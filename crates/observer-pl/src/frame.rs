@@ -92,6 +92,22 @@ impl Frame {
             None
         }
     }
+
+    /// If this is a `WINDOW` flow-control frame, the credit (bytes) it grants.
+    /// The payload is a 4-byte big-endian count, byte-identical to the journal's
+    /// `build_window` (`convey/secure_listener/framing.py`).
+    pub fn window_credit(&self) -> Option<u32> {
+        if self.flags & FLAG_WINDOW != 0 && self.payload.len() == 4 {
+            Some(u32::from_be_bytes([
+                self.payload[0],
+                self.payload[1],
+                self.payload[2],
+                self.payload[3],
+            ]))
+        } else {
+            None
+        }
+    }
 }
 
 /// Streaming frame decoder. Feed bytes off the wire; pull complete frames.
@@ -221,5 +237,24 @@ mod tests {
     fn reserved_flag_is_rejected() {
         let frame = Frame::new(1, FLAG_RESERVED_MASK, Vec::new());
         assert_eq!(frame.encode().unwrap_err(), FrameError::ReservedFlag(0x80));
+    }
+
+    #[test]
+    fn window_frame_parses_big_endian_credit() {
+        // 0x00_08_00_00 = 512 KiB, the journal's 50%-consumed replenishment grant.
+        let frame = Frame::new(5, FLAG_WINDOW, vec![0x00, 0x08, 0x00, 0x00]);
+        assert_eq!(frame.window_credit(), Some(512 * 1024));
+    }
+
+    #[test]
+    fn non_window_or_malformed_is_not_a_credit() {
+        // Right flag, wrong length.
+        assert!(Frame::new(5, FLAG_WINDOW, vec![1, 2, 3])
+            .window_credit()
+            .is_none());
+        // Right length, wrong flag.
+        assert!(Frame::new(5, FLAG_DATA, vec![0, 0, 0, 1])
+            .window_credit()
+            .is_none());
     }
 }

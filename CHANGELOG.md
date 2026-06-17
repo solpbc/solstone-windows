@@ -85,6 +85,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
   state is surfaced in the `HealthDump` (`sync` field) so `--dump-state` / `/healthz`
   reflect it. The AutomationId contract gains the pairing/upload ids and the
   `pairing_phase` token vocabulary.
+- **Mux WINDOW flow-control: segments larger than the 1 MiB initial window now
+  upload correctly.** The upload now paces the request body to the journal's
+  advertised send window and resumes on the `WINDOW` grants the journal emits as it
+  consumes the body (it replenishes at 50% consumed) — the same credit loop the iOS
+  client ships, byte-identical to the journal's `framing.py`/`mux.py`. Before this,
+  the body was sent in one burst and was only correct for payloads under 1 MiB; an
+  encoded screen segment (tens of MB) far exceeds that. `observer-pl` gains the pure,
+  host-tested `WindowedUpload` credit state machine and `WINDOW`-frame parsing; the
+  transport drives it full-duplex (write up to credit → read grants → repeat),
+  proven by a >1 MiB round-trip over real TLS + framing against a window-enforcing
+  peer.
 
 ### Changed
 
