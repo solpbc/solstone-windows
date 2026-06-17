@@ -14,7 +14,7 @@
 
 #![forbid(unsafe_code)]
 
-use observer_model::SegmentKey;
+use observer_model::{CaptureChunk, SegmentKey};
 
 /// Default rotation period: five minutes, aligned to the wall clock.
 pub const DEFAULT_SEGMENT_SECS: u64 = 5 * 60;
@@ -48,14 +48,20 @@ pub fn should_rotate(current: SegmentKey, now_epoch_secs: u64, period_secs: u64)
     segment_for(now_epoch_secs, period_secs) != current
 }
 
-/// Filesystem seam for segment lifecycle. Real impl lives in `platform-win`
-/// (`%LocalAppData%`); tests inject a fake. Open creates an `.incomplete`
-/// segment dir; finalize atomically renames it to its sealed name.
+/// Filesystem seam for segment lifecycle and per-source chunk writes.
+///
+/// Real impl lives in `platform-win` (`%LocalAppData%`); tests inject a fake.
+/// Open creates an `.incomplete` segment dir, writes append owned chunks to
+/// per-source files inside it, and finalize atomically renames it to its sealed
+/// name.
 pub trait SegmentFs {
     type Error: core::fmt::Debug;
 
     /// Create and open the `.incomplete` directory for `key`; return its path.
     fn open_incomplete(&mut self, key: SegmentKey) -> Result<String, Self::Error>;
+
+    /// Append one owned chunk to the per-source file for `key`.
+    fn write_chunk(&mut self, key: SegmentKey, chunk: &CaptureChunk) -> Result<(), Self::Error>;
 
     /// Atomically seal the `.incomplete` segment for `key` to its final name.
     fn finalize(&mut self, key: SegmentKey) -> Result<(), Self::Error>;

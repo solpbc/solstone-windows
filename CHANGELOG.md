@@ -23,11 +23,21 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - The plumbing **reference spikes** are imported under `spikes/` (excluded from the
   workspace build): `gdi-screen`, `wasapi-loopback`, `wgc`, `mic`, `flaui-scratch`,
   and `flaui-driver`. Each is the source as spiked, trimmed to the source itself.
+- Capture-core platform landing: real WGC screen and WASAPI system-audio/mic source
+  implementations, std-backed segment writing and incomplete-segment recovery with a
+  staleness guard, the per-session single-instance mutex, and the session/power/display
+  notification pump.
+- The injected capture sink, clock, and segment-writer seams, plus the computed
+  `HealthDump` and loopback `/healthz` server, are wired for host-testable engine
+  operation.
 
 ### Changed
 
 - `tauri.conf.json` bundle icon points at `icons/icon.ico` (was a placeholder PNG),
   so the installer + executable carry the brand mark.
+- WGC raw screen capture is capped at approximately 1 fps. At 1080p RGBA8 this is
+  roughly 2.5 GB per five-minute segment and 15 GB per 30-minute soak; an encoder
+  remains deferred.
 
 ### Documentation
 

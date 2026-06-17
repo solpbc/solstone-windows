@@ -10,13 +10,5 @@ description = "Windows.Graphics.Capture screen source (implements ScreenSource).
 [dependencies]
 observer-model.workspace = true
 
-# The `windows` dependency is target-gated so the whole workspace still compiles
-# on the Linux dev box. Real WinRT/COM calls arrive in later waves on the build
-# box; the bootstrap skeleton is API-call-free.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
-    "Graphics_Capture",
-    "Graphics_DirectX_Direct3D11",
-    "Win32_Graphics_Direct3D11",
-    "Win32_System_WinRT_Graphics_Capture",
-] }
+windows-capture = "2.0.0"

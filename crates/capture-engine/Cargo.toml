@@ -11,5 +11,7 @@ description = "Composition-tier orchestrator: sources -> writer -> rotation -> s
 observer-model.workspace = true
 observer-segment.workspace = true
 observer-state.workspace = true
+observer-health.workspace = true
 observer-recovery.workspace = true
 observer-lifecycle.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

@@ -14,6 +14,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoStaticStr};
 
@@ -42,7 +44,18 @@ pub enum AppPhase {
 
 /// Which capture source a [`SourceState`] describes.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    IntoStaticStr,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -117,6 +130,18 @@ pub struct SourceReport {
     pub device: Option<String>,
 }
 
+/// Owned bytes emitted by a source into the capture engine.
+///
+/// `seq` is a per-source monotonic index used for diagnostics and no-loss tests.
+/// `data` is owned so platform capture threads can copy out non-sendable or
+/// short-lived buffers before crossing the pure sink seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureChunk {
+    pub source: SourceKind,
+    pub seq: u64,
+    pub data: Vec<u8>,
+}
+
 /// Identifies one rotation segment: which capture session and which clock-aligned
 /// boundary index within it. The math that produces these lives in
 /// `observer-segment`; this is just the key shape.
@@ -153,19 +178,38 @@ pub struct HealthDump {
 // capture-wasapi) implements them, and `capture-engine` is injected the
 // concrete `dyn` impls. So the engine is host-testable with fakes on Linux.
 
+/// Synchronous, non-blocking sink that sources emit owned chunks into.
+///
+/// The channel-backed implementation lives in `capture-engine`, keeping async
+/// runtime types out of the pure tier.
+pub trait CaptureSink: Send + Sync {
+    fn emit(&self, chunk: CaptureChunk);
+}
+
+/// Injected wall-clock seam used by the engine's rotation logic.
+///
+/// The real implementation lives in `capture-engine`; tests use a deterministic
+/// fake clock.
+pub trait Clock: Send + Sync {
+    fn now_epoch_secs(&self) -> u64;
+}
+
 /// A screen capture source (implemented by `capture-wgc` on the build box).
 pub trait ScreenSource: Send {
-    /// Begin producing screen frames.
-    fn start(&mut self) -> Result<(), SourceError>;
+    /// Begin producing screen frames into `sink`.
+    fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError>;
     /// Stop producing.
     fn stop(&mut self);
     /// The current honestly-reported state.
     fn state(&self) -> SourceState;
+    /// Re-acquire the screen source after a display topology or resolution change.
+    fn on_display_changed(&mut self);
 }
 
 /// A system-audio (render loopback) source (implemented by `capture-wasapi`).
 pub trait SystemAudioSource: Send {
-    fn start(&mut self) -> Result<(), SourceError>;
+    /// Begin producing PCM chunks into `sink`.
+    fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError>;
     fn stop(&mut self);
     fn state(&self) -> SourceState;
 }
@@ -173,7 +217,8 @@ pub trait SystemAudioSource: Send {
 /// A microphone (eCapture) source (implemented by `capture-wasapi`). Owns the
 /// [`SourceState::NoInputDevice`] determination when no mic endpoint exists.
 pub trait MicSource: Send {
-    fn start(&mut self) -> Result<(), SourceError>;
+    /// Begin producing PCM chunks into `sink`, or report `NoInputDevice`.
+    fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError>;
     fn stop(&mut self);
     fn state(&self) -> SourceState;
 }

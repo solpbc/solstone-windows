@@ -51,6 +51,10 @@ impl StateMachine {
         Self::default()
     }
 
+    pub fn engine_ready(&self) -> bool {
+        self.engine_ready
+    }
+
     /// The computed phase. Reachability of `Observing` requires the engine ready,
     /// a run requested, no active pause, and every *required* source `Active`.
     pub fn phase(&self) -> AppPhase {
