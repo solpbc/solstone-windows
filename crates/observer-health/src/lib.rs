@@ -38,6 +38,7 @@ mod tests {
             segment_seconds_remaining: None,
             engine_ready: false,
             version: "0.1.0".into(),
+            sync: observer_model::SyncSnapshot::default(),
         }
     }
 

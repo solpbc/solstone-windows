@@ -68,3 +68,36 @@ pub async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn open_about(app: tauri::AppHandle) -> Result<(), String> {
     crate::windows::open_about(&app).map_err(|e| e.to_string())
 }
+
+/// Pair this observer to a journal from a scanned/pasted pair-link, then start
+/// uploading. The pairing handshake + registration run inline (so the UI sees
+/// success/failure), then the upload + heartbeat loop is spawned for the process
+/// lifetime. Outcome is also reflected through the health dump's pairing phase.
+#[tauri::command]
+pub async fn pair(
+    state: tauri::State<'_, crate::app::AppState>,
+    link: String,
+) -> Result<(), String> {
+    // Snapshot everything we need before the first await — never hold the State
+    // borrow across it.
+    let cfg = state.sync_config.clone();
+    let sync = state.sync.clone();
+    let health = state.health.clone();
+    let (up_tx, up_rx) = tokio::sync::oneshot::channel();
+    if let Ok(mut shutdowns) = state._sync_shutdowns.lock() {
+        shutdowns.push(up_tx);
+    }
+
+    let paired = pl_transport_win::service::pair_and_register(&link, &cfg, sync.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) =
+            pl_transport_win::service::run_uploader(paired, cfg, health, sync, up_rx).await
+        {
+            eprintln!("uploader exited: {error}");
+        }
+    });
+    Ok(())
+}

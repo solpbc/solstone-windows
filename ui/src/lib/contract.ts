@@ -9,11 +9,16 @@ export const automationContract = {
   "automation_ids": {
     "about.version": "about.version",
     "about.window.root": "about.window.root",
+    "settings.pairing.input": "settings.pairing.input",
+    "settings.pairing.journal": "settings.pairing.journal",
+    "settings.pairing.state": "settings.pairing.state",
+    "settings.pairing.submit": "settings.pairing.submit",
     "settings.sources.mic.state": "settings.sources.mic.state",
     "settings.sources.screen.state": "settings.sources.screen.state",
     "settings.sources.systemAudio.state": "settings.sources.systemAudio.state",
     "settings.status.appState.state": "settings.status.appState.state",
     "settings.status.segmentDir": "settings.status.segmentDir",
+    "settings.status.upload.state": "settings.status.upload.state",
     "settings.window.root": "settings.window.root",
     "tray.menu.about": "tray.menu.about",
     "tray.menu.openSettings": "tray.menu.openSettings",
@@ -36,6 +41,12 @@ export const automationContract = {
       "endpoint_lost",
       "unknown",
       "write_failed"
+    ],
+    "pairing_phase": [
+      "failed",
+      "not_paired",
+      "paired",
+      "pairing"
     ],
     "pause_reason": [
       "operator",

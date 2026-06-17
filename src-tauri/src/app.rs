@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
-use observer_model::{AppPhase, HealthDump, PauseReason};
+use observer_model::{AppPhase, HealthDump, PauseReason, SyncSnapshot};
+use pl_transport_win::credential::PairedState;
+use pl_transport_win::service::{run_uploader, SyncConfig};
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::{mpsc, oneshot};
@@ -23,7 +25,39 @@ use tokio::sync::{mpsc, oneshot};
 pub struct AppState {
     pub commands: mpsc::UnboundedSender<EngineCommand>,
     pub health: Arc<Mutex<HealthDump>>,
+    /// Wave-2 pairing/upload snapshot (shared with the engine + sync layer).
+    pub sync: Arc<Mutex<SyncSnapshot>>,
+    /// Static identity + paths the sync layer needs to pair/upload.
+    pub sync_config: SyncConfig,
     pub _shutdown: Mutex<Option<oneshot::Sender<()>>>,
+    /// Shutdown senders for spawned uploader tasks; kept alive for the process
+    /// lifetime so the uploaders run (dropping a sender would stop them).
+    pub _sync_shutdowns: Mutex<Vec<oneshot::Sender<()>>>,
+}
+
+/// The observer's hostname for registration, best-effort.
+fn observer_hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOSTNAME").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "windows-observer".to_string())
+}
+
+/// Build the sync config from the per-user data layout + the engine's rotation
+/// period (so the uploader derives the same segment keys the writer sealed).
+fn build_sync_config() -> SyncConfig {
+    let host = observer_hostname();
+    SyncConfig {
+        platform: "windows".to_string(),
+        hostname: host.clone(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        stream_type: "desktop".to_string(),
+        device_label: host,
+        period_secs: EngineConfig::default().segment_secs,
+        state_path: platform_win::local_data_root().join("pairing.json"),
+        segments_root: platform_win::segments_dir(),
+    }
 }
 
 /// Boot the tray-resident observer.
@@ -40,6 +74,7 @@ pub fn run() {
             crate::ipc::get_health,
             crate::ipc::open_settings,
             crate::ipc::open_about,
+            crate::ipc::pair,
         ])
         .setup(|app| {
             if crate::lifecycle::acquire_single_instance()
@@ -85,14 +120,42 @@ pub fn run() {
                 .map_err(|error| io::Error::other(format!("engine start failed: {error:?}")))?;
 
             let health = engine.health_handle();
+            let sync = engine.sync_handle();
             let watch_rx = engine.health_watch();
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
+            // Resume an existing pairing: if a credential is on disk, start the
+            // upload + heartbeat loop now. A fresh pairing is started by the
+            // `pair` IPC command instead.
+            let sync_config = build_sync_config();
+            let mut sync_shutdowns: Vec<oneshot::Sender<()>> = Vec::new();
+            match PairedState::load(&sync_config.state_path) {
+                Ok(paired) if paired.is_paired() => {
+                    let (up_tx, up_rx) = oneshot::channel();
+                    sync_shutdowns.push(up_tx);
+                    let cfg = sync_config.clone();
+                    let health_for_sync = health.clone();
+                    let sync_for_sync = sync.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            run_uploader(paired, cfg, health_for_sync, sync_for_sync, up_rx).await
+                        {
+                            eprintln!("uploader exited: {error}");
+                        }
+                    });
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("failed to load pairing state: {error}"),
+            }
+
             app.manage(AppState {
                 commands: cmd_tx.clone(),
                 health: health.clone(),
+                sync: sync.clone(),
+                sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
+                _sync_shutdowns: Mutex::new(sync_shutdowns),
             });
 
             let (tray, mi_start, mi_pause, mi_resume) = crate::tray::init(app, cmd_tx.clone())?;
@@ -145,6 +208,10 @@ pub fn run() {
                         .lock()
                         .map(|health| health.sources.clone())
                         .unwrap_or_default();
+                    let sync = health
+                        .lock()
+                        .map(|health| health.sync.clone())
+                        .unwrap_or_default();
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -153,6 +220,7 @@ pub fn run() {
                         segment_seconds_remaining: None,
                         engine_ready: false,
                         version: env!("CARGO_PKG_VERSION").to_string(),
+                        sync,
                     };
                     if let Ok(mut health) = health.lock() {
                         *health = terminal.clone();

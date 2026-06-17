@@ -58,6 +58,33 @@ All notable changes to `solstone-windows` are recorded here. The format follows
   required source is killed, and a `--selftest` mode proves the contract-parse /
   token-match / drop-detection logic with no live target. AutomationIds and the
   `observing` token are read from `automation-contract.json`, never hardcoded.
+- **Pairing + upload (Wave 2): the observer pairs to a journal and delivers its
+  segments.** Two new crates implement a faithful Rust client of the same observer
+  wire protocol the iOS and Android apps ship and the journal serves — no new
+  crypto, no new wire format:
+  - `observer-pl` (pure, host-testable): the `go.solstone.app/p#…` pair-link parser
+    (Crockford base32, v04 single- + v05 multi-address), the spl mux framing
+    (8-byte header, OPEN/DATA/CLOSE/PING/PONG), HTTP-over-PL request/response, the
+    observer register/ingest/heartbeat/reconcile wire types, the multipart body
+    (the `files` field the journal reads), CA-fingerprint prefix pinning, and the
+    epoch→`day`/`segment` key conversion. Round-trip unit-tested end to end.
+  - `pl-transport-win` (transport): the framed-mTLS connection over rustls (ring)
+    with CA-fingerprint pinning **and** handshake-signature verification, EC P-256
+    key + CSR generation, the pairing handshake, the observer client
+    (register/ingest/heartbeat/reconcile), the sealed-segment store, and the upload
+    coordinator + heartbeat loop. Connection-level retry tolerates a freshly-paired
+    fingerprint not yet seen by every journal worker.
+- The upload coordinator ships sealed segments to `/app/observer/ingest` and
+  **reconciles by sha256** before deleting the local copy — a segment counts as
+  delivered only after the journal confirms it landed (honest state, earned not
+  asserted), with exponential backoff on failure.
+- The heartbeat posts `observe.status` to the paired journal every 15s, carrying the
+  real pause state from the health dump.
+- The Settings window gains a **Pairing pane** (paste a pair-link, see the pairing
+  phase + paired journal) and a **journal-sync** line in Status; pairing/upload
+  state is surfaced in the `HealthDump` (`sync` field) so `--dump-state` / `/healthz`
+  reflect it. The AutomationId contract gains the pairing/upload ids and the
+  `pairing_phase` token vocabulary.
 
 ### Changed
 

@@ -21,6 +21,7 @@ capture-engine.workspace = true
 platform-win.workspace = true
 capture-wgc.workspace = true
 capture-wasapi.workspace = true
+pl-transport-win.workspace = true
 observer-model.workspace = true
 observer-health.workspace = true
 observer-state.workspace = true

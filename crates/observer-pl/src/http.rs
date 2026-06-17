@@ -1,0 +1,257 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+//! HTTP/1.1 over PL — request build + response parse.
+//!
+//! Frames an HTTP request exactly as the Android `PlHttp` transport does so the
+//! journal sees identical bytes: a `host: spl.local` line the transport owns,
+//! an `accept` line (caller-overridable), the caller's headers, then a
+//! transport-owned `content-length`. Response parsing lowercases header keys,
+//! honors `content-length`, and de-chunks `transfer-encoding: chunked` — the
+//! same shape the Android parser handles.
+
+use thiserror::Error;
+
+/// A parsed HTTP response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let lower = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(k, _)| *k == lower)
+            .map(|(_, v)| v.as_str())
+    }
+
+    pub fn body_text(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
+
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum HttpError {
+    #[error("HTTP response missing header terminator")]
+    MissingTerminator,
+    #[error("HTTP response missing status line")]
+    MissingStatusLine,
+    #[error("bad HTTP status line: {0}")]
+    BadStatusLine(String),
+    #[error("chunked body is malformed: {0}")]
+    BadChunkedBody(String),
+}
+
+fn is_framing_owned(name: &str) -> bool {
+    name.eq_ignore_ascii_case("host")
+        || name.eq_ignore_ascii_case("content-length")
+        || name.eq_ignore_ascii_case("accept")
+}
+
+/// Build the HTTP/1.1 request bytes for a single PL stream. `headers` are the
+/// caller's extra headers (e.g. auth, content-type); `host`, `content-length`,
+/// and a default `accept` are added by the transport, `accept` overridable.
+pub fn build_request(
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut head = String::new();
+    head.push_str(method);
+    head.push(' ');
+    head.push_str(path);
+    head.push_str(" HTTP/1.1\r\n");
+    head.push_str("host: spl.local\r\n");
+
+    match headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("accept"))
+    {
+        Some((k, v)) => {
+            head.push_str(k);
+            head.push_str(": ");
+            head.push_str(v);
+            head.push_str("\r\n");
+        }
+        None => head.push_str("accept: application/json\r\n"),
+    }
+
+    for (name, value) in headers {
+        if !is_framing_owned(name) {
+            head.push_str(name);
+            head.push_str(": ");
+            head.push_str(value);
+            head.push_str("\r\n");
+        }
+    }
+
+    head.push_str("content-length: ");
+    head.push_str(&body.len().to_string());
+    head.push_str("\r\n\r\n");
+
+    let mut out = head.into_bytes();
+    out.extend_from_slice(body);
+    out
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Parse a complete HTTP/1.1 response (headers + body) off a PL stream.
+pub fn parse_response(raw: &[u8]) -> Result<HttpResponse, HttpError> {
+    let split = find_subsequence(raw, b"\r\n\r\n").ok_or(HttpError::MissingTerminator)?;
+    // Headers are ASCII/latin-1; lossy is safe and matches the reference parser.
+    let head = String::from_utf8_lossy(&raw[..split]);
+    let mut lines = head.split("\r\n");
+
+    let status_line = lines.next().ok_or(HttpError::MissingStatusLine)?;
+    let mut status_parts = status_line.splitn(3, ' ');
+    let _http = status_parts.next();
+    let status = status_parts
+        .next()
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or_else(|| HttpError::BadStatusLine(status_line.to_string()))?;
+
+    let mut headers = Vec::new();
+    for line in lines {
+        if let Some(colon) = line.find(':') {
+            let key = line[..colon].trim().to_ascii_lowercase();
+            let value = line[colon + 1..].trim().to_string();
+            headers.push((key, value));
+        }
+    }
+
+    let mut body = raw[split + 4..].to_vec();
+    let header_lookup = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
+
+    if header_lookup("transfer-encoding")
+        .map(|v| v.eq_ignore_ascii_case("chunked"))
+        .unwrap_or(false)
+    {
+        body = dechunk(&body)?;
+    } else if let Some(len) = header_lookup("content-length").and_then(|v| v.parse::<usize>().ok())
+    {
+        if len < body.len() {
+            body.truncate(len);
+        }
+    }
+
+    Ok(HttpResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+/// Decode a `chunked` transfer-encoding body.
+pub fn dechunk(raw: &[u8]) -> Result<Vec<u8>, HttpError> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < raw.len() {
+        let line_end = find_subsequence(&raw[index..], b"\r\n")
+            .map(|p| index + p)
+            .ok_or_else(|| HttpError::BadChunkedBody("missing size line".into()))?;
+        let size_text = String::from_utf8_lossy(&raw[index..line_end]);
+        let size_field = size_text.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_field, 16)
+            .map_err(|_| HttpError::BadChunkedBody(format!("bad chunk size {size_field:?}")))?;
+        index = line_end + 2;
+        if size == 0 {
+            return Ok(out);
+        }
+        if index + size > raw.len() {
+            return Err(HttpError::BadChunkedBody("truncated chunk".into()));
+        }
+        out.extend_from_slice(&raw[index..index + size]);
+        index += size + 2; // skip the chunk data + trailing CRLF
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_request_owns_host_accept_and_content_length() {
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X-Solstone-Observer".to_string(), "handle123".to_string()),
+            // Caller attempts to set framing-owned headers — must be dropped.
+            ("host".to_string(), "evil".to_string()),
+            ("content-length".to_string(), "999".to_string()),
+        ];
+        let bytes = build_request("POST", "/app/observer/ingest", &headers, b"payload");
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.starts_with("POST /app/observer/ingest HTTP/1.1\r\n"));
+        assert!(text.contains("host: spl.local\r\n"));
+        assert!(text.contains("accept: application/json\r\n"));
+        assert!(text.contains("Content-Type: application/json\r\n"));
+        assert!(text.contains("X-Solstone-Observer: handle123\r\n"));
+        assert!(text.contains("content-length: 7\r\n"));
+        // The caller's spoofed host/content-length never reach the wire.
+        assert!(!text.contains("host: evil"));
+        assert!(!text.contains("content-length: 999"));
+        assert!(text.ends_with("\r\n\r\npayload"));
+    }
+
+    #[test]
+    fn caller_can_override_accept() {
+        let headers = vec![("Accept".to_string(), "*/*".to_string())];
+        let text = String::from_utf8(build_request("GET", "/x", &headers, b"")).unwrap();
+        assert!(text.contains("Accept: */*\r\n"));
+        assert!(!text.contains("accept: application/json"));
+    }
+
+    #[test]
+    fn parses_content_length_response() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4\r\n\r\n{ok}trailing-garbage";
+        let resp = parse_response(raw).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"{ok}");
+        assert_eq!(resp.header("content-type"), Some("application/json"));
+    }
+
+    #[test]
+    fn parses_chunked_response() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let resp = parse_response(raw).unwrap();
+        assert_eq!(resp.body, b"Wikipedia");
+    }
+
+    #[test]
+    fn parses_401_with_body() {
+        let raw = b"HTTP/1.1 401 UNAUTHORIZED\r\nContent-Length: 16\r\n\r\n{\"error\":\"auth\"}";
+        let resp = parse_response(raw).unwrap();
+        assert_eq!(resp.status, 401);
+        assert!(!resp.is_success());
+    }
+
+    #[test]
+    fn missing_terminator_is_an_error() {
+        assert_eq!(
+            parse_response(b"HTTP/1.1 200 OK\r\n").unwrap_err(),
+            HttpError::MissingTerminator
+        );
+    }
+}

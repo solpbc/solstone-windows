@@ -23,6 +23,29 @@ interface SourceReport {
   device?: string | null;
 }
 
+type PairingPhase = "not_paired" | "pairing" | "paired" | "failed";
+
+interface PairingState {
+  phase: PairingPhase;
+  journal_label: string | null;
+  observer_name: string | null;
+  detail: string | null;
+}
+
+interface UploadStatus {
+  pending_segments: number;
+  uploaded_segments: number;
+  failed_segments: number;
+  last_uploaded_segment: string | null;
+  last_error: string | null;
+  heartbeat_ok: boolean;
+}
+
+interface SyncSnapshot {
+  pairing: PairingState;
+  upload: UploadStatus;
+}
+
 interface HealthDump {
   app_state: AppPhase;
   sources: SourceReport[];
@@ -31,7 +54,13 @@ interface HealthDump {
   segment_seconds_remaining: number | null;
   engine_ready: boolean;
   version: string;
+  sync: SyncSnapshot;
 }
+
+// The pair-link the owner typed/pasted. Held in a module var (never read back
+// from the DOM) so a health re-render never loses it.
+let pairingDraft = "";
+let pairingBusy = false;
 
 const ids = automationContract.automation_ids;
 const queriedRoot = document.querySelector<HTMLDivElement>("#app");
@@ -132,6 +161,106 @@ function sourceByKind(dump: HealthDump, kind: SourceKind): SourceReport | undefi
   return dump.sources.find((source) => source.kind === kind);
 }
 
+function pairingPhaseLabel(pairing: PairingState): string {
+  switch (pairing.phase) {
+    case "not_paired":
+      return "not paired";
+    case "pairing":
+      return "pairing…";
+    case "paired":
+      return pairing.journal_label ? `paired with ${pairing.journal_label}` : "paired";
+    case "failed":
+      return pairing.detail ? `pairing failed: ${pairing.detail}` : "pairing failed";
+  }
+}
+
+function uploadLabel(upload: UploadStatus): string {
+  const parts = [
+    `${upload.uploaded_segments} delivered`,
+    `${upload.pending_segments} pending`,
+  ];
+  if (upload.failed_segments > 0) {
+    parts.push(`${upload.failed_segments} retrying`);
+  }
+  if (upload.last_error) {
+    parts.push(`last error: ${upload.last_error}`);
+  }
+  return parts.join(" · ");
+}
+
+function renderPairingSection(dump: HealthDump): HTMLElement {
+  const pairing = dump.sync.pairing;
+  const pane = section("Pairing");
+  pane.append(
+    valueRow(
+      "status",
+      automation(text("div", pairingPhaseLabel(pairing)), ids["settings.pairing.state"]),
+    ),
+    valueRow(
+      "journal",
+      automation(
+        text("div", pairing.journal_label ?? "not paired"),
+        ids["settings.pairing.journal"],
+      ),
+    ),
+  );
+
+  const inputRow = document.createElement("div");
+  inputRow.style.display = "grid";
+  inputRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+  inputRow.style.gap = "8px";
+  inputRow.style.padding = "7px 0";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "paste a pair-link from your journal";
+  input.value = pairingDraft;
+  input.dataset.automationId = ids["settings.pairing.input"];
+  input.style.fontSize = "13px";
+  input.style.padding = "7px 9px";
+  input.style.border = "1px solid #c4ccc0";
+  input.style.borderRadius = "6px";
+  input.style.minWidth = "0";
+  input.oninput = () => {
+    pairingDraft = input.value;
+  };
+
+  const button = document.createElement("button");
+  const busy = pairingBusy || pairing.phase === "pairing";
+  button.textContent = busy ? "pairing…" : "pair";
+  button.disabled = busy;
+  button.dataset.automationId = ids["settings.pairing.submit"];
+  button.style.fontSize = "13px";
+  button.style.padding = "7px 14px";
+  button.style.border = "1px solid #2f6f4f";
+  button.style.borderRadius = "6px";
+  button.style.background = busy ? "#9bb6a6" : "#2f6f4f";
+  button.style.color = "#fff";
+  button.style.cursor = busy ? "default" : "pointer";
+  button.onclick = async () => {
+    const link = pairingDraft.trim();
+    if (!link || pairingBusy) {
+      return;
+    }
+    pairingBusy = true;
+    button.disabled = true;
+    button.textContent = "pairing…";
+    try {
+      // The result is reflected through the health dump's pairing phase; we
+      // ignore the return and let the next render paint the outcome.
+      await invoke("pair", { link });
+    } catch {
+      // Failure surfaces as pairing.phase = "failed" with a detail.
+    } finally {
+      pairingBusy = false;
+    }
+  };
+
+  inputRow.append(input, button);
+  pane.append(inputRow);
+  return pane;
+}
+
 function resetRoot(rootId: string): void {
   root.replaceChildren();
   root.dataset.automationId = rootId;
@@ -161,6 +290,10 @@ function renderSettings(dump: HealthDump): void {
         ids["settings.status.segmentDir"],
       ),
     ),
+    valueRow(
+      "journal sync",
+      automation(text("div", uploadLabel(dump.sync.upload)), ids["settings.status.upload.state"]),
+    ),
   );
 
   const sources = section("Sources");
@@ -185,7 +318,7 @@ function renderSettings(dump: HealthDump): void {
     ),
   );
 
-  root.append(status, sources);
+  root.append(status, sources, renderPairingSection(dump));
 }
 
 function renderAbout(dump: HealthDump): void {

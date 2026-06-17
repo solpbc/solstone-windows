@@ -91,10 +91,12 @@ crates/
   observer-recovery/   incomplete-segment scan/finalize over a RecoveryFs trait
   observer-lifecycle/  backoff + circuit-breaker state machine
   observer-contract/   AutomationId source of truth + the JSON generator
+  observer-pl/         pair-link parse + spl framing + observer wire + multipart + CA-fp pin (pure)
   ── platform tier ── (windows-rs quarantine, target-gated; unsafe only here)
   capture-wgc/         Windows.Graphics.Capture screen source
   capture-wasapi/      WASAPI loopback system audio + eCapture mic (owns NoInputDevice)
   platform-win/        session/power pump, named-mutex, %LocalAppData%, fs impls
+  pl-transport-win/    framed-mTLS transport (rustls) + observer client + upload coordinator + heartbeat
   ── composition tier ──
   capture-engine/      orchestrator: sources→writer→rotation→state→recovery
 src-tauri/             the binary: tray + Settings/About + IPC + arg dispatch
@@ -111,9 +113,13 @@ The **DAG rule**: dependency arrows never point pure → platform. The pure tier
 holds all the logic worth testing; the platform tier holds the `unsafe`
 WinRT/COM seams.
 
-**Reserved (Wave 2, not created yet):** `crates/observer-pl/` (pair-link parse +
-framing + observer wire protocol, pure) and `crates/pl-transport-win/`
-(framed-mTLS transport, rustls default). Named here; created when Wave 2 starts.
+**`pl-transport-win` is the one platform-tier crate with no `windows-rs` and no
+`unsafe`** — it is built on rustls (ring), which is cross-platform. It sits in the
+platform tier because it owns the OS-adjacent transport (sockets, TLS, the network
+seam), but it compiles and tests on the Linux dev host too. That is deliberate: the
+live cross-repo pair+ingest gate can run off-Windows against a journal on the dev
+box (see `crates/pl-transport-win/examples/live_gate.rs`), and the box's
+`win-host-ci` still builds + tests it on real MSVC alongside the windows-rs tier.
 
 ## 5. The contract
 

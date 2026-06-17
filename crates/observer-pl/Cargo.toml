@@ -1,0 +1,15 @@
+[package]
+name = "observer-pl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Pure observer PL wire protocol: pair-link parse, spl mux framing, HTTP-over-PL, the observer register/ingest/heartbeat/reconcile wire types, multipart, and CA-fingerprint pinning logic. No platform dep, no I/O; host-testable. The faithful Rust port of the contract iOS/Android ship."
+
+[dependencies]
+observer-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true

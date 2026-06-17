@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use observer_model::{AppPhase, ErrorReason, PauseReason, SourceKind};
+use observer_model::{AppPhase, ErrorReason, PairingPhase, PauseReason, SourceKind};
 use serde::Serialize;
 use strum::IntoEnumIterator;
 
@@ -51,9 +51,15 @@ pub mod settings {
     pub const WINDOW_ROOT: &str = "settings.window.root";
     pub const STATUS_APP_STATE: &str = "settings.status.appState.state";
     pub const STATUS_SEGMENT_DIR: &str = "settings.status.segmentDir";
+    pub const STATUS_UPLOAD_STATE: &str = "settings.status.upload.state";
     pub const SOURCES_SCREEN_STATE: &str = "settings.sources.screen.state";
     pub const SOURCES_SYSTEM_AUDIO_STATE: &str = "settings.sources.systemAudio.state";
     pub const SOURCES_MIC_STATE: &str = "settings.sources.mic.state";
+    /// Pairing pane (Wave 2): phase, paired journal, the pair-link field + action.
+    pub const PAIRING_STATE: &str = "settings.pairing.state";
+    pub const PAIRING_JOURNAL: &str = "settings.pairing.journal";
+    pub const PAIRING_INPUT: &str = "settings.pairing.input";
+    pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
 }
 
 /// About window.
@@ -77,6 +83,10 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.status.appState.state", settings::STATUS_APP_STATE),
         ("settings.status.segmentDir", settings::STATUS_SEGMENT_DIR),
         (
+            "settings.status.upload.state",
+            settings::STATUS_UPLOAD_STATE,
+        ),
+        (
             "settings.sources.screen.state",
             settings::SOURCES_SCREEN_STATE,
         ),
@@ -85,6 +95,10 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             settings::SOURCES_SYSTEM_AUDIO_STATE,
         ),
         ("settings.sources.mic.state", settings::SOURCES_MIC_STATE),
+        ("settings.pairing.state", settings::PAIRING_STATE),
+        ("settings.pairing.journal", settings::PAIRING_JOURNAL),
+        ("settings.pairing.input", settings::PAIRING_INPUT),
+        ("settings.pairing.submit", settings::PAIRING_SUBMIT),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
     ])
@@ -99,6 +113,7 @@ fn state_tokens() -> BTreeMap<&'static str, Vec<String>> {
         ("source_status", source_status_tokens()),
         ("pause_reason", enum_tokens::<PauseReason>()),
         ("error_reason", enum_tokens::<ErrorReason>()),
+        ("pairing_phase", enum_tokens::<PairingPhase>()),
     ])
 }
 

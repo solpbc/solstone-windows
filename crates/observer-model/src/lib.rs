@@ -153,6 +153,75 @@ pub struct SegmentKey {
     pub index: u64,
 }
 
+/// The observer's pairing phase with its journal. Like [`AppPhase`], this is a
+/// *reported* fact — `Paired` is only ever set after a real pairing handshake
+/// and observer registration succeed, never asserted optimistically.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    IntoStaticStr,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum PairingPhase {
+    /// No pairing credential on disk.
+    #[default]
+    NotPaired,
+    /// A pairing handshake is in progress.
+    Pairing,
+    /// Paired and registered: the observer can upload to the journal.
+    Paired,
+    /// The last pairing attempt failed; carries a detail in [`PairingState`].
+    Failed,
+}
+
+/// The honest pairing state surfaced in the health dump.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PairingState {
+    pub phase: PairingPhase,
+    /// The paired journal's human label, when known.
+    pub journal_label: Option<String>,
+    /// The registered observer's stream name, when known.
+    pub observer_name: Option<String>,
+    /// A failure detail when `phase` is `Failed`.
+    pub detail: Option<String>,
+}
+
+/// The honest upload/sync state surfaced in the health dump. Counts are earned
+/// from real ingest outcomes — a segment counts as `uploaded` only after the
+/// journal confirms it (reconcile by sha256), never on optimistic send.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct UploadStatus {
+    /// Sealed segments on disk not yet confirmed uploaded.
+    pub pending_segments: u64,
+    /// Segments confirmed landed in the journal this session.
+    pub uploaded_segments: u64,
+    /// Segments whose upload last failed (will be retried with backoff).
+    pub failed_segments: u64,
+    /// The last segment confirmed landed (`HHMMSS_LEN`).
+    pub last_uploaded_segment: Option<String>,
+    /// The last upload error detail, when one occurred.
+    pub last_error: Option<String>,
+    /// Whether the most recent heartbeat to the journal succeeded.
+    pub heartbeat_ok: bool,
+}
+
+/// The sync layer's snapshot (pairing + upload), folded into [`HealthDump`] by
+/// the engine. `Default` is the honest not-paired, nothing-uploaded state.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SyncSnapshot {
+    pub pairing: PairingState,
+    pub upload: UploadStatus,
+}
+
 /// The single honest-state payload, defined once and serialized identically
 /// three ways: the `--dump-state` CLI JSON, the localhost `/healthz` body, and
 /// the `health://changed` event the shell subscribes to. There is no second
@@ -171,6 +240,10 @@ pub struct HealthDump {
     pub engine_ready: bool,
     /// The observer build version.
     pub version: String,
+    /// Pairing + upload state from the Wave-2 sync layer. Defaults to the
+    /// not-paired/idle snapshot when sync is not running.
+    #[serde(default)]
+    pub sync: SyncSnapshot,
 }
 
 // ── Source traits ────────────────────────────────────────────────────────────

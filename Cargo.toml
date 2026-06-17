@@ -8,9 +8,11 @@ members = [
     "crates/observer-recovery",
     "crates/observer-lifecycle",
     "crates/observer-contract",
+    "crates/observer-pl",
     "crates/capture-wgc",
     "crates/capture-wasapi",
     "crates/platform-win",
+    "crates/pl-transport-win",
     "crates/capture-engine",
     "src-tauri",
     "xtask",
@@ -32,10 +34,19 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 strum = { version = "0.28", features = ["derive"] }
+sha2 = "0.10"
 
 # Composition / shell deps.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 anyhow = "1"
+
+# Wave-2 transport deps (framed-mTLS observer client). rustls with the ring
+# provider (no cmake/NASM toolchain needed; builds on the Linux dev host and the
+# Windows MSVC box alike) — we pin the journal CA fingerprint ourselves, so no
+# webpki-roots / system trust store is pulled in.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 
 # Internal crates (path deps; versions tracked via workspace.package).
 observer-model = { path = "crates/observer-model" }
@@ -45,7 +56,9 @@ observer-health = { path = "crates/observer-health" }
 observer-recovery = { path = "crates/observer-recovery" }
 observer-lifecycle = { path = "crates/observer-lifecycle" }
 observer-contract = { path = "crates/observer-contract" }
+observer-pl = { path = "crates/observer-pl" }
 capture-wgc = { path = "crates/capture-wgc" }
 capture-wasapi = { path = "crates/capture-wasapi" }
 platform-win = { path = "crates/platform-win" }
+pl-transport-win = { path = "crates/pl-transport-win" }
 capture-engine = { path = "crates/capture-engine" }

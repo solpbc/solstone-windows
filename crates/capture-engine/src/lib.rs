@@ -21,7 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use observer_lifecycle::{BackoffConfig, Lifecycle, RetryDecision};
 use observer_model::{
     AppPhase, CaptureChunk, CaptureSink, Clock, ErrorReason, HealthDump, MicSource, PauseReason,
-    ScreenSource, SourceError, SourceKind, SourceReport, SourceState, SystemAudioSource,
+    ScreenSource, SourceError, SourceKind, SourceReport, SourceState, SyncSnapshot,
+    SystemAudioSource,
 };
 use observer_recovery::{recover_all, RecoveryFs, RecoveryOutcome};
 use observer_segment::{
@@ -119,6 +120,10 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     retry_at_epoch_secs: BTreeMap<SourceKind, u64>,
     shared_health: Arc<Mutex<HealthDump>>,
     health_tx: watch::Sender<HealthDump>,
+    /// Wave-2 sync (pairing + upload) snapshot, published by the sync layer and
+    /// folded into every `HealthDump`. Default = not-paired/idle, so the engine
+    /// is unchanged when sync isn't running.
+    sync: Arc<Mutex<SyncSnapshot>>,
 }
 
 impl<SFS> CaptureEngine<SFS>
@@ -158,6 +163,7 @@ where
             retry_at_epoch_secs: BTreeMap::new(),
             shared_health: Arc::new(Mutex::new(Self::empty_health())),
             health_tx,
+            sync: Arc::new(Mutex::new(SyncSnapshot::default())),
         };
         engine.refresh_health();
 
@@ -189,6 +195,13 @@ where
         self.shared_health.clone()
     }
 
+    /// Handle the Wave-2 sync layer publishes its pairing/upload snapshot into.
+    /// The engine folds it into every `HealthDump` on the next tick, keeping one
+    /// serialization of state across capture + sync.
+    pub fn sync_handle(&self) -> Arc<Mutex<SyncSnapshot>> {
+        self.sync.clone()
+    }
+
     /// Subscribe to change-driven health updates.
     pub fn health_watch(&self) -> watch::Receiver<HealthDump> {
         self.health_tx.subscribe()
@@ -210,6 +223,12 @@ where
             None
         };
 
+        let sync = self
+            .sync
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default();
+
         HealthDump {
             app_state,
             sources: self.source_reports.values().cloned().collect(),
@@ -218,6 +237,7 @@ where
             segment_seconds_remaining,
             engine_ready: self.state.engine_ready(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            sync,
         }
     }
 
@@ -571,6 +591,7 @@ where
             segment_seconds_remaining: None,
             engine_ready: false,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            sync: SyncSnapshot::default(),
         }
     }
 }
@@ -1177,6 +1198,7 @@ mod tests {
             segment_seconds_remaining: None,
             engine_ready: true,
             version: "test".into(),
+            sync: SyncSnapshot::default(),
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
