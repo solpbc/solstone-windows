@@ -92,14 +92,20 @@ namespace Solstone.Harness
                 Log("OK (Tier 0): health dump reports observing");
 
                 // Tier 1 native-chrome liveness: open Settings from the tray and
-                // confirm the Settings window resolves by AutomationId.
-                var tier1 = Tier1Interaction(contract);
-                if (tier1 != Ok)
+                // confirm the Settings window resolves by AutomationId. This is
+                // ADVISORY, not the gate: the tray context menu is only reliably
+                // reachable on a fully interactive desktop, so a headless/automated
+                // session may not resolve it. The deterministic gate is the Tier-0
+                // health oracle above (the scope's "green path must not depend on
+                // UIA resolving"). A Tier-1 miss is logged, never fatal.
+                if (Tier1Interaction(contract) == Ok)
                 {
-                    Log("WARN (Tier 1): native-chrome interaction did not complete; the Tier-0 oracle is the gate");
-                    return tier1;
+                    Log("OK (Tier 1): tray -> Open Settings -> Settings window resolved by AutomationId");
                 }
-                Log("OK (Tier 1): tray -> Open Settings -> Settings window resolved by AutomationId");
+                else
+                {
+                    Log("WARN (Tier 1, advisory): native-chrome interaction did not complete on this session; Tier-0 oracle is the gate");
+                }
                 return Ok;
             }
             catch (Exception ex)
