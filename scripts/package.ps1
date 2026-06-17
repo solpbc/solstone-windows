@@ -8,7 +8,7 @@
 # `--signTemplate` form and add the credential pre-check; sign release artifacts
 # only. No code restructure is needed to turn signing on.
 #
-# This script does NOT build — `make package` builds target/release/ first and
+# This script does NOT build - `make package` builds target/release/ first and
 # this consumes it. Tauri embeds the webview (ui/dist) into the exe at compile
 # time, so the pack input is the self-contained exe, not loose webview files.
 
@@ -33,7 +33,7 @@ if (-not (Test-Path $Vpk)) { $Vpk = "vpk" }
 
 $Exe = Join-Path $Root "target\release\solstone-windows-app.exe"
 if (-not (Test-Path $Exe)) {
-    throw "release binary not found at $Exe — run ``make package`` (it builds --release first)."
+    throw "release binary not found at $Exe - run ``make package`` (it builds --release first)."
 }
 
 if (-not $Version) {
@@ -47,7 +47,7 @@ New-Item -ItemType Directory -Force -Path $Releases | Out-Null
 # Re-pack guard: refuse to clobber an already-packed full release for this version
 # (an un-bumped re-pack is an operator error). The glob tolerates a channel suffix.
 if (Get-ChildItem $Releases -Filter "Solstone-$Version*full.nupkg" -ErrorAction SilentlyContinue) {
-    throw "Solstone $Version already packed in $Releases — bump the version before re-packing."
+    throw "Solstone $Version already packed in $Releases - bump the version before re-packing."
 }
 
 # Stage the self-contained exe only. If box validation shows a required sidecar

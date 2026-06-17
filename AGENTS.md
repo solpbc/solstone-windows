@@ -73,7 +73,11 @@ matrix stay operator-direct on the box (not part of `win-host-ci`).
 Build-box gotchas: the FlaUI harness targets **net48** and needs
 `Accessibility.dll` in the publish layout; invoke `.cmd` shims via `cmd.exe /c`;
 use explicit tool paths until `PATH` refreshes after a package install; the smoke
-runs via a scheduled task into Session 1.
+runs via a scheduled task into Session 1. **Keep `.ps1` scripts ASCII-only** —
+Windows PowerShell 5.1 (the box default shell) reads a non-BOM `.ps1` in the
+system codepage, so a UTF-8 em-dash or smart-quote corrupts and can break string
+parsing (e.g. an em-dash inside a `throw "..."` aborts `vpk pack`). Use plain `-`
+and `'`/`"` in scripts that run on the box.
 
 ## 4. Source Layout
 

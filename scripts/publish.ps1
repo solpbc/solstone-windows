@@ -3,7 +3,7 @@
 
 # Publish the Releases/ directory to GitHub Releases, which serves as the
 # monotonic Velopack update feed. Operator-gated: there is no GitHub Actions
-# release path by policy — the operator runs this by hand from the build box.
+# release path by policy - the operator runs this by hand from the build box.
 #
 # Atomic-ish + fail-loud: `gh release create` errors if the tag already exists, so
 # an un-bumped re-publish fails rather than silently overwriting the feed. The feed
@@ -24,13 +24,13 @@ if (-not $Gh) { $Gh = "$env:ProgramFiles\GitHub CLI\gh.exe" }
 
 $Root = Split-Path -Parent $PSScriptRoot
 $Releases = Join-Path $Root "Releases"
-if (-not (Test-Path $Releases)) { throw "no Releases/ at $Releases — run ``make package`` first." }
+if (-not (Test-Path $Releases)) { throw "no Releases/ at $Releases - run ``make package`` first." }
 
-# Derive the version (hence the tag) from the packed full nupkg already on disk —
+# Derive the version (hence the tag) from the packed full nupkg already on disk -
 # publish operates purely on Releases/ contents. The regex tolerates a channel
 # segment in the nupkg name.
 $full = Get-ChildItem $Releases -Filter "Solstone-*full.nupkg" | Select-Object -First 1
-if (-not $full) { throw "no full nupkg in $Releases — run ``make package`` first." }
+if (-not $full) { throw "no full nupkg in $Releases - run ``make package`` first." }
 if ($full.Name -match 'Solstone-(.+?)(-win)?-full\.nupkg') {
     $Version = $Matches[1]
 } else {
@@ -47,7 +47,7 @@ $assets = Get-ChildItem $Releases -File |
     ForEach-Object { $_.FullName }
 
 Write-Host "publish.ps1: creating GitHub release $Tag"
-# Fail loud on an existing tag — gh errors and we do not pass --clobber, so the
+# Fail loud on an existing tag - gh errors and we do not pass --clobber, so the
 # monotonic feed is never silently overwritten.
 & $Gh release create $Tag @repoArgs --title $Tag --notes "Solstone $Version" @assets
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed for $Tag (tag may already exist; exit $LASTEXITCODE)." }
