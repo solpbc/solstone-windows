@@ -95,6 +95,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
   remains deferred.
 - The tray is now built in code with the contract id `tray.root`; the config tray
   block is removed to avoid a duplicate tray resource.
+- Incomplete-segment recovery now decides staleness by **rotation boundary**, not
+  by file age. The single-instance gate is acquired at boot before any capture
+  source starts, so recovery is guaranteed no concurrent writer — there is no live
+  writer to race, and the previous age/mtime margin only delayed sealing genuine
+  orphans. Recovery now leaves untouched only the one segment whose aligned window
+  contains *now* (the engine re-opens and continues it on restart) and seals or
+  quarantines every other `.incomplete` immediately. This finalizes a segment the
+  prior run had only just crossed out of when it crashed without the former up-to-one-
+  window delay; usable captured data is never abandoned. Pure `is_live_segment`
+  predicate added to the segment crate; the cross-boundary stale-finalize case is
+  covered by tests.
 
 ### Fixed
 

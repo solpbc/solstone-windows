@@ -18,15 +18,11 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use observer_model::{CaptureChunk, SegmentKey, SourceKind};
 use observer_recovery::{RecoveryFs, StaleSegment};
-use observer_segment::{SegmentFs, DEFAULT_SEGMENT_SECS};
-
-/// Extra age beyond one segment duration before recovery treats an incomplete
-/// directory as stale. Fresh in-flight segments must never be swept.
-pub const RECOVERY_STALENESS_MARGIN_SECS: u64 = 60;
+use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
 /// The per-user data root: `%LocalAppData%\Solstone`. Falls back to a temp path
 /// off-Windows so the type is host-constructible for tests.
@@ -366,11 +362,22 @@ impl RecoveryFs for LocalRecoveryFs {
             return Ok(Vec::new());
         }
 
-        let stale_before = SystemTime::now()
-            .checked_sub(Duration::from_secs(
-                DEFAULT_SEGMENT_SECS + RECOVERY_STALENESS_MARGIN_SECS,
-            ))
-            .unwrap_or(SystemTime::UNIX_EPOCH);
+        // Boundary-based staleness. The single-instance named mutex is acquired
+        // at boot, before the engine and its capture sources start (a second
+        // launch exits immediately), so recovery is guaranteed no concurrent
+        // writer — there is no live writer to race. That removes the need for
+        // the old age/mtime heuristic, which could delay sealing a genuinely
+        // orphaned segment by up to one segment-plus-margin window. The only
+        // directory recovery must leave untouched is the one whose aligned
+        // window contains *now*: the engine re-opens and *continues* it on
+        // restart. Every other `.incomplete` (a past window the prior run was
+        // sealing when it crashed — including one it had only just crossed into
+        // — or an anomalous future window from a backward clock step) is a real
+        // orphan and is swept on the spot.
+        let now_epoch_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
         let mut stale = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -387,14 +394,13 @@ impl RecoveryFs for LocalRecoveryFs {
             let Ok(index) = index_text.parse::<u64>() else {
                 continue;
             };
-            let modified = entry.metadata()?.modified()?;
-            if modified > stale_before {
-                continue;
-            }
             let key = SegmentKey {
                 boundary_epoch_secs: index * DEFAULT_SEGMENT_SECS,
                 index,
             };
+            if is_live_segment(key, now_epoch_secs, DEFAULT_SEGMENT_SECS) {
+                continue;
+            }
             stale.push(StaleSegment {
                 key,
                 path: absolute_string(&path)?,
@@ -423,6 +429,7 @@ impl RecoveryFs for LocalRecoveryFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use observer_segment::segment_for;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -448,24 +455,6 @@ mod tests {
             seq: 0,
             data: data.to_vec(),
         }
-    }
-
-    #[cfg(not(windows))]
-    fn set_dir_modified(path: &Path, time: SystemTime) -> io::Result<()> {
-        File::open(path)?.set_modified(time)
-    }
-
-    #[cfg(windows)]
-    fn set_dir_modified(path: &Path, time: SystemTime) -> io::Result<()> {
-        use std::os::windows::fs::OpenOptionsExt;
-
-        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-        OpenOptions::new()
-            .access_mode(FILE_WRITE_ATTRIBUTES)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-            .open(path)?
-            .set_modified(time)
     }
 
     #[test]
@@ -517,24 +506,75 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    fn now_epoch_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
     #[test]
-    fn recovery_scan_skips_fresh_incomplete_dirs() {
+    fn recovery_scan_keeps_current_boundary_sweeps_past() {
         let root = temp_root("staleness");
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("1.incomplete")).unwrap();
-        fs::write(root.join("1.incomplete/screen.bin"), b"old").unwrap();
-        fs::create_dir_all(root.join("2.incomplete")).unwrap();
-        fs::write(root.join("2.incomplete/screen.bin"), b"fresh").unwrap();
 
-        let old = SystemTime::now() - Duration::from_secs(60 * 60);
-        set_dir_modified(&root.join("1.incomplete"), old).unwrap();
+        // A past-window orphan (index 1 -> boundary epoch 300, i.e. 1970): the
+        // prior run was sealing it when it crashed. It must be swept regardless
+        // of its (here, fresh) mtime — boundary identity, not age, decides.
+        fs::create_dir_all(root.join("1.incomplete")).unwrap();
+        fs::write(root.join("1.incomplete/screen.bin"), b"orphan").unwrap();
+
+        // The live segment for *now*: its aligned window contains the wall
+        // clock, so the engine will re-open and continue it. Recovery must
+        // leave it untouched.
+        let live = segment_for(now_epoch_secs(), DEFAULT_SEGMENT_SECS);
+        fs::create_dir_all(root.join(format!("{}.incomplete", live.index))).unwrap();
+        fs::write(
+            root.join(format!("{}.incomplete/screen.bin", live.index)),
+            b"live",
+        )
+        .unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+
+        // Only the past-window orphan is returned; the live segment is skipped.
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].key, key(1));
+        assert!(stale[0].has_usable_data);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_finalizes_just_crossed_prior_boundary_immediately() {
+        // The cross-boundary stale-finalize case W1 left open: the prior run
+        // crossed into the current window, then crashed seconds later, leaving
+        // the immediately-preceding window's `.incomplete` with a *fresh* mtime.
+        // The old age guard would have skipped it for up to ~360 s; boundary
+        // recovery seals it on the spot and never loses its usable data.
+        let root = temp_root("cross-boundary");
+        let _ = fs::remove_dir_all(&root);
+
+        let live = segment_for(now_epoch_secs(), DEFAULT_SEGMENT_SECS);
+        let prior_index = live.index - 1; // the window immediately before now
+
+        fs::create_dir_all(root.join(format!("{prior_index}.incomplete"))).unwrap();
+        fs::write(
+            root.join(format!("{prior_index}.incomplete/screen.bin")),
+            b"just-crossed",
+        )
+        .unwrap();
 
         let mut recovery = LocalRecoveryFs::new(root.clone());
         let stale = recovery.scan_incomplete().unwrap();
 
         assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].key, key(1));
-        assert!(stale[0].has_usable_data);
+        assert_eq!(stale[0].key.index, prior_index);
+        assert!(
+            stale[0].has_usable_data,
+            "a just-crossed orphan with captured frames must be finalized, not lost"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -48,6 +48,20 @@ pub fn should_rotate(current: SegmentKey, now_epoch_secs: u64, period_secs: u64)
     segment_for(now_epoch_secs, period_secs) != current
 }
 
+/// True when `key` is the segment whose aligned window contains `now` — the one
+/// the engine is currently writing, or will re-open and *continue* on restart.
+///
+/// Recovery uses this as its staleness predicate: leave the live segment
+/// untouched, and sweep every other `.incomplete` directory immediately. Any
+/// non-live leftover is a genuine orphan — a past window the prior run was
+/// sealing when it crashed, or (anomalously, after a backward clock step) a
+/// future window. Boundary identity is the correct test because the
+/// single-instance gate guarantees no concurrent writer at recovery time, so an
+/// age/mtime heuristic is unnecessary and only delays sealing real orphans.
+pub fn is_live_segment(key: SegmentKey, now_epoch_secs: u64, period_secs: u64) -> bool {
+    key == segment_for(now_epoch_secs, period_secs)
+}
+
 /// Filesystem seam for segment lifecycle and per-source chunk writes.
 ///
 /// Real impl lives in `platform-win` (`%LocalAppData%`); tests inject a fake.
@@ -95,6 +109,21 @@ mod tests {
         let cur = segment_for(10, DEFAULT_SEGMENT_SECS);
         assert!(!should_rotate(cur, 299, DEFAULT_SEGMENT_SECS));
         assert!(should_rotate(cur, 300, DEFAULT_SEGMENT_SECS));
+    }
+
+    #[test]
+    fn live_segment_is_only_the_current_window() {
+        let now = 6 * 60 + 30; // 12:06:30 -> window index 1 (boundary 300)
+        let current = segment_for(now, DEFAULT_SEGMENT_SECS);
+        assert!(is_live_segment(current, now, DEFAULT_SEGMENT_SECS));
+        // The immediately prior window (index 0) is NOT live — it is an orphan
+        // to seal, even seconds after the boundary crossing.
+        let prior = segment_for(0, DEFAULT_SEGMENT_SECS);
+        assert!(!is_live_segment(prior, now, DEFAULT_SEGMENT_SECS));
+        // A future window (clock stepped backward since it was written) is not
+        // live either — the engine only ever opens the current window.
+        let future = segment_for(now + DEFAULT_SEGMENT_SECS, DEFAULT_SEGMENT_SECS);
+        assert!(!is_live_segment(future, now, DEFAULT_SEGMENT_SECS));
     }
 
     #[test]
