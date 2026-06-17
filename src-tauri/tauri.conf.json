@@ -24,7 +24,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/idle.png"],
+    "icon": ["icons/icon.ico"],
     "category": "Utility",
     "shortDescription": "Local-first solstone observer for Windows",
     "longDescription": "A per-user, tray-resident solstone observer: it gathers screen and system audio (plus microphone when present) into local, owner-controlled segments for the owner's journal."
