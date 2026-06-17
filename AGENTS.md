@@ -62,6 +62,14 @@ charter and license.
 | `make run` | launch from the tree + tail `%LocalAppData%\Solstone\logs\` |
 | `make clean` | `cargo clean` + remove `ui/dist` and `Releases/` |
 
+**Off-Windows dev host:** the Rust-MSVC / windows-rs / Tauri toolchain only builds
+on Windows, so on a non-Windows dev host run the gate on the Windows build box with
+`WIN_REMOTE_HOST=user@host make win-host-ci`. It bundles your exact working tree
+(committed or not), ships it over SSH (git bundle + scp — no rsync), and runs build
++ tests + the contract check on the box, streaming results back. `WIN_REMOTE_HOST`
+is supplied by your environment, never committed. The live FlaUI smoke + lifecycle
+matrix stay operator-direct on the box (not part of `win-host-ci`).
+
 Build-box gotchas: the FlaUI harness targets **net48** and needs
 `Accessibility.dll` in the publish layout; invoke `.cmd` shims via `cmd.exe /c`;
 use explicit tool paths until `PATH` refreshes after a package install; the smoke
