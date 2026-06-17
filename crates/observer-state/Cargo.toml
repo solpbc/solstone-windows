@@ -1,0 +1,11 @@
+[package]
+name = "observer-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Honest app-state reducer for the observer. AppPhase::Observing is computed from real source state, never settable by the UI."
+
+[dependencies]
+observer-model.workspace = true

@@ -1,0 +1,46 @@
+# Rust / cargo
+/target/
+**/target/
+
+# Front-end build output and deps
+/ui/dist/
+/ui/node_modules/
+node_modules/
+
+# Packaging output (Velopack feed + installers)
+/Releases/
+*.nupkg
+*.Setup.exe
+
+# Captured media and segments (never committed)
+*.mp4
+*.mkv
+*.wav
+*.m4a
+segments/
+*.incomplete/
+
+# Secrets, keystores, signing credentials
+.env
+.env.*
+!.env.example
+*.pfx
+*.pem
+*.key
+*.snk
+signing/credentials/
+
+# Screenshots and local evidence
+screenshots/
+*.png.local
+
+# .NET harness build output
+harness/**/bin/
+harness/**/obj/
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

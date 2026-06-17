@@ -1,0 +1,82 @@
+# cargo-deny configuration for solstone-windows.
+#
+# Three jobs:
+#   1. License gate  — this is AGPL-3.0-only; deps must be AGPL-compatible/permissive.
+#   2. Privacy denylist — the data covenant in code: no analytics, telemetry,
+#      tracking, crash-reporting, or phone-home crates may ever enter the graph.
+#   3. Pure-tier purity — the `windows` family must never reach the pure crates
+#      (enforced structurally; see the note under [bans] and `cargo xtask contract`).
+#
+# Run via `make ci` (`cargo deny check`).
+
+[graph]
+all-features = true
+
+[licenses]
+# Allow our own license plus the common permissive deps an AGPL project may consume.
+allow = [
+    "AGPL-3.0-only",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "Unlicense",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+# ── Privacy denylist (the data covenant, encoded) ────────────────────────────
+# solstone never ships analytics, telemetry, behavioral tracking, crash
+# reporting, or phone-home. These crates (and their wrappers) are banned at the
+# dependency-graph level so a transitive pull-in fails `cargo deny check`.
+deny = [
+    # crash reporters / error-tracking SaaS
+    { name = "sentry" },
+    { name = "sentry-core" },
+    { name = "sentry-types" },
+    { name = "rollbar" },
+    { name = "bugsnag" },
+    { name = "honeycomb" },
+    # product / behavioral analytics SDKs
+    { name = "segment" },
+    { name = "analytics" },
+    { name = "amplitude" },
+    { name = "mixpanel" },
+    { name = "posthog" },
+    { name = "posthog-rs" },
+    { name = "rudderanalytics" },
+    { name = "google-analytics" },
+    { name = "ga4" },
+    { name = "datadog" },
+    { name = "datadog-apm" },
+    { name = "opentelemetry-datadog" },
+    { name = "newrelic" },
+    { name = "appcenter" },
+]
+
+# ── Pure-tier purity ─────────────────────────────────────────────────────────
+# The `windows` family is a quarantine, allowed ONLY in the platform-tier crates
+# (capture-wgc, capture-wasapi, platform-win) where it is declared target-gated.
+# Pure-tier crates additionally carry `#![forbid(unsafe_code)]`, and the
+# dependency arrows never point pure -> platform (the DAG rule in AGENTS.md
+# §Source Layout). cargo-deny cannot scope a ban to a subset of workspace
+# members, so the structural guarantee is: (a) the workspace DAG, verified by
+# `cargo metadata`, and (b) `#![forbid(unsafe_code)]` on every pure crate. If a
+# `windows` dep ever appears outside the platform tier it shows up immediately
+# as a new edge in `cargo tree` for a pure crate.
+
+[advisories]
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

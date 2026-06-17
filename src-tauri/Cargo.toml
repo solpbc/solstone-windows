@@ -1,0 +1,39 @@
+[package]
+name = "solstone-windows-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "The solstone Windows observer binary: a tray-resident Tauri v2 shell over the capture engine. Thin — arg dispatch (--dump-state/--healthz), tray, Settings/About windows, IPC, Velopack hooks."
+default-run = "solstone-windows-app"
+
+[[bin]]
+name = "solstone-windows-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Engine + platform sources injected at the seam.
+capture-engine.workspace = true
+platform-win.workspace = true
+capture-wgc.workspace = true
+capture-wasapi.workspace = true
+observer-model.workspace = true
+observer-health.workspace = true
+observer-state.workspace = true
+observer-contract.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+
+[features]
+# Default keeps the custom protocol off; release builds enable as needed.
+custom-protocol = ["tauri/custom-protocol"]

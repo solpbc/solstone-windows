@@ -1,0 +1,22 @@
+[package]
+name = "capture-wgc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Windows.Graphics.Capture screen source (implements ScreenSource). Platform-tier: windows-rs quarantine; unsafe permitted here only; builds for the Windows MSVC target."
+
+[dependencies]
+observer-model.workspace = true
+
+# The `windows` dependency is target-gated so the whole workspace still compiles
+# on the Linux dev box. Real WinRT/COM calls arrive in later waves on the build
+# box; the bootstrap skeleton is API-call-free.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Graphics_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+] }

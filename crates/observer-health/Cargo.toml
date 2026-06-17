@@ -1,0 +1,12 @@
+[package]
+name = "observer-health"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Serialization of the HealthDump payload for --dump-state and the localhost /healthz body. One representation, three transports."
+
+[dependencies]
+observer-model.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Solstone",
+  "version": "0.1.0",
+  "identifier": "app.solstone.windows",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm --prefix ../ui run dev",
+    "beforeBuildCommand": "npm --prefix ../ui run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/idle.png",
+      "tooltip": "Solstone"
+    },
+    "security": {
+      "csp": "default-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/idle.png"],
+    "category": "Utility",
+    "shortDescription": "Local-first solstone observer for Windows",
+    "longDescription": "A per-user, tray-resident solstone observer: it gathers screen and system audio (plus microphone when present) into local, owner-controlled segments for the owner's journal."
+  },
+  "plugins": {}
+}

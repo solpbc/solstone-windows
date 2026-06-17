@@ -1,0 +1,14 @@
+[package]
+name = "observer-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Single source of truth for the AutomationId identifiers and the health/state token vocabulary, plus the deterministic automation-contract.json generator. State tokens derive from observer-model enums via strum::EnumIter."
+
+[dependencies]
+observer-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+strum.workspace = true

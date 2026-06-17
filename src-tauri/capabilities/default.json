@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal capability set for the tray-resident observer shell. The webview is a pure renderer that subscribes to health events; it gets only the core IPC + event permissions it needs and nothing that could let it act on the system.",
+  "windows": ["settings", "about"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "autostart:default"
+  ]
+}

@@ -1,0 +1,12 @@
+[package]
+name = "observer-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared, host-testable vocabulary for the solstone Windows observer: app phases, source kinds and states, segment keys, the source traits, and the honest-state health payload."
+
+[dependencies]
+serde.workspace = true
+strum.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "capture-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Composition-tier orchestrator: sources -> writer -> rotation -> state -> recovery. Tauri-agnostic and host-testable with fake sources; depends on the pure-tier trait seams, not the platform crates."
+
+[dependencies]
+observer-model.workspace = true
+observer-segment.workspace = true
+observer-state.workspace = true
+observer-recovery.workspace = true
+observer-lifecycle.workspace = true

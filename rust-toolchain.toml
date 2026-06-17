@@ -1,0 +1,11 @@
+# Pins the build-box toolchain to the Windows MSVC target. The platform-tier
+# crates (capture-wgc / capture-wasapi / platform-win) and the packaged binary
+# only build under stable-x86_64-pc-windows-msvc. The pure-tier crates compile
+# and test on any host (Linux dev box included) with the host's default stable
+# toolchain — the platform deps are target-gated, so this pin states intent for
+# the release build and does not block host-side `cargo test -p observer-*`.
+[toolchain]
+channel = "stable"
+targets = ["x86_64-pc-windows-msvc"]
+components = ["clippy", "rustfmt"]
+profile = "minimal"

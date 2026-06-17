@@ -1,0 +1,11 @@
+[package]
+name = "observer-lifecycle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Backoff + circuit-breaker pure state machine for source restart policy. Fake-clock tested; no platform dependency."
+
+[dependencies]
+observer-model.workspace = true

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    net48 is deliberate. FlaUI's UIA3 backend needs Accessibility.dll (the COM
+    interop for IAccessible) present in the PUBLISH layout to bind. A net8.0-windows
+    build will not reliably ship it, so the driver targets net48 where the
+    framework provides it. See ../README.md for the publish-layout gotcha.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>solstone-driver</AssemblyName>
+    <RootNamespace>Solstone.Harness</RootNamespace>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
+  </ItemGroup>
+
+  <!--
+    Ensure the IAccessible COM interop ships in the publish layout. Without this
+    the UIA3 backend fails to bind at runtime.
+  -->
+  <ItemGroup>
+    <Reference Include="Accessibility" />
+  </ItemGroup>
+
+</Project>

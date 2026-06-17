@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/observer-model",
+    "crates/observer-segment",
+    "crates/observer-state",
+    "crates/observer-health",
+    "crates/observer-recovery",
+    "crates/observer-lifecycle",
+    "crates/observer-contract",
+    "crates/capture-wgc",
+    "crates/capture-wasapi",
+    "crates/platform-win",
+    "crates/capture-engine",
+    "src-tauri",
+    "xtask",
+]
+# spikes/ is reference-only and intentionally excluded from the build:
+# stale spike code can never break `make ci`.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+authors = ["sol pbc"]
+rust-version = "1.82"
+
+[workspace.dependencies]
+# Pure-tier shared deps (no platform).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+strum = { version = "0.28", features = ["derive"] }
+
+# Composition / shell deps.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+anyhow = "1"
+
+# Internal crates (path deps; versions tracked via workspace.package).
+observer-model = { path = "crates/observer-model" }
+observer-segment = { path = "crates/observer-segment" }
+observer-state = { path = "crates/observer-state" }
+observer-health = { path = "crates/observer-health" }
+observer-recovery = { path = "crates/observer-recovery" }
+observer-lifecycle = { path = "crates/observer-lifecycle" }
+observer-contract = { path = "crates/observer-contract" }
+capture-wgc = { path = "crates/capture-wgc" }
+capture-wasapi = { path = "crates/capture-wasapi" }
+platform-win = { path = "crates/platform-win" }
+capture-engine = { path = "crates/capture-engine" }

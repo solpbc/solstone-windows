@@ -1,0 +1,11 @@
+[package]
+name = "observer-segment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "5-minute clock-boundary rotation and segment-key math for the observer. Pure, host-testable with a synthetic clock; I/O goes through the SegmentFs trait."
+
+[dependencies]
+observer-model.workspace = true

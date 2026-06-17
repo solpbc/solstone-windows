@@ -1,0 +1,11 @@
+[package]
+name = "observer-recovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Incomplete-segment scan and finalize/quarantine over a RecoveryFs trait. Pure logic; real fs from platform-win, fake fs in tests."
+
+[dependencies]
+observer-model.workspace = true
