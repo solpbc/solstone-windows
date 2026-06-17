@@ -25,12 +25,18 @@ WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
 WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: build test ci contract package publish smoke run clean \
+.PHONY: install build test ci contract package publish smoke run clean \
         require-win-remote-host sync-win-host win-host-ci help
 
 help:
-	@echo "verbs: build test ci contract package publish smoke run clean"
+	@echo "verbs: install build test ci contract package publish smoke run clean"
 	@echo "remote: WIN_REMOTE_HOST=<host> make win-host-ci"
+
+# Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
+# locally we only set up the UI's JS deps when present. Run by the hopper mill at
+# lode start.
+install:
+	@if [ -f ui/package.json ]; then npm --prefix ui install; else echo "no local tooling to install"; fi
 
 # Build the binary + the webview bundle.
 build:
