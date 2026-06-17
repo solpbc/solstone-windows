@@ -77,6 +77,12 @@ deny = [
 
 [advisories]
 yanked = "warn"
+# Unmaintained-crate advisories: only for crates we directly depend on. Tauri's
+# Linux GUI backend (GTK3 bindings, unic-*) drags in many transitive crates the
+# upstream has flagged unmaintained — we don't control them, there is no available
+# upgrade, and the shipped product targets Windows/WebView2, not GTK3/Linux.
+# Security vulnerabilities are still checked across the whole graph regardless.
+unmaintained = "workspace"
 
 [sources]
 unknown-registry = "deny"

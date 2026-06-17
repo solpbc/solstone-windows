@@ -95,7 +95,10 @@ mod tests {
 
     fn seg(index: u64, usable: bool) -> StaleSegment {
         StaleSegment {
-            key: SegmentKey { boundary_epoch_secs: index * 300, index },
+            key: SegmentKey {
+                boundary_epoch_secs: index * 300,
+                index,
+            },
             path: format!("/seg/{index}.incomplete"),
             has_usable_data: usable,
         }
@@ -109,8 +112,20 @@ mod tests {
         };
         let out = recover_all(&mut fs).unwrap();
         assert_eq!(out.len(), 2);
-        assert_eq!(fs.finalized, vec![SegmentKey { boundary_epoch_secs: 300, index: 1 }]);
-        assert_eq!(fs.quarantined, vec![SegmentKey { boundary_epoch_secs: 600, index: 2 }]);
+        assert_eq!(
+            fs.finalized,
+            vec![SegmentKey {
+                boundary_epoch_secs: 300,
+                index: 1
+            }]
+        );
+        assert_eq!(
+            fs.quarantined,
+            vec![SegmentKey {
+                boundary_epoch_secs: 600,
+                index: 2
+            }]
+        );
     }
 
     #[test]

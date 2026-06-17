@@ -4,17 +4,11 @@
 //! Workspace task runner.
 //!
 //! Verbs:
-//!   * `contract`          — (re)generate `automation-contract.json` at the repo
-//!                           root and the `ui/src/lib/contract.ts` codegen.
-//!   * `contract --check`  — regenerate both in memory and exit 1 on any drift
-//!                           (the gate `make ci` and the `contract_not_stale`
-//!                           test both invoke).
-//!   * `purity-check`      — fail if the `windows` family reaches any pure-tier
-//!                           crate (even target-gated). Run by `make ci` and the
-//!                           remote mill gate (`scripts/win-ci.cmd`).
-//!   * `package`           — Velopack packaging (delegates to the Windows
-//!                           script; a stub off the build box).
-//!   * `dev`               — developer convenience launcher (stub).
+//! - `contract` — regenerate `automation-contract.json` + the `ui/src/lib/contract.ts` codegen.
+//! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate and the `contract_not_stale` test both invoke it).
+//! - `purity-check` — fail if the `windows` family reaches any pure-tier crate, even target-gated (run by `make ci` and the remote mill gate `scripts/win-ci.cmd`).
+//! - `package` — Velopack packaging (delegates to the Windows script; a stub off the build box).
+//! - `dev` — developer convenience launcher (stub).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -111,7 +105,9 @@ fn generate_ts_binding(contract_json: &str) -> String {
     out.push_str("// Copyright (c) 2026 sol pbc\n");
     out.push_str("//\n");
     out.push_str("// GENERATED — DO NOT EDIT. Run `make contract`.\n");
-    out.push_str("// Source of truth: the observer-contract crate -> automation-contract.json.\n\n");
+    out.push_str(
+        "// Source of truth: the observer-contract crate -> automation-contract.json.\n\n",
+    );
     out.push_str("export const automationContract = ");
     // Embed the canonical JSON verbatim so the TS and JSON can never disagree.
     out.push_str(contract_json.trim_end());
@@ -141,7 +137,17 @@ fn cmd_purity_check() -> ExitCode {
     let mut violations = Vec::new();
     for pkg in PURE_CRATES {
         let out = std::process::Command::new("cargo")
-            .args(["tree", "-p", pkg, "--target", "all", "-e", "normal,build", "--prefix", "none"])
+            .args([
+                "tree",
+                "-p",
+                pkg,
+                "--target",
+                "all",
+                "-e",
+                "normal,build",
+                "--prefix",
+                "none",
+            ])
             .current_dir(&root)
             .output();
         let out = match out {
@@ -165,7 +171,10 @@ fn cmd_purity_check() -> ExitCode {
         }
     }
     if violations.is_empty() {
-        println!("purity-check: pure tier is windows-free ({} crates)", PURE_CRATES.len());
+        println!(
+            "purity-check: pure tier is windows-free ({} crates)",
+            PURE_CRATES.len()
+        );
         ExitCode::SUCCESS
     } else {
         eprintln!("purity-check: the windows family leaked into the pure tier:");

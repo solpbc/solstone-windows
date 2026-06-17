@@ -12,6 +12,11 @@ PWSH ?= pwsh
 CARGO ?= cargo
 TAURI_BIN := solstone-windows-app
 
+# Windows-only crates: their real build/test/lint runs on the Windows box
+# (windows-rs + MSVC) via win-host-ci. Excluded from the local fast checks,
+# which cover the cross-platform crates only (pure tier + capture-engine).
+REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-wasapi --exclude platform-win
+
 # Remote build host. The Windows-only toolchain (Rust-MSVC, windows-rs, Tauri,
 # Velopack, FlaUI) builds on a Windows build box; code + git stay on the dev host
 # and only the build/test runs remotely, streamed back. Transport is git: a bundle
@@ -30,7 +35,7 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 
 help:
 	@echo "verbs: install build test ci contract purity-check package publish smoke run clean"
-	@echo "remote: WIN_REMOTE_HOST=<host> make win-host-ci"
+	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
 # locally we only set up the UI's JS deps when present. Run by the hopper mill at
@@ -43,19 +48,24 @@ build:
 	$(CARGO) build -p $(TAURI_BIN)
 	npm --prefix ui run build
 
-# Pure tier also runs here (host-testable); no live target.
+# Local cross-platform tests (pure tier + capture-engine), host-testable, no live
+# target. The windows-only crates test remotely via win-host-ci.
 test:
-	$(CARGO) test --workspace
+	$(CARGO) test --workspace $(REMOTE_CRATES)
 
-# The full gate. Contract drift is checked before the suite so it fails fast.
-# (cargo fmt/clippy/deny are part of the gate where the toolchain provides them.)
+# The one CI surface for the engineer: cheap, host-independent checks run locally
+# and fail fast, then the real Windows build + test runs on the build box. One
+# flow. fmt/deny/contract/purity are host-independent; clippy + test cover the
+# cross-platform crates (pure tier + capture-engine). The windows-only crates are
+# built and tested remotely by win-host-ci.
 ci:
 	$(CARGO) fmt --all --check
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(CARGO) clippy --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
 	$(CARGO) run -q -p xtask -- contract --check
 	$(CARGO) run -q -p xtask -- purity-check
-	$(CARGO) test --workspace
+	$(CARGO) test --workspace $(REMOTE_CRATES)
 	$(CARGO) deny check
+	$(MAKE) win-host-ci
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.
 contract:

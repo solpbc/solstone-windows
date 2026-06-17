@@ -122,17 +122,35 @@ mod tests {
             multiplier: 2,
             breaker_threshold: 100,
         });
-        assert_eq!(lc.on_failure(), RetryDecision::RetryAfter(Duration::from_secs(1)));
-        assert_eq!(lc.on_failure(), RetryDecision::RetryAfter(Duration::from_secs(2)));
-        assert_eq!(lc.on_failure(), RetryDecision::RetryAfter(Duration::from_secs(4)));
-        assert_eq!(lc.on_failure(), RetryDecision::RetryAfter(Duration::from_secs(8)));
+        assert_eq!(
+            lc.on_failure(),
+            RetryDecision::RetryAfter(Duration::from_secs(1))
+        );
+        assert_eq!(
+            lc.on_failure(),
+            RetryDecision::RetryAfter(Duration::from_secs(2))
+        );
+        assert_eq!(
+            lc.on_failure(),
+            RetryDecision::RetryAfter(Duration::from_secs(4))
+        );
+        assert_eq!(
+            lc.on_failure(),
+            RetryDecision::RetryAfter(Duration::from_secs(8))
+        );
         // capped
-        assert_eq!(lc.on_failure(), RetryDecision::RetryAfter(Duration::from_secs(8)));
+        assert_eq!(
+            lc.on_failure(),
+            RetryDecision::RetryAfter(Duration::from_secs(8))
+        );
     }
 
     #[test]
     fn breaker_opens_at_threshold() {
-        let mut lc = Lifecycle::new(BackoffConfig { breaker_threshold: 3, ..Default::default() });
+        let mut lc = Lifecycle::new(BackoffConfig {
+            breaker_threshold: 3,
+            ..Default::default()
+        });
         assert!(matches!(lc.on_failure(), RetryDecision::RetryAfter(_)));
         assert!(matches!(lc.on_failure(), RetryDecision::RetryAfter(_)));
         assert_eq!(lc.on_failure(), RetryDecision::GiveUp);
@@ -141,13 +159,19 @@ mod tests {
 
     #[test]
     fn success_resets_and_recloses() {
-        let mut lc = Lifecycle::new(BackoffConfig { breaker_threshold: 3, ..Default::default() });
+        let mut lc = Lifecycle::new(BackoffConfig {
+            breaker_threshold: 3,
+            ..Default::default()
+        });
         lc.on_failure();
         lc.on_failure();
         lc.on_success();
         assert_eq!(lc.consecutive_failures(), 0);
         assert_eq!(lc.breaker(), BreakerState::Closed);
         // backoff restarts from initial after a success
-        assert_eq!(lc.on_failure(), RetryDecision::RetryAfter(Duration::from_secs(1)));
+        assert_eq!(
+            lc.on_failure(),
+            RetryDecision::RetryAfter(Duration::from_secs(1))
+        );
     }
 }

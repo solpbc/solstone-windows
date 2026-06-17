@@ -135,12 +135,16 @@ mod tests {
     use observer_model::ErrorReason;
 
     fn report(kind: SourceKind, state: SourceState) -> SourceReport {
-        SourceReport { kind, state, device: None }
+        SourceReport {
+            kind,
+            state,
+            device: None,
+        }
     }
 
     #[test]
     fn idle_until_start_requested() {
-        let mut sm = StateMachine::new();
+        let sm = StateMachine::new();
         assert_eq!(sm.phase(), AppPhase::Idle);
     }
 
@@ -151,7 +155,10 @@ mod tests {
         reduce(&mut sm, AppEvent::EngineReady);
         // Still Starting: no sources active yet.
         assert_eq!(sm.phase(), AppPhase::Starting);
-        reduce(&mut sm, AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)));
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)),
+        );
         assert_eq!(sm.phase(), AppPhase::Starting);
         let p = reduce(
             &mut sm,
@@ -165,8 +172,14 @@ mod tests {
         let mut sm = StateMachine::new();
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
-        reduce(&mut sm, AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)));
-        reduce(&mut sm, AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)));
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)),
+        );
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
+        );
         let p = reduce(
             &mut sm,
             AppEvent::SourceUpdated(report(SourceKind::Mic, SourceState::NoInputDevice)),
@@ -179,14 +192,23 @@ mod tests {
         let mut sm = StateMachine::new();
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
-        reduce(&mut sm, AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)));
-        reduce(&mut sm, AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)));
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)),
+        );
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
+        );
         assert_eq!(sm.phase(), AppPhase::Observing);
         let p = reduce(
             &mut sm,
             AppEvent::SourceUpdated(report(
                 SourceKind::SystemAudio,
-                SourceState::Faulted { reason: ErrorReason::EndpointLost, detail: "endpoint gone".into() },
+                SourceState::Faulted {
+                    reason: ErrorReason::EndpointLost,
+                    detail: "endpoint gone".into(),
+                },
             )),
         );
         assert_eq!(p, AppPhase::Error);
@@ -197,8 +219,14 @@ mod tests {
         let mut sm = StateMachine::new();
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
-        reduce(&mut sm, AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)));
-        reduce(&mut sm, AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)));
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)),
+        );
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
+        );
         let p = reduce(&mut sm, AppEvent::RequestedPause(PauseReason::Operator));
         assert_eq!(p, AppPhase::Paused);
     }

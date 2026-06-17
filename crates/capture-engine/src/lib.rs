@@ -40,7 +40,9 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { segment_secs: DEFAULT_SEGMENT_SECS }
+        Self {
+            segment_secs: DEFAULT_SEGMENT_SECS,
+        }
     }
 }
 
@@ -109,31 +111,49 @@ mod tests {
     #[derive(Default)]
     struct FakeScreen;
     impl ScreenSource for FakeScreen {
-        fn start(&mut self) -> Result<(), SourceError> { Ok(()) }
+        fn start(&mut self) -> Result<(), SourceError> {
+            Ok(())
+        }
         fn stop(&mut self) {}
-        fn state(&self) -> SourceState { SourceState::Active }
+        fn state(&self) -> SourceState {
+            SourceState::Active
+        }
     }
     #[derive(Default)]
     struct FakeSysAudio;
     impl SystemAudioSource for FakeSysAudio {
-        fn start(&mut self) -> Result<(), SourceError> { Ok(()) }
+        fn start(&mut self) -> Result<(), SourceError> {
+            Ok(())
+        }
         fn stop(&mut self) {}
-        fn state(&self) -> SourceState { SourceState::Active }
+        fn state(&self) -> SourceState {
+            SourceState::Active
+        }
     }
     #[derive(Default)]
     struct FakeMic;
     impl MicSource for FakeMic {
-        fn start(&mut self) -> Result<(), SourceError> { Ok(()) }
+        fn start(&mut self) -> Result<(), SourceError> {
+            Ok(())
+        }
         fn stop(&mut self) {}
-        fn state(&self) -> SourceState { SourceState::NoInputDevice }
+        fn state(&self) -> SourceState {
+            SourceState::NoInputDevice
+        }
     }
 
     struct NoStale;
     impl RecoveryFs for NoStale {
         type Error = ();
-        fn scan_incomplete(&mut self) -> Result<Vec<observer_recovery::StaleSegment>, ()> { Ok(vec![]) }
-        fn finalize(&mut self, _s: &observer_recovery::StaleSegment) -> Result<(), ()> { Ok(()) }
-        fn quarantine(&mut self, _s: &observer_recovery::StaleSegment) -> Result<(), ()> { Ok(()) }
+        fn scan_incomplete(&mut self) -> Result<Vec<observer_recovery::StaleSegment>, ()> {
+            Ok(vec![])
+        }
+        fn finalize(&mut self, _s: &observer_recovery::StaleSegment) -> Result<(), ()> {
+            Ok(())
+        }
+        fn quarantine(&mut self, _s: &observer_recovery::StaleSegment) -> Result<(), ()> {
+            Ok(())
+        }
     }
 
     #[test]

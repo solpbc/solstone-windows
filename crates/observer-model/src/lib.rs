@@ -22,7 +22,9 @@ use strum::{EnumIter, IntoStaticStr};
 ///
 /// `Observing` exists only as a derived conclusion: it is reachable when the
 /// engine is running and the required sources are `Active`. There is no setter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum AppPhase {
@@ -39,7 +41,9 @@ pub enum AppPhase {
 }
 
 /// Which capture source a [`SourceState`] describes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum SourceKind {
@@ -52,7 +56,9 @@ pub enum SourceKind {
 }
 
 /// Why a pause is in effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum PauseReason {
@@ -66,7 +72,9 @@ pub enum PauseReason {
 
 /// A coarse, owner-meaningful classification of a source fault. The detailed
 /// string lives alongside in [`SourceState::Faulted`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum ErrorReason {
@@ -96,10 +104,7 @@ pub enum SourceState {
     /// No input device of this kind exists on the machine. First-class, honest.
     NoInputDevice,
     /// The source faulted; carries a coarse reason and a detail string.
-    Faulted {
-        reason: ErrorReason,
-        detail: String,
-    },
+    Faulted { reason: ErrorReason, detail: String },
 }
 
 /// A reported source plus which kind it is and the device label, if any.
@@ -184,7 +189,10 @@ pub struct SourceError {
 
 impl SourceError {
     pub fn new(reason: ErrorReason, detail: impl Into<String>) -> Self {
-        Self { reason, detail: detail.into() }
+        Self {
+            reason,
+            detail: detail.into(),
+        }
     }
 }
 

@@ -76,8 +76,14 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.window.root", settings::WINDOW_ROOT),
         ("settings.status.appState.state", settings::STATUS_APP_STATE),
         ("settings.status.segmentDir", settings::STATUS_SEGMENT_DIR),
-        ("settings.sources.screen.state", settings::SOURCES_SCREEN_STATE),
-        ("settings.sources.systemAudio.state", settings::SOURCES_SYSTEM_AUDIO_STATE),
+        (
+            "settings.sources.screen.state",
+            settings::SOURCES_SCREEN_STATE,
+        ),
+        (
+            "settings.sources.systemAudio.state",
+            settings::SOURCES_SYSTEM_AUDIO_STATE,
+        ),
         ("settings.sources.mic.state", settings::SOURCES_MIC_STATE),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
@@ -102,10 +108,12 @@ fn enum_tokens<E>() -> Vec<String>
 where
     E: IntoEnumIterator + Into<&'static str>,
 {
-    let mut v: Vec<String> = E::iter().map(|variant| {
-        let s: &'static str = variant.into();
-        s.to_string()
-    }).collect();
+    let mut v: Vec<String> = E::iter()
+        .map(|variant| {
+            let s: &'static str = variant.into();
+            s.to_string()
+        })
+        .collect();
     v.sort();
     v
 }
