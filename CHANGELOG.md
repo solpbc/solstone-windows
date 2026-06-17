@@ -69,6 +69,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - The tray is now built in code with the contract id `tray.root`; the config tray
   block is removed to avoid a duplicate tray resource.
 
+### Fixed
+
+- Segment writes are now durably synced per chunk. Previously a segment's frames
+  stayed in the OS write cache until finalize, so a crash mid-segment lost the
+  whole in-flight segment and incomplete-segment recovery read a zero length for a
+  segment that had actually captured data (wrongly quarantining it). Found in
+  on-device validation: live capture reaches `observing` and writes real frames,
+  but the on-disk segment showed 0 bytes until rotation. At the capped ~1 fps the
+  per-chunk sync is negligible.
+
 ### Documentation
 
 - Mic capture: validating against a *real* input device is deferred to a future

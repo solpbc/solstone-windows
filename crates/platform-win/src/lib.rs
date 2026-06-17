@@ -314,6 +314,12 @@ impl SegmentFs for LocalSegmentFs {
         }
         let file = self.handles.get_mut(&handle_key).expect("handle inserted");
         file.write_all(&chunk.data)?;
+        // Durably commit each chunk. Without this, a 5-minute segment's frames sit
+        // in the OS write cache until finalize: a crash would lose the whole
+        // in-flight segment, and recovery's usable-data check (file length) would
+        // read 0 for a segment that actually captured data and wrongly quarantine
+        // it. At the capped ~1 fps this is ~1 fsync/sec — negligible.
+        file.sync_all()?;
         Ok(())
     }
 
