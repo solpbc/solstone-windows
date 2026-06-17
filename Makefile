@@ -25,11 +25,11 @@ WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
 WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: install build test ci contract package publish smoke run clean \
+.PHONY: install build test ci contract purity-check package publish smoke run clean \
         require-win-remote-host sync-win-host win-host-ci help
 
 help:
-	@echo "verbs: install build test ci contract package publish smoke run clean"
+	@echo "verbs: install build test ci contract purity-check package publish smoke run clean"
 	@echo "remote: WIN_REMOTE_HOST=<host> make win-host-ci"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
@@ -53,12 +53,18 @@ ci:
 	$(CARGO) fmt --all --check
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	$(CARGO) run -q -p xtask -- contract --check
+	$(CARGO) run -q -p xtask -- purity-check
 	$(CARGO) test --workspace
 	$(CARGO) deny check
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.
 contract:
 	$(CARGO) run -q -p xtask -- contract
+
+# Structural gate: the `windows` family must never reach the pure tier
+# (AGENTS.md §Source Layout). `--target all` makes target-gated leaks visible on any host.
+purity-check:
+	$(CARGO) run -q -p xtask -- purity-check
 
 # Build then pack a Velopack release into Releases/. Unsigned now; the
 # $SignTemplate seam in scripts/package.ps1 is empty until the cert lands.

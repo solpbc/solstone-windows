@@ -5,7 +5,7 @@
 #   2. Privacy denylist — the data covenant in code: no analytics, telemetry,
 #      tracking, crash-reporting, or phone-home crates may ever enter the graph.
 #   3. Pure-tier purity — the `windows` family must never reach the pure crates
-#      (enforced structurally; see the note under [bans] and `cargo xtask contract`).
+#      (gated by `cargo xtask purity-check`; see the note under [bans]).
 #
 # Run via `make ci` (`cargo deny check`).
 
@@ -69,10 +69,11 @@ deny = [
 # Pure-tier crates additionally carry `#![forbid(unsafe_code)]`, and the
 # dependency arrows never point pure -> platform (the DAG rule in AGENTS.md
 # §Source Layout). cargo-deny cannot scope a ban to a subset of workspace
-# members, so the structural guarantee is: (a) the workspace DAG, verified by
-# `cargo metadata`, and (b) `#![forbid(unsafe_code)]` on every pure crate. If a
-# `windows` dep ever appears outside the platform tier it shows up immediately
-# as a new edge in `cargo tree` for a pure crate.
+# members, so purity is gated by `cargo xtask purity-check` instead: it runs
+# `cargo tree --target all` over each pure crate and fails if the `windows`
+# family appears (`--target all` is essential — the platform tier declares
+# `windows` target-gated, so a leak is invisible to a host-target tree off
+# Windows). Wired into both `make ci` and the remote mill gate (scripts/win-ci.cmd).
 
 [advisories]
 yanked = "warn"

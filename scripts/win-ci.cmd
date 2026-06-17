@@ -35,6 +35,8 @@ echo === cargo test (workspace, minus app) ===
 cargo test --workspace --exclude solstone-windows-app || exit /b 1
 echo === cargo xtask contract --check ===
 cargo run -q -p xtask -- contract --check || exit /b 1
+echo === cargo xtask purity-check ===
+cargo run -q -p xtask -- purity-check || exit /b 1
 
 echo === WIN_CI_OK ===
 exit /b 0
