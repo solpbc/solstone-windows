@@ -17,6 +17,7 @@ use std::time::Duration;
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
 use observer_model::{AppPhase, HealthDump, PauseReason};
 use tauri::{Emitter, Manager};
+use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::{mpsc, oneshot};
 
 pub struct AppState {
@@ -46,6 +47,23 @@ pub fn run() {
             {
                 app.handle().exit(0);
                 return Ok(());
+            }
+
+            // First launch after install (Velopack `on_first_run`): register the
+            // per-user autostart login item — the single home for the actual
+            // `.enable()` call, where the `AppHandle` exists. Idempotent (guards
+            // on `is_enabled`); a failure is logged, never fatal to first run.
+            if crate::lifecycle::is_first_run() {
+                let autostart = app.autolaunch();
+                match autostart.is_enabled() {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if let Err(error) = autostart.enable() {
+                            eprintln!("autostart registration failed: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("autostart query failed: {error}"),
+                }
             }
 
             let sources = Sources {

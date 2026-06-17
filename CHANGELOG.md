@@ -40,6 +40,15 @@ All notable changes to `solstone-windows` are recorded here. The format follows
   from the Windows notification pump thread.
 - `capture-engine` has an `EngineCommand` channel and change-driven health watch
   for shell and lifecycle integration.
+- The observer binary is now Velopack-aware: `VelopackApp` runs first in `main()`,
+  handling the install/updated/obsolete/uninstall lifecycle hooks (so they exit 0);
+  the first launch after install registers the per-user autostart login item.
+- Real `make package`: `vpk pack` of the release binary into `Releases/` (per-user
+  `%LocalAppData%`, no UAC, unsigned) — full + delta `nupkg`, `Setup.exe`, and the
+  `releases.win.json` update feed. The packed version equals the binary's
+  `--dump-state` version by construction.
+- Real `make publish`: uploads `Releases/` to GitHub Releases (the monotonic update
+  feed), feed JSON last, fail-loud on an existing tag.
 
 ### Changed
 

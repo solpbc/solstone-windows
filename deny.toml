@@ -27,6 +27,8 @@ allow = [
     "MPL-2.0",
     "Unlicense",
     "CC0-1.0",
+    # via velopack -> ureq -> webpki-roots (Mozilla CA bundle; permissive).
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

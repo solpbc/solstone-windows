@@ -20,7 +20,20 @@ mod windows;
 
 use std::process::ExitCode;
 
+use velopack::VelopackApp;
+
 fn main() -> ExitCode {
+    // Velopack-aware entry — MUST run first. For the installer lifecycle args
+    // (--veloapp-install / -updated / -obsolete / -uninstall) `run()` acts and
+    // terminates the process. On the first launch after install it fires
+    // `on_first_run` (triggered by the VELOPACK_FIRSTRUN env) to mark per-user
+    // autostart registration, then control CONTINUES to the tray. For a normal
+    // launch (no veloapp arg, no firstrun env) `run()` is a no-op and falls
+    // through to the CLI surface / GUI below.
+    VelopackApp::build()
+        .on_first_run(|_version| crate::lifecycle::mark_first_run())
+        .run();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Agent-native CLI surface — handled before the GUI runtime boots.
@@ -37,9 +50,6 @@ fn main() -> ExitCode {
         }
     }
 
-    // Velopack lifecycle hooks (--veloapp-install/-update/-obsolete/-firstrun)
-    // are handled by the packaging layer before the app proper; the app only
-    // needs to be Velopack-aware. See packaging/hooks/.
     app::run();
     ExitCode::SUCCESS
 }

@@ -43,10 +43,12 @@ help:
 install:
 	@if [ -f ui/package.json ]; then npm --prefix ui install; else echo "no local tooling to install"; fi
 
-# Build the binary + the webview bundle.
+# Build the webview bundle + the binary. The webview is built FIRST: Tauri embeds
+# ui/dist into the exe at cargo-compile time, so building it after would embed a
+# stale bundle.
 build:
-	$(CARGO) build -p $(TAURI_BIN)
 	npm --prefix ui run build
+	$(CARGO) build -p $(TAURI_BIN)
 
 # Local cross-platform tests (pure tier + capture-engine), host-testable, no live
 # target. The windows-only crates test remotely via win-host-ci.
@@ -76,9 +78,15 @@ contract:
 purity-check:
 	$(CARGO) run -q -p xtask -- purity-check
 
-# Build then pack a Velopack release into Releases/. Unsigned now; the
-# $SignTemplate seam in scripts/package.ps1 is empty until the cert lands.
-package: build
+# Build a RELEASE binary + webview, then pack a Velopack release into Releases/.
+# Release (not the debug `build`) so the tray app is windowless — the
+# `windows_subsystem="windows"` attribute is release-only. The webview is built
+# first (embedded at cargo-compile time). The .ps1 consumes target/release/ and
+# does not rebuild. Unsigned now; the $SignTemplate seam in scripts/package.ps1 is
+# empty until the cert lands.
+package:
+	npm --prefix ui run build
+	$(CARGO) build -p $(TAURI_BIN) --release
 	$(PWSH) -File scripts/package.ps1
 
 # Upload the Releases/ dir to GitHub Releases = the monotonic update feed.

@@ -15,6 +15,8 @@
 //! The durable layer is what the tray/UI read — earned from the Velopack
 //! callback, never optimistically pre-set.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// Durable update status (persisted). Read by the UI/tray badge.
 ///
 /// Shape only in Wave 1 — the Velopack update *loop* that fills it is Wave 3
@@ -41,4 +43,20 @@ pub enum UpdateActivity {
 /// Acquire the single-instance gate at boot.
 pub fn acquire_single_instance() -> platform_win::InstanceLock {
     platform_win::acquire_single_instance("Solstone")
+}
+
+/// Post-install first-run signal. Set by the Velopack `on_first_run` hook at the
+/// top of `main()` (before any Tauri `AppHandle` exists) and consumed in the Tauri
+/// `.setup()` to register per-user autostart exactly once — the single in-process
+/// bridge between the headless hook and the GUI handle.
+static FIRST_RUN: AtomicBool = AtomicBool::new(false);
+
+/// Mark this process as the post-install first run (Velopack `on_first_run`).
+pub fn mark_first_run() {
+    FIRST_RUN.store(true, Ordering::SeqCst);
+}
+
+/// True if Velopack signaled this is the first launch after install.
+pub fn is_first_run() -> bool {
+    FIRST_RUN.load(Ordering::SeqCst)
 }
