@@ -6,8 +6,8 @@
 //! Bridges the platform notification pump (`platform-win`) into engine intents:
 //! a session lock pauses with `SessionLocked`, a suspend pauses with
 //! `SystemSuspending`, resume/unlock resumes. The per-session named-mutex
-//! single-instance gate is acquired here at boot; a second launch surfaces
-//! Settings on the first instance and exits.
+//! single-instance gate is acquired here at boot; a second launch exits cleanly
+//! for Wave 1.
 //!
 //! Update status follows the two-layer model: a durable `ReconciledUpdateStatus`
 //! (persisted; last-known-available + last-check-outcome) split from a transient
@@ -32,9 +32,7 @@ pub enum UpdateActivity {
     Installing,
 }
 
-/// Acquire the single-instance gate at boot. Skeleton delegates to
-/// `platform-win`; the second-instance surface-and-exit is wired by the Wave-1
-/// shell work.
+/// Acquire the single-instance gate at boot.
 pub fn acquire_single_instance() -> platform_win::InstanceLock {
     platform_win::acquire_single_instance("Solstone")
 }

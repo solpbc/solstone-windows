@@ -30,6 +30,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - The injected capture sink, clock, and segment-writer seams, plus the computed
   `HealthDump` and loopback `/healthz` server, are wired for host-testable engine
   operation.
+- The tray-resident honest-state shell is wired: per-state tray icon and menu,
+  on-demand Settings/About windows, and a pure-renderer webview fed by the live
+  health stream.
+- The fixed loopback `/healthz` + `--dump-state` oracle now reports the running
+  app's live health snapshot, falling back to an honest not-running snapshot when
+  the app is absent.
+- Session/power/display notifications now flow into the engine command channel
+  from the Windows notification pump thread.
+- `capture-engine` has an `EngineCommand` channel and change-driven health watch
+  for shell and lifecycle integration.
 
 ### Changed
 
@@ -38,6 +48,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - WGC raw screen capture is capped at approximately 1 fps. At 1080p RGBA8 this is
   roughly 2.5 GB per five-minute segment and 15 GB per 30-minute soak; an encoder
   remains deferred.
+- The tray is now built in code with the contract id `tray.root`; the config tray
+  block is removed to avoid a duplicate tray resource.
 
 ### Documentation
 

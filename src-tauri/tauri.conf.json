@@ -12,11 +12,6 @@
   "app": {
     "withGlobalTauri": false,
     "windows": [],
-    "trayIcon": {
-      "id": "main",
-      "iconPath": "icons/idle.png",
-      "tooltip": "Solstone"
-    },
     "security": {
       "csp": "default-src 'self'"
     }

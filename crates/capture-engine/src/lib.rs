@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_lifecycle::{BackoffConfig, Lifecycle, RetryDecision};
 use observer_model::{
-    AppPhase, CaptureChunk, CaptureSink, Clock, ErrorReason, HealthDump, MicSource, ScreenSource,
-    SourceError, SourceKind, SourceReport, SourceState, SystemAudioSource,
+    AppPhase, CaptureChunk, CaptureSink, Clock, ErrorReason, HealthDump, MicSource, PauseReason,
+    ScreenSource, SourceError, SourceKind, SourceReport, SourceState, SystemAudioSource,
 };
 use observer_recovery::{recover_all, RecoveryFs, RecoveryOutcome};
 use observer_segment::{
@@ -30,9 +30,18 @@ use observer_segment::{
 use observer_state::{reduce, AppEvent, StateMachine};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
+
+/// Commands the shell and lifecycle pump can send to the engine loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineCommand {
+    Start,
+    Pause(PauseReason),
+    Resume,
+    DisplayChanged,
+}
 
 /// Engine-level errors. Source start failures are folded into honest state and
 /// do not abort `start`; segment fs failures are infrastructural and do abort.
@@ -109,6 +118,7 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     lifecycles: BTreeMap<SourceKind, Lifecycle>,
     retry_at_epoch_secs: BTreeMap<SourceKind, u64>,
     shared_health: Arc<Mutex<HealthDump>>,
+    health_tx: watch::Sender<HealthDump>,
 }
 
 impl<SFS> CaptureEngine<SFS>
@@ -129,6 +139,7 @@ where
     {
         let outcomes = recover_all(recovery_fs)?;
         let (tx, rx) = mpsc::unbounded_channel();
+        let (health_tx, _) = watch::channel(Self::empty_health());
         let sink = Arc::new(EngineSink { tx });
         let mut state = StateMachine::new();
         reduce(&mut state, AppEvent::EngineReady);
@@ -146,6 +157,7 @@ where
             lifecycles: Self::new_lifecycles(config.lifecycle),
             retry_at_epoch_secs: BTreeMap::new(),
             shared_health: Arc::new(Mutex::new(Self::empty_health())),
+            health_tx,
         };
         engine.refresh_health();
 
@@ -175,6 +187,11 @@ where
     /// Shared health payload used by the loopback health server.
     pub fn health_handle(&self) -> Arc<Mutex<HealthDump>> {
         self.shared_health.clone()
+    }
+
+    /// Subscribe to change-driven health updates.
+    pub fn health_watch(&self) -> watch::Receiver<HealthDump> {
+        self.health_tx.subscribe()
     }
 
     /// Produce the current honest health payload.
@@ -254,12 +271,19 @@ where
     pub async fn run(
         &mut self,
         mut shutdown: oneshot::Receiver<()>,
+        mut command_rx: mpsc::UnboundedReceiver<EngineCommand>,
     ) -> Result<(), EngineError<SFS::Error>> {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
                 _ = &mut shutdown => {
                     return Ok(());
+                }
+                cmd = command_rx.recv() => {
+                    match cmd {
+                        Some(command) => self.apply_command(command),
+                        None => return Ok(()),
+                    }
                 }
                 chunk = self.rx.recv() => {
                     if let Some(chunk) = chunk {
@@ -280,6 +304,24 @@ where
 
     fn reduce(&mut self, event: AppEvent) -> AppPhase {
         reduce(&mut self.state, event)
+    }
+
+    fn apply_command(&mut self, command: EngineCommand) {
+        match command {
+            EngineCommand::Start => {
+                self.reduce(AppEvent::RequestedStart);
+            }
+            EngineCommand::Pause(reason) => {
+                self.reduce(AppEvent::RequestedPause(reason));
+            }
+            EngineCommand::Resume => {
+                self.reduce(AppEvent::RequestedResume);
+            }
+            EngineCommand::DisplayChanged => {
+                self.on_display_changed();
+            }
+        }
+        self.refresh_health();
     }
 
     fn open_current_segment(&mut self) -> Result<(), EngineError<SFS::Error>> {
@@ -471,8 +513,9 @@ where
     fn refresh_health(&mut self) {
         let dump = self.health_dump();
         if let Ok(mut shared) = self.shared_health.lock() {
-            *shared = dump;
+            *shared = dump.clone();
         }
+        self.health_tx.send_replace(dump);
     }
 
     fn start_source(&mut self, kind: SourceKind) {
@@ -892,6 +935,42 @@ mod tests {
         assert_eq!(handles.system_audio.starts(), 1);
         assert_eq!(handles.mic.starts(), 1);
         engine.stop().unwrap();
+    }
+
+    #[test]
+    fn apply_command_folds_refresh_health() {
+        let (sources, handles) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        let mut rx = engine.health_watch();
+
+        rx.mark_unchanged();
+        engine.apply_command(EngineCommand::Start);
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(engine.health_dump().app_state, AppPhase::Starting);
+
+        engine.start().unwrap();
+
+        rx.mark_unchanged();
+        engine.apply_command(EngineCommand::Pause(PauseReason::Operator));
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+
+        rx.mark_unchanged();
+        engine.apply_command(EngineCommand::Resume);
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+
+        let display_changes = handles.screen.display_changes();
+        rx.mark_unchanged();
+        engine.apply_command(EngineCommand::DisplayChanged);
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(handles.screen.display_changes(), display_changes + 1);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
     }
 
     #[test]

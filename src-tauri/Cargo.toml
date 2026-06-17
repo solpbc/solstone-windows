@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "The solstone Windows observer binary: a tray-resident Tauri v2 shell over the capture engine. Thin — arg dispatch (--dump-state/--healthz), tray, Settings/About windows, IPC, Velopack hooks."
+description = "The solstone Windows observer binary: a tray-resident Tauri v2 shell over the capture engine. Thin — arg dispatch (--dump-state/--healthz), tray, Settings/About windows, and IPC."
 default-run = "solstone-windows-app"
 
 [[bin]]
@@ -31,7 +31,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 
 [features]
