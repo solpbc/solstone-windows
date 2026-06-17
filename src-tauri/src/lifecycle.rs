@@ -16,13 +16,19 @@
 //! callback, never optimistically pre-set.
 
 /// Durable update status (persisted). Read by the UI/tray badge.
+///
+/// Shape only in Wave 1 — the Velopack update *loop* that fills it is Wave 3
+/// (a documented non-goal here), so it is not yet constructed.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ReconciledUpdateStatus {
     pub last_known_available: Option<String>,
     pub last_check_succeeded: bool,
 }
 
-/// Transient update activity. Never restored from disk.
+/// Transient update activity. Never restored from disk. Shape only in Wave 1
+/// (the update loop that drives it is Wave 3).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UpdateActivity {
     #[default]

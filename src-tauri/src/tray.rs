@@ -15,14 +15,14 @@ use observer_model::{AppPhase, PauseReason};
 use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::App;
+use tauri::{App, Wry};
 use tokio::sync::mpsc;
 
 /// Install the tray icon + menu.
 pub fn init(
     app: &mut App,
     cmd_tx: mpsc::UnboundedSender<EngineCommand>,
-) -> tauri::Result<(TrayIcon, MenuItem, MenuItem, MenuItem)> {
+) -> tauri::Result<(TrayIcon, MenuItem<Wry>, MenuItem<Wry>, MenuItem<Wry>)> {
     let mi_start = MenuItemBuilder::with_id(observer_contract::tray::MENU_START, "Start")
         .enabled(false)
         .build(app)?;
@@ -89,9 +89,9 @@ pub fn init(
 
 pub fn apply_state(
     tray: &TrayIcon,
-    mi_start: &MenuItem,
-    mi_pause: &MenuItem,
-    mi_resume: &MenuItem,
+    mi_start: &MenuItem<Wry>,
+    mi_pause: &MenuItem<Wry>,
+    mi_resume: &MenuItem<Wry>,
     phase: &AppPhase,
 ) {
     let _ = tray.set_icon(Some(icon_for(phase)));

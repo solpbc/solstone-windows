@@ -186,7 +186,7 @@ pub fn run() {
         .expect("error while building the observer");
 
     app.run(|_, event| {
-        if let tauri::RunEvent::ExitRequested { code, api } = event {
+        if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
             if code.is_none() {
                 api.prevent_exit();
             }
