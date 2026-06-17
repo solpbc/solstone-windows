@@ -37,6 +37,12 @@ pause is in effect, and every *required* source (screen + system audio) is
 `Active`. The microphone is best-effort: a machine with no mic
 (`NoInputDevice`) still observes.
 
+> **Mic validation is deferred.** The `NoInputDevice` state is modeled and tested
+> from the first wave, but validating capture against a *real* input device is
+> deferred to a future iteration — iterating on the no-device path is sufficient
+> for now. Live-mic capture is **not a release gate**; it is picked up when a real
+> or virtual input device is in place.
+
 ## Update status (two layers)
 
 - **Durable `ReconciledUpdateStatus`** (persisted): last-known-available +

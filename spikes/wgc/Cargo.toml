@@ -1,0 +1,14 @@
+# Reference spike — not a workspace member (spikes/ is excluded from the build).
+# Extracted from the box-side `observer-plumbing-spikes` project (its `wgc` bin =
+# Windows.Graphics.Capture frame pump via the `windows-capture` crate). The
+# dependency block is reproduced verbatim from that project, so `windows` is
+# carried for the sibling `mic` spike even though `wgc` uses only
+# `windows-capture`. **Direct seed** for the production `capture-wgc` crate.
+[package]
+name = "wgc-spike"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+windows = { version = "0.58.0", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com"] }
+windows-capture = "2.0.0"

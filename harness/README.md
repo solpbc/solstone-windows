@@ -28,6 +28,18 @@ the target framework without re-proving UIA3 binding in the published layout.
 Assert against a UIA **value** pattern on a stable element — never an
 accessible-name on a relabeled control (the other spike gotcha).
 
+## Reconfirm against the real shell (first-wave work)
+
+The plumbing spike proved FlaUI/UIA3 green against a **native WinForms** target
+(`spikes/flaui-scratch/`) — not against the real Tauri shell. A Tauri window hosts
+a Chromium **WebView2**, whose UIA tree is structurally different. Reconfirming
+that the harness reaches the chrome we control (tray + window frame + stamped
+AutomationIds), and settling on the Tier 0 health-dump + Tier 1 native-chrome
+assertions above, **needs the shell to exist first** — so it is part of the
+first-wave shell + smoke work (1B builds the shell; 1D builds and reconfirms the
+smoke), not a pre-wave step. Until then, Tier 2 webview DOM stays explicitly
+best-effort.
+
 ## Run
 
 `scripts/smoke.ps1` registers + fires a low-privilege scheduled task

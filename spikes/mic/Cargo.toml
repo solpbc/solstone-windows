@@ -1,0 +1,15 @@
+# Reference spike — not a workspace member (spikes/ is excluded from the build).
+# Extracted from the box-side `observer-plumbing-spikes` project (its `mic` bin =
+# WASAPI eCapture endpoint enumeration; proved the zero-active-endpoint case the
+# product models as `SourceState::NoInputDevice`). The dependency block is
+# reproduced verbatim from that project, so `windows-capture` is carried for the
+# sibling `wgc` spike even though `mic` uses only `windows`. Reference for the
+# `capture-wasapi` eCapture path.
+[package]
+name = "mic-spike"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+windows = { version = "0.58.0", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com"] }
+windows-capture = "2.0.0"

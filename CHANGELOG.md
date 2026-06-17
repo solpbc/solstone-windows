@@ -15,3 +15,24 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - The pure tier is host-testable: rotation math, the honest-state reducer,
   incomplete-segment recovery, the backoff/circuit-breaker, and the contract
   generator all run off-Windows.
+- `src-tauri/icons/icon.ico` — a real multi-resolution app icon (16/24/32/48/64/
+  128/256, rendered natively at each size from the solstone brand mark). This
+  unblocks the Tauri app-crate build and the heavier `make build` / `make package`
+  path, which embed the `.ico` as the executable's Windows resource. Verified: the
+  app crate now compiles and links on the Windows build box.
+- The plumbing **reference spikes** are imported under `spikes/` (excluded from the
+  workspace build): `gdi-screen`, `wasapi-loopback`, `wgc`, `mic`, `flaui-scratch`,
+  and `flaui-driver`. Each is the source as spiked, trimmed to the source itself.
+
+### Changed
+
+- `tauri.conf.json` bundle icon points at `icons/icon.ico` (was a placeholder PNG),
+  so the installer + executable carry the brand mark.
+
+### Documentation
+
+- Mic capture: validating against a *real* input device is deferred to a future
+  iteration. The `NoInputDevice` state stays modeled and tested from the first
+  wave; live-mic capture is not a release gate (`docs/lifecycle-matrix.md`).
+- The FlaUI-against-the-real-shell reconfirm is folded into the first wave (it needs
+  the shell to exist) rather than a pre-wave step (`harness/README.md`).

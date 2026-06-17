@@ -1,0 +1,20 @@
+# Reference spike — not a workspace member (spikes/ is excluded from the build).
+# Extracted from the box-side `capture-spike` project (its default `main` bin =
+# GDI screen capture). The dependency block is reproduced verbatim from that
+# project, so the `windows` feature set is the superset shared with the sibling
+# `wasapi-loopback` spike. Superseded in production by `capture-wgc`; GDI stays a
+# diagnostic fallback only.
+[package]
+name = "gdi-screen-spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+] }
+image = "0.25"
