@@ -33,17 +33,22 @@ async fn main() {
         std::env::var("SOLSTONE_DEVICE_LABEL").unwrap_or_else(|_| "win-w2-live-test".to_string());
 
     // Fabricate one sealed segment aligned to the current clock boundary, so the
-    // derived day/segment keys look like a real capture. The screen payload size
-    // is env-tunable: the default tiny marker stays inside the 1 MiB initial mux
-    // window (the W2 small-segment gate); set `SOLSTONE_FAKE_SCREEN_BYTES` to a
-    // multi-MiB value to exercise WINDOW flow-control end-to-end against the real
-    // journal — the realistic-payload proof for the encoder arc, decoupled from
-    // the encoder itself (an encoded ~37.5 MB segment will far exceed 1 MiB).
+    // derived day/segment keys look like a real capture. The screen payload is
+    // env-tunable:
+    //   - `SOLSTONE_REAL_SCREEN_FILE=/path/to.mp4` — upload a REAL captured,
+    //     encoded segment (the encoder-arc end-to-end proof: a genuine H.264 mp4
+    //     lands in the journal by sha256 and `journal describe` ingests it; a
+    //     >1 MiB file also exercises WINDOW flow-control live).
+    //   - `SOLSTONE_FAKE_SCREEN_BYTES=N` — N deterministic synthetic bytes.
+    //   - default — a tiny marker inside the 1 MiB initial window (W2 gate).
     let screen_bytes: usize = std::env::var("SOLSTONE_FAKE_SCREEN_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    let screen_payload: Vec<u8> = if screen_bytes > 0 {
+    let screen_payload: Vec<u8> = if let Ok(path) = std::env::var("SOLSTONE_REAL_SCREEN_FILE") {
+        std::fs::read(&path)
+            .unwrap_or_else(|e| panic!("read SOLSTONE_REAL_SCREEN_FILE {path}: {e}"))
+    } else if screen_bytes > 0 {
         // Deterministic, non-trivial bytes so the journal's sha256 reconcile is a
         // real byte-identity check across the whole multi-MiB body.
         (0..screen_bytes).map(|i| (i % 251) as u8).collect()

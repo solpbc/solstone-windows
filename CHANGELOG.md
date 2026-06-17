@@ -104,14 +104,33 @@ All notable changes to `solstone-windows` are recorded here. The format follows
   transport drives it full-duplex (write up to credit → read grants → repeat),
   proven by a >1 MiB round-trip over real TLS + framing against a window-enforcing
   peer.
+- **Screen H.264 encoder (Media Foundation): the screen is encoded to a compact
+  `.mp4` per segment instead of stored as raw frames.** A new pure `observer-nv12`
+  crate (RGBA/BGRA → NV12, host-tested against known colour vectors) and a platform
+  `capture-screen-encode` crate (a Media Foundation `IMFSinkWriter` worker, with
+  `windows-rs`/COM `unsafe` quarantined to the platform tier) encode the WGC screen
+  frames to H.264 — ~1 Mbps / 1 fps / ~90-frame GOP / native resolution, matching
+  the macOS recorder; hardware encoder MFT where present, software-MFT fallback
+  otherwise. The engine owns a pure `ScreenEncoder` seam: it opens the encoder
+  lazily on the first frame (a frameless window leaves no orphan mp4), writes
+  `display_<n>_screen.mp4` (the journal's screen-video filename), and seals a
+  segment **only after `Finalize()` succeeds** — a finalize failure leaves the
+  segment `.incomplete` (recovery prefers the still-usable audio over a moov-less,
+  unplayable mp4) rather than sealing a corrupt file; an encode failure faults the
+  screen source while audio keeps flowing, and `--dump-state` reports per-segment
+  frames-consumed vs. samples-written. Live-validated on hardware: a real 5-minute
+  capture produced a valid 1080p H.264 mp4 (~1.2 MB vs. ~1.7 GB raw) that decodes
+  at 1 fps and lands in a journal by sha256 over the private link.
 
 ### Changed
 
 - `tauri.conf.json` bundle icon points at `icons/icon.ico` (was a placeholder PNG),
   so the installer + executable carry the brand mark.
-- WGC raw screen capture is capped at approximately 1 fps. At 1080p RGBA8 this is
-  roughly 2.5 GB per five-minute segment and 15 GB per 30-minute soak; an encoder
-  remains deferred.
+- The WGC screen path now **encodes to H.264 `.mp4`** instead of writing raw RGBA
+  frames (see the encoder entry above). The prior raw path was capped to ~1 fps
+  purely to bound disk (~2.5 GB per five-minute segment at 1080p); encoding makes a
+  segment roughly MB-scale (~1,000× smaller for a quiet screen) and an actual upload
+  payload.
 - The tray is now built in code with the contract id `tray.root`; the config tray
   block is removed to avoid a duplicate tray resource.
 - Incomplete-segment recovery now decides staleness by **rotation boundary**, not

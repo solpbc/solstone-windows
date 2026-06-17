@@ -23,13 +23,14 @@ mod imp {
     use windows::Win32::Media::MediaFoundation::{
         eAVEncH264VProfile_High, CODECAPI_AVEncMPVGOPSize, ICodecAPI, IMFAttributes, IMFMediaType,
         IMFSinkWriter, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-        MFCreateSinkWriterFromURL, MFMediaType_Video, MFShutdown, MFStartup, MFVideoFormat_H264,
-        MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFSTARTUP_FULL,
-        MF_E_DXGI_DEVICE_NOT_INITIALIZED, MF_E_DXGI_NEW_VIDEO_DEVICE,
-        MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_NEW_VIDEO_DEVICE, MF_MT_AVG_BITRATE,
-        MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-        MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
-        MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_DISABLE_THROTTLING, MF_VERSION,
+        MFCreateSinkWriterFromURL, MFMediaType_Video, MFShutdown, MFStartup,
+        MFTranscodeContainerType_MPEG4, MFVideoFormat_H264, MFVideoFormat_NV12,
+        MFVideoInterlace_Progressive, MFSTARTUP_FULL, MF_E_DXGI_DEVICE_NOT_INITIALIZED,
+        MF_E_DXGI_NEW_VIDEO_DEVICE, MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_NEW_VIDEO_DEVICE,
+        MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+        MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
+        MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SINK_WRITER_DISABLE_THROTTLING,
+        MF_TRANSCODE_CONTAINERTYPE, MF_VERSION,
     };
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
@@ -409,8 +410,20 @@ mod imp {
         // https://learn.microsoft.com/en-us/windows/win32/api/mfreadwrite/nf-mfreadwrite-mfcreatesinkwriterfromurl
         // https://learn.microsoft.com/en-us/windows/win32/medfound/tutorial--using-the-sink-writer-to-encode-video
         // CPU samples leave MF_SINK_WRITER_D3D_MANAGER unset; hardware MFTs are enabled without use-only fallback.
-        let attrs = create_attributes(2)?;
+        let attrs = create_attributes(3)?;
         unsafe {
+            // The sink writer infers the container from the URL extension UNLESS
+            // MF_TRANSCODE_CONTAINERTYPE is set. Our output URL ends in `.partial`
+            // (the seal-only-after-Finalize marker), which MF does not recognize —
+            // without this attribute MFCreateSinkWriterFromURL returns
+            // MF_E_NOT_FOUND (0xC00D36D5). Pin MPEG-4 explicitly so the `.partial`
+            // name stays decoupled from container selection. (MS Learn:
+            // mfreadwrite/nf-mfreadwrite-mfcreatesinkwriterfromurl — Remarks.)
+            attrs
+                .SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)
+                .map_err(|error| {
+                    windows_error(EncoderErrorKind::OpenFailed, "set container type", error)
+                })?;
             attrs
                 .SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)
                 .map_err(|error| {
