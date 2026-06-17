@@ -12,12 +12,18 @@ PWSH ?= pwsh
 CARGO ?= cargo
 TAURI_BIN := solstone-windows-app
 
-# Remote build-host targets (reserved). Set WIN_REMOTE_HOST=<host> to drive a
-# Windows build box over SSH. The sync uses a dedicated remote tree so the
-# destructive `--delete` can never clobber a working checkout on the build box.
+# Remote build host. The Windows-only toolchain (Rust-MSVC, windows-rs, Tauri,
+# Velopack, FlaUI) builds on a Windows build box; code + git stay on the dev host
+# and only the build/test runs remotely, streamed back. Transport is git: a bundle
+# of the exact working tree (committed or not) carried by scp and fetched on the
+# box — no rsync, no remote `make`, no POSIX assumptions about the box. The box
+# bootstrap (C:\sol\sw-ci.cmd) fetches the bundle, hard-checks-out, and runs
+# scripts/win-ci.cmd. WIN_REMOTE_HOST is supplied by the build environment, never
+# committed (public hygiene): WIN_REMOTE_HOST=user@host make win-host-ci.
 WIN_REMOTE_HOST ?=
-WIN_REMOTE_PROJECT ?= solstone-windows-host
-RSYNC_EXCLUDES := --exclude .git --exclude target --exclude ui/dist --exclude ui/node_modules --exclude Releases
+WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
+WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
+WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
 .PHONY: build test ci contract package publish smoke run clean \
         require-win-remote-host sync-win-host win-host-ci help
@@ -70,13 +76,21 @@ clean:
 	$(CARGO) clean
 	rm -rf ui/dist Releases
 
-# ── Remote build host (reserved) ─────────────────────────────────────────────
+# ── Remote build host ─────────────────────────────────────────────────────────
 require-win-remote-host:
-	@test -n "$(WIN_REMOTE_HOST)" || (echo "Set WIN_REMOTE_HOST=<host>" >&2; exit 2)
+	@test -n "$(WIN_REMOTE_HOST)" || (echo "Set WIN_REMOTE_HOST=user@host" >&2; exit 2)
 
+# Bundle the exact working tree (incl. uncommitted) and ship it to the box.
 sync-win-host: require-win-remote-host
-	ssh $(WIN_REMOTE_HOST) 'mkdir -p $(WIN_REMOTE_PROJECT)'
-	rsync -az --delete $(RSYNC_EXCLUDES) ./ $(WIN_REMOTE_HOST):$(WIN_REMOTE_PROJECT)/
+	@mkdir -p $(dir $(WIN_BUNDLE))
+	@SHA=$$(git stash create); [ -n "$$SHA" ] || SHA=$$(git rev-parse HEAD); \
+	  git update-ref refs/heads/__swsync $$SHA; \
+	  git bundle create $(WIN_BUNDLE) refs/heads/__swsync; \
+	  git update-ref -d refs/heads/__swsync; \
+	  echo "synced working tree @ $$SHA"
+	$(WIN_SCP) $(WIN_BUNDLE) $(WIN_REMOTE_HOST):swbuild.bundle
 
+# Sync, then run the Session-0-safe gate on the box (build + tests + contract).
+# The live FlaUI smoke + lifecycle matrix are operator-direct, not part of this.
 win-host-ci: sync-win-host
-	ssh $(WIN_REMOTE_HOST) 'cd $(WIN_REMOTE_PROJECT) && make ci'
+	$(WIN_SSH) $(WIN_REMOTE_HOST) 'cmd /c C:\sol\sw-ci.cmd'
