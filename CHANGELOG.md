@@ -41,8 +41,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - `capture-engine` has an `EngineCommand` channel and change-driven health watch
   for shell and lifecycle integration.
 - The observer binary is now Velopack-aware: `VelopackApp` runs first in `main()`,
-  handling the install/updated/obsolete/uninstall lifecycle hooks (so they exit 0);
-  the first launch after install registers the per-user autostart login item.
+  handling the install/updated/obsolete/uninstall lifecycle hooks (so they exit 0).
+- Relaunch-at-login: the observer registers a per-user autostart login item — a
+  single named value under the `HKCU\…\CurrentVersion\Run` key, no admin and no
+  machine-wide entry — so the tray-resident observer comes back in interactive
+  Session 1 after a reboot. Registration is ensured idempotently on every launch
+  (it writes only when the entry is missing or stale, so it self-heals an
+  unregistered install, re-points the entry if the executable moves, and never
+  leaves a duplicate); the Velopack uninstall hook removes it. Replaces the prior
+  one-shot first-run registration, which silently left the observer unregistered
+  whenever the first post-install launch wasn't the installer-spawned one.
 - Real `make package`: `vpk pack` of the release binary into `Releases/` (per-user
   `%LocalAppData%`, no UAC, unsigned) — full + delta `nupkg`, `Setup.exe`, and the
   `releases.win.json` update feed. The packed version equals the binary's

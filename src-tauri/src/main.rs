@@ -25,13 +25,17 @@ use velopack::VelopackApp;
 fn main() -> ExitCode {
     // Velopack-aware entry — MUST run first. For the installer lifecycle args
     // (--veloapp-install / -updated / -obsolete / -uninstall) `run()` acts and
-    // terminates the process. On the first launch after install it fires
-    // `on_first_run` (triggered by the VELOPACK_FIRSTRUN env) to mark per-user
-    // autostart registration, then control CONTINUES to the tray. For a normal
-    // launch (no veloapp arg, no firstrun env) `run()` is a no-op and falls
-    // through to the CLI surface / GUI below.
+    // terminates the process. The uninstall fast-callback removes the per-user
+    // autostart login item so no stale `Run` entry survives the app's removal
+    // (registration itself is ensured idempotently on every normal launch, in the
+    // Tauri setup). For a normal launch (no veloapp arg) `run()` is a no-op and
+    // falls through to the CLI surface / GUI below.
     VelopackApp::build()
-        .on_first_run(|_version| crate::lifecycle::mark_first_run())
+        .on_before_uninstall_fast_callback(|_version| {
+            let _ = platform_win::autostart::remove_login_item(
+                platform_win::autostart::LOGIN_ITEM_NAME,
+            );
+        })
         .run();
 
     let args: Vec<String> = std::env::args().skip(1).collect();

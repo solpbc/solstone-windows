@@ -23,3 +23,5 @@ windows = { version = "0.58", features = [
     "Win32_System_Power",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# Per-user autostart `Run`-key registration (safe wrapper over the HKCU registry).
+winreg = "0.55"

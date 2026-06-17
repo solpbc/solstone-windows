@@ -33,7 +33,6 @@ anyhow.workspace = true
 tokio.workspace = true
 
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-tauri-plugin-autostart = "2"
 
 # Velopack-aware entry hook (VelopackApp runs first in main) + per-user install
 # feed. Exact pin: the app crate is not built by any gated path, so the build box

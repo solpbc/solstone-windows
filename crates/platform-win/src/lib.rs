@@ -24,6 +24,8 @@ use observer_model::{CaptureChunk, SegmentKey, SourceKind};
 use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
+pub mod autostart;
+
 /// The per-user data root: `%LocalAppData%\Solstone`. Falls back to a temp path
 /// off-Windows so the type is host-constructible for tests.
 pub fn local_data_root() -> PathBuf {

@@ -143,8 +143,12 @@ path must not depend on Chromium UIA resolving.
 
 ## 6. Lifecycle
 
-- **Production launch:** per-user login/startup item into interactive Session 1
-  (autostart plugin / Velopack first-run hook). **Test launch:** low-privilege
+- **Production launch:** a per-user login item into interactive Session 1 — a
+  single named value under the `HKCU\…\CurrentVersion\Run` key (no admin, no
+  machine-wide `HKLM`, no scheduled task). It is *ensured idempotently on every
+  launch* (write-only-when-missing-or-stale, so it self-heals and never
+  duplicates) by `platform_win::autostart`, not tied to a one-shot install
+  signal; the Velopack uninstall hook removes it. **Test launch:** low-privilege
   scheduled task (`LogonType=Interactive`) into Session 1 (FlaUI smoke only).
   Never conflate them.
 - **Handlers:** lock/unlock pause+resume; display-change re-acquires the screen
@@ -152,9 +156,9 @@ path must not depend on Chromium UIA resolving.
   `observing` into `Error` via the backoff/breaker.
 - **Single instance:** a per-session named mutex; a second launch surfaces
   Settings on the first and exits.
-- **Velopack hooks** the app must handle: `--veloapp-install`, `--veloapp-update`,
-  `--veloapp-obsolete`, `--veloapp-firstrun` (first-run registers autostart). The
-  app must be Velopack-aware so the hooks exit 0.
+- **Velopack hooks** the app must handle: `--veloapp-install`, `--veloapp-updated`,
+  `--veloapp-obsolete`, `--veloapp-uninstall` (the uninstall fast-callback removes
+  the autostart login item). The app must be Velopack-aware so the hooks exit 0.
 
 See `docs/lifecycle-matrix.md` for the full table.
 

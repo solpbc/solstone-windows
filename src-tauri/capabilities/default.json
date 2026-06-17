@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "core:event:default",
-    "core:window:allow-close",
-    "autostart:default"
+    "core:window:allow-close"
   ]
 }

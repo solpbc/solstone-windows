@@ -3,8 +3,8 @@
 
 //! App composition root.
 //!
-//! Wires the tray, the IPC command surface, and the Velopack-aware autostart
-//! plugin, then runs the tray-resident event loop. No window is auto-shown;
+//! Wires the tray and the IPC command surface, ensures the per-user autostart
+//! login item, then runs the tray-resident event loop. No window is auto-shown;
 //! Settings/About are created on demand (see [`crate::windows`]). The capture
 //! engine is constructed here with the concrete platform sources injected at the
 //! `observer-model` trait seam (`capture-wgc` / `capture-wasapi`), keeping the
@@ -19,7 +19,6 @@ use observer_model::{AppPhase, HealthDump, PauseReason, SyncSnapshot};
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::{run_uploader, SyncConfig};
 use tauri::{Emitter, Manager};
-use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::{mpsc, oneshot};
 
 pub struct AppState {
@@ -63,10 +62,6 @@ fn build_sync_config() -> SyncConfig {
 /// Boot the tray-resident observer.
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
         .invoke_handler(tauri::generate_handler![
             crate::ipc::start_observing,
             crate::ipc::pause,
@@ -84,21 +79,25 @@ pub fn run() {
                 return Ok(());
             }
 
-            // First launch after install (Velopack `on_first_run`): register the
-            // per-user autostart login item — the single home for the actual
-            // `.enable()` call, where the `AppHandle` exists. Idempotent (guards
-            // on `is_enabled`); a failure is logged, never fatal to first run.
-            if crate::lifecycle::is_first_run() {
-                let autostart = app.autolaunch();
-                match autostart.is_enabled() {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        if let Err(error) = autostart.enable() {
-                            eprintln!("autostart registration failed: {error}");
-                        }
+            // Ensure the per-user autostart login item so the tray-resident
+            // observer relaunches at the next login. Run on every launch (not
+            // gated on a one-shot install signal) and idempotent: it writes only
+            // when the entry is missing or stale, so it self-heals an unregistered
+            // install and re-points the entry if the executable path moved. A
+            // failure is logged, never fatal.
+            match std::env::current_exe() {
+                Ok(exe) => match platform_win::autostart::ensure_login_item(
+                    platform_win::autostart::LOGIN_ITEM_NAME,
+                    &exe,
+                    &[],
+                ) {
+                    Ok(platform_win::autostart::EnsureOutcome::Registered) => {
+                        eprintln!("autostart: registered login item");
                     }
-                    Err(error) => eprintln!("autostart query failed: {error}"),
-                }
+                    Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => {}
+                    Err(error) => eprintln!("autostart: registration failed: {error}"),
+                },
+                Err(error) => eprintln!("autostart: could not resolve current exe: {error}"),
             }
 
             let sources = Sources {
