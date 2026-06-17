@@ -102,6 +102,7 @@ pub fn run() {
 
             let sources = Sources {
                 screen: Box::new(capture_wgc::WgcScreenSource::new()),
+                screen_encoder: Box::new(capture_screen_encode::MfScreenEncoder::new()),
                 system_audio: Box::new(capture_wasapi::WasapiSystemAudioSource::new()),
                 mic: Box::new(capture_wasapi::WasapiMicSource::new()),
             };
@@ -220,6 +221,7 @@ pub fn run() {
                         engine_ready: false,
                         version: env!("CARGO_PKG_VERSION").to_string(),
                         sync,
+                        screen_encoder: None,
                     };
                     if let Ok(mut health) = health.lock() {
                         *health = terminal.clone();

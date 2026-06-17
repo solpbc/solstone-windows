@@ -18,7 +18,8 @@ mod imp {
     use std::time::{Duration, Instant};
 
     use observer_model::{
-        CaptureChunk, CaptureSink, ErrorReason, ScreenSource, SourceError, SourceKind, SourceState,
+        CaptureSink, ErrorReason, ScreenFrame, ScreenPixelFormat, ScreenSource, SourceError,
+        SourceState,
     };
     use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
     use windows_capture::frame::Frame;
@@ -35,6 +36,7 @@ mod imp {
     // ~1 fps cap. At 1080p RGBA8 (~8.3 MB/frame), 1 fps * 300s is ~2.5 GB per
     // five-minute segment and ~15 GB per 30-minute soak; the encoder is deferred.
     const MINIMUM_UPDATE_INTERVAL: Duration = Duration::from_millis(1000);
+    const SCREEN_COLOR_FORMAT: ColorFormat = ColorFormat::Rgba8;
 
     struct SharedState {
         state: SourceState,
@@ -55,12 +57,14 @@ mod imp {
         sink: Arc<dyn CaptureSink>,
         state: Arc<Mutex<SharedState>>,
         seq: Arc<AtomicU64>,
+        color_format: ColorFormat,
     }
 
     struct WgcHandler {
         sink: Arc<dyn CaptureSink>,
         state: Arc<Mutex<SharedState>>,
         seq: Arc<AtomicU64>,
+        color_format: ColorFormat,
         scratch: Vec<u8>,
     }
 
@@ -81,6 +85,7 @@ mod imp {
                 sink: ctx.flags.sink,
                 state: ctx.flags.state,
                 seq: ctx.flags.seq,
+                color_format: ctx.flags.color_format,
                 scratch: Vec::new(),
             })
         }
@@ -90,13 +95,24 @@ mod imp {
             frame: &mut Frame,
             _capture_control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
+            let pixel_format = match self.color_format {
+                ColorFormat::Rgba8 => ScreenPixelFormat::Rgba8,
+                ColorFormat::Bgra8 => ScreenPixelFormat::Bgra8,
+                ColorFormat::Rgba16F => {
+                    return Err("unsupported WGC color format Rgba16F".to_string());
+                }
+            };
+            let width = frame.width();
+            let height = frame.height();
             let frame_buffer = frame.buffer().map_err(|err| err.to_string())?;
             let data = frame_buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-            self.sink.emit(CaptureChunk {
-                source: SourceKind::Screen,
+            self.sink.emit_screen_frame(ScreenFrame {
                 seq,
-                data,
+                width,
+                height,
+                pixel_format,
+                pixels: Arc::from(data),
             });
             self.set_state(SourceState::Active, Some(Instant::now()));
             Ok(())
@@ -160,11 +176,12 @@ mod imp {
                 SecondaryWindowSettings::Default,
                 MinimumUpdateIntervalSettings::Custom(MINIMUM_UPDATE_INTERVAL),
                 DirtyRegionSettings::Default,
-                ColorFormat::Rgba8,
+                SCREEN_COLOR_FORMAT,
                 HandlerFlags {
                     sink,
                     state: Arc::clone(&self.state),
                     seq: Arc::clone(&self.seq),
+                    color_format: SCREEN_COLOR_FORMAT,
                 },
             ))
         }

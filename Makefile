@@ -15,7 +15,7 @@ TAURI_BIN := solstone-windows-app
 # Windows-only crates: their real build/test/lint runs on the Windows box
 # (windows-rs + MSVC) via win-host-ci. Excluded from the local fast checks,
 # which cover the cross-platform crates only (pure tier + capture-engine).
-REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-wasapi --exclude platform-win
+REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-wasapi --exclude platform-win --exclude capture-screen-encode
 
 # Remote build host. The Windows-only toolchain (Rust-MSVC, windows-rs, Tauri,
 # Velopack, FlaUI) builds on a Windows build box; code + git stay on the dev host

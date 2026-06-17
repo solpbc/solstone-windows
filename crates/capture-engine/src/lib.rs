@@ -20,9 +20,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_lifecycle::{BackoffConfig, Lifecycle, RetryDecision};
 use observer_model::{
-    AppPhase, CaptureChunk, CaptureSink, Clock, ErrorReason, HealthDump, MicSource, PauseReason,
-    ScreenSource, SourceError, SourceKind, SourceReport, SourceState, SyncSnapshot,
-    SystemAudioSource,
+    AppPhase, CaptureChunk, CaptureSink, Clock, EncoderError, ErrorReason, HealthDump, MicSource,
+    PauseReason, ScreenEncoder, ScreenFrame, ScreenSource, SourceError, SourceKind, SourceReport,
+    SourceState, SyncSnapshot, SystemAudioSource,
 };
 use observer_recovery::{recover_all, RecoveryFs, RecoveryOutcome};
 use observer_segment::{
@@ -63,13 +63,22 @@ impl Clock for SystemClock {
     }
 }
 
+enum CaptureEvent {
+    Audio(CaptureChunk),
+    Screen(ScreenFrame),
+}
+
 struct EngineSink {
-    tx: mpsc::UnboundedSender<CaptureChunk>,
+    tx: mpsc::UnboundedSender<CaptureEvent>,
 }
 
 impl CaptureSink for EngineSink {
     fn emit(&self, chunk: CaptureChunk) {
-        let _ = self.tx.send(chunk);
+        let _ = self.tx.send(CaptureEvent::Audio(chunk));
+    }
+
+    fn emit_screen_frame(&self, frame: ScreenFrame) {
+        let _ = self.tx.send(CaptureEvent::Screen(frame));
     }
 }
 
@@ -78,6 +87,7 @@ struct OpenSegment {
     dir: String,
     opened_epoch_secs: u64,
     screen_chunks: u64,
+    screen_encoder_open: bool,
 }
 
 /// The concrete platform sources injected into the engine. `capture-engine`
@@ -85,6 +95,7 @@ struct OpenSegment {
 /// in, keeping the engine Tauri- and Windows-agnostic.
 pub struct Sources {
     pub screen: Box<dyn ScreenSource>,
+    pub screen_encoder: Box<dyn ScreenEncoder>,
     pub system_audio: Box<dyn SystemAudioSource>,
     pub mic: Box<dyn MicSource>,
 }
@@ -113,7 +124,7 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     segment_fs: SFS,
     clock: Box<dyn Clock>,
     current_segment: Option<OpenSegment>,
-    rx: mpsc::UnboundedReceiver<CaptureChunk>,
+    rx: mpsc::UnboundedReceiver<CaptureEvent>,
     sink: Arc<EngineSink>,
     source_reports: BTreeMap<SourceKind, SourceReport>,
     lifecycles: BTreeMap<SourceKind, Lifecycle>,
@@ -238,6 +249,10 @@ where
             engine_ready: self.state.engine_ready(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             sync,
+            screen_encoder: self
+                .current_segment
+                .is_some()
+                .then(|| self.sources.screen_encoder.health()),
         }
     }
 
@@ -259,11 +274,14 @@ where
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
+        self.drain_events()?;
 
         if let Some(segment) = self.current_segment.take() {
-            self.segment_fs
-                .finalize(segment.key)
-                .map_err(EngineError::Segment)?;
+            if self.finalize_screen_encoder().is_ok() {
+                self.segment_fs
+                    .finalize(segment.key)
+                    .map_err(EngineError::Segment)?;
+            }
         }
         self.fold_source_states();
         self.refresh_health();
@@ -278,7 +296,7 @@ where
 
     /// Deterministic, host-testable unit of engine work.
     pub fn pump(&mut self) -> Result<(), EngineError<SFS::Error>> {
-        self.drain_chunks()?;
+        self.drain_events()?;
         self.rotate_if_needed()?;
         self.retry_due_sources();
         self.fold_source_states();
@@ -305,9 +323,9 @@ where
                         None => return Ok(()),
                     }
                 }
-                chunk = self.rx.recv() => {
-                    if let Some(chunk) = chunk {
-                        self.write_chunk(chunk)?;
+                event = self.rx.recv() => {
+                    if let Some(event) = event {
+                        self.handle_event(event)?;
                     } else {
                         return Ok(());
                     }
@@ -359,18 +377,29 @@ where
             dir,
             opened_epoch_secs: now,
             screen_chunks: 0,
+            screen_encoder_open: false,
         });
         Ok(())
     }
 
-    fn drain_chunks(&mut self) -> Result<(), EngineError<SFS::Error>> {
-        while let Ok(chunk) = self.rx.try_recv() {
-            self.write_chunk(chunk)?;
+    fn drain_events(&mut self) -> Result<(), EngineError<SFS::Error>> {
+        while let Ok(event) = self.rx.try_recv() {
+            self.handle_event(event)?;
         }
         Ok(())
     }
 
-    fn write_chunk(&mut self, chunk: CaptureChunk) -> Result<(), EngineError<SFS::Error>> {
+    fn handle_event(&mut self, event: CaptureEvent) -> Result<(), EngineError<SFS::Error>> {
+        match event {
+            CaptureEvent::Audio(chunk) => self.write_audio_chunk(chunk),
+            CaptureEvent::Screen(frame) => {
+                self.encode_screen_frame(frame);
+                Ok(())
+            }
+        }
+    }
+
+    fn write_audio_chunk(&mut self, chunk: CaptureChunk) -> Result<(), EngineError<SFS::Error>> {
         let Some(segment) = self.current_segment.as_mut() else {
             return Ok(());
         };
@@ -388,10 +417,37 @@ where
             return Err(EngineError::Segment(error));
         }
 
-        if chunk.source == SourceKind::Screen {
-            segment.screen_chunks = segment.screen_chunks.saturating_add(1);
-        }
         Ok(())
+    }
+
+    fn encode_screen_frame(&mut self, frame: ScreenFrame) {
+        let Some((needs_open, dir)) = self.current_segment.as_mut().map(|segment| {
+            segment.screen_chunks = segment.screen_chunks.saturating_add(1);
+            (!segment.screen_encoder_open, segment.dir.clone())
+        }) else {
+            return;
+        };
+
+        if needs_open {
+            // Display/resolution changes need no separate engine mechanism:
+            // lazy open derives the next segment's native dimensions from its
+            // first screen frame after WGC has restarted.
+            if let Err(error) = self
+                .sources
+                .screen_encoder
+                .open(&dir, frame.width, frame.height)
+            {
+                self.apply_encoder_error(error);
+                return;
+            }
+            if let Some(segment) = self.current_segment.as_mut() {
+                segment.screen_encoder_open = true;
+            }
+        }
+
+        if let Err(error) = self.sources.screen_encoder.encode_frame(&frame) {
+            self.apply_encoder_error(error);
+        }
     }
 
     fn rotate_if_needed(&mut self) -> Result<(), EngineError<SFS::Error>> {
@@ -403,10 +459,12 @@ where
             return Ok(());
         }
 
-        let old_key = current.key;
-        self.segment_fs
-            .finalize(old_key)
-            .map_err(EngineError::Segment)?;
+        let old_segment = self.current_segment.take().expect("current checked above");
+        if self.finalize_screen_encoder().is_ok() {
+            self.segment_fs
+                .finalize(old_segment.key)
+                .map_err(EngineError::Segment)?;
+        }
 
         let next_key = segment_for(now, self.config.segment_secs);
         let dir = self
@@ -418,15 +476,34 @@ where
             dir,
             opened_epoch_secs: now,
             screen_chunks: 0,
+            screen_encoder_open: false,
         });
         Ok(())
     }
 
+    fn finalize_screen_encoder(&mut self) -> Result<(), EncoderError> {
+        match self.sources.screen_encoder.finalize() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.apply_encoder_error(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     fn fold_source_states(&mut self) {
+        let screen_state = if let Some(detail) = self.sources.screen_encoder.last_error() {
+            SourceState::Faulted {
+                reason: ErrorReason::WriteFailed,
+                detail,
+            }
+        } else {
+            self.sources.screen.state()
+        };
         let reports = [
             SourceReport {
                 kind: SourceKind::Screen,
-                state: self.sources.screen.state(),
+                state: screen_state,
                 device: None,
             },
             SourceReport {
@@ -460,6 +537,17 @@ where
 
         self.source_reports.insert(report.kind, report.clone());
         self.reduce(AppEvent::SourceUpdated(report));
+    }
+
+    fn apply_encoder_error(&mut self, error: EncoderError) {
+        self.apply_source_report(SourceReport {
+            kind: SourceKind::Screen,
+            state: SourceState::Faulted {
+                reason: ErrorReason::WriteFailed,
+                detail: error.detail,
+            },
+            device: None,
+        });
     }
 
     fn apply_source_error(&mut self, kind: SourceKind, error: SourceError) {
@@ -592,6 +680,7 @@ where
             engine_ready: false,
             version: env!("CARGO_PKG_VERSION").to_string(),
             sync: SyncSnapshot::default(),
+            screen_encoder: None,
         }
     }
 }
@@ -636,7 +725,9 @@ mod tests {
     use std::collections::{BTreeSet, VecDeque};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use observer_model::{ErrorReason, SegmentKey};
+    use observer_model::{
+        EncoderErrorKind, EncoderHealth, ErrorReason, ScreenPixelFormat, SegmentKey,
+    };
     use observer_recovery::StaleSegment;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -669,11 +760,13 @@ mod tests {
         Open(SegmentKey),
         Write(SegmentKey, SourceKind, u64),
         Finalize(SegmentKey),
+        EncoderOpen(u32, u32),
+        EncoderEncode(u64),
+        EncoderFinalize,
     }
 
     #[derive(Default)]
     struct FakeSegmentState {
-        events: Vec<FsEvent>,
         writes: Vec<(SegmentKey, SourceKind, u64)>,
         fail_open: bool,
     }
@@ -681,15 +774,20 @@ mod tests {
     #[derive(Clone, Default)]
     struct FakeSegmentFs {
         state: Arc<Mutex<FakeSegmentState>>,
+        events: Arc<Mutex<Vec<FsEvent>>>,
     }
 
     impl FakeSegmentFs {
         fn events(&self) -> Vec<FsEvent> {
-            self.state.lock().unwrap().events.clone()
+            self.events.lock().unwrap().clone()
         }
 
         fn writes(&self) -> Vec<(SegmentKey, SourceKind, u64)> {
             self.state.lock().unwrap().writes.clone()
+        }
+
+        fn event_log(&self) -> Arc<Mutex<Vec<FsEvent>>> {
+            self.events.clone()
         }
     }
 
@@ -697,11 +795,11 @@ mod tests {
         type Error = &'static str;
 
         fn open_incomplete(&mut self, key: SegmentKey) -> Result<String, Self::Error> {
-            let mut state = self.state.lock().unwrap();
+            let state = self.state.lock().unwrap();
             if state.fail_open {
                 return Err("open failed");
             }
-            state.events.push(FsEvent::Open(key));
+            self.events.lock().unwrap().push(FsEvent::Open(key));
             Ok(format!("/segments/{}.incomplete", key.index))
         }
 
@@ -711,19 +809,16 @@ mod tests {
             chunk: &CaptureChunk,
         ) -> Result<(), Self::Error> {
             let mut state = self.state.lock().unwrap();
-            state
-                .events
+            self.events
+                .lock()
+                .unwrap()
                 .push(FsEvent::Write(key, chunk.source, chunk.seq));
             state.writes.push((key, chunk.source, chunk.seq));
             Ok(())
         }
 
         fn finalize(&mut self, key: SegmentKey) -> Result<(), Self::Error> {
-            self.state
-                .lock()
-                .unwrap()
-                .events
-                .push(FsEvent::Finalize(key));
+            self.events.lock().unwrap().push(FsEvent::Finalize(key));
             Ok(())
         }
     }
@@ -870,8 +965,152 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct FakeScreenEncoder {
+        inner: Arc<Mutex<FakeScreenEncoderState>>,
+        events: Option<Arc<Mutex<Vec<FsEvent>>>>,
+    }
+
+    #[derive(Default)]
+    struct FakeScreenEncoderState {
+        opened: Option<(String, u32, u32)>,
+        frames_consumed: u64,
+        samples_written: u64,
+        last_error: Option<String>,
+        open_errors: VecDeque<EncoderError>,
+        encode_errors: VecDeque<EncoderError>,
+        finalize_errors: VecDeque<EncoderError>,
+    }
+
+    impl FakeScreenEncoder {
+        fn with_events(events: Arc<Mutex<Vec<FsEvent>>>) -> Self {
+            Self {
+                inner: Arc::new(Mutex::new(FakeScreenEncoderState::default())),
+                events: Some(events),
+            }
+        }
+
+        fn push_encode_error(&self, error: EncoderError) {
+            self.inner.lock().unwrap().encode_errors.push_back(error);
+        }
+
+        fn push_finalize_error(&self, error: EncoderError) {
+            self.inner.lock().unwrap().finalize_errors.push_back(error);
+        }
+
+        fn health_snapshot(&self) -> EncoderHealth {
+            self.inner.lock().unwrap().health()
+        }
+
+        fn open_count(&self) -> usize {
+            self.events
+                .as_ref()
+                .map(|events| {
+                    events
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|event| matches!(event, FsEvent::EncoderOpen(_, _)))
+                        .count()
+                })
+                .unwrap_or(0)
+        }
+    }
+
+    impl FakeScreenEncoderState {
+        fn health(&self) -> EncoderHealth {
+            EncoderHealth {
+                frames_consumed: self.frames_consumed,
+                samples_written: self.samples_written,
+                last_error: self.last_error.clone(),
+            }
+        }
+    }
+
+    impl ScreenEncoder for FakeScreenEncoder {
+        fn open(&mut self, dir: &str, width: u32, height: u32) -> Result<(), EncoderError> {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(error) = inner.open_errors.pop_front() {
+                inner.last_error = Some(error.detail.clone());
+                return Err(error);
+            }
+            inner.opened = Some((dir.to_string(), width, height));
+            inner.last_error = None;
+            if let Some(events) = &self.events {
+                events
+                    .lock()
+                    .unwrap()
+                    .push(FsEvent::EncoderOpen(width, height));
+            }
+            Ok(())
+        }
+
+        fn encode_frame(&mut self, frame: &ScreenFrame) -> Result<(), EncoderError> {
+            let mut inner = self.inner.lock().unwrap();
+            inner.frames_consumed = inner.frames_consumed.saturating_add(1);
+            let Some((_, width, height)) = inner.opened.as_ref() else {
+                let error = EncoderError::new(EncoderErrorKind::EncodeFailed, "encoder not open");
+                inner.last_error = Some(error.detail.clone());
+                return Err(error);
+            };
+            if *width != frame.width || *height != frame.height {
+                let error = EncoderError::new(
+                    EncoderErrorKind::InvalidFrameDimensions,
+                    format!(
+                        "frame dimensions {}x{} do not match opened {}x{}",
+                        frame.width, frame.height, width, height
+                    ),
+                );
+                inner.last_error = Some(error.detail.clone());
+                return Err(error);
+            }
+            if let Some(error) = inner.encode_errors.pop_front() {
+                inner.last_error = Some(error.detail.clone());
+                return Err(error);
+            }
+            inner.samples_written = inner.samples_written.saturating_add(1);
+            if let Some(events) = &self.events {
+                events
+                    .lock()
+                    .unwrap()
+                    .push(FsEvent::EncoderEncode(frame.seq));
+            }
+            Ok(())
+        }
+
+        fn finalize(&mut self) -> Result<(), EncoderError> {
+            if let Some(events) = &self.events {
+                events.lock().unwrap().push(FsEvent::EncoderFinalize);
+            }
+            let mut inner = self.inner.lock().unwrap();
+            inner.opened = None;
+            if let Some(error) = inner.finalize_errors.pop_front() {
+                inner.last_error = Some(error.detail.clone());
+                return Err(error);
+            }
+            Ok(())
+        }
+
+        fn frames_consumed(&self) -> u64 {
+            self.inner.lock().unwrap().frames_consumed
+        }
+
+        fn samples_written(&self) -> u64 {
+            self.inner.lock().unwrap().samples_written
+        }
+
+        fn last_error(&self) -> Option<String> {
+            self.inner.lock().unwrap().last_error.clone()
+        }
+
+        fn health(&self) -> EncoderHealth {
+            self.inner.lock().unwrap().health()
+        }
+    }
+
     struct Handles {
         screen: FakeSourceHandle,
+        screen_encoder: FakeScreenEncoder,
         system_audio: FakeSourceHandle,
         mic: FakeSourceHandle,
     }
@@ -883,6 +1122,7 @@ mod tests {
     ) -> (Sources, Handles) {
         let handles = Handles {
             screen: FakeSourceHandle::new(screen_state),
+            screen_encoder: FakeScreenEncoder::default(),
             system_audio: FakeSourceHandle::new(system_audio_state),
             mic: FakeSourceHandle::new(mic_state),
         };
@@ -890,6 +1130,7 @@ mod tests {
             screen: Box::new(FakeScreen {
                 handle: handles.screen.clone(),
             }),
+            screen_encoder: Box::new(handles.screen_encoder.clone()),
             system_audio: Box::new(FakeSystemAudio {
                 handle: handles.system_audio.clone(),
             }),
@@ -897,6 +1138,13 @@ mod tests {
                 handle: handles.mic.clone(),
             }),
         };
+        (sources, handles)
+    }
+
+    fn active_sources_with_encoder(screen_encoder: FakeScreenEncoder) -> (Sources, Handles) {
+        let (mut sources, mut handles) = active_sources();
+        sources.screen_encoder = Box::new(screen_encoder.clone());
+        handles.screen_encoder = screen_encoder;
         (sources, handles)
     }
 
@@ -922,8 +1170,35 @@ mod tests {
 
     fn emit_screen(sink: &Arc<dyn CaptureSink>, seqs: impl Iterator<Item = u64>) {
         for seq in seqs {
+            sink.emit_screen_frame(ScreenFrame {
+                seq,
+                width: 2,
+                height: 2,
+                pixel_format: ScreenPixelFormat::Rgba8,
+                pixels: Arc::from(vec![seq as u8; 16]),
+            });
+        }
+    }
+
+    fn emit_screen_size(sink: &Arc<dyn CaptureSink>, seq: u64, width: u32, height: u32) {
+        let len = width as usize * height as usize * 4;
+        sink.emit_screen_frame(ScreenFrame {
+            seq,
+            width,
+            height,
+            pixel_format: ScreenPixelFormat::Rgba8,
+            pixels: Arc::from(vec![seq as u8; len]),
+        });
+    }
+
+    fn emit_audio(
+        sink: &Arc<dyn CaptureSink>,
+        source: SourceKind,
+        seqs: impl Iterator<Item = u64>,
+    ) {
+        for seq in seqs {
             sink.emit(CaptureChunk {
-                source: SourceKind::Screen,
+                source,
                 seq,
                 data: vec![seq as u8],
             });
@@ -995,7 +1270,7 @@ mod tests {
     }
 
     #[test]
-    fn rotation_preserves_every_chunk_once_and_splits_segments() {
+    fn rotation_preserves_every_audio_chunk_once_and_splits_segments() {
         let clock = FakeClock::new(299);
         let segment_fs = FakeSegmentFs::default();
         let segment_view = segment_fs.clone();
@@ -1004,14 +1279,14 @@ mod tests {
         engine.start().unwrap();
         let sink = engine.sink();
 
-        emit_screen(&sink, 0..5);
+        emit_audio(&sink, SourceKind::SystemAudio, 0..5);
         engine.pump().unwrap();
 
         clock.set(300);
-        emit_screen(&sink, 5..8);
+        emit_audio(&sink, SourceKind::SystemAudio, 5..8);
         engine.pump().unwrap();
 
-        emit_screen(&sink, 8..11);
+        emit_audio(&sink, SourceKind::SystemAudio, 8..11);
         engine.pump().unwrap();
 
         let writes = segment_view.writes();
@@ -1034,6 +1309,35 @@ mod tests {
             .position(|event| *event == FsEvent::Open(new))
             .unwrap();
         assert!(finalize_old < open_new);
+    }
+
+    #[test]
+    fn rotation_finalizes_encoder_before_sealing_segment() {
+        let clock = FakeClock::new(299);
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        let encoder = FakeScreenEncoder::with_events(segment_view.event_log());
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
+        engine.start().unwrap();
+
+        emit_screen(&engine.sink(), 0..1);
+        engine.pump().unwrap();
+
+        clock.set(300);
+        engine.pump().unwrap();
+
+        let old = segment_for(299, DEFAULT_SEGMENT_SECS);
+        let events = segment_view.events();
+        let encoder_finalize = events
+            .iter()
+            .position(|event| *event == FsEvent::EncoderFinalize)
+            .unwrap();
+        let segment_finalize = events
+            .iter()
+            .position(|event| *event == FsEvent::Finalize(old))
+            .unwrap();
+        assert!(encoder_finalize < segment_finalize);
     }
 
     #[test]
@@ -1188,6 +1492,180 @@ mod tests {
         assert_eq!(engine.health_dump().frame_rate, Some(2));
     }
 
+    #[test]
+    fn finalize_error_leaves_segment_incomplete_and_faults_screen_write_failed() {
+        let clock = FakeClock::new(299);
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        let encoder = FakeScreenEncoder::with_events(segment_view.event_log());
+        encoder.push_finalize_error(EncoderError::new(
+            EncoderErrorKind::FinalizeFailed,
+            "finalize failed",
+        ));
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
+        engine.start().unwrap();
+        emit_screen(&engine.sink(), 0..1);
+        engine.pump().unwrap();
+
+        clock.set(300);
+        engine.pump().unwrap();
+
+        let old = segment_for(299, DEFAULT_SEGMENT_SECS);
+        assert!(!segment_view.events().contains(&FsEvent::Finalize(old)));
+        let screen = engine
+            .health_dump()
+            .sources
+            .into_iter()
+            .find(|source| source.kind == SourceKind::Screen)
+            .unwrap();
+        assert_eq!(
+            screen.state,
+            SourceState::Faulted {
+                reason: ErrorReason::WriteFailed,
+                detail: "finalize failed".into()
+            }
+        );
+    }
+
+    #[test]
+    fn encoder_health_is_folded_into_health_dump() {
+        let encoder = FakeScreenEncoder::default();
+        let encoder_view = encoder.clone();
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start().unwrap();
+        emit_screen(&engine.sink(), 0..3);
+        engine.pump().unwrap();
+
+        let health = engine.health_dump().screen_encoder.unwrap();
+        assert_eq!(health, encoder_view.health_snapshot());
+        assert_eq!(health.frames_consumed, 3);
+        assert_eq!(health.samples_written, 3);
+        assert!(health.last_error.is_none());
+    }
+
+    #[test]
+    fn encode_error_faults_screen_with_write_failed() {
+        let encoder = FakeScreenEncoder::default();
+        encoder.push_encode_error(EncoderError::new(
+            EncoderErrorKind::EncodeFailed,
+            "write sample failed",
+        ));
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start().unwrap();
+        emit_screen(&engine.sink(), 0..1);
+        engine.pump().unwrap();
+
+        let screen = engine
+            .health_dump()
+            .sources
+            .into_iter()
+            .find(|source| source.kind == SourceKind::Screen)
+            .unwrap();
+        assert_eq!(
+            screen.state,
+            SourceState::Faulted {
+                reason: ErrorReason::WriteFailed,
+                detail: "write sample failed".into()
+            }
+        );
+    }
+
+    #[test]
+    fn drops_mismatched_resolution_until_next_rotation_and_reports_delta() {
+        let clock = FakeClock::new(299);
+        let encoder = FakeScreenEncoder::default();
+        let encoder_view = encoder.clone();
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(
+            clock.clone(),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start().unwrap();
+        let sink = engine.sink();
+
+        emit_screen_size(&sink, 0, 2, 2);
+        emit_screen_size(&sink, 1, 4, 2);
+        engine.pump().unwrap();
+
+        let health = encoder_view.health_snapshot();
+        assert_eq!(health.frames_consumed, 2);
+        assert_eq!(health.samples_written, 1);
+        assert!(health.last_error.unwrap().contains("do not match"));
+
+        clock.set(300);
+        engine.pump().unwrap();
+        emit_screen_size(&sink, 2, 4, 2);
+        engine.pump().unwrap();
+
+        let health = encoder_view.health_snapshot();
+        assert_eq!(health.frames_consumed, 3);
+        assert_eq!(health.samples_written, 2);
+        assert!(health.last_error.is_none());
+    }
+
+    #[test]
+    fn device_removed_finalize_failure_leaves_incomplete_and_next_open_retries_mft() {
+        let clock = FakeClock::new(299);
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        let encoder = FakeScreenEncoder::with_events(segment_view.event_log());
+        let encoder_view = encoder.clone();
+        encoder.push_finalize_error(EncoderError::new(
+            EncoderErrorKind::DeviceLost,
+            "DXGI_ERROR_DEVICE_REMOVED",
+        ));
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
+        engine.start().unwrap();
+
+        emit_screen(&engine.sink(), 0..1);
+        engine.pump().unwrap();
+        clock.set(300);
+        engine.pump().unwrap();
+        emit_screen(&engine.sink(), 1..2);
+        engine.pump().unwrap();
+
+        let old = segment_for(299, DEFAULT_SEGMENT_SECS);
+        assert!(!segment_view.events().contains(&FsEvent::Finalize(old)));
+        assert_eq!(encoder_view.open_count(), 2);
+        assert!(encoder_view.health_snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn zero_frame_window_produces_no_screen_file_and_empty_upload_is_dropped() {
+        let clock = FakeClock::new(299);
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        let encoder = FakeScreenEncoder::with_events(segment_view.event_log());
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
+        engine.start().unwrap();
+
+        clock.set(300);
+        engine.pump().unwrap();
+
+        assert!(!segment_view.events().iter().any(|event| matches!(
+            event,
+            FsEvent::EncoderOpen(_, _) | FsEvent::EncoderEncode(_)
+        )));
+        assert!(segment_view.writes().is_empty());
+    }
+
     #[tokio::test]
     async fn loopback_health_serves_fixed_dump() {
         let fed = HealthDump {
@@ -1199,6 +1677,7 @@ mod tests {
             engine_ready: true,
             version: "test".into(),
             sync: SyncSnapshot::default(),
+            screen_encoder: None,
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

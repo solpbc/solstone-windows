@@ -18,6 +18,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Engine + platform sources injected at the seam.
 capture-engine.workspace = true
+capture-screen-encode.workspace = true
 platform-win.workspace = true
 capture-wgc.workspace = true
 capture-wasapi.workspace = true

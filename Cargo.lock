@@ -262,6 +262,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "capture-screen-encode"
+version = "0.1.0"
+dependencies = [
+ "observer-model",
+ "observer-nv12",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "capture-wasapi"
 version = "0.1.0"
 dependencies = [
@@ -2258,6 +2267,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "observer-nv12"
+version = "0.1.0"
+dependencies = [
+ "observer-model",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "observer-pl"
 version = "0.1.0"
 dependencies = [
@@ -3220,6 +3237,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "capture-engine",
+ "capture-screen-encode",
  "capture-wasapi",
  "capture-wgc",
  "observer-contract",

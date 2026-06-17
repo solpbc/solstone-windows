@@ -1,0 +1,18 @@
+[package]
+name = "capture-screen-encode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Windows screen H.264 encoder seam. Part 1 exposes an inert stub; Media Foundation implementation follows in part 2."
+
+[dependencies]
+observer-model.workspace = true
+observer-nv12.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }

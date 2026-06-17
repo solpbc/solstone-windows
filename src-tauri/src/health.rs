@@ -33,6 +33,7 @@ pub fn not_running_snapshot() -> HealthDump {
         engine_ready: false,
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync: observer_model::SyncSnapshot::default(),
+        screen_encoder: None,
     }
 }
 

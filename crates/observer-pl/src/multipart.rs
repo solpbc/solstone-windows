@@ -65,8 +65,8 @@ mod tests {
                 ("platform", "windows"),
             ],
             &[FilePart {
-                filename: "screen.bin".into(),
-                content_type: "application/octet-stream".into(),
+                filename: observer_model::SCREEN_FILE_NAME.into(),
+                content_type: "video/mp4".into(),
                 bytes: b"RGBA".to_vec(),
             }],
         );
@@ -78,7 +78,7 @@ mod tests {
             "--BREAD\r\nContent-Disposition: form-data; name=\"day\"\r\n\r\n20260617\r\n"
         ));
         assert!(text.contains(
-            "Content-Disposition: form-data; name=\"files\"; filename=\"screen.bin\"\r\nContent-Type: application/octet-stream\r\n\r\nRGBA\r\n"
+            "Content-Disposition: form-data; name=\"files\"; filename=\"display_1_screen.mp4\"\r\nContent-Type: video/mp4\r\n\r\nRGBA\r\n"
         ));
         assert!(text.ends_with("--BREAD--\r\n"));
         // The file field name is exactly `files` (server reads getlist("files")).

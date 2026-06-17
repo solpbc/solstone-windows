@@ -20,7 +20,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use observer_model::{CaptureChunk, SegmentKey, SourceKind};
+use observer_model::{CaptureChunk, SegmentKey, SourceKind, SCREEN_FILE_NAME};
 use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
@@ -61,13 +61,15 @@ fn sealed_dir(root: &Path, key: SegmentKey) -> PathBuf {
 
 fn source_file_name(source: SourceKind) -> &'static str {
     match source {
-        SourceKind::Screen => "screen.bin",
+        SourceKind::Screen => SCREEN_FILE_NAME,
         SourceKind::SystemAudio => "system-audio.pcm",
         SourceKind::Mic => "mic.pcm",
     }
 }
 
-fn has_usable_media(dir: &Path) -> io::Result<bool> {
+fn has_sealable_media(dir: &Path) -> io::Result<bool> {
+    // Partial files are never counted as sealable media because only the bare
+    // final per-source filenames are probed here.
     for source in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
         let path = dir.join(source_file_name(source));
         if path.is_file() && path.metadata()?.len() > 0 {
@@ -75,6 +77,23 @@ fn has_usable_media(dir: &Path) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+fn remove_partial_media(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".partial") {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
 }
 
 fn absolute_string(path: &Path) -> io::Result<String> {
@@ -302,6 +321,12 @@ impl SegmentFs for LocalSegmentFs {
     }
 
     fn write_chunk(&mut self, key: SegmentKey, chunk: &CaptureChunk) -> Result<(), Self::Error> {
+        if chunk.source == SourceKind::Screen {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "screen frames are encoded through ScreenEncoder",
+            ));
+        }
         let dir = incomplete_dir(&self.root, key);
         fs::create_dir_all(&dir)?;
         let handle_key = (key, chunk.source);
@@ -406,7 +431,7 @@ impl RecoveryFs for LocalRecoveryFs {
             stale.push(StaleSegment {
                 key,
                 path: absolute_string(&path)?,
-                has_usable_data: has_usable_media(&path)?,
+                has_usable_data: has_sealable_media(&path)?,
             });
         }
         stale.sort_by_key(|seg| seg.key);
@@ -414,6 +439,10 @@ impl RecoveryFs for LocalRecoveryFs {
     }
 
     fn finalize(&mut self, seg: &StaleSegment) -> Result<(), Self::Error> {
+        // Never abandon usable captured data: a truncated PCM is still usable,
+        // a moov-less mp4 is not. Drop dead screen partials before sealing the
+        // remaining final media files.
+        remove_partial_media(Path::new(&seg.path))?;
         fs::rename(&seg.path, sealed_dir(&self.root, seg.key))
     }
 
@@ -470,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_lifecycle_writes_source_files_and_finalizes() {
+    fn segment_lifecycle_writes_audio_source_files_and_finalizes() {
         let root = temp_root("segment");
         let _ = fs::remove_dir_all(&root);
         let mut fs_impl = LocalSegmentFs::new(root.clone());
@@ -481,12 +510,6 @@ mod tests {
         assert!(root.join("7.incomplete").is_dir());
 
         fs_impl
-            .write_chunk(key, &chunk(SourceKind::Screen, b"rgba-a"))
-            .unwrap();
-        fs_impl
-            .write_chunk(key, &chunk(SourceKind::Screen, b"rgba-b"))
-            .unwrap();
-        fs_impl
             .write_chunk(key, &chunk(SourceKind::SystemAudio, b"pcm-sys"))
             .unwrap();
         fs_impl
@@ -496,14 +519,30 @@ mod tests {
 
         assert!(!root.join("7.incomplete").exists());
         assert_eq!(
-            fs::read(root.join("7/screen.bin")).unwrap(),
-            b"rgba-argba-b"
-        );
-        assert_eq!(
             fs::read(root.join("7/system-audio.pcm")).unwrap(),
             b"pcm-sys"
         );
         assert_eq!(fs::read(root.join("7/mic.pcm")).unwrap(), b"pcm-mic");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn segment_fs_rejects_screen_chunks() {
+        let root = temp_root("segment-screen-reject");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(8);
+
+        fs_impl.open_incomplete(key).unwrap();
+        let error = fs_impl
+            .write_chunk(key, &chunk(SourceKind::Screen, b"raw-rgba"))
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!root
+            .join(format!("8.incomplete/{SCREEN_FILE_NAME}"))
+            .exists());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -524,7 +563,11 @@ mod tests {
         // prior run was sealing it when it crashed. It must be swept regardless
         // of its (here, fresh) mtime — boundary identity, not age, decides.
         fs::create_dir_all(root.join("1.incomplete")).unwrap();
-        fs::write(root.join("1.incomplete/screen.bin"), b"orphan").unwrap();
+        fs::write(
+            root.join(format!("1.incomplete/{SCREEN_FILE_NAME}")),
+            b"orphan",
+        )
+        .unwrap();
 
         // The live segment for *now*: its aligned window contains the wall
         // clock, so the engine will re-open and continue it. Recovery must
@@ -532,7 +575,7 @@ mod tests {
         let live = segment_for(now_epoch_secs(), DEFAULT_SEGMENT_SECS);
         fs::create_dir_all(root.join(format!("{}.incomplete", live.index))).unwrap();
         fs::write(
-            root.join(format!("{}.incomplete/screen.bin", live.index)),
+            root.join(format!("{}.incomplete/{SCREEN_FILE_NAME}", live.index)),
             b"live",
         )
         .unwrap();
@@ -563,7 +606,7 @@ mod tests {
 
         fs::create_dir_all(root.join(format!("{prior_index}.incomplete"))).unwrap();
         fs::write(
-            root.join(format!("{prior_index}.incomplete/screen.bin")),
+            root.join(format!("{prior_index}.incomplete/{SCREEN_FILE_NAME}")),
             b"just-crossed",
         )
         .unwrap();
@@ -577,6 +620,102 @@ mod tests {
             stale[0].has_usable_data,
             "a just-crossed orphan with captured frames must be finalized, not lost"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_seals_partial_screen_with_usable_audio_and_drops_partial() {
+        let root = temp_root("partial-audio");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("2.incomplete");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(
+            orphan.join(format!("{SCREEN_FILE_NAME}.partial")),
+            b"moovless",
+        )
+        .unwrap();
+        fs::write(orphan.join("system-audio.pcm"), b"pcm").unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].has_usable_data);
+
+        recovery.finalize(&stale[0]).unwrap();
+
+        assert!(root.join("2/system-audio.pcm").is_file());
+        assert!(!root.join(format!("2/{SCREEN_FILE_NAME}.partial")).exists());
+        assert!(!root.join("2.incomplete").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_quarantines_partial_only_orphan() {
+        let root = temp_root("partial-only");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("3.incomplete");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(
+            orphan.join(format!("{SCREEN_FILE_NAME}.partial")),
+            b"moovless",
+        )
+        .unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(!stale[0].has_usable_data);
+
+        recovery.quarantine(&stale[0]).unwrap();
+
+        assert!(root.join("quarantine/3.incomplete").is_dir());
+        assert!(root
+            .join(format!(
+                "quarantine/3.incomplete/{SCREEN_FILE_NAME}.partial"
+            ))
+            .is_file());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_seals_finalized_screen_mp4_without_partial() {
+        let root = temp_root("final-screen");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("4.incomplete");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join(SCREEN_FILE_NAME), b"mp4").unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].has_usable_data);
+
+        recovery.finalize(&stale[0]).unwrap();
+
+        assert!(root.join(format!("4/{SCREEN_FILE_NAME}")).is_file());
+        assert!(!root.join("4.incomplete").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_quarantines_empty_orphan() {
+        let root = temp_root("empty-orphan");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("5.incomplete")).unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(!stale[0].has_usable_data);
+
+        recovery.quarantine(&stale[0]).unwrap();
+
+        assert!(root.join("quarantine/5.incomplete").is_dir());
+        assert!(!root.join("5.incomplete").exists());
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn segments_response_reconciles_by_sha() {
-        let raw = r#"{"items":[{"key":"143000_300","files":[{"name":"screen.bin","sha256":"abcd","size":10}]}],"total":1,"protocol_version":2}"#;
+        let raw = r#"{"items":[{"key":"143000_300","files":[{"name":"display_1_screen.mp4","sha256":"abcd","size":10}]}],"total":1,"protocol_version":2}"#;
         let resp: SegmentsResponse = serde_json::from_str(raw).unwrap();
         assert!(resp.has_segment_sha("143000_300", "abcd"));
         assert!(!resp.has_segment_sha("143000_300", "ffff"));

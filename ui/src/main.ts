@@ -46,6 +46,12 @@ interface SyncSnapshot {
   upload: UploadStatus;
 }
 
+interface EncoderHealth {
+  frames_consumed: number;
+  samples_written: number;
+  last_error: string | null;
+}
+
 interface HealthDump {
   app_state: AppPhase;
   sources: SourceReport[];
@@ -55,6 +61,7 @@ interface HealthDump {
   engine_ready: boolean;
   version: string;
   sync: SyncSnapshot;
+  screen_encoder: EncoderHealth | null;
 }
 
 // The pair-link the owner typed/pasted. Held in a module var (never read back

@@ -4,7 +4,7 @@
 //! The sealed-segment source the uploader drains.
 //!
 //! W1 seals each finished segment into `…/segments/<index>/` (renamed from
-//! `<index>.incomplete`) holding the per-source files (`screen.bin`,
+//! `<index>.incomplete`) holding the per-source files (`display_1_screen.mp4`,
 //! `system-audio.pcm`, `mic.pcm`). The clock-aligned boundary is
 //! `index * period_secs` epoch seconds, which the uploader turns into the
 //! journal's `day` / `segment` keys. Behind a trait so the coordinator is
@@ -36,6 +36,7 @@ pub trait SealedStore: Send + Sync {
 pub fn content_type_for(name: &str) -> String {
     match name {
         "system-audio.pcm" | "mic.pcm" => "audio/L16".to_string(),
+        name if name.ends_with(".mp4") => "video/mp4".to_string(),
         _ => "application/octet-stream".to_string(),
     }
 }
@@ -125,6 +126,7 @@ impl SealedStore for LocalSealedStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use observer_model::SCREEN_FILE_NAME;
 
     fn temp_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -143,7 +145,7 @@ mod tests {
         // sealed segment index 7 with two files
         let seg = root.join("7");
         std::fs::create_dir_all(&seg).unwrap();
-        std::fs::write(seg.join("screen.bin"), b"RGBA").unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
         std::fs::write(seg.join("system-audio.pcm"), b"PCM").unwrap();
         // an in-flight dir that must be ignored
         std::fs::create_dir_all(root.join("8.incomplete")).unwrap();
@@ -155,11 +157,33 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].index, 7);
         assert_eq!(segs[0].boundary_epoch_secs, 7 * 300);
-        assert_eq!(segs[0].files, vec!["screen.bin", "system-audio.pcm"]);
-        assert_eq!(store.read_file(7, "screen.bin").unwrap(), b"RGBA");
+        assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME, "system-audio.pcm"]);
+        assert_eq!(store.read_file(7, SCREEN_FILE_NAME).unwrap(), b"MP4");
 
         store.remove(7).unwrap();
         assert!(store.scan().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mp4_content_type_is_video_mp4() {
+        assert_eq!(content_type_for(SCREEN_FILE_NAME), "video/mp4");
+    }
+
+    #[test]
+    fn coordinator_uploads_renamed_mp4_filename_unchanged() {
+        let root = temp_root();
+        let seg = root.join("9");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        let segs = store.scan().unwrap();
+
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME]);
+        assert_eq!(store.read_file(9, &segs[0].files[0]).unwrap(), b"MP4");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

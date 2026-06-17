@@ -19,6 +19,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoStaticStr};
 
+/// Final screen media filename inside a sealed segment.
+pub const SCREEN_FILE_NAME: &str = "display_1_screen.mp4";
+
 /// The observer's top-level phase. **Computed** from real source state by the
 /// reducer in `observer-state` — never set directly by the UI or any command.
 ///
@@ -142,6 +145,108 @@ pub struct CaptureChunk {
     pub data: Vec<u8>,
 }
 
+/// CPU pixel format for screen frames crossing the pure capture seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenPixelFormat {
+    Rgba8,
+    Bgra8,
+}
+
+/// Owned screen frame emitted by the WGC source and consumed by the encoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenFrame {
+    pub seq: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pixel_format: ScreenPixelFormat,
+    pub pixels: Arc<[u8]>,
+}
+
+/// Coarse encoder failure category. The engine maps all variants to
+/// [`ErrorReason::WriteFailed`] when surfacing a source fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncoderErrorKind {
+    OpenFailed,
+    EncodeFailed,
+    FinalizeFailed,
+    InvalidFrameDimensions,
+    DeviceLost,
+    Unavailable,
+    WorkerStopped,
+}
+
+/// Error returned by the screen encoder seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncoderError {
+    pub kind: EncoderErrorKind,
+    pub detail: String,
+}
+
+impl EncoderError {
+    pub fn new(kind: EncoderErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl core::fmt::Display for EncoderError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}: {}", self.kind, self.detail)
+    }
+}
+
+impl std::error::Error for EncoderError {}
+
+/// Honest screen encoder accounting folded into health.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct EncoderHealth {
+    pub frames_consumed: u64,
+    pub samples_written: u64,
+    pub last_error: Option<String>,
+}
+
+/// Inspectable H.264 encoder defaults used to configure Media Foundation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncoderConfig {
+    pub width: u32,
+    pub height: u32,
+    pub bitrate: u32,
+    pub frame_rate_num: u32,
+    pub frame_rate_den: u32,
+    pub pixel_aspect_num: u32,
+    pub pixel_aspect_den: u32,
+    pub progressive: bool,
+    pub h264_high_profile: bool,
+    pub gop_size: u32,
+    pub enable_hardware_transforms: bool,
+    pub use_only_hardware_transforms: bool,
+    pub use_d3d_manager: bool,
+    pub disable_throttling: bool,
+}
+
+impl EncoderConfig {
+    pub fn for_frame_size(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            bitrate: 1_000_000,
+            frame_rate_num: 1,
+            frame_rate_den: 1,
+            pixel_aspect_num: 1,
+            pixel_aspect_den: 1,
+            progressive: true,
+            h264_high_profile: true,
+            gop_size: 90,
+            enable_hardware_transforms: true,
+            use_only_hardware_transforms: false,
+            use_d3d_manager: false,
+            disable_throttling: true,
+        }
+    }
+}
+
 /// Identifies one rotation segment: which capture session and which clock-aligned
 /// boundary index within it. The math that produces these lives in
 /// `observer-segment`; this is just the key shape.
@@ -244,6 +349,9 @@ pub struct HealthDump {
     /// not-paired/idle snapshot when sync is not running.
     #[serde(default)]
     pub sync: SyncSnapshot,
+    /// Screen encoder accounting, present while the engine is running.
+    #[serde(default)]
+    pub screen_encoder: Option<EncoderHealth>,
 }
 
 // ── Source traits ────────────────────────────────────────────────────────────
@@ -257,6 +365,7 @@ pub struct HealthDump {
 /// runtime types out of the pure tier.
 pub trait CaptureSink: Send + Sync {
     fn emit(&self, chunk: CaptureChunk);
+    fn emit_screen_frame(&self, frame: ScreenFrame);
 }
 
 /// Injected wall-clock seam used by the engine's rotation logic.
@@ -277,6 +386,17 @@ pub trait ScreenSource: Send {
     fn state(&self) -> SourceState;
     /// Re-acquire the screen source after a display topology or resolution change.
     fn on_display_changed(&mut self);
+}
+
+/// Screen encoder driven by the engine at the segment lifecycle boundary.
+pub trait ScreenEncoder: Send {
+    fn open(&mut self, dir: &str, width: u32, height: u32) -> Result<(), EncoderError>;
+    fn encode_frame(&mut self, frame: &ScreenFrame) -> Result<(), EncoderError>;
+    fn finalize(&mut self) -> Result<(), EncoderError>;
+    fn frames_consumed(&self) -> u64;
+    fn samples_written(&self) -> u64;
+    fn last_error(&self) -> Option<String>;
+    fn health(&self) -> EncoderHealth;
 }
 
 /// A system-audio (render loopback) source (implemented by `capture-wasapi`).
@@ -322,3 +442,26 @@ impl core::fmt::Display for SourceError {
 }
 
 impl std::error::Error for SourceError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoder_config_matches_ac1_media_foundation_defaults() {
+        let config = EncoderConfig::for_frame_size(1920, 1080);
+
+        assert_eq!(config.width, 1920);
+        assert_eq!(config.height, 1080);
+        assert_eq!(config.bitrate, 1_000_000);
+        assert_eq!((config.frame_rate_num, config.frame_rate_den), (1, 1));
+        assert_eq!((config.pixel_aspect_num, config.pixel_aspect_den), (1, 1));
+        assert!(config.progressive);
+        assert!(config.h264_high_profile);
+        assert_eq!(config.gop_size, 90);
+        assert!(config.enable_hardware_transforms);
+        assert!(!config.use_only_hardware_transforms);
+        assert!(!config.use_d3d_manager);
+        assert!(config.disable_throttling);
+    }
+}

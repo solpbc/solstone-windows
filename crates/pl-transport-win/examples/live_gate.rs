@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use observer_model::SyncSnapshot;
+use observer_model::{SyncSnapshot, SCREEN_FILE_NAME};
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::coordinator::UploadCoordinator;
 use pl_transport_win::pairing;
@@ -60,7 +60,7 @@ async fn main() {
         .join("segments");
     let seg_dir = root.join(index.to_string());
     std::fs::create_dir_all(&seg_dir).unwrap();
-    std::fs::write(seg_dir.join("screen.bin"), &screen_payload).unwrap();
+    std::fs::write(seg_dir.join(SCREEN_FILE_NAME), &screen_payload).unwrap();
     std::fs::write(
         seg_dir.join("system-audio.pcm"),
         b"solstone-windows-w2-live-audio",

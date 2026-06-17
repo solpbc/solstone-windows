@@ -128,6 +128,7 @@ const PURE_CRATES: &[&str] = &[
     "observer-lifecycle",
     "observer-contract",
     "observer-pl",
+    "observer-nv12",
 ];
 
 /// Fail if the `windows` family reaches any pure-tier crate. `--target all` is

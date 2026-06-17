@@ -1,0 +1,12 @@
+[package]
+name = "observer-nv12"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Pure RGBA8/BGRA8 to NV12 conversion for the screen encoder. Host-testable and unsafe-free."
+
+[dependencies]
+observer-model.workspace = true
+thiserror.workspace = true

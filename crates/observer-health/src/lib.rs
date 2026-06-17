@@ -39,6 +39,7 @@ mod tests {
             engine_ready: false,
             version: "0.1.0".into(),
             sync: observer_model::SyncSnapshot::default(),
+            screen_encoder: None,
         }
     }
 

@@ -106,7 +106,7 @@ Real file layout:
 - Segment dir: `<segments_root>/<key.index>.incomplete`.
 - Final dir: `<segments_root>/<key.index>`.
 - Source files:
-  - `SourceKind::Screen` -> `screen.bin`
+  - `SourceKind::Screen` -> `display_1_screen.mp4`
   - `SourceKind::SystemAudio` -> `system-audio.pcm`
   - `SourceKind::Mic` -> `mic.pcm`
 - `write_chunk` lazily opens the per-source file with append semantics and writes `chunk.data` exactly as received.
@@ -114,7 +114,7 @@ Real file layout:
 
 WGC rate cap: the screen source uses `MinimumUpdateIntervalSettings::Custom(Duration::from_millis(1000))`, approximately 1 fps. At 1080p RGBA8 (~8.3 MB/frame), this is ~2.5 GB per five-minute segment and ~15 GB per 30-minute soak; higher resolutions scale linearly by pixel count. No encoder is added in 1A; encoding/compression stays deferred.
 
-Format risk: 1A raw append has no per-chunk header, dimensions, stride, sample format, or persisted `seq`. This matches the locked KISS shape but makes `screen.bin` harder to inspect across display-size changes. The 1 fps cap bounds raw volume but does not make it storage-efficient. The fake fs owns exact seq/segment assertions.
+Format risk: 1A raw append has no per-chunk header, dimensions, stride, sample format, or persisted `seq`. This matched the locked KISS shape but made the old screen file harder to inspect across display-size changes. The 1 fps cap bounded raw volume but did not make it storage-efficient. The fake fs owns exact seq/segment assertions.
 
 ## capture-engine Cargo and types
 
