@@ -16,15 +16,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
+    <!-- 5.0.0 is the version proven green against native chrome in the spike. -->
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
   </ItemGroup>
 
   <!--
     Ensure the IAccessible COM interop ships in the publish layout. Without this
-    the UIA3 backend fails to bind at runtime.
+    the UIA3 backend fails to bind at runtime. System.Web.Extensions provides
+    JavaScriptSerializer for parsing the health dump + contract JSON (no
+    third-party JSON dependency).
   -->
   <ItemGroup>
     <Reference Include="Accessibility" />
+    <Reference Include="System.Web.Extensions" />
   </ItemGroup>
 
 </Project>

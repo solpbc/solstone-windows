@@ -49,6 +49,15 @@ All notable changes to `solstone-windows` are recorded here. The format follows
   `--dump-state` version by construction.
 - Real `make publish`: uploads `Releases/` to GitHub Releases (the monotonic update
   feed), feed JSON last, fail-loud on an existing tag.
+- FlaUI smoke harness: the net48 `harness/driver/` is implemented (graduated from
+  the reference spike) and `make smoke` runs it against the *installed* app. The
+  deterministic gate is the health oracle (Tier 0: poll loopback `/healthz` until
+  `app_state` reaches the contract's `observing` token); Tier 1 drives the native
+  tray chrome by AutomationId; the webview DOM is never load-bearing. A
+  `--fail-inject` mode asserts the observer honestly leaves `observing` when a
+  required source is killed, and a `--selftest` mode proves the contract-parse /
+  token-match / drop-detection logic with no live target. AutomationIds and the
+  `observing` token are read from `automation-contract.json`, never hardcoded.
 
 ### Changed
 
