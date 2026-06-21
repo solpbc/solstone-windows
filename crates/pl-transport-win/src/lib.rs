@@ -8,7 +8,7 @@
 //! journal serves and that iOS/Android already ship:
 //!
 //! 1. **Pair** ([`pairing`]) — certless TLS to the journal with CA-fp pinning,
-//!    POST a freshly-minted CSR to `/app/link/pair`, store the signed client
+//!    POST a freshly-minted CSR to `/app/network/pair`, store the signed client
 //!    credential.
 //! 2. **Register** ([`client`]) — over mTLS, `/app/observer/register`, learn the
 //!    observer handle.

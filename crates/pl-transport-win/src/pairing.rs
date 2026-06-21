@@ -4,7 +4,7 @@
 //! The pairing handshake.
 //!
 //! Over a certless, CA-fp-pinned TLS connection, POST a freshly-minted CSR to
-//! `/app/link/pair?token=<nonce>`; the journal signs it and returns the client
+//! `/app/network/pair?token=<nonce>`; the journal signs it and returns the client
 //! cert + CA chain + its identity. We verify the returned `fingerprint` equals
 //! `sha256:<hex>` of the signed client cert (the integrity check the Android/iOS
 //! clients also do) before trusting the credential. Multi-address pair-links are

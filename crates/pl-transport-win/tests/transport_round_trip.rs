@@ -100,7 +100,7 @@ async fn round_trips_request_over_real_tls_and_framing() {
         "127.0.0.1",
         port,
         "POST",
-        "/app/link/pair?token=abc123",
+        "/app/network/pair?token=abc123",
         &[("Content-Type".to_string(), "application/json".to_string())],
         request_body,
     )
@@ -113,7 +113,7 @@ async fn round_trips_request_over_real_tls_and_framing() {
     // The server received exactly the HTTP request our transport framed.
     let received = server.await.unwrap();
     let received_text = String::from_utf8_lossy(&received);
-    assert!(received_text.starts_with("POST /app/link/pair?token=abc123 HTTP/1.1\r\n"));
+    assert!(received_text.starts_with("POST /app/network/pair?token=abc123 HTTP/1.1\r\n"));
     assert!(received_text.contains("host: spl.local\r\n"));
     assert!(received_text.contains("Content-Type: application/json\r\n"));
     assert!(received_text.ends_with("{\"csr\":\"PEM\",\"device_label\":\"win\"}"));

@@ -12,16 +12,16 @@
 
 use serde::{Deserialize, Serialize};
 
-// ── /app/link/pair ───────────────────────────────────────────────────────────
+// ── /app/network/pair ────────────────────────────────────────────────────────
 
-/// POST body for `/app/link/pair?token=<nonce>`.
+/// POST body for `/app/network/pair?token=<nonce>`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PairRequest {
     pub csr: String,
     pub device_label: String,
 }
 
-/// Success response from `/app/link/pair`. The journal signs our CSR and returns
+/// Success response from `/app/network/pair`. The journal signs our CSR and returns
 /// the client cert plus the CA chain to trust.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PairResponse {

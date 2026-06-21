@@ -14,7 +14,7 @@
 //!   CLOSE/PING/PONG) and the dialer-side request/response assembler.
 //! - [`http`] — HTTP/1.1 request build + response parse, exactly as the Android
 //!   `PlHttp` transport frames it (`host: spl.local`, framing-owned headers).
-//! - [`wire`] — the serde request/response shapes for `/app/link/pair`,
+//! - [`wire`] — the serde request/response shapes for `/app/network/pair`,
 //!   `/app/observer/register`, `/app/observer/ingest`, `/ingest/event`
 //!   (heartbeat), and `/ingest/segments/<day>` (reconcile).
 //! - [`multipart`] — the ingest multipart body, byte-identical to the macOS /
@@ -61,7 +61,7 @@ pub const PROTOCOL_VERSION_HEADER: &str = "X-Solstone-Protocol-Version";
 /// from the convey blueprint so the Windows client cannot drift.
 pub mod paths {
     /// Mobile/observer pairing endpoint. Carries `?token=<nonce_hex>`.
-    pub const PAIR: &str = "/app/link/pair";
+    pub const PAIR: &str = "/app/network/pair";
     /// Self-register an observer after pairing.
     pub const REGISTER: &str = "/app/observer/register";
     /// Segment upload (multipart).
