@@ -56,7 +56,7 @@ charter and license.
 | `make test` | `cargo test --workspace` (the pure tier runs off-Windows too) |
 | `make ci` | fmt-check · clippy `-D warnings` · contract `--check` · tests · `cargo deny check` |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
-| `make package` | `make build` → Velopack pack → `Releases/` (unsigned now) |
+| `make package` | `make build` → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
 | `make publish` | upload `Releases/` to GitHub Releases (the update feed) |
 | `make smoke` | Session-1 scheduled-task FlaUI smoke vs the installed app |
 | `make run` | launch from the tree + tail `%LocalAppData%\Solstone\logs\` |
@@ -165,9 +165,11 @@ See `docs/lifecycle-matrix.md` for the full table.
 ## 7. Packaging & release
 
 Velopack, per-user `%LocalAppData%`, no UAC. GitHub Releases is the monotonic
-update feed (`make publish`). Unsigned now; the `--signTemplate` seam in
-`scripts/package.ps1` is empty until the cert lands, and signing covers release
-artifacts only. See `docs/release-runbook.md`.
+update feed (`make publish`). Release artifacts are signed (DigiCert KeyLocker via
+Velopack's `--signTemplate`); signing is opt-in and release-only (`-Sign` /
+`SOLSTONE_SIGN=1`) so dev/local packs stay unsigned, and the credentials are
+env-supplied, never committed. Signing covers release artifacts only. See
+`docs/release-runbook.md`.
 
 ## 8. Safety Rails
 

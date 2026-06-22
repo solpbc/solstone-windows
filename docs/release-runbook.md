@@ -22,16 +22,32 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
   registers the per-user autostart login item.
 
-## Signing (unsigned now → cert later)
+## Signing (wired — opt-in, release-only)
 
-The validated path is **unsigned**. `scripts/package.ps1` has an empty
-`$SignTemplate` seam. When a code-signing cert is provisioned:
+Release artifacts are signed with the sol pbc code-signing certificate via
+Velopack's `--signTemplate` (DigiCert KeyLocker / `smctl`). Signing is **opt-in
+and release-only**: dev/local and delta-update-validation packs stay unsigned so
+they do not burn the certificate's finite signature quota or churn the binary's
+SmartScreen reputation hashes.
 
-1. Populate `$SignTemplate` with the Velopack `--signTemplate` form.
-2. Add `packaging/signing/preflight-auth.ps1` (credential pre-check).
-3. Sign **release artifacts only**.
+**Turn signing on for a release:** set `SOLSTONE_SIGN=1` in the build environment
+before packaging — the box packaging wrapper forwards it as `-Sign` to
+`scripts/package.ps1` (you can also pass `-Sign` directly). Without it the pack is
+unsigned.
 
-No code restructure is required to turn signing on.
+**Signing environment.** `scripts/package.ps1` and
+`packaging/signing/preflight-auth.ps1` read the signing configuration and
+credentials from the environment, never from committed source: `SM_HOST`,
+`SM_API_KEY`, `SM_CLIENT_CERT_FILE`, `SM_CLIENT_CERT_PASSWORD`, and
+`SM_KEYPAIR_ALIAS`. The operator supplies these on the build box at sign time;
+they are never committed. The preflight fails fast (with a secret-free message) if
+the environment is not provisioned or the credentials cannot sign.
+
+**Always `signtool verify /pa` after a signed pack** — on `Setup.exe` and the
+packaged app exe. This is the authoritative gate: the signer can report success
+even when a file was left unsigned, so a clean verify (sha256 + an RFC3161
+timestamp, "Successfully verified") is what confirms the artifacts actually
+shipped signed.
 
 ## Build-box gotchas
 

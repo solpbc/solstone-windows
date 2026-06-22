@@ -14,6 +14,12 @@
 :: The box has Windows PowerShell 5.1 only (no pwsh 7), so package.ps1 runs under
 :: `powershell` here (the Makefile uses `pwsh` for the local path); package.ps1 is
 :: ASCII-only precisely so it parses under 5.1.
+::
+:: Signing is opt-in and release-only: set SOLSTONE_SIGN=1 in the environment to
+:: pass -Sign through to package.ps1 (a release). Leave it unset for dev/local and
+:: delta-update validation packs so they stay unsigned (no signature-quota burn,
+:: stable SmartScreen hashes). The signing credentials are supplied by the box's
+:: signing environment; package.ps1 / preflight-auth.ps1 read them, never this file.
 setlocal enableextensions
 cd /d "%~dp0.." || exit /b 1
 
@@ -33,7 +39,9 @@ call npm --prefix ui run build || exit /b 1
 echo === cargo build -p solstone-windows-app --release ===
 cargo build -p solstone-windows-app --release || exit /b 1
 echo === vpk pack (scripts\package.ps1) ===
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 || exit /b 1
+set "SIGN_ARG="
+if defined SOLSTONE_SIGN set "SIGN_ARG=-Sign"
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1 %SIGN_ARG% || exit /b 1
 
 echo === WIN_PACKAGE_OK ===
 exit /b 0

@@ -13,10 +13,11 @@ Velopack release packaging for the observer.
   (`--veloapp-install`, `--veloapp-update`, `--veloapp-obsolete`, `--veloapp-firstrun`).
   First-run registers the per-user autostart login item; the app being
   Velopack-aware is what makes the install hooks exit 0.
-- `signing/` — the release-artifact signing seam. **Empty now** (the validated
-  path is unsigned). When the cert is provisioned, `scripts/package.ps1` populates
-  its `$SignTemplate` with the Velopack `--signTemplate` form and `signing/`
-  gains a credential pre-check. Signing covers release artifacts only.
+- `signing/` — release-artifact code signing (DigiCert KeyLocker / `smctl` via
+  Velopack's `--signTemplate`). `scripts/package.ps1` signs when packaged with
+  `-Sign` (release-only — `SOLSTONE_SIGN=1` on the box), and
+  `signing/preflight-auth.ps1` is the pre-`vpk pack` credential check. Credentials
+  are env-supplied, never committed. Signing covers release artifacts only.
 
 ## Build
 

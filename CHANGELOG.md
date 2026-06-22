@@ -8,6 +8,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Added
 
+- Release-artifact code signing is wired into the Velopack packaging path
+  (`scripts/package.ps1`): release artifacts are signed with the sol pbc
+  certificate (DigiCert KeyLocker via Velopack's `--signTemplate`), gated
+  **opt-in and release-only** (`-Sign` / `SOLSTONE_SIGN=1`) so dev/local and
+  delta-validation packs stay unsigned. Adds `packaging/signing/preflight-auth.ps1`,
+  a fail-fast credential pre-check. Signing credentials and the keypair alias are
+  env-supplied, never committed. A signed `Setup.exe` clears the Windows
+  SmartScreen unknown-publisher block on a clean machine.
 - Initial public bootstrap: the cargo workspace, the three crate tiers
   (pure / platform / composition), the Tauri v2 tray-app skeleton, the Vite
   webview skeleton, the net48 FlaUI harness skeleton, Velopack packaging scaffold,

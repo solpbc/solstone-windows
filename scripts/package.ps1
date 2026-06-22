@@ -3,10 +3,17 @@
 
 # Velopack packaging: `vpk pack` the already-built RELEASE binary into Releases/
 # (full + delta nupkg + Setup.exe + releases.win.json feed). Per-user install to
-# %LocalAppData%, no UAC. Unsigned now: the $SignTemplate seam below is
-# intentionally empty. When the signing cert lands, populate it with the Velopack
-# `--signTemplate` form and add the credential pre-check; sign release artifacts
-# only. No code restructure is needed to turn signing on.
+# %LocalAppData%, no UAC.
+#
+# Signing is OPT-IN and release-only. Pass -Sign to sign the packed artifacts with
+# the DigiCert KeyLocker certificate via Velopack's --signTemplate (smctl). Without
+# -Sign the pack is unsigned - the dev/local default - so iterate and delta-update
+# validation packs do NOT burn the certificate's finite signature quota or churn
+# the binary's SmartScreen reputation hashes. No secret or account identifier is
+# hard-coded here: the signing credentials and the keypair alias come from the
+# build box's signing environment (SM_HOST / SM_API_KEY / SM_CLIENT_CERT_FILE /
+# SM_CLIENT_CERT_PASSWORD / SM_KEYPAIR_ALIAS), never committed. See
+# docs/release-runbook.md.
 #
 # This script does NOT build - `make package` builds target/release/ first and
 # this consumes it. Tauri embeds the webview (ui/dist) into the exe at compile
@@ -16,14 +23,28 @@ param(
     # Override the packed version. Default: read it from the built exe's own
     # --dump-state so the feed version equals the binary's reported version by
     # construction (the monotonic feed + Wave-3 delta gate depend on this identity).
-    [string]$Version = ""
+    [string]$Version = "",
+
+    # Sign the packed artifacts (release-only). Default off = unsigned dev/local
+    # pack. When set, the credential preflight must pass and the signing
+    # environment must be provisioned on the build box.
+    [switch]$Sign
 )
 
 $ErrorActionPreference = "Stop"
 
-# Empty signing seam. When the cert is provisioned this becomes e.g.
-#   $SignTemplate = '--signTemplate "smctl sign --fingerprint <fp> --input {{file}}"'
+# Signing seam. Empty = unsigned. -Sign populates it (release-only) after the
+# credential preflight passes. The keypair alias is env-supplied so no DigiCert
+# account identifier lands in this public source; the smctl form is the KeyLocker
+# signing path validated on the build box (signtool + KSP, RFC3161 timestamp).
 $SignTemplate = ""
+if ($Sign) {
+    & (Join-Path $PSScriptRoot "..\packaging\signing\preflight-auth.ps1")
+    $SignTemplate = "smctl sign --keypair-alias $($env:SM_KEYPAIR_ALIAS) --input {{file}}"
+    Write-Host "package.ps1: signing ENABLED - release artifacts will be signed via smctl/KeyLocker."
+} else {
+    Write-Host "package.ps1: signing disabled (unsigned pack). Pass -Sign for a release."
+}
 
 $Root = Split-Path -Parent $PSScriptRoot
 
