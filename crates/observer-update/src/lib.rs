@@ -353,6 +353,30 @@ pub enum UpdateEvent {
     ConfigInvalid,
 }
 
+/// Canonical relative-time spec for the "last checked …" line, with the
+/// **< 60s → "just now"** threshold. The webview computes the *live* clock from
+/// `last_checked_at` on a 1s tick (the JS analog of the macOS `TimelineView`), so
+/// this is the spec the TS mirror is held to — pinned here so the threshold can
+/// never silently drift. `now` and `checked_at` are unix epoch seconds.
+pub fn last_checked_relative(checked_at: Option<u64>, now: u64) -> String {
+    let Some(t) = checked_at else {
+        return "never checked for updates".to_string();
+    };
+    let secs = now.saturating_sub(t);
+    if secs < 60 {
+        "checked just now".to_string()
+    } else if secs < 3_600 {
+        let m = secs / 60;
+        format!("checked {m} minute{} ago", if m == 1 { "" } else { "s" })
+    } else if secs < 86_400 {
+        let h = secs / 3_600;
+        format!("checked {h} hour{} ago", if h == 1 { "" } else { "s" })
+    } else {
+        let d = secs / 86_400;
+        format!("checked {d} day{} ago", if d == 1 { "" } else { "s" })
+    }
+}
+
 /// Fold one [`UpdateEvent`] into the state. No arm sets a display directly — the
 /// honest view is always recomputed by [`UpdateState::view`].
 pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
@@ -626,6 +650,43 @@ mod tests {
         let mut s = UpdateState::new();
         s.prefs.auto_check = false;
         assert!(!s.view().actions.frequency_enabled);
+    }
+
+    #[test]
+    fn last_checked_just_now_threshold_is_60s() {
+        // The load-bearing boundary: 59s is still "just now", 60s flips to minutes.
+        assert_eq!(
+            last_checked_relative(Some(1_000), 1_000),
+            "checked just now"
+        );
+        assert_eq!(
+            last_checked_relative(Some(1_000), 1_059),
+            "checked just now"
+        );
+        assert_eq!(
+            last_checked_relative(Some(1_000), 1_060),
+            "checked 1 minute ago"
+        );
+        assert_eq!(
+            last_checked_relative(Some(1_000), 1_000 + 120),
+            "checked 2 minutes ago"
+        );
+        assert_eq!(
+            last_checked_relative(Some(1_000), 1_000 + 7_200),
+            "checked 2 hours ago"
+        );
+        assert_eq!(
+            last_checked_relative(Some(1_000), 1_000 + 86_400),
+            "checked 1 day ago"
+        );
+    }
+
+    #[test]
+    fn last_checked_never() {
+        assert_eq!(
+            last_checked_relative(None, 9_999),
+            "never checked for updates"
+        );
     }
 
     #[test]

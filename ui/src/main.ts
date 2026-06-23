@@ -64,6 +64,60 @@ interface HealthDump {
   screen_encoder: EncoderHealth | null;
 }
 
+// ── Updater (observer-update) ────────────────────────────────────────────────
+// Update state arrives on its own `update://changed` event, separate from the
+// health stream, and is rendered into the Updates section honestly: every control
+// is enabled only when its `actions` flag is true (no dead buttons), and the
+// state text never claims "up to date" without an earned up-to-date result.
+
+type UpdateDisplayKind =
+  | "never_checked"
+  | "up_to_date"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "staged"
+  | "failed"
+  | "failed_with_available"
+  | "unavailable";
+type UpdateActivityKind = "idle" | "checking" | "downloading" | "installing";
+type CheckIntervalKind = "day" | "week" | "month";
+
+interface UpdatePrefs {
+  auto_check: boolean;
+  interval: CheckIntervalKind;
+  auto_download: boolean;
+}
+
+interface UpdateActions {
+  can_check_now: boolean;
+  can_cancel: boolean;
+  can_download: boolean;
+  can_install: boolean;
+  can_retry: boolean;
+  can_dismiss: boolean;
+  frequency_enabled: boolean;
+}
+
+interface UpdateView {
+  display: UpdateDisplayKind;
+  activity: UpdateActivityKind;
+  last_checked_at: number | null;
+  available_version: string | null;
+  notes: string | null;
+  download_pct: number | null;
+  prefs: UpdatePrefs;
+  actions: UpdateActions;
+}
+
+// Latest snapshots; the settings view renders from both. Held in module vars so a
+// re-render from either stream never loses the other's state.
+let latestHealth: HealthDump | null = null;
+let latestUpdate: UpdateView | null = null;
+// The last-checked line node, refreshed each render; a 1s interval rewrites its
+// text so the relative clock ticks live — the JS analog of the macOS TimelineView.
+let lastCheckedEl: HTMLElement | null = null;
+
 // The pair-link the owner typed/pasted. Held in a module var (never read back
 // from the DOM) so a health re-render never loses it.
 let pairingDraft = "";
@@ -326,6 +380,9 @@ function renderSettings(dump: HealthDump): void {
   );
 
   root.append(status, sources, renderPairingSection(dump));
+  if (latestUpdate) {
+    root.append(renderUpdatesSection(latestUpdate));
+  }
 }
 
 function renderAbout(dump: HealthDump): void {
@@ -349,13 +406,266 @@ function renderAbout(dump: HealthDump): void {
   root.append(title, body, version);
 }
 
-function render(dump: HealthDump): void {
-  if (label === "about") {
-    renderAbout(dump);
-  } else {
-    renderSettings(dump);
+function nowSecs(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+// Mirror of observer_update::last_checked_relative (the Rust-tested canonical
+// spec, where the <60s "just now" threshold is pinned). This ticks the live clock.
+function lastCheckedRelative(checkedAt: number | null, secsNow: number): string {
+  if (checkedAt == null) {
+    return "never checked for updates";
+  }
+  const secs = Math.max(0, secsNow - checkedAt);
+  if (secs < 60) {
+    return "checked just now";
+  }
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60);
+    return `checked ${m} minute${m === 1 ? "" : "s"} ago`;
+  }
+  if (secs < 86400) {
+    const h = Math.floor(secs / 3600);
+    return `checked ${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  const d = Math.floor(secs / 86400);
+  return `checked ${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+function updateHeadline(view: UpdateView): string {
+  const v = view.available_version ?? "";
+  switch (view.display) {
+    case "never_checked":
+      return "not checked yet";
+    case "up_to_date":
+      return "solstone is up to date";
+    case "checking":
+      return "checking for updates…";
+    case "available":
+      return `solstone ${v} is available`;
+    case "downloading":
+      return `downloading ${v} — ${view.download_pct ?? 0}%`;
+    case "staged":
+      return `solstone ${v} is ready — it installs when solstone relaunches`;
+    case "failed":
+      return "couldn't check for updates right now";
+    case "failed_with_available":
+      return `couldn't check right now — solstone ${v} was found earlier`;
+    case "unavailable":
+      return "this build can't check for updates on its own";
   }
 }
 
-void invoke<HealthDump>("get_health").then(render);
-void listen<HealthDump>("health://changed", (event) => render(event.payload));
+function actionButton(
+  labelText: string,
+  automationId: string,
+  enabled: boolean,
+  onClick: () => void,
+): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.textContent = labelText;
+  b.disabled = !enabled;
+  b.dataset.automationId = automationId;
+  b.style.fontSize = "13px";
+  b.style.padding = "6px 12px";
+  b.style.border = enabled ? "1px solid #2f6f4f" : "1px solid #c4ccc0";
+  b.style.borderRadius = "6px";
+  b.style.background = enabled ? "#2f6f4f" : "#e7ebe5";
+  b.style.color = enabled ? "#fff" : "#9aa49c";
+  b.style.cursor = enabled ? "pointer" : "default";
+  if (enabled) {
+    b.onclick = onClick;
+  }
+  return b;
+}
+
+function checkboxRow(
+  labelText: string,
+  automationId: string,
+  checked: boolean,
+  enabled: boolean,
+  onChange: (on: boolean) => void,
+): HTMLDivElement {
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = checked;
+  box.disabled = !enabled;
+  box.dataset.automationId = automationId;
+  box.onchange = () => onChange(box.checked);
+  const wrap = document.createElement("div");
+  wrap.append(box);
+  return valueRow(labelText, wrap);
+}
+
+function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLDivElement {
+  const sel = document.createElement("select");
+  sel.disabled = !enabled;
+  sel.dataset.automationId = ids["settings.updates.frequency"];
+  const options: ReadonlyArray<readonly [CheckIntervalKind, string]> = [
+    ["day", "every day"],
+    ["week", "every week"],
+    ["month", "every month"],
+  ];
+  for (const [val, lbl] of options) {
+    const opt = document.createElement("option");
+    opt.value = val;
+    opt.textContent = lbl;
+    if (val === interval) {
+      opt.selected = true;
+    }
+    sel.append(opt);
+  }
+  sel.style.fontSize = "13px";
+  sel.onchange = () => {
+    void invoke("update_set_interval", { interval: sel.value });
+  };
+  const wrap = document.createElement("div");
+  wrap.append(sel);
+  return valueRow("how often", wrap);
+}
+
+function renderUpdatesSection(view: UpdateView): HTMLElement {
+  const pane = section("Updates");
+  const a = view.actions;
+
+  pane.append(
+    valueRow(
+      "status",
+      automation(text("div", updateHeadline(view)), ids["settings.updates.state"]),
+    ),
+  );
+
+  lastCheckedEl = automation(
+    text("div", lastCheckedRelative(view.last_checked_at, nowSecs())),
+    ids["settings.updates.lastChecked"],
+  );
+  pane.append(valueRow("last checked", lastCheckedEl));
+
+  // Action buttons — each shown only when relevant, each disabled from real
+  // actionability (no dead buttons). "check" is always present; there is no
+  // cancel control (Velopack 1.2.0 has no cancellation API).
+  const actions = document.createElement("div");
+  actions.style.display = "flex";
+  actions.style.flexWrap = "wrap";
+  actions.style.gap = "8px";
+  actions.style.padding = "7px 0";
+
+  const checkLabel = view.display === "never_checked" ? "check for updates" : "check again";
+  actions.append(
+    actionButton(checkLabel, ids["settings.updates.checkNow"], a.can_check_now, () => {
+      void invoke("update_check_now");
+    }),
+  );
+  if (view.display === "available") {
+    actions.append(
+      actionButton("download", ids["settings.updates.download"], a.can_download, () => {
+        void invoke("update_download");
+      }),
+    );
+  }
+  if (view.display === "staged") {
+    actions.append(
+      actionButton("relaunch to install", ids["settings.updates.install"], a.can_install, () => {
+        void invoke("update_install");
+      }),
+    );
+  }
+  if (view.display === "failed" || view.display === "failed_with_available") {
+    actions.append(
+      actionButton("retry", ids["settings.updates.retry"], a.can_retry, () => {
+        void invoke("update_check_now");
+      }),
+    );
+  }
+  if (a.can_dismiss) {
+    actions.append(
+      actionButton("dismiss", ids["settings.updates.dismiss"], true, () => {
+        void invoke("update_dismiss");
+      }),
+    );
+  }
+  pane.append(actions);
+
+  // Release notes (functional default; VPX owns the experience-layer pass).
+  if (view.notes) {
+    const notes = automation(document.createElement("div"), ids["settings.updates.notes"]);
+    notes.textContent = view.notes;
+    notes.style.whiteSpace = "pre-wrap";
+    notes.style.fontSize = "12px";
+    notes.style.color = "#415146";
+    notes.style.maxHeight = "120px";
+    notes.style.overflowY = "auto";
+    pane.append(valueRow("what's new", notes));
+  }
+
+  // Preferences.
+  pane.append(
+    checkboxRow(
+      "check automatically",
+      ids["settings.updates.autoCheck"],
+      view.prefs.auto_check,
+      true,
+      (on) => {
+        void invoke("update_set_auto_check", { on });
+      },
+    ),
+  );
+  pane.append(frequencyRow(view.prefs.interval, a.frequency_enabled));
+  pane.append(
+    checkboxRow(
+      "download in the background",
+      ids["settings.updates.autoDownload"],
+      view.prefs.auto_download,
+      true,
+      (on) => {
+        void invoke("update_set_auto_download", { on });
+      },
+    ),
+  );
+
+  return pane;
+}
+
+function rerender(): void {
+  if (!latestHealth) {
+    return;
+  }
+  if (label === "about") {
+    renderAbout(latestHealth);
+  } else {
+    renderSettings(latestHealth);
+  }
+}
+
+async function boot(): Promise<void> {
+  if (label === "about") {
+    latestHealth = await invoke<HealthDump>("get_health");
+    rerender();
+    return;
+  }
+  const [health, update] = await Promise.all([
+    invoke<HealthDump>("get_health"),
+    invoke<UpdateView>("update_get").catch(() => null),
+  ]);
+  latestHealth = health;
+  latestUpdate = update;
+  rerender();
+}
+
+void boot();
+void listen<HealthDump>("health://changed", (event) => {
+  latestHealth = event.payload;
+  rerender();
+});
+void listen<UpdateView>("update://changed", (event) => {
+  latestUpdate = event.payload;
+  rerender();
+});
+
+// Live last-checked clock: tick the relative string once a second without a full
+// re-render (the JS analog of the macOS TimelineView; <60s -> "just now").
+setInterval(() => {
+  if (lastCheckedEl && latestUpdate) {
+    lastCheckedEl.textContent = lastCheckedRelative(latestUpdate.last_checked_at, nowSecs());
+  }
+}, 1000);
