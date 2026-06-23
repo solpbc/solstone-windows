@@ -1,0 +1,14 @@
+[package]
+name = "observer-retention"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Local-cache retention policy for confirmed-synced segments: keep-days model (don't-keep / N days / forever) + the pure prune decision (whether a confirmed segment is older than the window). Pure, host-testable; the transport tier marks confirmed segments and prunes per this policy."
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

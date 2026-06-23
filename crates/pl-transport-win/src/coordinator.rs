@@ -13,19 +13,27 @@
 //! without losing data. Pairing/upload counts are published into the shared
 //! [`SyncSnapshot`] the engine folds into the health dump.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_model::SyncSnapshot;
 use observer_pl::ca;
 use observer_pl::civil;
 use observer_pl::multipart::FilePart;
+use observer_retention::RetentionConfig;
 
 use crate::client::ObserverClient;
 use crate::sealed::{content_type_for, SealedStore};
 use crate::{TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
 const MAX_BACKOFF_SECS: u64 = 300;
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// Drives sealed segments to the journal and reconciles them.
 pub struct UploadCoordinator {
@@ -34,6 +42,10 @@ pub struct UploadCoordinator {
     sync: Arc<Mutex<SyncSnapshot>>,
     platform: String,
     period_secs: u64,
+    /// Owner cache-retention policy (shared, edited over IPC). Decides whether a
+    /// confirmed segment is deleted on confirmation (don't-keep) or retained and
+    /// pruned past the window.
+    retention: Arc<RwLock<RetentionConfig>>,
 }
 
 impl UploadCoordinator {
@@ -43,6 +55,7 @@ impl UploadCoordinator {
         sync: Arc<Mutex<SyncSnapshot>>,
         platform: impl Into<String>,
         period_secs: u64,
+        retention: Arc<RwLock<RetentionConfig>>,
     ) -> Self {
         Self {
             client,
@@ -50,12 +63,40 @@ impl UploadCoordinator {
             sync,
             platform: platform.into(),
             period_secs: period_secs.max(1),
+            retention,
+        }
+    }
+
+    /// The current retention policy (defaulting on a poisoned lock).
+    fn retention(&self) -> RetentionConfig {
+        self.retention.read().map(|r| *r).unwrap_or_default()
+    }
+
+    /// Prune confirmed-and-retained local segments older than the retention
+    /// window. Only ever removes **confirmed-uploaded** segments — unsynced local
+    /// data is never deleted (the covenant guard). No-op for don't-keep (nothing
+    /// is retained) and forever.
+    fn prune_retained(&self) {
+        let policy = self.retention();
+        if policy.delete_on_confirm() || policy.is_forever() {
+            return;
+        }
+        let now = now_epoch_secs();
+        if let Ok(confirmed) = self.store.confirmed() {
+            for segment in confirmed {
+                if policy.should_prune(segment.boundary_epoch_secs, now) {
+                    let _ = self.store.remove(segment.index);
+                }
+            }
         }
     }
 
     /// One pass: upload + reconcile every sealed segment currently on disk.
     /// Returns the number of segments confirmed landed this pass.
     pub async fn tick(&self) -> Result<usize, TransportError> {
+        // Prune retained-and-confirmed segments past the window first (cheap, local).
+        self.prune_retained();
+
         let segments = self.store.scan()?;
         self.set_pending(segments.len() as u64);
         let mut confirmed_now = 0usize;
@@ -95,7 +136,14 @@ impl UploadCoordinator {
                         .iter()
                         .all(|(_, sha)| listed.has_segment_sha(&server_key, sha));
                     if confirmed {
-                        self.store.remove(segment.index)?;
+                        // Honor retention: delete the local copy now (don't-keep)
+                        // or retain it (mark confirmed so it isn't re-uploaded) for
+                        // the prune pass to remove once it's past the window.
+                        if self.retention().delete_on_confirm() {
+                            self.store.remove(segment.index)?;
+                        } else {
+                            self.store.mark_confirmed(segment.index)?;
+                        }
                         confirmed_now += 1;
                         self.on_confirmed(&segment_key);
                     }

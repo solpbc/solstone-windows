@@ -18,6 +18,7 @@ mod hotkey;
 mod ipc;
 mod lifecycle;
 mod mic;
+mod retention;
 mod tray;
 mod update;
 mod windows;

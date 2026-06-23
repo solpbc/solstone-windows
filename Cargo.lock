@@ -2321,6 +2321,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "observer-retention"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "observer-segment"
 version = "0.1.0"
 dependencies = [
@@ -2489,6 +2497,7 @@ version = "0.1.0"
 dependencies = [
  "observer-model",
  "observer-pl",
+ "observer-retention",
  "rcgen",
  "rustls",
  "serde",
@@ -3283,6 +3292,7 @@ dependencies = [
  "observer-hotkey",
  "observer-mic",
  "observer-model",
+ "observer-retention",
  "observer-state",
  "observer-update",
  "pl-transport-win",

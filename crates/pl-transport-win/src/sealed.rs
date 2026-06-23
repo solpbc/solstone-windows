@@ -23,12 +23,27 @@ pub struct SealedSegment {
     pub files: Vec<String>,
 }
 
+/// Marker file written into a sealed dir once its upload is confirmed and the
+/// owner's retention policy says to keep the local copy. Its presence means the
+/// segment is **done uploading** — [`SealedStore::scan`] skips it (never
+/// re-uploads) and it lives until the retention window prunes it.
+pub const UPLOADED_MARKER: &str = ".uploaded";
+
 /// Source of sealed segments. Real impl scans `%LocalAppData%`; tests use a
 /// temp dir.
 pub trait SealedStore: Send + Sync {
+    /// Sealed segments still pending upload (those **without** the confirmed
+    /// marker). Confirmed-but-retained segments are excluded — they are not
+    /// re-uploaded.
     fn scan(&self) -> std::io::Result<Vec<SealedSegment>>;
     fn read_file(&self, index: u64, name: &str) -> std::io::Result<Vec<u8>>;
     fn remove(&self, index: u64) -> std::io::Result<()>;
+    /// Mark a segment confirmed-uploaded (retain locally). Writes [`UPLOADED_MARKER`].
+    fn mark_confirmed(&self, index: u64) -> std::io::Result<()>;
+    /// Confirmed-but-retained segments (those **with** the marker), for the
+    /// retention prune pass. `files` is not populated — only index + boundary are
+    /// needed to decide pruning.
+    fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>>;
 }
 
 /// The best-effort content type for an observer segment file. The journal stores
@@ -84,8 +99,10 @@ fn list_files(dir: &Path) -> std::io::Result<Vec<String>> {
     Ok(files)
 }
 
-impl SealedStore for LocalSealedStore {
-    fn scan(&self) -> std::io::Result<Vec<SealedSegment>> {
+impl LocalSealedStore {
+    /// Scan sealed dirs, yielding each as `(index, files)`; the caller filters by
+    /// confirmed marker. Shared by `scan` (pending) and `confirmed` (retained).
+    fn scan_filtered(&self, want_confirmed: bool) -> std::io::Result<Vec<SealedSegment>> {
         let mut out = Vec::new();
         let dir = match std::fs::read_dir(&self.root) {
             Ok(d) => d,
@@ -104,14 +121,24 @@ impl SealedStore for LocalSealedStore {
                 continue;
             };
             let files = list_files(&entry.path())?;
+            let is_confirmed = files.iter().any(|f| f == UPLOADED_MARKER);
+            if is_confirmed != want_confirmed {
+                continue;
+            }
             out.push(SealedSegment {
                 index,
                 boundary_epoch_secs: index.saturating_mul(self.period_secs),
-                files,
+                files: files.into_iter().filter(|f| f != UPLOADED_MARKER).collect(),
             });
         }
         out.sort_by_key(|s| s.index);
         Ok(out)
+    }
+}
+
+impl SealedStore for LocalSealedStore {
+    fn scan(&self) -> std::io::Result<Vec<SealedSegment>> {
+        self.scan_filtered(false)
     }
 
     fn read_file(&self, index: u64, name: &str) -> std::io::Result<Vec<u8>> {
@@ -120,6 +147,14 @@ impl SealedStore for LocalSealedStore {
 
     fn remove(&self, index: u64) -> std::io::Result<()> {
         std::fs::remove_dir_all(self.segment_dir(index))
+    }
+
+    fn mark_confirmed(&self, index: u64) -> std::io::Result<()> {
+        std::fs::write(self.segment_dir(index).join(UPLOADED_MARKER), [])
+    }
+
+    fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>> {
+        self.scan_filtered(true)
     }
 }
 
@@ -191,5 +226,38 @@ mod tests {
     fn missing_root_scans_empty() {
         let store = LocalSealedStore::new(std::env::temp_dir().join("plw-nope-zzz"), 300);
         assert!(store.scan().unwrap().is_empty());
+    }
+
+    #[test]
+    fn confirmed_marker_excludes_from_scan_and_lists_in_confirmed() {
+        let root = temp_root();
+        for idx in [3u64, 4] {
+            let seg = root.join(idx.to_string());
+            std::fs::create_dir_all(&seg).unwrap();
+            std::fs::write(seg.join("system-audio.pcm"), b"PCM").unwrap();
+        }
+        let store = LocalSealedStore::new(&root, 300);
+
+        // Both pending initially; none confirmed.
+        assert_eq!(store.scan().unwrap().len(), 2);
+        assert!(store.confirmed().unwrap().is_empty());
+
+        // Mark 3 confirmed -> scan (pending) skips it; confirmed lists it, with the
+        // marker filtered out of `files` so it's never re-uploaded.
+        store.mark_confirmed(3).unwrap();
+        let pending = store.scan().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].index, 4);
+        let confirmed = store.confirmed().unwrap();
+        assert_eq!(confirmed.len(), 1);
+        assert_eq!(confirmed[0].index, 3);
+        assert_eq!(confirmed[0].boundary_epoch_secs, 3 * 300);
+        assert!(!confirmed[0].files.iter().any(|f| f == UPLOADED_MARKER));
+        assert!(confirmed[0].files.contains(&"system-audio.pcm".to_string()));
+
+        // A confirmed segment can still be removed (the prune path).
+        store.remove(3).unwrap();
+        assert!(store.confirmed().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

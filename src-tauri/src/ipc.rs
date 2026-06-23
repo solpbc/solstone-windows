@@ -195,6 +195,29 @@ pub fn list_mic_devices() -> Vec<observer_mic::MicDeviceRef> {
     capture_wasapi::list_mic_devices()
 }
 
+// ── Cache retention ────────────────────────────────────────────────────────────
+// How long confirmed-synced local segments are kept. `set_retention` writes the
+// shared policy; the upload coordinator honors it on its next tick (delete on
+// confirm for don't-keep, else retain + prune past the window).
+
+/// The current cache-retention policy (Settings render).
+#[tauri::command]
+pub fn get_retention(
+    ctrl: tauri::State<'_, crate::retention::RetentionController>,
+) -> observer_retention::RetentionConfig {
+    ctrl.get()
+}
+
+/// Replace the cache-retention policy. Effective on the coordinator's next tick
+/// and persisted to `retention.json`.
+#[tauri::command]
+pub fn set_retention(
+    ctrl: tauri::State<'_, crate::retention::RetentionController>,
+    config: observer_retention::RetentionConfig,
+) {
+    ctrl.set(config);
+}
+
 // ── Updater intents ──────────────────────────────────────────────────────────
 // User intents for the in-app updater. Like the rest of the IPC surface these
 // only *ask* the engine to act; update state is earned from the Velopack result

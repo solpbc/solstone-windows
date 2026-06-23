@@ -118,8 +118,17 @@ async fn main() {
     let client = Arc::new(client);
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let store = Box::new(LocalSealedStore::new(&root, PERIOD_SECS));
-    let coordinator =
-        UploadCoordinator::new(client.clone(), store, sync.clone(), PLATFORM, PERIOD_SECS);
+    let retention = std::sync::Arc::new(std::sync::RwLock::new(
+        observer_retention::RetentionConfig::default(),
+    ));
+    let coordinator = UploadCoordinator::new(
+        client.clone(),
+        store,
+        sync.clone(),
+        PLATFORM,
+        PERIOD_SECS,
+        retention,
+    );
     let confirmed = coordinator.tick().await.expect("upload tick failed");
     let snapshot = sync.lock().unwrap().clone();
     println!(

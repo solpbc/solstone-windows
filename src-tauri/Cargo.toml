@@ -30,6 +30,7 @@ observer-contract.workspace = true
 observer-exclusion.workspace = true
 observer-hotkey.workspace = true
 observer-mic.workspace = true
+observer-retention.workspace = true
 observer-update.workspace = true
 
 serde.workspace = true

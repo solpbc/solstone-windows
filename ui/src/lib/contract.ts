@@ -28,6 +28,7 @@ export const automationContract = {
     "settings.pairing.journal": "settings.pairing.journal",
     "settings.pairing.state": "settings.pairing.state",
     "settings.pairing.submit": "settings.pairing.submit",
+    "settings.retention": "settings.retention",
     "settings.sources.mic.state": "settings.sources.mic.state",
     "settings.sources.screen.state": "settings.sources.screen.state",
     "settings.sources.systemAudio.state": "settings.sources.systemAudio.state",

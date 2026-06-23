@@ -10,6 +10,7 @@ description = "Framed-mTLS PL transport + observer client/upload/heartbeat for t
 [dependencies]
 observer-pl.workspace = true
 observer-model.workspace = true
+observer-retention.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -10,9 +10,10 @@
 //! state into the shared [`SyncSnapshot`] so the health dump reflects reality.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use observer_model::{HealthDump, PairingPhase, PairingState, SyncSnapshot};
+use observer_retention::RetentionConfig;
 use tokio::sync::oneshot;
 
 use crate::client::ObserverClient;
@@ -41,6 +42,9 @@ pub struct SyncConfig {
     pub state_path: PathBuf,
     /// The sealed-segments root the uploader drains.
     pub segments_root: PathBuf,
+    /// Owner cache-retention policy (shared, edited over IPC) the upload
+    /// coordinator honors when a segment's upload is confirmed.
+    pub retention: Arc<RwLock<RetentionConfig>>,
 }
 
 fn set_pairing(sync: &Arc<Mutex<SyncSnapshot>>, state: PairingState) {
@@ -168,6 +172,7 @@ pub async fn run_uploader(
         sync.clone(),
         cfg.platform.clone(),
         cfg.period_secs,
+        cfg.retention.clone(),
     );
 
     let (co_shutdown_tx, co_shutdown_rx) = oneshot::channel();
