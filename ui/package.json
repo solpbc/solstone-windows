@@ -1,7 +1,7 @@
 {
   "name": "solstone-windows-ui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "WebView2 front-end for the solstone Windows observer. Pure renderer: it subscribes to health://changed and renders the honest state; it never mints status.",
   "scripts": {
