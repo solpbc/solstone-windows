@@ -40,6 +40,7 @@ mod tests {
             version: "0.1.0".into(),
             sync: observer_model::SyncSnapshot::default(),
             screen_encoder: None,
+            exclusions: None,
         }
     }
 

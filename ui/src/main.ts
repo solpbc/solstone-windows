@@ -52,6 +52,12 @@ interface EncoderHealth {
   last_error: string | null;
 }
 
+interface ExclusionHealth {
+  rules_active: boolean;
+  frames_redacted: number;
+  frames_dropped: number;
+}
+
 interface HealthDump {
   app_state: AppPhase;
   sources: SourceReport[];
@@ -62,6 +68,24 @@ interface HealthDump {
   version: string;
   sync: SyncSnapshot;
   screen_encoder: EncoderHealth | null;
+  exclusions: ExclusionHealth | null;
+}
+
+// ── Capture exclusions (observer-exclusion) ──────────────────────────────────
+// The owner's privacy controls. Rules are loaded once and edited in place; each
+// edit calls `set_exclusions` (effective on the next captured frame, persisted)
+// and re-renders. Exclusion *activity* is read from the health dump so the
+// owner can see exclusions working — it is never silent.
+
+interface ExclusionRules {
+  excluded_exes: string[];
+  title_patterns: string[];
+  exclude_private_browsing: boolean;
+}
+
+interface RunningApp {
+  exe_name: string;
+  display_name: string;
 }
 
 // ── Updater (observer-update) ────────────────────────────────────────────────
@@ -122,6 +146,13 @@ let lastCheckedEl: HTMLElement | null = null;
 // from the DOM) so a health re-render never loses it.
 let pairingDraft = "";
 let pairingBusy = false;
+
+// Capture-exclusion rules + the running-app picker list. Held in module vars so a
+// 1s health re-render repaints the section without losing edits; `titleDraft`
+// preserves a half-typed title keyword across re-renders (like pairingDraft).
+let latestExclusions: ExclusionRules | null = null;
+let runningApps: RunningApp[] = [];
+let titleDraft = "";
 
 const ids = automationContract.automation_ids;
 const queriedRoot = document.querySelector<HTMLDivElement>("#app");
@@ -322,6 +353,212 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   return pane;
 }
 
+async function applyExclusions(next: ExclusionRules): Promise<void> {
+  latestExclusions = next;
+  rerender();
+  try {
+    await invoke("set_exclusions", { rules: next });
+  } catch {
+    // Persistence failures are logged backend-side; the in-memory rules already
+    // took effect. The next get on restart reflects the last persisted state.
+  }
+}
+
+function exclusionActivityLabel(health: ExclusionHealth | null): string {
+  if (!health || !health.rules_active) {
+    return "no exclusions active";
+  }
+  const parts = [
+    `${health.frames_redacted} frame${health.frames_redacted === 1 ? "" : "s"} redacted`,
+  ];
+  if (health.frames_dropped > 0) {
+    parts.push(`${health.frames_dropped} dropped`);
+  }
+  return `${parts.join(" · ")} this session`;
+}
+
+// A removable list of string values (excluded exes / title keywords).
+function removableList(
+  values: string[],
+  listAutomationId: string,
+  onRemove: (value: string) => void,
+): HTMLElement {
+  const list = automation(document.createElement("div"), listAutomationId);
+  list.style.display = "flex";
+  list.style.flexWrap = "wrap";
+  list.style.gap = "6px";
+  list.style.padding = "4px 0";
+  if (values.length === 0) {
+    const empty = text("div", "none yet");
+    empty.style.color = "#9aa49c";
+    empty.style.fontSize = "13px";
+    list.append(empty);
+    return list;
+  }
+  for (const value of values) {
+    const chip = document.createElement("span");
+    chip.style.display = "inline-flex";
+    chip.style.alignItems = "center";
+    chip.style.gap = "6px";
+    chip.style.fontSize = "13px";
+    chip.style.padding = "3px 4px 3px 9px";
+    chip.style.border = "1px solid #c4ccc0";
+    chip.style.borderRadius = "6px";
+    chip.style.background = "#eef1ec";
+    chip.append(text("span", value));
+
+    const remove = document.createElement("button");
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `remove ${value}`);
+    remove.style.border = "none";
+    remove.style.background = "transparent";
+    remove.style.color = "#5f6b63";
+    remove.style.cursor = "pointer";
+    remove.style.fontSize = "15px";
+    remove.style.lineHeight = "1";
+    remove.style.padding = "0 2px";
+    remove.onclick = () => onRemove(value);
+    chip.append(remove);
+    list.append(chip);
+  }
+  return list;
+}
+
+function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLElement {
+  const pane = section("Privacy");
+
+  // Private browsing — title-heuristic auto-exclude, on by default.
+  pane.append(
+    checkboxRow(
+      "private browsing",
+      ids["settings.exclusions.privateBrowsing"],
+      rules.exclude_private_browsing,
+      true,
+      (on) => {
+        void applyExclusions({ ...rules, exclude_private_browsing: on });
+      },
+    ),
+  );
+  const privateHelp = text(
+    "div",
+    "automatically keep private and incognito browser windows out of the journal",
+  );
+  privateHelp.style.color = "#5f6b63";
+  privateHelp.style.fontSize = "12px";
+  privateHelp.style.padding = "0 0 6px";
+  pane.append(privateHelp);
+
+  // Excluded apps — pick from the live running-app list (robust process identity).
+  const appPickRow = document.createElement("div");
+  appPickRow.style.display = "grid";
+  appPickRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+  appPickRow.style.gap = "8px";
+  appPickRow.style.padding = "7px 0";
+
+  const appSelect = document.createElement("select");
+  appSelect.dataset.automationId = ids["settings.exclusions.appInput"];
+  appSelect.style.fontSize = "13px";
+  appSelect.style.padding = "7px 9px";
+  appSelect.style.border = "1px solid #c4ccc0";
+  appSelect.style.borderRadius = "6px";
+  appSelect.style.minWidth = "0";
+  const choices = runningApps.filter((app) => !rules.excluded_exes.includes(app.exe_name));
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = choices.length > 0 ? "choose a running app…" : "no other apps running";
+  appSelect.append(placeholder);
+  for (const app of choices) {
+    const opt = document.createElement("option");
+    opt.value = app.exe_name;
+    opt.textContent = `${app.display_name} (${app.exe_name})`;
+    appSelect.append(opt);
+  }
+
+  const appAdd = actionButton(
+    "exclude",
+    ids["settings.exclusions.appAdd"],
+    choices.length > 0,
+    () => {
+      const exe = appSelect.value.trim().toLowerCase();
+      if (!exe || rules.excluded_exes.includes(exe)) {
+        return;
+      }
+      void applyExclusions({ ...rules, excluded_exes: [...rules.excluded_exes, exe] });
+    },
+  );
+  appPickRow.append(appSelect, appAdd);
+  pane.append(valueRow("excluded apps", document.createElement("div")));
+  pane.append(appPickRow);
+  pane.append(
+    removableList(rules.excluded_exes, ids["settings.exclusions.appsList"], (exe) => {
+      void applyExclusions({
+        ...rules,
+        excluded_exes: rules.excluded_exes.filter((e) => e !== exe),
+      });
+    }),
+  );
+
+  // Title keywords — case-insensitive substring of a window title.
+  const titleRow = document.createElement("div");
+  titleRow.style.display = "grid";
+  titleRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+  titleRow.style.gap = "8px";
+  titleRow.style.padding = "7px 0";
+
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.placeholder = "a keyword, e.g. banking";
+  titleInput.value = titleDraft;
+  titleInput.dataset.automationId = ids["settings.exclusions.titleInput"];
+  titleInput.style.fontSize = "13px";
+  titleInput.style.padding = "7px 9px";
+  titleInput.style.border = "1px solid #c4ccc0";
+  titleInput.style.borderRadius = "6px";
+  titleInput.style.minWidth = "0";
+  titleInput.oninput = () => {
+    titleDraft = titleInput.value;
+  };
+  const addTitle = (): void => {
+    const keyword = titleDraft.trim().toLowerCase();
+    if (!keyword || rules.title_patterns.includes(keyword)) {
+      return;
+    }
+    titleDraft = "";
+    void applyExclusions({ ...rules, title_patterns: [...rules.title_patterns, keyword] });
+  };
+  titleInput.onkeydown = (event) => {
+    if (event.key === "Enter") {
+      addTitle();
+    }
+  };
+
+  const titleAdd = actionButton("add", ids["settings.exclusions.titleAdd"], true, addTitle);
+  titleRow.append(titleInput, titleAdd);
+  pane.append(valueRow("title keywords", document.createElement("div")));
+  pane.append(titleRow);
+  pane.append(
+    removableList(rules.title_patterns, ids["settings.exclusions.titlesList"], (keyword) => {
+      void applyExclusions({
+        ...rules,
+        title_patterns: rules.title_patterns.filter((k) => k !== keyword),
+      });
+    }),
+  );
+
+  // Exclusion activity — the never-silent surface: redacted/dropped this session.
+  pane.append(
+    valueRow(
+      "exclusion activity",
+      automation(
+        text("div", exclusionActivityLabel(dump.exclusions)),
+        ids["settings.exclusions.activity"],
+      ),
+    ),
+  );
+
+  return pane;
+}
+
 function resetRoot(rootId: string): void {
   root.replaceChildren();
   root.dataset.automationId = rootId;
@@ -379,7 +616,11 @@ function renderSettings(dump: HealthDump): void {
     ),
   );
 
-  root.append(status, sources, renderPairingSection(dump));
+  root.append(status, sources);
+  if (latestExclusions) {
+    root.append(renderExclusionsSection(latestExclusions, dump));
+  }
+  root.append(renderPairingSection(dump));
   if (latestUpdate) {
     root.append(renderUpdatesSection(latestUpdate));
   }
@@ -643,12 +884,16 @@ async function boot(): Promise<void> {
     rerender();
     return;
   }
-  const [health, update] = await Promise.all([
+  const [health, update, exclusions, apps] = await Promise.all([
     invoke<HealthDump>("get_health"),
     invoke<UpdateView>("update_get").catch(() => null),
+    invoke<ExclusionRules>("get_exclusions").catch(() => null),
+    invoke<RunningApp[]>("list_running_apps").catch(() => [] as RunningApp[]),
   ]);
   latestHealth = health;
   latestUpdate = update;
+  latestExclusions = exclusions;
+  runningApps = apps;
   rerender();
 }
 

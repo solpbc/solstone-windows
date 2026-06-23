@@ -12,6 +12,7 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod app;
+mod exclusions;
 mod health;
 mod ipc;
 mod lifecycle;
@@ -63,6 +64,14 @@ fn main() -> ExitCode {
     // Headless apply of a staged update (the CLI analog of relaunch-to-install).
     if args.iter().any(|a| a == "--apply-update") {
         return update::apply_pending_cli();
+    }
+
+    // Agent-native exclusion diagnostic: the windows the enumerator sees on the
+    // primary monitor, the active rules, and the resulting verdict, as JSON. Must
+    // run in the interactive session to see the owner's desktop windows.
+    if args.iter().any(|a| a == "--dump-windows") {
+        println!("{}", exclusions::dump_windows_json());
+        return ExitCode::SUCCESS;
     }
 
     app::run();

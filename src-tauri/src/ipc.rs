@@ -102,6 +102,38 @@ pub async fn pair(
     Ok(())
 }
 
+// ── Capture-exclusion intents ─────────────────────────────────────────────────
+// The owner's privacy controls. `set_exclusions` takes effect on the next
+// captured frame (it writes the shared rules handle the WGC source reads) and
+// persists across restart. Exclusion *activity* (frames redacted / dropped) is
+// surfaced through the health dump, not here.
+
+/// The current capture-exclusion rules (for the Settings initial render).
+#[tauri::command]
+pub fn get_exclusions(
+    state: tauri::State<'_, crate::app::AppState>,
+) -> observer_exclusion::ExclusionRules {
+    state.exclusions.get()
+}
+
+/// Replace the capture-exclusion rules. Effective on the next captured frame and
+/// persisted to `exclusions.json`.
+#[tauri::command]
+pub fn set_exclusions(
+    state: tauri::State<'_, crate::app::AppState>,
+    rules: observer_exclusion::ExclusionRules,
+) {
+    state.exclusions.set(rules);
+}
+
+/// The distinct running apps the owner can pick to exclude (exe + a friendly
+/// label). Picking from this list keys exclusion on a real running process's
+/// exe — robust identity, not free-text.
+#[tauri::command]
+pub fn list_running_apps() -> Vec<observer_exclusion::RunningApp> {
+    capture_wgc::list_running_apps()
+}
+
 // ── Updater intents ──────────────────────────────────────────────────────────
 // User intents for the in-app updater. Like the rest of the IPC surface these
 // only *ask* the engine to act; update state is earned from the Velopack result

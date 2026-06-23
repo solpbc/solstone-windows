@@ -207,6 +207,22 @@ pub struct EncoderHealth {
     pub last_error: Option<String>,
 }
 
+/// Capture-exclusion accounting folded into health so exclusion activity is
+/// **never silent**: the owner can see that excluded surfaces are being kept out
+/// of segments (regions redacted) and that uncertain frames are being dropped
+/// whole rather than risk a leak. Reported by the screen source that enforces
+/// exclusions; `None` in [`HealthDump`] when no exclusion-aware source is running.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ExclusionHealth {
+    /// Whether any exclusion rule is currently configured.
+    pub rules_active: bool,
+    /// Frames that had one or more regions blacked out before encoding.
+    pub frames_redacted: u64,
+    /// Frames dropped whole because an excluded surface could not be safely
+    /// redacted (unknown geometry, an unreadable window, or enumeration failure).
+    pub frames_dropped: u64,
+}
+
 /// Inspectable H.264 encoder defaults used to configure Media Foundation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderConfig {
@@ -352,6 +368,9 @@ pub struct HealthDump {
     /// Screen encoder accounting, present while the engine is running.
     #[serde(default)]
     pub screen_encoder: Option<EncoderHealth>,
+    /// Capture-exclusion accounting, present when the screen source enforces it.
+    #[serde(default)]
+    pub exclusions: Option<ExclusionHealth>,
 }
 
 // ── Source traits ────────────────────────────────────────────────────────────
@@ -386,6 +405,11 @@ pub trait ScreenSource: Send {
     fn state(&self) -> SourceState;
     /// Re-acquire the screen source after a display topology or resolution change.
     fn on_display_changed(&mut self);
+    /// Capture-exclusion accounting, when this source enforces exclusions.
+    /// Default `None` for sources that don't (test fakes, the off-Windows stub).
+    fn exclusion_health(&self) -> Option<ExclusionHealth> {
+        None
+    }
 }
 
 /// Screen encoder driven by the engine at the segment lifecycle boundary.

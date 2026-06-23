@@ -8,18 +8,53 @@
 //! [`ScreenSource`](observer_model::ScreenSource) trait against WGC; the engine
 //! is injected the resulting `dyn ScreenSource` and never sees a `windows` type.
 //!
+//! **Capture exclusions.** WGC captures the whole primary monitor and exposes no
+//! per-window exclude (and `SetWindowDisplayAffinity` only governs a process's
+//! *own* windows), so excluded surfaces are removed here in software: at each
+//! frame the owner's [`ExclusionRules`] are evaluated against the windows present
+//! on the captured monitor, and the frame is passed through, has the excluded
+//! regions blacked out, or — when an excluded surface can't be safely redacted —
+//! dropped whole. The policy + redaction live in the pure `observer-exclusion`
+//! crate; this crate only supplies window facts (Win32 enumeration) and applies
+//! the verdict to the owned frame buffer before it crosses the sink seam.
+//!
 //! Off-Windows, this crate exposes the same public source as an honest inert
 //! stub so the Linux dev host can compile the workspace.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Per-frame capture-exclusion counters, shared between the WGC capture thread
+/// (which increments them) and the health reporter (which snapshots them). It
+/// lives in the platform crate because it is incremented at the capture seam;
+/// only the pure [`observer_model::ExclusionHealth`] snapshot crosses the
+/// `ScreenSource` trait, keeping exclusion activity visible in health (never
+/// silent) without leaking a platform type into the engine.
+#[derive(Debug, Default)]
+pub struct ExclusionStats {
+    frames_redacted: AtomicU64,
+    frames_dropped: AtomicU64,
+}
+
+impl ExclusionStats {
+    fn snapshot(&self, rules_active: bool) -> observer_model::ExclusionHealth {
+        observer_model::ExclusionHealth {
+            rules_active,
+            frames_redacted: self.frames_redacted.load(Ordering::Relaxed),
+            frames_dropped: self.frames_dropped.load(Ordering::Relaxed),
+        }
+    }
+}
 
 #[cfg(windows)]
 mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
     use std::time::{Duration, Instant};
 
+    use observer_exclusion::{apply_redaction, evaluate, ExclusionDecision, ExclusionRules};
     use observer_model::{
-        CaptureSink, ErrorReason, ScreenFrame, ScreenPixelFormat, ScreenSource, SourceError,
-        SourceState,
+        CaptureSink, ErrorReason, ExclusionHealth, ScreenFrame, ScreenPixelFormat, ScreenSource,
+        SourceError, SourceState,
     };
     use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
     use windows_capture::frame::Frame;
@@ -29,6 +64,12 @@ mod imp {
         ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
         MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
     };
+
+    use super::ExclusionStats;
+
+    mod window_enum;
+
+    pub use window_enum::{dump_primary_monitor_windows, list_running_apps};
 
     type HandlerError = String;
 
@@ -58,6 +99,8 @@ mod imp {
         state: Arc<Mutex<SharedState>>,
         seq: Arc<AtomicU64>,
         color_format: ColorFormat,
+        rules: Arc<RwLock<ExclusionRules>>,
+        stats: Arc<ExclusionStats>,
     }
 
     struct WgcHandler {
@@ -65,6 +108,8 @@ mod imp {
         state: Arc<Mutex<SharedState>>,
         seq: Arc<AtomicU64>,
         color_format: ColorFormat,
+        rules: Arc<RwLock<ExclusionRules>>,
+        stats: Arc<ExclusionStats>,
         scratch: Vec<u8>,
     }
 
@@ -86,6 +131,8 @@ mod imp {
                 state: ctx.flags.state,
                 seq: ctx.flags.seq,
                 color_format: ctx.flags.color_format,
+                rules: ctx.flags.rules,
+                stats: ctx.flags.stats,
                 scratch: Vec::new(),
             })
         }
@@ -105,7 +152,38 @@ mod imp {
             let width = frame.width();
             let height = frame.height();
             let frame_buffer = frame.buffer().map_err(|err| err.to_string())?;
-            let data = frame_buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
+            let mut data = frame_buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
+
+            // Capture exclusions, applied before the frame can become a segment.
+            // The owner's rules drive an enumerate -> evaluate -> redact/drop pass;
+            // anything that can't be redacted safely drops the whole frame (fail
+            // closed). Skipped entirely when no rule is configured (no per-frame
+            // cost). A dropped frame still keeps the source `Active` + fresh — the
+            // observer is healthy, just excluding — and is counted into health.
+            let rules = self.rules.read().map(|r| r.clone()).unwrap_or_default();
+            if rules.is_active() {
+                match window_enum::enumerate_primary_monitor_windows(width, height) {
+                    Ok(windows) => match evaluate(&rules, &windows) {
+                        ExclusionDecision::Pass => {}
+                        ExclusionDecision::Redact(rects) => {
+                            apply_redaction(&mut data, width, height, pixel_format, &rects);
+                            self.stats.frames_redacted.fetch_add(1, Ordering::Relaxed);
+                        }
+                        ExclusionDecision::Drop => {
+                            self.stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
+                            self.set_state(SourceState::Active, Some(Instant::now()));
+                            return Ok(());
+                        }
+                    },
+                    Err(()) => {
+                        // We can't prove the frame is clean — fail closed.
+                        self.stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
+                        self.set_state(SourceState::Active, Some(Instant::now()));
+                        return Ok(());
+                    }
+                }
+            }
+
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
             self.sink.emit_screen_frame(ScreenFrame {
                 seq,
@@ -136,22 +214,23 @@ mod imp {
         state: Arc<Mutex<SharedState>>,
         last_sink: Option<Arc<dyn CaptureSink>>,
         seq: Arc<AtomicU64>,
+        rules: Arc<RwLock<ExclusionRules>>,
+        stats: Arc<ExclusionStats>,
     }
 
-    impl Default for WgcScreenSource {
-        fn default() -> Self {
+    impl WgcScreenSource {
+        /// Construct over the shared exclusion-rules handle. The owner edits the
+        /// rules over IPC (writing the same `Arc`), so changes take effect on the
+        /// next captured frame without a restart.
+        pub fn new(rules: Arc<RwLock<ExclusionRules>>) -> Self {
             Self {
                 control: None,
                 state: Arc::new(Mutex::new(SharedState::default())),
                 last_sink: None,
                 seq: Arc::new(AtomicU64::new(0)),
+                rules,
+                stats: Arc::new(ExclusionStats::default()),
             }
-        }
-    }
-
-    impl WgcScreenSource {
-        pub fn new() -> Self {
-            Self::default()
         }
 
         fn set_state(&self, state: SourceState, last_frame: Option<Instant>) {
@@ -182,6 +261,8 @@ mod imp {
                     state: Arc::clone(&self.state),
                     seq: Arc::clone(&self.seq),
                     color_format: SCREEN_COLOR_FORMAT,
+                    rules: Arc::clone(&self.rules),
+                    stats: Arc::clone(&self.stats),
                 },
             ))
         }
@@ -251,22 +332,39 @@ mod imp {
                 );
             }
         }
+
+        fn exclusion_health(&self) -> Option<ExclusionHealth> {
+            let active = self.rules.read().map(|r| r.is_active()).unwrap_or(false);
+            Some(self.stats.snapshot(active))
+        }
     }
 }
 
 #[cfg(not(windows))]
 mod imp {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
+    use observer_exclusion::{ExclusionRules, RunningApp};
     use observer_model::{CaptureSink, ScreenSource, SourceError, SourceState};
 
+    /// Non-Windows stub: no windows to enumerate.
+    pub fn list_running_apps() -> Vec<RunningApp> {
+        Vec::new()
+    }
+
+    /// Non-Windows stub: no windows to enumerate.
+    pub fn dump_primary_monitor_windows() -> Vec<observer_exclusion::WindowInfo> {
+        Vec::new()
+    }
+
     /// WGC-backed screen source. Non-Windows stub: never produces frames.
-    #[derive(Debug, Default)]
-    pub struct WgcScreenSource;
+    pub struct WgcScreenSource {
+        _rules: Arc<RwLock<ExclusionRules>>,
+    }
 
     impl WgcScreenSource {
-        pub fn new() -> Self {
-            Self
+        pub fn new(rules: Arc<RwLock<ExclusionRules>>) -> Self {
+            Self { _rules: rules }
         }
     }
 
@@ -285,4 +383,4 @@ mod imp {
     }
 }
 
-pub use imp::WgcScreenSource;
+pub use imp::{dump_primary_monitor_windows, list_running_apps, WgcScreenSource};

@@ -253,6 +253,7 @@ where
                 .current_segment
                 .is_some()
                 .then(|| self.sources.screen_encoder.health()),
+            exclusions: self.sources.screen.exclusion_health(),
         }
     }
 
@@ -681,6 +682,7 @@ where
             version: env!("CARGO_PKG_VERSION").to_string(),
             sync: SyncSnapshot::default(),
             screen_encoder: None,
+            exclusions: None,
         }
     }
 }
@@ -1678,6 +1680,7 @@ mod tests {
             version: "test".into(),
             sync: SyncSnapshot::default(),
             screen_encoder: None,
+            exclusions: None,
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

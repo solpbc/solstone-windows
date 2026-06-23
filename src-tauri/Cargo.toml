@@ -27,6 +27,7 @@ observer-model.workspace = true
 observer-health.workspace = true
 observer-state.workspace = true
 observer-contract.workspace = true
+observer-exclusion.workspace = true
 observer-update.workspace = true
 
 serde.workspace = true

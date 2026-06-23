@@ -8,6 +8,7 @@ members = [
     "crates/observer-recovery",
     "crates/observer-lifecycle",
     "crates/observer-contract",
+    "crates/observer-exclusion",
     "crates/observer-update",
     "crates/observer-pl",
     "crates/observer-nv12",
@@ -59,6 +60,7 @@ observer-health = { path = "crates/observer-health" }
 observer-recovery = { path = "crates/observer-recovery" }
 observer-lifecycle = { path = "crates/observer-lifecycle" }
 observer-contract = { path = "crates/observer-contract" }
+observer-exclusion = { path = "crates/observer-exclusion" }
 observer-update = { path = "crates/observer-update" }
 observer-pl = { path = "crates/observer-pl" }
 observer-nv12 = { path = "crates/observer-nv12" }

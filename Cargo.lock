@@ -282,7 +282,9 @@ dependencies = [
 name = "capture-wgc"
 version = "0.1.0"
 dependencies = [
+ "observer-exclusion",
  "observer-model",
+ "windows 0.58.0",
  "windows-capture",
 ]
 
@@ -2244,6 +2246,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "observer-exclusion"
+version = "0.1.0"
+dependencies = [
+ "observer-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "observer-health"
 version = "0.1.0"
 dependencies = [
@@ -3249,6 +3260,7 @@ dependencies = [
  "capture-wasapi",
  "capture-wgc",
  "observer-contract",
+ "observer-exclusion",
  "observer-health",
  "observer-model",
  "observer-state",

@@ -74,6 +74,17 @@ pub mod settings {
     pub const UPDATES_FREQUENCY: &str = "settings.updates.frequency";
     pub const UPDATES_AUTO_DOWNLOAD: &str = "settings.updates.autoDownload";
     pub const UPDATES_NOTES: &str = "settings.updates.notes";
+    /// Exclusions pane (Privacy): the private-browsing toggle, the excluded-app
+    /// picker + list, the title-pattern field + list, and the exclusion-activity
+    /// line (redacted/dropped counts — exclusion is never silent).
+    pub const EXCLUSIONS_PRIVATE_BROWSING: &str = "settings.exclusions.privateBrowsing";
+    pub const EXCLUSIONS_APP_INPUT: &str = "settings.exclusions.appInput";
+    pub const EXCLUSIONS_APP_ADD: &str = "settings.exclusions.appAdd";
+    pub const EXCLUSIONS_APPS_LIST: &str = "settings.exclusions.appsList";
+    pub const EXCLUSIONS_TITLE_INPUT: &str = "settings.exclusions.titleInput";
+    pub const EXCLUSIONS_TITLE_ADD: &str = "settings.exclusions.titleAdd";
+    pub const EXCLUSIONS_TITLES_LIST: &str = "settings.exclusions.titlesList";
+    pub const EXCLUSIONS_ACTIVITY: &str = "settings.exclusions.activity";
 }
 
 /// About window.
@@ -131,6 +142,35 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             settings::UPDATES_AUTO_DOWNLOAD,
         ),
         ("settings.updates.notes", settings::UPDATES_NOTES),
+        (
+            "settings.exclusions.privateBrowsing",
+            settings::EXCLUSIONS_PRIVATE_BROWSING,
+        ),
+        (
+            "settings.exclusions.appInput",
+            settings::EXCLUSIONS_APP_INPUT,
+        ),
+        ("settings.exclusions.appAdd", settings::EXCLUSIONS_APP_ADD),
+        (
+            "settings.exclusions.appsList",
+            settings::EXCLUSIONS_APPS_LIST,
+        ),
+        (
+            "settings.exclusions.titleInput",
+            settings::EXCLUSIONS_TITLE_INPUT,
+        ),
+        (
+            "settings.exclusions.titleAdd",
+            settings::EXCLUSIONS_TITLE_ADD,
+        ),
+        (
+            "settings.exclusions.titlesList",
+            settings::EXCLUSIONS_TITLES_LIST,
+        ),
+        (
+            "settings.exclusions.activity",
+            settings::EXCLUSIONS_ACTIVITY,
+        ),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
     ])

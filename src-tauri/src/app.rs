@@ -32,6 +32,8 @@ pub struct AppState {
     /// Shutdown senders for spawned uploader tasks; kept alive for the process
     /// lifetime so the uploaders run (dropping a sender would stop them).
     pub _sync_shutdowns: Mutex<Vec<oneshot::Sender<()>>>,
+    /// Capture-exclusion rules controller (shared with the WGC screen source).
+    pub exclusions: crate::exclusions::ExclusionController,
 }
 
 /// The observer's hostname for registration, best-effort.
@@ -70,6 +72,9 @@ pub fn run() {
             crate::ipc::open_settings,
             crate::ipc::open_about,
             crate::ipc::pair,
+            crate::ipc::get_exclusions,
+            crate::ipc::set_exclusions,
+            crate::ipc::list_running_apps,
             crate::ipc::update_get,
             crate::ipc::update_check_now,
             crate::ipc::update_download,
@@ -108,8 +113,14 @@ pub fn run() {
                 Err(error) => eprintln!("autostart: could not resolve current exe: {error}"),
             }
 
+            // Capture-exclusion rules: load persisted owner policy and share the
+            // handle with the WGC source so edits take effect on the next frame.
+            let exclusions = crate::exclusions::ExclusionController::new(
+                platform_win::local_data_root().join("exclusions.json"),
+            );
+
             let sources = Sources {
-                screen: Box::new(capture_wgc::WgcScreenSource::new()),
+                screen: Box::new(capture_wgc::WgcScreenSource::new(exclusions.rules_handle())),
                 screen_encoder: Box::new(capture_screen_encode::MfScreenEncoder::new()),
                 system_audio: Box::new(capture_wasapi::WasapiSystemAudioSource::new()),
                 mic: Box::new(capture_wasapi::WasapiMicSource::new()),
@@ -164,6 +175,7 @@ pub fn run() {
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
                 _sync_shutdowns: Mutex::new(sync_shutdowns),
+                exclusions,
             });
 
             // In-app updater: construct the Velopack-backed controller (honest
@@ -232,6 +244,10 @@ pub fn run() {
                         .lock()
                         .map(|health| health.sync.clone())
                         .unwrap_or_default();
+                    let exclusions = health
+                        .lock()
+                        .ok()
+                        .and_then(|health| health.exclusions.clone());
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -242,6 +258,7 @@ pub fn run() {
                         version: env!("CARGO_PKG_VERSION").to_string(),
                         sync,
                         screen_encoder: None,
+                        exclusions,
                     };
                     if let Ok(mut health) = health.lock() {
                         *health = terminal.clone();
