@@ -70,6 +70,14 @@ pub fn run() {
             crate::ipc::open_settings,
             crate::ipc::open_about,
             crate::ipc::pair,
+            crate::ipc::update_get,
+            crate::ipc::update_check_now,
+            crate::ipc::update_download,
+            crate::ipc::update_install,
+            crate::ipc::update_dismiss,
+            crate::ipc::update_set_auto_check,
+            crate::ipc::update_set_auto_download,
+            crate::ipc::update_set_interval,
         ])
         .setup(|app| {
             if crate::lifecycle::acquire_single_instance()
@@ -157,6 +165,18 @@ pub fn run() {
                 _shutdown: Mutex::new(Some(shutdown_tx)),
                 _sync_shutdowns: Mutex::new(sync_shutdowns),
             });
+
+            // In-app updater: construct the Velopack-backed controller (honest
+            // state earned from the feed, persisted next to pairing.json),
+            // rehydrate any staged-pending-restart update, and start the owned
+            // background-check timer. Manager construction fails cleanly off a
+            // Velopack install (dev tree) -> surfaced as the honest "unavailable".
+            let updater = crate::update::UpdateController::new(
+                app.handle().clone(),
+                platform_win::local_data_root().join("update.json"),
+            );
+            app.manage(updater.clone());
+            updater.spawn_timer();
 
             let (tray, mi_start, mi_pause, mi_resume) = crate::tray::init(app, cmd_tx.clone())?;
 

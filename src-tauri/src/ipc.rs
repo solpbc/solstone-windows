@@ -101,3 +101,66 @@ pub async fn pair(
     });
     Ok(())
 }
+
+// ── Updater intents ──────────────────────────────────────────────────────────
+// User intents for the in-app updater. Like the rest of the IPC surface these
+// only *ask* the engine to act; update state is earned from the Velopack result
+// and pushed back over `update://changed` — the webview never mints update state.
+
+/// The current honest update snapshot (for the initial render on Settings open).
+#[tauri::command]
+pub fn update_get(
+    ctrl: tauri::State<'_, crate::update::UpdateController>,
+) -> observer_update::UpdateView {
+    ctrl.view()
+}
+
+/// Start a manual update check (also serves the "retry" / "check again" controls).
+#[tauri::command]
+pub fn update_check_now(ctrl: tauri::State<'_, crate::update::UpdateController>) {
+    ctrl.check();
+}
+
+/// Download the currently-available update.
+#[tauri::command]
+pub fn update_download(ctrl: tauri::State<'_, crate::update::UpdateController>) {
+    ctrl.download();
+}
+
+/// Apply the staged update and relaunch into it.
+#[tauri::command]
+pub fn update_install(ctrl: tauri::State<'_, crate::update::UpdateController>) {
+    ctrl.install();
+}
+
+/// Dismiss an available/failed block back to idle.
+#[tauri::command]
+pub fn update_dismiss(ctrl: tauri::State<'_, crate::update::UpdateController>) {
+    ctrl.dismiss();
+}
+
+/// Persist the "check for updates automatically" toggle.
+#[tauri::command]
+pub fn update_set_auto_check(ctrl: tauri::State<'_, crate::update::UpdateController>, on: bool) {
+    ctrl.set_auto_check(on);
+}
+
+/// Persist the "download updates in the background" toggle.
+#[tauri::command]
+pub fn update_set_auto_download(ctrl: tauri::State<'_, crate::update::UpdateController>, on: bool) {
+    ctrl.set_auto_download(on);
+}
+
+/// Persist the check-frequency preference (`day` / `week` / `month`).
+#[tauri::command]
+pub fn update_set_interval(
+    ctrl: tauri::State<'_, crate::update::UpdateController>,
+    interval: String,
+) {
+    let iv = match interval.as_str() {
+        "day" => observer_update::CheckInterval::Day,
+        "month" => observer_update::CheckInterval::Month,
+        _ => observer_update::CheckInterval::Week,
+    };
+    ctrl.set_interval(iv);
+}

@@ -3252,6 +3252,7 @@ dependencies = [
  "observer-health",
  "observer-model",
  "observer-state",
+ "observer-update",
  "pl-transport-win",
  "platform-win",
  "serde",

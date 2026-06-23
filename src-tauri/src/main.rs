@@ -16,6 +16,7 @@ mod health;
 mod ipc;
 mod lifecycle;
 mod tray;
+mod update;
 mod windows;
 
 use std::process::ExitCode;

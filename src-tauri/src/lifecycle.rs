@@ -10,33 +10,11 @@
 //! for Wave 1.
 //!
 //! Update status follows the two-layer model: a durable `ReconciledUpdateStatus`
-//! (persisted; last-known-available + last-check-outcome) split from a transient
-//! `UpdateActivity` (checking/downloading/installing; never restored from disk).
-//! The durable layer is what the tray/UI read — earned from the Velopack
-//! callback, never optimistically pre-set.
-
-/// Durable update status (persisted). Read by the UI/tray badge.
-///
-/// Shape only in Wave 1 — the Velopack update *loop* that fills it is Wave 3
-/// (a documented non-goal here), so it is not yet constructed.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
-pub struct ReconciledUpdateStatus {
-    pub last_known_available: Option<String>,
-    pub last_check_succeeded: bool,
-}
-
-/// Transient update activity. Never restored from disk. Shape only in Wave 1
-/// (the update loop that drives it is Wave 3).
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UpdateActivity {
-    #[default]
-    Idle,
-    Checking,
-    Downloading,
-    Installing,
-}
+//! (persisted; last_checked_at + outcome + available version) split from a
+//! transient `UpdateActivity` (checking/downloading/installing; never restored
+//! from disk). Both now live, expanded, in the pure `observer-update` crate and
+//! are driven by the Velopack-backed [`crate::update`] controller — earned from
+//! the Velopack result, never optimistically pre-set.
 
 /// Acquire the single-instance gate at boot.
 pub fn acquire_single_instance() -> platform_win::InstanceLock {
