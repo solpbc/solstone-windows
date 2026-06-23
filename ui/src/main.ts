@@ -169,6 +169,12 @@ document.body.style.fontFamily =
 document.body.style.color = "#17201b";
 document.body.style.background = "#f6f7f4";
 
+// Keyframes for the indeterminate update-progress sweep (checking / installing).
+const updateProgressStyle = document.createElement("style");
+updateProgressStyle.textContent =
+  "@keyframes update-indeterminate{0%{left:-35%}100%{left:100%}}";
+document.head.append(updateProgressStyle);
+
 const label = getCurrentWindow().label;
 
 function text(tag: keyof HTMLElementTagNameMap, value: string): HTMLElement {
@@ -675,9 +681,12 @@ function lastCheckedRelative(checkedAt: number | null, secsNow: number): string 
 
 function updateHeadline(view: UpdateView): string {
   const v = view.available_version ?? "";
+  if (view.activity === "installing") {
+    return v ? `installing solstone ${v}…` : "installing…";
+  }
   switch (view.display) {
     case "never_checked":
-      return "not checked yet";
+      return "not checked for updates yet";
     case "up_to_date":
       return "solstone is up to date";
     case "checking":
@@ -685,15 +694,52 @@ function updateHeadline(view: UpdateView): string {
     case "available":
       return `solstone ${v} is available`;
     case "downloading":
-      return `downloading ${v} — ${view.download_pct ?? 0}%`;
+      return `downloading solstone ${v}`;
     case "staged":
-      return `solstone ${v} is ready — it installs when solstone relaunches`;
+      return `solstone ${v} is ready to install`;
     case "failed":
-      return "couldn't check for updates right now";
+      return "couldn't check for updates";
     case "failed_with_available":
-      return `couldn't check right now — solstone ${v} was found earlier`;
+      return `couldn't check — solstone ${v} found earlier`;
     case "unavailable":
-      return "this build can't check for updates on its own";
+      return "this build can't update itself";
+  }
+}
+
+// The quiet subtitle under the headline. `live` marks the last-checked clock so
+// the 1s tick only rewrites those states; static subtitles never tick. Returns
+// null where the headline + progress bar already say everything (checking,
+// downloading).
+function updateSubtitle(
+  view: UpdateView,
+  secsNow: number,
+): { text: string; live: boolean } | null {
+  if (view.activity === "installing") {
+    return { text: "this only takes a moment", live: false };
+  }
+  switch (view.display) {
+    case "never_checked":
+      return {
+        text: view.prefs.auto_check
+          ? "automatic checks are on — solstone will check on its own"
+          : "automatic checks are off",
+        live: false,
+      };
+    case "checking":
+    case "downloading":
+      return null;
+    case "staged":
+      return { text: "it installs the next time solstone restarts", live: false };
+    case "unavailable":
+      return {
+        text: "download the latest from solstone.app/download/windows",
+        live: false,
+      };
+    case "up_to_date":
+    case "available":
+    case "failed":
+    case "failed_with_available":
+      return { text: lastCheckedRelative(view.last_checked_at, secsNow), live: true };
   }
 }
 
@@ -738,7 +784,18 @@ function checkboxRow(
   return valueRow(labelText, wrap);
 }
 
-function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLDivElement {
+function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLElement {
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.alignItems = "center";
+  row.style.gap = "10px";
+  row.style.padding = "6px 0";
+  row.style.marginLeft = "26px";
+
+  const labelNode = text("div", "how often");
+  labelNode.style.fontSize = "13px";
+  labelNode.style.color = enabled ? "#5f6b63" : "#9aa49c";
+
   const sel = document.createElement("select");
   sel.disabled = !enabled;
   sel.dataset.automationId = ids["settings.updates.frequency"];
@@ -757,59 +814,233 @@ function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLDivEle
     sel.append(opt);
   }
   sel.style.fontSize = "13px";
+  sel.style.padding = "3px 6px";
   sel.onchange = () => {
     void invoke("update_set_interval", { interval: sel.value });
   };
+
+  row.append(labelNode, sel);
+  return row;
+}
+
+// A settings toggle row: checkbox adjacent to its label (the macOS Toggle idiom),
+// distinct from valueRow's split label : control grid.
+function toggleRow(
+  labelText: string,
+  automationId: string,
+  checked: boolean,
+  onChange: (on: boolean) => void,
+): HTMLElement {
+  const lab = document.createElement("label");
+  lab.style.display = "flex";
+  lab.style.alignItems = "center";
+  lab.style.gap = "9px";
+  lab.style.padding = "6px 0";
+  lab.style.fontSize = "13px";
+  lab.style.color = "#17201b";
+  lab.style.cursor = "pointer";
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = checked;
+  box.dataset.automationId = automationId;
+  box.style.margin = "0";
+  box.onchange = () => onChange(box.checked);
+
+  lab.append(box, text("span", labelText));
+  return lab;
+}
+
+// A thin update-progress bar: determinate (download percent) or an indeterminate
+// sweep while a check/install is in flight, so a wait visibly breathes.
+function updateProgressBar(determinate: boolean, pct: number | null): HTMLElement {
   const wrap = document.createElement("div");
-  wrap.append(sel);
-  return valueRow("how often", wrap);
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.gap = "10px";
+  wrap.style.margin = "12px 0 2px";
+
+  const track = document.createElement("div");
+  track.style.position = "relative";
+  track.style.flex = "1";
+  track.style.height = "6px";
+  track.style.borderRadius = "3px";
+  track.style.background = "#e7ebe5";
+  track.style.overflow = "hidden";
+
+  const fill = document.createElement("div");
+  fill.style.position = "absolute";
+  fill.style.top = "0";
+  fill.style.bottom = "0";
+  fill.style.background = "#2f6f4f";
+  fill.style.borderRadius = "3px";
+  if (determinate) {
+    fill.style.left = "0";
+    fill.style.width = `${pct ?? 0}%`;
+    fill.style.transition = "width .2s";
+  } else {
+    fill.style.width = "35%";
+    fill.style.animation = "update-indeterminate 1.1s ease-in-out infinite";
+  }
+  track.append(fill);
+  wrap.append(track);
+
+  if (determinate) {
+    const lbl = text("div", `${pct ?? 0}%`);
+    lbl.style.fontSize = "12px";
+    lbl.style.color = "#5f6b63";
+    lbl.style.minWidth = "34px";
+    lbl.style.textAlign = "right";
+    wrap.append(lbl);
+  }
+  return wrap;
+}
+
+// Release notes from the feed, rendered as light markdown (headings + bullets)
+// in a quiet card. Carries the settings.updates.notes automation id.
+function updateNotesBlock(notes: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.style.margin = "14px 0 2px";
+
+  const cap = text("div", "what's new");
+  cap.style.fontSize = "12px";
+  cap.style.fontWeight = "600";
+  cap.style.color = "#5f6b63";
+  cap.style.margin = "0 0 6px";
+
+  const card = automation(document.createElement("div"), ids["settings.updates.notes"]);
+  card.style.background = "#ffffff";
+  card.style.border = "1px solid #e2e7dd";
+  card.style.borderRadius = "6px";
+  card.style.padding = "10px 12px";
+  card.style.maxHeight = "150px";
+  card.style.overflowY = "auto";
+
+  for (const raw of notes.split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      const spacer = document.createElement("div");
+      spacer.style.height = "5px";
+      card.append(spacer);
+      continue;
+    }
+    const heading = /^#{1,3}\s+(.*)$/.exec(line);
+    const bullet = /^[-*]\s+(.*)$/.exec(line);
+    if (heading) {
+      const h = text("div", heading[1]);
+      h.style.fontSize = "12.5px";
+      h.style.fontWeight = "600";
+      h.style.color = "#17201b";
+      h.style.margin = "6px 0 3px";
+      card.append(h);
+    } else if (bullet) {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.gap = "7px";
+      row.style.fontSize = "12.5px";
+      row.style.color = "#415146";
+      row.style.lineHeight = "1.45";
+      row.style.margin = "2px 0";
+      const dot = text("div", "•");
+      dot.style.color = "#2f6f4f";
+      row.append(dot, text("div", bullet[1]));
+      card.append(row);
+    } else {
+      const p = text("div", line);
+      p.style.fontSize = "12.5px";
+      p.style.color = "#415146";
+      p.style.lineHeight = "1.45";
+      p.style.margin = "2px 0";
+      card.append(p);
+    }
+  }
+  wrap.append(cap, card);
+  return wrap;
 }
 
 function renderUpdatesSection(view: UpdateView): HTMLElement {
   const pane = section("Updates");
   const a = view.actions;
 
-  pane.append(
-    valueRow(
-      "status",
-      automation(text("div", updateHeadline(view)), ids["settings.updates.state"]),
-    ),
-  );
+  // Focal state headline + a quiet subtitle (the macOS Updates header hierarchy),
+  // not another label : value row. The headline carries the contract state id.
+  const headline = automation(text("div", updateHeadline(view)), ids["settings.updates.state"]);
+  headline.style.fontSize = "16px";
+  headline.style.fontWeight = "650";
+  headline.style.color = "#17201b";
+  headline.style.lineHeight = "1.3";
+  headline.style.margin = "0";
+  pane.append(headline);
 
-  lastCheckedEl = automation(
-    text("div", lastCheckedRelative(view.last_checked_at, nowSecs())),
-    ids["settings.updates.lastChecked"],
-  );
-  pane.append(valueRow("last checked", lastCheckedEl));
+  // The last-checked clock lives in the subtitle and ticks live (<60s "just
+  // now") only where the subtitle *is* the clock; static subtitles (staged,
+  // unavailable, never-checked) never tick, so lastCheckedEl stays null there.
+  lastCheckedEl = null;
+  const subtitle = updateSubtitle(view, nowSecs());
+  if (subtitle) {
+    const sub = text("div", subtitle.text);
+    sub.style.fontSize = "13px";
+    sub.style.color = "#5f6b63";
+    sub.style.margin = "3px 0 0";
+    if (subtitle.live) {
+      automation(sub, ids["settings.updates.lastChecked"]);
+      lastCheckedEl = sub;
+    }
+    pane.append(sub);
+  }
+
+  // Progress — determinate for a download, an indeterminate sweep while a check
+  // or install is in flight.
+  if (view.display === "checking" || view.activity === "installing") {
+    pane.append(updateProgressBar(false, null));
+  } else if (view.display === "downloading") {
+    pane.append(updateProgressBar(true, view.download_pct));
+  }
+
+  // Release notes — only present in the available state (the reducer clears them
+  // once a version downloads); rendered as light markdown.
+  if (view.display === "available" && view.notes) {
+    pane.append(updateNotesBlock(view.notes));
+  }
 
   // Action buttons — each shown only when relevant, each disabled from real
-  // actionability (no dead buttons). "check" is always present; there is no
-  // cancel control (Velopack 1.2.0 has no cancellation API).
+  // actionability (no dead buttons). There is no cancel control (Velopack 1.2.0
+  // has no cancellation API); an in-flight download/install shows no buttons.
   const actions = document.createElement("div");
   actions.style.display = "flex";
   actions.style.flexWrap = "wrap";
   actions.style.gap = "8px";
-  actions.style.padding = "7px 0";
+  actions.style.margin = "14px 0 2px";
+  let anyAction = false;
 
-  const checkLabel = view.display === "never_checked" ? "check for updates" : "check again";
-  actions.append(
-    actionButton(checkLabel, ids["settings.updates.checkNow"], a.can_check_now, () => {
-      void invoke("update_check_now");
-    }),
-  );
+  const showCheck =
+    view.display !== "downloading" &&
+    view.display !== "unavailable" &&
+    view.activity !== "installing";
+  if (showCheck) {
+    const checkLabel = view.display === "never_checked" ? "check for updates" : "check again";
+    actions.append(
+      actionButton(checkLabel, ids["settings.updates.checkNow"], a.can_check_now, () => {
+        void invoke("update_check_now");
+      }),
+    );
+    anyAction = true;
+  }
   if (view.display === "available") {
     actions.append(
       actionButton("download", ids["settings.updates.download"], a.can_download, () => {
         void invoke("update_download");
       }),
     );
+    anyAction = true;
   }
-  if (view.display === "staged") {
+  if (view.display === "staged" && view.activity !== "installing") {
     actions.append(
       actionButton("relaunch to install", ids["settings.updates.install"], a.can_install, () => {
         void invoke("update_install");
       }),
     );
+    anyAction = true;
   }
   if (view.display === "failed" || view.display === "failed_with_available") {
     actions.append(
@@ -817,6 +1048,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
         void invoke("update_check_now");
       }),
     );
+    anyAction = true;
   }
   if (a.can_dismiss) {
     actions.append(
@@ -824,45 +1056,66 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
         void invoke("update_dismiss");
       }),
     );
+    anyAction = true;
   }
-  pane.append(actions);
-
-  // Release notes (functional default; VPX owns the experience-layer pass).
-  if (view.notes) {
-    const notes = automation(document.createElement("div"), ids["settings.updates.notes"]);
-    notes.textContent = view.notes;
-    notes.style.whiteSpace = "pre-wrap";
-    notes.style.fontSize = "12px";
-    notes.style.color = "#415146";
-    notes.style.maxHeight = "120px";
-    notes.style.overflowY = "auto";
-    pane.append(valueRow("what's new", notes));
+  if (anyAction) {
+    pane.append(actions);
   }
 
-  // Preferences.
-  pane.append(
-    checkboxRow(
-      "check automatically",
+  // Automatic-update preferences, grouped (the macOS "automatic updates" box):
+  // the auto-check toggle, the frequency picker indented beneath it (disabled
+  // when auto-check is off), and the background-download toggle.
+  const prefs = document.createElement("div");
+  prefs.style.marginTop = "16px";
+  prefs.style.paddingTop = "14px";
+  prefs.style.borderTop = "1px solid #e2e7dd";
+
+  const prefsLabel = text("div", "automatic updates");
+  prefsLabel.style.fontSize = "12px";
+  prefsLabel.style.fontWeight = "600";
+  prefsLabel.style.color = "#5f6b63";
+  prefsLabel.style.margin = "0 0 4px";
+  prefs.append(prefsLabel);
+
+  prefs.append(
+    toggleRow(
+      "check for updates automatically",
       ids["settings.updates.autoCheck"],
       view.prefs.auto_check,
-      true,
       (on) => {
         void invoke("update_set_auto_check", { on });
       },
     ),
   );
-  pane.append(frequencyRow(view.prefs.interval, a.frequency_enabled));
-  pane.append(
-    checkboxRow(
-      "download in the background",
+  prefs.append(frequencyRow(view.prefs.interval, a.frequency_enabled));
+  prefs.append(
+    toggleRow(
+      "download updates in the background",
       ids["settings.updates.autoDownload"],
       view.prefs.auto_download,
-      true,
       (on) => {
         void invoke("update_set_auto_download", { on });
       },
     ),
   );
+  pane.append(prefs);
+
+  // Privacy footnote — the trust line for an update surface, ported from the
+  // macOS pane. Honest by construction: the check is a first-party manifest GET
+  // with no per-user identifier (the stagingId is neutralized — Article 8).
+  const foot = document.createElement("div");
+  foot.style.marginTop = "16px";
+  foot.style.paddingTop = "12px";
+  foot.style.borderTop = "1px solid #e2e7dd";
+  const footText = text(
+    "div",
+    "solstone never sends usage data. update checks only fetch the version manifest.",
+  );
+  footText.style.fontSize = "12px";
+  footText.style.color = "#5f6b63";
+  footText.style.lineHeight = "1.45";
+  foot.append(footText);
+  pane.append(foot);
 
   return pane;
 }
