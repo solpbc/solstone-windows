@@ -158,6 +158,8 @@ let pairingBusy = false;
 // preserves a half-typed title keyword across re-renders (like pairingDraft).
 let latestExclusions: ExclusionRules | null = null;
 let latestHotkey: HotkeyView | null = null;
+let latestMic: MicView | null = null;
+let micDevices: MicDeviceRef[] = [];
 let runningApps: RunningApp[] = [];
 let titleDraft = "";
 
@@ -619,6 +621,25 @@ interface HotkeyView {
   registration: HotkeyRegistration;
 }
 
+// ── Microphone controls (observer-mic) ───────────────────────────────────────
+// Device priority + per-device disable + input gain. The owner reorders/disables
+// devices and sets gain; the capture loop opens the selected device and reports
+// the actually-open id back as active_id, so "active" is earned, not guessed.
+interface MicDeviceRef {
+  id: string;
+  name: string;
+}
+interface MicConfig {
+  priority: string[];
+  disabled: string[];
+  gain: number;
+}
+interface MicView {
+  config: MicConfig;
+  active_id: string | null;
+}
+const MIC_GAIN_LEVELS = [1, 2, 4, 8];
+
 // VK options the owner can pick as the main key (the backend validates the combo).
 const HOTKEY_KEYS: ReadonlyArray<readonly [number, string]> = (() => {
   const out: Array<[number, string]> = [];
@@ -767,6 +788,177 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   return pane;
 }
 
+// Display order: priority ids first (those present), then remaining present
+// devices in enumeration order. Reorder/disable operate on this list.
+function orderedMicDevices(cfg: MicConfig, devices: MicDeviceRef[]): MicDeviceRef[] {
+  const byId = new Map(devices.map((d) => [d.id, d]));
+  const out: MicDeviceRef[] = [];
+  const seen = new Set<string>();
+  for (const id of cfg.priority) {
+    const d = byId.get(id);
+    if (d && !seen.has(id)) {
+      out.push(d);
+      seen.add(id);
+    }
+  }
+  for (const d of devices) {
+    if (!seen.has(d.id)) {
+      out.push(d);
+      seen.add(d.id);
+    }
+  }
+  return out;
+}
+
+async function applyMic(next: MicConfig): Promise<void> {
+  latestMic = { config: next, active_id: latestMic?.active_id ?? null };
+  rerender();
+  try {
+    await invoke("set_mic_config", { config: next });
+  } catch {
+    // Persistence failures are logged backend-side; the desired config still took.
+  }
+  // The capture loop reconciles selection within ~1s; refetch the active device.
+  setTimeout(() => {
+    void invoke<MicView>("get_mic_config")
+      .then((v) => {
+        latestMic = v;
+        rerender();
+      })
+      .catch(() => {});
+  }, 1200);
+}
+
+function reorderButton(glyph: string, enabled: boolean, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.textContent = glyph;
+  b.disabled = !enabled;
+  b.style.fontSize = "13px";
+  b.style.lineHeight = "1";
+  b.style.padding = "3px 7px";
+  b.style.border = "1px solid #c4ccc0";
+  b.style.borderRadius = "6px";
+  b.style.background = enabled ? "#eef1ec" : "#f3f5f1";
+  b.style.color = enabled ? "#415146" : "#c4ccc0";
+  b.style.cursor = enabled ? "pointer" : "default";
+  if (enabled) {
+    b.onclick = onClick;
+  }
+  return b;
+}
+
+function renderMicSection(view: MicView): HTMLElement {
+  const pane = section("Microphones");
+  const cfg = view.config;
+  const ordered = orderedMicDevices(cfg, micDevices);
+
+  // Input gain — segmented 1× / 2× / 4× / 8×.
+  const gainRow = automation(document.createElement("div"), ids["settings.mic.gain"]);
+  gainRow.style.display = "flex";
+  gainRow.style.gap = "6px";
+  for (const level of MIC_GAIN_LEVELS) {
+    const on = cfg.gain === level;
+    const b = document.createElement("button");
+    b.textContent = `${level}×`;
+    b.style.fontSize = "13px";
+    b.style.padding = "5px 12px";
+    b.style.border = on ? "1px solid #2f6f4f" : "1px solid #c4ccc0";
+    b.style.borderRadius = "6px";
+    b.style.background = on ? "#2f6f4f" : "#eef1ec";
+    b.style.color = on ? "#fff" : "#415146";
+    b.style.cursor = "pointer";
+    b.onclick = () => {
+      void applyMic({ ...cfg, gain: level });
+    };
+    gainRow.append(b);
+  }
+  pane.append(valueRow("input gain", gainRow));
+
+  // Active device — earned from what the loop actually opened.
+  const activeName =
+    ordered.find((d) => d.id === view.active_id)?.name ??
+    (view.active_id ? "selected device" : "none");
+  pane.append(
+    valueRow(
+      "active microphone",
+      automation(text("div", activeName), ids["settings.mic.active"]),
+    ),
+  );
+
+  // Device priority list — reorder + enable/disable. Highest priority first.
+  const list = automation(document.createElement("div"), ids["settings.mic.devices"]);
+  list.style.display = "flex";
+  list.style.flexDirection = "column";
+  list.style.gap = "6px";
+  list.style.padding = "4px 0";
+  if (ordered.length === 0) {
+    const empty = text("div", "no microphone input devices");
+    empty.style.color = "#9aa49c";
+    empty.style.fontSize = "13px";
+    list.append(empty);
+  }
+  ordered.forEach((d, idx) => {
+    const disabled = cfg.disabled.includes(d.id);
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.gap = "8px";
+    row.style.fontSize = "13px";
+
+    const orderIds = ordered.map((x) => x.id);
+    row.append(
+      reorderButton("↑", idx > 0, () => {
+        const o = [...orderIds];
+        [o[idx - 1], o[idx]] = [o[idx], o[idx - 1]];
+        void applyMic({ ...cfg, priority: o });
+      }),
+    );
+    row.append(
+      reorderButton("↓", idx < ordered.length - 1, () => {
+        const o = [...orderIds];
+        [o[idx + 1], o[idx]] = [o[idx], o[idx + 1]];
+        void applyMic({ ...cfg, priority: o });
+      }),
+    );
+
+    const label = text("span", d.name);
+    label.style.flex = "1";
+    if (disabled) {
+      label.style.textDecoration = "line-through";
+      label.style.color = "#9aa49c";
+    }
+    if (d.id === view.active_id) {
+      const badge = text("span", " · active");
+      badge.style.color = "#2f6f4f";
+      label.append(badge);
+    }
+    row.append(label);
+
+    const toggle = document.createElement("button");
+    toggle.textContent = disabled ? "enable" : "disable";
+    toggle.style.fontSize = "12px";
+    toggle.style.padding = "4px 10px";
+    toggle.style.border = "1px solid #c4ccc0";
+    toggle.style.borderRadius = "6px";
+    toggle.style.background = "#eef1ec";
+    toggle.style.color = "#415146";
+    toggle.style.cursor = "pointer";
+    toggle.onclick = () => {
+      const next = disabled
+        ? cfg.disabled.filter((x) => x !== d.id)
+        : [...cfg.disabled, d.id];
+      void applyMic({ ...cfg, disabled: next });
+    };
+    row.append(toggle);
+
+    list.append(row);
+  });
+  pane.append(valueRow("devices", document.createElement("div")));
+  pane.append(list);
+
+  return pane;
+}
+
 function renderSettings(dump: HealthDump): void {
   resetRoot(ids["settings.window.root"]);
 
@@ -824,6 +1016,9 @@ function renderSettings(dump: HealthDump): void {
   }
   if (latestHotkey) {
     root.append(renderHotkeySection(latestHotkey));
+  }
+  if (latestMic) {
+    root.append(renderMicSection(latestMic));
   }
   root.append(renderPairingSection(dump));
   if (latestUpdate) {
@@ -1336,18 +1531,22 @@ async function boot(): Promise<void> {
     rerender();
     return;
   }
-  const [health, update, exclusions, apps, hotkey] = await Promise.all([
+  const [health, update, exclusions, apps, hotkey, micCfg, mics] = await Promise.all([
     invoke<HealthDump>("get_health"),
     invoke<UpdateView>("update_get").catch(() => null),
     invoke<ExclusionRules>("get_exclusions").catch(() => null),
     invoke<RunningApp[]>("list_running_apps").catch(() => [] as RunningApp[]),
     invoke<HotkeyView>("get_hotkey").catch(() => null),
+    invoke<MicView>("get_mic_config").catch(() => null),
+    invoke<MicDeviceRef[]>("list_mic_devices").catch(() => [] as MicDeviceRef[]),
   ]);
   latestHealth = health;
   latestUpdate = update;
   latestExclusions = exclusions;
   runningApps = apps;
   latestHotkey = hotkey;
+  latestMic = micCfg;
+  micDevices = mics;
   rerender();
 }
 

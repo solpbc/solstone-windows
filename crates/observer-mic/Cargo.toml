@@ -1,0 +1,14 @@
+[package]
+name = "observer-mic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Microphone control model: owner device priority + per-device disable + input gain, the pure device-selection policy (highest-priority enabled present device), and the gain-application DSP. Pure, host-testable; the platform tier enumerates real WASAPI endpoints and opens the selected one."
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

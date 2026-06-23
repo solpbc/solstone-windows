@@ -17,6 +17,7 @@ mod health;
 mod hotkey;
 mod ipc;
 mod lifecycle;
+mod mic;
 mod tray;
 mod update;
 mod windows;

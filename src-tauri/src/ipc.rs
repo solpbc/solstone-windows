@@ -167,6 +167,34 @@ pub fn set_hotkey(
     ctrl.set(config);
 }
 
+// ── Microphone controls ────────────────────────────────────────────────────────
+// Owner device priority + per-device disable + input gain. `set_mic_config` writes
+// the shared policy; the mic capture loop reconciles selection + gain on its next
+// cadence and publishes the actually-open device id back, which `get_mic_config`
+// surfaces as `active_id` — so "active" is earned, not guessed.
+
+/// The current mic config + the actually-open device id (Settings render).
+#[tauri::command]
+pub fn get_mic_config(ctrl: tauri::State<'_, crate::mic::MicController>) -> observer_mic::MicView {
+    ctrl.view()
+}
+
+/// Replace the mic config (priority / disabled / gain). Effective on the capture
+/// loop's next reconcile and persisted to `mic.json`.
+#[tauri::command]
+pub fn set_mic_config(
+    ctrl: tauri::State<'_, crate::mic::MicController>,
+    config: observer_mic::MicConfig,
+) {
+    ctrl.set(config);
+}
+
+/// The live input devices the owner can prioritize / disable (id + friendly name).
+#[tauri::command]
+pub fn list_mic_devices() -> Vec<observer_mic::MicDeviceRef> {
+    capture_wasapi::list_mic_devices()
+}
+
 // ── Updater intents ──────────────────────────────────────────────────────────
 // User intents for the in-app updater. Like the rest of the IPC surface these
 // only *ask* the engine to act; update state is earned from the Velopack result

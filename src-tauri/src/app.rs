@@ -77,6 +77,9 @@ pub fn run() {
             crate::ipc::list_running_apps,
             crate::ipc::get_hotkey,
             crate::ipc::set_hotkey,
+            crate::ipc::get_mic_config,
+            crate::ipc::set_mic_config,
+            crate::ipc::list_mic_devices,
             crate::ipc::update_get,
             crate::ipc::update_check_now,
             crate::ipc::update_download,
@@ -121,11 +124,20 @@ pub fn run() {
                 platform_win::local_data_root().join("exclusions.json"),
             );
 
+            // Microphone controls: load persisted device priority/disable/gain and
+            // share the handles with the WASAPI mic source (it reconciles the
+            // selected device + gain live and publishes the open device id back).
+            let mic =
+                crate::mic::MicController::new(platform_win::local_data_root().join("mic.json"));
+
             let sources = Sources {
                 screen: Box::new(capture_wgc::WgcScreenSource::new(exclusions.rules_handle())),
                 screen_encoder: Box::new(capture_screen_encode::MfScreenEncoder::new()),
                 system_audio: Box::new(capture_wasapi::WasapiSystemAudioSource::new()),
-                mic: Box::new(capture_wasapi::WasapiMicSource::new()),
+                mic: Box::new(capture_wasapi::WasapiMicSource::new(
+                    mic.config_handle(),
+                    mic.active_handle(),
+                )),
             };
             let mut recovery = platform_win::LocalRecoveryFs::default();
             let segment_fs = platform_win::LocalSegmentFs::default();
@@ -200,6 +212,7 @@ pub fn run() {
                 platform_win::local_data_root().join("hotkey.json"),
             );
             app.manage(hotkey.clone());
+            app.manage(mic.clone());
 
             let (tray, mi_start, pause_submenu, mi_resume) =
                 crate::tray::init(app, cmd_tx.clone())?;

@@ -97,6 +97,11 @@ pub mod settings {
     pub const HOTKEY_COMBO: &str = "settings.hotkey.combo";
     pub const HOTKEY_CLEAR: &str = "settings.hotkey.clear";
     pub const HOTKEY_STATUS: &str = "settings.hotkey.status";
+    /// Microphones pane: the device priority/disable list, the active-device line,
+    /// and the input-gain control.
+    pub const MIC_DEVICES: &str = "settings.mic.devices";
+    pub const MIC_ACTIVE: &str = "settings.mic.active";
+    pub const MIC_GAIN: &str = "settings.mic.gain";
 }
 
 /// About window.
@@ -191,6 +196,9 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.hotkey.combo", settings::HOTKEY_COMBO),
         ("settings.hotkey.clear", settings::HOTKEY_CLEAR),
         ("settings.hotkey.status", settings::HOTKEY_STATUS),
+        ("settings.mic.devices", settings::MIC_DEVICES),
+        ("settings.mic.active", settings::MIC_ACTIVE),
+        ("settings.mic.gain", settings::MIC_GAIN),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
     ])

@@ -129,6 +129,7 @@ const PURE_CRATES: &[&str] = &[
     "observer-contract",
     "observer-exclusion",
     "observer-hotkey",
+    "observer-mic",
     "observer-update",
     "observer-pl",
     "observer-nv12",
