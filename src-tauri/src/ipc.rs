@@ -78,6 +78,23 @@ pub async fn open_about(app: tauri::AppHandle) -> Result<(), String> {
     crate::windows::open_about(&app).map_err(|e| e.to_string())
 }
 
+/// The Windows release-history page — the in-app "read the full notes online"
+/// link's destination, the analog of macOS `UpdatesCopy.releaseNotesOnlineURL`.
+const RELEASE_NOTES_URL: &str = "https://solstone.app/releases/windows";
+
+/// Open the release-history page in the owner's default browser. The webview is a
+/// sealed renderer with no navigation power (a raw link would only re-navigate
+/// the Settings webview itself); this hands the one outbound affordance to the
+/// OS. The URL is fixed here, never passed from the webview, so the renderer can
+/// only ever open this exact first-party page — not an arbitrary URL.
+#[tauri::command]
+pub fn open_release_notes(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(RELEASE_NOTES_URL, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Pair this observer to a journal from a scanned/pasted pair-link, then start
 /// uploading. The pairing handshake + registration run inline (so the UI sees
 /// success/failure), then the upload + heartbeat loop is spawned for the process

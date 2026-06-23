@@ -1602,8 +1602,38 @@ function updateNotesBlock(notes: string): HTMLElement {
       card.append(p);
     }
   }
-  wrap.append(cap, card);
+  wrap.append(cap, card, updateNotesOnlineLink());
   return wrap;
+}
+
+// The macOS "read the full notes online" affordance (UpdatesCopy.releaseNotesOnlineURL).
+// Lives inside the notes block, so it renders only when the feed actually carried
+// notes — the same NotesMarkdown the web page renders from the one releases.win.json
+// feed — and can therefore never point at an empty release-history page. The webview
+// is a sealed renderer with no navigation power: the href mirrors the destination for
+// hover/a11y semantics but is never followed (a raw nav would replace the Settings
+// shell); the click is handed to the backend, which opens the system browser.
+function updateNotesOnlineLink(): HTMLAnchorElement {
+  const link = document.createElement("a");
+  link.textContent = "read the full notes online";
+  link.href = "https://solstone.app/releases/windows";
+  link.style.display = "inline-block";
+  link.style.margin = "8px 0 0";
+  link.style.fontSize = "12.5px";
+  link.style.color = "#2f6f4f";
+  link.style.textDecoration = "none";
+  link.style.cursor = "pointer";
+  link.onmouseenter = () => {
+    link.style.textDecoration = "underline";
+  };
+  link.onmouseleave = () => {
+    link.style.textDecoration = "none";
+  };
+  link.onclick = (e) => {
+    e.preventDefault();
+    void invoke("open_release_notes");
+  };
+  return link;
 }
 
 function renderUpdatesSection(view: UpdateView): HTMLElement {

@@ -66,6 +66,11 @@ fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
 /// Boot the tray-resident observer.
 pub fn run() {
     let app = tauri::Builder::default()
+        // Backend-only: opens the owner's default browser for `open_release_notes`.
+        // No opener:* permission is added to the webview capability set, so the
+        // renderer cannot call the plugin directly or name a URL — its sole
+        // outbound reach is the fixed-URL command below.
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             crate::ipc::start_observing,
             crate::ipc::pause,
@@ -92,6 +97,7 @@ pub fn run() {
             crate::ipc::update_set_auto_check,
             crate::ipc::update_set_auto_download,
             crate::ipc::update_set_interval,
+            crate::ipc::open_release_notes,
         ])
         .setup(|app| {
             if crate::lifecycle::acquire_single_instance()

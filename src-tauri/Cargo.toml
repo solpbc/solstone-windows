@@ -40,6 +40,12 @@ tokio.workspace = true
 
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 
+# Open the owner's default browser for the one outbound affordance (the in-app
+# "read the full notes online" link -> the release-history page). Used only from
+# Rust, behind the fixed-URL `open_release_notes` command; no opener:* permission
+# is granted to the webview, so the renderer can never name an arbitrary URL.
+tauri-plugin-opener = "2"
+
 # Velopack-aware entry hook (VelopackApp runs first in main) + per-user install
 # feed. Exact pin: the app crate is not built by any gated path, so the build box
 # must resolve exactly the version the integration was authored against.
