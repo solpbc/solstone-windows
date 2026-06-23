@@ -158,6 +158,10 @@ let pairingBusy = false;
 // preserves a half-typed title keyword across re-renders (like pairingDraft).
 let latestExclusions: ExclusionRules | null = null;
 let latestHotkey: HotkeyView | null = null;
+// True while the press-to-capture field is listening for the owner's next combo.
+// Held in a module var so a 1s health re-render keeps the capturing state; the
+// keydown listener lives on the window, added once when capture starts.
+let hotkeyCapturing = false;
 let latestMic: MicView | null = null;
 let micDevices: MicDeviceRef[] = [];
 let latestRetention: RetentionConfig | null = null;
@@ -231,6 +235,56 @@ function valueRow(labelText: string, value: HTMLElement): HTMLDivElement {
   value.style.overflowWrap = "anywhere";
   row.append(labelNode, value);
   return row;
+}
+
+// ── Settings experience vocabulary ───────────────────────────────────────────
+// The within-section building blocks the Updates pass established (orienting
+// caption → subhead → helper caption → trust footnote) so every Settings
+// section reads as a status/control surface, not a flat label:value table.
+
+// An orienting line under a section heading or a subhead (the macOS GroupBox caption).
+function helpCaption(value: string): HTMLElement {
+  const d = text("div", value);
+  d.style.color = "#5f6b63";
+  d.style.fontSize = "12px";
+  d.style.lineHeight = "1.45";
+  d.style.margin = "0 0 8px";
+  return d;
+}
+
+// A group label within a section (e.g. "device priority", "your shortcut").
+function subheadLabel(value: string): HTMLElement {
+  const d = text("div", value);
+  d.style.fontSize = "12px";
+  d.style.fontWeight = "600";
+  d.style.color = "#5f6b63";
+  d.style.margin = "14px 0 4px";
+  return d;
+}
+
+// A trailing caption beneath a control (the macOS "changes take effect…" line).
+function microCaption(value: string): HTMLElement {
+  const d = text("div", value);
+  d.style.color = "#5f6b63";
+  d.style.fontSize = "12px";
+  d.style.lineHeight = "1.4";
+  d.style.margin = "4px 0 0";
+  return d;
+}
+
+// A bordered-top trust line at the foot of a section (the Updates privacy-footnote
+// register), for the load-bearing covenant copy a trust surface must land.
+function trustFootnote(value: string): HTMLElement {
+  const foot = document.createElement("div");
+  foot.style.marginTop = "16px";
+  foot.style.paddingTop = "12px";
+  foot.style.borderTop = "1px solid #e2e7dd";
+  const ft = text("div", value);
+  ft.style.fontSize = "12px";
+  ft.style.color = "#5f6b63";
+  ft.style.lineHeight = "1.45";
+  foot.append(ft);
+  return foot;
 }
 
 function phaseLabel(phase: AppPhase): string {
@@ -398,6 +452,7 @@ function removableList(
   values: string[],
   listAutomationId: string,
   onRemove: (value: string) => void,
+  emptyText = "none yet",
 ): HTMLElement {
   const list = automation(document.createElement("div"), listAutomationId);
   list.style.display = "flex";
@@ -405,7 +460,7 @@ function removableList(
   list.style.gap = "6px";
   list.style.padding = "4px 0";
   if (values.length === 0) {
-    const empty = text("div", "none yet");
+    const empty = text("div", emptyText);
     empty.style.color = "#9aa49c";
     empty.style.fontSize = "13px";
     list.append(empty);
@@ -442,29 +497,31 @@ function removableList(
 
 function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLElement {
   const pane = section("Privacy");
-
-  // Private browsing — title-heuristic auto-exclude, on by default.
   pane.append(
-    checkboxRow(
-      "private browsing",
+    helpCaption("choose what solstone keeps out of your journal. changes take effect right away."),
+  );
+
+  // Private browsing — title-heuristic auto-exclude, on by default. The honest
+  // caveat (a title heuristic, not a structural exclude) is stated, not implied.
+  pane.append(
+    toggleRow(
+      "keep private browsing windows out",
       ids["settings.exclusions.privateBrowsing"],
       rules.exclude_private_browsing,
-      true,
       (on) => {
         void applyExclusions({ ...rules, exclude_private_browsing: on });
       },
     ),
   );
-  const privateHelp = text(
-    "div",
-    "automatically keep private and incognito browser windows out of the journal",
+  pane.append(
+    microCaption(
+      "solstone recognizes private and incognito windows by their title — it catches the major browsers in their default private mode.",
+    ),
   );
-  privateHelp.style.color = "#5f6b63";
-  privateHelp.style.fontSize = "12px";
-  privateHelp.style.padding = "0 0 6px";
-  pane.append(privateHelp);
 
   // Excluded apps — pick from the live running-app list (robust process identity).
+  pane.append(subheadLabel("excluded apps"));
+  pane.append(helpCaption("windows from these apps never reach your journal."));
   const appPickRow = document.createElement("div");
   appPickRow.style.display = "grid";
   appPickRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
@@ -503,18 +560,24 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
     },
   );
   appPickRow.append(appSelect, appAdd);
-  pane.append(valueRow("excluded apps", document.createElement("div")));
   pane.append(appPickRow);
   pane.append(
-    removableList(rules.excluded_exes, ids["settings.exclusions.appsList"], (exe) => {
-      void applyExclusions({
-        ...rules,
-        excluded_exes: rules.excluded_exes.filter((e) => e !== exe),
-      });
-    }),
+    removableList(
+      rules.excluded_exes,
+      ids["settings.exclusions.appsList"],
+      (exe) => {
+        void applyExclusions({
+          ...rules,
+          excluded_exes: rules.excluded_exes.filter((e) => e !== exe),
+        });
+      },
+      "nothing excluded yet",
+    ),
   );
 
   // Title keywords — case-insensitive substring of a window title.
+  pane.append(subheadLabel("title keywords"));
+  pane.append(helpCaption("hide any window whose title contains a word you choose."));
   const titleRow = document.createElement("div");
   titleRow.style.display = "grid";
   titleRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
@@ -550,27 +613,41 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
 
   const titleAdd = actionButton("add", ids["settings.exclusions.titleAdd"], true, addTitle);
   titleRow.append(titleInput, titleAdd);
-  pane.append(valueRow("title keywords", document.createElement("div")));
   pane.append(titleRow);
   pane.append(
-    removableList(rules.title_patterns, ids["settings.exclusions.titlesList"], (keyword) => {
-      void applyExclusions({
-        ...rules,
-        title_patterns: rules.title_patterns.filter((k) => k !== keyword),
-      });
-    }),
-  );
-
-  // Exclusion activity — the never-silent surface: redacted/dropped this session.
-  pane.append(
-    valueRow(
-      "exclusion activity",
-      automation(
-        text("div", exclusionActivityLabel(dump.exclusions)),
-        ids["settings.exclusions.activity"],
-      ),
+    removableList(
+      rules.title_patterns,
+      ids["settings.exclusions.titlesList"],
+      (keyword) => {
+        void applyExclusions({
+          ...rules,
+          title_patterns: rules.title_patterns.filter((k) => k !== keyword),
+        });
+      },
+      "no keywords yet",
     ),
   );
+
+  // Exclusion activity — the never-silent surface (redacted/dropped this session),
+  // landed as a labeled trust footnote: the proof the exclusions are working.
+  const activityFoot = document.createElement("div");
+  activityFoot.style.marginTop = "16px";
+  activityFoot.style.paddingTop = "12px";
+  activityFoot.style.borderTop = "1px solid #e2e7dd";
+  const activityCap = text("div", "exclusion activity");
+  activityCap.style.fontSize = "12px";
+  activityCap.style.fontWeight = "600";
+  activityCap.style.color = "#5f6b63";
+  activityCap.style.margin = "0 0 3px";
+  const activityVal = automation(
+    text("div", exclusionActivityLabel(dump.exclusions)),
+    ids["settings.exclusions.activity"],
+  );
+  activityVal.style.fontSize = "12px";
+  activityVal.style.color = "#5f6b63";
+  activityVal.style.lineHeight = "1.45";
+  activityFoot.append(activityCap, activityVal);
+  pane.append(activityFoot);
 
   return pane;
 }
@@ -692,6 +769,105 @@ function hotkeyStatusLabel(view: HotkeyView): string {
   }
 }
 
+// Honest registration status as [text, color]: semantic color where the job is
+// distinguishing states (registered = active, taken/failed = a problem), AA on
+// the light ground. The text is the same source of truth as hotkeyStatusLabel.
+function hotkeyStatusDisplay(view: HotkeyView): [string, string] {
+  const labelText = hotkeyStatusLabel(view);
+  switch (view.registration) {
+    case "registered":
+      return [labelText, "#2f6f4f"];
+    case "combo_taken":
+    case "failed":
+      return [labelText, "#9a4a2f"];
+    case "inactive":
+      return [labelText, "#5f6b63"];
+  }
+}
+
+function vkLabel(vk: number): string {
+  const found = HOTKEY_KEYS.find(([v]) => v === vk);
+  return found ? found[1] : "";
+}
+
+// "Ctrl + Alt + P" from a config; "" when there's no real combo to show.
+function hotkeyComboString(cfg: HotkeyConfig): string {
+  const parts: string[] = [];
+  if (cfg.ctrl) parts.push("Ctrl");
+  if (cfg.alt) parts.push("Alt");
+  if (cfg.shift) parts.push("Shift");
+  if (cfg.win) parts.push("Win");
+  const key = vkLabel(cfg.vk);
+  if (key) parts.push(key);
+  return parts.join(" + ");
+}
+
+// Map a keydown to one of the allowed virtual-key codes (A–Z, 0–9, F1–F12,
+// Space) — exactly the HOTKEY_KEYS set. Returns 0 for a modifier-only or
+// unsupported key, so the capture keeps waiting for a real key.
+function vkFromKeydown(event: KeyboardEvent): number {
+  const code = event.code;
+  if (code.length === 4 && code.startsWith("Key")) {
+    return code.charCodeAt(3); // "KeyA" -> 'A' = 0x41
+  }
+  if (code.length === 6 && code.startsWith("Digit")) {
+    return 0x30 + Number(code.slice(5));
+  }
+  if (/^F([1-9]|1[0-2])$/.test(code)) {
+    return 0x70 + Number(code.slice(1)) - 1;
+  }
+  if (code === "Space") {
+    return 0x20;
+  }
+  return 0;
+}
+
+function onHotkeyCaptureKey(event: KeyboardEvent): void {
+  if (!hotkeyCapturing) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Escape") {
+    stopHotkeyCapture();
+    return;
+  }
+  const vk = vkFromKeydown(event);
+  if (vk === 0) {
+    return; // modifier-only or unsupported — wait for a real key.
+  }
+  const ctrl = event.ctrlKey;
+  const alt = event.altKey;
+  const shift = event.shiftKey;
+  const win = event.metaKey;
+  if (!(ctrl || alt || shift || win)) {
+    return; // a global shortcut needs at least one modifier — keep waiting.
+  }
+  hotkeyCapturing = false;
+  window.removeEventListener("keydown", onHotkeyCaptureKey, true);
+  // The backend reports the honest registration outcome (registered / taken /
+  // failed); the capture only records the owner's intended combo.
+  void applyHotkey({ enabled: true, ctrl, alt, shift, win, vk });
+}
+
+function startHotkeyCapture(): void {
+  if (hotkeyCapturing) {
+    return;
+  }
+  hotkeyCapturing = true;
+  window.addEventListener("keydown", onHotkeyCaptureKey, true);
+  rerender();
+}
+
+function stopHotkeyCapture(): void {
+  if (!hotkeyCapturing) {
+    return;
+  }
+  hotkeyCapturing = false;
+  window.removeEventListener("keydown", onHotkeyCaptureKey, true);
+  rerender();
+}
+
 async function applyHotkey(next: HotkeyConfig): Promise<void> {
   latestHotkey = { config: next, registration: latestHotkey?.registration ?? "inactive" };
   rerender();
@@ -716,79 +892,88 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   const pane = section("Global shortcut");
   const cfg = view.config;
 
+  pane.append(helpCaption("a global shortcut to pause and resume solstone from anywhere."));
+
   pane.append(
-    checkboxRow(
-      "pause/resume shortcut",
+    toggleRow(
+      "enable the pause / resume shortcut",
       ids["settings.hotkey.enabled"],
       cfg.enabled,
-      true,
       (on) => {
         void applyHotkey({ ...cfg, enabled: on });
       },
     ),
   );
 
-  // Modifier checkboxes — the functional default (VPX owns a nicer "press your
-  // shortcut" capture in the experience pass).
-  const mods = document.createElement("div");
-  mods.style.display = "flex";
-  mods.style.flexWrap = "wrap";
-  mods.style.gap = "12px";
-  const modDefs: ReadonlyArray<readonly ["ctrl" | "alt" | "shift" | "win", string]> = [
-    ["ctrl", "Ctrl"],
-    ["alt", "Alt"],
-    ["shift", "Shift"],
-    ["win", "Win"],
-  ];
-  for (const [key, lbl] of modDefs) {
-    const wrap = document.createElement("label");
-    wrap.style.display = "inline-flex";
-    wrap.style.alignItems = "center";
-    wrap.style.gap = "4px";
-    wrap.style.fontSize = "13px";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = cfg[key];
-    box.onchange = () => {
-      void applyHotkey({ ...cfg, [key]: box.checked });
-    };
-    wrap.append(box, text("span", lbl));
-    mods.append(wrap);
+  // Press-to-capture — the native global-shortcut pattern. The owner clicks the
+  // field and presses their combo; the field carries the settings.hotkey.combo
+  // contract id (the combo control). Writes the same HotkeyConfig fields.
+  pane.append(subheadLabel("your shortcut"));
+  const combo = hotkeyComboString(cfg);
+  const field = document.createElement("button");
+  field.dataset.automationId = ids["settings.hotkey.combo"];
+  field.style.display = "flex";
+  field.style.alignItems = "center";
+  field.style.justifyContent = "space-between";
+  field.style.gap = "10px";
+  field.style.width = "100%";
+  field.style.textAlign = "left";
+  field.style.fontSize = "13px";
+  field.style.padding = "9px 12px";
+  field.style.borderRadius = "6px";
+  field.style.border = `1px dashed ${hotkeyCapturing ? "#2f6f4f" : "#c4ccc0"}`;
+  field.style.background = hotkeyCapturing ? "#eef4ef" : "#ffffff";
+  field.style.color = "#17201b";
+  field.style.cursor = "pointer";
+  if (hotkeyCapturing) {
+    const lead = text("span", "press your shortcut…");
+    lead.style.color = "#2f6f4f";
+    lead.style.fontWeight = "600";
+    const hint = text("span", "esc to cancel");
+    hint.style.color = "#9aa49c";
+    hint.style.fontSize = "12px";
+    field.append(lead, hint);
+    field.onclick = () => stopHotkeyCapture();
+  } else if (combo) {
+    const kbd = text("span", combo);
+    kbd.style.fontFamily = 'ui-monospace, "Cascadia Code", Consolas, monospace';
+    const hint = text("span", "change");
+    hint.style.color = "#5f6b63";
+    hint.style.fontSize = "12px";
+    field.append(kbd, hint);
+    field.onclick = () => startHotkeyCapture();
+  } else {
+    const lead = text("span", "click, then press your shortcut");
+    lead.style.color = "#5f6b63";
+    const hint = text("span", "set");
+    hint.style.color = "#2f6f4f";
+    hint.style.fontSize = "12px";
+    hint.style.fontWeight = "600";
+    field.append(lead, hint);
+    field.onclick = () => startHotkeyCapture();
   }
-  pane.append(valueRow("modifiers", mods));
+  pane.append(field);
+  pane.append(microCaption("hold one or more of Ctrl, Alt, Shift, or Win and press a key."));
 
-  const keySel = document.createElement("select");
-  keySel.dataset.automationId = ids["settings.hotkey.combo"];
-  keySel.style.fontSize = "13px";
-  const none = document.createElement("option");
-  none.value = "0";
-  none.textContent = "(choose a key)";
-  keySel.append(none);
-  for (const [vk, lbl] of HOTKEY_KEYS) {
-    const opt = document.createElement("option");
-    opt.value = String(vk);
-    opt.textContent = lbl;
-    if (vk === cfg.vk) {
-      opt.selected = true;
-    }
-    keySel.append(opt);
-  }
-  keySel.onchange = () => {
-    void applyHotkey({ ...cfg, vk: Number(keySel.value) });
-  };
-  pane.append(valueRow("key", keySel));
+  const [statusText, statusColor] = hotkeyStatusDisplay(view);
+  const statusEl = automation(text("div", statusText), ids["settings.hotkey.status"]);
+  statusEl.style.color = statusColor;
+  pane.append(valueRow("status", statusEl));
 
-  pane.append(
-    valueRow(
-      "status",
-      automation(text("div", hotkeyStatusLabel(view)), ids["settings.hotkey.status"]),
-    ),
-  );
-
-  const clearRow = document.createElement("div");
-  clearRow.style.padding = "7px 0";
-  clearRow.append(
-    actionButton("clear shortcut", ids["settings.hotkey.clear"], hotkeyHasCombo(cfg), () => {
+  // Clear — a quiet text button, present only when a combo is set.
+  if (hotkeyHasCombo(cfg)) {
+    const clear = document.createElement("button");
+    clear.textContent = "clear shortcut";
+    clear.dataset.automationId = ids["settings.hotkey.clear"];
+    clear.style.border = "none";
+    clear.style.background = "transparent";
+    clear.style.color = "#5f6b63";
+    clear.style.cursor = "pointer";
+    clear.style.fontSize = "12px";
+    clear.style.padding = "6px 0";
+    clear.style.textDecoration = "underline";
+    clear.onclick = () => {
+      stopHotkeyCapture();
       void applyHotkey({
         enabled: false,
         ctrl: false,
@@ -797,9 +982,11 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
         win: false,
         vk: 0,
       });
-    }),
-  );
-  pane.append(clearRow);
+    };
+    const clearWrap = document.createElement("div");
+    clearWrap.append(clear);
+    pane.append(clearWrap);
+  }
 
   return pane;
 }
@@ -868,40 +1055,19 @@ function renderMicSection(view: MicView): HTMLElement {
   const cfg = view.config;
   const ordered = orderedMicDevices(cfg, micDevices);
 
-  // Input gain — segmented 1× / 2× / 4× / 8×.
-  const gainRow = automation(document.createElement("div"), ids["settings.mic.gain"]);
-  gainRow.style.display = "flex";
-  gainRow.style.gap = "6px";
-  for (const level of MIC_GAIN_LEVELS) {
-    const on = cfg.gain === level;
-    const b = document.createElement("button");
-    b.textContent = `${level}×`;
-    b.style.fontSize = "13px";
-    b.style.padding = "5px 12px";
-    b.style.border = on ? "1px solid #2f6f4f" : "1px solid #c4ccc0";
-    b.style.borderRadius = "6px";
-    b.style.background = on ? "#2f6f4f" : "#eef1ec";
-    b.style.color = on ? "#fff" : "#415146";
-    b.style.cursor = "pointer";
-    b.onclick = () => {
-      void applyMic({ ...cfg, gain: level });
-    };
-    gainRow.append(b);
-  }
-  pane.append(valueRow("input gain", gainRow));
-
-  // Active device — earned from what the loop actually opened.
-  const activeName =
-    ordered.find((d) => d.id === view.active_id)?.name ??
-    (view.active_id ? "selected device" : "none");
   pane.append(
-    valueRow(
-      "active microphone",
-      automation(text("div", activeName), ids["settings.mic.active"]),
+    helpCaption(
+      "solstone observes through one microphone at a time. set which one, and how much to boost it.",
     ),
   );
 
-  // Device priority list — reorder + enable/disable. Highest priority first.
+  // Device priority first (macOS-sibling order) — reorder + enable/disable.
+  pane.append(subheadLabel("device priority"));
+  pane.append(
+    helpCaption(
+      "the top enabled microphone is used. use ↑ ↓ to set the order; solstone falls back to the next if one is unavailable.",
+    ),
+  );
   const list = automation(document.createElement("div"), ids["settings.mic.devices"]);
   list.style.display = "flex";
   list.style.flexDirection = "column";
@@ -969,14 +1135,62 @@ function renderMicSection(view: MicView): HTMLElement {
 
     list.append(row);
   });
-  pane.append(valueRow("devices", document.createElement("div")));
   pane.append(list);
+
+  // Active device — earned from what the loop actually opened (never guessed).
+  // Carries the settings.mic.active contract id.
+  const activeName =
+    ordered.find((d) => d.id === view.active_id)?.name ??
+    (view.active_id ? "selected device" : "none");
+  const activeRow = document.createElement("div");
+  activeRow.style.display = "flex";
+  activeRow.style.gap = "6px";
+  activeRow.style.fontSize = "12px";
+  activeRow.style.color = "#5f6b63";
+  activeRow.style.margin = "6px 0 0";
+  const activeVal = automation(text("span", activeName), ids["settings.mic.active"]);
+  activeVal.style.color = "#17201b";
+  activeRow.append(text("span", "active:"), activeVal);
+  pane.append(activeRow);
+
+  // Input gain — segmented 1× / 2× / 4× / 8×.
+  pane.append(subheadLabel("input gain"));
+  const gainRow = automation(document.createElement("div"), ids["settings.mic.gain"]);
+  gainRow.style.display = "flex";
+  gainRow.style.gap = "6px";
+  for (const level of MIC_GAIN_LEVELS) {
+    const on = cfg.gain === level;
+    const b = document.createElement("button");
+    b.textContent = `${level}×`;
+    b.style.fontSize = "13px";
+    b.style.padding = "5px 12px";
+    b.style.border = on ? "1px solid #2f6f4f" : "1px solid #c4ccc0";
+    b.style.borderRadius = "6px";
+    b.style.background = on ? "#2f6f4f" : "#eef1ec";
+    b.style.color = on ? "#fff" : "#415146";
+    b.style.cursor = "pointer";
+    b.onclick = () => {
+      void applyMic({ ...cfg, gain: level });
+    };
+    gainRow.append(b);
+  }
+  pane.append(gainRow);
+  pane.append(
+    microCaption(
+      "a louder input for quiet microphones — changes apply right away. a stronger boost can pick up more background noise in a quiet room.",
+    ),
+  );
 
   return pane;
 }
 
 function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
   const pane = section("Local storage");
+  pane.append(
+    helpCaption(
+      "after a segment safely reaches your journal, how long should solstone keep its local copy on this computer?",
+    ),
+  );
 
   const sel = document.createElement("select");
   sel.dataset.automationId = ids["settings.retention"];
@@ -1005,15 +1219,11 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
     void invoke("set_retention", { config: next }).catch(() => {});
   };
   pane.append(valueRow("keep segments", sel));
-
-  const help = text(
-    "div",
-    "how long segments stay on this computer after they reach your journal. unsynced segments are always kept.",
+  pane.append(
+    trustFootnote(
+      "your unsynced segments are never deleted — solstone only clears local copies of segments already saved to your journal.",
+    ),
   );
-  help.style.color = "#5f6b63";
-  help.style.fontSize = "12px";
-  help.style.padding = "2px 0 0";
-  pane.append(help);
 
   return pane;
 }
@@ -1220,24 +1430,6 @@ function actionButton(
     b.onclick = onClick;
   }
   return b;
-}
-
-function checkboxRow(
-  labelText: string,
-  automationId: string,
-  checked: boolean,
-  enabled: boolean,
-  onChange: (on: boolean) => void,
-): HTMLDivElement {
-  const box = document.createElement("input");
-  box.type = "checkbox";
-  box.checked = checked;
-  box.disabled = !enabled;
-  box.dataset.automationId = automationId;
-  box.onchange = () => onChange(box.checked);
-  const wrap = document.createElement("div");
-  wrap.append(box);
-  return valueRow(labelText, wrap);
 }
 
 function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLElement {
