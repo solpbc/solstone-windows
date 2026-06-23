@@ -12,7 +12,7 @@
 
 #![forbid(unsafe_code)]
 
-use observer_model::{AppPhase, PauseReason, SourceKind, SourceReport, SourceState};
+use observer_model::{AppPhase, PauseReason, PauseSnapshot, SourceKind, SourceReport, SourceState};
 
 /// Intents and facts that move the observer's state. UI commands map to the
 /// `Requested*` intents; the engine emits the `Source*`/`Engine*` facts.
@@ -20,8 +20,14 @@ use observer_model::{AppPhase, PauseReason, SourceKind, SourceReport, SourceStat
 pub enum AppEvent {
     /// Operator asked to start observing.
     RequestedStart,
-    /// Operator (or the system) asked to pause.
-    RequestedPause(PauseReason),
+    /// Operator (or the system) asked to pause. `expires_at_epoch_secs` is an
+    /// absolute auto-resume deadline the caller derives from a chosen duration
+    /// against its own clock; `None` is an indefinite pause (the operator's
+    /// "until I resume", or a system lock/suspend pause).
+    RequestedPause {
+        reason: PauseReason,
+        expires_at_epoch_secs: Option<u64>,
+    },
     /// Operator asked to resume.
     RequestedResume,
     /// The engine finished construction + recovery and is ready.
@@ -32,13 +38,21 @@ pub enum AppEvent {
     SourceFaulted(SourceKind),
 }
 
+/// A pause in effect: why, and an optional absolute deadline for automatic
+/// resume. Reducer working memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PauseState {
+    reason: PauseReason,
+    expires_at_epoch_secs: Option<u64>,
+}
+
 /// The reducer's working memory. The public [`phase`](Self::phase) is always
 /// recomputed from these facts — there is no settable phase field.
 #[derive(Debug, Clone, Default)]
 pub struct StateMachine {
     engine_ready: bool,
     run_requested: bool,
-    paused: Option<PauseReason>,
+    paused: Option<PauseState>,
     screen: Option<SourceState>,
     system_audio: Option<SourceState>,
     // Mic is intentionally NOT required for `Observing`: a machine with no mic
@@ -58,7 +72,7 @@ impl StateMachine {
     /// The computed phase. Reachability of `Observing` requires the engine ready,
     /// a run requested, no active pause, and every *required* source `Active`.
     pub fn phase(&self) -> AppPhase {
-        if let Some(_reason) = self.paused {
+        if self.paused.is_some() {
             return AppPhase::Paused;
         }
         if !self.run_requested {
@@ -75,6 +89,26 @@ impl StateMachine {
         } else {
             AppPhase::Starting
         }
+    }
+
+    /// The honest pause snapshot for the health dump, given the current clock.
+    /// `None` when not paused; `seconds_remaining` is the live countdown to an
+    /// automatic resume for a duration-bounded pause, `None` for an indefinite one.
+    pub fn pause_snapshot(&self, now_epoch_secs: u64) -> Option<PauseSnapshot> {
+        self.paused.map(|p| PauseSnapshot {
+            reason: p.reason,
+            seconds_remaining: p
+                .expires_at_epoch_secs
+                .map(|exp| exp.saturating_sub(now_epoch_secs)),
+        })
+    }
+
+    /// True when a duration-bounded pause has reached its deadline and the engine
+    /// should auto-resume. An indefinite pause never expires on a timer.
+    pub fn pause_due_to_expire(&self, now_epoch_secs: u64) -> bool {
+        self.paused
+            .and_then(|p| p.expires_at_epoch_secs)
+            .is_some_and(|exp| now_epoch_secs >= exp)
     }
 
     fn required(&self) -> [&Option<SourceState>; 2] {
@@ -104,8 +138,14 @@ pub fn reduce(state: &mut StateMachine, event: AppEvent) -> AppPhase {
             state.run_requested = true;
             state.paused = None;
         }
-        AppEvent::RequestedPause(reason) => {
-            state.paused = Some(reason);
+        AppEvent::RequestedPause {
+            reason,
+            expires_at_epoch_secs,
+        } => {
+            state.paused = Some(PauseState {
+                reason,
+                expires_at_epoch_secs,
+            });
         }
         AppEvent::RequestedResume => {
             state.paused = None;
@@ -231,7 +271,69 @@ mod tests {
             &mut sm,
             AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
         );
-        let p = reduce(&mut sm, AppEvent::RequestedPause(PauseReason::Operator));
+        let p = reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: None,
+            },
+        );
         assert_eq!(p, AppPhase::Paused);
+    }
+
+    #[test]
+    fn indefinite_pause_has_no_remaining_and_never_expires() {
+        let mut sm = StateMachine::new();
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: None,
+            },
+        );
+        let snap = sm.pause_snapshot(1_000).expect("paused");
+        assert_eq!(snap.reason, PauseReason::Operator);
+        assert_eq!(snap.seconds_remaining, None);
+        assert!(!sm.pause_due_to_expire(u64::MAX));
+    }
+
+    #[test]
+    fn duration_pause_counts_down_then_expires() {
+        let mut sm = StateMachine::new();
+        // Paused at t=1000 for 900s -> deadline 1900.
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: Some(1_900),
+            },
+        );
+        assert_eq!(
+            sm.pause_snapshot(1_000).unwrap().seconds_remaining,
+            Some(900)
+        );
+        assert_eq!(
+            sm.pause_snapshot(1_870).unwrap().seconds_remaining,
+            Some(30)
+        );
+        assert!(!sm.pause_due_to_expire(1_899));
+        assert!(sm.pause_due_to_expire(1_900));
+        // Past the deadline, remaining saturates at 0 rather than underflowing.
+        assert_eq!(sm.pause_snapshot(2_000).unwrap().seconds_remaining, Some(0));
+    }
+
+    #[test]
+    fn resume_clears_pause_snapshot() {
+        let mut sm = StateMachine::new();
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: Some(1_900),
+            },
+        );
+        reduce(&mut sm, AppEvent::RequestedResume);
+        assert!(sm.pause_snapshot(1_000).is_none());
+        assert!(!sm.pause_due_to_expire(u64::MAX));
     }
 }

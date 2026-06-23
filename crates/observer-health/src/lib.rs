@@ -41,6 +41,7 @@ mod tests {
             sync: observer_model::SyncSnapshot::default(),
             screen_encoder: None,
             exclusions: None,
+            pause: None,
         }
     }
 

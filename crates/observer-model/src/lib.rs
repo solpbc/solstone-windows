@@ -343,6 +343,20 @@ pub struct SyncSnapshot {
     pub upload: UploadStatus,
 }
 
+/// The honest pause detail surfaced in the health dump while the observer is
+/// paused. Like every other field here it is *earned*, never asserted: it is
+/// present only when the reducer is actually in [`AppPhase::Paused`].
+///
+/// `seconds_remaining` counts down to an automatic resume for a duration-bounded
+/// operator pause (15m / 30m / 1h); it is `None` for an indefinite pause — the
+/// operator's "until I resume", or a system lock/suspend pause that ends on its
+/// own OS event rather than a timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseSnapshot {
+    pub reason: PauseReason,
+    pub seconds_remaining: Option<u64>,
+}
+
 /// The single honest-state payload, defined once and serialized identically
 /// three ways: the `--dump-state` CLI JSON, the localhost `/healthz` body, and
 /// the `health://changed` event the shell subscribes to. There is no second
@@ -371,6 +385,10 @@ pub struct HealthDump {
     /// Capture-exclusion accounting, present when the screen source enforces it.
     #[serde(default)]
     pub exclusions: Option<ExclusionHealth>,
+    /// Honest pause detail (reason + countdown to auto-resume), present only
+    /// while the observer is paused. `None` in every non-paused phase.
+    #[serde(default)]
+    pub pause: Option<PauseSnapshot>,
 }
 
 // ── Source traits ────────────────────────────────────────────────────────────

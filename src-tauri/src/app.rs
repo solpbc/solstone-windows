@@ -190,7 +190,8 @@ pub fn run() {
             app.manage(updater.clone());
             updater.spawn_timer();
 
-            let (tray, mi_start, mi_pause, mi_resume) = crate::tray::init(app, cmd_tx.clone())?;
+            let (tray, mi_start, pause_submenu, mi_resume) =
+                crate::tray::init(app, cmd_tx.clone())?;
 
             tauri::async_runtime::spawn(async move {
                 let _ = engine.run(shutdown_rx, cmd_rx).await;
@@ -217,7 +218,7 @@ pub fn run() {
                 let health = health.clone();
                 let tray = tray.clone();
                 let mi_start = mi_start.clone();
-                let mi_pause = mi_pause.clone();
+                let pause_submenu = pause_submenu.clone();
                 let mi_resume = mi_resume.clone();
                 let mut rx = watch_rx;
                 async move {
@@ -226,9 +227,9 @@ pub fn run() {
                         crate::tray::apply_state(
                             &tray,
                             &mi_start,
-                            &mi_pause,
+                            &pause_submenu,
                             &mi_resume,
-                            &dump.app_state,
+                            &dump,
                         );
                         let _ = app.emit("health://changed", &dump);
                         if rx.changed().await.is_err() {
@@ -259,6 +260,7 @@ pub fn run() {
                         sync,
                         screen_encoder: None,
                         exclusions,
+                        pause: None,
                     };
                     if let Ok(mut health) = health.lock() {
                         *health = terminal.clone();
@@ -266,9 +268,9 @@ pub fn run() {
                     crate::tray::apply_state(
                         &tray,
                         &mi_start,
-                        &mi_pause,
+                        &pause_submenu,
                         &mi_resume,
-                        &AppPhase::Error,
+                        &terminal,
                     );
                     let _ = app.emit("health://changed", &terminal);
                 }
@@ -282,10 +284,16 @@ pub fn run() {
                         for notification in pump.poll() {
                             let command = match notification {
                                 platform_win::SystemNotification::SessionLocked => {
-                                    Some(EngineCommand::Pause(PauseReason::SessionLocked))
+                                    Some(EngineCommand::Pause {
+                                        reason: PauseReason::SessionLocked,
+                                        duration_secs: None,
+                                    })
                                 }
                                 platform_win::SystemNotification::Suspending => {
-                                    Some(EngineCommand::Pause(PauseReason::SystemSuspending))
+                                    Some(EngineCommand::Pause {
+                                        reason: PauseReason::SystemSuspending,
+                                        duration_secs: None,
+                                    })
                                 }
                                 platform_win::SystemNotification::SessionUnlocked
                                 | platform_win::SystemNotification::Resumed => {

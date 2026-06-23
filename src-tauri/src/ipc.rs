@@ -23,9 +23,15 @@ pub fn start_observing(state: tauri::State<'_, crate::app::AppState>) -> Result<
         .map_err(|error| error.to_string())
 }
 
-/// Ask the engine to pause. `reason` is an owner-meaningful token.
+/// Ask the engine to pause. `reason` is an owner-meaningful token;
+/// `duration_secs` bounds an operator pause (auto-resume after it elapses) and is
+/// `None` for an indefinite "until I resume" pause.
 #[tauri::command]
-pub fn pause(state: tauri::State<'_, crate::app::AppState>, reason: String) -> Result<(), String> {
+pub fn pause(
+    state: tauri::State<'_, crate::app::AppState>,
+    reason: String,
+    duration_secs: Option<u64>,
+) -> Result<(), String> {
     let reason = match reason.as_str() {
         "session_locked" => PauseReason::SessionLocked,
         "system_suspending" => PauseReason::SystemSuspending,
@@ -33,7 +39,10 @@ pub fn pause(state: tauri::State<'_, crate::app::AppState>, reason: String) -> R
     };
     state
         .commands
-        .send(EngineCommand::Pause(reason))
+        .send(EngineCommand::Pause {
+            reason,
+            duration_secs,
+        })
         .map_err(|error| error.to_string())
 }
 

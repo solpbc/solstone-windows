@@ -39,7 +39,12 @@ pub const GENERATED_BANNER: &str = "DO NOT EDIT — run make contract";
 pub mod tray {
     pub const ROOT: &str = "tray.root";
     pub const MENU_START: &str = "tray.menu.start";
+    /// The Pause submenu root; its children are the duration choices below.
     pub const MENU_PAUSE: &str = "tray.menu.pause";
+    pub const MENU_PAUSE_15M: &str = "tray.menu.pause15m";
+    pub const MENU_PAUSE_30M: &str = "tray.menu.pause30m";
+    pub const MENU_PAUSE_1H: &str = "tray.menu.pause1h";
+    pub const MENU_PAUSE_INDEFINITE: &str = "tray.menu.pauseIndefinite";
     pub const MENU_RESUME: &str = "tray.menu.resume";
     pub const MENU_OPEN_SETTINGS: &str = "tray.menu.openSettings";
     pub const MENU_ABOUT: &str = "tray.menu.about";
@@ -100,6 +105,10 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("tray.root", tray::ROOT),
         ("tray.menu.start", tray::MENU_START),
         ("tray.menu.pause", tray::MENU_PAUSE),
+        ("tray.menu.pause15m", tray::MENU_PAUSE_15M),
+        ("tray.menu.pause30m", tray::MENU_PAUSE_30M),
+        ("tray.menu.pause1h", tray::MENU_PAUSE_1H),
+        ("tray.menu.pauseIndefinite", tray::MENU_PAUSE_INDEFINITE),
         ("tray.menu.resume", tray::MENU_RESUME),
         ("tray.menu.openSettings", tray::MENU_OPEN_SETTINGS),
         ("tray.menu.about", tray::MENU_ABOUT),

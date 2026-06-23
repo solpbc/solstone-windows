@@ -35,6 +35,7 @@ pub fn not_running_snapshot() -> HealthDump {
         sync: observer_model::SyncSnapshot::default(),
         screen_encoder: None,
         exclusions: None,
+        pause: None,
     }
 }
 

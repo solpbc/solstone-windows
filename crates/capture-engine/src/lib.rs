@@ -39,7 +39,13 @@ pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineCommand {
     Start,
-    Pause(PauseReason),
+    /// Pause capture. `duration_secs` bounds an operator pause (15m / 30m / 1h)
+    /// after which the engine auto-resumes; `None` is an indefinite pause (the
+    /// operator's "until I resume", or a system lock/suspend pause).
+    Pause {
+        reason: PauseReason,
+        duration_secs: Option<u64>,
+    },
     Resume,
     DisplayChanged,
 }
@@ -254,6 +260,7 @@ where
                 .is_some()
                 .then(|| self.sources.screen_encoder.health()),
             exclusions: self.sources.screen.exclusion_health(),
+            pause: self.state.pause_snapshot(now),
         }
     }
 
@@ -298,6 +305,7 @@ where
     /// Deterministic, host-testable unit of engine work.
     pub fn pump(&mut self) -> Result<(), EngineError<SFS::Error>> {
         self.drain_events()?;
+        self.auto_resume_if_due()?;
         self.rotate_if_needed()?;
         self.retry_due_sources();
         self.fold_source_states();
@@ -320,7 +328,7 @@ where
                 }
                 cmd = command_rx.recv() => {
                     match cmd {
-                        Some(command) => self.apply_command(command),
+                        Some(command) => self.apply_command(command)?,
                         None => return Ok(()),
                     }
                 }
@@ -332,6 +340,7 @@ where
                     }
                 }
                 _ = interval.tick() => {
+                    self.auto_resume_if_due()?;
                     self.rotate_if_needed()?;
                     self.retry_due_sources();
                     self.fold_source_states();
@@ -345,22 +354,74 @@ where
         reduce(&mut self.state, event)
     }
 
-    fn apply_command(&mut self, command: EngineCommand) {
+    fn apply_command(&mut self, command: EngineCommand) -> Result<(), EngineError<SFS::Error>> {
         match command {
             EngineCommand::Start => {
                 self.reduce(AppEvent::RequestedStart);
             }
-            EngineCommand::Pause(reason) => {
-                self.reduce(AppEvent::RequestedPause(reason));
+            EngineCommand::Pause {
+                reason,
+                duration_secs,
+            } => {
+                let now = self.clock.now_epoch_secs();
+                let expires_at_epoch_secs = duration_secs.map(|d| now.saturating_add(d));
+                self.reduce(AppEvent::RequestedPause {
+                    reason,
+                    expires_at_epoch_secs,
+                });
+                // A pause must actually stop capture, not merely relabel the
+                // phase: stop every source and seal the open segment so nothing
+                // is gathered while paused. Honest state — "paused" is true.
+                self.pause_capture()?;
             }
             EngineCommand::Resume => {
                 self.reduce(AppEvent::RequestedResume);
+                self.resume_capture()?;
             }
             EngineCommand::DisplayChanged => {
                 self.on_display_changed();
             }
         }
         self.refresh_health();
+        Ok(())
+    }
+
+    /// Stop all sources and seal the open segment so capture truly halts while
+    /// paused. Idempotent: a no-op when nothing is open.
+    fn pause_capture(&mut self) -> Result<(), EngineError<SFS::Error>> {
+        self.sources.screen.stop();
+        self.sources.system_audio.stop();
+        self.sources.mic.stop();
+        self.drain_events()?;
+        if let Some(segment) = self.current_segment.take() {
+            if self.finalize_screen_encoder().is_ok() {
+                self.segment_fs
+                    .finalize(segment.key)
+                    .map_err(EngineError::Segment)?;
+            }
+        }
+        self.fold_source_states();
+        Ok(())
+    }
+
+    /// Re-open the current segment and restart every source. The inverse of
+    /// [`Self::pause_capture`], used by both an explicit resume and auto-resume.
+    fn resume_capture(&mut self) -> Result<(), EngineError<SFS::Error>> {
+        self.open_current_segment()?;
+        for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
+            self.start_source(kind);
+        }
+        self.fold_source_states();
+        Ok(())
+    }
+
+    /// Auto-resume when a duration-bounded pause has reached its deadline.
+    fn auto_resume_if_due(&mut self) -> Result<(), EngineError<SFS::Error>> {
+        if self.state.pause_due_to_expire(self.clock.now_epoch_secs()) {
+            self.reduce(AppEvent::RequestedResume);
+            self.resume_capture()?;
+        }
+        Ok(())
     }
 
     fn open_current_segment(&mut self) -> Result<(), EngineError<SFS::Error>> {
@@ -683,6 +744,7 @@ where
             sync: SyncSnapshot::default(),
             screen_encoder: None,
             exclusions: None,
+            pause: None,
         }
     }
 }
@@ -884,6 +946,10 @@ mod tests {
 
         fn starts(&self) -> usize {
             self.inner.lock().unwrap().starts
+        }
+
+        fn stops(&self) -> usize {
+            self.inner.lock().unwrap().stops
         }
 
         fn display_changes(&self) -> usize {
@@ -1247,28 +1313,121 @@ mod tests {
         let mut rx = engine.health_watch();
 
         rx.mark_unchanged();
-        engine.apply_command(EngineCommand::Start);
+        engine.apply_command(EngineCommand::Start).unwrap();
         assert!(rx.has_changed().unwrap());
         assert_eq!(engine.health_dump().app_state, AppPhase::Starting);
 
         engine.start().unwrap();
 
         rx.mark_unchanged();
-        engine.apply_command(EngineCommand::Pause(PauseReason::Operator));
+        engine
+            .apply_command(EngineCommand::Pause {
+                reason: PauseReason::Operator,
+                duration_secs: None,
+            })
+            .unwrap();
         assert!(rx.has_changed().unwrap());
         assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
 
         rx.mark_unchanged();
-        engine.apply_command(EngineCommand::Resume);
+        engine.apply_command(EngineCommand::Resume).unwrap();
         assert!(rx.has_changed().unwrap());
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
 
         let display_changes = handles.screen.display_changes();
         rx.mark_unchanged();
-        engine.apply_command(EngineCommand::DisplayChanged);
+        engine.apply_command(EngineCommand::DisplayChanged).unwrap();
         assert!(rx.has_changed().unwrap());
         assert_eq!(handles.screen.display_changes(), display_changes + 1);
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+    }
+
+    #[test]
+    fn pause_stops_capture_seals_segment_and_auto_resumes_at_deadline() {
+        let clock = FakeClock::new(1_000);
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        let (sources, handles) = active_sources();
+        let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
+        engine.start().unwrap();
+        assert!(
+            engine.health_dump().segment_dir.is_some(),
+            "a segment is open while observing"
+        );
+        let stops_before = handles.screen.stops();
+
+        // Pause for 900s at t=1000 -> auto-resume deadline 1900.
+        engine
+            .apply_command(EngineCommand::Pause {
+                reason: PauseReason::Operator,
+                duration_secs: Some(900),
+            })
+            .unwrap();
+
+        // A real pause: sources stopped, the open segment sealed, phase Paused,
+        // and the honest countdown surfaced.
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert!(
+            handles.screen.stops() > stops_before,
+            "screen source stopped"
+        );
+        assert!(
+            engine.health_dump().segment_dir.is_none(),
+            "the open segment is sealed on pause — nothing is captured"
+        );
+        assert!(
+            segment_view
+                .events()
+                .iter()
+                .any(|e| matches!(e, FsEvent::Finalize(_))),
+            "the segment was finalized on pause"
+        );
+        assert_eq!(
+            engine.health_dump().pause.unwrap().seconds_remaining,
+            Some(900)
+        );
+
+        // Before the deadline, pumping keeps it paused.
+        clock.set(1_899);
+        engine.pump().unwrap();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert_eq!(
+            engine.health_dump().pause.unwrap().seconds_remaining,
+            Some(1)
+        );
+
+        // At the deadline, the engine auto-resumes and re-opens a segment.
+        clock.set(1_900);
+        engine.pump().unwrap();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert!(engine.health_dump().pause.is_none());
+        assert!(
+            engine.health_dump().segment_dir.is_some(),
+            "a fresh segment is open after auto-resume"
+        );
+    }
+
+    #[test]
+    fn indefinite_pause_never_auto_resumes() {
+        let clock = FakeClock::new(1_000);
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(
+            clock.clone(),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start().unwrap();
+        engine
+            .apply_command(EngineCommand::Pause {
+                reason: PauseReason::Operator,
+                duration_secs: None,
+            })
+            .unwrap();
+        assert_eq!(engine.health_dump().pause.unwrap().seconds_remaining, None);
+        clock.set(u64::MAX / 2);
+        engine.pump().unwrap();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
     }
 
     #[test]
@@ -1681,6 +1840,7 @@ mod tests {
             sync: SyncSnapshot::default(),
             screen_encoder: None,
             exclusions: None,
+            pause: None,
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
