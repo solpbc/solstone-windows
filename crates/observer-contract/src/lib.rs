@@ -102,6 +102,8 @@ pub mod settings {
     pub const MIC_DEVICES: &str = "settings.mic.devices";
     pub const MIC_ACTIVE: &str = "settings.mic.active";
     pub const MIC_GAIN: &str = "settings.mic.gain";
+    /// Storage pane: the local-cache retention picker for confirmed-synced segments.
+    pub const RETENTION: &str = "settings.retention";
 }
 
 /// About window.
@@ -199,6 +201,7 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.mic.devices", settings::MIC_DEVICES),
         ("settings.mic.active", settings::MIC_ACTIVE),
         ("settings.mic.gain", settings::MIC_GAIN),
+        ("settings.retention", settings::RETENTION),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
     ])
