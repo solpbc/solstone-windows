@@ -58,6 +58,11 @@ interface ExclusionHealth {
   frames_dropped: number;
 }
 
+interface PauseSnapshot {
+  reason: "operator" | "session_locked" | "system_suspending";
+  seconds_remaining: number | null;
+}
+
 interface HealthDump {
   app_state: AppPhase;
   sources: SourceReport[];
@@ -69,6 +74,7 @@ interface HealthDump {
   sync: SyncSnapshot;
   screen_encoder: EncoderHealth | null;
   exclusions: ExclusionHealth | null;
+  pause: PauseSnapshot | null;
 }
 
 // ── Capture exclusions (observer-exclusion) ──────────────────────────────────
@@ -151,6 +157,7 @@ let pairingBusy = false;
 // 1s health re-render repaints the section without losing edits; `titleDraft`
 // preserves a half-typed title keyword across re-renders (like pairingDraft).
 let latestExclusions: ExclusionRules | null = null;
+let latestHotkey: HotkeyView | null = null;
 let runningApps: RunningApp[] = [];
 let titleDraft = "";
 
@@ -571,6 +578,195 @@ function resetRoot(rootId: string): void {
   root.style.minHeight = "100vh";
 }
 
+// Pause detail for the status line: "paused — 14 min left" while a bounded pause
+// counts down, plain "paused" otherwise (indefinite, or no detail yet).
+function pauseRemainingLabel(secs: number): string {
+  const mins = Math.floor(secs / 60);
+  if (mins <= 0) {
+    return "less than a minute left";
+  }
+  if (mins < 60) {
+    return `${mins} min left`;
+  }
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h} hr left` : `${h} hr ${m} min left`;
+}
+
+function statusStateLabel(dump: HealthDump): string {
+  if (dump.app_state === "paused") {
+    const secs = dump.pause?.seconds_remaining;
+    return secs != null ? `paused — ${pauseRemainingLabel(secs)}` : "paused";
+  }
+  return phaseLabel(dump.app_state);
+}
+
+// ── Global pause/resume hotkey (observer-hotkey) ──────────────────────────────
+// A configurable global shortcut that toggles pause/resume. The owner picks
+// modifiers + a key; the backend registers it with the OS and reports the honest
+// outcome — a combo another app already owns shows as taken, never a silent no-op.
+interface HotkeyConfig {
+  enabled: boolean;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  win: boolean;
+  vk: number;
+}
+type HotkeyRegistration = "inactive" | "registered" | "combo_taken" | "failed";
+interface HotkeyView {
+  config: HotkeyConfig;
+  registration: HotkeyRegistration;
+}
+
+// VK options the owner can pick as the main key (the backend validates the combo).
+const HOTKEY_KEYS: ReadonlyArray<readonly [number, string]> = (() => {
+  const out: Array<[number, string]> = [];
+  for (let v = 0x41; v <= 0x5a; v++) {
+    out.push([v, String.fromCharCode(v)]); // A-Z
+  }
+  for (let v = 0x30; v <= 0x39; v++) {
+    out.push([v, String.fromCharCode(v)]); // 0-9
+  }
+  for (let n = 1; n <= 12; n++) {
+    out.push([0x70 + n - 1, `F${n}`]); // F1-F12
+  }
+  out.push([0x20, "Space"]);
+  return out;
+})();
+
+function hotkeyHasCombo(c: HotkeyConfig): boolean {
+  return c.vk !== 0 && (c.ctrl || c.alt || c.shift || c.win);
+}
+
+function hotkeyStatusLabel(view: HotkeyView): string {
+  switch (view.registration) {
+    case "registered":
+      return "active";
+    case "combo_taken":
+      return "that combo is in use by another app — pick another";
+    case "failed":
+      return "couldn't register that shortcut";
+    case "inactive":
+      if (!hotkeyHasCombo(view.config)) {
+        return "no shortcut set";
+      }
+      return view.config.enabled ? "starting…" : "shortcut set but turned off";
+  }
+}
+
+async function applyHotkey(next: HotkeyConfig): Promise<void> {
+  latestHotkey = { config: next, registration: latestHotkey?.registration ?? "inactive" };
+  rerender();
+  try {
+    await invoke("set_hotkey", { config: next });
+  } catch {
+    // Persistence failures are logged backend-side; the desired config still took.
+  }
+  // The pump reconciles registration within a poll (~250ms); refetch the honest
+  // outcome shortly after so the status reflects registered / combo-taken.
+  setTimeout(() => {
+    void invoke<HotkeyView>("get_hotkey")
+      .then((v) => {
+        latestHotkey = v;
+        rerender();
+      })
+      .catch(() => {});
+  }, 450);
+}
+
+function renderHotkeySection(view: HotkeyView): HTMLElement {
+  const pane = section("Global shortcut");
+  const cfg = view.config;
+
+  pane.append(
+    checkboxRow(
+      "pause/resume shortcut",
+      ids["settings.hotkey.enabled"],
+      cfg.enabled,
+      true,
+      (on) => {
+        void applyHotkey({ ...cfg, enabled: on });
+      },
+    ),
+  );
+
+  // Modifier checkboxes — the functional default (VPX owns a nicer "press your
+  // shortcut" capture in the experience pass).
+  const mods = document.createElement("div");
+  mods.style.display = "flex";
+  mods.style.flexWrap = "wrap";
+  mods.style.gap = "12px";
+  const modDefs: ReadonlyArray<readonly ["ctrl" | "alt" | "shift" | "win", string]> = [
+    ["ctrl", "Ctrl"],
+    ["alt", "Alt"],
+    ["shift", "Shift"],
+    ["win", "Win"],
+  ];
+  for (const [key, lbl] of modDefs) {
+    const wrap = document.createElement("label");
+    wrap.style.display = "inline-flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "4px";
+    wrap.style.fontSize = "13px";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = cfg[key];
+    box.onchange = () => {
+      void applyHotkey({ ...cfg, [key]: box.checked });
+    };
+    wrap.append(box, text("span", lbl));
+    mods.append(wrap);
+  }
+  pane.append(valueRow("modifiers", mods));
+
+  const keySel = document.createElement("select");
+  keySel.dataset.automationId = ids["settings.hotkey.combo"];
+  keySel.style.fontSize = "13px";
+  const none = document.createElement("option");
+  none.value = "0";
+  none.textContent = "(choose a key)";
+  keySel.append(none);
+  for (const [vk, lbl] of HOTKEY_KEYS) {
+    const opt = document.createElement("option");
+    opt.value = String(vk);
+    opt.textContent = lbl;
+    if (vk === cfg.vk) {
+      opt.selected = true;
+    }
+    keySel.append(opt);
+  }
+  keySel.onchange = () => {
+    void applyHotkey({ ...cfg, vk: Number(keySel.value) });
+  };
+  pane.append(valueRow("key", keySel));
+
+  pane.append(
+    valueRow(
+      "status",
+      automation(text("div", hotkeyStatusLabel(view)), ids["settings.hotkey.status"]),
+    ),
+  );
+
+  const clearRow = document.createElement("div");
+  clearRow.style.padding = "7px 0";
+  clearRow.append(
+    actionButton("clear shortcut", ids["settings.hotkey.clear"], hotkeyHasCombo(cfg), () => {
+      void applyHotkey({
+        enabled: false,
+        ctrl: false,
+        alt: false,
+        shift: false,
+        win: false,
+        vk: 0,
+      });
+    }),
+  );
+  pane.append(clearRow);
+
+  return pane;
+}
+
 function renderSettings(dump: HealthDump): void {
   resetRoot(ids["settings.window.root"]);
 
@@ -585,7 +781,7 @@ function renderSettings(dump: HealthDump): void {
   status.append(
     valueRow(
       "state",
-      automation(text("div", phaseLabel(dump.app_state)), ids["settings.status.appState.state"]),
+      automation(text("div", statusStateLabel(dump)), ids["settings.status.appState.state"]),
     ),
     valueRow(
       "segment directory",
@@ -625,6 +821,9 @@ function renderSettings(dump: HealthDump): void {
   root.append(status, sources);
   if (latestExclusions) {
     root.append(renderExclusionsSection(latestExclusions, dump));
+  }
+  if (latestHotkey) {
+    root.append(renderHotkeySection(latestHotkey));
   }
   root.append(renderPairingSection(dump));
   if (latestUpdate) {
@@ -1137,16 +1336,18 @@ async function boot(): Promise<void> {
     rerender();
     return;
   }
-  const [health, update, exclusions, apps] = await Promise.all([
+  const [health, update, exclusions, apps, hotkey] = await Promise.all([
     invoke<HealthDump>("get_health"),
     invoke<UpdateView>("update_get").catch(() => null),
     invoke<ExclusionRules>("get_exclusions").catch(() => null),
     invoke<RunningApp[]>("list_running_apps").catch(() => [] as RunningApp[]),
+    invoke<HotkeyView>("get_hotkey").catch(() => null),
   ]);
   latestHealth = health;
   latestUpdate = update;
   latestExclusions = exclusions;
   runningApps = apps;
+  latestHotkey = hotkey;
   rerender();
 }
 

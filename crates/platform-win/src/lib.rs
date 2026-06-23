@@ -151,7 +151,14 @@ pub enum SystemNotification {
     DisplayChanged,
     Suspending,
     Resumed,
+    /// The owner pressed the configured global pause/resume hotkey. The shell maps
+    /// this to a pause/resume toggle.
+    HotkeyPressed,
 }
+
+/// The hotkey id we register; we only ever own one global hotkey at a time.
+#[cfg_attr(not(windows), allow(dead_code))]
+const HOTKEY_ID: i32 = 1;
 
 #[cfg(not(windows))]
 /// The session/power notification pump.
@@ -164,6 +171,14 @@ impl NotificationPump {
         Self
     }
 
+    /// Construct a pump bound to the owner's global hotkey. No-op off Windows.
+    pub fn with_hotkey(
+        _desired: std::sync::Arc<std::sync::Mutex<observer_hotkey::HotkeyConfig>>,
+        _outcome: std::sync::Arc<std::sync::Mutex<observer_hotkey::HotkeyRegistration>>,
+    ) -> Self {
+        Self
+    }
+
     /// Drain any pending notifications. Empty on non-Windows hosts.
     pub fn poll(&mut self) -> Vec<SystemNotification> {
         Vec::new()
@@ -172,22 +187,29 @@ impl NotificationPump {
 
 #[cfg(windows)]
 mod notification_pump {
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
 
+    use observer_hotkey::{HotkeyConfig, HotkeyRegistration};
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{
+        ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+    };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::RemoteDesktop::{
         WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
     };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+        MOD_SHIFT, MOD_WIN,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW,
         TranslateMessage, HWND_MESSAGE, MSG, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_REMOVE,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_DISPLAYCHANGE, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE,
-        WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_DISPLAYCHANGE, WM_HOTKEY, WM_POWERBROADCAST,
+        WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
     };
 
-    use super::SystemNotification;
+    use super::{SystemNotification, HOTKEY_ID};
 
     static QUEUE: OnceLock<Mutex<Vec<SystemNotification>>> = OnceLock::new();
 
@@ -215,6 +237,9 @@ mod notification_pump {
             WM_POWERBROADCAST if wparam.0 == PBT_APMRESUMESUSPEND as usize => {
                 Some(SystemNotification::Resumed)
             }
+            // Our global hotkey fired. We register it against this window, so the
+            // message lands here (and the filtered PeekMessage below retrieves it).
+            WM_HOTKEY if wparam.0 == HOTKEY_ID as usize => Some(SystemNotification::HotkeyPressed),
             _ => None,
         };
         if let Some(notification) = notification {
@@ -228,16 +253,101 @@ mod notification_pump {
         s.encode_utf16().chain(Some(0)).collect()
     }
 
-    /// The session/power notification pump.
+    /// Win32 modifier mask for a config (always with `MOD_NOREPEAT` so a held
+    /// combo fires once, not repeatedly).
+    fn modifiers_for(config: &HotkeyConfig) -> HOT_KEY_MODIFIERS {
+        let mut mods = MOD_NOREPEAT;
+        if config.ctrl {
+            mods |= MOD_CONTROL;
+        }
+        if config.alt {
+            mods |= MOD_ALT;
+        }
+        if config.shift {
+            mods |= MOD_SHIFT;
+        }
+        if config.win {
+            mods |= MOD_WIN;
+        }
+        mods
+    }
+
+    /// Attempt to register `config` as the global hotkey on `hwnd`. Maps the
+    /// single-registrant failure (`ERROR_HOTKEY_ALREADY_REGISTERED`) to the honest
+    /// [`HotkeyRegistration::ComboTaken`] rather than a silent no-op.
+    fn register_combo(hwnd: HWND, config: &HotkeyConfig) -> HotkeyRegistration {
+        match unsafe { RegisterHotKey(hwnd, HOTKEY_ID, modifiers_for(config), config.vk) } {
+            Ok(()) => HotkeyRegistration::Registered,
+            Err(error) => {
+                if error.code() == ERROR_HOTKEY_ALREADY_REGISTERED.to_hresult() {
+                    HotkeyRegistration::ComboTaken
+                } else {
+                    eprintln!("hotkey: RegisterHotKey failed: {error}");
+                    HotkeyRegistration::Failed
+                }
+            }
+        }
+    }
+
+    /// Shared state for the optional global hotkey the pump manages: the owner's
+    /// desired config (written by the shell over IPC) and the honest registration
+    /// outcome the pump reports back (read by Settings).
+    struct HotkeyBinding {
+        desired: Arc<Mutex<HotkeyConfig>>,
+        outcome: Arc<Mutex<HotkeyRegistration>>,
+        /// The config we last attempted to register, so we only re-register on a
+        /// real change instead of every poll.
+        applied: Option<HotkeyConfig>,
+        /// Whether a hotkey id is currently registered with the OS.
+        registered: bool,
+    }
+
+    /// The session/power notification pump (and, optionally, the global hotkey).
     #[derive(Debug)]
     pub struct NotificationPump {
         hwnd: HWND,
+        hotkey: Option<HotkeyBinding>,
+    }
+
+    impl std::fmt::Debug for HotkeyBinding {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("HotkeyBinding")
+                .field("applied", &self.applied)
+                .field("registered", &self.registered)
+                .finish()
+        }
     }
 
     impl NotificationPump {
         pub fn new() -> Self {
+            Self {
+                hwnd: Self::create_window(),
+                hotkey: None,
+            }
+        }
+
+        /// Construct a pump that also owns the owner's global pause/resume hotkey.
+        /// The pump reconciles registration from `desired` on every [`poll`] (on
+        /// its own thread, where `RegisterHotKey`/`WM_HOTKEY` must live) and writes
+        /// the honest result into `outcome`.
+        pub fn with_hotkey(
+            desired: Arc<Mutex<HotkeyConfig>>,
+            outcome: Arc<Mutex<HotkeyRegistration>>,
+        ) -> Self {
+            Self {
+                hwnd: Self::create_window(),
+                hotkey: Some(HotkeyBinding {
+                    desired,
+                    outcome,
+                    applied: None,
+                    registered: false,
+                }),
+            }
+        }
+
+        fn create_window() -> HWND {
             let class = wide_z("SolstoneNotificationPump");
-            let hwnd = unsafe {
+            unsafe {
                 let module = GetModuleHandleW(PCWSTR::null()).ok();
                 let instance = module.map_or(HINSTANCE::default(), HINSTANCE::from);
                 let wc = WNDCLASSW {
@@ -266,12 +376,47 @@ mod notification_pump {
                     let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
                 }
                 hwnd
+            }
+        }
+
+        /// Reconcile the OS hotkey registration with the owner's desired config.
+        /// Only acts when the desired config changed since the last poll; writes
+        /// the honest outcome back so Settings can show it.
+        fn reconcile_hotkey(&mut self) {
+            let Some(binding) = self.hotkey.as_mut() else {
+                return;
             };
-            Self { hwnd }
+            let desired = binding
+                .desired
+                .lock()
+                .map(|c| *c)
+                .unwrap_or_else(|_| HotkeyConfig::default());
+            if binding.applied == Some(desired) {
+                return;
+            }
+            // Drop any currently-registered combo before (re)registering.
+            if binding.registered {
+                unsafe {
+                    let _ = UnregisterHotKey(self.hwnd, HOTKEY_ID);
+                }
+                binding.registered = false;
+            }
+            let outcome = if desired.is_armed() {
+                let result = register_combo(self.hwnd, &desired);
+                binding.registered = result == HotkeyRegistration::Registered;
+                result
+            } else {
+                HotkeyRegistration::Inactive
+            };
+            binding.applied = Some(desired);
+            if let Ok(mut out) = binding.outcome.lock() {
+                *out = outcome;
+            }
         }
 
         /// Drain any pending notifications.
         pub fn poll(&mut self) -> Vec<SystemNotification> {
+            self.reconcile_hotkey();
             unsafe {
                 let mut message = MSG::default();
                 while PeekMessageW(&mut message, self.hwnd, 0, 0, PM_REMOVE).as_bool() {
@@ -281,6 +426,18 @@ mod notification_pump {
             }
             let mut guard = queue().lock().unwrap();
             std::mem::take(&mut *guard)
+        }
+    }
+
+    impl Drop for NotificationPump {
+        fn drop(&mut self) {
+            if let Some(binding) = &self.hotkey {
+                if binding.registered {
+                    unsafe {
+                        let _ = UnregisterHotKey(self.hwnd, HOTKEY_ID);
+                    }
+                }
+            }
         }
     }
 }

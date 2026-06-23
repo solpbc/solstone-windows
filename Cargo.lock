@@ -2263,6 +2263,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "observer-hotkey"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "observer-lifecycle"
 version = "0.1.0"
 dependencies = [
@@ -2485,6 +2493,7 @@ dependencies = [
 name = "platform-win"
 version = "0.1.0"
 dependencies = [
+ "observer-hotkey",
  "observer-model",
  "observer-recovery",
  "observer-segment",
@@ -3262,6 +3271,7 @@ dependencies = [
  "observer-contract",
  "observer-exclusion",
  "observer-health",
+ "observer-hotkey",
  "observer-model",
  "observer-state",
  "observer-update",

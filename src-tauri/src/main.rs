@@ -14,6 +14,7 @@
 mod app;
 mod exclusions;
 mod health;
+mod hotkey;
 mod ipc;
 mod lifecycle;
 mod tray;

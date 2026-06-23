@@ -90,6 +90,13 @@ pub mod settings {
     pub const EXCLUSIONS_TITLE_ADD: &str = "settings.exclusions.titleAdd";
     pub const EXCLUSIONS_TITLES_LIST: &str = "settings.exclusions.titlesList";
     pub const EXCLUSIONS_ACTIVITY: &str = "settings.exclusions.activity";
+    /// Global pause/resume hotkey pane: the on/off toggle, the current combo +
+    /// capture/clear controls, and the honest registration status line (a combo
+    /// another app already owns shows here, never a silent no-op).
+    pub const HOTKEY_ENABLED: &str = "settings.hotkey.enabled";
+    pub const HOTKEY_COMBO: &str = "settings.hotkey.combo";
+    pub const HOTKEY_CLEAR: &str = "settings.hotkey.clear";
+    pub const HOTKEY_STATUS: &str = "settings.hotkey.status";
 }
 
 /// About window.
@@ -180,6 +187,10 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             "settings.exclusions.activity",
             settings::EXCLUSIONS_ACTIVITY,
         ),
+        ("settings.hotkey.enabled", settings::HOTKEY_ENABLED),
+        ("settings.hotkey.combo", settings::HOTKEY_COMBO),
+        ("settings.hotkey.clear", settings::HOTKEY_CLEAR),
+        ("settings.hotkey.status", settings::HOTKEY_STATUS),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
     ])

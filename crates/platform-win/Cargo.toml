@@ -11,6 +11,7 @@ description = "Windows platform glue: session/power notification pump, named-mut
 observer-model.workspace = true
 observer-segment.workspace = true
 observer-recovery.workspace = true
+observer-hotkey.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -22,6 +23,7 @@ windows = { version = "0.58", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_Power",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 # Per-user autostart `Run`-key registration (safe wrapper over the HKCU registry).
 winreg = "0.55"

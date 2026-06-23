@@ -143,6 +143,30 @@ pub fn list_running_apps() -> Vec<observer_exclusion::RunningApp> {
     capture_wgc::list_running_apps()
 }
 
+// ── Global pause/resume hotkey ─────────────────────────────────────────────────
+// The owner's configurable global hotkey. `set_hotkey` writes the desired config;
+// the notification pump reconciles the OS registration on its next poll and writes
+// back the honest outcome (Registered / ComboTaken / …), which `get_hotkey`
+// surfaces — a taken combo is reported, never a silent no-op.
+
+/// The current hotkey config + its live registration outcome (Settings render).
+#[tauri::command]
+pub fn get_hotkey(
+    ctrl: tauri::State<'_, crate::hotkey::HotkeyController>,
+) -> observer_hotkey::HotkeyView {
+    ctrl.view()
+}
+
+/// Replace the global-hotkey config. Effective on the pump's next reconcile and
+/// persisted to `hotkey.json`.
+#[tauri::command]
+pub fn set_hotkey(
+    ctrl: tauri::State<'_, crate::hotkey::HotkeyController>,
+    config: observer_hotkey::HotkeyConfig,
+) {
+    ctrl.set(config);
+}
+
 // ── Updater intents ──────────────────────────────────────────────────────────
 // User intents for the in-app updater. Like the rest of the IPC surface these
 // only *ask* the engine to act; update state is earned from the Velopack result

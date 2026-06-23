@@ -47,6 +47,10 @@ pub enum EngineCommand {
         duration_secs: Option<u64>,
     },
     Resume,
+    /// Toggle between paused and observing — the global hotkey's action. Pauses
+    /// indefinitely when observing, resumes when paused. The engine resolves the
+    /// direction because it owns the authoritative phase.
+    TogglePause,
     DisplayChanged,
 }
 
@@ -377,6 +381,18 @@ where
             EngineCommand::Resume => {
                 self.reduce(AppEvent::RequestedResume);
                 self.resume_capture()?;
+            }
+            EngineCommand::TogglePause => {
+                if self.state.phase() == AppPhase::Paused {
+                    self.reduce(AppEvent::RequestedResume);
+                    self.resume_capture()?;
+                } else {
+                    self.reduce(AppEvent::RequestedPause {
+                        reason: PauseReason::Operator,
+                        expires_at_epoch_secs: None,
+                    });
+                    self.pause_capture()?;
+                }
             }
             EngineCommand::DisplayChanged => {
                 self.on_display_changed();
@@ -1405,6 +1421,29 @@ mod tests {
             engine.health_dump().segment_dir.is_some(),
             "a fresh segment is open after auto-resume"
         );
+    }
+
+    #[test]
+    fn toggle_pause_flips_between_observing_and_paused() {
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start().unwrap();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+
+        // Hotkey once -> indefinite pause.
+        engine.apply_command(EngineCommand::TogglePause).unwrap();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert_eq!(engine.health_dump().pause.unwrap().seconds_remaining, None);
+
+        // Hotkey again -> resume.
+        engine.apply_command(EngineCommand::TogglePause).unwrap();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert!(engine.health_dump().pause.is_none());
     }
 
     #[test]

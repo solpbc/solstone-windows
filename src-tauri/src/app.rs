@@ -75,6 +75,8 @@ pub fn run() {
             crate::ipc::get_exclusions,
             crate::ipc::set_exclusions,
             crate::ipc::list_running_apps,
+            crate::ipc::get_hotkey,
+            crate::ipc::set_hotkey,
             crate::ipc::update_get,
             crate::ipc::update_check_now,
             crate::ipc::update_download,
@@ -190,6 +192,15 @@ pub fn run() {
             app.manage(updater.clone());
             updater.spawn_timer();
 
+            // Global pause/resume hotkey: load the owner's persisted combo and
+            // share its handles with the notification pump, which owns the Win32
+            // registration (it must live on the pump's message-loop thread) and
+            // reports the honest outcome back for Settings to render.
+            let hotkey = crate::hotkey::HotkeyController::new(
+                platform_win::local_data_root().join("hotkey.json"),
+            );
+            app.manage(hotkey.clone());
+
             let (tray, mi_start, pause_submenu, mi_resume) =
                 crate::tray::init(app, cmd_tx.clone())?;
 
@@ -278,8 +289,11 @@ pub fn run() {
 
             std::thread::spawn({
                 let cmd_tx = cmd_tx.clone();
+                let hotkey_desired = hotkey.desired_handle();
+                let hotkey_outcome = hotkey.outcome_handle();
                 move || {
-                    let mut pump = platform_win::NotificationPump::new();
+                    let mut pump =
+                        platform_win::NotificationPump::with_hotkey(hotkey_desired, hotkey_outcome);
                     loop {
                         for notification in pump.poll() {
                             let command = match notification {
@@ -301,6 +315,10 @@ pub fn run() {
                                 }
                                 platform_win::SystemNotification::DisplayChanged => {
                                     Some(EngineCommand::DisplayChanged)
+                                }
+                                // The owner pressed the global hotkey -> toggle.
+                                platform_win::SystemNotification::HotkeyPressed => {
+                                    Some(EngineCommand::TogglePause)
                                 }
                             };
                             if let Some(command) = command {
