@@ -5,6 +5,14 @@
 # (full + delta nupkg + Setup.exe + releases.win.json feed). Per-user install to
 # %LocalAppData%, no UAC.
 #
+# Release notes: the matching CHANGELOG.md "## [<version>]" section is threaded
+# into the pack via Velopack's --releaseNotes, so releases.win.json carries real
+# per-release notes (NotesMarkdown/NotesHtml) - the Windows analog of the macOS
+# appcast <description>, rendered by the in-app Updates pane and
+# solstone.app/releases/windows. A signed release pack REQUIRES the section
+# (parity with the macOS publish-appcast, which dies without it); an unsigned
+# dev/local pack warns and packs note-less so iteration stays frictionless.
+#
 # Signing is OPT-IN and release-only. Pass -Sign to sign the packed artifacts with
 # the DigiCert KeyLocker certificate via Velopack's --signTemplate (smctl). Without
 # -Sign the pack is unsigned - the dev/local default - so iterate and delta-update
@@ -81,6 +89,35 @@ Copy-Item $Exe (Join-Path $Stage "solstone-windows-app.exe")
 
 $Icon = Join-Path $Root "src-tauri\icons\icon.ico"
 
+# Release notes: extract the CHANGELOG.md "## [<version>]" section (mirrors the
+# macOS publish-appcast.py extract_release_notes) and write it to a notes file
+# under target/ (NOT Releases/, which publish-r2 uploads wholesale). Velopack
+# renders it to NotesMarkdown + NotesHtml inside releases.win.json.
+$NotesFile = $null
+$ChangelogPath = Join-Path $Root "CHANGELOG.md"
+if (Test-Path $ChangelogPath) {
+    $Changelog = Get-Content -Raw -Encoding UTF8 $ChangelogPath
+    $EscVersion = [regex]::Escape($Version)
+    # "## [<version>]" header (optional trailing " - date"), body up to the next
+    # "## [" header or end of file. (?ms): ^ anchors per-line, . spans newlines.
+    $NotesMatch = [regex]::Match($Changelog, "(?ms)^## \[$EscVersion\][^\r\n]*\r?\n(.*?)(?=^## \[|\z)")
+    if ($NotesMatch.Success) {
+        $NotesBody = $NotesMatch.Groups[1].Value.Trim()
+        if ($NotesBody) {
+            $NotesFile = Join-Path $Root "target\release-notes-$Version.md"
+            # -NoNewline: write the section body verbatim, no injected trailing newline.
+            Set-Content -Path $NotesFile -Value $NotesBody -Encoding UTF8 -NoNewline
+            Write-Host "package.ps1: release notes from CHANGELOG.md ## [$Version] -> $NotesFile"
+        }
+    }
+}
+if (-not $NotesFile) {
+    if ($Sign) {
+        throw "package.ps1: no CHANGELOG.md '## [$Version]' section with notes - a signed release pack must carry release notes. Cut [Unreleased] -> [$Version] in CHANGELOG.md before signing."
+    }
+    Write-Host "package.ps1: no CHANGELOG.md '## [$Version]' section - packing without release notes (unsigned dev/local pack)."
+}
+
 $vpkArgs = @(
     "pack",
     "--packId", "Solstone",
@@ -95,6 +132,9 @@ $vpkArgs = @(
 )
 # Thread the signing seam through only when populated (unsigned path leaves it out).
 if ($SignTemplate) { $vpkArgs += @("--signTemplate", $SignTemplate) }
+# Thread release notes only when we have a notes file (dev packs without a
+# CHANGELOG section pack note-less; a signed release already threw above if absent).
+if ($NotesFile) { $vpkArgs += @("--releaseNotes", $NotesFile) }
 
 Write-Host "package.ps1: vpk pack Solstone $Version -> $Releases"
 # Delta nupkg is emitted automatically when a prior full nupkg is already present
@@ -102,4 +142,4 @@ Write-Host "package.ps1: vpk pack Solstone $Version -> $Releases"
 & $Vpk @vpkArgs
 if ($LASTEXITCODE -ne 0) { throw "vpk pack failed (exit $LASTEXITCODE)." }
 
-Write-Host "package.ps1: done. Releases/ carries Setup.exe + full nupkg (+ delta when a prior release was present) + releases.win.json."
+Write-Host "package.ps1: done. Releases/ carries Setup.exe + full nupkg (+ delta when a prior release was present) + releases.win.json$(if ($NotesFile) { ' (with release notes)' })."

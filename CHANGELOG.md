@@ -8,6 +8,15 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Added
 
+- Velopack release packaging now threads per-release notes into the update feed:
+  `scripts/package.ps1` extracts this CHANGELOG's `## [<version>]` section and
+  passes it to `vpk pack --releaseNotes`, so `releases.win.json` carries
+  `NotesMarkdown`/`NotesHtml`. The in-app Updates pane and
+  `solstone.app/releases/windows` render those notes (the Windows analog of the
+  macOS appcast `<description>`). A signed release pack requires the section and
+  fails loud without it; unsigned dev/local packs pack note-less. Before a signed
+  release, cut `## [Unreleased]` to `## [<version>] - <date>` (see the release
+  runbook).
 - Release-artifact code signing is wired into the Velopack packaging path
   (`scripts/package.ps1`): release artifacts are signed with the sol pbc
   certificate (DigiCert KeyLocker via Velopack's `--signTemplate`), gated

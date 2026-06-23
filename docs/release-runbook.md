@@ -24,6 +24,20 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
   registers the per-user autostart login item.
 
+## Release notes — cut the CHANGELOG section before a signed pack
+
+Per-release notes ship **inside the update feed**: `make package` extracts the
+`CHANGELOG.md` `## [<version>]` section and threads it into `vpk pack` via
+`--releaseNotes`, so `releases.win.json` carries `NotesMarkdown`/`NotesHtml`. The
+in-app Updates pane and `solstone.app/releases/windows` render those notes — the
+Windows analog of the macOS appcast `<description>`.
+
+**Before a signed release pack, cut the CHANGELOG:** rename `## [Unreleased]` to
+`## [<version>] - <YYYY-MM-DD>` (Keep a Changelog format) so a matching section
+exists. A signed pack (`-Sign` / `SOLSTONE_SIGN=1`) **fails loud** if the section
+is missing — same discipline the macOS `publish-appcast.py` enforces. Unsigned
+dev/local packs warn and pack note-less, so iteration stays frictionless.
+
 ## Update feed — R2 primary, GitHub mirror
 
 The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows/`
