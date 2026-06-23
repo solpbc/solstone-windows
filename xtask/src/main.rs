@@ -127,6 +127,7 @@ const PURE_CRATES: &[&str] = &[
     "observer-recovery",
     "observer-lifecycle",
     "observer-contract",
+    "observer-update",
     "observer-pl",
     "observer-nv12",
 ];

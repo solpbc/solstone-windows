@@ -60,6 +60,20 @@ pub mod settings {
     pub const PAIRING_JOURNAL: &str = "settings.pairing.journal";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
     pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
+    /// Updates pane: honest state line, live last-checked, the control buttons,
+    /// the auto-check / frequency / background-download settings, release notes.
+    pub const UPDATES_STATE: &str = "settings.updates.state";
+    pub const UPDATES_LAST_CHECKED: &str = "settings.updates.lastChecked";
+    pub const UPDATES_CHECK_NOW: &str = "settings.updates.checkNow";
+    pub const UPDATES_CANCEL: &str = "settings.updates.cancel";
+    pub const UPDATES_DOWNLOAD: &str = "settings.updates.download";
+    pub const UPDATES_INSTALL: &str = "settings.updates.install";
+    pub const UPDATES_RETRY: &str = "settings.updates.retry";
+    pub const UPDATES_DISMISS: &str = "settings.updates.dismiss";
+    pub const UPDATES_AUTO_CHECK: &str = "settings.updates.autoCheck";
+    pub const UPDATES_FREQUENCY: &str = "settings.updates.frequency";
+    pub const UPDATES_AUTO_DOWNLOAD: &str = "settings.updates.autoDownload";
+    pub const UPDATES_NOTES: &str = "settings.updates.notes";
 }
 
 /// About window.
@@ -99,6 +113,24 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.pairing.journal", settings::PAIRING_JOURNAL),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
+        ("settings.updates.state", settings::UPDATES_STATE),
+        (
+            "settings.updates.lastChecked",
+            settings::UPDATES_LAST_CHECKED,
+        ),
+        ("settings.updates.checkNow", settings::UPDATES_CHECK_NOW),
+        ("settings.updates.cancel", settings::UPDATES_CANCEL),
+        ("settings.updates.download", settings::UPDATES_DOWNLOAD),
+        ("settings.updates.install", settings::UPDATES_INSTALL),
+        ("settings.updates.retry", settings::UPDATES_RETRY),
+        ("settings.updates.dismiss", settings::UPDATES_DISMISS),
+        ("settings.updates.autoCheck", settings::UPDATES_AUTO_CHECK),
+        ("settings.updates.frequency", settings::UPDATES_FREQUENCY),
+        (
+            "settings.updates.autoDownload",
+            settings::UPDATES_AUTO_DOWNLOAD,
+        ),
+        ("settings.updates.notes", settings::UPDATES_NOTES),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
     ])
