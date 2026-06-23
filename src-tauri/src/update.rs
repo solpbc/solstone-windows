@@ -159,7 +159,7 @@ pub fn check_update_cli() -> std::process::ExitCode {
     match manager.check_for_updates() {
         Ok(UpdateCheck::UpdateAvailable(info)) => {
             let v = info.TargetFullRelease.Version.clone();
-            println!("--check-update: update available: {v}; downloading…");
+            println!("--check-update: update available: {v}; downloading...");
             if let Err(e) = manager.download_updates(&info, None) {
                 eprintln!("--check-update: download failed: {e}");
                 return ExitCode::FAILURE;
