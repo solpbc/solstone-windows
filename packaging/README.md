@@ -7,6 +7,12 @@ Velopack release packaging for the observer.
 - **Update feed.** GitHub Releases serves the monotonic feed (full + delta `nupkg`,
   `Setup.exe`, feed JSON). Operator-driven via `make publish` — there is no hosted CI release path.
 
+## Distribution
+
+[`DISTRIBUTION.md`](DISTRIBUTION.md) — the channels (direct download, **winget**,
+**scoop**), the per-release manifest-update steps, and the update-ownership /
+coexistence model. winget manifest reference: [`winget/`](winget/).
+
 ## Layout
 
 - `hooks/` — the Velopack lifecycle handlers the app must be aware of
