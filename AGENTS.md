@@ -168,8 +168,10 @@ See `docs/lifecycle-matrix.md` for the full table.
 
 Velopack, per-user `%LocalAppData%`, no UAC. The **primary update feed is R2** at
 `updates.solstone.app/solstone-windows/` (`make publish-r2`) — a privacy-clean,
-no-analytics static surface, so each user's scheduled update check stays a plain
-GET on our own surface rather than hitting a third party. GitHub Releases is
+no-analytics static surface, so each user's scheduled update check stays a
+first-party GET on our own surface (carrying only the app version + static app id,
+**no per-user identifier**) rather than hitting a third party. (The updater
+neutralizes Velopack's per-install staging id — see `src-tauri/src/update.rs`.) GitHub Releases is
 demoted to a source-hygiene **mirror** (`make publish`, a tagged source release
 with the artifacts attached). The in-app updater fetches `releases.win.json` from
 the R2 feed via Velopack's `HttpSource`. Release artifacts are signed (DigiCert

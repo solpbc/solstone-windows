@@ -17,8 +17,16 @@
 //! shows progress and runs to completion. (A future Velopack with cancellation
 //! would light up `UpdateActions::can_cancel`, which the pure model already
 //! computes; the webview simply renders no cancel button today.)
+//!
+//! Privacy (Article 8): Velopack's `HttpSource` appends
+//! `?localVersion=<ver>&id=<appId>&stagingId=<id>` to the feed GET, where
+//! `stagingId` is otherwise a persisted random per-install UUID — a device
+//! identifier on the wire. We neutralize it at boot (see
+//! [`neutralize_staging_id`]) so the check carries only the app version + the
+//! static app id + an empty staging token, to our own no-analytics surface. No
+//! per-user identifier ever leaves the machine.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -95,11 +103,38 @@ fn non_empty(s: &str) -> Option<String> {
     }
 }
 
+/// Neutralize velopack's per-install staging identifier so no device/user
+/// identifier reaches the wire (Article 8). velopack's `HttpSource` appends
+/// `stagingId` to the feed GET, sourced from a `.betaId` file it mints with a
+/// random `Uuid::new_v4()` when absent. velopack reads that file verbatim when it
+/// exists, so we pre-seed it **empty** at boot (overwriting any prior UUID) — the
+/// check then sends an empty staging token instead of a stable device id. We do
+/// not use staged rollouts, so a constant/empty id costs nothing. Pinned to the
+/// `velopack = "=1.2.0"` per-user layout: `%LocalAppData%\Solstone\packages`,
+/// which is `data_root/packages` (our `local_data_root()` is that same root).
+fn neutralize_staging_id(data_root: &Path) {
+    let beta_id = data_root.join("packages").join(".betaId");
+    if let Some(dir) = beta_id.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("updater: couldn't ensure packages dir for staging-id neutralization: {e}");
+            return;
+        }
+    }
+    if let Err(e) = std::fs::write(&beta_id, "") {
+        eprintln!("updater: couldn't neutralize staging id: {e}");
+    }
+}
+
 impl UpdateController {
     /// Build the controller: construct the `UpdateManager` (`None` if the app is
     /// not Velopack-installed), load persisted prefs+status, and rehydrate any
     /// staged-pending-restart asset from Velopack (earned, not persisted).
     pub fn new(app: AppHandle, state_path: PathBuf) -> Self {
+        // Article 8: strip velopack's per-install staging UUID before any check.
+        if let Some(root) = state_path.parent() {
+            neutralize_staging_id(root);
+        }
+
         let opts = UpdateOptions {
             // Explicit so feed resolution is deterministic (`releases.win.json`),
             // even though the build's default channel is already `win`.
