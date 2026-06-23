@@ -31,10 +31,12 @@ WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
 .PHONY: install build test ci contract purity-check package publish publish-r2 \
+        publish-winget publish-scoop publish-packages \
         pull-releases require-win-remote-host sync-win-host win-host-ci help
 
 help:
 	@echo "verbs: install build test ci contract purity-check package publish smoke run clean"
+	@echo "release: package (box) -> publish (box) -> pull-releases -> publish-r2 -> publish-packages"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
@@ -102,6 +104,21 @@ publish:
 # the signing box. Pack on the box, `make pull-releases`, then this.
 publish-r2:
 	sh scripts/publish-r2.sh Releases
+
+# Refresh the package-manager channels for a PUBLISHED release. Run on the RELEASE
+# HOST after `make publish` (the GitHub release + assets must exist; the manifests
+# point at and are hashed over those assets). Both ride the existing signed
+# artifacts -- no rebuild. VERSION defaults to the workspace version; override with
+# `make publish-packages VERSION=x.y.z`. See packaging/DISTRIBUTION.md.
+#   winget -> a version-update PR to microsoft/winget-pkgs (needs komac).
+#   scoop  -> bump version+hash in solpbc/scoop-solstone.
+publish-winget:
+	sh scripts/publish-winget.sh $(VERSION)
+
+publish-scoop:
+	sh scripts/publish-scoop.sh $(VERSION)
+
+publish-packages: publish-winget publish-scoop
 
 # Pull the box's packed Releases/ to the release host so publish-r2 can upload it.
 # The box checks the working tree out under ~/swbuild (sync-win-host's bundle).

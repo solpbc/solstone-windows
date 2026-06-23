@@ -15,6 +15,25 @@ The installer supports silent install (`Setup.exe --silent`), installs per-user 
 entry (`DisplayName=Solstone`, `Publisher=sol pbc`, `DisplayVersion`) that winget
 uses for version detection.
 
+## Release step
+
+The package-manager channels are refreshed **as the last step of a release**, on
+the release host, after the GitHub release + assets exist — they ride the same
+artifacts, so there is no rebuild. The full sequence:
+
+```
+make package        # build box: build + Velopack pack -> Releases/
+make publish        # build box: GitHub release (vX.Y.Z) + assets
+make pull-releases   # release host: pull Releases/ from the box
+make publish-r2      # release host: R2 update feed (in-app updater channel)
+make publish-packages # release host: winget PR + scoop bump  <-- this file
+```
+
+`make publish-packages` runs `publish-winget` + `publish-scoop` (below). `VERSION`
+defaults to the workspace version; override with `make publish-packages VERSION=x.y.z`.
+There is no GitHub Actions / webhook path for this — it is an operator-run release
+step, same posture as `publish` / `publish-r2`.
+
 ## winget
 
 Manifests live in the community repo `microsoft/winget-pkgs` under
@@ -22,29 +41,18 @@ Manifests live in the community repo `microsoft/winget-pkgs` under
 account / MSIX). A reference copy of the current manifest set is in
 [`winget/`](winget/).
 
-**Per release:**
+**Per release: `make publish-winget`** (`scripts/publish-winget.sh`). winget has no
+push API — every version is a PR to the community repo — so the target opens a
+version-update PR via [`komac`](https://github.com/russellbanks/Komac) (which
+fetches the `Setup.exe` asset, computes the SHA256, and submits). winget's pipeline
+then validates (schema, hash, an interactive Windows-Sandbox install) before a
+moderator/bot merges — so the PR is itself the install-validation gate.
 
-1. Cut + publish the release (so the `Solstone-win-Setup.exe` asset exists at
-   `https://github.com/solpbc/solstone-windows/releases/download/v<version>/`).
-2. Update the manifest and open a PR. The easiest path is
-   [`komac`](https://github.com/russellbanks/Komac) or
-   [`wingetcreate`](https://github.com/microsoft/winget-create):
-
-   ```sh
-   komac update solpbc.Solstone \
-     --version <version> \
-     --urls https://github.com/solpbc/solstone-windows/releases/download/v<version>/Solstone-win-Setup.exe \
-     --submit
-   ```
-
-   (komac fetches the installer, computes the SHA256, and opens the PR.) Or edit
-   the YAML in `winget/`, bump `PackageVersion` + `InstallerUrl` + `InstallerSha256`
-   + `AppsAndFeaturesEntries.DisplayVersion`, and submit the PR by hand.
-3. winget's automated pipeline validates (schema, hash, an interactive
-   Windows-Sandbox install) before a moderator merges.
-
-Validate locally before submitting: `winget validate --manifest <dir>` (and, on a
-real interactive desktop, `winget install --manifest <dir>`).
+- Needs `komac` on the release host (the script prints install instructions if absent).
+- **First-ever package only** was a one-time `komac new` / hand PR; steady-state is `komac update`, which is what the target runs.
+- Manual fallback: bump the YAML in [`winget/`](winget/) (`PackageVersion` /
+  `InstallerUrl` / `InstallerSha256` / `AppsAndFeaturesEntries.DisplayVersion`) and
+  open the PR by hand. Validate first with `winget validate --manifest <dir>`.
 
 ## scoop
 
@@ -52,16 +60,13 @@ Bucket: [`solpbc/scoop-solstone`](https://github.com/solpbc/scoop-solstone).
 Users add it with `scoop bucket add solstone https://github.com/solpbc/scoop-solstone`.
 
 The manifest (`bucket/solstone.json`) points at `Solstone-win-Portable.zip` and
-carries `checkver`/`autoupdate` blocks.
+carries `checkver`/`autoupdate` blocks (the latter let a maintainer auto-refresh
+from a scoop checkout — `bin/checkver.ps1 solstone -u`).
 
-**Per release**, refresh the manifest's `version` + `hash` either by:
-
-- running scoop's updater locally against the bucket
-  (`bin/checkver.ps1 solstone -u` from a scoop checkout), or
-- editing `bucket/solstone.json` by hand (bump `version`, and `hash` to the
-  SHA256 of the new `Solstone-win-Portable.zip`), or
-- triggering the repo's manual **Excavator** workflow if/when it is added (it is
-  intentionally left as a manual, operator-run step).
+**Per release: `make publish-scoop`** (`scripts/publish-scoop.sh`) — hashes the
+published `Portable.zip` and bumps the manifest's `version` + `hash` in
+`solpbc/scoop-solstone` via the GitHub API. No external CI/bot: it is an
+operator-run release step. (Hand fallback: edit `bucket/solstone.json` directly.)
 
 ## Coexistence
 
