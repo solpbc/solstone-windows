@@ -30,8 +30,8 @@ WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
 WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: install build test ci contract purity-check package publish smoke run clean \
-        require-win-remote-host sync-win-host win-host-ci help
+.PHONY: install build test ci contract purity-check package publish publish-r2 \
+        pull-releases require-win-remote-host sync-win-host win-host-ci help
 
 help:
 	@echo "verbs: install build test ci contract purity-check package publish smoke run clean"
@@ -89,9 +89,26 @@ package:
 	$(CARGO) build -p $(TAURI_BIN) --release
 	$(PWSH) -File scripts/package.ps1
 
-# Upload the Releases/ dir to GitHub Releases = the monotonic update feed.
+# Upload the Releases/ dir to GitHub Releases = the demoted source-hygiene mirror
+# (a tagged source release with the artifacts attached). The PRIMARY auto-update
+# feed is R2 (publish-r2). Runs on the build box.
 publish:
 	$(PWSH) -File scripts/publish.ps1
+
+# Upload the Releases/ dir to the R2 update feed at
+# updates.solstone.app/solstone-windows/ -- the PRIMARY auto-update channel the
+# in-app updater fetches, feed-last. Runs on the RELEASE HOST (where wrangler
+# holds the Cloudflare R2 auth), not the build box -- keeps Cloudflare creds off
+# the signing box. Pack on the box, `make pull-releases`, then this.
+publish-r2:
+	sh scripts/publish-r2.sh Releases
+
+# Pull the box's packed Releases/ to the release host so publish-r2 can upload it.
+# The box checks the working tree out under ~/swbuild (sync-win-host's bundle).
+pull-releases: require-win-remote-host
+	rm -rf Releases
+	$(WIN_SCP) -r $(WIN_REMOTE_HOST):swbuild/Releases Releases
+	@echo "pulled Releases/ from $(WIN_REMOTE_HOST)"
 
 # Register + fire the Session-1 scheduled-task FlaUI smoke against the installed
 # app; poll health to `observing`. Live target — run on the build box.

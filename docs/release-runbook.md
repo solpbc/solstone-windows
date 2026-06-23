@@ -10,17 +10,41 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Build binary + webview | `make build` |
 | Full gate (fmt · clippy · contract drift · tests · cargo-deny) | `make ci` |
 | Pack a Velopack release into `Releases/` | `make package` |
-| Upload `Releases/` to GitHub Releases (the update feed) | `make publish` |
+| Pull the box's `Releases/` to the release host | `make pull-releases` |
+| Upload `Releases/` to the R2 update feed (**primary**) | `make publish-r2` |
+| Upload `Releases/` to GitHub Releases (source mirror) | `make publish` |
 | FlaUI smoke vs the installed app | `make smoke` |
 
 ## Packaging
 
 - Velopack, per-user `%LocalAppData%`, **no UAC**.
 - Evergreen WebView2 runtime (no fixed-version bundle).
-- `Releases/` carries the full + delta `nupkg`, `Setup.exe`, and the feed JSON.
-  GitHub Releases is the monotonic update feed.
+- `Releases/` carries the full (+ delta) `nupkg`, `Solstone-win-Setup.exe`,
+  `Solstone-win-Portable.zip`, and the feed (`releases.win.json`).
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
   registers the per-user autostart login item.
+
+## Update feed — R2 primary, GitHub mirror
+
+The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows/`
+— a privacy-clean static surface (no analytics, GET-only). The in-app updater
+fetches `releases.win.json` from there via Velopack's `HttpSource`. GitHub
+Releases is a demoted **source-hygiene mirror** only.
+
+**Two-host flow** (mirrors the macOS appcast split — keeps Cloudflare creds off
+the signing box):
+
+1. On the build box: `make package` (`-Sign` / `SOLSTONE_SIGN=1` for a release).
+2. On the release host: `make pull-releases` (scp the box's `Releases/` over),
+   then `make publish-r2` — uploads every artifact, **feed-last**
+   (`releases.win.json` after the nupkgs/Setup.exe), then HEAD-checks the feed +
+   the `Solstone-win-Setup.exe` permalink target. Requires `wrangler` authed to
+   the Cloudflare account + `curl`.
+3. Optional source mirror: on the box, `make publish` (tagged GitHub release).
+
+`make publish-r2` accumulates: nupkgs are version-named (prior deltas/fulls stay),
+`Solstone-win-Setup.exe` is a stable name overwritten with the latest. The
+`solstone.app/download/windows` permalink 302s to that stable Setup.exe.
 
 ## Signing (wired — opt-in, release-only)
 

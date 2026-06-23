@@ -57,7 +57,9 @@ charter and license.
 | `make ci` | fmt-check · clippy `-D warnings` · contract `--check` · tests · `cargo deny check` |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
 | `make package` | `make build` → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
-| `make publish` | upload `Releases/` to GitHub Releases (the update feed) |
+| `make publish-r2` | upload `Releases/` to the R2 update feed (`updates.solstone.app/solstone-windows/`, feed-last) — the **primary** auto-update channel; run on the release host |
+| `make pull-releases` | pull the box's packed `Releases/` to the release host (before `publish-r2`) |
+| `make publish` | upload `Releases/` to GitHub Releases — the demoted source-hygiene mirror |
 | `make smoke` | Session-1 scheduled-task FlaUI smoke vs the installed app |
 | `make run` | launch from the tree + tail `%LocalAppData%\Solstone\logs\` |
 | `make clean` | `cargo clean` + remove `ui/dist` and `Releases/` |
@@ -164,12 +166,18 @@ See `docs/lifecycle-matrix.md` for the full table.
 
 ## 7. Packaging & release
 
-Velopack, per-user `%LocalAppData%`, no UAC. GitHub Releases is the monotonic
-update feed (`make publish`). Release artifacts are signed (DigiCert KeyLocker via
-Velopack's `--signTemplate`); signing is opt-in and release-only (`-Sign` /
-`SOLSTONE_SIGN=1`) so dev/local packs stay unsigned, and the credentials are
-env-supplied, never committed. Signing covers release artifacts only. See
-`docs/release-runbook.md`.
+Velopack, per-user `%LocalAppData%`, no UAC. The **primary update feed is R2** at
+`updates.solstone.app/solstone-windows/` (`make publish-r2`) — a privacy-clean,
+no-analytics static surface, so each user's scheduled update check stays a plain
+GET on our own surface rather than hitting a third party. GitHub Releases is
+demoted to a source-hygiene **mirror** (`make publish`, a tagged source release
+with the artifacts attached). The in-app updater fetches `releases.win.json` from
+the R2 feed via Velopack's `HttpSource`. Release artifacts are signed (DigiCert
+KeyLocker via Velopack's `--signTemplate`); signing is opt-in and release-only
+(`-Sign` / `SOLSTONE_SIGN=1`) so dev/local packs stay unsigned, and the
+credentials are env-supplied, never committed. Signing covers release artifacts
+only. The R2 upload runs on the release host (where the cloud auth lives), not the
+signing box. See `docs/release-runbook.md`.
 
 ## 8. Safety Rails
 
