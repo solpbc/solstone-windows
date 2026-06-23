@@ -55,6 +55,11 @@ fn main() -> ExitCode {
         }
     }
 
+    // Headless check + stage of an update (readies it for --apply-update).
+    if args.iter().any(|a| a == "--check-update") {
+        return update::check_update_cli();
+    }
+
     // Headless apply of a staged update (the CLI analog of relaunch-to-install).
     if args.iter().any(|a| a == "--apply-update") {
         return update::apply_pending_cli();

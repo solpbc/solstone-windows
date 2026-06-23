@@ -143,6 +143,45 @@ fn build_manager() -> Option<UpdateManager> {
     }
 }
 
+/// Headless check + stage of an update (`--check-update`) — readies an update
+/// without the GUI: checks the feed, and if a newer version is available downloads
+/// it (full or delta) and stages it for the next launch. Apply it with
+/// `--apply-update`. Neutralizes the staging id first (Article 8), same as the GUI
+/// boot. Enables unattended update + the build-box end-to-end delta validation.
+pub fn check_update_cli() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    // Article 8: strip velopack's per-install staging UUID before the check.
+    neutralize_staging_id(&platform_win::local_data_root());
+    let Some(manager) = build_manager() else {
+        eprintln!("--check-update: updater unavailable (not installed via Velopack?)");
+        return ExitCode::FAILURE;
+    };
+    match manager.check_for_updates() {
+        Ok(UpdateCheck::UpdateAvailable(info)) => {
+            let v = info.TargetFullRelease.Version.clone();
+            println!("--check-update: update available: {v}; downloading…");
+            if let Err(e) = manager.download_updates(&info, None) {
+                eprintln!("--check-update: download failed: {e}");
+                return ExitCode::FAILURE;
+            }
+            println!("--check-update: downloaded + staged {v} (apply with --apply-update)");
+            ExitCode::SUCCESS
+        }
+        Ok(UpdateCheck::NoUpdateAvailable) => {
+            println!("--check-update: up to date");
+            ExitCode::SUCCESS
+        }
+        Ok(UpdateCheck::RemoteIsEmpty) => {
+            println!("--check-update: remote feed is empty");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("--check-update: check failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Headless apply of a staged update — the CLI analog of the in-app
 /// relaunch-to-install (`--apply-update`). Applies the pending-restart package via
 /// Velopack (which relaunches the app), or exits nonzero when nothing is staged.
