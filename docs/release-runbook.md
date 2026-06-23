@@ -80,8 +80,11 @@ shipped signed.
 - Invoke `.cmd` shims via `cmd.exe /c`.
 - The FlaUI smoke runs via a low-privilege scheduled task
   (`LogonType=Interactive`) into Session 1 against the installed app.
-- Delta-update validation: install N → bump → package N+1 → assert the *delta*
-  applies and the relaunched app reports the new version via `--dump-state`.
+- Delta-update validation: install N → bump → package N+1 → publish to R2 →
+  assert the running app auto-finds N+1, downloads the *delta*, and stages it;
+  then apply headlessly with `solstone-windows-app.exe --apply-update` (the CLI
+  analog of relaunch-to-install) and assert the relaunched app reports the new
+  version via `--dump-state`.
 
 ## Remote build host (optional)
 

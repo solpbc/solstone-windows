@@ -36,8 +36,10 @@ charter and license.
   a known build box via local `make`. `.github/workflows/` does not exist, by
   policy, permanently.
 - **Agent-native CLI surface.** `--dump-state` / `/healthz` expose the honest
-  state; atomic `make` verbs wrap every multi-step operation. Never hand-chain
-  `cargo build` → `vpk pack` → `gh release` — invoke the verb.
+  state; `--apply-update` applies a staged update headlessly (the CLI analog of
+  the in-app relaunch-to-install); atomic `make` verbs wrap every multi-step
+  operation. Never hand-chain `cargo build` → `vpk pack` → `gh release` — invoke
+  the verb.
 - **Shared protocols are code.** The AutomationId identifiers and the
   health/state token vocabulary are a generated, committed,
   drift-gated `automation-contract.json` — not prose. The source of truth is the

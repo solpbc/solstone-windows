@@ -125,6 +125,53 @@ fn neutralize_staging_id(data_root: &Path) {
     }
 }
 
+/// Construct the Velopack `UpdateManager` over our R2 feed. `None` when the app is
+/// not Velopack-installed (e.g. a dev tree), surfaced honestly as `Unavailable`.
+fn build_manager() -> Option<UpdateManager> {
+    let opts = UpdateOptions {
+        // Explicit so feed resolution is deterministic (`releases.win.json`),
+        // even though the build's default channel is already `win`.
+        ExplicitChannel: Some(CHANNEL.to_string()),
+        ..Default::default()
+    };
+    match UpdateManager::new(HttpSource::new(FEED_URL), Some(opts), None) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!("updater: unavailable (not installed via Velopack?): {e}");
+            None
+        }
+    }
+}
+
+/// Headless apply of a staged update — the CLI analog of the in-app
+/// relaunch-to-install (`--apply-update`). Applies the pending-restart package via
+/// Velopack (which relaunches the app), or exits nonzero when nothing is staged.
+/// Enables unattended apply and the build-box end-to-end delta validation.
+pub fn apply_pending_cli() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let Some(manager) = build_manager() else {
+        eprintln!("--apply-update: updater unavailable (not installed via Velopack?)");
+        return ExitCode::FAILURE;
+    };
+    match manager.get_update_pending_restart() {
+        Some(asset) => {
+            eprintln!(
+                "--apply-update: applying staged {} and relaunching…",
+                asset.Version
+            );
+            if let Err(e) = manager.apply_updates_and_restart(&asset) {
+                eprintln!("--apply-update: apply failed: {e}");
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS // typically unreached: the process is replaced.
+        }
+        None => {
+            eprintln!("--apply-update: no staged update pending");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 impl UpdateController {
     /// Build the controller: construct the `UpdateManager` (`None` if the app is
     /// not Velopack-installed), load persisted prefs+status, and rehydrate any
@@ -135,19 +182,7 @@ impl UpdateController {
             neutralize_staging_id(root);
         }
 
-        let opts = UpdateOptions {
-            // Explicit so feed resolution is deterministic (`releases.win.json`),
-            // even though the build's default channel is already `win`.
-            ExplicitChannel: Some(CHANNEL.to_string()),
-            ..Default::default()
-        };
-        let manager = match UpdateManager::new(HttpSource::new(FEED_URL), Some(opts), None) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                eprintln!("updater: unavailable (not installed via Velopack?): {e}");
-                None
-            }
-        };
+        let manager = build_manager();
 
         let mut state = UpdateState::new();
         if let Ok(text) = std::fs::read_to_string(&state_path) {
