@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-24
+
 ### Added
 
 - the tray icon now shows whether your data is reaching your journal: a full sun
