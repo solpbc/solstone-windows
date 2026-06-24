@@ -95,6 +95,10 @@ export const automationContract = {
       "faulted",
       "inactive",
       "no_input_device"
+    ],
+    "view_render_state": [
+      "pending",
+      "rendered"
     ]
   }
 } as const;

@@ -24,7 +24,9 @@
 
 use std::collections::BTreeMap;
 
-use observer_model::{AppPhase, ErrorReason, PairingPhase, PauseReason, SourceKind};
+use observer_model::{
+    AppPhase, ErrorReason, PairingPhase, PauseReason, SourceKind, ViewRenderState,
+};
 use serde::Serialize;
 use strum::IntoEnumIterator;
 
@@ -217,6 +219,7 @@ fn state_tokens() -> BTreeMap<&'static str, Vec<String>> {
         ("pause_reason", enum_tokens::<PauseReason>()),
         ("error_reason", enum_tokens::<ErrorReason>()),
         ("pairing_phase", enum_tokens::<PairingPhase>()),
+        ("view_render_state", enum_tokens::<ViewRenderState>()),
     ])
 }
 

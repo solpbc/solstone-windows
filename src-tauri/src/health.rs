@@ -36,6 +36,7 @@ pub fn not_running_snapshot() -> HealthDump {
         screen_encoder: None,
         exclusions: None,
         pause: None,
+        views: Default::default(),
     }
 }
 

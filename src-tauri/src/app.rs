@@ -127,7 +127,7 @@ fn log_health_transitions(previous: Option<&HealthDump>, current: &HealthDump) {
 }
 
 /// Boot the tray-resident observer.
-pub fn run() {
+pub fn run(open_view: Option<observer_model::View>) {
     tracing::info!(
         target: "lifecycle",
         version = env!("CARGO_PKG_VERSION"),
@@ -149,6 +149,7 @@ pub fn run() {
             crate::ipc::open_settings,
             crate::ipc::open_about,
             crate::ipc::log_frontend_error,
+            crate::ipc::view_rendered,
             crate::ipc::pair,
             crate::ipc::get_exclusions,
             crate::ipc::set_exclusions,
@@ -170,7 +171,7 @@ pub fn run() {
             crate::ipc::update_set_interval,
             crate::ipc::open_release_notes,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             match crate::lifecycle::acquire_single_instance() {
                 platform_win::InstanceLock::AlreadyRunning => {
                     tracing::info!(
@@ -426,6 +427,10 @@ pub fn run() {
                         .lock()
                         .ok()
                         .and_then(|health| health.exclusions.clone());
+                    let views = health
+                        .lock()
+                        .map(|health| health.views.clone())
+                        .unwrap_or_default();
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -438,6 +443,7 @@ pub fn run() {
                         screen_encoder: None,
                         exclusions,
                         pause: None,
+                        views,
                     };
                     log_health_transitions(previous.as_ref(), &terminal);
                     if let Ok(mut health) = health.lock() {
@@ -496,6 +502,19 @@ pub fn run() {
                     }
                 }
             });
+
+            // Honor `--open-view` only in the mutex-holding instance (we're past the
+            // AlreadyRunning early-return). No-arg launch stays tray-first.
+            if let Some(view) = open_view {
+                let handle = app.handle();
+                let result = match view {
+                    observer_model::View::Settings => crate::windows::open_settings(handle),
+                    observer_model::View::About => crate::windows::open_about(handle),
+                };
+                if let Err(error) = result {
+                    tracing::warn!(target: "window", view = view.label(), error = %error, "open-view failed");
+                }
+            }
 
             Ok(())
         })

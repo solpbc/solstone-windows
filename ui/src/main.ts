@@ -141,6 +141,7 @@ interface HealthDump {
   screen_encoder: EncoderHealth | null;
   exclusions: ExclusionHealth | null;
   pause: PauseSnapshot | null;
+  views?: Record<string, string>;
 }
 
 // ── Capture exclusions (observer-exclusion) ──────────────────────────────────
@@ -210,6 +211,7 @@ interface UpdateView {
 // re-render from either stream never loses the other's state.
 let latestHealth: HealthDump | null = null;
 let latestUpdate: UpdateView | null = null;
+let renderBeaconFired = false;
 // The last-checked line node, refreshed each render; a 1s interval rewrites its
 // text so the relative clock ticks live — the JS analog of the macOS TimelineView.
 let lastCheckedEl: HTMLElement | null = null;
@@ -1866,23 +1868,82 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
 
 function rerender(): void {
   if (!latestHealth) {
-    return;
-  }
-  if (label === "about") {
+    renderUnavailable();
+  } else if (label === "about") {
     renderAbout(latestHealth);
   } else {
     renderSettings(latestHealth);
   }
+  scheduleRenderBeacon();
+}
+
+function renderUnavailable(): void {
+  const rootId = label === "about" ? ids["about.window.root"] : ids["settings.window.root"];
+  resetRoot(rootId);
+
+  const title = text("h1", "solstone");
+  title.style.margin = "0";
+  title.style.padding = "18px 20px 8px";
+  title.style.fontSize = "22px";
+  title.style.fontWeight = "700";
+
+  const msg = text("p", "couldn't load the observer status just now.");
+  msg.style.padding = "0 20px";
+  msg.style.color = "#5b6661";
+
+  const retry = document.createElement("button");
+  retry.textContent = "retry";
+  retry.style.margin = "8px 20px";
+  retry.style.fontSize = "13px";
+  retry.style.padding = "7px 14px";
+  retry.style.border = "1px solid #2f6f4f";
+  retry.style.borderRadius = "6px";
+  retry.style.background = "#2f6f4f";
+  retry.style.color = "#fff";
+  retry.style.cursor = "pointer";
+  retry.addEventListener("click", () => {
+    void retryHealth();
+  });
+
+  root.append(title, msg, retry);
+}
+
+async function retryHealth(): Promise<void> {
+  const health = await invoke<HealthDump>("get_health").catch(() => null);
+  if (health) {
+    latestHealth = health;
+  }
+  rerender();
+}
+
+function scheduleRenderBeacon(): void {
+  if (renderBeaconFired) {
+    return;
+  }
+  const rootId = label === "about" ? ids["about.window.root"] : ids["settings.window.root"];
+  requestAnimationFrame(() => {
+    // Gate on OUR contract window-root being present — proves our renderer painted,
+    // not a foreign error page. Fires for both the real UI and the error state
+    // (both call resetRoot with the contract root id); never if our JS never runs.
+    if (document.querySelector(`[data-automation-id="${rootId}"]`)) {
+      renderBeaconFired = true;
+      try {
+        void invoke("view_rendered").catch(() => {});
+      } catch {
+        // Fire-and-forget only.
+      }
+    }
+  });
 }
 
 async function boot(): Promise<void> {
   if (label === "about") {
-    latestHealth = await invoke<HealthDump>("get_health");
+    latestHealth = await invoke<HealthDump>("get_health").catch(() => null);
     rerender();
     return;
   }
   const [health, update, exclusions, apps, hotkey, micCfg, mics, retention] = await Promise.all([
-    invoke<HealthDump>("get_health"),
+    invoke<HealthDump>("get_health").catch(() => null),
     invoke<UpdateView>("update_get").catch(() => null),
     invoke<ExclusionRules>("get_exclusions").catch(() => null),
     invoke<RunningApp[]>("list_running_apps").catch(() => [] as RunningApp[]),

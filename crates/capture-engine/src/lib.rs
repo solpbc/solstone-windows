@@ -265,6 +265,7 @@ where
                 .then(|| self.sources.screen_encoder.health()),
             exclusions: self.sources.screen.exclusion_health(),
             pause: self.state.pause_snapshot(now),
+            views: Default::default(),
         }
     }
 
@@ -697,8 +698,12 @@ where
     }
 
     fn refresh_health(&mut self) {
-        let dump = self.health_dump();
+        let mut dump = self.health_dump();
         if let Ok(mut shared) = self.shared_health.lock() {
+            // `views` is app-owned (the frontend writes it via the beacon command).
+            // The engine rebuilds the dump from scratch each tick, so carry the
+            // earned beacon forward — never clobber it back to empty.
+            dump.views = shared.views.clone();
             *shared = dump.clone();
         }
         self.health_tx.send_replace(dump);
@@ -761,6 +766,7 @@ where
             screen_encoder: None,
             exclusions: None,
             pause: None,
+            views: Default::default(),
         }
     }
 }
@@ -807,6 +813,7 @@ mod tests {
 
     use observer_model::{
         EncoderErrorKind, EncoderHealth, ErrorReason, ScreenPixelFormat, SegmentKey,
+        ViewRenderState,
     };
     use observer_recovery::StaleSegment;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1470,6 +1477,39 @@ mod tests {
     }
 
     #[test]
+    fn refresh_health_carries_app_owned_views_forward() {
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        // Seed the app-owned views into the shared dump (as the beacon command would).
+        let handle = engine.health_handle();
+        handle
+            .lock()
+            .unwrap()
+            .views
+            .insert("settings".to_string(), ViewRenderState::Rendered);
+
+        // A wholesale refresh rebuilds the dump from scratch (empty views) ...
+        assert!(engine.health_dump().views.is_empty());
+        engine.refresh_health();
+
+        // ... but must preserve the earned beacon on both the shared handle and the
+        // watch channel.
+        assert_eq!(
+            handle.lock().unwrap().views.get("settings"),
+            Some(&ViewRenderState::Rendered)
+        );
+        assert_eq!(
+            engine.health_watch().borrow().views.get("settings"),
+            Some(&ViewRenderState::Rendered)
+        );
+    }
+
+    #[test]
     fn rotation_preserves_every_audio_chunk_once_and_splits_segments() {
         let clock = FakeClock::new(299);
         let segment_fs = FakeSegmentFs::default();
@@ -1880,6 +1920,7 @@ mod tests {
             screen_encoder: None,
             exclusions: None,
             pause: None,
+            views: Default::default(),
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

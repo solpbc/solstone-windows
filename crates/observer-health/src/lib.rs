@@ -42,6 +42,7 @@ mod tests {
             screen_encoder: None,
             exclusions: None,
             pause: None,
+            views: Default::default(),
         }
     }
 

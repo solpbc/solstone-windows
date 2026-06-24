@@ -108,6 +108,22 @@ pub fn log_frontend_error(record: observer_log::FrontendErrorRecord) {
     );
 }
 
+/// Record that a view's frontend painted its contract window root. Honest-state:
+/// only our own renderer can call this back, and only after stamping the contract
+/// root, so `rendered` is *earned*. The view is derived from the calling window's
+/// label (not passed by the frontend). Fire-and-forget; unknown labels are ignored.
+#[tauri::command]
+pub fn view_rendered(window: tauri::WebviewWindow, state: tauri::State<'_, crate::app::AppState>) {
+    if let Some(view) = observer_model::View::parse(window.label()) {
+        if let Ok(mut health) = state.health.lock() {
+            health.views.insert(
+                view.label().to_string(),
+                observer_model::ViewRenderState::Rendered,
+            );
+        }
+    }
+}
+
 /// Pair this observer to a journal from a scanned/pasted pair-link, then start
 /// uploading. The pairing handshake + registration run inline (so the UI sees
 /// success/failure), then the upload + heartbeat loop is spawned for the process

@@ -14,6 +14,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -304,6 +305,62 @@ pub enum PairingPhase {
     Failed,
 }
 
+/// Render-readiness of one of our webview views. `Rendered` is *earned*: only our
+/// own frontend writes it, and only after it has stamped its contract window
+/// root. Surfaced on `/healthz` as the value type of `HealthDump::views`. Tokens
+/// for this enum flow into the contract via `enum_tokens::<ViewRenderState>()`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ViewRenderState {
+    /// Our frontend has not (yet) reported a painted contract root. Represented on
+    /// the live map by absence as well; both mean "not proven rendered".
+    Pending,
+    /// Our frontend painted its contract window root and called the beacon back.
+    Rendered,
+}
+
+/// The two on-demand webview views. Single source of truth for the `--open-view`
+/// startup arg's valid set, the `HealthDump::views` map keys, and the labels of
+/// the Tauri webview windows. `ALL` drives `label`/`parse`/`valid_list` so the
+/// valid set never drifts into two lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Settings,
+    About,
+}
+
+impl View {
+    /// Every view, in declaration order — the one place the set is enumerated.
+    pub const ALL: [View; 2] = [View::Settings, View::About];
+
+    /// The canonical lowercase label: the webview window label, the `--open-view`
+    /// value, and the `HealthDump::views` key.
+    pub fn label(self) -> &'static str {
+        match self {
+            View::Settings => "settings",
+            View::About => "about",
+        }
+    }
+
+    /// Parse a view name (an `--open-view` value or a window label). `None` for an
+    /// unknown name — callers surface that, never panic.
+    pub fn parse(input: &str) -> Option<View> {
+        View::ALL.into_iter().find(|view| view.label() == input)
+    }
+
+    /// Comma-joined valid names for a user-facing "valid: ..." hint.
+    pub fn valid_list() -> String {
+        View::ALL
+            .iter()
+            .map(|view| view.label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// The honest pairing state surfaced in the health dump.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PairingState {
@@ -389,6 +446,12 @@ pub struct HealthDump {
     /// while the observer is paused. `None` in every non-paused phase.
     #[serde(default)]
     pub pause: Option<PauseSnapshot>,
+    /// App-owned per-view render-readiness beacon (label -> render-state). The
+    /// engine never computes this; it only carries it forward across its wholesale
+    /// dump replace. Meaningful only on the live `/healthz`. Empty until a view
+    /// proves it painted.
+    #[serde(default)]
+    pub views: BTreeMap<String, ViewRenderState>,
 }
 
 // ── Source traits ────────────────────────────────────────────────────────────
@@ -488,6 +551,7 @@ impl std::error::Error for SourceError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strum::IntoEnumIterator;
 
     #[test]
     fn encoder_config_matches_ac1_media_foundation_defaults() {
@@ -505,5 +569,58 @@ mod tests {
         assert!(!config.use_only_hardware_transforms);
         assert!(!config.use_d3d_manager);
         assert!(config.disable_throttling);
+    }
+
+    #[test]
+    fn health_dump_serializes_views() {
+        let mut dump = HealthDump {
+            app_state: AppPhase::Idle,
+            sources: vec![],
+            frame_rate: None,
+            segment_dir: None,
+            segment_seconds_remaining: None,
+            engine_ready: false,
+            version: "test".into(),
+            sync: SyncSnapshot::default(),
+            screen_encoder: None,
+            exclusions: None,
+            pause: None,
+            views: BTreeMap::new(),
+        };
+
+        let empty_json = serde_json::to_string(&dump).unwrap();
+        assert!(empty_json.contains("\"views\":{}"));
+
+        dump.views
+            .insert("settings".into(), ViewRenderState::Rendered);
+        let json = serde_json::to_string(&dump).unwrap();
+        assert!(json.contains("\"views\":{\"settings\":\"rendered\"}"));
+
+        let round_trip: HealthDump = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            round_trip.views.get("settings"),
+            Some(&ViewRenderState::Rendered)
+        );
+    }
+
+    #[test]
+    fn view_render_state_tokens_are_snake_case() {
+        assert_eq!(<&str>::from(ViewRenderState::Pending), "pending");
+        assert_eq!(<&str>::from(ViewRenderState::Rendered), "rendered");
+        assert_eq!(ViewRenderState::iter().count(), 2);
+        assert_eq!(
+            serde_json::to_string(&ViewRenderState::Rendered).unwrap(),
+            "\"rendered\""
+        );
+    }
+
+    #[test]
+    fn view_parse_and_labels() {
+        assert_eq!(View::parse("settings"), Some(View::Settings));
+        assert_eq!(View::parse("about"), Some(View::About));
+        assert_eq!(View::parse("bogus"), None);
+        assert_eq!(View::parse(""), None);
+        assert_eq!(View::Settings.label(), "settings");
+        assert_eq!(View::valid_list(), "settings, about");
     }
 }

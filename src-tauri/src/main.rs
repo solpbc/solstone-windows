@@ -94,10 +94,32 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let mut open_view: Option<observer_model::View> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--open-view" {
+            match args
+                .get(i + 1)
+                .and_then(|name| observer_model::View::parse(name))
+            {
+                Some(view) => open_view = Some(view),
+                None => {
+                    eprintln!(
+                        "--open-view: unknown view; valid: {}",
+                        observer_model::View::valid_list()
+                    );
+                    open_view = None;
+                }
+            }
+            i += 1;
+        }
+        i += 1;
+    }
+
     observer_log::init(
         &platform_win::logs_dir(),
         std::env::var("RUST_LOG").ok().as_deref(),
     );
-    app::run();
+    app::run(open_view);
     ExitCode::SUCCESS
 }

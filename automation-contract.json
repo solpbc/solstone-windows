@@ -89,6 +89,10 @@
       "faulted",
       "inactive",
       "no_input_device"
+    ],
+    "view_render_state": [
+      "pending",
+      "rendered"
     ]
   }
 }
