@@ -6,6 +6,26 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-24
+
+### Fixed
+
+- Settings and About now open correctly. in 0.2.0 these windows could come up
+  blank; they now show as intended, so you can pair to your journal and manage
+  observing from Settings.
+
+### Changed
+
+- the update check is now a bare request for the version manifest — it carries
+  nothing about the version you have or your install. it was already private; this
+  trims the last detail off the wire.
+
+### Added
+
+- a local diagnostic log under your Solstone app data, to make support easier. it
+  stays on your machine — nothing is ever sent anywhere — and it records only
+  events and errors, never the contents of what's observed.
+
 ## [0.2.0] - 2026-06-23
 
 ### Added
