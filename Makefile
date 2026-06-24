@@ -50,7 +50,7 @@ install:
 # stale bundle.
 build:
 	npm --prefix ui run build
-	$(CARGO) build -p $(TAURI_BIN)
+	$(CARGO) build -p $(TAURI_BIN) --features custom-protocol
 
 # Local cross-platform tests (pure tier + capture-engine), host-testable, no live
 # target. The windows-only crates test remotely via win-host-ci.
@@ -88,7 +88,10 @@ purity-check:
 # empty until the cert lands.
 package:
 	npm --prefix ui run build
-	$(CARGO) build -p $(TAURI_BIN) --release
+	# --features custom-protocol: serve the embedded ui/dist, not the Vite devUrl.
+	# Without it the shipped Settings/About load "localhost refused to connect"
+	# (cargo tauri build sets it automatically; a plain cargo build does not).
+	$(CARGO) build -p $(TAURI_BIN) --release --features custom-protocol
 	$(PWSH) -File scripts/package.ps1
 
 # Upload the Releases/ dir to GitHub Releases = the demoted source-hygiene mirror

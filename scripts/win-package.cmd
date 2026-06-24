@@ -36,8 +36,13 @@ echo === npm install (ui) ===
 call npm --prefix ui install || exit /b 1
 echo === npm run build (ui -^> ui/dist) ===
 call npm --prefix ui run build || exit /b 1
-echo === cargo build -p solstone-windows-app --release ===
-cargo build -p solstone-windows-app --release || exit /b 1
+:: --features custom-protocol is REQUIRED for a shipping build. Without it Tauri
+:: serves the webview from devUrl (the Vite dev server, build.devUrl in
+:: tauri.conf.json) instead of the embedded ui/dist, so the Settings and About
+:: windows load "localhost refused to connect" in the installed app. cargo tauri
+:: build enables it automatically; a plain cargo build does not. Do not remove.
+echo === cargo build -p solstone-windows-app --release --features custom-protocol ===
+cargo build -p solstone-windows-app --release --features custom-protocol || exit /b 1
 echo === vpk pack (scripts\package.ps1) ===
 set "SIGN_ARG="
 if defined SOLSTONE_SIGN set "SIGN_ARG=-Sign"

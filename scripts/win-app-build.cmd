@@ -24,8 +24,11 @@ echo === npm install (ui) ===
 call npm --prefix ui install || exit /b 1
 echo === npm run build (ui -^> ui/dist) ===
 call npm --prefix ui run build || exit /b 1
-echo === cargo build -p solstone-windows-app ===
-cargo build -p solstone-windows-app || exit /b 1
+:: --features custom-protocol so this verify build serves the embedded ui/dist
+:: (not the Vite devUrl) and the Settings/About windows actually render — a plain
+:: cargo build leaves the webview pointed at a dead dev server. See win-package.cmd.
+echo === cargo build -p solstone-windows-app --features custom-protocol ===
+cargo build -p solstone-windows-app --features custom-protocol || exit /b 1
 
 echo === WIN_APP_BUILD_OK ===
 exit /b 0
