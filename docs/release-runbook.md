@@ -42,8 +42,10 @@ dev/local packs warn and pack note-less, so iteration stays frictionless.
 
 The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows/`
 — a privacy-clean static surface (no analytics, GET-only). The in-app updater
-fetches `releases.win.json` from there via Velopack's `HttpSource`. GitHub
-Releases is a demoted **source-hygiene mirror** only.
+fetches `releases.win.json` from there with a bare, query-free manifest GET via
+the custom local Velopack `UpdateSource`; package downloads still request the
+package files by filename from the same first-party feed host. GitHub Releases is
+a demoted **source-hygiene mirror** only.
 
 **Two-host flow** (mirrors the macOS appcast split — keeps Cloudflare creds off
 the signing box):

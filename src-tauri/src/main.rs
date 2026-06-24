@@ -21,6 +21,7 @@ mod mic;
 mod retention;
 mod tray;
 mod update;
+mod update_feed;
 mod windows;
 
 use std::process::ExitCode;

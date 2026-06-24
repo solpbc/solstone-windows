@@ -18,13 +18,12 @@
 //! would light up `UpdateActions::can_cancel`, which the pure model already
 //! computes; the webview simply renders no cancel button today.)
 //!
-//! Privacy (Article 8): Velopack's `HttpSource` appends
-//! `?localVersion=<ver>&id=<appId>&stagingId=<id>` to the feed GET, where
-//! `stagingId` is otherwise a persisted random per-install UUID — a device
-//! identifier on the wire. We neutralize it at boot (see
-//! [`neutralize_staging_id`]) so the check carries only the app version + the
-//! static app id + an empty staging token, to our own no-analytics surface. No
-//! per-user identifier ever leaves the machine.
+//! Privacy (Article 8): our custom [`R2FeedSource`] performs a bare, query-free
+//! first-party manifest GET to the R2 feed: no app version, no app id, no staging
+//! id. Package downloads still request package files by filename from the same
+//! first-party feed host, with same-origin enforcement in the source. Velopack's
+//! manager remains in charge of version comparison, delta selection, checksum,
+//! staging, pending-restart, and relaunch.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,9 +36,9 @@ use observer_update::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use velopack::{
-    sources::HttpSource, UpdateCheck, UpdateInfo, UpdateManager, UpdateOptions, VelopackAsset,
-};
+use velopack::{UpdateCheck, UpdateInfo, UpdateManager, UpdateOptions, VelopackAsset};
+
+use crate::update_feed::R2FeedSource;
 
 /// The privacy-clean R2 update feed — a plain static GET surface, no identifiers,
 /// no analytics (Article 8). Channel `win` => the client GETs
@@ -104,14 +103,15 @@ fn non_empty(s: &str) -> Option<String> {
 }
 
 /// Neutralize velopack's per-install staging identifier so no device/user
-/// identifier reaches the wire (Article 8). velopack's `HttpSource` appends
-/// `stagingId` to the feed GET, sourced from a `.betaId` file it mints with a
-/// random `Uuid::new_v4()` when absent. velopack reads that file verbatim when it
-/// exists, so we pre-seed it **empty** at boot (overwriting any prior UUID) — the
-/// check then sends an empty staging token instead of a stable device id. We do
-/// not use staged rollouts, so a constant/empty id costs nothing. Pinned to the
-/// `velopack = "=1.2.0"` per-user layout: `%LocalAppData%\Solstone\packages`,
-/// which is `data_root/packages` (our `local_data_root()` is that same root).
+/// identifier is minted or persisted (Article 8). velopack's manager reads a
+/// per-install staging UUID from `.betaId`, minting a random `Uuid::new_v4()`
+/// when absent, and threads it to the source as `staged_user_id`. Our
+/// `R2FeedSource` ignores that value so it never reaches the wire, but we still
+/// pre-seed `.betaId` **empty** at boot (overwriting any prior UUID) so no stable
+/// per-install identifier is minted/persisted on disk and the staged-rollout id
+/// stays unused. Pinned to the `velopack = "=1.2.0"` per-user layout:
+/// `%LocalAppData%\Solstone\packages`, which is `data_root/packages` (our
+/// `local_data_root()` is that same root).
 fn neutralize_staging_id(data_root: &Path) {
     let beta_id = data_root.join("packages").join(".betaId");
     if let Some(dir) = beta_id.parent() {
@@ -134,7 +134,7 @@ fn build_manager() -> Option<UpdateManager> {
         ExplicitChannel: Some(CHANNEL.to_string()),
         ..Default::default()
     };
-    match UpdateManager::new(HttpSource::new(FEED_URL), Some(opts), None) {
+    match UpdateManager::new(R2FeedSource::new(FEED_URL), Some(opts), None) {
         Ok(m) => Some(m),
         Err(e) => {
             eprintln!("updater: unavailable (not installed via Velopack?): {e}");
