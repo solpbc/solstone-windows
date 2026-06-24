@@ -72,15 +72,22 @@ function Invoke-InSession1([string]$name, [string]$exe, [string]$args) {
 }
 function Remove-Task([string]$name) { schtasks /Delete /TN $name /F 2>$null | Out-Null }
 
-# Launch the observer in Session 1 (idempotent: single-instance mutex makes a
-# second launch a no-op).
-Write-Host "=== launch observer in Session 1 ==="
-Invoke-InSession1 "solstone-smoke-app" $AppExe ""
+# Launch the observer in Session 1 with --open-view settings so the Settings
+# webview actually opens -- the Tier-R render gate then polls /healthz for the
+# per-view render beacon (views.settings == rendered). The single-instance mutex
+# makes a second launch a no-op, so the harness must own a clean slate: any prior
+# instance is killed below before launch (a stray holder would swallow the arg and
+# the gate would time out, indistinguishable from a render failure).
+Write-Host "=== ensure no prior instance holds the single-instance mutex ==="
+taskkill /IM solstone-windows-app.exe /F 2>$null | Out-Null
+Start-Sleep -Seconds 2
+Write-Host "=== launch observer in Session 1 (--open-view settings) ==="
+Invoke-InSession1 "solstone-smoke-app" $AppExe "--open-view settings"
 
 $DriverLog = Join-Path $env:TEMP "solstone-smoke-driver.log"
 if (Test-Path $DriverLog) { Remove-Item $DriverLog -Force }
 
-$DriverArgs = "--contract `"$Contract`" --health-url $HealthUrl --timeout-secs $TimeoutSecs"
+$DriverArgs = "--contract `"$Contract`" --health-url $HealthUrl --timeout-secs $TimeoutSecs --render-view settings"
 if ($FailInject) {
     # Wait for observing, then kill system audio (stop the audio service), then
     # run the driver in --fail-inject mode to assert the honest drop.

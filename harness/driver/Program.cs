@@ -49,6 +49,7 @@ namespace Solstone.Harness
         private const int SelftestFailed = 6;
         private const int UsageError = 7;
         private const int Exception = 10;
+        private const int ViewNotRendered = 11;
 
         private static string LastState = "(none)";
 
@@ -83,7 +84,7 @@ namespace Solstone.Harness
                     return FailInjectStayedObserving;
                 }
 
-                // Default happy path: wait for observing (Tier 0, the gate).
+                // Default happy path: wait for observing (Tier 0).
                 if (!PollUntil(opts, dump => Health.AppState(dump) == observing))
                 {
                     Log($"FAIL: app_state never reached '{observing}' within {opts.TimeoutSecs}s (last = '{LastState}')");
@@ -91,20 +92,32 @@ namespace Solstone.Harness
                 }
                 Log("OK (Tier 0): health dump reports observing");
 
-                // Tier 1 native-chrome liveness: open Settings from the tray and
-                // confirm the Settings window resolves by AutomationId. This is
-                // ADVISORY, not the gate: the tray context menu is only reliably
-                // reachable on a fully interactive desktop, so a headless/automated
-                // session may not resolve it. The deterministic gate is the Tier-0
-                // health oracle above (the scope's "green path must not depend on
-                // UIA resolving"). A Tier-1 miss is logged, never fatal.
+                // Tier R render gate (LOAD-BEARING): the view opened via --open-view
+                // must report it rendered OUR UI -- the per-view beacon
+                // (`views.<label>` == rendered) on /healthz, which only our own
+                // renderer can fire and only after stamping the contract window root.
+                // A webview that loads the dev-server error page or a blank window
+                // never fires it, so this catches the 0.2.0 custom-protocol class that
+                // the old "window resolved" Tier-1 missed. Launch the app with
+                // `--open-view <view>` so the view actually opens.
+                var rendered = contract.RenderedToken();
+                if (!PollUntil(opts, dump => Health.ViewState(dump, opts.RenderView) == rendered))
+                {
+                    Log($"FAIL (Tier R): view '{opts.RenderView}' never reached '{rendered}' within {opts.TimeoutSecs}s -- the webview did not load our UI (is the app launched with --open-view {opts.RenderView}? is --features custom-protocol set?)");
+                    return ViewNotRendered;
+                }
+                Log($"OK (Tier R): view '{opts.RenderView}' rendered our UI ('{rendered}')");
+
+                // Tier 1 native-chrome (ADVISORY): --open-view already opened the view
+                // deterministically, so a tray-menu miss here is informational, never
+                // fatal. The gate is Tier 0 (observing) + Tier R (our UI rendered).
                 if (Tier1Interaction(contract) == Ok)
                 {
                     Log("OK (Tier 1): tray -> Open Settings -> Settings window resolved by AutomationId");
                 }
                 else
                 {
-                    Log("WARN (Tier 1, advisory): native-chrome interaction did not complete on this session; Tier-0 oracle is the gate");
+                    Log("WARN (Tier 1, advisory): native-chrome interaction did not complete; Tier-0 + Tier-R are the gate");
                 }
                 return Ok;
             }
@@ -194,6 +207,16 @@ namespace Solstone.Harness
             failures += Expect("app_state extract (observing)", Health.AppState(observingDump) == "observing");
             failures += Expect("app_state extract (starting)", Health.AppState(startingDump) == "starting");
 
+            // Tier-R render-gate logic: the rendered token + views extraction.
+            failures += Expect("rendered token", c.RenderedToken() == "rendered");
+            var renderedDump = "{\"app_state\":\"observing\",\"views\":{\"settings\":\"rendered\"}}";
+            var pendingDump = "{\"app_state\":\"observing\",\"views\":{\"settings\":\"pending\"}}";
+            var noViewsDump = "{\"app_state\":\"observing\"}";
+            failures += Expect("view state (rendered)", Health.ViewState(renderedDump, "settings") == "rendered");
+            failures += Expect("view state (pending)", Health.ViewState(pendingDump, "settings") == "pending");
+            failures += Expect("view state (no views map -> null)", Health.ViewState(noViewsDump, "settings") == null);
+            failures += Expect("view state (absent key -> null)", Health.ViewState(renderedDump, "about") == null);
+
             // Fail-inject decision: a faulted required source means the honest dump
             // must NOT be observing -> the drop-detected predicate fires.
             var faultedDump = "{\"app_state\":\"error\",\"sources\":[{\"kind\":\"system_audio\",\"status\":\"faulted\"}]}";
@@ -215,7 +238,8 @@ namespace Solstone.Harness
         private static string SampleContractJson()
         {
             return "{\"_generated\":\"x\",\"automation_ids\":{\"settings.window.root\":\"settings.window.root\"},"
-                 + "\"state_tokens\":{\"app_phase\":[\"error\",\"idle\",\"observing\",\"paused\",\"starting\"]}}";
+                 + "\"state_tokens\":{\"app_phase\":[\"error\",\"idle\",\"observing\",\"paused\",\"starting\"],"
+                 + "\"view_render_state\":[\"pending\",\"rendered\"]}}";
         }
 
         private static void Log(string line) => Console.WriteLine("[driver] " + line);
@@ -228,6 +252,7 @@ namespace Solstone.Harness
         public int TimeoutSecs = 60;
         public bool FailInject;
         public bool Selftest;
+        public string RenderView = "settings";
 
         public static Options? Parse(string[] args)
         {
@@ -241,9 +266,10 @@ namespace Solstone.Harness
                     case "--timeout-secs": o.TimeoutSecs = int.Parse(Next(args, ref i)); break;
                     case "--fail-inject": o.FailInject = true; break;
                     case "--selftest": o.Selftest = true; break;
+                    case "--render-view": o.RenderView = Next(args, ref i); break;
                     default:
                         Console.Error.WriteLine($"[driver] unknown arg '{args[i]}'");
-                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--fail-inject] | --selftest");
+                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--render-view settings|about] [--fail-inject] | --selftest");
                         return null;
                 }
             }
@@ -266,11 +292,13 @@ namespace Solstone.Harness
     {
         private readonly System.Collections.Generic.Dictionary<string, object> _ids;
         private readonly object[] _appPhase;
+        private readonly object[] _viewRenderState;
 
-        private Contract(System.Collections.Generic.Dictionary<string, object> ids, object[] appPhase)
+        private Contract(System.Collections.Generic.Dictionary<string, object> ids, object[] appPhase, object[] viewRenderState)
         {
             _ids = ids;
             _appPhase = appPhase;
+            _viewRenderState = viewRenderState;
         }
 
         public static Contract Load(string path)
@@ -285,7 +313,8 @@ namespace Solstone.Harness
             var ids = (System.Collections.Generic.Dictionary<string, object>)root["automation_ids"];
             var tokens = (System.Collections.Generic.Dictionary<string, object>)root["state_tokens"];
             var appPhase = (object[])tokens["app_phase"];
-            return new Contract(ids, appPhase);
+            var viewRenderState = (object[])tokens["view_render_state"];
+            return new Contract(ids, appPhase, viewRenderState);
         }
 
         // The observing token, read from the model-derived app_phase vocabulary.
@@ -293,6 +322,14 @@ namespace Solstone.Harness
         {
             var match = _appPhase.Select(o => o.ToString()).FirstOrDefault(t => t == "observing");
             if (match == null) throw new InvalidDataException("contract state_tokens.app_phase has no 'observing' token");
+            return match;
+        }
+
+        // The "rendered" token, read from the model-derived view_render_state vocabulary.
+        public string RenderedToken()
+        {
+            var match = _viewRenderState.Select(o => o.ToString()).FirstOrDefault(t => t == "rendered");
+            if (match == null) throw new InvalidDataException("contract state_tokens.view_render_state has no 'rendered' token");
             return match;
         }
 
@@ -336,6 +373,26 @@ namespace Solstone.Harness
                 var root = (System.Collections.Generic.Dictionary<string, object>)
                     new JavaScriptSerializer().DeserializeObject(dumpJson);
                 return root.TryGetValue("app_state", out var v) ? v?.ToString() : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // Extract the views.<view> render-state token from a health-dump JSON body
+        // (null when absent/unparseable -> the poller treats it as "not yet rendered").
+        public static string? ViewState(string? dumpJson, string view)
+        {
+            if (string.IsNullOrEmpty(dumpJson)) return null;
+            try
+            {
+                var root = (System.Collections.Generic.Dictionary<string, object>)
+                    new JavaScriptSerializer().DeserializeObject(dumpJson);
+                if (!root.TryGetValue("views", out var v) ||
+                    !(v is System.Collections.Generic.Dictionary<string, object> views))
+                    return null;
+                return views.TryGetValue(view, out var s) ? s?.ToString() : null;
             }
             catch
             {
