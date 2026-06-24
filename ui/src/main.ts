@@ -11,6 +11,72 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { automationContract } from "./lib/contract";
 
+installFrontendErrorHandlers();
+
+type FrontendOrigin = "settings" | "about" | "none";
+type FrontendErrorKind = "error" | "unhandled_rejection";
+
+interface FrontendErrorRecord {
+  kind: FrontendErrorKind;
+  level: "error";
+  origin: FrontendOrigin;
+  line: number;
+  column: number;
+}
+
+function installFrontendErrorHandlers(): void {
+  try {
+    window.addEventListener("error", (event: ErrorEvent) => {
+      try {
+        forwardFrontendError({
+          kind: "error",
+          level: "error",
+          origin: resolveFrontendOrigin(),
+          line: event.lineno || 0,
+          column: event.colno || 0,
+        });
+      } catch {
+        // Never let the error handler recurse.
+      }
+    });
+    window.addEventListener("unhandledrejection", (_event: PromiseRejectionEvent) => {
+      try {
+        forwardFrontendError({
+          kind: "unhandled_rejection",
+          level: "error",
+          origin: resolveFrontendOrigin(),
+          line: 0,
+          column: 0,
+        });
+      } catch {
+        // Never let the error handler recurse.
+      }
+    });
+  } catch {
+    // Frontend error capture must be best-effort.
+  }
+}
+
+function resolveFrontendOrigin(): FrontendOrigin {
+  try {
+    const label = getCurrentWindow().label;
+    if (label === "settings" || label === "about") {
+      return label;
+    }
+  } catch {
+    // Tauri API unavailable during early module evaluation.
+  }
+  return "none";
+}
+
+function forwardFrontendError(record: FrontendErrorRecord): void {
+  try {
+    void invoke("log_frontend_error", { record }).catch(() => {});
+  } catch {
+    // Fire-and-forget only.
+  }
+}
+
 type AppPhase = "idle" | "starting" | "observing" | "paused" | "error";
 type SourceKind = "screen" | "system_audio" | "mic";
 type SourceStatus = "active" | "inactive" | "no_input_device" | "faulted";

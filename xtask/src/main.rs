@@ -132,6 +132,7 @@ const PURE_CRATES: &[&str] = &[
     "observer-mic",
     "observer-retention",
     "observer-update",
+    "observer-log",
     "observer-pl",
     "observer-nv12",
 ];

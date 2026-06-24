@@ -116,12 +116,22 @@ fn neutralize_staging_id(data_root: &Path) {
     let beta_id = data_root.join("packages").join(".betaId");
     if let Some(dir) = beta_id.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("updater: couldn't ensure packages dir for staging-id neutralization: {e}");
+            tracing::warn!(
+                target: "update",
+                step = "neutralize_staging_id_dir",
+                error = %e,
+                "updater staging id neutralization failed"
+            );
             return;
         }
     }
     if let Err(e) = std::fs::write(&beta_id, "") {
-        eprintln!("updater: couldn't neutralize staging id: {e}");
+        tracing::warn!(
+            target: "update",
+            step = "neutralize_staging_id_write",
+            error = %e,
+            "updater staging id neutralization failed"
+        );
     }
 }
 
@@ -137,7 +147,12 @@ fn build_manager() -> Option<UpdateManager> {
     match UpdateManager::new(R2FeedSource::new(FEED_URL), Some(opts), None) {
         Ok(m) => Some(m),
         Err(e) => {
-            eprintln!("updater: unavailable (not installed via Velopack?): {e}");
+            tracing::warn!(
+                target: "update",
+                step = "build_manager",
+                error = %e,
+                "updater unavailable"
+            );
             None
         }
     }
@@ -285,13 +300,19 @@ impl UpdateController {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 if let Err(e) = std::fs::write(&self.inner.state_path, text) {
-                    eprintln!(
-                        "updater: failed to persist {}: {e}",
-                        self.inner.state_path.display()
+                    tracing::warn!(
+                        target: "update",
+                        path = %self.inner.state_path.display(),
+                        error = %e,
+                        "persist failed"
                     );
                 }
             }
-            Err(e) => eprintln!("updater: failed to serialize state: {e}"),
+            Err(e) => tracing::warn!(
+                target: "update",
+                error = %e,
+                "serialize failed"
+            ),
         }
     }
 
@@ -355,6 +376,13 @@ impl UpdateController {
                 let version = info.TargetFullRelease.Version.clone();
                 let notes = non_empty(&info.TargetFullRelease.NotesMarkdown);
                 ctrl.inner.rt.lock().expect("update rt").available_info = Some(*info);
+                tracing::info!(
+                    target: "update",
+                    operation = "check",
+                    result = "available",
+                    version = %version,
+                    "update check result"
+                );
                 ctrl.apply(UpdateEvent::CheckResult {
                     now: now_secs(),
                     result: CheckOutcome::UpdateAvailable { version, notes },
@@ -374,6 +402,12 @@ impl UpdateController {
             }
             Ok(UpdateCheck::NoUpdateAvailable) => {
                 ctrl.inner.rt.lock().expect("update rt").available_info = None;
+                tracing::info!(
+                    target: "update",
+                    operation = "check",
+                    result = "up_to_date",
+                    "update check result"
+                );
                 ctrl.apply(UpdateEvent::CheckResult {
                     now: now_secs(),
                     result: CheckOutcome::UpToDate,
@@ -382,6 +416,12 @@ impl UpdateController {
             }
             Ok(UpdateCheck::RemoteIsEmpty) => {
                 ctrl.inner.rt.lock().expect("update rt").available_info = None;
+                tracing::info!(
+                    target: "update",
+                    operation = "check",
+                    result = "empty",
+                    "update check result"
+                );
                 ctrl.apply(UpdateEvent::CheckResult {
                     now: now_secs(),
                     result: CheckOutcome::Empty,
@@ -389,7 +429,12 @@ impl UpdateController {
                 ctrl.end();
             }
             Err(e) => {
-                eprintln!("updater: check failed: {e}");
+                tracing::warn!(
+                    target: "update",
+                    operation = "check",
+                    error = %e,
+                    "update check failed"
+                );
                 ctrl.apply(UpdateEvent::CheckFailed { now: now_secs() });
                 ctrl.end();
             }
@@ -434,10 +479,22 @@ impl UpdateController {
                         .unwrap_or_else(|| info.TargetFullRelease.clone());
                     let version = staged.Version.clone();
                     ctrl.inner.rt.lock().expect("update rt").staged_asset = Some(staged);
+                    tracing::info!(
+                        target: "update",
+                        operation = "download",
+                        result = "success",
+                        version = %version,
+                        "update download result"
+                    );
                     ctrl.apply(UpdateEvent::Downloaded { version });
                 }
                 Err(e) => {
-                    eprintln!("updater: download failed: {e}");
+                    tracing::warn!(
+                        target: "update",
+                        operation = "download",
+                        error = %e,
+                        "update download failed"
+                    );
                     ctrl.apply(UpdateEvent::CheckFailed { now: now_secs() });
                 }
             }
@@ -459,10 +516,22 @@ impl UpdateController {
             }
         };
         self.signal(UpdateEvent::InstallStarted);
+        tracing::info!(
+            target: "update",
+            operation = "apply_restart",
+            result = "install_started",
+            version = %asset.Version,
+            "update apply result"
+        );
         let ctrl = self.clone();
         std::thread::spawn(move || {
             if let Err(e) = manager.apply_updates_and_restart(&asset) {
-                eprintln!("updater: apply/restart failed: {e}");
+                tracing::warn!(
+                    target: "update",
+                    operation = "apply_restart",
+                    error = %e,
+                    "update apply failed"
+                );
                 // Relaunch did not happen — fall back to the honest staged state.
                 ctrl.apply(UpdateEvent::Downloaded {
                     version: asset.Version.clone(),

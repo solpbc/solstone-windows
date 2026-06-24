@@ -95,6 +95,19 @@ pub fn open_release_notes(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Persist a structurally minimal frontend error event.
+#[tauri::command]
+pub fn log_frontend_error(record: observer_log::FrontendErrorRecord) {
+    tracing::error!(
+        target: "frontend",
+        kind = ?record.kind,
+        origin = ?record.origin,
+        line = record.line,
+        column = record.column,
+        "frontend error"
+    );
+}
+
 /// Pair this observer to a journal from a scanned/pasted pair-link, then start
 /// uploading. The pairing handshake + registration run inline (so the UI sees
 /// success/failure), then the upload + heartbeat loop is spawned for the process
@@ -114,15 +127,45 @@ pub async fn pair(
         shutdowns.push(up_tx);
     }
 
-    let paired = pl_transport_win::service::pair_and_register(&link, &cfg, sync.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    tracing::info!(
+        target: "sync",
+        pair_link = %observer_log::redact_pair_link(&link),
+        "pairing attempt"
+    );
+    let paired = match pl_transport_win::service::pair_and_register(&link, &cfg, sync.clone()).await
+    {
+        Ok(paired) => {
+            tracing::info!(target: "sync", outcome = "paired", "pairing result");
+            paired
+        }
+        Err(error) => {
+            let error = error.to_string();
+            tracing::warn!(
+                target: "sync",
+                pair_link = %observer_log::redact_pair_link(&link),
+                error = %observer_log::redact_secret("pairing-error", &error),
+                "pairing result"
+            );
+            return Err(error);
+        }
+    };
 
+    tracing::info!(
+        target: "sync",
+        source = "fresh_pair",
+        "uploader started"
+    );
     tauri::async_runtime::spawn(async move {
         if let Err(error) =
             pl_transport_win::service::run_uploader(paired, cfg, health, sync, up_rx).await
         {
-            eprintln!("uploader exited: {error}");
+            let error = error.to_string();
+            tracing::warn!(
+                target: "sync",
+                source = "fresh_pair",
+                error = %observer_log::redact_secret("uploader-error", &error),
+                "uploader exited"
+            );
         }
     });
     Ok(())

@@ -65,10 +65,21 @@ impl RetentionController {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 if let Err(e) = std::fs::write(self.path.as_path(), text) {
-                    eprintln!("retention: failed to persist {}: {e}", self.path.display());
+                    tracing::warn!(
+                        target: "config",
+                        area = "retention",
+                        path = %self.path.display(),
+                        error = %e,
+                        "persist failed"
+                    );
                 }
             }
-            Err(e) => eprintln!("retention: failed to serialize config: {e}"),
+            Err(e) => tracing::warn!(
+                target: "config",
+                area = "retention",
+                error = %e,
+                "serialize failed"
+            ),
         }
     }
 }

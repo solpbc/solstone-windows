@@ -75,10 +75,21 @@ impl HotkeyController {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 if let Err(e) = std::fs::write(self.path.as_path(), text) {
-                    eprintln!("hotkey: failed to persist {}: {e}", self.path.display());
+                    tracing::warn!(
+                        target: "config",
+                        area = "hotkey",
+                        path = %self.path.display(),
+                        error = %e,
+                        "persist failed"
+                    );
                 }
             }
-            Err(e) => eprintln!("hotkey: failed to serialize config: {e}"),
+            Err(e) => tracing::warn!(
+                target: "config",
+                area = "hotkey",
+                error = %e,
+                "serialize failed"
+            ),
         }
     }
 }

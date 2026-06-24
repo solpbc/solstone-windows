@@ -76,10 +76,21 @@ impl MicController {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 if let Err(e) = std::fs::write(self.path.as_path(), text) {
-                    eprintln!("mic: failed to persist {}: {e}", self.path.display());
+                    tracing::warn!(
+                        target: "config",
+                        area = "mic",
+                        path = %self.path.display(),
+                        error = %e,
+                        "persist failed"
+                    );
                 }
             }
-            Err(e) => eprintln!("mic: failed to serialize config: {e}"),
+            Err(e) => tracing::warn!(
+                target: "config",
+                area = "mic",
+                error = %e,
+                "serialize failed"
+            ),
         }
     }
 }

@@ -6,8 +6,9 @@
 //! Tray-first: no window is shown at launch. Before booting the Tauri runtime,
 //! `main` dispatches on the agent-native CLI surface — `--dump-state` prints the
 //! honest [`HealthDump`](observer_model::HealthDump) JSON and exits; `--healthz`
-//! is the same payload for liveness. Everything else falls through to the
-//! tray-resident app.
+//! is the same payload for liveness; `--log-path` prints the persistent file-log
+//! path without opening the writer. Everything else initializes the rotating file
+//! log and falls through to the tray-resident app.
 
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
@@ -78,6 +79,25 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if args.iter().any(|a| a == "--log-path") {
+        use std::io::Write as _;
+
+        let path = observer_log::active_log_path(&platform_win::logs_dir());
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join(path)
+        };
+        let _ = writeln!(std::io::stdout(), "{}", absolute.display());
+        return ExitCode::SUCCESS;
+    }
+
+    observer_log::init(
+        &platform_win::logs_dir(),
+        std::env::var("RUST_LOG").ok().as_deref(),
+    );
     app::run();
     ExitCode::SUCCESS
 }

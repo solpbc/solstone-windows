@@ -32,11 +32,13 @@ observer-hotkey.workspace = true
 observer-mic.workspace = true
 observer-retention.workspace = true
 observer-update.workspace = true
+observer-log.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 

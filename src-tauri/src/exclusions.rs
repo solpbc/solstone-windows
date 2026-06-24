@@ -87,10 +87,21 @@ impl ExclusionController {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 if let Err(e) = std::fs::write(self.path.as_path(), text) {
-                    eprintln!("exclusions: failed to persist {}: {e}", self.path.display());
+                    tracing::warn!(
+                        target: "config",
+                        area = "exclusions",
+                        path = %self.path.display(),
+                        error = %e,
+                        "persist failed"
+                    );
                 }
             }
-            Err(e) => eprintln!("exclusions: failed to serialize rules: {e}"),
+            Err(e) => tracing::warn!(
+                target: "config",
+                area = "exclusions",
+                error = %e,
+                "serialize failed"
+            ),
         }
     }
 }

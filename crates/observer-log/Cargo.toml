@@ -1,0 +1,17 @@
+[package]
+name = "observer-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Persistent rotating file log, redaction helpers, frontend error payloads, and panic logging for the solstone Windows observer. Pure tier; no platform dependency."
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+serde.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

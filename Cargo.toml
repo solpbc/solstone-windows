@@ -13,6 +13,7 @@ members = [
     "crates/observer-mic",
     "crates/observer-retention",
     "crates/observer-update",
+    "crates/observer-log",
     "crates/observer-pl",
     "crates/observer-nv12",
     "crates/capture-screen-encode",
@@ -42,6 +43,7 @@ serde_json = "1"
 thiserror = "2"
 strum = { version = "0.28", features = ["derive"] }
 sha2 = "0.10"
+tracing = "0.1"
 
 # Composition / shell deps.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
@@ -68,6 +70,7 @@ observer-hotkey = { path = "crates/observer-hotkey" }
 observer-mic = { path = "crates/observer-mic" }
 observer-retention = { path = "crates/observer-retention" }
 observer-update = { path = "crates/observer-update" }
+observer-log = { path = "crates/observer-log" }
 observer-pl = { path = "crates/observer-pl" }
 observer-nv12 = { path = "crates/observer-nv12" }
 capture-screen-encode = { path = "crates/capture-screen-encode" }

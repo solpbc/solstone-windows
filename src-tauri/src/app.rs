@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
-use observer_model::{AppPhase, HealthDump, PauseReason, SyncSnapshot};
+use observer_model::{AppPhase, HealthDump, PauseReason, SourceKind, SourceState, SyncSnapshot};
 use observer_retention::RetentionConfig;
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::{run_uploader, SyncConfig};
@@ -63,8 +63,78 @@ fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
     }
 }
 
+fn app_phase_label(phase: AppPhase) -> &'static str {
+    phase.into()
+}
+
+fn source_kind_label(kind: SourceKind) -> &'static str {
+    kind.into()
+}
+
+fn source_state_label(state: &SourceState) -> &'static str {
+    match state {
+        SourceState::Active => "active",
+        SourceState::Inactive => "inactive",
+        SourceState::NoInputDevice => "no_input_device",
+        SourceState::Faulted { .. } => "faulted",
+    }
+}
+
+fn log_health_transitions(previous: Option<&HealthDump>, current: &HealthDump) {
+    let Some(previous) = previous else {
+        return;
+    };
+
+    if previous.app_state != current.app_state {
+        tracing::info!(
+            target: "health",
+            from = app_phase_label(previous.app_state),
+            to = app_phase_label(current.app_state),
+            "app phase changed"
+        );
+    }
+
+    for source in &current.sources {
+        let previous_state = previous
+            .sources
+            .iter()
+            .find(|previous| previous.kind == source.kind)
+            .map(|previous| &previous.state);
+        if previous_state == Some(&source.state) {
+            continue;
+        }
+
+        let from = previous_state.map(source_state_label).unwrap_or("missing");
+        let to = source_state_label(&source.state);
+        match &source.state {
+            SourceState::Faulted { reason, .. } => tracing::warn!(
+                target: "health",
+                source = source_kind_label(source.kind),
+                from,
+                to,
+                reason = ?reason,
+                "source state changed"
+            ),
+            _ => tracing::info!(
+                target: "health",
+                source = source_kind_label(source.kind),
+                from,
+                to,
+                "source state changed"
+            ),
+        }
+    }
+}
+
 /// Boot the tray-resident observer.
 pub fn run() {
+    tracing::info!(
+        target: "lifecycle",
+        version = env!("CARGO_PKG_VERSION"),
+        build = if cfg!(debug_assertions) { "debug" } else { "release" },
+        "boot"
+    );
+
     let app = tauri::Builder::default()
         // Backend-only: opens the owner's default browser for `open_release_notes`.
         // No opener:* permission is added to the webview capability set, so the
@@ -78,6 +148,7 @@ pub fn run() {
             crate::ipc::get_health,
             crate::ipc::open_settings,
             crate::ipc::open_about,
+            crate::ipc::log_frontend_error,
             crate::ipc::pair,
             crate::ipc::get_exclusions,
             crate::ipc::set_exclusions,
@@ -100,11 +171,23 @@ pub fn run() {
             crate::ipc::open_release_notes,
         ])
         .setup(|app| {
-            if crate::lifecycle::acquire_single_instance()
-                == platform_win::InstanceLock::AlreadyRunning
-            {
-                app.handle().exit(0);
-                return Ok(());
+            match crate::lifecycle::acquire_single_instance() {
+                platform_win::InstanceLock::AlreadyRunning => {
+                    tracing::info!(
+                        target: "lifecycle",
+                        outcome = "already_running",
+                        "single instance"
+                    );
+                    app.handle().exit(0);
+                    return Ok(());
+                }
+                platform_win::InstanceLock::Acquired => {
+                    tracing::info!(
+                        target: "lifecycle",
+                        outcome = "acquired",
+                        "single instance"
+                    );
+                }
             }
 
             // Ensure the per-user autostart login item so the tray-resident
@@ -120,12 +203,36 @@ pub fn run() {
                     &[],
                 ) {
                     Ok(platform_win::autostart::EnsureOutcome::Registered) => {
-                        eprintln!("autostart: registered login item");
+                        tracing::info!(
+                            target: "lifecycle",
+                            component = "autostart",
+                            outcome = "registered",
+                            "autostart ensure"
+                        );
                     }
-                    Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => {}
-                    Err(error) => eprintln!("autostart: registration failed: {error}"),
+                    Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => {
+                        tracing::info!(
+                            target: "lifecycle",
+                            component = "autostart",
+                            outcome = "already_current",
+                            "autostart ensure"
+                        );
+                    }
+                    Err(error) => tracing::warn!(
+                        target: "lifecycle",
+                        component = "autostart",
+                        outcome = "failed",
+                        error = %error,
+                        "autostart ensure"
+                    ),
                 },
-                Err(error) => eprintln!("autostart: could not resolve current exe: {error}"),
+                Err(error) => tracing::warn!(
+                    target: "lifecycle",
+                    component = "autostart",
+                    outcome = "current_exe_failed",
+                    error = %error,
+                    "autostart ensure"
+                ),
             }
 
             // Capture-exclusion rules: load persisted owner policy and share the
@@ -158,6 +265,7 @@ pub fn run() {
             };
             let mut recovery = platform_win::LocalRecoveryFs::default();
             let segment_fs = platform_win::LocalSegmentFs::default();
+            tracing::info!(target: "engine", operation = "start", "engine start");
             let (mut engine, _outcomes) = CaptureEngine::new(
                 sources,
                 EngineConfig::default(),
@@ -168,6 +276,7 @@ pub fn run() {
             engine
                 .start()
                 .map_err(|error| io::Error::other(format!("engine start failed: {error:?}")))?;
+            tracing::info!(target: "engine", outcome = "started", "engine start");
 
             let health = engine.health_handle();
             let sync = engine.sync_handle();
@@ -187,16 +296,34 @@ pub fn run() {
                     let cfg = sync_config.clone();
                     let health_for_sync = health.clone();
                     let sync_for_sync = sync.clone();
+                    tracing::info!(
+                        target: "sync",
+                        source = "resume",
+                        "uploader started"
+                    );
                     tauri::async_runtime::spawn(async move {
                         if let Err(error) =
                             run_uploader(paired, cfg, health_for_sync, sync_for_sync, up_rx).await
                         {
-                            eprintln!("uploader exited: {error}");
+                            let error = error.to_string();
+                            tracing::warn!(
+                                target: "sync",
+                                source = "resume",
+                                error = %observer_log::redact_secret("uploader-error", &error),
+                                "uploader exited"
+                            );
                         }
                     });
                 }
                 Ok(_) => {}
-                Err(error) => eprintln!("failed to load pairing state: {error}"),
+                Err(error) => {
+                    let error = error.to_string();
+                    tracing::warn!(
+                        target: "sync",
+                        error = %observer_log::redact_secret("pairing-load-error", &error),
+                        "pairing state load failed"
+                    );
+                }
             }
 
             app.manage(AppState {
@@ -249,7 +376,12 @@ pub fn run() {
                             let _ = capture_engine::serve_health(listener, health).await;
                         }
                         Err(error) => {
-                            eprintln!("health server bind failed: {error}");
+                            tracing::error!(
+                                target: "health",
+                                port = crate::health::HEALTH_PORT,
+                                error = %error,
+                                "health server bind failed"
+                            );
                         }
                     }
                 }
@@ -264,8 +396,11 @@ pub fn run() {
                 let mi_resume = mi_resume.clone();
                 let mut rx = watch_rx;
                 async move {
+                    let mut previous: Option<HealthDump> = None;
                     loop {
                         let dump = rx.borrow_and_update().clone();
+                        log_health_transitions(previous.as_ref(), &dump);
+                        previous = Some(dump.clone());
                         crate::tray::apply_state(
                             &tray,
                             &mi_start,
@@ -304,6 +439,7 @@ pub fn run() {
                         exclusions,
                         pause: None,
                     };
+                    log_health_transitions(previous.as_ref(), &terminal);
                     if let Ok(mut health) = health.lock() {
                         *health = terminal.clone();
                     }
