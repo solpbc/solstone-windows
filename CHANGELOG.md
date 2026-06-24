@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-24
+
 ### Changed
 
 - Settings and About now feel native to Windows 11: they use the Windows system
