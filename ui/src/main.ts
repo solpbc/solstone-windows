@@ -245,17 +245,144 @@ if (!queriedRoot) {
 
 const root: HTMLDivElement = queriedRoot;
 
-document.body.style.margin = "0";
-document.body.style.fontFamily =
-  'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-document.body.style.color = "#17201b";
-document.body.style.background = "#f6f7f4";
+const nativeFeelStyle = document.createElement("style");
+nativeFeelStyle.textContent = `
+:root {
+  color-scheme: light dark;
+  --fg: rgba(0,0,0,0.886);
+  --fg-subtle: rgba(0,0,0,0.60);
+  --muted: rgba(0,0,0,0.45);
+  --bg: rgba(249,249,249,0.80);
+  --bg-input: #ffffff;
+  --border: rgba(0,0,0,0.0803);
+  --border-subtle: rgba(0,0,0,0.06);
+  --accent: #0067c0;
+  --accent-fg: #ffffff;
+  --accent-busy: rgba(0,103,192,0.55);
+  --accent-subtle: rgba(0,103,192,0.10);
+  --danger: #c42b1c;
+  --fill: rgba(0,0,0,0.045);
+}
 
-// Keyframes for the indeterminate update-progress sweep (checking / installing).
-const updateProgressStyle = document.createElement("style");
-updateProgressStyle.textContent =
-  "@keyframes update-indeterminate{0%{left:-35%}100%{left:100%}}";
-document.head.append(updateProgressStyle);
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ffffff;
+    --fg-subtle: rgba(255,255,255,0.606);
+    --muted: rgba(255,255,255,0.50);
+    --bg: rgba(32,32,32,0.80);
+    --bg-input: #2b2b2b;
+    --border: rgba(255,255,255,0.10);
+    --border-subtle: rgba(255,255,255,0.07);
+    --accent: #60cdff;
+    --accent-fg: #000000;
+    --accent-busy: rgba(96,205,255,0.45);
+    --accent-subtle: rgba(96,205,255,0.14);
+    --danger: #ff99a4;
+    --fill: rgba(255,255,255,0.065);
+  }
+}
+
+@supports (color: AccentColor) {
+  :root {
+    --accent: AccentColor;
+    --accent-fg: AccentColorText;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: transparent;
+}
+
+body {
+  font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  color: var(--fg);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+#app {
+  height: 100vh;
+  min-height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  background: var(--bg);
+  color: var(--fg);
+  scrollbar-width: thin;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes update-indeterminate {
+    0% { left: -35%; }
+    100% { left: 100%; }
+  }
+}
+`;
+document.head.append(nativeFeelStyle);
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+}
+
+document.addEventListener("contextmenu", (event) => {
+  if (isTextEntryTarget(event.target)) {
+    return;
+  }
+  event.preventDefault();
+});
+
+document.addEventListener("keydown", (event) => {
+  const key = event.key;
+  const lowerKey = key.toLowerCase();
+  const ctrlOrMeta = event.ctrlKey || event.metaKey;
+  const zoomKey = key === "+" || key === "=" || key === "-" || key === "_" || key === "0";
+  const blocked =
+    key === "F5" ||
+    key === "F3" ||
+    key === "F7" ||
+    (ctrlOrMeta &&
+      (lowerKey === "r" ||
+        lowerKey === "p" ||
+        lowerKey === "f" ||
+        zoomKey));
+
+  if (blocked) {
+    event.preventDefault();
+  }
+});
+
+document.addEventListener(
+  "wheel",
+  (event) => {
+    if (event.ctrlKey) {
+      event.preventDefault();
+    }
+  },
+  { passive: false },
+);
 
 const label = getCurrentWindow().label;
 
@@ -273,7 +400,7 @@ function automation(node: HTMLElement, id: string): HTMLElement {
 function section(title: string): HTMLElement {
   const node = document.createElement("section");
   node.style.padding = "18px 20px";
-  node.style.borderBottom = "1px solid #d8ddd4";
+  node.style.borderBottom = "1px solid var(--border)";
 
   const heading = text("h2", title);
   heading.style.margin = "0 0 12px";
@@ -281,7 +408,7 @@ function section(title: string): HTMLElement {
   heading.style.fontWeight = "700";
   heading.style.textTransform = "uppercase";
   heading.style.letterSpacing = "0";
-  heading.style.color = "#415146";
+  heading.style.color = "var(--fg-subtle)";
   node.append(heading);
 
   return node;
@@ -297,7 +424,7 @@ function valueRow(labelText: string, value: HTMLElement): HTMLDivElement {
   row.style.padding = "7px 0";
 
   const labelNode = text("div", labelText);
-  labelNode.style.color = "#5f6b63";
+  labelNode.style.color = "var(--fg-subtle)";
   labelNode.style.fontSize = "13px";
   value.style.fontSize = "13px";
   value.style.overflowWrap = "anywhere";
@@ -313,7 +440,7 @@ function valueRow(labelText: string, value: HTMLElement): HTMLDivElement {
 // An orienting line under a section heading or a subhead (the macOS GroupBox caption).
 function helpCaption(value: string): HTMLElement {
   const d = text("div", value);
-  d.style.color = "#5f6b63";
+  d.style.color = "var(--fg-subtle)";
   d.style.fontSize = "12px";
   d.style.lineHeight = "1.45";
   d.style.margin = "0 0 8px";
@@ -325,7 +452,7 @@ function subheadLabel(value: string): HTMLElement {
   const d = text("div", value);
   d.style.fontSize = "12px";
   d.style.fontWeight = "600";
-  d.style.color = "#5f6b63";
+  d.style.color = "var(--fg-subtle)";
   d.style.margin = "14px 0 4px";
   return d;
 }
@@ -333,7 +460,7 @@ function subheadLabel(value: string): HTMLElement {
 // A trailing caption beneath a control (the macOS "changes take effect…" line).
 function microCaption(value: string): HTMLElement {
   const d = text("div", value);
-  d.style.color = "#5f6b63";
+  d.style.color = "var(--fg-subtle)";
   d.style.fontSize = "12px";
   d.style.lineHeight = "1.4";
   d.style.margin = "4px 0 0";
@@ -346,10 +473,10 @@ function trustFootnote(value: string): HTMLElement {
   const foot = document.createElement("div");
   foot.style.marginTop = "16px";
   foot.style.paddingTop = "12px";
-  foot.style.borderTop = "1px solid #e2e7dd";
+  foot.style.borderTop = "1px solid var(--border-subtle)";
   const ft = text("div", value);
   ft.style.fontSize = "12px";
-  ft.style.color = "#5f6b63";
+  ft.style.color = "var(--fg-subtle)";
   ft.style.lineHeight = "1.45";
   foot.append(ft);
   return foot;
@@ -448,8 +575,10 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   input.dataset.automationId = ids["settings.pairing.input"];
   input.style.fontSize = "13px";
   input.style.padding = "7px 9px";
-  input.style.border = "1px solid #c4ccc0";
+  input.style.border = "1px solid var(--border)";
   input.style.borderRadius = "6px";
+  input.style.background = "var(--bg-input)";
+  input.style.color = "var(--fg)";
   input.style.minWidth = "0";
   input.oninput = () => {
     pairingDraft = input.value;
@@ -462,10 +591,10 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   button.dataset.automationId = ids["settings.pairing.submit"];
   button.style.fontSize = "13px";
   button.style.padding = "7px 14px";
-  button.style.border = "1px solid #2f6f4f";
+  button.style.border = "1px solid var(--accent)";
   button.style.borderRadius = "6px";
-  button.style.background = busy ? "#9bb6a6" : "#2f6f4f";
-  button.style.color = "#fff";
+  button.style.background = busy ? "var(--accent-busy)" : "var(--accent)";
+  button.style.color = "var(--accent-fg)";
   button.style.cursor = busy ? "default" : "pointer";
   button.onclick = async () => {
     const link = pairingDraft.trim();
@@ -529,7 +658,7 @@ function removableList(
   list.style.padding = "4px 0";
   if (values.length === 0) {
     const empty = text("div", emptyText);
-    empty.style.color = "#9aa49c";
+    empty.style.color = "var(--muted)";
     empty.style.fontSize = "13px";
     list.append(empty);
     return list;
@@ -541,9 +670,9 @@ function removableList(
     chip.style.gap = "6px";
     chip.style.fontSize = "13px";
     chip.style.padding = "3px 4px 3px 9px";
-    chip.style.border = "1px solid #c4ccc0";
+    chip.style.border = "1px solid var(--border)";
     chip.style.borderRadius = "6px";
-    chip.style.background = "#eef1ec";
+    chip.style.background = "var(--fill)";
     chip.append(text("span", value));
 
     const remove = document.createElement("button");
@@ -551,7 +680,7 @@ function removableList(
     remove.setAttribute("aria-label", `remove ${value}`);
     remove.style.border = "none";
     remove.style.background = "transparent";
-    remove.style.color = "#5f6b63";
+    remove.style.color = "var(--fg-subtle)";
     remove.style.cursor = "pointer";
     remove.style.fontSize = "15px";
     remove.style.lineHeight = "1";
@@ -600,7 +729,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   appSelect.dataset.automationId = ids["settings.exclusions.appInput"];
   appSelect.style.fontSize = "13px";
   appSelect.style.padding = "7px 9px";
-  appSelect.style.border = "1px solid #c4ccc0";
+  appSelect.style.border = "1px solid var(--border)";
   appSelect.style.borderRadius = "6px";
   appSelect.style.minWidth = "0";
   const choices = runningApps.filter((app) => !rules.excluded_exes.includes(app.exe_name));
@@ -659,8 +788,10 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   titleInput.dataset.automationId = ids["settings.exclusions.titleInput"];
   titleInput.style.fontSize = "13px";
   titleInput.style.padding = "7px 9px";
-  titleInput.style.border = "1px solid #c4ccc0";
+  titleInput.style.border = "1px solid var(--border)";
   titleInput.style.borderRadius = "6px";
+  titleInput.style.background = "var(--bg-input)";
+  titleInput.style.color = "var(--fg)";
   titleInput.style.minWidth = "0";
   titleInput.oninput = () => {
     titleDraft = titleInput.value;
@@ -701,18 +832,18 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   const activityFoot = document.createElement("div");
   activityFoot.style.marginTop = "16px";
   activityFoot.style.paddingTop = "12px";
-  activityFoot.style.borderTop = "1px solid #e2e7dd";
+  activityFoot.style.borderTop = "1px solid var(--border-subtle)";
   const activityCap = text("div", "exclusion activity");
   activityCap.style.fontSize = "12px";
   activityCap.style.fontWeight = "600";
-  activityCap.style.color = "#5f6b63";
+  activityCap.style.color = "var(--fg-subtle)";
   activityCap.style.margin = "0 0 3px";
   const activityVal = automation(
     text("div", exclusionActivityLabel(dump.exclusions)),
     ids["settings.exclusions.activity"],
   );
   activityVal.style.fontSize = "12px";
-  activityVal.style.color = "#5f6b63";
+  activityVal.style.color = "var(--fg-subtle)";
   activityVal.style.lineHeight = "1.45";
   activityFoot.append(activityCap, activityVal);
   pane.append(activityFoot);
@@ -844,12 +975,12 @@ function hotkeyStatusDisplay(view: HotkeyView): [string, string] {
   const labelText = hotkeyStatusLabel(view);
   switch (view.registration) {
     case "registered":
-      return [labelText, "#2f6f4f"];
+      return [labelText, "var(--accent)"];
     case "combo_taken":
     case "failed":
-      return [labelText, "#9a4a2f"];
+      return [labelText, "var(--danger)"];
     case "inactive":
-      return [labelText, "#5f6b63"];
+      return [labelText, "var(--fg-subtle)"];
   }
 }
 
@@ -989,16 +1120,16 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   field.style.fontSize = "13px";
   field.style.padding = "9px 12px";
   field.style.borderRadius = "6px";
-  field.style.border = `1px dashed ${hotkeyCapturing ? "#2f6f4f" : "#c4ccc0"}`;
-  field.style.background = hotkeyCapturing ? "#eef4ef" : "#ffffff";
-  field.style.color = "#17201b";
+  field.style.border = `1px dashed ${hotkeyCapturing ? "var(--accent)" : "var(--border)"}`;
+  field.style.background = hotkeyCapturing ? "var(--accent-subtle)" : "var(--bg-input)";
+  field.style.color = "var(--fg)";
   field.style.cursor = "pointer";
   if (hotkeyCapturing) {
     const lead = text("span", "press your shortcut…");
-    lead.style.color = "#2f6f4f";
+    lead.style.color = "var(--accent)";
     lead.style.fontWeight = "600";
     const hint = text("span", "esc to cancel");
-    hint.style.color = "#9aa49c";
+    hint.style.color = "var(--muted)";
     hint.style.fontSize = "12px";
     field.append(lead, hint);
     field.onclick = () => stopHotkeyCapture();
@@ -1006,15 +1137,15 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
     const kbd = text("span", combo);
     kbd.style.fontFamily = 'ui-monospace, "Cascadia Code", Consolas, monospace';
     const hint = text("span", "change");
-    hint.style.color = "#5f6b63";
+    hint.style.color = "var(--fg-subtle)";
     hint.style.fontSize = "12px";
     field.append(kbd, hint);
     field.onclick = () => startHotkeyCapture();
   } else {
     const lead = text("span", "click, then press your shortcut");
-    lead.style.color = "#5f6b63";
+    lead.style.color = "var(--fg-subtle)";
     const hint = text("span", "set");
-    hint.style.color = "#2f6f4f";
+    hint.style.color = "var(--accent)";
     hint.style.fontSize = "12px";
     hint.style.fontWeight = "600";
     field.append(lead, hint);
@@ -1035,7 +1166,7 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
     clear.dataset.automationId = ids["settings.hotkey.clear"];
     clear.style.border = "none";
     clear.style.background = "transparent";
-    clear.style.color = "#5f6b63";
+    clear.style.color = "var(--fg-subtle)";
     clear.style.cursor = "pointer";
     clear.style.fontSize = "12px";
     clear.style.padding = "6px 0";
@@ -1107,10 +1238,10 @@ function reorderButton(glyph: string, enabled: boolean, onClick: () => void): HT
   b.style.fontSize = "13px";
   b.style.lineHeight = "1";
   b.style.padding = "3px 7px";
-  b.style.border = "1px solid #c4ccc0";
+  b.style.border = "1px solid var(--border)";
   b.style.borderRadius = "6px";
-  b.style.background = enabled ? "#eef1ec" : "#f3f5f1";
-  b.style.color = enabled ? "#415146" : "#c4ccc0";
+  b.style.background = "var(--fill)";
+  b.style.color = enabled ? "var(--fg-subtle)" : "var(--muted)";
   b.style.cursor = enabled ? "pointer" : "default";
   if (enabled) {
     b.onclick = onClick;
@@ -1143,7 +1274,7 @@ function renderMicSection(view: MicView): HTMLElement {
   list.style.padding = "4px 0";
   if (ordered.length === 0) {
     const empty = text("div", "no microphone input devices");
-    empty.style.color = "#9aa49c";
+    empty.style.color = "var(--muted)";
     empty.style.fontSize = "13px";
     list.append(empty);
   }
@@ -1175,11 +1306,11 @@ function renderMicSection(view: MicView): HTMLElement {
     label.style.flex = "1";
     if (disabled) {
       label.style.textDecoration = "line-through";
-      label.style.color = "#9aa49c";
+      label.style.color = "var(--muted)";
     }
     if (d.id === view.active_id) {
       const badge = text("span", " · active");
-      badge.style.color = "#2f6f4f";
+      badge.style.color = "var(--accent)";
       label.append(badge);
     }
     row.append(label);
@@ -1188,10 +1319,10 @@ function renderMicSection(view: MicView): HTMLElement {
     toggle.textContent = disabled ? "enable" : "disable";
     toggle.style.fontSize = "12px";
     toggle.style.padding = "4px 10px";
-    toggle.style.border = "1px solid #c4ccc0";
+    toggle.style.border = "1px solid var(--border)";
     toggle.style.borderRadius = "6px";
-    toggle.style.background = "#eef1ec";
-    toggle.style.color = "#415146";
+    toggle.style.background = "var(--fill)";
+    toggle.style.color = "var(--fg-subtle)";
     toggle.style.cursor = "pointer";
     toggle.onclick = () => {
       const next = disabled
@@ -1214,10 +1345,10 @@ function renderMicSection(view: MicView): HTMLElement {
   activeRow.style.display = "flex";
   activeRow.style.gap = "6px";
   activeRow.style.fontSize = "12px";
-  activeRow.style.color = "#5f6b63";
+  activeRow.style.color = "var(--fg-subtle)";
   activeRow.style.margin = "6px 0 0";
   const activeVal = automation(text("span", activeName), ids["settings.mic.active"]);
-  activeVal.style.color = "#17201b";
+  activeVal.style.color = "var(--fg)";
   activeRow.append(text("span", "active:"), activeVal);
   pane.append(activeRow);
 
@@ -1232,10 +1363,10 @@ function renderMicSection(view: MicView): HTMLElement {
     b.textContent = `${level}×`;
     b.style.fontSize = "13px";
     b.style.padding = "5px 12px";
-    b.style.border = on ? "1px solid #2f6f4f" : "1px solid #c4ccc0";
+    b.style.border = on ? "1px solid var(--accent)" : "1px solid var(--border)";
     b.style.borderRadius = "6px";
-    b.style.background = on ? "#2f6f4f" : "#eef1ec";
-    b.style.color = on ? "#fff" : "#415146";
+    b.style.background = on ? "var(--accent)" : "var(--fill)";
+    b.style.color = on ? "var(--accent-fg)" : "var(--fg-subtle)";
     b.style.cursor = "pointer";
     b.onclick = () => {
       void applyMic({ ...cfg, gain: level });
@@ -1264,7 +1395,7 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
   sel.dataset.automationId = ids["settings.retention"];
   sel.style.fontSize = "13px";
   sel.style.padding = "7px 9px";
-  sel.style.border = "1px solid #c4ccc0";
+  sel.style.border = "1px solid var(--border)";
   sel.style.borderRadius = "6px";
   // If the persisted value isn't one of the presets, show it as a custom option
   // so the picker reflects the real state rather than silently snapping.
@@ -1378,11 +1509,11 @@ function renderAbout(dump: HealthDump): void {
   const body = text("p", "observers and the owner's journal, with sol the keeper");
   body.style.margin = "0 0 18px";
   body.style.lineHeight = "1.5";
-  body.style.color = "#415146";
+  body.style.color = "var(--fg-subtle)";
 
   const version = automation(text("div", dump.version), ids["about.version"]);
   version.style.fontSize = "13px";
-  version.style.color = "#5f6b63";
+  version.style.color = "var(--fg-subtle)";
 
   root.append(title, body, version);
 }
@@ -1489,10 +1620,10 @@ function actionButton(
   b.dataset.automationId = automationId;
   b.style.fontSize = "13px";
   b.style.padding = "6px 12px";
-  b.style.border = enabled ? "1px solid #2f6f4f" : "1px solid #c4ccc0";
+  b.style.border = enabled ? "1px solid var(--accent)" : "1px solid var(--border)";
   b.style.borderRadius = "6px";
-  b.style.background = enabled ? "#2f6f4f" : "#e7ebe5";
-  b.style.color = enabled ? "#fff" : "#9aa49c";
+  b.style.background = enabled ? "var(--accent)" : "var(--fill)";
+  b.style.color = enabled ? "var(--accent-fg)" : "var(--muted)";
   b.style.cursor = enabled ? "pointer" : "default";
   if (enabled) {
     b.onclick = onClick;
@@ -1510,7 +1641,7 @@ function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLElemen
 
   const labelNode = text("div", "how often");
   labelNode.style.fontSize = "13px";
-  labelNode.style.color = enabled ? "#5f6b63" : "#9aa49c";
+  labelNode.style.color = enabled ? "var(--fg-subtle)" : "var(--muted)";
 
   const sel = document.createElement("select");
   sel.disabled = !enabled;
@@ -1553,7 +1684,7 @@ function toggleRow(
   lab.style.gap = "9px";
   lab.style.padding = "6px 0";
   lab.style.fontSize = "13px";
-  lab.style.color = "#17201b";
+  lab.style.color = "var(--fg)";
   lab.style.cursor = "pointer";
 
   const box = document.createElement("input");
@@ -1581,14 +1712,14 @@ function updateProgressBar(determinate: boolean, pct: number | null): HTMLElemen
   track.style.flex = "1";
   track.style.height = "6px";
   track.style.borderRadius = "3px";
-  track.style.background = "#e7ebe5";
+  track.style.background = "var(--fill)";
   track.style.overflow = "hidden";
 
   const fill = document.createElement("div");
   fill.style.position = "absolute";
   fill.style.top = "0";
   fill.style.bottom = "0";
-  fill.style.background = "#2f6f4f";
+  fill.style.background = "var(--accent)";
   fill.style.borderRadius = "3px";
   if (determinate) {
     fill.style.left = "0";
@@ -1604,7 +1735,7 @@ function updateProgressBar(determinate: boolean, pct: number | null): HTMLElemen
   if (determinate) {
     const lbl = text("div", `${pct ?? 0}%`);
     lbl.style.fontSize = "12px";
-    lbl.style.color = "#5f6b63";
+    lbl.style.color = "var(--fg-subtle)";
     lbl.style.minWidth = "34px";
     lbl.style.textAlign = "right";
     wrap.append(lbl);
@@ -1621,12 +1752,12 @@ function updateNotesBlock(notes: string): HTMLElement {
   const cap = text("div", "what's new");
   cap.style.fontSize = "12px";
   cap.style.fontWeight = "600";
-  cap.style.color = "#5f6b63";
+  cap.style.color = "var(--fg-subtle)";
   cap.style.margin = "0 0 6px";
 
   const card = automation(document.createElement("div"), ids["settings.updates.notes"]);
-  card.style.background = "#ffffff";
-  card.style.border = "1px solid #e2e7dd";
+  card.style.background = "var(--bg-input)";
+  card.style.border = "1px solid var(--border-subtle)";
   card.style.borderRadius = "6px";
   card.style.padding = "10px 12px";
   card.style.maxHeight = "150px";
@@ -1646,7 +1777,7 @@ function updateNotesBlock(notes: string): HTMLElement {
       const h = text("div", heading[1]);
       h.style.fontSize = "12.5px";
       h.style.fontWeight = "600";
-      h.style.color = "#17201b";
+      h.style.color = "var(--fg)";
       h.style.margin = "6px 0 3px";
       card.append(h);
     } else if (bullet) {
@@ -1654,17 +1785,17 @@ function updateNotesBlock(notes: string): HTMLElement {
       row.style.display = "flex";
       row.style.gap = "7px";
       row.style.fontSize = "12.5px";
-      row.style.color = "#415146";
+      row.style.color = "var(--fg-subtle)";
       row.style.lineHeight = "1.45";
       row.style.margin = "2px 0";
       const dot = text("div", "•");
-      dot.style.color = "#2f6f4f";
+      dot.style.color = "var(--accent)";
       row.append(dot, text("div", bullet[1]));
       card.append(row);
     } else {
       const p = text("div", line);
       p.style.fontSize = "12.5px";
-      p.style.color = "#415146";
+      p.style.color = "var(--fg-subtle)";
       p.style.lineHeight = "1.45";
       p.style.margin = "2px 0";
       card.append(p);
@@ -1688,7 +1819,7 @@ function updateNotesOnlineLink(): HTMLAnchorElement {
   link.style.display = "inline-block";
   link.style.margin = "8px 0 0";
   link.style.fontSize = "12.5px";
-  link.style.color = "#2f6f4f";
+  link.style.color = "var(--accent)";
   link.style.textDecoration = "none";
   link.style.cursor = "pointer";
   link.onmouseenter = () => {
@@ -1713,7 +1844,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   const headline = automation(text("div", updateHeadline(view)), ids["settings.updates.state"]);
   headline.style.fontSize = "16px";
   headline.style.fontWeight = "650";
-  headline.style.color = "#17201b";
+  headline.style.color = "var(--fg)";
   headline.style.lineHeight = "1.3";
   headline.style.margin = "0";
   pane.append(headline);
@@ -1726,7 +1857,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   if (subtitle) {
     const sub = text("div", subtitle.text);
     sub.style.fontSize = "13px";
-    sub.style.color = "#5f6b63";
+    sub.style.color = "var(--fg-subtle)";
     sub.style.margin = "3px 0 0";
     if (subtitle.live) {
       automation(sub, ids["settings.updates.lastChecked"]);
@@ -1814,12 +1945,12 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   const prefs = document.createElement("div");
   prefs.style.marginTop = "16px";
   prefs.style.paddingTop = "14px";
-  prefs.style.borderTop = "1px solid #e2e7dd";
+  prefs.style.borderTop = "1px solid var(--border-subtle)";
 
   const prefsLabel = text("div", "automatic updates");
   prefsLabel.style.fontSize = "12px";
   prefsLabel.style.fontWeight = "600";
-  prefsLabel.style.color = "#5f6b63";
+  prefsLabel.style.color = "var(--fg-subtle)";
   prefsLabel.style.margin = "0 0 4px";
   prefs.append(prefsLabel);
 
@@ -1852,13 +1983,13 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   const foot = document.createElement("div");
   foot.style.marginTop = "16px";
   foot.style.paddingTop = "12px";
-  foot.style.borderTop = "1px solid #e2e7dd";
+  foot.style.borderTop = "1px solid var(--border-subtle)";
   const footText = text(
     "div",
     "solstone never sends usage data. update checks only fetch the version manifest.",
   );
   footText.style.fontSize = "12px";
-  footText.style.color = "#5f6b63";
+  footText.style.color = "var(--fg-subtle)";
   footText.style.lineHeight = "1.45";
   foot.append(footText);
   pane.append(foot);
@@ -1889,17 +2020,17 @@ function renderUnavailable(): void {
 
   const msg = text("p", "couldn't load the observer status just now.");
   msg.style.padding = "0 20px";
-  msg.style.color = "#5b6661";
+  msg.style.color = "var(--fg-subtle)";
 
   const retry = document.createElement("button");
   retry.textContent = "retry";
   retry.style.margin = "8px 20px";
   retry.style.fontSize = "13px";
   retry.style.padding = "7px 14px";
-  retry.style.border = "1px solid #2f6f4f";
+  retry.style.border = "1px solid var(--accent)";
   retry.style.borderRadius = "6px";
-  retry.style.background = "#2f6f4f";
-  retry.style.color = "#fff";
+  retry.style.background = "var(--accent)";
+  retry.style.color = "var(--accent-fg)";
   retry.style.cursor = "pointer";
   retry.addEventListener("click", () => {
     void retryHealth();

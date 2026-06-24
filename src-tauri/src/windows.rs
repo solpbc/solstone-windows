@@ -9,7 +9,14 @@
 //! contract SoT (`observer_contract::settings::WINDOW_ROOT`,
 //! `observer_contract::about::WINDOW_ROOT`).
 
+use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+const WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,OverscrollHistoryNavigation,msExperimentalScrolling --disable-pinch";
+
+fn mica_effects() -> tauri::utils::config::WindowEffectsConfig {
+    EffectsBuilder::new().effect(Effect::Mica).build()
+}
 
 /// Open (or focus) the Settings window.
 pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -27,6 +34,9 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("solstone — settings")
         .inner_size(420.0, 520.0)
+        .transparent(true)
+        .effects(mica_effects())
+        .additional_browser_args(WEBVIEW_ARGS)
         .visible(true)
         .build()?;
     tracing::info!(
@@ -54,6 +64,9 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into()))
         .title("about solstone")
         .inner_size(360.0, 280.0)
+        .transparent(true)
+        .effects(mica_effects())
+        .additional_browser_args(WEBVIEW_ARGS)
         .visible(true)
         .build()?;
     tracing::info!(

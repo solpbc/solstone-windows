@@ -6,6 +6,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Settings and About now feel native to Windows 11: they use the Windows system
+  font, follow your light or dark mode, sit over a soft translucent backdrop, and
+  use native scrollbars.
+- these windows no longer act like web pages: right-click menus, rubber-band
+  scroll, pinch zoom, and keyboard zoom stay out of your way.
+
 ## [0.2.2] - 2026-06-24
 
 ### Added

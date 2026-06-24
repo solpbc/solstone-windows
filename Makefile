@@ -32,7 +32,8 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 
 .PHONY: install build test ci contract purity-check package publish publish-r2 \
         publish-winget publish-scoop publish-packages \
-        pull-releases require-win-remote-host sync-win-host win-host-ci help
+        pull-releases require-win-remote-host sync-win-host win-host-ci \
+        screenshots help
 
 help:
 	@echo "verbs: install build test ci contract purity-check package publish smoke run clean"
@@ -134,6 +135,10 @@ pull-releases: require-win-remote-host
 # smoke directly from Session 0. Live target - run on the build box.
 smoke:
 	$(PWSH) -File scripts/smoke.ps1
+
+# Capture Settings/About in Session 1. Live target - run on the build box.
+screenshots:
+	$(PWSH) -File scripts/screenshot.ps1
 
 # Launch from the tree and tail the logs.
 run:
