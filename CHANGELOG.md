@@ -6,6 +6,22 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- the tray icon now shows whether your data is reaching your journal: a full sun
+  when you're observing and connected, a half sun when you're observing but not
+  connected to a journal yet (so "observing" never overstates what's happening).
+
+### Changed
+
+- the app is now named "solstone" (lowercase) everywhere you see it — taskbar,
+  Start menu, installer — to match the brand.
+- a new rounded app icon, built for Windows (rounded tile, sharp at every size).
+- crisper tray icon at small sizes.
+- opening solstone now brings up the Settings window so you can see it's running,
+  instead of quietly going to the tray. (launching at login still stays quiet in
+  the tray.)
+
 ## [0.2.1] - 2026-06-24
 
 ### Fixed
