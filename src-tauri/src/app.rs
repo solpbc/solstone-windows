@@ -127,7 +127,7 @@ fn log_health_transitions(previous: Option<&HealthDump>, current: &HealthDump) {
 }
 
 /// Boot the tray-resident observer.
-pub fn run(open_view: Option<observer_model::View>) {
+pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
     tracing::info!(
         target: "lifecycle",
         version = env!("CARGO_PKG_VERSION"),
@@ -179,6 +179,9 @@ pub fn run(open_view: Option<observer_model::View>) {
                         outcome = "already_running",
                         "single instance"
                     );
+                    if surface_on_launch {
+                        let _ = crate::control::signal_surface();
+                    }
                     app.handle().exit(0);
                     return Ok(());
                 }
@@ -201,7 +204,7 @@ pub fn run(open_view: Option<observer_model::View>) {
                 Ok(exe) => match platform_win::autostart::ensure_login_item(
                     platform_win::autostart::LOGIN_ITEM_NAME,
                     &exe,
-                    &[],
+                    &[observer_model::FROM_AUTOSTART_ARG],
                 ) {
                     Ok(platform_win::autostart::EnsureOutcome::Registered) => {
                         tracing::info!(
@@ -390,6 +393,30 @@ pub fn run(open_view: Option<observer_model::View>) {
 
             tauri::async_runtime::spawn({
                 let app = app.handle().clone();
+                async move {
+                    match tokio::net::TcpListener::bind((
+                        "127.0.0.1",
+                        crate::control::CONTROL_PORT,
+                    ))
+                    .await
+                    {
+                        Ok(listener) => {
+                            crate::control::serve(app, listener).await;
+                        }
+                        Err(error) => {
+                            tracing::error!(
+                                target: "control",
+                                port = crate::control::CONTROL_PORT,
+                                error = %error,
+                                "control server bind failed"
+                            );
+                        }
+                    }
+                }
+            });
+
+            tauri::async_runtime::spawn({
+                let app = app.handle().clone();
                 let health = health.clone();
                 let tray = tray.clone();
                 let mi_start = mi_start.clone();
@@ -504,16 +531,25 @@ pub fn run(open_view: Option<observer_model::View>) {
             });
 
             // Honor `--open-view` only in the mutex-holding instance (we're past the
-            // AlreadyRunning early-return). No-arg launch stays tray-first.
-            if let Some(view) = open_view {
-                let handle = app.handle();
-                let result = match view {
-                    observer_model::View::Settings => crate::windows::open_settings(handle),
-                    observer_model::View::About => crate::windows::open_about(handle),
-                };
-                if let Err(error) = result {
-                    tracing::warn!(target: "window", view = view.label(), error = %error, "open-view failed");
+            // AlreadyRunning early-return). No explicit view surfaces Settings only
+            // for user-visible launches; autostart stays tray-first.
+            let handle = app.handle();
+            match open_view {
+                Some(view) => {
+                    let result = match view {
+                        observer_model::View::Settings => crate::windows::open_settings(handle),
+                        observer_model::View::About => crate::windows::open_about(handle),
+                    };
+                    if let Err(error) = result {
+                        tracing::warn!(target: "window", view = view.label(), error = %error, "open-view failed");
+                    }
                 }
+                None if surface_on_launch => {
+                    if let Err(error) = crate::windows::open_settings(handle) {
+                        tracing::warn!(target: "window", view = "settings", error = %error, "launch-surface failed");
+                    }
+                }
+                None => {}
             }
 
             Ok(())

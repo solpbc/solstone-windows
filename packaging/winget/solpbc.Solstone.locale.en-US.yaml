@@ -6,7 +6,7 @@ PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
 PublisherSupportUrl: https://support.solpbc.org
-PackageName: Solstone
+PackageName: solstone
 PackageUrl: https://solstone.app
 License: AGPL-3.0-only
 LicenseUrl: https://github.com/solpbc/solstone-windows/blob/main/LICENSE

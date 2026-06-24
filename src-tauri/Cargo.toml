@@ -40,7 +40,7 @@ anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
 
 # Open the owner's default browser for the one outbound affordance (the in-app
 # "read the full notes online" link -> the release-history page). Used only from

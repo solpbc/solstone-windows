@@ -12,7 +12,7 @@ the R2 update feed:
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to
 `%LocalAppData%\Solstone` with no elevation, and registers an Add/Remove-Programs
-entry (`DisplayName=Solstone`, `Publisher=sol pbc`, `DisplayVersion`) that winget
+entry (`DisplayName=solstone`, `Publisher=sol pbc`, `DisplayVersion`) that winget
 uses for version detection.
 
 ## Release step

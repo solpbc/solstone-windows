@@ -14,7 +14,7 @@ InstallerSwitches:
 UpgradeBehavior: install
 ReleaseDate: 2026-06-23
 AppsAndFeaturesEntries:
-  - DisplayName: Solstone
+  - DisplayName: solstone
     Publisher: sol pbc
     DisplayVersion: 0.2.0
     InstallerType: exe

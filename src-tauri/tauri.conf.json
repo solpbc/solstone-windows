@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Solstone",
+  "productName": "solstone",
   "version": "0.2.1",
   "identifier": "app.solstone.windows",
   "build": {

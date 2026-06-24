@@ -13,6 +13,7 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod app;
+mod control;
 mod exclusions;
 mod health;
 mod hotkey;
@@ -116,10 +117,12 @@ fn main() -> ExitCode {
         i += 1;
     }
 
+    let surface_on_launch = observer_model::launch_should_surface(&args);
+
     observer_log::init(
         &platform_win::logs_dir(),
         std::env::var("RUST_LOG").ok().as_deref(),
     );
-    app::run(open_view);
+    app::run(open_view, surface_on_launch);
     ExitCode::SUCCESS
 }

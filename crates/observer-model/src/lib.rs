@@ -20,6 +20,12 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoStaticStr};
 
+pub mod launch;
+pub mod tray_status;
+
+pub use launch::{launch_should_surface, FROM_AUTOSTART_ARG};
+pub use tray_status::{classify_tray, TrayVisual};
+
 /// Final screen media filename inside a sealed segment.
 pub const SCREEN_FILE_NAME: &str = "display_1_screen.mp4";
 
