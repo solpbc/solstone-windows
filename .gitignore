@@ -5,6 +5,7 @@
 # Front-end build output and deps
 /ui/dist/
 /ui/node_modules/
+/ui/package-lock.json
 node_modules/
 
 # Packaging output (Velopack feed + installers)
