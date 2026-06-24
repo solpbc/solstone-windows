@@ -5,12 +5,14 @@
 # (live target). Two stages:
 #   1. Build + publish the net48 FlaUI driver (Accessibility.dll in the publish
 #      layout; see ../harness/README.md).
-#   2. Launch the installed app and run the driver in interactive Session 1 (FlaUI
-#      UIA needs the interactive desktop), then assert on the health dump.
+#   2. Launch the installed app in interactive Session 1.
+#   3. Run the deterministic health/render driver directly in Session 0, then run
+#      the FlaUI/UIA Tier 1 pass separately as advisory.
 #
 # The deterministic gate is the health oracle (Tier 0): poll /healthz until
-# app_state reaches the contract's `observing` token. Tier 1 drives the native
-# tray chrome by AutomationId. The webview DOM (Tier 2) is never load-bearing.
+# app_state reaches the contract's `observing` token, then require the per-view
+# render beacon (Tier R). Tier 1 drives native chrome by AutomationId, but it is
+# advisory and never decides SMOKE_OK/SMOKE_FAIL.
 #
 # -FailInject: after the app reaches observing, stop the Windows Audio service so
 # the (required) system-audio source faults, then assert the observer honestly
@@ -23,6 +25,7 @@
 param(
     [switch]$FailInject,
     [int]$TimeoutSecs = 90,
+    [int]$Tier1TimeoutSecs = 15,
     [switch]$SelftestOnly
 )
 
@@ -67,10 +70,14 @@ Write-Host "app: $AppExe"
 # Session 1 (the validated mechanism; an SSH/Session-0 process cannot start a GUI
 # or drive UIA in Session 1 directly).
 function Invoke-InSession1([string]$name, [string]$exe, [string]$args) {
-    schtasks /Create /TN $name /TR "`"$exe`" $args" /SC ONCE /ST 00:00 /RL LIMITED /IT /F | Out-Null
+    $start = (Get-Date).AddMinutes(5)
+    $startDate = $start.ToString("MM/dd/yyyy", [System.Globalization.CultureInfo]::InvariantCulture)
+    $startTime = $start.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
+    schtasks /Create /TN $name /TR "`"$exe`" $args" /SC ONCE /ST $startTime /SD $startDate /RL LIMITED /IT /F | Out-Null
     schtasks /Run /TN $name | Out-Null
 }
 function Remove-Task([string]$name) { schtasks /Delete /TN $name /F 2>$null | Out-Null }
+function ConvertTo-PsSingleQuoted([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
 
 # Launch the observer in Session 1 with --open-view settings so the Settings
 # webview actually opens -- the Tier-R render gate then polls /healthz for the
@@ -85,48 +92,84 @@ Write-Host "=== ensure no prior instance holds the single-instance mutex ==="
 Get-Process solstone-windows-app -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 Write-Host "=== launch observer in Session 1 (--open-view settings) ==="
-Invoke-InSession1 "solstone-smoke-app" $AppExe "--open-view settings"
+$AppLaunchCmd = Join-Path $env:TEMP "solstone-smoke-app.cmd"
+if (Test-Path $AppLaunchCmd) { Remove-Item $AppLaunchCmd -Force }
+Set-Content -Path $AppLaunchCmd -Value @("@echo off", "`"$AppExe`" --open-view settings") -Encoding ASCII
+Invoke-InSession1 "solstone-smoke-app" $AppLaunchCmd ""
 
-$DriverLog = Join-Path $env:TEMP "solstone-smoke-driver.log"
-if (Test-Path $DriverLog) { Remove-Item $DriverLog -Force }
-
-$DriverArgs = "--contract `"$Contract`" --health-url $HealthUrl --timeout-secs $TimeoutSecs --render-view settings"
+$GateArgs = @(
+    "--contract", $Contract,
+    "--health-url", $HealthUrl,
+    "--timeout-secs", "$TimeoutSecs",
+    "--render-view", "settings",
+    "--skip-tier1"
+)
 if ($FailInject) {
     # Wait for observing, then kill system audio (stop the audio service), then
     # run the driver in --fail-inject mode to assert the honest drop.
     Write-Host "=== fail-inject: waiting for observing, then stopping Windows Audio ==="
-    & $DriverExe --contract $Contract --health-url $HealthUrl --timeout-secs $TimeoutSecs
-    if ($LASTEXITCODE -ne 0) { throw "precondition (reach observing) failed ($LASTEXITCODE)" }
+    & $DriverExe @GateArgs
+    if ($LASTEXITCODE -ne 0) { throw "precondition (reach observing + render) failed ($LASTEXITCODE)" }
     try { Stop-Service -Name Audiosrv -Force -ErrorAction Stop; Write-Host "stopped Audiosrv" }
     catch { Write-Warning "could not stop Audiosrv ($_): live fail-injection needs privilege; selftest already proved the decision logic"; Remove-Task "solstone-smoke-app"; exit 0 }
-    $DriverArgs = "$DriverArgs --fail-inject"
+    $GateArgs += "--fail-inject"
 }
 
-# Run the driver in Session 1 so FlaUI UIA can see the interactive desktop.
-Write-Host "=== run FlaUI driver in Session 1 ==="
-$DriverWrap = "/c `"`"$DriverExe`" $DriverArgs > `"$DriverLog`" 2>&1`""
-Invoke-InSession1 "solstone-smoke-driver" "cmd.exe" $DriverWrap
-
-# Wait for the driver task to finish + surface its log/exit.
-$deadline = (Get-Date).AddSeconds($TimeoutSecs + 30)
-do {
-    Start-Sleep -Seconds 3
-    $info = schtasks /Query /TN "solstone-smoke-driver" /FO LIST /V 2>$null | Select-String "Status:|Last Result:"
-} while ((Get-Date) -lt $deadline -and ($info -match "Running"))
-
-if (Test-Path $DriverLog) { Write-Host "--- driver log ---"; Get-Content $DriverLog; Write-Host "--- end driver log ---" }
+# Run the load-bearing gate directly in Session 0. /healthz is loopback-reachable
+# from SSH, so the gate can use the actual driver process exit instead of racing
+# Task Scheduler's transient Last Result (0x00041301 = still running).
+Write-Host "=== run health/render gate in Session 0 ==="
+& $DriverExe @GateArgs
+$GateExit = $LASTEXITCODE
 
 # Restore audio if we stopped it.
 if ($FailInject) { try { Start-Service -Name Audiosrv } catch {} }
 
-# The Last Result of the driver scheduled task is the driver's exit code.
-$last = (schtasks /Query /TN "solstone-smoke-driver" /FO LIST /V 2>$null | Select-String "Last Result:")
-Remove-Task "solstone-smoke-driver"
+if ($GateExit -ne 0) {
+    Remove-Task "solstone-smoke-app"
+    Write-Host "SMOKE_FAIL (gate exit $GateExit)"
+    exit $GateExit
+}
+
+if (-not $FailInject) {
+    Write-Host "=== run Tier 1 FlaUI advisory in Session 1 ==="
+    $Tier1Log = Join-Path $env:TEMP "solstone-smoke-tier1.log"
+    $Tier1Err = Join-Path $env:TEMP "solstone-smoke-tier1.err"
+    $Tier1Result = Join-Path $env:TEMP "solstone-smoke-tier1.exit"
+    $Tier1Script = Join-Path $env:TEMP "solstone-smoke-tier1.ps1"
+    foreach ($path in @($Tier1Log, $Tier1Err, $Tier1Result, $Tier1Script)) {
+        if (Test-Path $path) { Remove-Item $path -Force }
+    }
+
+    $Tier1Lines = @(
+        '$ErrorActionPreference = "Continue"',
+        '$p = Start-Process -FilePath ' + (ConvertTo-PsSingleQuoted $DriverExe) + ' -ArgumentList @("--contract",' + (ConvertTo-PsSingleQuoted $Contract) + ',"--tier1-only","--tier1-timeout-secs",' + (ConvertTo-PsSingleQuoted "$Tier1TimeoutSecs") + ') -Wait -PassThru -RedirectStandardOutput ' + (ConvertTo-PsSingleQuoted $Tier1Log) + ' -RedirectStandardError ' + (ConvertTo-PsSingleQuoted $Tier1Err),
+        '("exit={0}" -f $p.ExitCode) | Set-Content -Path ' + (ConvertTo-PsSingleQuoted $Tier1Result) + ' -Encoding ASCII'
+    )
+    Set-Content -Path $Tier1Script -Value $Tier1Lines -Encoding ASCII
+    Invoke-InSession1 "solstone-smoke-tier1" "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -File `"$Tier1Script`""
+
+    $deadline = (Get-Date).AddSeconds($Tier1TimeoutSecs + 20)
+    while ((Get-Date) -lt $deadline -and -not (Test-Path $Tier1Result)) {
+        Start-Sleep -Seconds 1
+    }
+
+    if (Test-Path $Tier1Log) { Write-Host "--- tier1 advisory log ---"; Get-Content $Tier1Log; Write-Host "--- end tier1 advisory log ---" }
+    if (Test-Path $Tier1Err) {
+        $err = Get-Content $Tier1Err
+        if ($err) { Write-Host "--- tier1 advisory stderr ---"; $err; Write-Host "--- end tier1 advisory stderr ---" }
+    }
+    if (Test-Path $Tier1Result) {
+        $tier1Exit = Get-Content $Tier1Result | Select-Object -First 1
+        if ($tier1Exit -ne "exit=0") { Write-Warning "Tier 1 advisory did not pass ($tier1Exit); health/render gate already passed" }
+    } else {
+        Write-Warning "Tier 1 advisory did not finish before the advisory timeout; health/render gate already passed"
+        schtasks /End /TN "solstone-smoke-tier1" 2>$null | Out-Null
+    }
+    Remove-Task "solstone-smoke-tier1"
+}
+
 Remove-Task "solstone-smoke-app"
 
-if ($last -match "Last Result:\s+(\d+)") {
-    $code = [int]$Matches[1]
-    if ($code -eq 0) { Write-Host "SMOKE_OK"; exit 0 }
-    Write-Host "SMOKE_FAIL (driver exit $code)"; exit $code
-}
-Write-Host "SMOKE_FAIL (could not read driver result)"; exit 1
+Write-Host "SMOKE_OK"
+exit 0

@@ -130,8 +130,8 @@ pull-releases: require-win-remote-host
 	$(WIN_SCP) -r $(WIN_REMOTE_HOST):swbuild/Releases Releases
 	@echo "pulled Releases/ from $(WIN_REMOTE_HOST)"
 
-# Register + fire the Session-1 scheduled-task FlaUI smoke against the installed
-# app; poll health to `observing`. Live target — run on the build box.
+# Launch the installed app in Session 1, then run the load-bearing health/render
+# smoke directly from Session 0. Live target - run on the build box.
 smoke:
 	$(PWSH) -File scripts/smoke.ps1
 

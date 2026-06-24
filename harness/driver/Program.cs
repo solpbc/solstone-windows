@@ -23,6 +23,8 @@
 //   --fail-inject    after observing, expect app_state to leave observing
 //                    (a required source was killed externally) -> exit 0;
 //                    if it dishonestly stays observing past the timeout -> non-0.
+//   --skip-tier1     run only the deterministic health/render gate.
+//   --tier1-only     run only the bounded advisory FlaUI/UIA native-chrome pass.
 //   --selftest       run the pure decision logic (contract parse, token match,
 //                    fail-inject decision) with no live target -> exit 0/non-0.
 
@@ -31,6 +33,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
@@ -65,6 +68,23 @@ namespace Solstone.Harness
                 var contract = Contract.Load(opts.ContractPath);
                 var observing = contract.ObservingToken(); // from state_tokens.app_phase
                 Log($"observing token = '{observing}'; health url = {opts.HealthUrl}; timeout = {opts.TimeoutSecs}s");
+
+                if (opts.Tier1Only)
+                {
+                    var tier1 = Tier1InteractionAdvisory(contract, opts.Tier1TimeoutSecs);
+                    if (tier1 == Ok)
+                    {
+                        Log("OK (Tier 1 advisory): tray -> Open Settings -> Settings window resolved by AutomationId");
+                    }
+                    else
+                    {
+                        Log("WARN (Tier 1 advisory): native-chrome interaction did not complete");
+                    }
+                    // UIA can leave COM helper threads behind after an advisory
+                    // timeout; tier1-only is a wrapper mode, so terminate hard.
+                    Environment.Exit(Ok);
+                    return Ok;
+                }
 
                 if (opts.FailInject)
                 {
@@ -111,7 +131,11 @@ namespace Solstone.Harness
                 // Tier 1 native-chrome (ADVISORY): --open-view already opened the view
                 // deterministically, so a tray-menu miss here is informational, never
                 // fatal. The gate is Tier 0 (observing) + Tier R (our UI rendered).
-                if (Tier1Interaction(contract) == Ok)
+                if (opts.SkipTier1)
+                {
+                    Log("SKIP (Tier 1 advisory): native-chrome interaction is separate from the gate");
+                }
+                else if (Tier1InteractionAdvisory(contract, opts.Tier1TimeoutSecs) == Ok)
                 {
                     Log("OK (Tier 1): tray -> Open Settings -> Settings window resolved by AutomationId");
                 }
@@ -126,6 +150,27 @@ namespace Solstone.Harness
                 Log("EXCEPTION");
                 Log(ex.ToString());
                 return Exception;
+            }
+        }
+
+        private static int Tier1InteractionAdvisory(Contract contract, int timeoutSecs)
+        {
+            var boundedTimeout = Math.Max(5, timeoutSecs);
+            var task = Task.Run(() => Tier1Interaction(contract));
+            try
+            {
+                if (!task.Wait(TimeSpan.FromSeconds(boundedTimeout)))
+                {
+                    Log($"Tier 1: timed out after {boundedTimeout}s");
+                    return Tier1WindowNotFound;
+                }
+                return task.Result;
+            }
+            catch (AggregateException ex)
+            {
+                Log("Tier 1: exception during UIA interaction");
+                Log(ex.GetBaseException().ToString());
+                return Tier1WindowNotFound;
             }
         }
 
@@ -252,6 +297,9 @@ namespace Solstone.Harness
         public int TimeoutSecs = 60;
         public bool FailInject;
         public bool Selftest;
+        public bool SkipTier1;
+        public bool Tier1Only;
+        public int Tier1TimeoutSecs = 15;
         public string RenderView = "settings";
 
         public static Options? Parse(string[] args)
@@ -266,10 +314,13 @@ namespace Solstone.Harness
                     case "--timeout-secs": o.TimeoutSecs = int.Parse(Next(args, ref i)); break;
                     case "--fail-inject": o.FailInject = true; break;
                     case "--selftest": o.Selftest = true; break;
+                    case "--skip-tier1": o.SkipTier1 = true; break;
+                    case "--tier1-only": o.Tier1Only = true; break;
+                    case "--tier1-timeout-secs": o.Tier1TimeoutSecs = int.Parse(Next(args, ref i)); break;
                     case "--render-view": o.RenderView = Next(args, ref i); break;
                     default:
                         Console.Error.WriteLine($"[driver] unknown arg '{args[i]}'");
-                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--render-view settings|about] [--fail-inject] | --selftest");
+                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--render-view settings|about] [--skip-tier1] [--tier1-only] [--tier1-timeout-secs N] [--fail-inject] | --selftest");
                         return null;
                 }
             }

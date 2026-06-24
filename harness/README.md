@@ -20,7 +20,11 @@ the target framework without re-proving UIA3 binding in the published layout.
   vocabulary. Robust against any webview UIA quirk.
 - **Tier 1 — native chrome is authoritative for interaction.** Find the window /
   tray by AutomationId (from the committed `automation-contract.json`) and invoke
-  tray/menu items on the native Win32/UIA surface.
+  tray/menu items on the native Win32/UIA surface. This tier is advisory in
+  `make smoke`; the release gate is Tier 0 + Tier R.
+- **Tier R — view render beacon is load-bearing.** The Settings view must report
+  `views.settings == rendered` on `/healthz`, proving our webview UI loaded and
+  painted.
 - **Tier 2 — webview `data-automation-id` is best-effort.** Stamped from the same
   source of truth, but the green path must **not** depend on Chromium UIA in
   WebView2 resolving.
@@ -43,8 +47,11 @@ best-effort.
 ## Run
 
 `scripts/smoke.ps1` registers + fires a low-privilege scheduled task
-(`LogonType=Interactive`) into Session 1, runs the published net48 driver, polls
-health to `observing`, and exits 0; a failure-injection mode (kill system audio)
-asserts the drop out of `observing` and exits non-zero.
+(`LogonType=Interactive`) into Session 1 only to launch the installed observer.
+The load-bearing driver then runs directly in the SSH/Session-0 context and
+polls loopback `/healthz` for `observing` plus the Settings render beacon. The
+FlaUI/UIA native-chrome pass runs afterward in Session 1 as a bounded advisory
+step and cannot decide `SMOKE_OK` / `SMOKE_FAIL`. A failure-injection mode (kill
+system audio) asserts the drop out of `observing` and exits non-zero.
 
 The `ui-driver` reference spike graduates into `driver/` as the real harness.
