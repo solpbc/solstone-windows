@@ -79,7 +79,10 @@ function Remove-Task([string]$name) { schtasks /Delete /TN $name /F 2>$null | Ou
 # instance is killed below before launch (a stray holder would swallow the arg and
 # the gate would time out, indistinguishable from a render failure).
 Write-Host "=== ensure no prior instance holds the single-instance mutex ==="
-taskkill /IM solstone-windows-app.exe /F 2>$null | Out-Null
+# Get-Process|Stop-Process, NOT taskkill: under $ErrorActionPreference='Stop' a
+# native command's stderr (taskkill's "process not found" when none is running)
+# becomes a terminating NativeCommandError and aborts the smoke.
+Get-Process solstone-windows-app -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 Write-Host "=== launch observer in Session 1 (--open-view settings) ==="
 Invoke-InSession1 "solstone-smoke-app" $AppExe "--open-view settings"
