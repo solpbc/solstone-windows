@@ -1,9 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-# Capture composited Settings/About screenshots on the Windows build box. Live
-# target only: launches the installed app in interactive Session 1, waits for the
-# earned render beacon on /healthz, then captures the DWM-composited window rect.
+# Capture Settings/About screenshots (light + dark) of the Windows observer for
+# visual validation. Live target only (the build box).
+#
+# WHY THIS SHAPE: window enumeration and screen capture must run INSIDE the
+# interactive Session 1 -- an SSH/Session-0 process cannot see Session 1's windows
+# or composited desktop (it gets a Win32Exception / empty window list, the way the
+# FlaUI smoke can only reach the app over loopback /healthz). So this script is a
+# Session-0 DRIVER that generates a self-contained capture routine, schedules it
+# into Session 1 (the validated scheduled-task mechanism), and collects the PNGs.
+# The capture finds the app window by PID + largest-visible (robust to a missing/
+# late window title), brings it to the foreground, and grabs its rect via
+# CopyFromScreen so DWM compositing (Mica) is captured.
 #
 # ASCII-only by policy: Windows PowerShell 5.1 reads non-BOM .ps1 in the system
 # codepage, so smart punctuation can corrupt and break parsing.
@@ -20,238 +29,110 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
-$HealthUrl = "http://127.0.0.1:49247/healthz"
-$TaskName = "solstone-screenshot-app"
-$ThemeKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-
-if (-not $OutputDir) {
-    $OutputDir = Join-Path $Root "target\screenshots"
-}
+if (-not $OutputDir) { $OutputDir = Join-Path $Root "target\screenshots" }
 New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
 
+# Resolve the app exe (override -> installed -> recursive search).
+if (-not ($AppExe -and (Test-Path $AppExe))) {
+    $AppExe = Join-Path $env:LOCALAPPDATA "Solstone\current\solstone-windows-app.exe"
+    if (-not (Test-Path $AppExe)) {
+        $found = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Solstone") -Recurse -Filter "solstone-windows-app.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { $AppExe = $found.FullName }
+        else { throw "app exe not found - pass -AppExe <path> or install the Velopack app first" }
+    }
+}
+$AppExe = (Resolve-Path $AppExe).Path
+Write-Host "screenshot: app = $AppExe"
+Write-Host "screenshot: out = $OutputDir"
+
+# The Session-1 capture routine (literal body; params injected as a prelude so the
+# body needs no escaping). Runs entirely inside Session 1.
+$body = @'
+$ErrorActionPreference = "Continue"
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-using System.Text;
-
-public static class SolstoneWindowNative
-{
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct Rect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [DllImport("user32.dll")]
-    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-
-    [DllImport("user32.dll")]
-    public static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetProcessDPIAware();
+public static class W {
+  public delegate bool Enum(IntPtr h, IntPtr l);
+  [StructLayout(LayoutKind.Sequential)] public struct R { public int L, T, Rr, B; }
+  [DllImport("user32.dll")] public static extern bool EnumWindows(Enum f, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
+try { [void][W]::SetProcessDPIAware() } catch {}
+$tk = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+$health = "http://127.0.0.1:49247/healthz"
+New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+Remove-Item "$OutputDir\DONE" -Force -ErrorAction SilentlyContinue
 
-try { [void][SolstoneWindowNative]::SetProcessDPIAware() } catch {}
-
-function Invoke-InSession1([string]$name, [string]$exe, [string]$args) {
-    $start = (Get-Date).AddMinutes(5)
-    $startDate = $start.ToString("MM/dd/yyyy", [System.Globalization.CultureInfo]::InvariantCulture)
-    $startTime = $start.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
-    schtasks /Create /TN $name /TR "`"$exe`" $args" /SC ONCE /ST $startTime /SD $startDate /RL LIMITED /IT /F | Out-Null
-    schtasks /Run /TN $name | Out-Null
+function Find-AppWindow {
+  $pids = @{}; Get-Process solstone-windows-app -EA SilentlyContinue | % { $pids["$($_.Id)"] = $true }
+  $script:best = $null; $script:bestArea = -1; $script:bestRect = $null
+  $cb = [W+Enum]{ param($h, $l)
+    if (-not [W]::IsWindowVisible($h)) { return $true }
+    [uint32]$p = 0; [void][W]::GetWindowThreadProcessId($h, [ref]$p)
+    if (-not $pids.ContainsKey("$p")) { return $true }
+    $r = New-Object W+R; if (-not [W]::GetWindowRect($h, [ref]$r)) { return $true }
+    $w = $r.Rr - $r.L; $hh = $r.B - $r.T; $a = $w * $hh
+    if ($w -gt 0 -and $hh -gt 0 -and $a -gt $script:bestArea) { $script:bestArea = $a; $script:best = $h; $script:bestRect = $r }
+    return $true
+  }
+  [void][W]::EnumWindows($cb, [IntPtr]::Zero)
+  if ($script:best) { return @{ H = $script:best; R = $script:bestRect } }
+  return $null
 }
 
-function Remove-Task([string]$name) {
-    schtasks /Delete /TN $name /F 2>$null | Out-Null
-}
-
-function Stop-AppInstance() {
-    Get-Process solstone-windows-app -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+foreach ($t in @(@{n = "light"; v = 1 }, @{n = "dark"; v = 0 })) {
+  New-Item -Path $tk -Force | Out-Null
+  New-ItemProperty -Path $tk -Name "AppsUseLightTheme" -Value $t.v -PropertyType DWord -Force | Out-Null
+  New-ItemProperty -Path $tk -Name "SystemUsesLightTheme" -Value $t.v -PropertyType DWord -Force | Out-Null
+  foreach ($v in @("settings", "about")) {
+    Get-Process solstone-windows-app -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
     Start-Sleep -Seconds 2
+    Start-Process $AppExe -ArgumentList "--open-view", $v
+    $dl = (Get-Date).AddSeconds($TimeoutSecs)
+    while ((Get-Date) -lt $dl) {
+      try { $h = Invoke-RestMethod $health -TimeoutSec 2; if ($h.views."$v" -eq "rendered") { break } } catch {}
+      Start-Sleep -Milliseconds 500
+    }
+    Start-Sleep -Seconds 2
+    $win = Find-AppWindow
+    if ($win) {
+      [void][W]::ShowWindow($win.H, 5); [void][W]::SetForegroundWindow($win.H); Start-Sleep -Milliseconds 900
+      $win = Find-AppWindow; $r = $win.R; $w = $r.Rr - $r.L; $hh = $r.B - $r.T
+      $bmp = New-Object System.Drawing.Bitmap($w, $hh); $g = [System.Drawing.Graphics]::FromImage($bmp)
+      try { $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size); $bmp.Save("$OutputDir\$v-$($t.n).png", [System.Drawing.Imaging.ImageFormat]::Png) }
+      finally { $g.Dispose(); $bmp.Dispose() }
+    }
+  }
 }
+Get-Process solstone-windows-app -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+Set-Content "$OutputDir\DONE" -Value "ok" -Encoding ASCII
+'@
 
-function Set-AppTheme([int]$value) {
-    New-Item -Path $ThemeKey -Force | Out-Null
-    New-ItemProperty -Path $ThemeKey -Name "AppsUseLightTheme" -Value $value -PropertyType DWord -Force | Out-Null
-}
+$prelude = "`$AppExe = '$AppExe'`r`n`$OutputDir = '$OutputDir'`r`n`$TimeoutSecs = $TimeoutSecs`r`n"
+$s1 = Join-Path $env:TEMP "solstone-capture-session1.ps1"
+$s1cmd = Join-Path $env:TEMP "solstone-capture-session1.cmd"
+Set-Content -Path $s1 -Value ($prelude + $body) -Encoding ASCII
+Set-Content -Path $s1cmd -Value @("@echo off", "start `"`" /b powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$s1`"") -Encoding ASCII
 
-function Wait-ViewRendered([string]$view) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSecs)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
-            if ($health -and $health.views) {
-                $prop = $health.views.PSObject.Properties[$view]
-                if ($prop -and $prop.Value -eq "rendered") {
-                    return
-                }
-            }
-        } catch {}
-        Start-Sleep -Milliseconds 500
-    }
-    throw "view '$view' never reached rendered within $TimeoutSecs seconds"
-}
+$TaskName = "solstone-screenshot"
+Remove-Item "$OutputDir\DONE" -Force -ErrorAction SilentlyContinue
+$start = (Get-Date).AddMinutes(5)
+schtasks /Create /TN $TaskName /TR "`"$s1cmd`"" /SC ONCE /ST $start.ToString("HH:mm") /SD $start.ToString("MM/dd/yyyy", [System.Globalization.CultureInfo]::InvariantCulture) /RL LIMITED /IT /F | Out-Null
+schtasks /Run /TN $TaskName | Out-Null
 
-function Get-AppExe() {
-    if ($AppExe -and (Test-Path $AppExe)) {
-        return (Resolve-Path $AppExe).Path
-    }
+# Poll for the DONE marker the Session-1 routine writes (4 captures ~ 30-40s).
+$deadline = (Get-Date).AddSeconds(($TimeoutSecs * 4) + 60)
+while ((Get-Date) -lt $deadline -and -not (Test-Path "$OutputDir\DONE")) { Start-Sleep -Seconds 2 }
+schtasks /Delete /TN $TaskName /F 2>$null | Out-Null
+if (-not (Test-Path "$OutputDir\DONE")) { throw "capture did not finish before deadline (no DONE marker in $OutputDir)" }
 
-    $appExe = Join-Path $env:LOCALAPPDATA "Solstone\current\solstone-windows-app.exe"
-    if (Test-Path $appExe) {
-        return $appExe
-    }
-
-    $found = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Solstone") -Recurse -Filter "solstone-windows-app.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) {
-        return $found.FullName
-    }
-
-    throw "installed app not found under $env:LOCALAPPDATA\Solstone - run make package + install Setup.exe first"
-}
-
-function Get-TargetWindowRect([string]$view) {
-    $processes = @(Get-Process solstone-windows-app -ErrorAction SilentlyContinue)
-    if ($processes.Count -eq 0) {
-        throw "solstone-windows-app process not found"
-    }
-
-    $pidSet = @{}
-    foreach ($process in $processes) {
-        $pidSet["$($process.Id)"] = $true
-    }
-
-    $matches = New-Object System.Collections.Generic.List[object]
-    $callback = [SolstoneWindowNative+EnumWindowsProc]{
-        param([IntPtr]$hWnd, [IntPtr]$lParam)
-
-        if (-not [SolstoneWindowNative]::IsWindowVisible($hWnd)) {
-            return $true
-        }
-
-        [uint32]$windowPid = 0
-        [void][SolstoneWindowNative]::GetWindowThreadProcessId($hWnd, [ref]$windowPid)
-        if (-not $pidSet.ContainsKey("$windowPid")) {
-            return $true
-        }
-
-        $titleBuffer = New-Object System.Text.StringBuilder 256
-        [void][SolstoneWindowNative]::GetWindowText($hWnd, $titleBuffer, $titleBuffer.Capacity)
-        $title = $titleBuffer.ToString()
-        if (-not $title.ToLowerInvariant().Contains($view)) {
-            return $true
-        }
-
-        $rect = New-Object SolstoneWindowNative+Rect
-        if (-not [SolstoneWindowNative]::GetWindowRect($hWnd, [ref]$rect)) {
-            return $true
-        }
-        if (($rect.Right -le $rect.Left) -or ($rect.Bottom -le $rect.Top)) {
-            return $true
-        }
-
-        $matches.Add([pscustomobject]@{
-            Handle = $hWnd
-            Title = $title
-            Rect = $rect
-        }) | Out-Null
-        return $true
-    }
-
-    [void][SolstoneWindowNative]::EnumWindows($callback, [IntPtr]::Zero)
-    if ($matches.Count -eq 0) {
-        throw "no visible '$view' window found for solstone-windows-app"
-    }
-
-    return $matches[0].Rect
-}
-
-function Save-WindowScreenshot([object]$rect, [string]$path) {
-    $width = $rect.Right - $rect.Left
-    $height = $rect.Bottom - $rect.Top
-    if ($width -le 0 -or $height -le 0) {
-        throw "invalid window bounds ${width}x${height}"
-    }
-
-    $bitmap = New-Object System.Drawing.Bitmap $width, $height
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    try {
-        $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
-        $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    } finally {
-        $graphics.Dispose()
-        $bitmap.Dispose()
-    }
-}
-
-$appExe = Get-AppExe
-$launchCmd = Join-Path $env:TEMP "solstone-screenshot-app.cmd"
-$hadOriginalTheme = $false
-$originalTheme = $null
-$paths = @()
-
-try {
-    try {
-        $existingTheme = Get-ItemProperty -Path $ThemeKey -Name "AppsUseLightTheme" -ErrorAction Stop
-        $originalTheme = [int]$existingTheme.AppsUseLightTheme
-        $hadOriginalTheme = $true
-    } catch {}
-
-    $views = @("settings", "about")
-    $themes = @(
-        @{ Name = "light"; Value = 1 },
-        @{ Name = "dark"; Value = 0 }
-    )
-
-    foreach ($view in $views) {
-        foreach ($theme in $themes) {
-            Stop-AppInstance
-            Set-AppTheme $theme.Value
-
-            if (Test-Path $launchCmd) {
-                Remove-Item $launchCmd -Force
-            }
-            Set-Content -Path $launchCmd -Value @("@echo off", "`"$appExe`" --open-view $view") -Encoding ASCII
-            Invoke-InSession1 $TaskName $launchCmd ""
-
-            Wait-ViewRendered $view
-            $rect = Get-TargetWindowRect $view
-            $path = Join-Path $OutputDir ("{0}-{1}.png" -f $view, $theme.Name)
-            Save-WindowScreenshot $rect $path
-            $paths += $path
-            Remove-Task $TaskName
-        }
-    }
-
-    Write-Host "SCREENSHOT_OK"
-    foreach ($path in $paths) {
-        Write-Host $path
-    }
-} finally {
-    Remove-Task $TaskName
-    if (Test-Path $launchCmd) {
-        Remove-Item $launchCmd -Force -ErrorAction SilentlyContinue
-    }
-    if ($hadOriginalTheme) {
-        New-ItemProperty -Path $ThemeKey -Name "AppsUseLightTheme" -Value $originalTheme -PropertyType DWord -Force | Out-Null
-    } else {
-        Remove-ItemProperty -Path $ThemeKey -Name "AppsUseLightTheme" -ErrorAction SilentlyContinue
-    }
-}
+Write-Host "SCREENSHOT_OK"
+Get-ChildItem "$OutputDir\*.png" | ForEach-Object { Write-Host $_.FullName }
