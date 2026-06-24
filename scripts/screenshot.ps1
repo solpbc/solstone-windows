@@ -10,7 +10,11 @@
 
 param(
     [int]$TimeoutSecs = 90,
-    [string]$OutputDir = ""
+    [string]$OutputDir = "",
+    # Override the app exe (default: the installed Velopack app). Lets a session
+    # capture a freshly-built dev exe (target\release|debug\...) for pre-release
+    # visual iteration, not only the installed release.
+    [string]$AppExe = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -106,6 +110,10 @@ function Wait-ViewRendered([string]$view) {
 }
 
 function Get-AppExe() {
+    if ($AppExe -and (Test-Path $AppExe)) {
+        return (Resolve-Path $AppExe).Path
+    }
+
     $appExe = Join-Path $env:LOCALAPPDATA "Solstone\current\solstone-windows-app.exe"
     if (Test-Path $appExe) {
         return $appExe
