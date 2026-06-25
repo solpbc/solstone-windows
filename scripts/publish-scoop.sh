@@ -7,7 +7,7 @@
 # release and its Solstone-win-Portable.zip asset must already exist, because the
 # manifest hash is computed over the PUBLISHED asset (what users actually download).
 #
-# Operator-driven, no CI path -- the same posture as publish.ps1 / publish-r2.sh.
+# Operator-driven, no CI path -- the same posture as publish-gh.sh / publish-r2.sh.
 # VERSION defaults to the workspace package version; pass an arg to override.
 set -eu
 

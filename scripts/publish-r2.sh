@@ -5,7 +5,7 @@
 # Publish the Velopack Releases/ directory to the R2 update feed at
 # updates.solstone.app/solstone-windows/ -- the auto-update channel the in-app
 # velopack::UpdateManager fetches. This is the PRIMARY update feed; the GitHub
-# release (scripts/publish.ps1) is a demoted source-hygiene mirror.
+# release (scripts/publish-gh.sh) is the required source-hygiene mirror.
 #
 # Runs on the RELEASE HOST (where wrangler holds the Cloudflare R2 auth for the
 # solstone-updates bucket), NOT on the build box -- mirrors the macOS appcast

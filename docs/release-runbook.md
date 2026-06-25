@@ -60,13 +60,15 @@ signing box; both publishes are mandatory):
    (`releases.win.json` after the nupkgs/Setup.exe), then HEAD-checks the feed +
    the `Solstone-win-Setup.exe` permalink target. Requires `wrangler` authed to
    the Cloudflare account + `curl`.
-3. **Required GitHub mirror:** on the box, `make publish` — creates the tagged
-   `v<version>` GitHub release, attaches every `Releases/` artifact (feed JSON
-   last), and sets the release body from the `CHANGELOG.md ## [<version>]` section
-   via `gh --notes-file` (same notes as the R2 feed; falls back to a bare title
-   only if the section is absent). Fails loud if the tag already exists (no silent
-   overwrite). Requires `gh` authed. Run it on the box (no `pwsh` on the Linux
-   release host).
+3. **Required GitHub mirror:** on the **release host** (same host as `publish-r2`,
+   not the build box — the box has no `gh`), `make publish` → `scripts/publish-gh.sh`
+   creates the tagged `v<version>` GitHub release, attaches every `Releases/`
+   artifact (feed JSON last), and sets the release body from the
+   `CHANGELOG.md ## [<version>]` section via `gh --notes-file` (same notes as the
+   R2 feed; bare-title fallback only if the section is absent). Version is the
+   highest packed full nupkg (`sort -V`), so an accumulated `Releases/` still tags
+   the current release. Fails loud if the tag already exists (no silent overwrite).
+   Requires `gh` authed to the repo.
 
 `make publish-r2` accumulates: nupkgs are version-named (prior deltas/fulls stay),
 `Solstone-win-Setup.exe` is a stable name overwritten with the latest. The

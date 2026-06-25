@@ -95,11 +95,13 @@ package:
 	$(CARGO) build -p $(TAURI_BIN) --release --features custom-protocol
 	$(PWSH) -File scripts/package.ps1
 
-# Upload the Releases/ dir to GitHub Releases = the demoted source-hygiene mirror
-# (a tagged source release with the artifacts attached). The PRIMARY auto-update
-# feed is R2 (publish-r2). Runs on the build box.
+# Upload the Releases/ dir to GitHub Releases = the REQUIRED source-hygiene mirror
+# (tagged v<version> release + artifacts + the CHANGELOG ## [<version>] notes, same
+# notes as the R2 feed). Every signed release publishes to BOTH R2 (publish-r2) and
+# GitHub (this) -- never skipped. Runs on the RELEASE HOST (where `gh` is authed +
+# Releases/ was pulled), same posture as publish-r2 -- the build box has no `gh`.
 publish:
-	$(PWSH) -File scripts/publish.ps1
+	sh scripts/publish-gh.sh Releases
 
 # Upload the Releases/ dir to the R2 update feed at
 # updates.solstone.app/solstone-windows/ -- the PRIMARY auto-update channel the
