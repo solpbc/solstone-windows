@@ -66,6 +66,24 @@ pub fn get_health(state: tauri::State<'_, crate::app::AppState>) -> Result<Healt
         .map_err(|_| "health mutex poisoned".to_string())
 }
 
+/// Where the owner's gathered media lives on this PC, for the Status surface.
+/// `bytes` is best-effort and currently always `None` — segments_dir holds
+/// per-segment SUBDIRECTORIES, so a shallow read_dir sum is meaningless and a
+/// deep walk is refused; the UI renders a size only when it is `Some`.
+#[derive(serde::Serialize)]
+pub struct StorageInfo {
+    root: String,
+    bytes: Option<u64>,
+}
+
+#[tauri::command]
+pub fn storage_info() -> StorageInfo {
+    StorageInfo {
+        root: platform_win::segments_dir().to_string_lossy().into_owned(),
+        bytes: None,
+    }
+}
+
 /// Open (create on demand) the Settings window.
 #[tauri::command]
 pub async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
@@ -92,6 +110,16 @@ pub fn open_release_notes(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(RELEASE_NOTES_URL, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn open_storage_folder(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let root = platform_win::segments_dir();
+    let _ = std::fs::create_dir_all(&root);
+    app.opener()
+        .open_path(root.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 

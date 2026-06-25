@@ -170,6 +170,8 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
             crate::ipc::update_set_auto_download,
             crate::ipc::update_set_interval,
             crate::ipc::open_release_notes,
+            crate::ipc::storage_info,
+            crate::ipc::open_storage_folder,
         ])
         .setup(move |app| {
             match crate::lifecycle::acquire_single_instance() {

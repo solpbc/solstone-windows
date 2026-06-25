@@ -80,6 +80,7 @@ function forwardFrontendError(record: FrontendErrorRecord): void {
 type AppPhase = "idle" | "starting" | "observing" | "paused" | "error";
 type SourceKind = "screen" | "system_audio" | "mic";
 type SourceStatus = "active" | "inactive" | "no_input_device" | "faulted";
+type Severity = "ok" | "neutral" | "attention";
 
 interface SourceReport {
   kind: SourceKind;
@@ -144,6 +145,11 @@ interface HealthDump {
   views?: Record<string, string>;
 }
 
+interface StorageInfo {
+  root: string;
+  bytes: number | null;
+}
+
 // ── Capture exclusions (observer-exclusion) ──────────────────────────────────
 // The owner's privacy controls. Rules are loaded once and edited in place; each
 // edit calls `set_exclusions` (effective on the next captured frame, persisted)
@@ -160,6 +166,8 @@ interface RunningApp {
   exe_name: string;
   display_name: string;
 }
+
+const SELF_EXE = "solstone-windows-app.exe";
 
 // ── Updater (observer-update) ────────────────────────────────────────────────
 // Update state arrives on its own `update://changed` event, separate from the
@@ -210,6 +218,7 @@ interface UpdateView {
 // Latest snapshots; the settings view renders from both. Held in module vars so a
 // re-render from either stream never loses the other's state.
 let latestHealth: HealthDump | null = null;
+let latestStorage: StorageInfo | null = null;
 let latestUpdate: UpdateView | null = null;
 let renderBeaconFired = false;
 // Set when a background event (health/update stream) wants a full rerender but an
@@ -578,6 +587,48 @@ function trustFootnote(value: string): HTMLElement {
   return foot;
 }
 
+function pill(label: string, severity: Severity): HTMLElement {
+  const colors: Record<Severity, { text: string; bg: string; border: string }> = {
+    ok: {
+      text: "var(--accent)",
+      bg: "var(--accent-subtle)",
+      border: "1px solid var(--accent)",
+    },
+    neutral: {
+      text: "var(--fg-subtle)",
+      bg: "var(--fill)",
+      border: "1px solid var(--border)",
+    },
+    attention: {
+      text: "var(--danger)",
+      bg: "var(--fill)",
+      border: "1px solid var(--danger)",
+    },
+  };
+
+  const chip = document.createElement("span");
+  const color = colors[severity];
+  chip.style.display = "inline-flex";
+  chip.style.alignItems = "center";
+  chip.style.width = "fit-content";
+  chip.style.maxWidth = "100%";
+  chip.style.boxSizing = "border-box";
+  chip.style.fontSize = "12px";
+  chip.style.fontWeight = "500";
+  chip.style.lineHeight = "1.35";
+  chip.style.padding = "2px 9px";
+  chip.style.borderRadius = "999px";
+  chip.style.color = color.text;
+  chip.style.background = color.bg;
+  chip.style.border = color.border;
+
+  const value = text("span", label);
+  value.style.minWidth = "0";
+  value.style.overflowWrap = "anywhere";
+  chip.append(value);
+  return chip;
+}
+
 function phaseLabel(phase: AppPhase): string {
   switch (phase) {
     case "idle":
@@ -610,6 +661,26 @@ function sourceStatusLabel(source: SourceReport | undefined): string {
   }
 }
 
+function severityForSource(source: SourceReport | undefined): Severity {
+  if (!source) {
+    return "neutral";
+  }
+
+  switch (source.status) {
+    case "active":
+      return "ok";
+    case "faulted":
+      return "attention";
+    case "inactive":
+    case "no_input_device":
+      return "neutral";
+  }
+}
+
+function sourcePill(source: SourceReport | undefined): HTMLElement {
+  return pill(sourceStatusLabel(source), severityForSource(source));
+}
+
 function sourceByKind(dump: HealthDump, kind: SourceKind): SourceReport | undefined {
   return dump.sources.find((source) => source.kind === kind);
 }
@@ -639,6 +710,67 @@ function uploadLabel(upload: UploadStatus): string {
     parts.push(`last error: ${upload.last_error}`);
   }
   return parts.join(" · ");
+}
+
+function formatStorageBytes(bytes: number): string {
+  const units = ["bytes", "kb", "mb", "gb", "tb"];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rendered = unit === 0 ? String(Math.floor(value)) : value.toFixed(1);
+  return `${rendered} ${units[unit]}`;
+}
+
+function storageRow(storage: StorageInfo | null): HTMLElement {
+  const value = document.createElement("div");
+  value.style.display = "grid";
+  value.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+  value.style.gap = "8px";
+  value.style.alignItems = "start";
+
+  const pathWrap = document.createElement("div");
+  pathWrap.style.minWidth = "0";
+  pathWrap.append(
+    selectable(
+      automation(
+        text("div", storage ? storage.root : "not available"),
+        ids["settings.status.segmentDir"],
+      ),
+    ),
+  );
+  if (storage && storage.bytes !== null) {
+    pathWrap.append(microCaption(`${formatStorageBytes(storage.bytes)} stored locally`));
+  }
+
+  value.append(
+    pathWrap,
+    actionButton("open folder", undefined, true, () => void invoke("open_storage_folder")),
+  );
+  return valueRow("stored on this pc", value);
+}
+
+function syncRow(sync: SyncSnapshot): HTMLElement {
+  let label: string;
+  switch (sync.pairing.phase) {
+    case "not_paired":
+      label = "not paired — pair to sync your journal";
+      break;
+    case "pairing":
+    case "failed":
+      label = pairingPhaseLabel(sync.pairing);
+      break;
+    case "paired":
+      label = uploadLabel(sync.upload);
+      break;
+  }
+
+  return valueRow(
+    "journal sync",
+    selectable(automation(text("div", label), ids["settings.status.upload.state"])),
+  );
 }
 
 function renderPairingSection(dump: HealthDump): HTMLElement {
@@ -734,13 +866,11 @@ function exclusionActivityLabel(health: ExclusionHealth | null): string {
   if (!health || !health.rules_active) {
     return "no exclusions active";
   }
-  const parts = [
-    `${health.frames_redacted} frame${health.frames_redacted === 1 ? "" : "s"} redacted`,
-  ];
+  const kept = `${health.frames_redacted} frame${health.frames_redacted === 1 ? "" : "s"} kept out of your journal this session`;
   if (health.frames_dropped > 0) {
-    parts.push(`${health.frames_dropped} dropped`);
+    return `${kept} · ${health.frames_dropped} dropped`;
   }
-  return `${parts.join(" · ")} this session`;
+  return kept;
 }
 
 // A removable list of string values (excluded exes / title keywords).
@@ -833,7 +963,11 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   appSelect.style.border = "1px solid var(--border)";
   appSelect.style.borderRadius = "var(--radius-control)";
   appSelect.style.minWidth = "0";
-  const choices = runningApps.filter((app) => !rules.excluded_exes.includes(app.exe_name));
+  const choices = runningApps.filter(
+    (app) =>
+      app.exe_name.toLowerCase() !== SELF_EXE &&
+      !rules.excluded_exes.includes(app.exe_name),
+  );
   const placeholder = document.createElement("option");
   placeholder.value = "";
   placeholder.textContent = choices.length > 0 ? "choose a running app…" : "no other apps running";
@@ -841,7 +975,8 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   for (const app of choices) {
     const opt = document.createElement("option");
     opt.value = app.exe_name;
-    opt.textContent = `${app.display_name} (${app.exe_name})`;
+    opt.textContent = app.display_name || app.exe_name;
+    opt.title = app.exe_name;
     appSelect.append(opt);
   }
 
@@ -930,7 +1065,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
     ),
   );
 
-  // Exclusion activity — the never-silent surface (redacted/dropped this session),
+  // Exclusion activity — the never-silent surface (kept out/dropped this session),
   // landed as a labeled trust footnote: the proof the exclusions are working.
   const activityFoot = document.createElement("div");
   activityFoot.style.marginTop = "16px";
@@ -1505,6 +1640,9 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
       "after a segment safely reaches your journal, how long should solstone keep its local copy on this computer?",
     ),
   );
+  pane.append(
+    helpCaption("a segment is a 5-minute local bundle that stays here until your journal receives it."),
+  );
 
   const sel = document.createElement("select");
   sel.dataset.automationId = ids["settings.retention"];
@@ -1560,21 +1698,8 @@ function renderSettings(dump: HealthDump): void {
       "state",
       automation(text("div", statusStateLabel(dump)), ids["settings.status.appState.state"]),
     ),
-    valueRow(
-      "segment directory",
-      selectable(
-        automation(
-          text("div", dump.segment_dir ?? "not available"),
-          ids["settings.status.segmentDir"],
-        ),
-      ),
-    ),
-    valueRow(
-      "journal sync",
-      selectable(
-        automation(text("div", uploadLabel(dump.sync.upload)), ids["settings.status.upload.state"]),
-      ),
-    ),
+    storageRow(latestStorage),
+    syncRow(dump.sync),
   );
 
   const sources = section("Sources");
@@ -1584,22 +1709,15 @@ function renderSettings(dump: HealthDump): void {
   sources.append(
     valueRow(
       "screen",
-      selectable(
-        automation(text("div", sourceStatusLabel(screen)), ids["settings.sources.screen.state"]),
-      ),
+      selectable(automation(sourcePill(screen), ids["settings.sources.screen.state"])),
     ),
     valueRow(
       "system audio",
-      selectable(
-        automation(
-          text("div", sourceStatusLabel(systemAudio)),
-          ids["settings.sources.systemAudio.state"],
-        ),
-      ),
+      selectable(automation(sourcePill(systemAudio), ids["settings.sources.systemAudio.state"])),
     ),
     valueRow(
       "microphone",
-      selectable(automation(text("div", sourceStatusLabel(mic)), ids["settings.sources.mic.state"])),
+      selectable(automation(sourcePill(mic), ids["settings.sources.mic.state"])),
     ),
   );
 
@@ -1735,14 +1853,16 @@ function updateSubtitle(
 
 function actionButton(
   labelText: string,
-  automationId: string,
+  automationId: string | undefined,
   enabled: boolean,
   onClick: () => void,
 ): HTMLButtonElement {
   const b = document.createElement("button");
   b.textContent = labelText;
   b.disabled = !enabled;
-  b.dataset.automationId = automationId;
+  if (automationId) {
+    b.dataset.automationId = automationId;
+  }
   b.classList.add(enabled ? "fluent-accent" : "fluent-control");
   b.style.fontSize = "13px";
   b.style.padding = "6px 12px";
@@ -2218,8 +2338,9 @@ async function boot(): Promise<void> {
     rerender();
     return;
   }
-  const [health, update, exclusions, apps, hotkey, micCfg, mics, retention] = await Promise.all([
+  const [health, storage, update, exclusions, apps, hotkey, micCfg, mics, retention] = await Promise.all([
     invoke<HealthDump>("get_health").catch(() => null),
+    invoke<StorageInfo>("storage_info").catch(() => null),
     invoke<UpdateView>("update_get").catch(() => null),
     invoke<ExclusionRules>("get_exclusions").catch(() => null),
     invoke<RunningApp[]>("list_running_apps").catch(() => [] as RunningApp[]),
@@ -2229,6 +2350,7 @@ async function boot(): Promise<void> {
     invoke<RetentionConfig>("get_retention").catch(() => null),
   ]);
   latestHealth = health;
+  latestStorage = storage;
   latestUpdate = update;
   latestExclusions = exclusions;
   runningApps = apps;
