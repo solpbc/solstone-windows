@@ -175,8 +175,11 @@ no-analytics static surface, so each user's scheduled update check stays a
 bare first-party manifest GET on our own surface with **no query string** (no app
 version, no app id, no per-user identifier) rather than hitting a third party.
 (The updater neutralizes Velopack's per-install staging id — see
-`src-tauri/src/update.rs`.) GitHub Releases is demoted to a source-hygiene
-**mirror** (`make publish`, a tagged source release with the artifacts attached).
+`src-tauri/src/update.rs`.) GitHub Releases is a **required source-hygiene
+mirror** (`make publish`, a tagged `v<version>` release with the artifacts +
+the `CHANGELOG.md ## [<version>]` notes attached): every signed release publishes
+to **both** R2 (primary) and GitHub, both carrying the same per-release notes —
+the GitHub mirror is never skipped.
 The in-app updater fetches `releases.win.json` via a query-free first-party
 manifest GET (a small custom Velopack `UpdateSource`); package downloads still
 request the package files by filename from the same first-party feed host.

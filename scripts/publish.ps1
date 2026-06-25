@@ -46,10 +46,32 @@ $assets = Get-ChildItem $Releases -File |
     Where-Object { $_.Name -ne "releases.win.json" } |
     ForEach-Object { $_.FullName }
 
+# Release notes: thread the CHANGELOG.md "## [<version>]" section into the GitHub
+# release body (same source as package.ps1 / the R2 feed's NotesMarkdown), so the
+# mirror carries the SAME per-release notes as the update feed - not a placeholder.
+# Required-step parity with publish-r2; falls back to a bare title only if absent.
+$NotesArgs = @("--notes", "Solstone $Version")
+$ChangelogPath = Join-Path $Root "CHANGELOG.md"
+if (Test-Path $ChangelogPath) {
+    $Changelog = Get-Content -Raw -Encoding UTF8 $ChangelogPath
+    $EscVersion = [regex]::Escape($Version)
+    $NotesMatch = [regex]::Match($Changelog, "(?ms)^## \[$EscVersion\][^\r\n]*\r?\n(.*?)(?=^## \[|\z)")
+    if ($NotesMatch.Success) {
+        $NotesBody = $NotesMatch.Groups[1].Value.Trim()
+        if ($NotesBody) {
+            $NotesFile = Join-Path $Root "target\gh-release-notes-$Version.md"
+            New-Item -ItemType Directory -Force -Path (Split-Path $NotesFile) | Out-Null
+            Set-Content -Path $NotesFile -Value $NotesBody -Encoding UTF8 -NoNewline
+            $NotesArgs = @("--notes-file", $NotesFile)
+            Write-Host "publish.ps1: release notes from CHANGELOG.md ## [$Version]"
+        }
+    }
+}
+
 Write-Host "publish.ps1: creating GitHub release $Tag"
 # Fail loud on an existing tag - gh errors and we do not pass --clobber, so the
 # monotonic feed is never silently overwritten.
-& $Gh release create $Tag @repoArgs --title $Tag --notes "Solstone $Version" @assets
+& $Gh release create $Tag @repoArgs --title $Tag @NotesArgs @assets
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed for $Tag (tag may already exist; exit $LASTEXITCODE)." }
 
 if (Test-Path $feed) {

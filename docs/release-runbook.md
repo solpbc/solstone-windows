@@ -12,7 +12,7 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Pack a Velopack release into `Releases/` | `make package` |
 | Pull the box's `Releases/` to the release host | `make pull-releases` |
 | Upload `Releases/` to the R2 update feed (**primary**) | `make publish-r2` |
-| Upload `Releases/` to GitHub Releases (source mirror) | `make publish` |
+| Upload `Releases/` to GitHub Releases (**required** mirror) | `make publish` |
 | FlaUI smoke vs the installed app | `make smoke` |
 
 ## Packaging
@@ -45,10 +45,14 @@ The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows
 fetches `releases.win.json` from there with a bare, query-free manifest GET via
 the custom local Velopack `UpdateSource`; package downloads still request the
 package files by filename from the same first-party feed host. GitHub Releases is
-a demoted **source-hygiene mirror** only.
+a **required source-hygiene mirror** — every signed release publishes to **both**
+R2 (primary) and GitHub (mirror), and **both carry the same per-release notes**
+(the `CHANGELOG.md ## [<version>]` section). The GitHub mirror is the
+download/source-of-record surface winget/scoop reference and where the tagged
+release + signed artifacts live; it is never skipped on a real release.
 
-**Two-host flow** (mirrors the macOS appcast split — keeps Cloudflare creds off
-the signing box):
+**Flow** (mirrors the macOS appcast split — keeps Cloudflare creds off the
+signing box; both publishes are mandatory):
 
 1. On the build box: `make package` (`-Sign` / `SOLSTONE_SIGN=1` for a release).
 2. On the release host: `make pull-releases` (scp the box's `Releases/` over),
@@ -56,7 +60,13 @@ the signing box):
    (`releases.win.json` after the nupkgs/Setup.exe), then HEAD-checks the feed +
    the `Solstone-win-Setup.exe` permalink target. Requires `wrangler` authed to
    the Cloudflare account + `curl`.
-3. Optional source mirror: on the box, `make publish` (tagged GitHub release).
+3. **Required GitHub mirror:** on the box, `make publish` — creates the tagged
+   `v<version>` GitHub release, attaches every `Releases/` artifact (feed JSON
+   last), and sets the release body from the `CHANGELOG.md ## [<version>]` section
+   via `gh --notes-file` (same notes as the R2 feed; falls back to a bare title
+   only if the section is absent). Fails loud if the tag already exists (no silent
+   overwrite). Requires `gh` authed. Run it on the box (no `pwsh` on the Linux
+   release host).
 
 `make publish-r2` accumulates: nupkgs are version-named (prior deltas/fulls stay),
 `Solstone-win-Setup.exe` is a stable name overwritten with the latest. The
