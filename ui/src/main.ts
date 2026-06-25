@@ -81,6 +81,7 @@ type AppPhase = "idle" | "starting" | "observing" | "paused" | "error";
 type SourceKind = "screen" | "system_audio" | "mic";
 type SourceStatus = "active" | "inactive" | "no_input_device" | "faulted";
 type Severity = "ok" | "neutral" | "attention";
+type Route = "home" | "sources" | "privacy" | "journal" | "shortcut" | "storage" | "updates";
 
 interface SourceReport {
   kind: SourceKind;
@@ -220,6 +221,7 @@ interface UpdateView {
 let latestHealth: HealthDump | null = null;
 let latestStorage: StorageInfo | null = null;
 let latestUpdate: UpdateView | null = null;
+let activeRoute: Route = "home";
 let renderBeaconFired = false;
 // Set when a background event (health/update stream) wants a full rerender but an
 // interactive control is active; the next flush or any direct rerender consumes it,
@@ -258,6 +260,16 @@ if (!queriedRoot) {
 
 const root: HTMLDivElement = queriedRoot;
 
+const ROUTES: ReadonlyArray<{ route: Route; label: string; glyph: string }> = [
+  { route: "home", label: "home", glyph: "\uE80F" },
+  { route: "sources", label: "sources", glyph: "\uE8B3" },
+  { route: "privacy", label: "privacy", glyph: "\uEA18" },
+  { route: "journal", label: "journal", glyph: "\uE753" },
+  { route: "shortcut", label: "shortcut", glyph: "\uE765" },
+  { route: "storage", label: "storage", glyph: "\uE8B7" },
+  { route: "updates", label: "updates", glyph: "\uE777" },
+];
+
 const nativeFeelStyle = document.createElement("style");
 nativeFeelStyle.textContent = `
 :root {
@@ -280,10 +292,11 @@ nativeFeelStyle.textContent = `
   --dur-fast: 83ms;
   --ease-standard: cubic-bezier(0,0,0,1);
   --overlay-hover: rgba(0,0,0,0.037);
-  --overlay-pressed: rgba(0,0,0,0.024);
-  --accent-overlay-hover: rgba(255,255,255,0.10);
-  --accent-overlay-pressed: rgba(0,0,0,0.06);
-}
+	  --overlay-pressed: rgba(0,0,0,0.024);
+	  --accent-overlay-hover: rgba(255,255,255,0.10);
+	  --accent-overlay-pressed: rgba(0,0,0,0.06);
+	  --rail-w: 200px;
+	}
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -395,15 +408,271 @@ a:focus-visible,
   cursor: text;
 }
 
-.scroll-surface {
-  scrollbar-width: thin;
-}
+	.scroll-surface {
+	  scrollbar-width: thin;
+	}
 
-@media (prefers-reduced-motion: no-preference) {
-  .fluent-control,
-  .fluent-accent {
-    transition: box-shadow var(--dur-fast) var(--ease-standard);
-  }
+	.settings-shell {
+	  position: relative;
+	  display: grid;
+	  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+	  height: 100%;
+	  min-height: 0;
+	  overflow: hidden;
+	}
+
+	.settings-scrim {
+	  display: none;
+	}
+
+	.settings-rail {
+	  min-height: 0;
+	  overflow-y: auto;
+	  border-right: 1px solid var(--border);
+	  background: color-mix(in srgb, var(--bg) 92%, transparent);
+	  padding: 14px 10px;
+	  box-sizing: border-box;
+	  scrollbar-width: thin;
+	}
+
+	.settings-rail-title {
+	  padding: 4px 10px 14px;
+	  font-size: 18px;
+	  font-weight: 700;
+	}
+
+	.settings-nav-item {
+	  position: relative;
+	  display: flex;
+	  align-items: center;
+	  gap: 10px;
+	  width: 100%;
+	  min-height: 36px;
+	  padding: 8px 10px;
+	  border: 1px solid transparent;
+	  border-radius: var(--radius-control);
+	  background: transparent;
+	  color: var(--fg);
+	  font-size: 13px;
+	  text-align: left;
+	  cursor: pointer;
+	}
+
+	.settings-nav-item[aria-current="page"] {
+	  background: var(--accent-subtle);
+	}
+
+	.settings-nav-item[aria-current="page"]::before {
+	  content: "";
+	  position: absolute;
+	  left: 0;
+	  top: 7px;
+	  bottom: 7px;
+	  width: 3px;
+	  border-radius: 0 2px 2px 0;
+	  background: var(--accent);
+	}
+
+	.settings-nav-glyph,
+	.settings-hamburger-glyph {
+	  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+	  font-size: 16px;
+	  line-height: 1;
+	}
+
+	.settings-nav-glyph {
+	  width: 20px;
+	  flex: 0 0 20px;
+	  text-align: center;
+	}
+
+	.settings-pane {
+	  min-width: 0;
+	  height: 100%;
+	  overflow-y: auto;
+	  scrollbar-width: thin;
+	}
+
+	.settings-pane-frame {
+	  box-sizing: border-box;
+	  width: 100%;
+	  max-width: 720px;
+	  margin: 0 auto;
+	  padding: 24px;
+	}
+
+	.settings-pane-topbar {
+	  display: flex;
+	  align-items: center;
+	  gap: 10px;
+	  margin: 0 0 14px;
+	}
+
+	.settings-pane-title {
+	  margin: 0;
+	  font-size: 22px;
+	  font-weight: 700;
+	  line-height: 1.25;
+	}
+
+	.settings-hamburger {
+	  display: none;
+	  align-items: center;
+	  justify-content: center;
+	  width: 34px;
+	  height: 34px;
+	  padding: 0;
+	  border: 1px solid var(--border);
+	  border-radius: var(--radius-control);
+	  background: var(--fill);
+	  color: var(--fg);
+	  cursor: pointer;
+	}
+
+	.settings-route-content {
+	  min-width: 0;
+	}
+
+	.settings-home {
+	  display: grid;
+	  gap: 16px;
+	}
+
+	.settings-status-strip {
+	  display: grid;
+	  gap: 8px;
+	  padding: 14px 16px;
+	  border: 1px solid var(--border);
+	  border-radius: var(--radius-card);
+	  background: var(--bg-input);
+	}
+
+	.settings-status-line,
+	.settings-status-button {
+	  display: grid;
+	  grid-template-columns: 116px minmax(0, 1fr);
+	  gap: 12px;
+	  align-items: center;
+	  min-height: 30px;
+	  font-size: 13px;
+	}
+
+	.settings-status-button {
+	  width: 100%;
+	  border: 1px solid transparent;
+	  border-radius: var(--radius-control);
+	  background: transparent;
+	  color: var(--fg);
+	  text-align: left;
+	  cursor: pointer;
+	}
+
+	.settings-status-label {
+	  color: var(--fg-subtle);
+	}
+
+	.settings-status-value {
+	  min-width: 0;
+	  overflow-wrap: anywhere;
+	}
+
+	.settings-card-grid {
+	  display: grid;
+	  grid-template-columns: repeat(2, minmax(0, 1fr));
+	  gap: 12px;
+	}
+
+	.settings-card {
+	  display: grid;
+	  gap: 12px;
+	  align-content: start;
+	  min-width: 0;
+	  padding: 15px;
+	  border: 1px solid var(--border);
+	  border-radius: var(--radius-card);
+	  background: var(--fill);
+	}
+
+	.settings-card-title {
+	  margin: 0;
+	  font-size: 12px;
+	  font-weight: 600;
+	  color: var(--fg-subtle);
+	}
+
+	.settings-card-glance {
+	  min-width: 0;
+	  font-size: 13px;
+	  overflow-wrap: anywhere;
+	}
+
+	.settings-card-action {
+	  align-self: end;
+	}
+
+	@media (max-width: 719px) {
+	  .settings-shell {
+	    grid-template-columns: minmax(0, 1fr);
+	  }
+
+	  .settings-pane-frame {
+	    padding: 12px;
+	  }
+
+	  .settings-hamburger {
+	    display: inline-flex;
+	    flex: 0 0 auto;
+	  }
+
+	  .settings-rail {
+	    position: absolute;
+	    inset: 0 auto 0 0;
+	    z-index: 3;
+	    width: min(280px, calc(100% - 48px));
+	    visibility: hidden;
+	    transform: translateX(-100%);
+	    transition: transform var(--dur-fast) var(--ease-standard), visibility var(--dur-fast) var(--ease-standard);
+	  }
+
+	  .settings-shell[data-pane-open="true"] .settings-rail {
+	    visibility: visible;
+	    transform: translateX(0);
+	  }
+
+	  .settings-scrim {
+	    display: block;
+	    position: absolute;
+	    inset: 0;
+	    z-index: 2;
+	    background: rgba(0,0,0,0.32);
+	    opacity: 0;
+	    visibility: hidden;
+	    transition: opacity var(--dur-fast) var(--ease-standard), visibility var(--dur-fast) var(--ease-standard);
+	  }
+
+	  .settings-shell[data-pane-open="true"] .settings-scrim {
+	    opacity: 1;
+	    visibility: visible;
+	  }
+
+	  .settings-card-grid {
+	    grid-template-columns: minmax(0, 1fr);
+	  }
+
+	  .settings-status-line,
+	  .settings-status-button {
+	    grid-template-columns: 92px minmax(0, 1fr);
+	  }
+	}
+
+	@media (prefers-reduced-motion: no-preference) {
+	  .fluent-control,
+	  .fluent-accent,
+	  .settings-nav-item,
+	  .settings-status-button,
+	  .settings-hamburger {
+	    transition: box-shadow var(--dur-fast) var(--ease-standard);
+	  }
 
   @keyframes update-indeterminate {
     0% { left: -35%; }
@@ -483,6 +752,55 @@ document.addEventListener(
   },
   true,
 );
+
+const narrowNav = window.matchMedia("(max-width: 719px)");
+
+function settingsShell(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(".settings-shell");
+}
+
+function closeNavOverlay(): void {
+  const shell = settingsShell();
+  if (shell) {
+    shell.dataset.paneOpen = "false";
+  }
+}
+
+function navOverlayOpen(shell: HTMLElement): boolean {
+  return shell.dataset.paneOpen === "true";
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !narrowNav.matches) {
+    return;
+  }
+  const shell = settingsShell();
+  if (shell && navOverlayOpen(shell)) {
+    closeNavOverlay();
+  }
+});
+
+document.addEventListener("click", (event) => {
+  if (!narrowNav.matches) {
+    return;
+  }
+  const shell = settingsShell();
+  if (!shell || !navOverlayOpen(shell)) {
+    return;
+  }
+  const target = event.target;
+  if (!(target instanceof Node)) {
+    return;
+  }
+  const element = target instanceof Element ? target : target.parentNode;
+  if (!(element instanceof Element)) {
+    return;
+  }
+  if (element.closest(".settings-rail") || element.closest(".settings-hamburger")) {
+    return;
+  }
+  closeNavOverlay();
+});
 
 const label = getCurrentWindow().label;
 
@@ -1093,6 +1411,9 @@ function resetRoot(rootId: string): void {
   root.replaceChildren();
   root.dataset.automationId = rootId;
   root.style.minHeight = "100vh";
+  root.style.padding = "";
+  root.style.overflow = "";
+  root.style.boxSizing = "";
 }
 
 // Pause detail for the status line: "paused — 14 min left" while a bounded pause
@@ -1682,26 +2003,34 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
   return pane;
 }
 
-function renderSettings(dump: HealthDump): void {
-  resetRoot(ids["settings.window.root"]);
+function routeLabel(route: Route): string {
+  return ROUTES.find((item) => item.route === route)?.label ?? route;
+}
 
-  const title = text("h1", "solstone");
-  title.style.margin = "0";
-  title.style.padding = "18px 20px 8px";
-  title.style.fontSize = "22px";
-  title.style.fontWeight = "700";
-  root.append(title);
+function navigateTo(route: Route): void {
+  activeRoute = route;
+  closeNavOverlay();
+  rerender();
+}
 
-  const status = section("Status");
-  status.append(
-    valueRow(
-      "state",
-      automation(text("div", statusStateLabel(dump)), ids["settings.status.appState.state"]),
-    ),
-    storageRow(latestStorage),
-    syncRow(dump.sync),
+function loadingCaption(): HTMLElement {
+  const cap = helpCaption("not available right now.");
+  cap.style.padding = "18px 20px";
+  return cap;
+}
+
+function clearLastSectionDivider(container: HTMLElement): void {
+  const sections = Array.from(container.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && child.tagName.toLowerCase() === "section",
   );
+  if (sections.length === 0) {
+    return;
+  }
+  sections[sections.length - 1].style.borderBottom = "none";
+}
 
+function renderSourcesSection(dump: HealthDump): HTMLElement {
   const sources = section("Sources");
   const screen = sourceByKind(dump, "screen");
   const systemAudio = sourceByKind(dump, "system_audio");
@@ -1720,24 +2049,320 @@ function renderSettings(dump: HealthDump): void {
       selectable(automation(sourcePill(mic), ids["settings.sources.mic.state"])),
     ),
   );
+  return sources;
+}
 
-  root.append(status, sources);
-  if (latestExclusions) {
-    root.append(renderExclusionsSection(latestExclusions, dump));
+function statusSeverity(phase: AppPhase): Severity {
+  switch (phase) {
+    case "observing":
+      return "ok";
+    case "error":
+      return "attention";
+    case "idle":
+    case "starting":
+    case "paused":
+      return "neutral";
   }
-  if (latestHotkey) {
-    root.append(renderHotkeySection(latestHotkey));
+}
+
+function syncSummary(sync: SyncSnapshot): string {
+  switch (sync.pairing.phase) {
+    case "not_paired":
+      return "pair to deliver to your journal";
+    case "pairing":
+    case "failed":
+      return pairingPhaseLabel(sync.pairing);
+    case "paired": {
+      const upload = sync.upload;
+      if (upload.last_error || upload.failed_segments > 0) {
+        return upload.failed_segments > 0
+          ? `${upload.failed_segments} retrying`
+          : "sync needs attention";
+      }
+      return `${upload.uploaded_segments} delivered · ${upload.pending_segments} pending`;
+    }
   }
-  if (latestMic) {
-    root.append(renderMicSection(latestMic));
+}
+
+function sourcesSummary(dump: HealthDump): string {
+  const screen = sourceStatusLabel(sourceByKind(dump, "screen"));
+  const systemAudio = sourceStatusLabel(sourceByKind(dump, "system_audio"));
+  const mic = sourceStatusLabel(sourceByKind(dump, "mic"));
+  return `screen: ${screen} · system audio: ${systemAudio} · mic: ${mic}`;
+}
+
+function statusLabelNode(labelText: string): HTMLElement {
+  const node = text("span", labelText);
+  node.classList.add("settings-status-label");
+  return node;
+}
+
+function statusValueNode(value: HTMLElement): HTMLElement {
+  const node = document.createElement("span");
+  node.classList.add("settings-status-value");
+  node.append(value);
+  return node;
+}
+
+function statusTextValue(value: string): HTMLElement {
+  return statusValueNode(text("span", value));
+}
+
+function statusLine(labelText: string, value: HTMLElement): HTMLElement {
+  const row = document.createElement("div");
+  row.classList.add("settings-status-line");
+  row.append(statusLabelNode(labelText), statusValueNode(value));
+  return row;
+}
+
+function statusButton(labelText: string, value: string, route: Route): HTMLButtonElement {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.classList.add("settings-status-button", "fluent-control");
+  row.onclick = () => navigateTo(route);
+  row.append(statusLabelNode(labelText), statusTextValue(value));
+  return row;
+}
+
+function renderStatusStrip(dump: HealthDump): HTMLElement {
+  const strip = document.createElement("div");
+  strip.classList.add("settings-status-strip");
+  strip.append(
+    statusLine(
+      "state",
+      automation(
+        pill(statusStateLabel(dump), statusSeverity(dump.app_state)),
+        ids["settings.status.appState.state"],
+      ),
+    ),
+    statusButton("journal", syncSummary(dump.sync), "journal"),
+    statusButton("sources", sourcesSummary(dump), "sources"),
+  );
+  return strip;
+}
+
+function homeCard(titleText: string, glanceNode: HTMLElement, actionNode: HTMLElement): HTMLElement {
+  const card = document.createElement("div");
+  card.classList.add("settings-card");
+
+  const title = text("h2", titleText);
+  title.classList.add("settings-card-title");
+
+  const glance = document.createElement("div");
+  glance.classList.add("settings-card-glance");
+  glance.append(glanceNode);
+
+  const action = document.createElement("div");
+  action.classList.add("settings-card-action");
+  action.append(actionNode);
+
+  card.append(title, glance, action);
+  return card;
+}
+
+function storageGlance(): HTMLElement {
+  const glance = text("div", latestStorage?.root ?? "local disk");
+  glance.style.whiteSpace = "nowrap";
+  glance.style.overflow = "hidden";
+  glance.style.textOverflow = "ellipsis";
+  return glance;
+}
+
+function renderPauseCard(dump: HealthDump): HTMLElement {
+  const phase = latestHealth?.app_state ?? dump.app_state;
+  let action: HTMLButtonElement;
+  if (phase === "observing") {
+    action = actionButton("pause", undefined, true, () => {
+      void invoke("pause", { reason: "operator", durationSecs: null }).then(() => retryHealth());
+    });
+  } else if (phase === "paused") {
+    action = actionButton("resume", undefined, true, () => {
+      void invoke("resume").then(() => retryHealth());
+    });
+  } else {
+    action = actionButton("pause", undefined, false, () => {});
   }
-  root.append(renderPairingSection(dump));
-  if (latestRetention) {
-    root.append(renderRetentionSection(latestRetention));
+
+  return homeCard(
+    "pause / resume",
+    pill(statusStateLabel(dump), statusSeverity(dump.app_state)),
+    action,
+  );
+}
+
+function renderJournalCard(dump: HealthDump): HTMLElement {
+  const phase = dump.sync.pairing.phase;
+  const labelText = phase === "not_paired" || phase === "failed" ? "pair" : "journal details";
+  return homeCard(
+    "journal",
+    text("div", pairingPhaseLabel(dump.sync.pairing)),
+    actionButton(labelText, undefined, true, () => navigateTo("journal")),
+  );
+}
+
+function renderStorageCard(): HTMLElement {
+  return homeCard(
+    "storage",
+    storageGlance(),
+    actionButton("open folder", undefined, true, () => void invoke("open_storage_folder")),
+  );
+}
+
+function renderUpdatesCard(): HTMLElement {
+  return homeCard(
+    "updates",
+    text("div", latestUpdate ? updateHeadline(latestUpdate) : "not available right now."),
+    actionButton("check now", undefined, latestUpdate !== null, () => void invoke("update_check_now")),
+  );
+}
+
+function renderHome(dump: HealthDump): HTMLElement {
+  const home = document.createElement("div");
+  home.classList.add("settings-home");
+
+  const cards = document.createElement("div");
+  cards.classList.add("settings-card-grid");
+  cards.append(
+    renderPauseCard(dump),
+    renderJournalCard(dump),
+    renderStorageCard(),
+    renderUpdatesCard(),
+  );
+
+  home.append(renderStatusStrip(dump), cards);
+  return home;
+}
+
+function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
+  const content = document.createElement("div");
+  content.classList.add("settings-route-content");
+
+  switch (route) {
+    case "home":
+      content.append(renderHome(dump));
+      break;
+    case "sources":
+      content.append(renderSourcesSection(dump), latestMic ? renderMicSection(latestMic) : loadingCaption());
+      break;
+    case "privacy":
+      content.append(latestExclusions ? renderExclusionsSection(latestExclusions, dump) : loadingCaption());
+      break;
+    case "journal": {
+      const sync = section("sync");
+      sync.append(syncRow(dump.sync));
+      content.append(renderPairingSection(dump), sync);
+      break;
+    }
+    case "shortcut":
+      content.append(latestHotkey ? renderHotkeySection(latestHotkey) : loadingCaption());
+      break;
+    case "storage": {
+      const location = section("storage location");
+      location.append(storageRow(latestStorage));
+      content.append(location, latestRetention ? renderRetentionSection(latestRetention) : loadingCaption());
+      break;
+    }
+    case "updates":
+      content.append(latestUpdate ? renderUpdatesSection(latestUpdate) : loadingCaption());
+      break;
   }
-  if (latestUpdate) {
-    root.append(renderUpdatesSection(latestUpdate));
+
+  clearLastSectionDivider(content);
+  return content;
+}
+
+function navButton(route: Route, labelText: string, glyph: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.classList.add("settings-nav-item", "fluent-control");
+  if (route === activeRoute) {
+    button.setAttribute("aria-current", "page");
   }
+
+  const icon = text("span", glyph);
+  icon.classList.add("settings-nav-glyph");
+  icon.setAttribute("aria-hidden", "true");
+
+  const labelNode = text("span", labelText);
+  button.append(icon, labelNode);
+  return button;
+}
+
+function renderRail(shell: HTMLElement): HTMLElement {
+  const rail = document.createElement("nav");
+  rail.classList.add("settings-rail");
+  rail.setAttribute("aria-label", "settings");
+
+  const title = text("div", "solstone");
+  title.classList.add("settings-rail-title");
+  rail.append(title);
+
+  for (const item of ROUTES) {
+    const button = navButton(item.route, item.label, item.glyph);
+    button.onclick = () => {
+      activeRoute = item.route;
+      shell.dataset.paneOpen = "false";
+      rerender();
+    };
+    rail.append(button);
+  }
+
+  return rail;
+}
+
+function renderPane(dump: HealthDump): HTMLElement {
+  const pane = document.createElement("main");
+  pane.classList.add("settings-pane");
+
+  const frame = document.createElement("div");
+  frame.classList.add("settings-pane-frame");
+
+  const topbar = document.createElement("div");
+  topbar.classList.add("settings-pane-topbar");
+
+  const hamburger = document.createElement("button");
+  hamburger.type = "button";
+  hamburger.classList.add("settings-hamburger", "fluent-control");
+  hamburger.setAttribute("aria-label", "open navigation");
+  hamburger.onclick = () => {
+    const shell = settingsShell();
+    if (shell) {
+      shell.dataset.paneOpen = navOverlayOpen(shell) ? "false" : "true";
+    }
+  };
+
+  const hamburgerGlyph = text("span", "\uE700");
+  hamburgerGlyph.classList.add("settings-hamburger-glyph");
+  hamburgerGlyph.setAttribute("aria-hidden", "true");
+  hamburger.append(hamburgerGlyph);
+
+  const title = text("h1", routeLabel(activeRoute));
+  title.classList.add("settings-pane-title");
+
+  topbar.append(hamburger, title);
+  frame.append(topbar, renderRouteContent(activeRoute, dump));
+  pane.append(frame);
+  return pane;
+}
+
+function renderSettingsShell(dump: HealthDump): HTMLElement {
+  const shell = document.createElement("div");
+  shell.classList.add("settings-shell");
+  shell.dataset.paneOpen = "false";
+
+  const scrim = document.createElement("div");
+  scrim.classList.add("settings-scrim");
+
+  shell.append(scrim, renderRail(shell), renderPane(dump));
+  return shell;
+}
+
+function renderSettings(dump: HealthDump): void {
+  resetRoot(ids["settings.window.root"]);
+  root.style.padding = "0";
+  root.style.overflow = "hidden";
+  root.style.boxSizing = "border-box";
+  root.append(renderSettingsShell(dump));
 }
 
 function renderAbout(dump: HealthDump): void {

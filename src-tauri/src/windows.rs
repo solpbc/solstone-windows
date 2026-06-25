@@ -34,7 +34,8 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("solstone — settings")
-        .inner_size(420.0, 520.0)
+        .inner_size(820.0, 580.0)
+        .min_inner_size(460.0, 480.0)
         .transparent(true)
         .effects(mica_effects())
         .scroll_bar_style(ScrollBarStyle::FluentOverlay)
