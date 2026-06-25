@@ -223,6 +223,7 @@ let latestStorage: StorageInfo | null = null;
 let latestUpdate: UpdateView | null = null;
 let activeRoute: Route = "home";
 let renderBeaconFired = false;
+let focusPaneTitleOnRender = false;
 // Set when a background event (health/update stream) wants a full rerender but an
 // interactive control is active; the next flush or any direct rerender consumes it,
 // coalescing many deferred events into a single repaint.
@@ -759,10 +760,34 @@ function settingsShell(): HTMLElement | null {
   return document.querySelector<HTMLElement>(".settings-shell");
 }
 
-function closeNavOverlay(): void {
+function openNavOverlay(): void {
   const shell = settingsShell();
-  if (shell) {
-    shell.dataset.paneOpen = "false";
+  if (!shell) {
+    return;
+  }
+  shell.dataset.paneOpen = "true";
+  const hamburger = document.querySelector<HTMLElement>(".settings-hamburger");
+  if (hamburger) {
+    hamburger.setAttribute("aria-expanded", "true");
+    hamburger.setAttribute("aria-label", "close navigation");
+  }
+  document.querySelector<HTMLElement>(".settings-rail .settings-nav-item")?.focus();
+}
+
+function closeNavOverlay(returnFocusToHamburger = false): void {
+  const shell = settingsShell();
+  if (!shell) {
+    return;
+  }
+  const wasOpen = navOverlayOpen(shell);
+  shell.dataset.paneOpen = "false";
+  const hamburger = document.querySelector<HTMLElement>(".settings-hamburger");
+  if (hamburger) {
+    hamburger.setAttribute("aria-expanded", "false");
+    hamburger.setAttribute("aria-label", "open navigation");
+  }
+  if (returnFocusToHamburger && wasOpen) {
+    hamburger?.focus();
   }
 }
 
@@ -776,7 +801,7 @@ document.addEventListener("keydown", (event) => {
   }
   const shell = settingsShell();
   if (shell && navOverlayOpen(shell)) {
-    closeNavOverlay();
+    closeNavOverlay(true);
   }
 });
 
@@ -799,7 +824,7 @@ document.addEventListener("click", (event) => {
   if (element.closest(".settings-rail") || element.closest(".settings-hamburger")) {
     return;
   }
-  closeNavOverlay();
+  closeNavOverlay(true);
 });
 
 const label = getCurrentWindow().label;
@@ -2009,6 +2034,7 @@ function routeLabel(route: Route): string {
 
 function navigateTo(route: Route): void {
   activeRoute = route;
+  focusPaneTitleOnRender = true;
   closeNavOverlay();
   rerender();
 }
@@ -2084,10 +2110,30 @@ function syncSummary(sync: SyncSnapshot): string {
   }
 }
 
-function sourcesSummary(dump: HealthDump): string {
-  const screen = sourceStatusLabel(sourceByKind(dump, "screen"));
-  const systemAudio = sourceStatusLabel(sourceByKind(dump, "system_audio"));
-  const mic = sourceStatusLabel(sourceByKind(dump, "mic"));
+function sourceGlanceToken(source: SourceReport | undefined, isMic: boolean): string {
+  if (!source) {
+    return "not reported";
+  }
+
+  switch (source.status) {
+    case "active":
+      return "active";
+    case "inactive":
+      return "inactive";
+    case "no_input_device":
+      return isMic ? "none" : "no input device";
+    case "faulted":
+      return "attention needed";
+  }
+}
+
+function sourcesGlance(dump: HealthDump): string {
+  const screen = sourceGlanceToken(sourceByKind(dump, "screen"), false);
+  const systemAudio = sourceGlanceToken(sourceByKind(dump, "system_audio"), false);
+  const mic = sourceGlanceToken(sourceByKind(dump, "mic"), true);
+  if (screen === "active" && systemAudio === "active") {
+    return mic === "active" ? "all sources active" : `screen + system audio active · mic: ${mic}`;
+  }
   return `screen: ${screen} · system audio: ${systemAudio} · mic: ${mic}`;
 }
 
@@ -2136,7 +2182,7 @@ function renderStatusStrip(dump: HealthDump): HTMLElement {
       ),
     ),
     statusButton("journal", syncSummary(dump.sync), "journal"),
-    statusButton("sources", sourcesSummary(dump), "sources"),
+    statusButton("sources", sourcesGlance(dump), "sources"),
   );
   return strip;
 }
@@ -2161,11 +2207,7 @@ function homeCard(titleText: string, glanceNode: HTMLElement, actionNode: HTMLEl
 }
 
 function storageGlance(): HTMLElement {
-  const glance = text("div", latestStorage?.root ?? "local disk");
-  glance.style.whiteSpace = "nowrap";
-  glance.style.overflow = "hidden";
-  glance.style.textOverflow = "ellipsis";
-  return glance;
+  return text("div", "stored on this pc");
 }
 
 function renderPauseCard(dump: HealthDump): HTMLElement {
@@ -2288,8 +2330,9 @@ function navButton(route: Route, labelText: string, glyph: string): HTMLButtonEl
   return button;
 }
 
-function renderRail(shell: HTMLElement): HTMLElement {
+function renderRail(): HTMLElement {
   const rail = document.createElement("nav");
+  rail.id = "settings-nav";
   rail.classList.add("settings-rail");
   rail.setAttribute("aria-label", "settings");
 
@@ -2299,11 +2342,7 @@ function renderRail(shell: HTMLElement): HTMLElement {
 
   for (const item of ROUTES) {
     const button = navButton(item.route, item.label, item.glyph);
-    button.onclick = () => {
-      activeRoute = item.route;
-      shell.dataset.paneOpen = "false";
-      rerender();
-    };
+    button.onclick = () => navigateTo(item.route);
     rail.append(button);
   }
 
@@ -2324,10 +2363,14 @@ function renderPane(dump: HealthDump): HTMLElement {
   hamburger.type = "button";
   hamburger.classList.add("settings-hamburger", "fluent-control");
   hamburger.setAttribute("aria-label", "open navigation");
+  hamburger.setAttribute("aria-expanded", "false");
+  hamburger.setAttribute("aria-controls", "settings-nav");
   hamburger.onclick = () => {
     const shell = settingsShell();
-    if (shell) {
-      shell.dataset.paneOpen = navOverlayOpen(shell) ? "false" : "true";
+    if (shell && navOverlayOpen(shell)) {
+      closeNavOverlay();
+    } else {
+      openNavOverlay();
     }
   };
 
@@ -2338,6 +2381,7 @@ function renderPane(dump: HealthDump): HTMLElement {
 
   const title = text("h1", routeLabel(activeRoute));
   title.classList.add("settings-pane-title");
+  title.tabIndex = -1;
 
   topbar.append(hamburger, title);
   frame.append(topbar, renderRouteContent(activeRoute, dump));
@@ -2353,7 +2397,7 @@ function renderSettingsShell(dump: HealthDump): HTMLElement {
   const scrim = document.createElement("div");
   scrim.classList.add("settings-scrim");
 
-  shell.append(scrim, renderRail(shell), renderPane(dump));
+  shell.append(scrim, renderRail(), renderPane(dump));
   return shell;
 }
 
@@ -2363,6 +2407,10 @@ function renderSettings(dump: HealthDump): void {
   root.style.overflow = "hidden";
   root.style.boxSizing = "border-box";
   root.append(renderSettingsShell(dump));
+  if (focusPaneTitleOnRender) {
+    focusPaneTitleOnRender = false;
+    root.querySelector<HTMLElement>(".settings-pane-title")?.focus();
+  }
 }
 
 function renderAbout(dump: HealthDump): void {
