@@ -6,6 +6,32 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-25
+
+### Added
+
+- a home section in settings: a status overview (what solstone is doing, your
+  journal, your sources) plus quick actions in one place: pause or resume, pair
+  your journal, open your local folder, and check for updates.
+
+### Changed
+
+- settings now has a section menu down the left side, like Windows Settings,
+  instead of one long scroll. pick a section to jump straight to it, and the
+  window reflows as you resize it, collapsing the menu to a button when narrow.
+- settings feels more at home on Windows 11: native scrollbars, keyboard focus
+  rings, your accent color, and rounded controls.
+- the status view is clearer and more honest: it shows "stored on this pc" with
+  an open-folder button instead of an internal path, tells you when you are not
+  yet paired instead of a confusing "0 delivered", shows each source's state as a
+  simple label, and lists apps by their friendly names when you exclude them.
+
+### Fixed
+
+- drop-down menus stay open long enough to pick an option. they could close
+  before your click landed.
+- you can now select and copy your local storage path.
+
 ## [0.2.3] - 2026-06-24
 
 ### Changed
