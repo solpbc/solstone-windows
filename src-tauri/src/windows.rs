@@ -9,6 +9,7 @@
 //! contract SoT (`observer_contract::settings::WINDOW_ROOT`,
 //! `observer_contract::about::WINDOW_ROOT`).
 
+use tauri::webview::ScrollBarStyle;
 use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -36,6 +37,7 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         .inner_size(420.0, 520.0)
         .transparent(true)
         .effects(mica_effects())
+        .scroll_bar_style(ScrollBarStyle::FluentOverlay)
         .additional_browser_args(WEBVIEW_ARGS)
         .visible(true)
         .build()?;
@@ -66,6 +68,7 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
         .inner_size(360.0, 280.0)
         .transparent(true)
         .effects(mica_effects())
+        .scroll_bar_style(ScrollBarStyle::FluentOverlay)
         .additional_browser_args(WEBVIEW_ARGS)
         .visible(true)
         .build()?;

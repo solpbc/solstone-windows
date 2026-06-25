@@ -266,6 +266,14 @@ nativeFeelStyle.textContent = `
   --accent-subtle: rgba(0,103,192,0.10);
   --danger: #c42b1c;
   --fill: rgba(0,0,0,0.045);
+  --radius-control: 4px;
+  --radius-card: 8px;
+  --dur-fast: 83ms;
+  --ease-standard: cubic-bezier(0,0,0,1);
+  --overlay-hover: rgba(0,0,0,0.037);
+  --overlay-pressed: rgba(0,0,0,0.024);
+  --accent-overlay-hover: rgba(255,255,255,0.10);
+  --accent-overlay-pressed: rgba(0,0,0,0.06);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -283,6 +291,10 @@ nativeFeelStyle.textContent = `
     --accent-subtle: rgba(96,205,255,0.14);
     --danger: #ff99a4;
     --fill: rgba(255,255,255,0.065);
+    --radius-control: 4px;
+    --radius-card: 8px;
+    --overlay-hover: rgba(255,255,255,0.045);
+    --overlay-pressed: rgba(255,255,255,0.030);
   }
 }
 
@@ -338,7 +350,52 @@ textarea {
   cursor: text;
 }
 
+.fluent-control:not(:disabled):hover {
+  box-shadow: inset 0 0 0 999px var(--overlay-hover);
+}
+
+.fluent-control:not(:disabled):active {
+  box-shadow: inset 0 0 0 999px var(--overlay-pressed);
+}
+
+.fluent-accent:not(:disabled):hover {
+  box-shadow: inset 0 0 0 999px var(--accent-overlay-hover);
+}
+
+.fluent-accent:not(:disabled):active {
+  box-shadow: inset 0 0 0 999px var(--accent-overlay-pressed);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.scroll-surface {
+  scrollbar-width: thin;
+}
+
 @media (prefers-reduced-motion: no-preference) {
+  .fluent-control,
+  .fluent-accent {
+    transition: box-shadow var(--dur-fast) var(--ease-standard);
+  }
+
   @keyframes update-indeterminate {
     0% { left: -35%; }
     100% { left: 100%; }
@@ -428,6 +485,11 @@ function text(tag: keyof HTMLElementTagNameMap, value: string): HTMLElement {
 
 function automation(node: HTMLElement, id: string): HTMLElement {
   node.dataset.automationId = id;
+  return node;
+}
+
+function selectable(node: HTMLElement): HTMLElement {
+  node.classList.add("selectable");
   return node;
 }
 
@@ -585,7 +647,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   pane.append(
     valueRow(
       "status",
-      automation(text("div", pairingPhaseLabel(pairing)), ids["settings.pairing.state"]),
+      selectable(automation(text("div", pairingPhaseLabel(pairing)), ids["settings.pairing.state"])),
     ),
     valueRow(
       "journal",
@@ -607,10 +669,12 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   input.placeholder = "paste a pair-link from your journal";
   input.value = pairingDraft;
   input.dataset.automationId = ids["settings.pairing.input"];
+  input.setAttribute("aria-label", "pair-link from your journal");
+  input.classList.add("fluent-control");
   input.style.fontSize = "13px";
   input.style.padding = "7px 9px";
   input.style.border = "1px solid var(--border)";
-  input.style.borderRadius = "6px";
+  input.style.borderRadius = "var(--radius-control)";
   input.style.background = "var(--bg-input)";
   input.style.color = "var(--fg)";
   input.style.minWidth = "0";
@@ -623,10 +687,11 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   button.textContent = busy ? "pairing…" : "pair";
   button.disabled = busy;
   button.dataset.automationId = ids["settings.pairing.submit"];
+  button.classList.add("fluent-accent");
   button.style.fontSize = "13px";
   button.style.padding = "7px 14px";
   button.style.border = "1px solid var(--accent)";
-  button.style.borderRadius = "6px";
+  button.style.borderRadius = "var(--radius-control)";
   button.style.background = busy ? "var(--accent-busy)" : "var(--accent)";
   button.style.color = "var(--accent-fg)";
   button.style.cursor = busy ? "default" : "pointer";
@@ -705,7 +770,7 @@ function removableList(
     chip.style.fontSize = "13px";
     chip.style.padding = "3px 4px 3px 9px";
     chip.style.border = "1px solid var(--border)";
-    chip.style.borderRadius = "6px";
+    chip.style.borderRadius = "var(--radius-control)";
     chip.style.background = "var(--fill)";
     chip.append(text("span", value));
 
@@ -761,10 +826,12 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
 
   const appSelect = document.createElement("select");
   appSelect.dataset.automationId = ids["settings.exclusions.appInput"];
+  appSelect.setAttribute("aria-label", "choose an app to exclude");
+  appSelect.classList.add("fluent-control");
   appSelect.style.fontSize = "13px";
   appSelect.style.padding = "7px 9px";
   appSelect.style.border = "1px solid var(--border)";
-  appSelect.style.borderRadius = "6px";
+  appSelect.style.borderRadius = "var(--radius-control)";
   appSelect.style.minWidth = "0";
   const choices = runningApps.filter((app) => !rules.excluded_exes.includes(app.exe_name));
   const placeholder = document.createElement("option");
@@ -820,10 +887,12 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   titleInput.placeholder = "a keyword, e.g. banking";
   titleInput.value = titleDraft;
   titleInput.dataset.automationId = ids["settings.exclusions.titleInput"];
+  titleInput.setAttribute("aria-label", "title keyword to exclude");
+  titleInput.classList.add("fluent-control");
   titleInput.style.fontSize = "13px";
   titleInput.style.padding = "7px 9px";
   titleInput.style.border = "1px solid var(--border)";
-  titleInput.style.borderRadius = "6px";
+  titleInput.style.borderRadius = "var(--radius-control)";
   titleInput.style.background = "var(--bg-input)";
   titleInput.style.color = "var(--fg)";
   titleInput.style.minWidth = "0";
@@ -1145,6 +1214,7 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   const combo = hotkeyComboString(cfg);
   const field = document.createElement("button");
   field.dataset.automationId = ids["settings.hotkey.combo"];
+  field.classList.add("fluent-control");
   field.style.display = "flex";
   field.style.alignItems = "center";
   field.style.justifyContent = "space-between";
@@ -1153,7 +1223,7 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   field.style.textAlign = "left";
   field.style.fontSize = "13px";
   field.style.padding = "9px 12px";
-  field.style.borderRadius = "6px";
+  field.style.borderRadius = "var(--radius-control)";
   field.style.border = `1px dashed ${hotkeyCapturing ? "var(--accent)" : "var(--border)"}`;
   field.style.background = hotkeyCapturing ? "var(--accent-subtle)" : "var(--bg-input)";
   field.style.color = "var(--fg)";
@@ -1265,15 +1335,22 @@ async function applyMic(next: MicConfig): Promise<void> {
   }, 1200);
 }
 
-function reorderButton(glyph: string, enabled: boolean, onClick: () => void): HTMLButtonElement {
+function reorderButton(
+  glyph: string,
+  enabled: boolean,
+  ariaLabel: string,
+  onClick: () => void,
+): HTMLButtonElement {
   const b = document.createElement("button");
   b.textContent = glyph;
   b.disabled = !enabled;
+  b.setAttribute("aria-label", ariaLabel);
+  b.classList.add("fluent-control");
   b.style.fontSize = "13px";
   b.style.lineHeight = "1";
   b.style.padding = "3px 7px";
   b.style.border = "1px solid var(--border)";
-  b.style.borderRadius = "6px";
+  b.style.borderRadius = "var(--radius-control)";
   b.style.background = "var(--fill)";
   b.style.color = enabled ? "var(--fg-subtle)" : "var(--muted)";
   b.style.cursor = enabled ? "pointer" : "default";
@@ -1322,14 +1399,14 @@ function renderMicSection(view: MicView): HTMLElement {
 
     const orderIds = ordered.map((x) => x.id);
     row.append(
-      reorderButton("↑", idx > 0, () => {
+      reorderButton("↑", idx > 0, `move ${d.name} up`, () => {
         const o = [...orderIds];
         [o[idx - 1], o[idx]] = [o[idx], o[idx - 1]];
         void applyMic({ ...cfg, priority: o });
       }),
     );
     row.append(
-      reorderButton("↓", idx < ordered.length - 1, () => {
+      reorderButton("↓", idx < ordered.length - 1, `move ${d.name} down`, () => {
         const o = [...orderIds];
         [o[idx + 1], o[idx]] = [o[idx], o[idx + 1]];
         void applyMic({ ...cfg, priority: o });
@@ -1351,10 +1428,11 @@ function renderMicSection(view: MicView): HTMLElement {
 
     const toggle = document.createElement("button");
     toggle.textContent = disabled ? "enable" : "disable";
+    toggle.classList.add("fluent-control");
     toggle.style.fontSize = "12px";
     toggle.style.padding = "4px 10px";
     toggle.style.border = "1px solid var(--border)";
-    toggle.style.borderRadius = "6px";
+    toggle.style.borderRadius = "var(--radius-control)";
     toggle.style.background = "var(--fill)";
     toggle.style.color = "var(--fg-subtle)";
     toggle.style.cursor = "pointer";
@@ -1389,16 +1467,19 @@ function renderMicSection(view: MicView): HTMLElement {
   // Input gain — segmented 1× / 2× / 4× / 8×.
   pane.append(subheadLabel("input gain"));
   const gainRow = automation(document.createElement("div"), ids["settings.mic.gain"]);
+  gainRow.setAttribute("role", "group");
+  gainRow.setAttribute("aria-label", "input gain");
   gainRow.style.display = "flex";
   gainRow.style.gap = "6px";
   for (const level of MIC_GAIN_LEVELS) {
     const on = cfg.gain === level;
     const b = document.createElement("button");
     b.textContent = `${level}×`;
+    b.classList.add(on ? "fluent-accent" : "fluent-control");
     b.style.fontSize = "13px";
     b.style.padding = "5px 12px";
     b.style.border = on ? "1px solid var(--accent)" : "1px solid var(--border)";
-    b.style.borderRadius = "6px";
+    b.style.borderRadius = "var(--radius-control)";
     b.style.background = on ? "var(--accent)" : "var(--fill)";
     b.style.color = on ? "var(--accent-fg)" : "var(--fg-subtle)";
     b.style.cursor = "pointer";
@@ -1427,10 +1508,12 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
 
   const sel = document.createElement("select");
   sel.dataset.automationId = ids["settings.retention"];
+  sel.setAttribute("aria-label", "how long to keep local segments");
+  sel.classList.add("fluent-control");
   sel.style.fontSize = "13px";
   sel.style.padding = "7px 9px";
   sel.style.border = "1px solid var(--border)";
-  sel.style.borderRadius = "6px";
+  sel.style.borderRadius = "var(--radius-control)";
   // If the persisted value isn't one of the presets, show it as a custom option
   // so the picker reflects the real state rather than silently snapping.
   const known = RETENTION_CHOICES.some(([days]) => days === cfg.keep_days);
@@ -1479,14 +1562,18 @@ function renderSettings(dump: HealthDump): void {
     ),
     valueRow(
       "segment directory",
-      automation(
-        text("div", dump.segment_dir ?? "not available"),
-        ids["settings.status.segmentDir"],
+      selectable(
+        automation(
+          text("div", dump.segment_dir ?? "not available"),
+          ids["settings.status.segmentDir"],
+        ),
       ),
     ),
     valueRow(
       "journal sync",
-      automation(text("div", uploadLabel(dump.sync.upload)), ids["settings.status.upload.state"]),
+      selectable(
+        automation(text("div", uploadLabel(dump.sync.upload)), ids["settings.status.upload.state"]),
+      ),
     ),
   );
 
@@ -1497,18 +1584,22 @@ function renderSettings(dump: HealthDump): void {
   sources.append(
     valueRow(
       "screen",
-      automation(text("div", sourceStatusLabel(screen)), ids["settings.sources.screen.state"]),
+      selectable(
+        automation(text("div", sourceStatusLabel(screen)), ids["settings.sources.screen.state"]),
+      ),
     ),
     valueRow(
       "system audio",
-      automation(
-        text("div", sourceStatusLabel(systemAudio)),
-        ids["settings.sources.systemAudio.state"],
+      selectable(
+        automation(
+          text("div", sourceStatusLabel(systemAudio)),
+          ids["settings.sources.systemAudio.state"],
+        ),
       ),
     ),
     valueRow(
       "microphone",
-      automation(text("div", sourceStatusLabel(mic)), ids["settings.sources.mic.state"]),
+      selectable(automation(text("div", sourceStatusLabel(mic)), ids["settings.sources.mic.state"])),
     ),
   );
 
@@ -1545,7 +1636,7 @@ function renderAbout(dump: HealthDump): void {
   body.style.lineHeight = "1.5";
   body.style.color = "var(--fg-subtle)";
 
-  const version = automation(text("div", dump.version), ids["about.version"]);
+  const version = selectable(automation(text("div", dump.version), ids["about.version"]));
   version.style.fontSize = "13px";
   version.style.color = "var(--fg-subtle)";
 
@@ -1652,10 +1743,11 @@ function actionButton(
   b.textContent = labelText;
   b.disabled = !enabled;
   b.dataset.automationId = automationId;
+  b.classList.add(enabled ? "fluent-accent" : "fluent-control");
   b.style.fontSize = "13px";
   b.style.padding = "6px 12px";
   b.style.border = enabled ? "1px solid var(--accent)" : "1px solid var(--border)";
-  b.style.borderRadius = "6px";
+  b.style.borderRadius = "var(--radius-control)";
   b.style.background = enabled ? "var(--accent)" : "var(--fill)";
   b.style.color = enabled ? "var(--accent-fg)" : "var(--muted)";
   b.style.cursor = enabled ? "pointer" : "default";
@@ -1680,6 +1772,8 @@ function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLElemen
   const sel = document.createElement("select");
   sel.disabled = !enabled;
   sel.dataset.automationId = ids["settings.updates.frequency"];
+  sel.setAttribute("aria-label", "how often to check for updates");
+  sel.classList.add("fluent-control");
   const options: ReadonlyArray<readonly [CheckIntervalKind, string]> = [
     ["day", "every day"],
     ["week", "every week"],
@@ -1696,6 +1790,7 @@ function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLElemen
   }
   sel.style.fontSize = "13px";
   sel.style.padding = "3px 6px";
+  sel.style.borderRadius = "var(--radius-control)";
   sel.onchange = () => {
     void invoke("update_set_interval", { interval: sel.value });
   };
@@ -1790,9 +1885,10 @@ function updateNotesBlock(notes: string): HTMLElement {
   cap.style.margin = "0 0 6px";
 
   const card = automation(document.createElement("div"), ids["settings.updates.notes"]);
+  card.classList.add("scroll-surface");
   card.style.background = "var(--bg-input)";
   card.style.border = "1px solid var(--border-subtle)";
-  card.style.borderRadius = "6px";
+  card.style.borderRadius = "var(--radius-card)";
   card.style.padding = "10px 12px";
   card.style.maxHeight = "150px";
   card.style.overflowY = "auto";
@@ -2072,11 +2168,12 @@ function renderUnavailable(): void {
 
   const retry = document.createElement("button");
   retry.textContent = "retry";
+  retry.classList.add("fluent-accent");
   retry.style.margin = "8px 20px";
   retry.style.fontSize = "13px";
   retry.style.padding = "7px 14px";
   retry.style.border = "1px solid var(--accent)";
-  retry.style.borderRadius = "6px";
+  retry.style.borderRadius = "var(--radius-control)";
   retry.style.background = "var(--accent)";
   retry.style.color = "var(--accent-fg)";
   retry.style.cursor = "pointer";
