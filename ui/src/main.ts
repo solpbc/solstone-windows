@@ -212,6 +212,10 @@ interface UpdateView {
 let latestHealth: HealthDump | null = null;
 let latestUpdate: UpdateView | null = null;
 let renderBeaconFired = false;
+// Set when a background event (health/update stream) wants a full rerender but an
+// interactive control is active; the next flush or any direct rerender consumes it,
+// coalescing many deferred events into a single repaint.
+let pendingRerender = false;
 // The last-checked line node, refreshed each render; a 1s interval rewrites its
 // text so the relative clock ticks live — the JS analog of the macOS TimelineView.
 let lastCheckedEl: HTMLElement | null = null;
@@ -347,6 +351,20 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 }
 
+// True while the owner is mid-interaction with a control a full rerender would
+// disrupt: an open native <select> popup (the picker / retention / frequency
+// dropdowns), in-progress text entry, or hotkey capture. Distinct from
+// isTextEntryTarget — it reads document.activeElement and includes <select>.
+function isInteractiveControlActive(): boolean {
+  const active = document.activeElement;
+  return (
+    active instanceof HTMLSelectElement ||
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    hotkeyCapturing
+  );
+}
+
 document.addEventListener("contextmenu", (event) => {
   if (isTextEntryTarget(event.target)) {
     return;
@@ -382,6 +400,22 @@ document.addEventListener(
     }
   },
   { passive: false },
+);
+
+// Flush a deferred background rerender once interaction ends. focusout fires before
+// the new focus settles, so recheck on a microtask (the blur->focusout->focus->focusin
+// sequence dispatches synchronously, so document.activeElement is settled by then) —
+// focus moving control->control doesn't flush; only settling onto a non-control does.
+document.addEventListener(
+  "focusout",
+  () => {
+    queueMicrotask(() => {
+      if (pendingRerender && !isInteractiveControlActive()) {
+        rerender();
+      }
+    });
+  },
+  true,
 );
 
 const label = getCurrentWindow().label;
@@ -1998,6 +2032,9 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
 }
 
 function rerender(): void {
+  // Any full render satisfies a deferred background request, so direct callers
+  // (commits, hotkey-capture end, boot) auto-flush a pending coalesced rerender.
+  pendingRerender = false;
   if (!latestHealth) {
     renderUnavailable();
   } else if (label === "about") {
@@ -2006,6 +2043,17 @@ function rerender(): void {
     renderSettings(latestHealth);
   }
   scheduleRenderBeacon();
+}
+
+// Background event streams call this instead of rerender() directly: defer + coalesce
+// the full rerender while a control is active so an open native popup / in-progress
+// edit / hotkey capture isn't torn down; otherwise render immediately (no added latency).
+function requestRerender(): void {
+  if (isInteractiveControlActive()) {
+    pendingRerender = true;
+    return;
+  }
+  rerender();
 }
 
 function renderUnavailable(): void {
@@ -2044,7 +2092,7 @@ async function retryHealth(): Promise<void> {
   if (health) {
     latestHealth = health;
   }
-  rerender();
+  requestRerender();
 }
 
 function scheduleRenderBeacon(): void {
@@ -2097,11 +2145,11 @@ async function boot(): Promise<void> {
 void boot();
 void listen<HealthDump>("health://changed", (event) => {
   latestHealth = event.payload;
-  rerender();
+  requestRerender();
 });
 void listen<UpdateView>("update://changed", (event) => {
   latestUpdate = event.payload;
-  rerender();
+  requestRerender();
 });
 
 // Live last-checked clock: tick the relative string once a second without a full
