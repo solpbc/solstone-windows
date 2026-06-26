@@ -74,6 +74,27 @@ signing box; both publishes are mandatory):
 `Solstone-win-Setup.exe` is a stable name overwritten with the latest. The
 `solstone.app/download/windows` permalink 302s to that stable Setup.exe.
 
+## Package-manager channels (winget / scoop) — submission timing
+
+These are secondary discovery surfaces (R2 + GitHub are the source-of-record); they
+are **community-moderated**, so factor the wait into release planning, don't block on it.
+
+- **winget (`microsoft/winget-pkgs`).** A **first/new-package** PR for a publisher is
+  the gated, slow step: after the Azure validation pipeline (~30-40 min) labels it
+  `Azure-Pipeline-Passed`/`Validation-Completed`, it sits on a **human (volunteer)
+  moderator** approval (`REVIEW_REQUIRED` → `Moderator-Approved` → auto-merge). Empirical
+  (gh, June 2026): new-package merges run a **median ~3.7 days, p90 ~6 days, tail to
+  1-2 weeks** (weekends slow it). **Subsequent version-update PRs are the fast path** —
+  median **~2 hours**, frequently auto-merged with no human (a "verified developer"
+  self-serve path is in development). So: land the first package once, then version bumps
+  are near-instant (build a little slack for the occasional one that hits the manual
+  queue). Don't close/reopen or push empty commits to "nudge" (resets validation); for
+  genuinely urgent items moderators watch the community Discord. (Research:
+  `records/decisions/260625-vpx-solstone-windows-settings-native-redesign-0.2.4.md`.)
+- **scoop** — bucket PR, lighter process.
+- **Chocolatey** — a third channel (enterprise/IT-admin reach) we have **not** adopted;
+  its community repo is also human-moderated. Evaluate deliberately, below winget/scoop.
+
 ## Signing (wired — opt-in, release-only)
 
 Release artifacts are signed with the sol pbc code-signing certificate via
