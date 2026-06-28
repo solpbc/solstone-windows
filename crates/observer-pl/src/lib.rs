@@ -39,6 +39,7 @@ pub mod http;
 pub mod multipart;
 pub mod mux;
 pub mod pairlink;
+pub mod relay;
 pub mod wire;
 
 /// Default PL-direct mTLS port, used when a pair-link carries port 0.

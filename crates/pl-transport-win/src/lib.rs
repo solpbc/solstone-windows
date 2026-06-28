@@ -31,9 +31,12 @@ pub mod coordinator;
 pub mod credential;
 pub mod heartbeat;
 pub mod pairing;
+pub mod relay;
 pub mod sealed;
 pub mod service;
 pub mod tls;
+
+use std::fmt;
 
 use observer_pl::http::HttpError;
 use observer_pl::mux::MuxError;
@@ -44,6 +47,44 @@ pub const DEFAULT_UPLOAD_INTERVAL_SECS: u64 = 5;
 
 /// Heartbeat cadence — matches the macOS `HeartbeatService` (15s).
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
+
+/// Typed relay upgrade/close outcomes. Retryability noted per-variant (doc only;
+/// W3 owns the retry policy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayError {
+    /// Upgrade HTTP 503; retryable.
+    HomeOffline,
+    /// Upgrade HTTP 401 or close 4401; not retryable without W2 token refresh.
+    Unauthorized,
+    /// Upgrade HTTP 402 or close 4402; not retryable.
+    Unpaid,
+    /// Upgrade HTTP 404; not retryable.
+    UnknownInstance,
+    /// Close 1009; retryable.
+    Overflow,
+    /// Close 1006/1012 or abnormal drop; retryable by reconnecting, not re-pairing.
+    Abnormal,
+    /// Any other unexpected upgrade HTTP status; not retryable.
+    UpgradeRejected,
+    /// AC6 inner-handshake/first-byte timeout; retryable.
+    Stalled,
+}
+
+impl fmt::Display for RelayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            RelayError::HomeOffline => "home offline",
+            RelayError::Unauthorized => "unauthorized",
+            RelayError::Unpaid => "unpaid",
+            RelayError::UnknownInstance => "unknown instance",
+            RelayError::Overflow => "overflow",
+            RelayError::Abnormal => "abnormal close",
+            RelayError::UpgradeRejected => "upgrade rejected",
+            RelayError::Stalled => "stalled",
+        };
+        f.write_str(message)
+    }
+}
 
 /// Errors from the transport / observer client.
 #[derive(Debug, Error)]
@@ -66,6 +107,8 @@ pub enum TransportError {
     Pairing(String),
     #[error("server rejected request: HTTP {status} {body}")]
     Rejected { status: u16, body: String },
+    #[error("relay error: {0}")]
+    Relay(RelayError),
     #[error("no reachable journal endpoint")]
     NoEndpoint,
     #[error("not paired")]
@@ -83,6 +126,17 @@ pub(crate) fn transport_error_code(err: &TransportError) -> String {
         TransportError::PairLink(_) => "pair_link".to_string(),
         TransportError::Pairing(_) => "pairing".to_string(),
         TransportError::Rejected { status, body: _ } => format!("http_{status}"),
+        TransportError::Relay(r) => match r {
+            RelayError::HomeOffline => "relay_home_offline",
+            RelayError::Unauthorized => "relay_unauthorized",
+            RelayError::Unpaid => "relay_unpaid",
+            RelayError::UnknownInstance => "relay_unknown_instance",
+            RelayError::Overflow => "relay_overflow",
+            RelayError::Abnormal => "relay_abnormal",
+            RelayError::UpgradeRejected => "relay_upgrade_rejected",
+            RelayError::Stalled => "relay_stalled",
+        }
+        .to_string(),
         TransportError::NoEndpoint => "no_endpoint".to_string(),
         TransportError::NotPaired => "not_paired".to_string(),
     }
@@ -117,6 +171,32 @@ mod tests {
                 },
                 "http_503",
             ),
+            (
+                TransportError::Relay(RelayError::HomeOffline),
+                "relay_home_offline",
+            ),
+            (
+                TransportError::Relay(RelayError::Unauthorized),
+                "relay_unauthorized",
+            ),
+            (TransportError::Relay(RelayError::Unpaid), "relay_unpaid"),
+            (
+                TransportError::Relay(RelayError::UnknownInstance),
+                "relay_unknown_instance",
+            ),
+            (
+                TransportError::Relay(RelayError::Overflow),
+                "relay_overflow",
+            ),
+            (
+                TransportError::Relay(RelayError::Abnormal),
+                "relay_abnormal",
+            ),
+            (
+                TransportError::Relay(RelayError::UpgradeRejected),
+                "relay_upgrade_rejected",
+            ),
+            (TransportError::Relay(RelayError::Stalled), "relay_stalled"),
             (TransportError::NoEndpoint, "no_endpoint"),
             (TransportError::NotPaired, "not_paired"),
         ];

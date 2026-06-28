@@ -56,6 +56,13 @@ anyhow = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+# SPL relay carrier (outer WSS leg). __rustls-tls is chosen deliberately: it exposes
+# Connector::Rustls so we supply our own ring-based ClientConfig (no second crypto
+# stack), and it avoids the duplicate webpki-roots 0.26 that rustls-tls-webpki-roots
+# would pull (we already have webpki-roots 1.x via the updater).
+tokio-tungstenite = { version = "0.26.2", default-features = false, features = ["connect", "__rustls-tls"] }
+webpki-roots = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 # Internal crates (path deps; versions tracked via workspace.package).
 observer-model = { path = "crates/observer-model" }

@@ -18,6 +18,9 @@ tokio = { workspace = true, features = ["net", "io-util", "rt", "macros", "time"
 rustls.workspace = true
 tokio-rustls.workspace = true
 rcgen.workspace = true
+tokio-tungstenite.workspace = true
+webpki-roots.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

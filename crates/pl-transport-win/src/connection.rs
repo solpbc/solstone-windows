@@ -22,7 +22,7 @@ use observer_pl::frame::FrameDialer;
 use observer_pl::http::{self, HttpResponse};
 use observer_pl::mux::{MuxError, ResponseAssembler, WindowedUpload};
 use rustls::ClientConfig;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -60,11 +60,24 @@ pub async fn request_once(
     tcp.set_nodelay(true).ok();
 
     let connector = TlsConnector::from(config);
-    let mut tls = connector
+    let tls = connector
         .connect(pinned_server_name(), tcp)
         .await
         .map_err(|e| TransportError::Tls(format!("handshake to {host}:{port}: {e}")))?;
 
+    run_request_over_stream(tls, method, path, headers, body).await
+}
+
+pub(crate) async fn run_request_over_stream<S>(
+    mut stream: S,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<HttpResponse, TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut dialer = FrameDialer::default();
     let stream_id = dialer.allocate();
     let request_bytes = http::build_request(method, path, headers, body);
@@ -82,11 +95,11 @@ pub async fn request_once(
                 .poll_send()
                 .map_err(|e| TransportError::Mux(MuxError::Frame(e)))?
             {
-                tls.write_all(&frame).await?;
+                stream.write_all(&frame).await?;
                 wrote = true;
             }
             if wrote {
-                tls.flush().await?;
+                stream.flush().await?;
             }
         }
         if assembler.is_closed() {
@@ -95,7 +108,7 @@ pub async fn request_once(
 
         // Read inbound. WINDOW grants unblock more sending; PONGs keep the mux
         // alive; DATA/CLOSE/RESET drive the response assembler.
-        let n = tokio::time::timeout(READ_TIMEOUT, tls.read(&mut buf))
+        let n = tokio::time::timeout(READ_TIMEOUT, stream.read(&mut buf))
             .await
             .map_err(|_| {
                 TransportError::Io(std::io::Error::new(
@@ -112,13 +125,13 @@ pub async fn request_once(
         }
         if !out.pongs.is_empty() {
             for pong in out.pongs {
-                tls.write_all(&pong).await?;
+                stream.write_all(&pong).await?;
             }
-            tls.flush().await?;
+            stream.flush().await?;
         }
     }
     // Best-effort clean close.
-    let _ = tls.shutdown().await;
+    let _ = stream.shutdown().await;
 
     Ok(assembler.into_response()?)
 }
