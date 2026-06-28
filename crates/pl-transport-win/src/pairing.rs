@@ -12,12 +12,13 @@
 
 use std::sync::Arc;
 
-use observer_pl::pairlink::{self, Endpoint};
+use observer_pl::pairlink::{self, Endpoint, ParsedPairLink};
 use observer_pl::wire::{PairRequest, PairResponse};
 use observer_pl::{ca, paths};
 
 use crate::connection::request_once;
 use crate::credential::{generate_csr, Credential, EndpointAddr};
+use crate::relay_pairing;
 use crate::{tls, TransportError};
 
 /// Pair against the given candidate endpoints using the one-shot `nonce_hex` and
@@ -56,13 +57,18 @@ pub async fn pair(
 /// Parse a `https://go.solstone.app/p#…` pair-link and pair against it.
 pub async fn pair_from_link(link: &str, device_label: &str) -> Result<Credential, TransportError> {
     let parsed = pairlink::parse(link).map_err(|e| TransportError::PairLink(e.to_string()))?;
-    pair(
-        &parsed.candidates,
-        &parsed.nonce_hex,
-        &parsed.ca_fp_prefix,
-        device_label,
-    )
-    .await
+    match parsed {
+        ParsedPairLink::Direct(pl) => {
+            pair(
+                &pl.candidates,
+                &pl.nonce_hex,
+                &pl.ca_fp_prefix,
+                device_label,
+            )
+            .await
+        }
+        ParsedPairLink::Relay(rl) => relay_pairing::pair_over_relay(&rl, device_label).await,
+    }
 }
 
 async fn pair_one(
@@ -119,5 +125,8 @@ async fn pair_one(
         instance_id: pair.instance_id,
         home_label: pair.home_label,
         endpoints: all_endpoints.iter().map(EndpointAddr::from).collect(),
+        relay_origin: None,
+        device_token: None,
+        device_token_expires_at: None,
     })
 }

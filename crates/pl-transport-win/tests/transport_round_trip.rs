@@ -64,6 +64,9 @@ fn observer_credential(pin: Vec<u8>, port: u16) -> Credential {
             host: "127.0.0.1".into(),
             port,
         }],
+        relay_origin: None,
+        device_token: None,
+        device_token_expires_at: None,
     }
 }
 

@@ -32,8 +32,12 @@ pub mod credential;
 pub mod heartbeat;
 pub mod pairing;
 pub mod relay;
+pub(crate) mod relay_http;
+pub mod relay_pairing;
+pub mod relay_token;
 pub mod sealed;
 pub mod service;
+pub(crate) mod spki_pin;
 pub mod tls;
 
 use std::fmt;
@@ -86,6 +90,29 @@ impl fmt::Display for RelayError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayControlEndpoint {
+    PairTicket,
+    EnrollDevice,
+    TokenRefresh,
+}
+
+impl RelayControlEndpoint {
+    fn code(self) -> &'static str {
+        match self {
+            RelayControlEndpoint::PairTicket => "pair_ticket",
+            RelayControlEndpoint::EnrollDevice => "enroll_device",
+            RelayControlEndpoint::TokenRefresh => "refresh",
+        }
+    }
+}
+
+impl fmt::Display for RelayControlEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
 /// Errors from the transport / observer client.
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -109,13 +136,18 @@ pub enum TransportError {
     Rejected { status: u16, body: String },
     #[error("relay error: {0}")]
     Relay(RelayError),
+    #[error("relay control {endpoint} rejected request: HTTP {status}")]
+    RelayControlRejected {
+        endpoint: RelayControlEndpoint,
+        status: u16,
+    },
     #[error("no reachable journal endpoint")]
     NoEndpoint,
     #[error("not paired")]
     NotPaired,
 }
 
-pub(crate) fn transport_error_code(err: &TransportError) -> String {
+pub fn transport_error_code(err: &TransportError) -> String {
     match err {
         TransportError::Io(_) => "io".to_string(),
         TransportError::Tls(_) => "tls".to_string(),
@@ -137,6 +169,9 @@ pub(crate) fn transport_error_code(err: &TransportError) -> String {
             RelayError::Stalled => "relay_stalled",
         }
         .to_string(),
+        TransportError::RelayControlRejected { endpoint, status } => {
+            format!("relay_{}_http_{status}", endpoint.code())
+        }
         TransportError::NoEndpoint => "no_endpoint".to_string(),
         TransportError::NotPaired => "not_paired".to_string(),
     }
@@ -197,6 +232,27 @@ mod tests {
                 "relay_upgrade_rejected",
             ),
             (TransportError::Relay(RelayError::Stalled), "relay_stalled"),
+            (
+                TransportError::RelayControlRejected {
+                    endpoint: RelayControlEndpoint::PairTicket,
+                    status: 401,
+                },
+                "relay_pair_ticket_http_401",
+            ),
+            (
+                TransportError::RelayControlRejected {
+                    endpoint: RelayControlEndpoint::EnrollDevice,
+                    status: 409,
+                },
+                "relay_enroll_device_http_409",
+            ),
+            (
+                TransportError::RelayControlRejected {
+                    endpoint: RelayControlEndpoint::TokenRefresh,
+                    status: 404,
+                },
+                "relay_refresh_http_404",
+            ),
             (TransportError::NoEndpoint, "no_endpoint"),
             (TransportError::NotPaired, "not_paired"),
         ];

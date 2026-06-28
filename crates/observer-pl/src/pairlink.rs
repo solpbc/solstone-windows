@@ -5,8 +5,10 @@
 //!
 //! A journal QR / pasted pair-link is `https://go.solstone.app/p#<fragment>`,
 //! where `<fragment>` is Crockford base32 over a small binary blob. We parse the
-//! two LAN-direct shapes the journal emits:
+//! LAN-direct shapes and the relay form the journal emits:
 //!
+//! - **v03** (relay): `0x03 instance_id(16) totp(3,BE) nonce(16)
+//!   ca_fp_tag(1) ca_fp_spki(16) relay_origin_selector(1) origin?`
 //! - **v04** (single IPv4): `0x04 0x01 ip(4) port(2,BE) nonce(16) ca_fp(16)` = 40 B
 //! - **v05** (multi IPv4, current): `0x05 0x01 count port(2,BE) ip(4)*count
 //!   nonce(16) ca_fp(16)` = 37 + 4*count B
@@ -21,6 +23,9 @@ use thiserror::Error;
 
 use crate::crockford::{self, CrockfordError};
 use crate::DEFAULT_DIRECT_PORT;
+
+/// Default relay origin selected by relay-form selector `0x00`.
+pub const DEFAULT_RELAY_ORIGIN: &str = "https://link.solstone.app";
 
 /// One dialable journal address from the pair-link.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +46,24 @@ pub struct PairLink {
     pub ca_fp_prefix: Vec<u8>,
 }
 
+/// Parsed pair-link variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedPairLink {
+    Direct(PairLink),
+    Relay(RelayPairLink),
+}
+
+/// A parsed relay-form pair-link: the relay target, the short-lived pair-ticket
+/// inputs, and the SPKI fingerprint prefix used later for live-peer binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayPairLink {
+    pub instance_id: String,
+    pub totp: String,
+    pub nonce_hex: String,
+    pub ca_fp_spki: Vec<u8>,
+    pub relay_origin: String,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PairLinkError {
     #[error("pair-link missing the '#<fragment>' part")]
@@ -51,8 +74,14 @@ pub enum PairLinkError {
     UnsupportedVersion(u8),
     #[error("unsupported pair-link address type: {0:#x}")]
     UnsupportedAddressType(u8),
+    #[error("unsupported relay CA-fingerprint tag: {0:#x}")]
+    UnknownCaFpTag(u8),
+    #[error("relay origin is not valid UTF-8")]
+    BadRelayOrigin,
     #[error("pair-link blob truncated (expected {expected} bytes, got {got})")]
     Truncated { expected: usize, got: usize },
+    #[error("pair-link blob length mismatch (expected {expected} bytes, got {got})")]
+    LengthMismatch { expected: usize, got: usize },
     #[error("pair-link carried no reachable (non-loopback) candidate")]
     NoReachableCandidate,
 }
@@ -60,6 +89,8 @@ pub enum PairLinkError {
 const ADDR_TYPE_IPV4: u8 = 0x01;
 const NONCE_LEN: usize = 16;
 const CA_FP_LEN: usize = 16;
+const RELAY_CA_FP_TAG_SPKI_SHA256: u8 = 0x01;
+const RELAY_MIN_LEN: usize = 54;
 
 fn hex_lower(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -71,6 +102,18 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 fn ipv4_string(octets: &[u8]) -> String {
     format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+}
+
+fn uuid_string(raw: &[u8]) -> String {
+    let h = hex_lower(raw);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 fn is_loopback(octets: &[u8]) -> bool {
@@ -85,8 +128,8 @@ fn normalize_port(raw: u16) -> u16 {
     }
 }
 
-/// Parse a full pair-link URL (or a bare fragment) into a [`PairLink`].
-pub fn parse(link: &str) -> Result<PairLink, PairLinkError> {
+/// Parse a full pair-link URL (or a bare fragment).
+pub fn parse(link: &str) -> Result<ParsedPairLink, PairLinkError> {
     let fragment = match link.split_once('#') {
         Some((_, frag)) => frag,
         // Allow callers to pass a bare fragment too.
@@ -98,14 +141,15 @@ pub fn parse(link: &str) -> Result<PairLink, PairLinkError> {
 }
 
 /// Parse the decoded binary blob.
-pub fn parse_blob(blob: &[u8]) -> Result<PairLink, PairLinkError> {
+pub fn parse_blob(blob: &[u8]) -> Result<ParsedPairLink, PairLinkError> {
     let version = *blob.first().ok_or(PairLinkError::Truncated {
         expected: 1,
         got: 0,
     })?;
     match version {
-        0x04 => parse_v04(blob),
-        0x05 => parse_v05(blob),
+        0x03 => parse_v03(blob).map(ParsedPairLink::Relay),
+        0x04 => parse_v04(blob).map(ParsedPairLink::Direct),
+        0x05 => parse_v05(blob).map(ParsedPairLink::Direct),
         other => Err(PairLinkError::UnsupportedVersion(other)),
     }
 }
@@ -119,6 +163,47 @@ fn require(blob: &[u8], end: usize) -> Result<(), PairLinkError> {
     } else {
         Ok(())
     }
+}
+
+fn require_exact(blob: &[u8], expected: usize) -> Result<(), PairLinkError> {
+    require(blob, expected)?;
+    if blob.len() != expected {
+        Err(PairLinkError::LengthMismatch {
+            expected,
+            got: blob.len(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_v03(blob: &[u8]) -> Result<RelayPairLink, PairLinkError> {
+    require(blob, RELAY_MIN_LEN)?;
+    let ca_fp_tag = blob[36];
+    if ca_fp_tag != RELAY_CA_FP_TAG_SPKI_SHA256 {
+        return Err(PairLinkError::UnknownCaFpTag(ca_fp_tag));
+    }
+
+    let selector = blob[53] as usize;
+    let relay_origin = if selector == 0 {
+        require_exact(blob, RELAY_MIN_LEN)?;
+        DEFAULT_RELAY_ORIGIN.to_string()
+    } else {
+        let expected = RELAY_MIN_LEN + selector;
+        require_exact(blob, expected)?;
+        std::str::from_utf8(&blob[RELAY_MIN_LEN..expected])
+            .map_err(|_| PairLinkError::BadRelayOrigin)?
+            .to_string()
+    };
+
+    let totp = u32::from_be_bytes([0, blob[17], blob[18], blob[19]]);
+    Ok(RelayPairLink {
+        instance_id: uuid_string(&blob[1..17]),
+        totp: format!("{totp:06}"),
+        nonce_hex: hex_lower(&blob[20..36]),
+        ca_fp_spki: blob[37..53].to_vec(),
+        relay_origin,
+    })
 }
 
 fn parse_v04(blob: &[u8]) -> Result<PairLink, PairLinkError> {
@@ -192,6 +277,24 @@ mod tests {
     use super::*;
     use crate::crockford;
 
+    const RELAY_WELL_KNOWN_FRAGMENT: &str =
+        "0C938NKR28T5CY0J6HB7G4HMASW03RJ004HMASW9NF6YY0938NKRKAYDXW0XXBDYXZ5FXENY04HMASW9NF6YY00";
+    const RELAY_CUSTOM_FRAGMENT: &str = "0C938NKR28T5CY0J6HB7G4HMASW03RJ004HMASW9NF6YY0938NKRKAYDXW0XXBDYXZ5FXENY04HMASW9NF6YY5B8EHT70WST5WQQ4SBCC5WJWSBRC5PQ0V35";
+
+    fn direct(parsed: ParsedPairLink) -> PairLink {
+        match parsed {
+            ParsedPairLink::Direct(pl) => pl,
+            ParsedPairLink::Relay(_) => panic!("expected direct pair-link"),
+        }
+    }
+
+    fn relay(parsed: ParsedPairLink) -> RelayPairLink {
+        match parsed {
+            ParsedPairLink::Relay(pl) => pl,
+            ParsedPairLink::Direct(_) => panic!("expected relay pair-link"),
+        }
+    }
+
     fn nonce16() -> [u8; 16] {
         [
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
@@ -202,6 +305,24 @@ mod tests {
         [
             0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad,
             0xae, 0xaf,
+        ]
+    }
+    fn relay_instance_id() -> [u8; 16] {
+        [
+            0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78, 0x12, 0x34,
+            0x56, 0x78,
+        ]
+    }
+    fn relay_nonce() -> [u8; 16] {
+        [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
+        ]
+    }
+    fn relay_ca_fp_spki() -> [u8; 16] {
+        [
+            0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
         ]
     }
 
@@ -225,11 +346,36 @@ mod tests {
         b
     }
 
+    fn build_v03(origin: Option<&str>, ca_fp_tag: u8) -> Vec<u8> {
+        let mut b = vec![0x03];
+        b.extend_from_slice(&relay_instance_id());
+        b.extend_from_slice(&[0x01, 0xe2, 0x40]); // 123456, 3-byte BE
+        b.extend_from_slice(&relay_nonce());
+        b.push(ca_fp_tag);
+        b.extend_from_slice(&relay_ca_fp_spki());
+        match origin {
+            Some(origin) => {
+                b.push(origin.len() as u8);
+                b.extend_from_slice(origin.as_bytes());
+            }
+            None => b.push(0),
+        }
+        b
+    }
+
+    fn assert_relay_fields(pl: RelayPairLink, relay_origin: &str) {
+        assert_eq!(pl.instance_id, "12345678-1234-5678-1234-567812345678");
+        assert_eq!(pl.totp, "123456");
+        assert_eq!(pl.nonce_hex, "0123456789abcdef0123456789abcdef");
+        assert_eq!(pl.ca_fp_spki, relay_ca_fp_spki().to_vec());
+        assert_eq!(pl.relay_origin, relay_origin);
+    }
+
     #[test]
     fn parses_v05_multi_address() {
         let blob = build_v05(&[[192, 0, 2, 10], [198, 51, 100, 20]], 7657);
         let url = format!("https://go.solstone.app/p#{}", crockford::encode(&blob));
-        let pl = parse(&url).unwrap();
+        let pl = direct(parse(&url).unwrap());
         assert_eq!(
             pl.candidates,
             vec![
@@ -250,7 +396,7 @@ mod tests {
     #[test]
     fn parses_v04_single_address() {
         let blob = build_v04([10, 0, 0, 5], 7657);
-        let pl = parse(&crockford::encode(&blob)).unwrap();
+        let pl = direct(parse(&crockford::encode(&blob)).unwrap());
         assert_eq!(pl.candidates.len(), 1);
         assert_eq!(pl.candidates[0].host, "10.0.0.5");
         assert_eq!(pl.ca_fp_prefix.len(), 16);
@@ -259,14 +405,14 @@ mod tests {
     #[test]
     fn port_zero_defaults_to_direct_port() {
         let blob = build_v05(&[[10, 0, 0, 5]], 0);
-        let pl = parse_blob(&blob).unwrap();
+        let pl = direct(parse_blob(&blob).unwrap());
         assert_eq!(pl.candidates[0].port, DEFAULT_DIRECT_PORT);
     }
 
     #[test]
     fn filters_loopback_candidates() {
         let blob = build_v05(&[[127, 0, 0, 1], [192, 168, 1, 9]], 7657);
-        let pl = parse_blob(&blob).unwrap();
+        let pl = direct(parse_blob(&blob).unwrap());
         assert_eq!(pl.candidates.len(), 1);
         assert_eq!(pl.candidates[0].host, "192.168.1.9");
     }
@@ -295,6 +441,83 @@ mod tests {
         assert_eq!(
             parse_blob(&[0x02, 0x01, 0x00]).unwrap_err(),
             PairLinkError::UnsupportedVersion(0x02)
+        );
+    }
+
+    #[test]
+    fn parses_v03_well_known_conformance_fragment() {
+        let blob = build_v03(None, RELAY_CA_FP_TAG_SPKI_SHA256);
+        assert_eq!(crockford::encode(&blob), RELAY_WELL_KNOWN_FRAGMENT);
+        let pl = relay(parse(RELAY_WELL_KNOWN_FRAGMENT).unwrap());
+        assert_relay_fields(pl, DEFAULT_RELAY_ORIGIN);
+    }
+
+    #[test]
+    fn parses_v03_custom_origin_conformance_fragment() {
+        let origin = "https://relay.example";
+        let blob = build_v03(Some(origin), RELAY_CA_FP_TAG_SPKI_SHA256);
+        assert_eq!(crockford::encode(&blob), RELAY_CUSTOM_FRAGMENT);
+        let pl = relay(parse(RELAY_CUSTOM_FRAGMENT).unwrap());
+        assert_relay_fields(pl, origin);
+    }
+
+    #[test]
+    fn parses_v03_from_built_blob() {
+        let origin = "https://relay.example";
+        let pl = relay(parse_blob(&build_v03(Some(origin), RELAY_CA_FP_TAG_SPKI_SHA256)).unwrap());
+        assert_relay_fields(pl, origin);
+    }
+
+    #[test]
+    fn rejects_unknown_relay_ca_fp_tag() {
+        assert_eq!(
+            parse_blob(&build_v03(None, 0x02)).unwrap_err(),
+            PairLinkError::UnknownCaFpTag(0x02)
+        );
+    }
+
+    #[test]
+    fn rejects_v03_truncation_before_selector() {
+        let blob = build_v03(None, RELAY_CA_FP_TAG_SPKI_SHA256);
+        assert!(matches!(
+            parse_blob(&blob[..53]).unwrap_err(),
+            PairLinkError::Truncated {
+                expected: RELAY_MIN_LEN,
+                got: 53
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_v03_custom_origin_truncation() {
+        let blob = build_v03(Some("https://relay.example"), RELAY_CA_FP_TAG_SPKI_SHA256);
+        assert!(matches!(
+            parse_blob(&blob[..blob.len() - 1]).unwrap_err(),
+            PairLinkError::Truncated { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_v03_selector_length_mismatch() {
+        let mut blob = build_v03(None, RELAY_CA_FP_TAG_SPKI_SHA256);
+        blob.push(0xff);
+        assert_eq!(
+            parse_blob(&blob).unwrap_err(),
+            PairLinkError::LengthMismatch {
+                expected: RELAY_MIN_LEN,
+                got: RELAY_MIN_LEN + 1
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_bad_relay_origin_utf8() {
+        let mut blob = build_v03(None, RELAY_CA_FP_TAG_SPKI_SHA256);
+        blob[53] = 1;
+        blob.push(0xff);
+        assert_eq!(
+            parse_blob(&blob).unwrap_err(),
+            PairLinkError::BadRelayOrigin
         );
     }
 }

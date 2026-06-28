@@ -51,6 +51,12 @@ pub struct Credential {
     pub instance_id: String,
     pub home_label: String,
     pub endpoints: Vec<EndpointAddr>,
+    #[serde(default)]
+    pub relay_origin: Option<String>,
+    #[serde(default)]
+    pub device_token: Option<String>,
+    #[serde(default)]
+    pub device_token_expires_at: Option<i64>,
 }
 
 /// The full persisted sync identity: the credential plus the registered
@@ -93,6 +99,33 @@ impl PairedState {
 pub struct GeneratedKey {
     pub key_pem: String,
     pub csr_pem: String,
+}
+
+pub(crate) fn endpoint_addrs_from_local_endpoints(
+    value: Option<&serde_json::Value>,
+) -> Vec<EndpointAddr> {
+    // Relay pair-response local_endpoints are {ip, port, scope}; scope is kept
+    // server-side for now and intentionally not persisted by this lode.
+    let Some(serde_json::Value::Array(entries)) = value else {
+        return Vec::new();
+    };
+
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let object = entry.as_object()?;
+            let host = object.get("ip")?.as_str()?;
+            let port = object.get("port")?.as_u64()?;
+            let port = u16::try_from(port).ok()?;
+            if port == 0 {
+                return None;
+            }
+            Some(EndpointAddr {
+                host: host.to_string(),
+                port,
+            })
+        })
+        .collect()
 }
 
 /// Generate an EC P-256 key and a CSR with `device_label` as the CN. The
@@ -144,6 +177,9 @@ mod tests {
                     host: "10.0.0.5".into(),
                     port: 7657,
                 }],
+                relay_origin: None,
+                device_token: None,
+                device_token_expires_at: None,
             }),
             observer_key: Some("obs-handle".into()),
             observer_name: Some("winbox".into()),
@@ -163,5 +199,81 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let state = PairedState::load(&path).unwrap();
         assert!(!state.is_paired());
+    }
+
+    #[test]
+    fn relay_fields_round_trip() {
+        let state = PairedState {
+            credential: Some(Credential {
+                client_key_pem: "K".into(),
+                client_cert_pem: "C".into(),
+                ca_chain_pem: vec!["CA".into()],
+                ca_fp_prefix: vec![1, 2, 3, 4],
+                instance_id: "inst".into(),
+                home_label: "Home".into(),
+                endpoints: Vec::new(),
+                relay_origin: Some("https://link.solstone.app".into()),
+                device_token: Some("token".into()),
+                device_token_expires_at: Some(123),
+            }),
+            observer_key: Some("obs-handle".into()),
+            observer_name: None,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let loaded: PairedState = serde_json::from_str(&json).unwrap();
+        let credential = loaded.credential.unwrap();
+        assert_eq!(
+            credential.relay_origin.as_deref(),
+            Some("https://link.solstone.app")
+        );
+        assert_eq!(credential.device_token.as_deref(), Some("token"));
+        assert_eq!(credential.device_token_expires_at, Some(123));
+    }
+
+    #[test]
+    fn pre_w2_pairing_json_loads_with_default_relay_fields() {
+        let json = r#"{
+          "credential": {
+            "client_key_pem": "K",
+            "client_cert_pem": "C",
+            "ca_chain_pem": ["CA"],
+            "ca_fp_prefix": [1, 2, 3, 4],
+            "instance_id": "inst",
+            "home_label": "Home",
+            "endpoints": [{"host": "10.0.0.5", "port": 7657}]
+          },
+          "observer_key": "obs-handle",
+          "observer_name": "winbox"
+        }"#;
+        let loaded: PairedState = serde_json::from_str(json).unwrap();
+        assert!(loaded.is_paired());
+        let credential = loaded.credential.unwrap();
+        assert_eq!(credential.relay_origin, None);
+        assert_eq!(credential.device_token, None);
+        assert_eq!(credential.device_token_expires_at, None);
+    }
+
+    #[test]
+    fn local_endpoints_helper_maps_valid_entries_and_skips_invalid() {
+        let value = serde_json::json!([
+            {"ip": "10.0.0.2", "port": 7657, "scope": "lan"},
+            {"ip": "10.0.0.3", "port": 0, "scope": "lan"},
+            {"ip": "10.0.0.4", "port": 70000, "scope": "lan"},
+            {"ip": 42, "port": 7657},
+            {"host": "10.0.0.5", "port": 7657},
+            "bad"
+        ]);
+        assert_eq!(
+            endpoint_addrs_from_local_endpoints(Some(&value)),
+            vec![EndpointAddr {
+                host: "10.0.0.2".into(),
+                port: 7657
+            }]
+        );
+        assert!(endpoint_addrs_from_local_endpoints(None).is_empty());
+        assert!(
+            endpoint_addrs_from_local_endpoints(Some(&serde_json::json!({"ip": "10.0.0.2"})))
+                .is_empty()
+        );
     }
 }

@@ -35,6 +35,11 @@ struct CaFpPinVerifier {
     provider: Arc<CryptoProvider>,
 }
 
+#[derive(Debug)]
+struct TrustAllPairingVerifier {
+    provider: Arc<CryptoProvider>,
+}
+
 impl ServerCertVerifier for CaFpPinVerifier {
     fn verify_server_cert(
         &self,
@@ -92,6 +97,53 @@ impl ServerCertVerifier for CaFpPinVerifier {
     }
 }
 
+impl ServerCertVerifier for TrustAllPairingVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
@@ -102,6 +154,25 @@ pub fn pairing_config(ca_fp_prefix: &[u8]) -> Result<ClientConfig, TransportErro
     let provider = provider();
     let verifier = Arc::new(CaFpPinVerifier {
         prefix: ca_fp_prefix.to_vec(),
+        provider: provider.clone(),
+    });
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| TransportError::Tls(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    Ok(config)
+}
+
+/// Client config for relay pairing's inner TLS leg. It accepts any certificate
+/// chain during the handshake so the ceremony can surface the live peer leaf,
+/// but it still verifies the TLS handshake signature against that leaf through
+/// ring. Safe only when followed immediately by the relay live-peer SPKI binding;
+/// never use this for an established session.
+pub fn trust_all_pairing_config() -> Result<ClientConfig, TransportError> {
+    let provider = provider();
+    let verifier = Arc::new(TrustAllPairingVerifier {
         provider: provider.clone(),
     });
     let config = ClientConfig::builder_with_provider(provider)

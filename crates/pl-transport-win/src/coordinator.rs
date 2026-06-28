@@ -305,6 +305,9 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 9,
             }],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
         };
         Arc::new(
             ObserverClient::new(credential)

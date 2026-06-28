@@ -12,6 +12,22 @@ pub enum DialUrlError {
 }
 
 pub fn dial_url(relay_origin: &str, instance_id: &str) -> Result<String, DialUrlError> {
+    relay_url(relay_origin, "/session/dial", instance_id)
+}
+
+pub fn pair_dial_url(relay_origin: &str, instance_id: &str) -> Result<String, DialUrlError> {
+    relay_url(relay_origin, "/session/pair-dial", instance_id)
+}
+
+fn relay_url(relay_origin: &str, path: &str, instance_id: &str) -> Result<String, DialUrlError> {
+    let origin = ws_origin(relay_origin)?;
+    Ok(format!(
+        "{origin}{path}?instance={}",
+        percent_encode(instance_id)
+    ))
+}
+
+fn ws_origin(relay_origin: &str) -> Result<String, DialUrlError> {
     let rewritten = if let Some(rest) = relay_origin.strip_prefix("https://") {
         format!("wss://{rest}")
     } else if let Some(rest) = relay_origin.strip_prefix("http://") {
@@ -19,11 +35,10 @@ pub fn dial_url(relay_origin: &str, instance_id: &str) -> Result<String, DialUrl
     } else {
         return Err(DialUrlError::UnsupportedScheme);
     };
-    let origin = rewritten.strip_suffix('/').unwrap_or(&rewritten);
-    Ok(format!(
-        "{origin}/session/dial?instance={}",
-        percent_encode(instance_id)
-    ))
+    Ok(rewritten
+        .strip_suffix('/')
+        .unwrap_or(&rewritten)
+        .to_string())
 }
 
 fn percent_encode(value: &str) -> String {
@@ -101,6 +116,46 @@ mod tests {
         assert_eq!(
             dial_url("https://link.solstone.app", "inst-123").unwrap(),
             "wss://link.solstone.app/session/dial?instance=inst-123"
+        );
+    }
+
+    #[test]
+    fn pair_dial_rewrites_https_to_wss() {
+        assert_eq!(
+            pair_dial_url("https://link.solstone.app", "inst").unwrap(),
+            "wss://link.solstone.app/session/pair-dial?instance=inst"
+        );
+    }
+
+    #[test]
+    fn pair_dial_rewrites_http_to_ws() {
+        assert_eq!(
+            pair_dial_url("http://127.0.0.1:7657", "inst").unwrap(),
+            "ws://127.0.0.1:7657/session/pair-dial?instance=inst"
+        );
+    }
+
+    #[test]
+    fn pair_dial_trims_one_trailing_slash() {
+        assert_eq!(
+            pair_dial_url("https://link.solstone.app/", "inst").unwrap(),
+            "wss://link.solstone.app/session/pair-dial?instance=inst"
+        );
+    }
+
+    #[test]
+    fn pair_dial_percent_encodes_query_value() {
+        assert_eq!(
+            pair_dial_url("https://link.solstone.app", "inst one/two").unwrap(),
+            "wss://link.solstone.app/session/pair-dial?instance=inst%20one%2Ftwo"
+        );
+    }
+
+    #[test]
+    fn pair_dial_rejects_unsupported_scheme() {
+        assert_eq!(
+            pair_dial_url("wss://link.solstone.app", "inst").unwrap_err(),
+            DialUrlError::UnsupportedScheme
         );
     }
 }

@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use futures_util::{Sink, Stream};
 use observer_pl::http::HttpResponse;
+use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -36,13 +37,13 @@ use crate::{RelayError, TransportError};
 
 /// Inner mTLS progress bound for AC6. This is not a presence-hold wait; a live
 /// relay path should produce the journal's TLS response well before this.
-const RELAY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const RELAY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Outer relay dial bound. This mirrors the direct TCP connect hygiene and is
 /// separate from the typed inner-handshake stalled outcome.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_WS_CHUNK_BYTES: usize = 64 * 1024;
 
-fn outer_config() -> Arc<ClientConfig> {
+pub(crate) fn outer_config() -> Arc<ClientConfig> {
     static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
@@ -296,6 +297,49 @@ pub async fn request_once_over_ws(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<HttpResponse, TransportError> {
+    request_once_over_ws_inner(
+        ws,
+        inner_config,
+        handshake_timeout,
+        method,
+        path,
+        headers,
+        body,
+    )
+    .await
+    .map(|(response, _peer_leaf)| response)
+}
+
+pub async fn request_once_over_ws_with_peer_leaf(
+    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    inner_config: Arc<ClientConfig>,
+    handshake_timeout: Duration,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<(HttpResponse, Option<CertificateDer<'static>>), TransportError> {
+    request_once_over_ws_inner(
+        ws,
+        inner_config,
+        handshake_timeout,
+        method,
+        path,
+        headers,
+        body,
+    )
+    .await
+}
+
+async fn request_once_over_ws_inner(
+    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    inner_config: Arc<ClientConfig>,
+    handshake_timeout: Duration,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<(HttpResponse, Option<CertificateDer<'static>>), TransportError> {
     let (duplex, termination) = WsByteDuplex::new(ws);
     let connector = TlsConnector::from(inner_config);
     let tls = match tokio::time::timeout(
@@ -313,9 +357,15 @@ pub async fn request_once_over_ws(
             return Err(TransportError::Tls(format!("inner relay handshake: {e}")));
         }
     };
+    let peer_leaf = tls
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|certs| certs.first())
+        .cloned();
 
     match run_request_over_stream(tls, method, path, headers, body).await {
-        Ok(response) => Ok(response),
+        Ok(response) => Ok((response, peer_leaf)),
         Err(error) => {
             if let Some(value) = current_termination(&termination) {
                 Err(TransportError::Relay(relay_error_from_termination(value)))

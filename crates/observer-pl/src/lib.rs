@@ -36,6 +36,7 @@ pub mod civil;
 pub mod crockford;
 pub mod frame;
 pub mod http;
+pub mod jwt;
 pub mod multipart;
 pub mod mux;
 pub mod pairlink;
