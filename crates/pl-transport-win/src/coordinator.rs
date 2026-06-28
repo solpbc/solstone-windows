@@ -11,7 +11,9 @@
 //! honest state, earned not asserted. Failures leave the segment on disk and
 //! grow an exponential backoff (5s → 5m), so a transient journal outage retries
 //! without losing data. Pairing/upload counts are published into the shared
-//! [`SyncSnapshot`] the engine folds into the health dump.
+//! [`SyncSnapshot`] the engine folds into the health dump. Tick results also
+//! maintain the diagnostics-only health beacon fields: consecutive failure code
+//! and last successful sync epoch milliseconds.
 
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,7 +26,7 @@ use observer_retention::RetentionConfig;
 
 use crate::client::ObserverClient;
 use crate::sealed::{content_type_for, SealedStore};
-use crate::{TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
+use crate::{transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
 const MAX_BACKOFF_SECS: u64 = 300;
 
@@ -32,6 +34,13 @@ fn now_epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
@@ -94,6 +103,15 @@ impl UploadCoordinator {
     /// One pass: upload + reconcile every sealed segment currently on disk.
     /// Returns the number of segments confirmed landed this pass.
     pub async fn tick(&self) -> Result<usize, TransportError> {
+        let result = self.tick_inner().await;
+        match &result {
+            Ok(_) => self.note_tick_success(),
+            Err(error) => self.note_tick_failure(error),
+        }
+        result
+    }
+
+    async fn tick_inner(&self) -> Result<usize, TransportError> {
         // Prune retained-and-confirmed segments past the window first (cheap, local).
         self.prune_retained();
 
@@ -201,5 +219,144 @@ impl UploadCoordinator {
             snapshot.upload.failed_segments += 1;
             snapshot.upload.last_error = Some(err.to_string());
         }
+    }
+
+    fn note_tick_success(&self) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.record_success(now_epoch_millis());
+        }
+    }
+
+    fn note_tick_failure(&self, err: &TransportError) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.record_failure(&transport_error_code(err));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use observer_model::RECENT_ERROR_COUNT_MAX;
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+
+    use crate::credential::{Credential, EndpointAddr};
+
+    struct EmptyStore;
+
+    impl SealedStore for EmptyStore {
+        fn scan(&self) -> std::io::Result<Vec<crate::sealed::SealedSegment>> {
+            Ok(Vec::new())
+        }
+
+        fn read_file(&self, _index: u64, _name: &str) -> std::io::Result<Vec<u8>> {
+            unreachable!("empty store has no files")
+        }
+
+        fn remove(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn confirmed(&self) -> std::io::Result<Vec<crate::sealed::SealedSegment>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct FailingStore;
+
+    impl SealedStore for FailingStore {
+        fn scan(&self) -> std::io::Result<Vec<crate::sealed::SealedSegment>> {
+            Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"))
+        }
+
+        fn read_file(&self, _index: u64, _name: &str) -> std::io::Result<Vec<u8>> {
+            unreachable!("scan fails before files are read")
+        }
+
+        fn remove(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn confirmed(&self) -> std::io::Result<Vec<crate::sealed::SealedSegment>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn dummy_client() -> Arc<ObserverClient> {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let credential = Credential {
+            client_key_pem: key.serialize_pem(),
+            client_cert_pem: cert.pem(),
+            ca_chain_pem: vec![cert.pem()],
+            ca_fp_prefix: vec![0; 16],
+            instance_id: "test".into(),
+            home_label: "Home".into(),
+            endpoints: vec![EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: 9,
+            }],
+        };
+        Arc::new(
+            ObserverClient::new(credential)
+                .unwrap()
+                .with_observer_key(Some("observer-key".into())),
+        )
+    }
+
+    fn coordinator(
+        store: Box<dyn SealedStore>,
+        sync: Arc<Mutex<SyncSnapshot>>,
+    ) -> UploadCoordinator {
+        UploadCoordinator::new(
+            dummy_client(),
+            store,
+            sync,
+            "windows",
+            300,
+            Arc::new(RwLock::new(RetentionConfig::default())),
+        )
+    }
+
+    #[tokio::test]
+    async fn failed_tick_records_bounded_sanitized_reason() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator(Box::new(FailingStore), sync.clone());
+
+        for _ in 0..100 {
+            assert!(coordinator.tick().await.is_err());
+        }
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.upload.recent_error_count, RECENT_ERROR_COUNT_MAX);
+        assert_eq!(snapshot.upload.last_error_reason.as_deref(), Some("io"));
+        assert_eq!(snapshot.upload.last_successful_sync, None);
+    }
+
+    #[tokio::test]
+    async fn no_work_successful_tick_resets_reason_and_stamps_sync_time() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        {
+            let mut snapshot = sync.lock().unwrap();
+            snapshot.upload.record_failure("tls");
+        }
+        let coordinator = coordinator(Box::new(EmptyStore), sync.clone());
+
+        let confirmed = coordinator.tick().await.unwrap();
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(confirmed, 0);
+        assert_eq!(snapshot.upload.recent_error_count, 0);
+        assert_eq!(snapshot.upload.last_error_reason, None);
+        assert!(snapshot.upload.last_successful_sync.is_some());
     }
 }

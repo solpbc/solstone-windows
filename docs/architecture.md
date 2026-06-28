@@ -13,8 +13,8 @@ arrows never point pure → platform.
 
 | Tier | Crates | Rule |
 |---|---|---|
-| **Pure** | `observer-{model,segment,state,health,recovery,lifecycle,contract}` | no `windows` dep; `#![forbid(unsafe_code)]`; host-testable |
-| **Platform** | `capture-wgc`, `capture-wasapi`, `platform-win` | `windows-rs` (target-gated); `unsafe` isolated here |
+| **Pure** | `observer-{model,segment,state,health,recovery,lifecycle,contract,pl}` | no `windows` dep; `#![forbid(unsafe_code)]`; host-testable |
+| **Platform** | `capture-wgc`, `capture-wasapi`, `platform-win`, `pl-transport-win` | `windows-rs` is target-gated where present; `unsafe` isolated here |
 | **Composition** | `capture-engine` (lib), `src-tauri` (bin) | inject concrete platform impls into the trait seams |
 
 The crate boundary is the only mechanically-enforceable purity boundary in Rust:
@@ -41,11 +41,15 @@ transitions, recovery scans, contract codegen — is tested off-Windows.
 - **observer-contract** — AutomationId source of truth + the deterministic
   `automation-contract.json` generator; the state-token vocabulary derives from
   the model enums via `strum::EnumIter`.
+- **observer-pl** — pure pair-link, framing, observer wire, multipart, and
+  CA-fingerprint pinning helpers.
 - **capture-wgc** — Windows.Graphics.Capture screen source.
 - **capture-wasapi** — WASAPI render-loopback system audio + eCapture mic; owns
   the `NoInputDevice` determination.
 - **platform-win** — session/power notification pump, per-session named-mutex
   single-instance gate, `%LocalAppData%` paths, the real `SegmentFs`/`RecoveryFs`.
+- **pl-transport-win** — rustls-backed pair/register/upload/heartbeat transport;
+  host-testable despite living in the platform tier.
 - **capture-engine** — composition-tier orchestrator: sources → writer →
   rotation → state → recovery. Tauri-agnostic; host-testable with fake sources.
 
@@ -56,10 +60,15 @@ task in the same process. The separate capture-worker process is a **named,
 deferred escape hatch** — only if a soak shows WebView2 instability. The clean
 crate seam makes that flip a re-host of one crate, not a rewrite.
 
-## Reserved (Wave 2, not created at bootstrap)
+## Sync transport + health beacon
 
-- `observer-pl` — pair-link parse + framing + observer wire protocol (pure).
-- `pl-transport-win` — framed-mTLS transport (rustls default).
+`observer-pl` and `pl-transport-win` now carry the Wave-2 pair/register/upload
+path. The heartbeat POST remains an `observe.status` event, with an additive
+diagnostics-only health beacon: observer name when known, stream type, version,
+uptime seconds, last successful sync epoch milliseconds, pending segment count,
+bounded consecutive error count, and a sanitized error code.
 
-These are named here and created when Wave 2 starts; the bootstrap does not ship
-empty Wave-2 crates.
+The beacon never carries captured content, file paths, URLs, tokens, response
+bodies, host endpoints, or fingerprints. Journal-side `health.ingest_rejection`
+is a separate health source recorded by the journal when uploads fail ingest
+contract validation; the observer beacon does not duplicate that record.

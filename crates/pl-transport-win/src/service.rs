@@ -114,6 +114,7 @@ async fn pair_and_register_inner(
     let paired = PairedState {
         credential: Some(credential),
         observer_key: Some(registration.key.clone()),
+        observer_name: Some(registration.name.clone()),
     };
     paired.save(&cfg.state_path)?;
     Ok((paired, journal_label, registration.name))
@@ -134,7 +135,7 @@ pub async fn run_uploader(
 
     let observer_name = if let Some(key) = paired.observer_key.clone() {
         client = client.with_observer_key(Some(key));
-        None
+        paired.observer_name.clone()
     } else {
         let registration = client
             .register(
@@ -148,6 +149,7 @@ pub async fn run_uploader(
         PairedState {
             credential: Some(credential),
             observer_key: Some(registration.key.clone()),
+            observer_name: Some(registration.name.clone()),
         }
         .save(&cfg.state_path)?;
         Some(registration.name)
@@ -182,6 +184,8 @@ pub async fn run_uploader(
         client.clone(),
         health,
         sync.clone(),
+        cfg.stream_type.clone(),
+        cfg.version.clone(),
         hb_shutdown_rx,
     ));
 

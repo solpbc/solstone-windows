@@ -59,6 +59,8 @@ pub struct Credential {
 pub struct PairedState {
     pub credential: Option<Credential>,
     pub observer_key: Option<String>,
+    #[serde(default)]
+    pub observer_name: Option<String>,
 }
 
 impl PairedState {
@@ -144,11 +146,13 @@ mod tests {
                 }],
             }),
             observer_key: Some("obs-handle".into()),
+            observer_name: Some("winbox".into()),
         };
         state.save(&path).unwrap();
         let loaded = PairedState::load(&path).unwrap();
         assert!(loaded.is_paired());
         assert_eq!(loaded.observer_key.as_deref(), Some("obs-handle"));
+        assert_eq!(loaded.observer_name.as_deref(), Some("winbox"));
         assert_eq!(loaded.credential.unwrap().endpoints[0].port, 7657);
         let _ = std::fs::remove_dir_all(&dir);
     }

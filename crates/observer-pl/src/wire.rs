@@ -94,6 +94,30 @@ impl IngestResponse {
 
 // ── /app/observer/ingest/event (heartbeat) ───────────────────────────────────
 
+/// Diagnostics-only health fields carried by `observe.status`. All fields are
+/// optional and omitted when absent so the legacy heartbeat body stays unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HealthBeacon {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stream_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub version: Option<String>,
+    /// Monotonic process uptime in seconds.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub uptime: Option<u64>,
+    /// Epoch milliseconds of the last successful sync tick.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_successful_sync: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pending_queue_depth: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub recent_error_count: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_error_reason: Option<String>,
+}
+
 /// The heartbeat event body. The journal updates `last_seen` when it sees an
 /// `observe.status` event; `paused` carries the observer's current pause state,
 /// matching the macOS `HeartbeatService` POST.
@@ -102,15 +126,23 @@ pub struct HeartbeatEvent {
     pub tract: String,
     pub event: String,
     pub paused: bool,
+    #[serde(flatten)]
+    pub beacon: HealthBeacon,
 }
 
 impl HeartbeatEvent {
     /// Build the canonical `observe.status` heartbeat.
     pub fn status(paused: bool) -> Self {
+        Self::observe_status(paused, HealthBeacon::default())
+    }
+
+    /// Build an `observe.status` heartbeat with diagnostics-only health fields.
+    pub fn observe_status(paused: bool, beacon: HealthBeacon) -> Self {
         Self {
             tract: "observe".to_string(),
             event: "status".to_string(),
             paused,
+            beacon,
         }
     }
 }
@@ -207,9 +239,72 @@ mod tests {
     #[test]
     fn heartbeat_status_is_observe_status() {
         let json = serde_json::to_string(&HeartbeatEvent::status(true)).unwrap();
-        assert!(json.contains("\"tract\":\"observe\""));
-        assert!(json.contains("\"event\":\"status\""));
-        assert!(json.contains("\"paused\":true"));
+        assert_eq!(
+            json,
+            r#"{"tract":"observe","event":"status","paused":true}"#
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn heartbeat_observe_status_serializes_populated_beacon() {
+        let event = HeartbeatEvent::observe_status(
+            false,
+            HealthBeacon {
+                name: Some("fedora".into()),
+                stream_type: Some("desktop".into()),
+                version: Some("0.3.1".into()),
+                uptime: Some(120),
+                last_successful_sync: Some(1_700_000_000_000),
+                pending_queue_depth: Some(2),
+                recent_error_count: Some(1),
+                last_error_reason: Some("http_503".into()),
+            },
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 11);
+        assert_eq!(object["tract"], "observe");
+        assert_eq!(object["event"], "status");
+        assert_eq!(object["paused"], false);
+        assert_eq!(object["name"], "fedora");
+        assert_eq!(object["stream_type"], "desktop");
+        assert_eq!(object["version"], "0.3.1");
+        assert_eq!(object["uptime"], 120);
+        assert_eq!(object["last_successful_sync"], 1_700_000_000_000u64);
+        assert_eq!(object["pending_queue_depth"], 2);
+        assert_eq!(object["recent_error_count"], 1);
+        assert_eq!(object["last_error_reason"], "http_503");
+
+        let round_trip: HeartbeatEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_trip, event);
+    }
+
+    #[test]
+    fn heartbeat_observe_status_omits_absent_name() {
+        let event = HeartbeatEvent::observe_status(
+            false,
+            HealthBeacon {
+                name: None,
+                stream_type: Some("desktop".into()),
+                version: Some("0.3.1".into()),
+                uptime: Some(120),
+                last_successful_sync: Some(1_700_000_000_000),
+                pending_queue_depth: Some(2),
+                recent_error_count: Some(1),
+                last_error_reason: Some("http_503".into()),
+            },
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object().unwrap();
+        assert!(!object.contains_key("name"));
+        assert_eq!(object["stream_type"], "desktop");
+        assert_eq!(object["version"], "0.3.1");
     }
 
     #[test]

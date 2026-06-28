@@ -106,6 +106,9 @@ interface UploadStatus {
   failed_segments: number;
   last_uploaded_segment: string | null;
   last_error: string | null;
+  last_successful_sync?: number;
+  recent_error_count?: number;
+  last_error_reason?: string | null;
   heartbeat_ok: boolean;
 }
 

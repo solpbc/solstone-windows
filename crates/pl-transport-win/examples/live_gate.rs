@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_model::{SyncSnapshot, SCREEN_FILE_NAME};
+use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::coordinator::UploadCoordinator;
 use pl_transport_win::pairing;
@@ -111,7 +112,10 @@ async fn main() {
     );
 
     // 3. Heartbeat once.
-    client.heartbeat(false).await.expect("heartbeat failed");
+    client
+        .heartbeat(&HeartbeatEvent::status(false))
+        .await
+        .expect("heartbeat failed");
     println!("HEARTBEAT: ok");
 
     // 4. Upload + reconcile via the real coordinator.

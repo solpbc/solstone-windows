@@ -126,8 +126,8 @@ impl ObserverClient {
     }
 
     /// Post the `observe.status` heartbeat so the journal sees the observer live.
-    pub async fn heartbeat(&self, paused: bool) -> Result<(), TransportError> {
-        let body = serde_json::to_vec(&HeartbeatEvent::status(paused))?;
+    pub async fn heartbeat(&self, event: &HeartbeatEvent) -> Result<(), TransportError> {
+        let body = serde_json::to_vec(event)?;
         let mut headers = self.auth_headers()?;
         headers.push(("Content-Type".to_string(), "application/json".to_string()));
         let response = self

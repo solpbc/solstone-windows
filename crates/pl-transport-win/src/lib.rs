@@ -71,3 +71,65 @@ pub enum TransportError {
     #[error("not paired")]
     NotPaired,
 }
+
+pub(crate) fn transport_error_code(err: &TransportError) -> String {
+    match err {
+        TransportError::Io(_) => "io".to_string(),
+        TransportError::Tls(_) => "tls".to_string(),
+        TransportError::Crypto(_) => "crypto".to_string(),
+        TransportError::Mux(_) => "mux".to_string(),
+        TransportError::Http(_) => "http".to_string(),
+        TransportError::Json(_) => "json".to_string(),
+        TransportError::PairLink(_) => "pair_link".to_string(),
+        TransportError::Pairing(_) => "pairing".to_string(),
+        TransportError::Rejected { status, body: _ } => format!("http_{status}"),
+        TransportError::NoEndpoint => "no_endpoint".to_string(),
+        TransportError::NotPaired => "not_paired".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_error_code_maps_every_variant_without_inner_detail() {
+        let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let cases = [
+            (
+                TransportError::Io(std::io::Error::other("C:\\Users\\me\\seg.mp4")),
+                "io",
+            ),
+            (TransportError::Tls("10.0.0.5:7657".into()), "tls"),
+            (TransportError::Crypto("fingerprint abc".into()), "crypto"),
+            (TransportError::Mux(MuxError::Incomplete), "mux"),
+            (
+                TransportError::Http(HttpError::BadStatusLine("HTTP/1.1 SECRET".into())),
+                "http",
+            ),
+            (TransportError::Json(json_error), "json"),
+            (TransportError::PairLink("token=abc".into()), "pair_link"),
+            (TransportError::Pairing("sha256:abc".into()), "pairing"),
+            (
+                TransportError::Rejected {
+                    status: 503,
+                    body: "SECRET https://x/y?token=abc C:\\Users\\me\\seg.mp4".into(),
+                },
+                "http_503",
+            ),
+            (TransportError::NoEndpoint, "no_endpoint"),
+            (TransportError::NotPaired, "not_paired"),
+        ];
+
+        for (error, expected) in cases {
+            let code = transport_error_code(&error);
+            assert_eq!(code, expected);
+            assert!(!code.contains("SECRET"));
+            assert!(!code.contains("token"));
+            assert!(!code.contains("Users"));
+            assert!(!code.contains("https://"));
+            assert!(!code.contains("sha256:"));
+            assert!(!code.contains("10.0.0.5"));
+        }
+    }
+}

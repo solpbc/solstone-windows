@@ -382,6 +382,9 @@ pub struct PairingState {
 /// The honest upload/sync state surfaced in the health dump. Counts are earned
 /// from real ingest outcomes — a segment counts as `uploaded` only after the
 /// journal confirms it (reconcile by sha256), never on optimistic send.
+pub const RECENT_ERROR_COUNT_MAX: u8 = 99;
+pub const LAST_ERROR_REASON_MAX_LEN: usize = 200;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct UploadStatus {
     /// Sealed segments on disk not yet confirmed uploaded.
@@ -394,8 +397,40 @@ pub struct UploadStatus {
     pub last_uploaded_segment: Option<String>,
     /// The last upload error detail, when one occurred.
     pub last_error: Option<String>,
+    /// Epoch milliseconds of the last successful sync tick.
+    pub last_successful_sync: Option<u64>,
+    /// Consecutive failed sync ticks, bounded for journal diagnostics.
+    pub recent_error_count: u8,
+    /// Sanitized, single-line sync error code for journal diagnostics.
+    pub last_error_reason: Option<String>,
     /// Whether the most recent heartbeat to the journal succeeded.
     pub heartbeat_ok: bool,
+}
+
+impl UploadStatus {
+    pub fn record_failure(&mut self, reason_code: &str) {
+        self.recent_error_count = self
+            .recent_error_count
+            .saturating_add(1)
+            .min(RECENT_ERROR_COUNT_MAX);
+        self.last_error_reason = Some(bounded_single_line(reason_code, LAST_ERROR_REASON_MAX_LEN));
+    }
+
+    pub fn record_success(&mut self, now_ms: u64) {
+        self.recent_error_count = 0;
+        self.last_error_reason = None;
+        self.last_successful_sync = Some(now_ms);
+    }
+}
+
+fn bounded_single_line(input: &str, max_chars: usize) -> String {
+    input
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 /// The sync layer's snapshot (pairing + upload), folded into [`HealthDump`] by
@@ -607,6 +642,45 @@ mod tests {
             round_trip.views.get("settings"),
             Some(&ViewRenderState::Rendered)
         );
+    }
+
+    #[test]
+    fn upload_status_failure_clamps_and_single_lines_reason() {
+        let mut upload = UploadStatus::default();
+        for _ in 0..100 {
+            upload.record_failure("  http_500\nretry\tlater  ");
+        }
+
+        assert_eq!(upload.recent_error_count, RECENT_ERROR_COUNT_MAX);
+        assert_eq!(
+            upload.last_error_reason.as_deref(),
+            Some("http_500 retry later")
+        );
+    }
+
+    #[test]
+    fn upload_status_failure_truncates_reason_by_chars() {
+        let mut upload = UploadStatus::default();
+        let reason = "é".repeat(LAST_ERROR_REASON_MAX_LEN + 5);
+
+        upload.record_failure(&reason);
+
+        let bounded = upload.last_error_reason.unwrap();
+        assert_eq!(bounded.chars().count(), LAST_ERROR_REASON_MAX_LEN);
+        assert!(bounded.len() > LAST_ERROR_REASON_MAX_LEN);
+        assert!(bounded.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn upload_status_success_resets_consecutive_failure_signal() {
+        let mut upload = UploadStatus::default();
+        upload.record_failure("tls");
+
+        upload.record_success(1_700_000_000_000);
+
+        assert_eq!(upload.recent_error_count, 0);
+        assert_eq!(upload.last_error_reason, None);
+        assert_eq!(upload.last_successful_sync, Some(1_700_000_000_000));
     }
 
     #[test]
