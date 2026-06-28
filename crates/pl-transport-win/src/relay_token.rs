@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! Relay device-token refresh helpers.
+//! Low-level relay device-token refresh helpers consumed by `ObserverClient`.
 //!
-//! W3 owns coordinator wiring. On a relay 4401, it should refresh once, redial
-//! once, surface re-pair on `ReconnectNeeded`, and never loop.
+//! The refresh-once/redial-once policy lives in the client relay send path.
 
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::credential::Credential;
 use crate::{relay_http, TransportError};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -32,19 +30,6 @@ pub async fn refresh_device_token(relay_origin: &str, current_token: &str) -> Re
         Ok(outcome) => outcome,
         Err(_) => RefreshOutcome::TransientError,
     }
-}
-
-pub async fn maybe_refresh_device_token(
-    cred: &Credential,
-    now_secs: i64,
-) -> Option<RefreshOutcome> {
-    let origin = cred.relay_origin.as_deref()?;
-    let token = cred.device_token.as_deref()?;
-    let claims = observer_pl::jwt::decode_claims(token)?;
-    if !observer_pl::jwt::should_refresh(&claims, now_secs) {
-        return None;
-    }
-    Some(refresh_device_token(origin, token).await)
 }
 
 async fn refresh_device_token_inner(

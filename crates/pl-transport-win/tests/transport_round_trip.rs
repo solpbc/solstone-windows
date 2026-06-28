@@ -10,6 +10,7 @@
 //! replaced by a fixed echo. This is the deterministic, host-runnable proxy for
 //! the live cross-repo gate.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use observer_model::{
@@ -23,12 +24,14 @@ use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr};
 use pl_transport_win::heartbeat::run_heartbeat;
 use pl_transport_win::tls::pairing_config;
+use pl_transport_win::TransportError;
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
 fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
@@ -68,6 +71,19 @@ fn observer_credential(pin: Vec<u8>, port: u16) -> Credential {
         device_token: None,
         device_token_expires_at: None,
     }
+}
+
+fn observer_relay_credential(
+    pin: Vec<u8>,
+    port: u16,
+    relay_origin: String,
+    token: &str,
+) -> Credential {
+    let mut credential = observer_credential(pin, port);
+    credential.relay_origin = Some(relay_origin);
+    credential.device_token = Some(token.to_string());
+    credential.device_token_expires_at = Some(200);
+    credential
 }
 
 fn test_health(app_state: AppPhase) -> HealthDump {
@@ -141,6 +157,31 @@ async fn serve_one_response(
 
 async fn serve_one(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     serve_one_response(listener, acceptor, "200 OK", b"{\"status\":\"ok\"}").await
+}
+
+async fn serve_drop_then_one(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
+    let (tcp, _) = listener.accept().await.unwrap();
+    drop(tcp);
+    serve_one(listener, acceptor).await
+}
+
+async fn spawn_counting_relay() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let task = tokio::spawn({
+        let accepts = accepts.clone();
+        async move {
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    break;
+                };
+                accepts.fetch_add(1, Ordering::SeqCst);
+                drop(tcp);
+            }
+        }
+    });
+    (origin, accepts, task)
 }
 
 #[tokio::test]
@@ -443,4 +484,95 @@ async fn heartbeat_immediate_post_rejection_is_non_fatal_and_sets_heartbeat_not_
     assert_eq!(body["tract"], "observe");
     assert_eq!(body["event"], "status");
     assert_eq!(body["paused"], true);
+}
+
+#[tokio::test]
+async fn reachable_lan_success_never_dials_relay() {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one(listener, acceptor));
+    let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
+    let client = ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token"))
+        .unwrap()
+        .with_observer_key(Some("observer-key".into()));
+
+    client
+        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
+        .await
+        .unwrap();
+
+    let _ = server.await.unwrap();
+    assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
+    relay_task.abort();
+}
+
+#[tokio::test]
+async fn reachable_lan_rejection_never_dials_relay() {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_response(
+        listener,
+        acceptor,
+        "503 Service Unavailable",
+        b"{\"error\":\"busy\"}",
+    ));
+    let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
+    let client = ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token"))
+        .unwrap()
+        .with_observer_key(Some("observer-key".into()));
+
+    let err = client
+        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, TransportError::Rejected { status: 503, .. }));
+    let _ = server.await.unwrap();
+    assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
+    relay_task.abort();
+}
+
+#[tokio::test]
+async fn lan_only_no_endpoint_still_returns_no_endpoint() {
+    let mut credential = observer_credential(vec![0; 16], 7657);
+    credential.endpoints.clear();
+    let client = ObserverClient::new(credential)
+        .unwrap()
+        .with_observer_key(Some("observer-key".into()));
+
+    let err = client
+        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, TransportError::NoEndpoint));
+}
+
+#[tokio::test]
+async fn transient_lan_fault_then_success_absorbed_before_relay() {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_drop_then_one(listener, acceptor));
+    let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
+    let client = ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token"))
+        .unwrap()
+        .with_observer_key(Some("observer-key".into()));
+
+    client
+        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
+        .await
+        .unwrap();
+
+    let _ = server.await.unwrap();
+    assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
+    relay_task.abort();
 }

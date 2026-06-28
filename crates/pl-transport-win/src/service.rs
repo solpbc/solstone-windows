@@ -101,7 +101,8 @@ async fn pair_and_register_inner(
 ) -> Result<(PairedState, String, String), TransportError> {
     let credential = pairing::pair_from_link(link, &cfg.device_label).await?;
     let journal_label = credential.home_label.clone();
-    let mut client = ObserverClient::new(credential.clone())?;
+    let mut client =
+        ObserverClient::new(credential.clone())?.with_state_path(cfg.state_path.clone());
     let registration = client
         .register(
             &cfg.platform,
@@ -131,7 +132,8 @@ pub async fn run_uploader(
 ) -> Result<(), TransportError> {
     let credential = paired.credential.clone().ok_or(TransportError::NotPaired)?;
     let journal_label = credential.home_label.clone();
-    let mut client = ObserverClient::new(credential.clone())?;
+    let mut client =
+        ObserverClient::new(credential.clone())?.with_state_path(cfg.state_path.clone());
 
     let observer_name = if let Some(key) = paired.observer_key.clone() {
         client = client.with_observer_key(Some(key));

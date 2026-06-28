@@ -10,20 +10,25 @@
 //! round-trip tests.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW};
 use observer_pl::http::HttpResponse;
 use observer_pl::mux::INITIAL_WINDOW;
+use observer_pl::wire::HeartbeatEvent;
+use pl_transport_win::client::ObserverClient;
+use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::relay::{dial_relay_ws, request_once_over_ws, request_once_relay};
 use pl_transport_win::tls::pairing_config;
-use pl_transport_win::{RelayError, TransportError};
+use pl_transport_win::{transport_error_code, RelayError, TransportError};
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ClientConfig, ServerConfig};
+use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -35,9 +40,11 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, accept_hdr_async, WebSocketStream};
 
 const RELAY_TOKEN: &str = "test-device-token";
+const INSTANCE_ID: &str = "12345678-1234-5678-1234-567812345678";
 const CARRIER_READ_BUF_BYTES: usize = 64 * 1024;
 const LARGE_WS_FRAME_BYTES: usize = 256 * 1024;
 const LARGE_RESPONSE_BYTES: usize = 512 * 1024 + 137;
+static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -63,6 +70,91 @@ fn client_config(pin: &[u8]) -> Arc<ClientConfig> {
 
 fn unused_outer_config() -> Arc<ClientConfig> {
     client_config(&[0xAA; 16])
+}
+
+fn epoch_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn base64url_no_pad(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    let mut index = 0;
+    while index + 3 <= input.len() {
+        let chunk = ((input[index] as u32) << 16)
+            | ((input[index + 1] as u32) << 8)
+            | input[index + 2] as u32;
+        out.push(TABLE[((chunk >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((chunk >> 12) & 0x3F) as usize] as char);
+        out.push(TABLE[((chunk >> 6) & 0x3F) as usize] as char);
+        out.push(TABLE[(chunk & 0x3F) as usize] as char);
+        index += 3;
+    }
+    match input.len() - index {
+        1 => {
+            let chunk = (input[index] as u32) << 16;
+            out.push(TABLE[((chunk >> 18) & 0x3F) as usize] as char);
+            out.push(TABLE[((chunk >> 12) & 0x3F) as usize] as char);
+        }
+        2 => {
+            let chunk = ((input[index] as u32) << 16) | ((input[index + 1] as u32) << 8);
+            out.push(TABLE[((chunk >> 18) & 0x3F) as usize] as char);
+            out.push(TABLE[((chunk >> 12) & 0x3F) as usize] as char);
+            out.push(TABLE[((chunk >> 6) & 0x3F) as usize] as char);
+        }
+        _ => {}
+    }
+    out
+}
+
+fn mint_jwt(iat: i64, exp: i64) -> String {
+    let payload = format!(r#"{{"iat":{iat},"exp":{exp}}}"#);
+    format!(
+        "{}.{}.sig",
+        base64url_no_pad(b"{}"),
+        base64url_no_pad(payload.as_bytes())
+    )
+}
+
+fn observer_relay_credential(
+    pin: Vec<u8>,
+    lan_port: u16,
+    relay_origin: String,
+    token: String,
+) -> Credential {
+    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let params = CertificateParams::new(vec!["observer.test".to_string()]).unwrap();
+    let cert = params.self_signed(&key).unwrap();
+    let expires_at = observer_pl::jwt::decode_claims(&token).map(|claims| claims.exp);
+    Credential {
+        client_key_pem: key.serialize_pem(),
+        client_cert_pem: cert.pem(),
+        ca_chain_pem: vec![cert.pem()],
+        ca_fp_prefix: pin,
+        instance_id: INSTANCE_ID.into(),
+        home_label: "Home".into(),
+        endpoints: vec![EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: lan_port,
+        }],
+        relay_origin: Some(relay_origin),
+        device_token: Some(token),
+        device_token_expires_at: expires_at,
+    }
+}
+
+fn temp_pairing_path(name: &str) -> PathBuf {
+    let unique = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    std::env::temp_dir().join(format!("plw-{name}-{}-{unique}.json", std::process::id()))
+}
+
+fn heartbeat_client(credential: Credential) -> ObserverClient {
+    ObserverClient::new(credential)
+        .unwrap()
+        .with_observer_key(Some("observer-key".into()))
 }
 
 async fn pump_ws(
@@ -443,10 +535,15 @@ async fn spawn_large_response_relay(
     (origin, task, sent_frame_sizes)
 }
 
-fn tls_pair() -> (Arc<ClientConfig>, TlsAcceptor) {
+fn tls_pair_with_pin() -> (Vec<u8>, TlsAcceptor) {
     let (cert, key) = self_signed();
     let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    (pin, acceptor)
+}
+
+fn tls_pair() -> (Arc<ClientConfig>, TlsAcceptor) {
+    let (pin, acceptor) = tls_pair_with_pin();
     (client_config(&pin), acceptor)
 }
 
@@ -456,6 +553,261 @@ fn assert_relay_error<T>(result: Result<T, TransportError>, expected: RelayError
         Err(other) => panic!("expected relay error {expected:?}, got {other:?}"),
         Ok(_) => panic!("expected relay error {expected:?}, got success"),
     }
+}
+
+#[derive(Clone, Copy)]
+enum CombinedWsMode {
+    AcceptAny,
+    FreshOnly,
+    AlwaysUnauthorized,
+    Close(u16),
+    UpgradeReject(u16),
+}
+
+struct CombinedRelayState {
+    acceptor: TlsAcceptor,
+    mode: CombinedWsMode,
+    fresh_token: String,
+    tcp_accepts: AtomicUsize,
+    ws_dials: AtomicUsize,
+    refreshes: AtomicUsize,
+    auth_headers: Mutex<Vec<String>>,
+    inner_requests: Mutex<Vec<Vec<u8>>>,
+}
+
+struct CombinedRelay {
+    origin: String,
+    state: Arc<CombinedRelayState>,
+    task: JoinHandle<()>,
+}
+
+impl CombinedRelay {
+    fn abort(&self) {
+        self.task.abort();
+    }
+}
+
+async fn spawn_combined_relay(
+    acceptor: TlsAcceptor,
+    mode: CombinedWsMode,
+    fresh_token: String,
+) -> CombinedRelay {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let state = Arc::new(CombinedRelayState {
+        acceptor,
+        mode,
+        fresh_token,
+        tcp_accepts: AtomicUsize::new(0),
+        ws_dials: AtomicUsize::new(0),
+        refreshes: AtomicUsize::new(0),
+        auth_headers: Mutex::new(Vec::new()),
+        inner_requests: Mutex::new(Vec::new()),
+    });
+    let task = tokio::spawn({
+        let state = state.clone();
+        async move {
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    break;
+                };
+                state.tcp_accepts.fetch_add(1, Ordering::SeqCst);
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let _ = handle_combined_connection(tcp, state).await;
+                });
+            }
+        }
+    });
+    CombinedRelay {
+        origin,
+        state,
+        task,
+    }
+}
+
+async fn handle_combined_connection(
+    tcp: TcpStream,
+    state: Arc<CombinedRelayState>,
+) -> io::Result<()> {
+    let mut peek = [0u8; 512];
+    let n = tcp.peek(&mut peek).await?;
+    if String::from_utf8_lossy(&peek[..n]).starts_with("GET ") {
+        handle_combined_ws(tcp, state).await
+    } else {
+        handle_combined_http(tcp, state).await
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> io::Result<()> {
+    let seen_auth = Arc::new(Mutex::new(String::new()));
+    let seen_auth_for_cb = seen_auth.clone();
+    let state_for_cb = state.clone();
+    let mode = state.mode;
+    let result = accept_hdr_async(tcp, move |request: &Request, response: Response| {
+        state_for_cb.ws_dials.fetch_add(1, Ordering::SeqCst);
+        let path_ok = request.uri().path() == "/session/dial"
+            && request
+                .uri()
+                .query()
+                .map(|query| query.contains(INSTANCE_ID))
+                .unwrap_or(false);
+        let auth = request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        *seen_auth_for_cb.lock().unwrap() = auth.clone();
+        state_for_cb.auth_headers.lock().unwrap().push(auth);
+        if !path_ok {
+            let response: ErrorResponse = tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(400)
+                .body(Some("bad path".to_string()))
+                .unwrap();
+            return Err(response);
+        }
+        if let CombinedWsMode::UpgradeReject(status) = mode {
+            let response: ErrorResponse = tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(status)
+                .body(Some("rejected".to_string()))
+                .unwrap();
+            return Err(response);
+        }
+        Ok(response)
+    })
+    .await;
+
+    let mut ws = match result {
+        Ok(ws) => ws,
+        Err(_) => return Ok(()),
+    };
+    match mode {
+        CombinedWsMode::AcceptAny => {}
+        CombinedWsMode::FreshOnly => {
+            let expected = format!("Bearer {}", state.fresh_token);
+            if *seen_auth.lock().unwrap() != expected {
+                ws.send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::from(4401),
+                    reason: "".into(),
+                })))
+                .await
+                .map_err(io::Error::other)?;
+                return Ok(());
+            }
+        }
+        CombinedWsMode::AlwaysUnauthorized => {
+            ws.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::from(4401),
+                reason: "".into(),
+            })))
+            .await
+            .map_err(io::Error::other)?;
+            return Ok(());
+        }
+        CombinedWsMode::Close(code) => {
+            ws.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::from(code),
+                reason: "".into(),
+            })))
+            .await
+            .map_err(io::Error::other)?;
+            return Ok(());
+        }
+        CombinedWsMode::UpgradeReject(_) => return Ok(()),
+    }
+
+    let (relay_side, server_side) = tokio::io::duplex(4096);
+    tokio::spawn(async move {
+        let _ = pump_ws(ws, relay_side, None).await;
+    });
+    let request = serve_stream_response(
+        server_side,
+        state.acceptor.clone(),
+        "200 OK",
+        b"{\"status\":\"ok\"}",
+    )
+    .await;
+    state.inner_requests.lock().unwrap().push(request);
+    Ok(())
+}
+
+async fn handle_combined_http(
+    mut tcp: TcpStream,
+    state: Arc<CombinedRelayState>,
+) -> io::Result<()> {
+    let raw = read_http_request(&mut tcp).await?;
+    let text = String::from_utf8_lossy(&raw);
+    let path = text
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    if path == "/token/refresh" {
+        state.refreshes.fetch_add(1, Ordering::SeqCst);
+        write_json(
+            &mut tcp,
+            200,
+            json!({
+                "device_token": state.fresh_token,
+            }),
+        )
+        .await?;
+    } else {
+        write_json(&mut tcp, 404, json!({"error":"not_found"})).await?;
+    }
+    let _ = tcp.shutdown().await;
+    Ok(())
+}
+
+async fn read_http_request<S>(stream: &mut S) -> io::Result<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(raw);
+        }
+        raw.extend_from_slice(&buf[..n]);
+        if request_complete(&raw) {
+            return Ok(raw);
+        }
+    }
+}
+
+fn request_complete(raw: &[u8]) -> bool {
+    let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&raw[..split]);
+    let len = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    raw.len() >= split + 4 + len
+}
+
+async fn write_json<S>(stream: &mut S, status: u16, body: serde_json::Value) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    let body = body.to_string();
+    let reason = if status == 200 { "OK" } else { "ERR" };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.flush().await
 }
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
@@ -819,4 +1171,266 @@ async fn relay_inner_app_503_returns_http_response_not_home_offline() {
     assert!(!response.is_success());
     assert_eq!(response.body_text(), "{\"error\":\"busy\"}");
     let _ = server.await.unwrap();
+}
+
+#[tokio::test]
+async fn relay_fallbacks_after_lan_unreachable() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let token = mint_jwt(now, now + 10_000);
+    let relay = spawn_combined_relay(acceptor, CombinedWsMode::AcceptAny, token.clone()).await;
+    let client = heartbeat_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        token,
+    ));
+
+    client
+        .heartbeat(&HeartbeatEvent::status(false))
+        .await
+        .unwrap();
+
+    let requests = relay.state.inner_requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request_text = String::from_utf8_lossy(&requests[0]);
+    assert!(request_text.starts_with("POST /app/observer/ingest/event HTTP/1.1\r\n"));
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_credential_without_lan_endpoints_rejected_at_new() {
+    let (pin, _acceptor) = tls_pair_with_pin();
+    let mut credential =
+        observer_relay_credential(pin, 7657, "http://127.0.0.1:1".into(), mint_jwt(100, 200));
+    credential.endpoints.clear();
+
+    match ObserverClient::new(credential) {
+        Err(TransportError::Pairing(message)) => {
+            assert_eq!(message, "relay credential has no LAN endpoints");
+        }
+        Err(other) => panic!("expected Pairing error, got {other:?}"),
+        Ok(_) => panic!("relay credential without LAN endpoints should fail"),
+    }
+}
+
+#[tokio::test]
+async fn relay_proactive_refresh_before_first_dial() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(100, 200);
+    let fresh_token = mint_jwt(now, now + 10_000);
+    let relay =
+        spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
+    let client = heartbeat_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        old_token,
+    ));
+
+    client
+        .heartbeat(&HeartbeatEvent::status(false))
+        .await
+        .unwrap();
+
+    assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        relay.state.auth_headers.lock().unwrap().as_slice(),
+        [format!("Bearer {fresh_token}")]
+    );
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_unauthorized_refreshes_and_redials_once() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay =
+        spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
+    let client = heartbeat_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        old_token,
+    ));
+
+    client
+        .heartbeat(&HeartbeatEvent::status(false))
+        .await
+        .unwrap();
+
+    assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 2);
+    assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        relay.state.auth_headers.lock().unwrap().last().cloned(),
+        Some(format!("Bearer {fresh_token}"))
+    );
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_unauthorized_persists_after_refresh_is_terminal_no_storm() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay =
+        spawn_combined_relay(acceptor, CombinedWsMode::AlwaysUnauthorized, fresh_token).await;
+    let client = heartbeat_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        old_token,
+    ));
+
+    let err = client
+        .heartbeat(&HeartbeatEvent::status(false))
+        .await
+        .unwrap_err();
+
+    assert_relay_error::<()>(Err(err), RelayError::Unauthorized);
+    assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 2);
+    assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_refresh_persists_token_for_restart() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay =
+        spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
+    let credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token);
+    let path = temp_pairing_path("refresh");
+    PairedState {
+        credential: Some(credential.clone()),
+        observer_key: Some("observer-key".into()),
+        observer_name: Some("fedora".into()),
+    }
+    .save(&path)
+    .unwrap();
+    let client = heartbeat_client(credential).with_state_path(path.clone());
+
+    client
+        .heartbeat(&HeartbeatEvent::status(false))
+        .await
+        .unwrap();
+
+    let loaded = PairedState::load(&path).unwrap();
+    let loaded_credential = loaded.credential.unwrap();
+    assert_eq!(
+        loaded_credential.device_token.as_deref(),
+        Some(fresh_token.as_str())
+    );
+    assert_eq!(
+        loaded_credential.device_token_expires_at,
+        Some(now + 20_000)
+    );
+    assert_eq!(loaded.observer_key.as_deref(), Some("observer-key"));
+    assert_eq!(loaded.observer_name.as_deref(), Some("fedora"));
+    let _ = std::fs::remove_file(&path);
+    relay.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_refresh_single_flight_across_concurrent_sends() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay =
+        spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
+    let client = Arc::new(heartbeat_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        old_token,
+    )));
+
+    let mut tasks = Vec::new();
+    for _ in 0..3 {
+        let client = client.clone();
+        tasks.push(tokio::spawn(async move {
+            client.heartbeat(&HeartbeatEvent::status(false)).await
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
+
+    assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        relay
+            .state
+            .auth_headers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|auth| *auth == &format!("Bearer {fresh_token}"))
+            .count(),
+        3
+    );
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_unpaid_is_terminal_bounded() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let token = mint_jwt(now, now + 10_000);
+    let relay = spawn_combined_relay(acceptor, CombinedWsMode::Close(4402), token.clone()).await;
+    let client = heartbeat_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        token,
+    ));
+
+    let err = client
+        .heartbeat(&HeartbeatEvent::status(false))
+        .await
+        .unwrap_err();
+
+    assert_relay_error::<()>(Err(err), RelayError::Unpaid);
+    assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 1);
+    assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 0);
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_reasons_map_verbatim_and_redacted() {
+    for (mode, expected) in [
+        (CombinedWsMode::Close(4402), "relay_unpaid"),
+        (CombinedWsMode::UpgradeReject(503), "relay_home_offline"),
+    ] {
+        let (pin, acceptor) = tls_pair_with_pin();
+        let now = epoch_secs();
+        let token = mint_jwt(now, now + 10_000);
+        let relay = spawn_combined_relay(acceptor, mode, token.clone()).await;
+        let client = heartbeat_client(observer_relay_credential(
+            pin,
+            9,
+            relay.origin.clone(),
+            token.clone(),
+        ));
+
+        let err = client
+            .heartbeat(&HeartbeatEvent::status(false))
+            .await
+            .unwrap_err();
+        let code = transport_error_code(&err);
+
+        assert_eq!(code, expected);
+        assert!(!code.contains(&token));
+        assert!(!code.contains(&relay.origin));
+        assert!(!code.contains("https://"));
+        assert!(!code.contains(INSTANCE_ID));
+        relay.abort();
+    }
 }

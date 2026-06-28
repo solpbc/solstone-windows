@@ -11,8 +11,10 @@
 //! the journal accepts either auth header, and the two recent Android 401s were
 //! both *missing-header* bugs, so the client always sends the full set.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_pl::multipart::{self, FilePart};
 use observer_pl::wire::{
@@ -25,8 +27,19 @@ use observer_pl::{
 use rustls::ClientConfig;
 
 use crate::connection::request_once;
-use crate::credential::Credential;
-use crate::{tls, TransportError};
+use crate::credential::{Credential, PairedState};
+use crate::relay::request_once_relay;
+use crate::relay_token::{refresh_device_token, RefreshOutcome};
+use crate::{tls, RelayError, TransportError};
+
+/// Relay transient retry count. Mirrors the LAN connection/handshake retry bound.
+const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
+
+enum RefreshAction {
+    Redial,
+    Terminal,
+    Transient,
+}
 
 /// An observer talking to its paired journal over framed-mTLS.
 pub struct ObserverClient {
@@ -34,11 +47,21 @@ pub struct ObserverClient {
     config: Arc<ClientConfig>,
     observer_key: Option<String>,
     boundary_counter: AtomicU64,
+    /// Live relay device-token used for dials; the mutex is the refresh single-flight gate.
+    device_token: Option<tokio::sync::Mutex<String>>,
+    /// Optional persisted pairing state path for best-effort refreshed-token write-back.
+    state_path: Option<PathBuf>,
 }
 
 impl ObserverClient {
     /// Build the client and its mTLS config from a stored credential.
     pub fn new(credential: Credential) -> Result<Self, TransportError> {
+        if credential.relay_origin.is_some() && credential.endpoints.is_empty() {
+            return Err(TransportError::Pairing(
+                "relay credential has no LAN endpoints".into(),
+            ));
+        }
+        let device_token = credential.device_token.clone().map(tokio::sync::Mutex::new);
         let chain = tls::parse_certs(&credential.client_cert_pem)?;
         let key = tls::parse_private_key(&credential.client_key_pem)?;
         let config = Arc::new(tls::mtls_config(&credential.ca_fp_prefix, chain, key)?);
@@ -47,12 +70,20 @@ impl ObserverClient {
             config,
             observer_key: None,
             boundary_counter: AtomicU64::new(1),
+            device_token,
+            state_path: None,
         })
     }
 
     /// Attach a previously-registered observer handle (resumed from disk).
     pub fn with_observer_key(mut self, key: Option<String>) -> Self {
         self.observer_key = key;
+        self
+    }
+
+    /// Attach the persisted pairing state path for best-effort relay token refresh write-back.
+    pub fn with_state_path(mut self, path: PathBuf) -> Self {
+        self.state_path = Some(path);
         self
     }
 
@@ -186,6 +217,126 @@ impl ObserverClient {
         format!("----solstonewindowsboundary{n}")
     }
 
+    /// True when the stored credential has relay coordinates and a live token.
+    fn relay_eligible(&self) -> bool {
+        self.credential.relay_origin.is_some() && self.device_token.is_some()
+    }
+
+    /// Clone the current live relay token under the single-flight mutex.
+    async fn current_token(&self) -> String {
+        self.device_token
+            .as_ref()
+            .expect("live device token present for relay send")
+            .lock()
+            .await
+            .clone()
+    }
+
+    /// Best-effort write-back of a refreshed relay token into the persisted pairing state.
+    async fn persist_token(&self, token: &str, expires_at: i64) {
+        let Some(path) = &self.state_path else {
+            return;
+        };
+        let Ok(mut state) = PairedState::load(path) else {
+            return;
+        };
+        let Some(credential) = state.credential.as_mut() else {
+            return;
+        };
+        credential.device_token = Some(token.to_string());
+        credential.device_token_expires_at = Some(expires_at);
+        let _ = state.save(path);
+    }
+
+    /// Refresh only if the live token still matches the caller's failed token.
+    async fn refresh_if_current(&self, origin: &str, expected: &str) -> RefreshAction {
+        let Some(token) = &self.device_token else {
+            return RefreshAction::Terminal;
+        };
+        let mut guard = token.lock().await;
+        if guard.as_str() != expected {
+            return RefreshAction::Redial;
+        }
+        match refresh_device_token(origin, expected).await {
+            RefreshOutcome::Refreshed {
+                device_token,
+                expires_at,
+            } => {
+                *guard = device_token.clone();
+                drop(guard);
+                self.persist_token(&device_token, expires_at).await;
+                RefreshAction::Redial
+            }
+            RefreshOutcome::ReconnectNeeded => RefreshAction::Terminal,
+            RefreshOutcome::TransientError => RefreshAction::Transient,
+        }
+    }
+
+    /// Send through the relay after the direct LAN loop has exhausted.
+    async fn send_over_relay(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<observer_pl::http::HttpResponse, TransportError> {
+        let origin = self
+            .credential
+            .relay_origin
+            .as_deref()
+            .ok_or(TransportError::NoEndpoint)?;
+        let instance_id = &self.credential.instance_id;
+        let current = self.current_token().await;
+        if token_should_refresh(&current, now_secs()) {
+            if let RefreshAction::Terminal = self.refresh_if_current(origin, &current).await {
+                return Err(TransportError::Relay(RelayError::Unauthorized));
+            }
+        }
+
+        let mut reactive_refreshed = false;
+        let mut transient_attempt = 0usize;
+        loop {
+            let token = self.current_token().await;
+            match request_once_relay(
+                self.config.clone(),
+                origin,
+                instance_id,
+                &token,
+                method,
+                path,
+                headers,
+                body,
+            )
+            .await
+            {
+                Ok(response) => return Ok(response),
+                Err(TransportError::Relay(RelayError::Unauthorized)) => {
+                    if reactive_refreshed {
+                        return Err(TransportError::Relay(RelayError::Unauthorized));
+                    }
+                    reactive_refreshed = true;
+                    match self.refresh_if_current(origin, &token).await {
+                        RefreshAction::Redial => continue,
+                        RefreshAction::Terminal | RefreshAction::Transient => {
+                            return Err(TransportError::Relay(RelayError::Unauthorized));
+                        }
+                    }
+                }
+                Err(e) if relay_fault_is_transient_err(&e) => {
+                    transient_attempt += 1;
+                    if transient_attempt >= RELAY_MAX_TRANSIENT_ATTEMPTS {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        250 * transient_attempt as u64,
+                    ))
+                    .await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Send a request, trying each journal endpoint and retrying transient
     /// connection/handshake failures. Connection-per-request means each call
     /// re-handshakes; a freshly-paired fingerprint can take a moment to reach
@@ -230,6 +381,67 @@ impl ObserverClient {
                 _ => break,
             }
         }
-        Err(last_err.unwrap_or(TransportError::NoEndpoint))
+        let lan_err = last_err.unwrap_or(TransportError::NoEndpoint);
+        let lan_unreachable = matches!(
+            lan_err,
+            TransportError::Tls(_) | TransportError::Io(_) | TransportError::NoEndpoint
+        );
+        if lan_unreachable && self.relay_eligible() {
+            return self.send_over_relay(method, path, headers, body).await;
+        }
+        Err(lan_err)
+    }
+}
+
+/// Decode JWT lifetime and apply the observer-pl proactive refresh threshold.
+fn token_should_refresh(token: &str, now_secs: i64) -> bool {
+    observer_pl::jwt::decode_claims(token)
+        .map(|claims| observer_pl::jwt::should_refresh(&claims, now_secs))
+        .unwrap_or(false)
+}
+
+/// Current UNIX time in seconds, falling back to zero on clock errors.
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Relay faults that are worth retrying inside the bounded relay phase.
+fn relay_fault_is_transient(err: &RelayError) -> bool {
+    matches!(
+        err,
+        RelayError::HomeOffline | RelayError::Abnormal | RelayError::Overflow | RelayError::Stalled
+    )
+}
+
+/// Transport-level wrapper around the relay transient retry predicate.
+fn relay_fault_is_transient_err(err: &TransportError) -> bool {
+    matches!(err, TransportError::Relay(relay) if relay_fault_is_transient(relay))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_fault_is_transient_truth_table() {
+        for err in [
+            RelayError::HomeOffline,
+            RelayError::Abnormal,
+            RelayError::Overflow,
+            RelayError::Stalled,
+        ] {
+            assert!(relay_fault_is_transient(&err), "{err:?} should retry");
+        }
+        for err in [
+            RelayError::Unauthorized,
+            RelayError::Unpaid,
+            RelayError::UnknownInstance,
+            RelayError::UpgradeRejected,
+        ] {
+            assert!(!relay_fault_is_transient(&err), "{err:?} should stop");
+        }
     }
 }

@@ -9,11 +9,9 @@ use futures_util::{SinkExt, StreamExt};
 use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
 use observer_pl::pairlink::RelayPairLink;
 use observer_pl::wire::PairRequest;
-use pl_transport_win::credential::{Credential, EndpointAddr};
+use pl_transport_win::credential::EndpointAddr;
 use pl_transport_win::relay_pairing::pair_over_relay;
-use pl_transport_win::relay_token::{
-    maybe_refresh_device_token, refresh_device_token, RefreshOutcome,
-};
+use pl_transport_win::relay_token::{refresh_device_token, RefreshOutcome};
 use pl_transport_win::{transport_error_code, RelayControlEndpoint, TransportError};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, ExtendedKeyUsagePurpose,
@@ -366,21 +364,6 @@ where
     Ok(())
 }
 
-fn test_credential(origin: String, token: String) -> Credential {
-    Credential {
-        client_key_pem: "K".into(),
-        client_cert_pem: "C".into(),
-        ca_chain_pem: vec!["CA".into()],
-        ca_fp_prefix: vec![1, 2, 3, 4],
-        instance_id: INSTANCE_ID.into(),
-        home_label: "Home".into(),
-        endpoints: Vec::new(),
-        relay_origin: Some(origin),
-        device_token: Some(token),
-        device_token_expires_at: Some(200),
-    }
-}
-
 #[tokio::test]
 async fn relay_pairing_full_ceremony_populates_credential() {
     let state = Arc::new(MockState::normal().with_same_tls_ca());
@@ -470,33 +453,6 @@ async fn relay_pairing_enroll_statuses_are_control_rejections() {
         assert_eq!(code, format!("relay_enroll_device_http_{status}"));
         assert!(!code.contains("attestation"));
     }
-}
-
-#[tokio::test]
-async fn refresh_maybe_posts_only_after_threshold() {
-    let state = Arc::new(MockState::normal().with_same_tls_ca());
-    let origin = spawn_mock_relay(state.clone()).await;
-    let cred = test_credential(origin, CURRENT_TOKEN.into());
-
-    let outcome = maybe_refresh_device_token(&cred, 181).await;
-    assert_eq!(
-        outcome,
-        Some(RefreshOutcome::Refreshed {
-            device_token: NEW_TOKEN.into(),
-            expires_at: 400
-        })
-    );
-    assert_eq!(state.refresh_hits.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn refresh_undecodable_token_is_noop() {
-    let state = Arc::new(MockState::normal().with_same_tls_ca());
-    let origin = spawn_mock_relay(state.clone()).await;
-    let cred = test_credential(origin, "not-a-jwt".into());
-
-    assert_eq!(maybe_refresh_device_token(&cred, 999).await, None);
-    assert_eq!(state.refresh_hits.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
