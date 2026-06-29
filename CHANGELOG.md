@@ -6,6 +6,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-06-28
+
+### Added
+
+- reach your journal from anywhere. when your journal has private network access
+  turned on, solstone now connects to it over the encrypted relay while you're
+  away from home, not only on the same wi-fi. it keeps using a direct connection
+  when you're home and switches to the relay when you're not, with nothing to set
+  up beyond pairing. the relay only carries sealed traffic between your device and
+  your journal; it never sees what's inside.
+
 ## [0.2.4] - 2026-06-25
 
 ### Added
