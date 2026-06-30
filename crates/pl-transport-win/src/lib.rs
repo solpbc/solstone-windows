@@ -64,6 +64,8 @@ pub enum RelayError {
     Unpaid,
     /// Upgrade HTTP 404; not retryable.
     UnknownInstance,
+    /// Pair-dial HTTP 401; the journal pairing window is closed or expired.
+    PairWindowClosed,
     /// Close 1009; retryable.
     Overflow,
     /// Close 1006/1012 or abnormal drop; retryable by reconnecting, not re-pairing.
@@ -81,6 +83,9 @@ impl fmt::Display for RelayError {
             RelayError::Unauthorized => "unauthorized",
             RelayError::Unpaid => "unpaid",
             RelayError::UnknownInstance => "unknown instance",
+            RelayError::PairWindowClosed => {
+                "the pairing window is closed or expired — regenerate the link on your journal"
+            }
             RelayError::Overflow => "overflow",
             RelayError::Abnormal => "abnormal close",
             RelayError::UpgradeRejected => "upgrade rejected",
@@ -92,7 +97,6 @@ impl fmt::Display for RelayError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayControlEndpoint {
-    PairTicket,
     EnrollDevice,
     TokenRefresh,
 }
@@ -100,7 +104,6 @@ pub enum RelayControlEndpoint {
 impl RelayControlEndpoint {
     fn code(self) -> &'static str {
         match self {
-            RelayControlEndpoint::PairTicket => "pair_ticket",
             RelayControlEndpoint::EnrollDevice => "enroll_device",
             RelayControlEndpoint::TokenRefresh => "refresh",
         }
@@ -163,6 +166,7 @@ pub fn transport_error_code(err: &TransportError) -> String {
             RelayError::Unauthorized => "relay_unauthorized",
             RelayError::Unpaid => "relay_unpaid",
             RelayError::UnknownInstance => "relay_unknown_instance",
+            RelayError::PairWindowClosed => "relay_pair_window_closed",
             RelayError::Overflow => "relay_overflow",
             RelayError::Abnormal => "relay_abnormal",
             RelayError::UpgradeRejected => "relay_upgrade_rejected",
@@ -220,6 +224,10 @@ mod tests {
                 "relay_unknown_instance",
             ),
             (
+                TransportError::Relay(RelayError::PairWindowClosed),
+                "relay_pair_window_closed",
+            ),
+            (
                 TransportError::Relay(RelayError::Overflow),
                 "relay_overflow",
             ),
@@ -232,13 +240,6 @@ mod tests {
                 "relay_upgrade_rejected",
             ),
             (TransportError::Relay(RelayError::Stalled), "relay_stalled"),
-            (
-                TransportError::RelayControlRejected {
-                    endpoint: RelayControlEndpoint::PairTicket,
-                    status: 401,
-                },
-                "relay_pair_ticket_http_401",
-            ),
             (
                 TransportError::RelayControlRejected {
                     endpoint: RelayControlEndpoint::EnrollDevice,

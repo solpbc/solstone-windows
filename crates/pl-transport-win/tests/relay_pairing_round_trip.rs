@@ -26,8 +26,8 @@ use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, WebSocketStream};
 
-const INSTANCE_ID: &str = "12345678-1234-5678-1234-567812345678";
-const NONCE_HEX: &str = "0123456789abcdef0123456789abcdef";
+const PAIR_SECRET: [u8; 8] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
+const PAIR_SECRET_HEX: &str = "0123456789abcdef";
 const CURRENT_TOKEN: &str = "e30.eyJpYXQiOjEwMCwiZXhwIjoyMDB9.sig";
 const NEW_TOKEN: &str = "e30.eyJpYXQiOjMwMCwiZXhwIjo0MDB9.sig";
 const ENROLL_TOKEN: &str = "e30.eyJpYXQiOjEwMCwiZXhwIjo5OTk5OTk5OTk5fQ.sig";
@@ -89,6 +89,7 @@ struct MockState {
     json_ca: Arc<TestCa>,
     tls_signer: Arc<TestCa>,
     home_mode: HomeMode,
+    pair_instance_id: Mutex<Option<String>>,
     enroll_status: Mutex<Option<u16>>,
     refresh_status: Mutex<Option<u16>>,
     refresh_hits: AtomicUsize,
@@ -101,6 +102,7 @@ impl MockState {
             json_ca: ca,
             tls_signer: Arc::new(TestCa::new()),
             home_mode: HomeMode::Ok,
+            pair_instance_id: Mutex::new(None),
             enroll_status: Mutex::new(None),
             refresh_status: Mutex::new(None),
             refresh_hits: AtomicUsize::new(0),
@@ -115,12 +117,15 @@ impl MockState {
 
 fn relay_link(origin: String, ca_fp_spki: Vec<u8>) -> RelayPairLink {
     RelayPairLink {
-        instance_id: INSTANCE_ID.to_string(),
-        totp: "123456".to_string(),
-        nonce_hex: NONCE_HEX.to_string(),
+        s: PAIR_SECRET,
         ca_fp_spki,
         relay_origin: origin,
     }
+}
+
+fn jid_for_ca(ca: &TestCa) -> String {
+    let spki = observer_pl::ca::extract_spki_der(ca.cert.der()).unwrap();
+    observer_pl::relay_window::jid_from_spki(&spki).unwrap()
 }
 
 async fn spawn_mock_relay(state: Arc<MockState>) -> String {
@@ -213,9 +218,7 @@ async fn handle_http(mut tcp: TcpStream, state: Arc<MockState>) -> io::Result<()
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
 
-    if path.starts_with("/session/pair-ticket") {
-        write_json(&mut tcp, 200, json!({"pair_ticket":"pair-ticket"})).await?;
-    } else if path == "/enroll/device" {
+    if path == "/enroll/device" {
         let status = *state.enroll_status.lock().unwrap();
         match status {
             Some(status) => write_json(&mut tcp, status, json!({"error":"rejected"})).await?,
@@ -296,7 +299,7 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
     }
 
     let request_text = String::from_utf8_lossy(&request);
-    assert!(request_text.starts_with("POST /app/network/pair?token="));
+    assert!(request_text.starts_with(&format!("POST /app/network/pair?token={PAIR_SECRET_HEX} ")));
     let body = request
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -309,10 +312,16 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
         .unwrap();
     let fingerprint = format!("sha256:{}", observer_pl::ca::sha256_hex(client_cert.der()));
 
+    let instance_id = state
+        .pair_instance_id
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| jid_for_ca(state.json_ca.as_ref()));
     let mut response = json!({
         "client_cert": client_cert.pem(),
         "ca_chain": [state.json_ca.cert.pem()],
-        "instance_id": INSTANCE_ID,
+        "instance_id": instance_id,
         "home_label": "Home",
         "fingerprint": fingerprint,
         "local_endpoints": [{"ip":"10.0.0.2","port":7657,"scope":"lan"}]
@@ -373,6 +382,7 @@ async fn relay_pairing_full_ceremony_populates_credential() {
     let credential = pair_over_relay(&link, "win-test").await.unwrap();
 
     assert_eq!(credential.relay_origin.as_deref(), Some(origin.as_str()));
+    assert_eq!(credential.instance_id, jid_for_ca(state.json_ca.as_ref()));
     assert_eq!(credential.device_token.as_deref(), Some(ENROLL_TOKEN));
     assert_eq!(credential.device_token_expires_at, Some(9_999_999_999));
     assert!(credential.client_key_pem.contains("BEGIN PRIVATE KEY"));
@@ -386,6 +396,18 @@ async fn relay_pairing_full_ceremony_populates_credential() {
             port: 7657
         }]
     );
+}
+
+#[tokio::test]
+async fn relay_pairing_rejects_jid_mismatch_before_enroll() {
+    let state = Arc::new(MockState::normal().with_same_tls_ca());
+    *state.pair_instance_id.lock().unwrap() =
+        Some("00000000-0000-8000-8000-000000000001".to_string());
+    let origin = spawn_mock_relay(state.clone()).await;
+    let link = relay_link(origin, state.json_ca.spki_pin());
+
+    let err = pair_over_relay(&link, "win-test").await.unwrap_err();
+    assert!(matches!(err, TransportError::Pairing(_)));
 }
 
 #[tokio::test]

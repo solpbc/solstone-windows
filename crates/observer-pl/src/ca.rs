@@ -16,6 +16,9 @@
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+const OID_EC_PUBLIC_KEY: &[u8] = &[0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+const OID_PRIME256V1: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CaError {
     #[error("malformed certificate DER")]
@@ -136,6 +139,27 @@ pub fn extract_spki_der(cert_der: &[u8]) -> Result<Vec<u8>, CaError> {
     Ok(spki.full(cert_der).to_vec())
 }
 
+/// True if `spki_der` is a canonical EC P-256 SubjectPublicKeyInfo.
+pub fn is_ec_p256_spki(spki_der: &[u8]) -> bool {
+    let Ok(spki) = expect_element(spki_der, 0x30) else {
+        return false;
+    };
+    let mut spki_pos = spki.content_start;
+    let Ok(alg_id) = read_element(spki_der, &mut spki_pos, 0x30) else {
+        return false;
+    };
+    let mut alg_pos = alg_id.content_start;
+    let Ok(alg_oid) = read_element(spki_der, &mut alg_pos, 0x06) else {
+        return false;
+    };
+    let Ok(curve_oid) = read_element(spki_der, &mut alg_pos, 0x06) else {
+        return false;
+    };
+    alg_pos == alg_id.full_end
+        && alg_oid.full(spki_der) == OID_EC_PUBLIC_KEY
+        && curve_oid.full(spki_der) == OID_PRIME256V1
+}
+
 /// Extract the full TBS certificate DER element and certificate signature bytes
 /// from an X.509 certificate DER blob.
 pub fn extract_tbs_and_signature(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CaError> {
@@ -241,6 +265,18 @@ mod tests {
         let (cert, expected_spki) = test_cert_der_and_spki();
         let spki = extract_spki_der(&cert).unwrap();
         assert_eq!(spki, expected_spki);
+    }
+
+    #[test]
+    fn recognizes_ec_p256_spki() {
+        let (_, spki) = test_cert_der_and_spki();
+        assert!(is_ec_p256_spki(&spki));
+    }
+
+    #[test]
+    fn ec_p256_spki_gate_fails_closed_on_junk() {
+        assert!(!is_ec_p256_spki(b"not der"));
+        assert!(!is_ec_p256_spki(&[0x30, 0x59]));
     }
 
     #[test]

@@ -22,6 +22,7 @@
 //!   `request.files.getlist("files")`).
 //! - [`ca`] — CA-fingerprint prefix pinning (SHA-256 of the cert DER, first 16
 //!   bytes), the constant the transport's TLS verifier enforces.
+//! - [`relay_window`] — relay pair-window RK and journal identity derivations.
 //! - [`civil`] — epoch → `YYYYMMDD` / `HHMMSS` for the ingest `day` / `segment`
 //!   keys, pure UTC arithmetic (no chrono, no tz database).
 //!
@@ -41,6 +42,7 @@ pub mod multipart;
 pub mod mux;
 pub mod pairlink;
 pub mod relay;
+pub mod relay_window;
 pub mod wire;
 
 /// Default PL-direct mTLS port, used when a pair-link carries port 0.
@@ -62,7 +64,7 @@ pub const PROTOCOL_VERSION_HEADER: &str = "X-Solstone-Protocol-Version";
 /// Observer endpoint paths (relative to the journal origin), reused verbatim
 /// from the convey blueprint so the Windows client cannot drift.
 pub mod paths {
-    /// Mobile/observer pairing endpoint. Carries `?token=<nonce_hex>`.
+    /// Mobile/observer pairing endpoint. Carries `?token=<pair-token-hex>`.
     pub const PAIR: &str = "/app/network/pair";
     /// Self-register an observer after pairing.
     pub const REGISTER: &str = "/app/observer/register";

@@ -24,7 +24,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::Error as WsError;
-use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{
@@ -83,6 +84,13 @@ fn relay_error_from_upgrade_status(status: u16) -> RelayError {
         401 => RelayError::Unauthorized,
         402 => RelayError::Unpaid,
         404 => RelayError::UnknownInstance,
+        _ => RelayError::UpgradeRejected,
+    }
+}
+
+fn relay_error_from_pair_upgrade_status(status: u16) -> RelayError {
+    match status {
+        401 => RelayError::PairWindowClosed,
         _ => RelayError::UpgradeRejected,
     }
 }
@@ -288,6 +296,38 @@ pub async fn dial_relay_ws(
     }
 }
 
+fn build_pair_dial_request(url: &str, rk_hex: &str) -> Result<Request, TransportError> {
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| TransportError::Tls(format!("relay pair-dial request: {e}")))?;
+    let key = HeaderValue::from_str(rk_hex)
+        .map_err(|_| TransportError::Tls("relay pair key header".into()))?;
+    request
+        .headers_mut()
+        .insert(HeaderName::from_static("sec-pair-key"), key);
+    Ok(request)
+}
+
+pub async fn dial_pair_relay_ws(
+    url: &str,
+    rk_hex: &str,
+    outer: Arc<ClientConfig>,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, TransportError> {
+    let request = build_pair_dial_request(url, rk_hex)?;
+    let dial = connect_async_tls_with_config(request, None, true, Some(Connector::Rustls(outer)));
+    match tokio::time::timeout(DIAL_TIMEOUT, dial).await {
+        Err(_) => Err(TransportError::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "relay ws dial timed out",
+        ))),
+        Ok(Ok((ws, _response))) => Ok(ws),
+        Ok(Err(WsError::Http(response))) => Err(TransportError::Relay(
+            relay_error_from_pair_upgrade_status(response.status().as_u16()),
+        )),
+        Ok(Err(e)) => Err(TransportError::Tls(format!("relay ws upgrade: {e}"))),
+    }
+}
+
 pub async fn request_once_over_ws(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     inner_config: Arc<ClientConfig>,
@@ -400,4 +440,31 @@ pub async fn request_once_relay(
         body,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_pair_dial_request_sets_pair_key_without_authorization() {
+        let rk_hex = "e34481a4cde647ba9c9fb29a59e18271";
+        let request =
+            build_pair_dial_request("wss://link.solstone.app/session/pair-dial", rk_hex).unwrap();
+
+        assert!(request.uri().query().is_none());
+        assert_eq!(
+            request.headers().get("sec-pair-key").unwrap(),
+            HeaderValue::from_str(rk_hex).unwrap()
+        );
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn pair_upgrade_401_maps_to_pair_window_closed() {
+        assert_eq!(
+            relay_error_from_pair_upgrade_status(401),
+            RelayError::PairWindowClosed
+        );
+    }
 }

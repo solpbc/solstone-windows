@@ -3,9 +3,9 @@
 
 //! Operator-direct relay-form pairing gate (not part of `make ci`).
 //!
-//! Runs the real relay-form (`0x03`) pairing ceremony against a live relay +
-//! home: parse a relay pair-link, pair over the relay (pair-ticket → pair-dial →
-//! CSR over the tunnel → live-peer SPKI pin → enroll/device), register the
+//! Runs the real relay-form (`0x06`) pairing ceremony against a live relay +
+//! home: parse a relay pair-link, pair over the relay (pair-dial → CSR over the
+//! tunnel → live-peer SPKI pin → enroll/device), register the
 //! observer, then persist the resulting [`PairedState`] (credential + observer
 //! handle) to a JSON file and print the relay env (`relay_origin`, `instance_id`,
 //! `device_token`) that [`relay_live_gate`](relay_live_gate.rs) consumes for a
@@ -13,7 +13,7 @@
 //! hardware without forcing any network topology — `relay_live_gate` dials the
 //! relay directly, never the LAN.
 //!
-//! Usage: `SOLSTONE_PAIR_LINK='https://go.solstone.app/p#…' (a 0x03 relay link)
+//! Usage: `SOLSTONE_PAIR_LINK='https://go.solstone.app/p#…' (a 0x06 relay link)
 //! SOLSTONE_CREDENTIAL_FILE=/path/pairing.json cargo run -p pl-transport-win
 //! --example relay_pair_gate`. Because rustls + tokio-tungstenite are
 //! cross-platform this runs on Linux or Windows alike.
@@ -27,11 +27,11 @@ const PLATFORM: &str = "windows";
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     let link = std::env::var("SOLSTONE_PAIR_LINK")
-        .expect("set SOLSTONE_PAIR_LINK to a fresh 0x03 relay pair-link from `sol call link pair`");
+        .expect("set SOLSTONE_PAIR_LINK to a fresh 0x06 relay pair-link from `sol call link pair`");
     let credential_file = std::env::var("SOLSTONE_CREDENTIAL_FILE")
         .expect("set SOLSTONE_CREDENTIAL_FILE to the output pairing.json path");
-    let device_label =
-        std::env::var("SOLSTONE_DEVICE_LABEL").unwrap_or_else(|_| "win-relay-pair-gate".to_string());
+    let device_label = std::env::var("SOLSTONE_DEVICE_LABEL")
+        .unwrap_or_else(|_| "win-relay-pair-gate".to_string());
 
     // 1. Pair relay-form over the live relay.
     let credential = pairing::pair_from_link(&link, &device_label)
@@ -42,7 +42,7 @@ async fn main() {
     let relay_origin = credential
         .relay_origin
         .clone()
-        .expect("paired credential has no relay_origin — was this a 0x03 relay link?");
+        .expect("paired credential has no relay_origin — was this a 0x06 relay link?");
     let device_token = credential
         .device_token
         .clone()
@@ -59,7 +59,13 @@ async fn main() {
     // 2. Register the observer (over LAN-first/relay-fallback — either path is fine here).
     let mut client = ObserverClient::new(credential.clone()).expect("client build failed");
     let registration = client
-        .register(PLATFORM, &device_label, "desktop", env!("CARGO_PKG_VERSION"), None)
+        .register(
+            PLATFORM,
+            &device_label,
+            "desktop",
+            env!("CARGO_PKG_VERSION"),
+            None,
+        )
         .await
         .expect("register failed");
     println!(

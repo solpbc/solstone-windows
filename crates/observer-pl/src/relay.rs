@@ -15,8 +15,8 @@ pub fn dial_url(relay_origin: &str, instance_id: &str) -> Result<String, DialUrl
     relay_url(relay_origin, "/session/dial", instance_id)
 }
 
-pub fn pair_dial_url(relay_origin: &str, instance_id: &str) -> Result<String, DialUrlError> {
-    relay_url(relay_origin, "/session/pair-dial", instance_id)
+pub fn pair_dial_url(relay_origin: &str) -> Result<String, DialUrlError> {
+    Ok(format!("{}/session/pair-dial", ws_origin(relay_origin)?))
 }
 
 fn relay_url(relay_origin: &str, path: &str, instance_id: &str) -> Result<String, DialUrlError> {
@@ -122,39 +122,31 @@ mod tests {
     #[test]
     fn pair_dial_rewrites_https_to_wss() {
         assert_eq!(
-            pair_dial_url("https://link.solstone.app", "inst").unwrap(),
-            "wss://link.solstone.app/session/pair-dial?instance=inst"
+            pair_dial_url("https://link.solstone.app").unwrap(),
+            "wss://link.solstone.app/session/pair-dial"
         );
     }
 
     #[test]
     fn pair_dial_rewrites_http_to_ws() {
         assert_eq!(
-            pair_dial_url("http://127.0.0.1:7657", "inst").unwrap(),
-            "ws://127.0.0.1:7657/session/pair-dial?instance=inst"
+            pair_dial_url("http://127.0.0.1:7657").unwrap(),
+            "ws://127.0.0.1:7657/session/pair-dial"
         );
     }
 
     #[test]
     fn pair_dial_trims_one_trailing_slash() {
         assert_eq!(
-            pair_dial_url("https://link.solstone.app/", "inst").unwrap(),
-            "wss://link.solstone.app/session/pair-dial?instance=inst"
-        );
-    }
-
-    #[test]
-    fn pair_dial_percent_encodes_query_value() {
-        assert_eq!(
-            pair_dial_url("https://link.solstone.app", "inst one/two").unwrap(),
-            "wss://link.solstone.app/session/pair-dial?instance=inst%20one%2Ftwo"
+            pair_dial_url("https://link.solstone.app/").unwrap(),
+            "wss://link.solstone.app/session/pair-dial"
         );
     }
 
     #[test]
     fn pair_dial_rejects_unsupported_scheme() {
         assert_eq!(
-            pair_dial_url("wss://link.solstone.app", "inst").unwrap_err(),
+            pair_dial_url("wss://link.solstone.app").unwrap_err(),
             DialUrlError::UnsupportedScheme
         );
     }

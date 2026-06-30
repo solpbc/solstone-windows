@@ -16,11 +16,6 @@ use crate::credential::{endpoint_addrs_from_local_endpoints, generate_csr, Crede
 use crate::{relay, relay_http, spki_pin, tls, RelayControlEndpoint, TransportError};
 
 #[derive(Deserialize)]
-struct PairTicketResponse {
-    pair_ticket: String,
-}
-
-#[derive(Deserialize)]
 struct EnrollResponse {
     device_token: String,
 }
@@ -29,10 +24,10 @@ pub async fn pair_over_relay(
     link: &RelayPairLink,
     device_label: &str,
 ) -> Result<Credential, TransportError> {
-    let pair_ticket = request_pair_ticket(link).await?;
-    let url = observer_pl::relay::pair_dial_url(&link.relay_origin, &link.instance_id)
+    let rk = observer_pl::relay_window::derive_rk(&link.s);
+    let url = observer_pl::relay::pair_dial_url(&link.relay_origin)
         .map_err(|e| TransportError::PairLink(format!("relay origin: {e}")))?;
-    let ws = relay::dial_relay_ws(&url, &pair_ticket, relay::outer_config()).await?;
+    let ws = relay::dial_pair_relay_ws(&url, &hex_lower(&rk), relay::outer_config()).await?;
 
     let generated = generate_csr(device_label)?;
     let request = PairRequest {
@@ -41,7 +36,7 @@ pub async fn pair_over_relay(
     };
     let body = serde_json::to_vec(&request)?;
     let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-    let path = format!("{}?token={}", paths::PAIR, link.nonce_hex);
+    let path = format!("{}?token={}", paths::PAIR, hex_lower(&link.s));
     let inner_config = Arc::new(tls::trust_all_pairing_config()?);
     let (response, peer_leaf) = relay::request_once_over_ws_with_peer_leaf(
         ws,
@@ -72,9 +67,14 @@ pub async fn pair_over_relay(
     spki_pin::verify_live_peer_binding(&peer_leaf, &pinned_ca)?;
     spki_pin::verify_ca_self_signed(&pinned_ca)?;
 
-    if pair.instance_id != link.instance_id {
+    let spki = ca::extract_spki_der(pinned_ca.as_ref())
+        .map_err(|_| TransportError::Pairing("relay ca spki".into()))?;
+    let expected = observer_pl::relay_window::jid_from_spki(&spki)
+        .map_err(|_| TransportError::Pairing("relay ca not p-256".into()))?;
+    if pair.instance_id != expected {
         return Err(TransportError::Pairing("relay instance mismatch".into()));
     }
+
     let client_cert_der = tls::parse_certs(&pair.client_cert)?
         .into_iter()
         .next()
@@ -90,7 +90,8 @@ pub async fn pair_over_relay(
         .home_attestation
         .as_deref()
         .ok_or_else(|| TransportError::Pairing("relay response missing home attestation".into()))?;
-    let device_token = enroll_device(link, home_attestation).await?;
+    let device_token =
+        enroll_device(&link.relay_origin, &pair.instance_id, home_attestation).await?;
     let device_token_expires_at = observer_pl::jwt::decode_claims(&device_token).map(|c| c.exp);
     let ca_fp_prefix = ca::sha256(pinned_ca.as_ref())[..16].to_vec();
     let endpoints = endpoint_addrs_from_local_endpoints(pair.local_endpoints.as_ref());
@@ -109,40 +110,16 @@ pub async fn pair_over_relay(
     })
 }
 
-async fn request_pair_ticket(link: &RelayPairLink) -> Result<String, TransportError> {
-    let body = serde_json::to_vec(&json!({
-        "instance_id": &link.instance_id,
-        "totp": &link.totp,
-    }))?;
-    // RelayPairLink carries a canonical hyphenated UUID, which is URL-safe.
-    let path = format!("/session/pair-ticket?instance={}", link.instance_id);
-    let response = relay_http::relay_https_post_json(&link.relay_origin, &path, &body).await?;
-    if !response.is_success() {
-        return Err(TransportError::RelayControlRejected {
-            endpoint: RelayControlEndpoint::PairTicket,
-            status: response.status,
-        });
-    }
-    let parsed: PairTicketResponse = serde_json::from_slice(&response.body)
-        .map_err(|_| TransportError::Pairing("relay pair-ticket response malformed".into()))?;
-    if parsed.pair_ticket.is_empty() {
-        return Err(TransportError::Pairing(
-            "relay pair-ticket response malformed".into(),
-        ));
-    }
-    Ok(parsed.pair_ticket)
-}
-
 async fn enroll_device(
-    link: &RelayPairLink,
+    relay_origin: &str,
+    instance_id: &str,
     home_attestation: &str,
 ) -> Result<String, TransportError> {
     let body = serde_json::to_vec(&json!({
-        "instance_id": &link.instance_id,
+        "instance_id": instance_id,
         "home_attestation": home_attestation,
     }))?;
-    let response =
-        relay_http::relay_https_post_json(&link.relay_origin, "/enroll/device", &body).await?;
+    let response = relay_http::relay_https_post_json(relay_origin, "/enroll/device", &body).await?;
     if !response.is_success() {
         return Err(TransportError::RelayControlRejected {
             endpoint: RelayControlEndpoint::EnrollDevice,
@@ -157,6 +134,14 @@ async fn enroll_device(
         ));
     }
     Ok(parsed.device_token)
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
 }
 
 fn parse_ca_chain(chain: &[String]) -> Result<Vec<CertificateDer<'static>>, TransportError> {
