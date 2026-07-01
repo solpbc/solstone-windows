@@ -30,7 +30,7 @@ WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
 WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: install build test ci contract purity-check package publish publish-r2 \
+.PHONY: install build test ui-test ci contract purity-check package publish publish-r2 \
         publish-winget publish-scoop publish-packages \
         pull-releases require-win-remote-host sync-win-host win-host-ci \
         screenshots help
@@ -58,6 +58,12 @@ build:
 test:
 	$(CARGO) test --workspace $(REMOTE_CRATES)
 
+# UI unit tests (vitest+jsdom) on the Linux mill. Reinstall first so the new
+# vitest/jsdom devDeps (added after the lode-start `npm install`) are present.
+ui-test:
+	npm --prefix ui install
+	npm --prefix ui run test
+
 # The one CI surface for the engineer: cheap, host-independent checks run locally
 # and fail fast, then the real Windows build + test runs on the build box. One
 # flow. fmt/deny/contract/purity are host-independent; clippy + test cover the
@@ -70,6 +76,7 @@ ci:
 	$(CARGO) run -q -p xtask -- purity-check
 	$(CARGO) test --workspace $(REMOTE_CRATES)
 	$(CARGO) deny check
+	$(MAKE) ui-test
 	$(MAKE) win-host-ci
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.

@@ -11,8 +11,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { automationContract } from "./lib/contract";
 
-installFrontendErrorHandlers();
-
 type FrontendOrigin = "settings" | "about" | "none";
 type FrontendErrorKind = "error" | "unhandled_rejection";
 
@@ -264,13 +262,9 @@ let runningApps: RunningApp[] = [];
 let titleDraft = "";
 
 const ids = automationContract.automation_ids;
-const queriedRoot = document.querySelector<HTMLDivElement>("#app");
-
-if (!queriedRoot) {
-  throw new Error("missing app root");
-}
-
-const root: HTMLDivElement = queriedRoot;
+let root!: HTMLDivElement;
+let narrowNav!: MediaQueryList;
+let label = "settings";
 
 const ROUTES: ReadonlyArray<{ route: Route; label: string; glyph: string }> = [
   { route: "home", label: "home", glyph: "\uE80F" },
@@ -282,8 +276,7 @@ const ROUTES: ReadonlyArray<{ route: Route; label: string; glyph: string }> = [
   { route: "updates", label: "updates", glyph: "\uE777" },
 ];
 
-const nativeFeelStyle = document.createElement("style");
-nativeFeelStyle.textContent = `
+const NATIVE_FEEL_CSS = `
 :root {
   color-scheme: light dark;
   --fg: rgba(0,0,0,0.886);
@@ -692,7 +685,6 @@ a:focus-visible,
   }
 }
 `;
-document.head.append(nativeFeelStyle);
 
 function isTextEntryTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
@@ -711,61 +703,6 @@ function isInteractiveControlActive(): boolean {
     hotkeyCapturing
   );
 }
-
-document.addEventListener("contextmenu", (event) => {
-  if (isTextEntryTarget(event.target)) {
-    return;
-  }
-  event.preventDefault();
-});
-
-document.addEventListener("keydown", (event) => {
-  const key = event.key;
-  const lowerKey = key.toLowerCase();
-  const ctrlOrMeta = event.ctrlKey || event.metaKey;
-  const zoomKey = key === "+" || key === "=" || key === "-" || key === "_" || key === "0";
-  const blocked =
-    key === "F5" ||
-    key === "F3" ||
-    key === "F7" ||
-    (ctrlOrMeta &&
-      (lowerKey === "r" ||
-        lowerKey === "p" ||
-        lowerKey === "f" ||
-        zoomKey));
-
-  if (blocked) {
-    event.preventDefault();
-  }
-});
-
-document.addEventListener(
-  "wheel",
-  (event) => {
-    if (event.ctrlKey) {
-      event.preventDefault();
-    }
-  },
-  { passive: false },
-);
-
-// Flush a deferred background rerender once interaction ends. focusout fires before
-// the new focus settles, so recheck on a microtask (the blur->focusout->focus->focusin
-// sequence dispatches synchronously, so document.activeElement is settled by then) —
-// focus moving control->control doesn't flush; only settling onto a non-control does.
-document.addEventListener(
-  "focusout",
-  () => {
-    queueMicrotask(() => {
-      if (pendingRerender && !isInteractiveControlActive()) {
-        rerender();
-      }
-    });
-  },
-  true,
-);
-
-const narrowNav = window.matchMedia("(max-width: 719px)");
 
 function settingsShell(): HTMLElement | null {
   return document.querySelector<HTMLElement>(".settings-shell");
@@ -805,40 +742,6 @@ function closeNavOverlay(returnFocusToHamburger = false): void {
 function navOverlayOpen(shell: HTMLElement): boolean {
   return shell.dataset.paneOpen === "true";
 }
-
-document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || !narrowNav.matches) {
-    return;
-  }
-  const shell = settingsShell();
-  if (shell && navOverlayOpen(shell)) {
-    closeNavOverlay(true);
-  }
-});
-
-document.addEventListener("click", (event) => {
-  if (!narrowNav.matches) {
-    return;
-  }
-  const shell = settingsShell();
-  if (!shell || !navOverlayOpen(shell)) {
-    return;
-  }
-  const target = event.target;
-  if (!(target instanceof Node)) {
-    return;
-  }
-  const element = target instanceof Element ? target : target.parentNode;
-  if (!(element instanceof Element)) {
-    return;
-  }
-  if (element.closest(".settings-rail") || element.closest(".settings-hamburger")) {
-    return;
-  }
-  closeNavOverlay(true);
-});
-
-const label = getCurrentWindow().label;
 
 function text(tag: keyof HTMLElementTagNameMap, value: string): HTMLElement {
   const node = document.createElement(tag);
@@ -3111,16 +3014,6 @@ async function boot(): Promise<void> {
   rerender();
 }
 
-void boot();
-void listen<HealthDump>("health://changed", (event) => {
-  setLatestHealth(event.payload);
-  requestRerender();
-});
-void listen<UpdateView>("update://changed", (event) => {
-  latestUpdate = event.payload;
-  requestRerender();
-});
-
 function updatePauseLabels(): void {
   if (pauseStatusEls.length === 0) return;
   const secs = latestHealth?.pause?.seconds_remaining;
@@ -3134,11 +3027,191 @@ function updatePauseLabels(): void {
   }
 }
 
-// Live last-checked clock: tick the relative string once a second without a full
-// re-render (the JS analog of the macOS TimelineView; <60s -> "just now").
-setInterval(() => {
-  if (lastCheckedEl && latestUpdate) {
-    lastCheckedEl.textContent = lastCheckedRelative(latestUpdate.last_checked_at, nowSecs());
+export function start(): void {
+  installFrontendErrorHandlers();
+
+  const queriedRoot = document.querySelector<HTMLDivElement>("#app");
+  if (!queriedRoot) {
+    throw new Error("missing app root");
   }
-  updatePauseLabels();
-}, 1000);
+  root = queriedRoot;
+
+  const styleEl = document.createElement("style");
+  styleEl.textContent = NATIVE_FEEL_CSS;
+  document.head.append(styleEl);
+
+  document.addEventListener("contextmenu", (event) => {
+    if (isTextEntryTarget(event.target)) {
+      return;
+    }
+    event.preventDefault();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    const key = event.key;
+    const lowerKey = key.toLowerCase();
+    const ctrlOrMeta = event.ctrlKey || event.metaKey;
+    const zoomKey = key === "+" || key === "=" || key === "-" || key === "_" || key === "0";
+    const blocked =
+      key === "F5" ||
+      key === "F3" ||
+      key === "F7" ||
+      (ctrlOrMeta &&
+        (lowerKey === "r" ||
+          lowerKey === "p" ||
+          lowerKey === "f" ||
+          zoomKey));
+
+    if (blocked) {
+      event.preventDefault();
+    }
+  });
+
+  document.addEventListener(
+    "wheel",
+    (event) => {
+      if (event.ctrlKey) {
+        event.preventDefault();
+      }
+    },
+    { passive: false },
+  );
+
+  // Flush a deferred background rerender once interaction ends. focusout fires before
+  // the new focus settles, so recheck on a microtask (the blur->focusout->focus->focusin
+  // sequence dispatches synchronously, so document.activeElement is settled by then) —
+  // focus moving control->control doesn't flush; only settling onto a non-control does.
+  document.addEventListener(
+    "focusout",
+    () => {
+      queueMicrotask(() => {
+        if (pendingRerender && !isInteractiveControlActive()) {
+          rerender();
+        }
+      });
+    },
+    true,
+  );
+
+  narrowNav = window.matchMedia("(max-width: 719px)");
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !narrowNav.matches) {
+      return;
+    }
+    const shell = settingsShell();
+    if (shell && navOverlayOpen(shell)) {
+      closeNavOverlay(true);
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!narrowNav.matches) {
+      return;
+    }
+    const shell = settingsShell();
+    if (!shell || !navOverlayOpen(shell)) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+    const element = target instanceof Element ? target : target.parentNode;
+    if (!(element instanceof Element)) {
+      return;
+    }
+    if (element.closest(".settings-rail") || element.closest(".settings-hamburger")) {
+      return;
+    }
+    closeNavOverlay(true);
+  });
+
+  label = getCurrentWindow().label;
+
+  void boot();
+  void listen<HealthDump>("health://changed", (event) => {
+    setLatestHealth(event.payload);
+    requestRerender();
+  });
+  void listen<UpdateView>("update://changed", (event) => {
+    latestUpdate = event.payload;
+    requestRerender();
+  });
+
+  // Live last-checked clock: tick the relative string once a second without a full
+  // re-render (the JS analog of the macOS TimelineView; <60s -> "just now").
+  setInterval(() => {
+    if (lastCheckedEl && latestUpdate) {
+      lastCheckedEl.textContent = lastCheckedRelative(latestUpdate.last_checked_at, nowSecs());
+    }
+    updatePauseLabels();
+  }, 1000);
+}
+
+export const __test__ = {
+  setRoot(el: HTMLDivElement) {
+    root = el;
+  },
+  setLabel(l: string) {
+    label = l;
+  },
+  setRoute(r: Route) {
+    activeRoute = r;
+  },
+  setHealth(dump: HealthDump | null, receivedAt?: number | null) {
+    latestHealth = dump;
+    healthReceivedAt = receivedAt !== undefined ? receivedAt : (dump ? nowSecs() : null);
+  },
+  setStorage(v: StorageInfo | null) {
+    latestStorage = v;
+  },
+  setUpdate(v: UpdateView | null) {
+    latestUpdate = v;
+  },
+  setExclusions(v: ExclusionRules | null) {
+    latestExclusions = v;
+  },
+  setHotkey(v: HotkeyView | null) {
+    latestHotkey = v;
+  },
+  setMic(v: MicView | null) {
+    latestMic = v;
+  },
+  setMicDevices(v: MicDeviceRef[]) {
+    micDevices = v;
+  },
+  setRetention(v: RetentionConfig | null) {
+    latestRetention = v;
+  },
+  setRunningApps(v: RunningApp[]) {
+    runningApps = v;
+  },
+  renderSettings,
+  renderAbout,
+  renderUnavailable,
+  rerender,
+  reset() {
+    latestHealth = null;
+    healthReceivedAt = null;
+    latestStorage = null;
+    latestUpdate = null;
+    latestExclusions = null;
+    latestHotkey = null;
+    latestMic = null;
+    micDevices = [];
+    latestRetention = null;
+    runningApps = [];
+    activeRoute = "home";
+    label = "settings";
+    renderBeaconFired = false;
+    focusPaneTitleOnRender = false;
+    pendingRerender = false;
+    lastCheckedEl = null;
+    pauseStatusEls = [];
+    pairingDraft = "";
+    pairingBusy = false;
+    hotkeyCapturing = false;
+    titleDraft = "";
+  },
+};
