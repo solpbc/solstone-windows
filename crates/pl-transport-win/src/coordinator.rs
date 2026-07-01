@@ -209,6 +209,10 @@ impl UploadCoordinator {
     fn on_confirmed(&self, segment_key: &str) {
         if let Ok(mut snapshot) = self.sync.lock() {
             snapshot.upload.uploaded_segments += 1;
+            // Walk pending down live, in lockstep with delivered, so the home pane
+            // doesn't freeze pending at its tick-start count while delivered climbs.
+            // The end-of-tick rescan (set_pending after the loop) stays authoritative.
+            snapshot.upload.pending_segments = snapshot.upload.pending_segments.saturating_sub(1);
             snapshot.upload.last_uploaded_segment = Some(segment_key.to_string());
             snapshot.upload.last_error = None;
         }
