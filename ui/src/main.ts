@@ -246,6 +246,7 @@ let healthReceivedAt: number | null = null;
 // from the DOM) so a health re-render never loses it.
 let pairingDraft = "";
 let pairingBusy = false;
+let journalOpenError = false;
 
 // Capture-exclusion rules + the running-app picker list. Held in module vars so a
 // 1s health re-render repaints the section without losing edits; `titleDraft`
@@ -1124,6 +1125,49 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
     "journal sync",
     selectable(automation(text("div", label), ids["settings.status.upload.state"])),
   );
+}
+
+function renderJournalOpenSection(dump: HealthDump): HTMLElement {
+  const pane = section("your journal");
+  const pairing = dump.sync.pairing;
+
+  if (pairing.phase !== "paired") {
+    journalOpenError = false;
+    pane.append(
+      automation(
+        text("div", "pair your observer to open your journal"),
+        ids["settings.journal.unavailable"],
+      ),
+    );
+    return pane;
+  }
+
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.flexWrap = "wrap";
+  row.style.alignItems = "center";
+  row.style.gap = "10px";
+  row.style.padding = "7px 0";
+
+  const error = text("div", "couldn't open your journal — try again");
+  error.style.color = "var(--danger)";
+  error.style.fontSize = "12px";
+  error.hidden = !journalOpenError;
+
+  const button = actionButton("open journal", ids["settings.journal.open"], true, async () => {
+    try {
+      await invoke("open_journal");
+      journalOpenError = false;
+      error.hidden = true;
+    } catch {
+      journalOpenError = true;
+      error.hidden = false;
+    }
+  });
+
+  row.append(button, error);
+  pane.append(row);
+  return pane;
 }
 
 function renderPairingSection(dump: HealthDump): HTMLElement {
@@ -2316,7 +2360,11 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
     case "journal": {
       const sync = section("sync");
       sync.append(syncRow(dump.sync));
-      content.append(renderPairingSection(dump), sync);
+      content.append(
+        renderJournalOpenSection(dump),
+        renderPairingSection(dump),
+        sync,
+      );
       break;
     }
     case "shortcut":

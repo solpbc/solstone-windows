@@ -50,6 +50,106 @@ pub enum HttpError {
     BadChunkedBody(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChunkState {
+    Size,
+    Data(usize),
+    DataCrlf,
+    Trailer,
+    Done,
+}
+
+/// Incremental decoder for `Transfer-Encoding: chunked` response bodies.
+///
+/// `push` buffers partial size lines, chunk data, and terminators across calls,
+/// returning only newly decoded body bytes. The terminal zero-size chunk does
+/// not itself produce bytes; trailers are consumed and ignored.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChunkedDecoder {
+    buf: Vec<u8>,
+    state: ChunkState,
+}
+
+impl Default for ChunkedDecoder {
+    fn default() -> Self {
+        Self {
+            buf: Vec::new(),
+            state: ChunkState::Size,
+        }
+    }
+}
+
+impl ChunkedDecoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<u8>, HttpError> {
+        if self.state == ChunkState::Done {
+            return Ok(Vec::new());
+        }
+
+        self.buf.extend_from_slice(bytes);
+        let mut out = Vec::new();
+
+        loop {
+            match self.state {
+                ChunkState::Size => {
+                    let Some(line_end) = find_subsequence(&self.buf, b"\r\n") else {
+                        break;
+                    };
+                    let size_text = String::from_utf8_lossy(&self.buf[..line_end]);
+                    let size_field = size_text.split(';').next().unwrap_or("").trim();
+                    let size = usize::from_str_radix(size_field, 16).map_err(|_| {
+                        HttpError::BadChunkedBody(format!("bad chunk size {size_field:?}"))
+                    })?;
+                    self.buf.drain(..line_end + 2);
+                    self.state = if size == 0 {
+                        ChunkState::Trailer
+                    } else {
+                        ChunkState::Data(size)
+                    };
+                }
+                ChunkState::Data(size) => {
+                    if self.buf.len() < size {
+                        break;
+                    }
+                    out.extend_from_slice(&self.buf[..size]);
+                    self.buf.drain(..size);
+                    self.state = ChunkState::DataCrlf;
+                }
+                ChunkState::DataCrlf => {
+                    if self.buf.len() < 2 {
+                        break;
+                    }
+                    if &self.buf[..2] != b"\r\n" {
+                        return Err(HttpError::BadChunkedBody("missing chunk terminator".into()));
+                    }
+                    self.buf.drain(..2);
+                    self.state = ChunkState::Size;
+                }
+                ChunkState::Trailer => {
+                    if self.buf.starts_with(b"\r\n") {
+                        self.buf.clear();
+                        self.state = ChunkState::Done;
+                        break;
+                    }
+                    let Some(trailer_end) = find_subsequence(&self.buf, b"\r\n\r\n") else {
+                        break;
+                    };
+                    self.buf.drain(..trailer_end + 4);
+                    self.buf.clear();
+                    self.state = ChunkState::Done;
+                    break;
+                }
+                ChunkState::Done => break,
+            }
+        }
+
+        Ok(out)
+    }
+}
+
 fn is_framing_owned(name: &str) -> bool {
     name.eq_ignore_ascii_case("host")
         || name.eq_ignore_ascii_case("content-length")
@@ -103,7 +203,7 @@ pub fn build_request(
     out
 }
 
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
@@ -115,27 +215,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Parse a complete HTTP/1.1 response (headers + body) off a PL stream.
 pub fn parse_response(raw: &[u8]) -> Result<HttpResponse, HttpError> {
     let split = find_subsequence(raw, b"\r\n\r\n").ok_or(HttpError::MissingTerminator)?;
-    // Headers are ASCII/latin-1; lossy is safe and matches the reference parser.
-    let head = String::from_utf8_lossy(&raw[..split]);
-    let mut lines = head.split("\r\n");
-
-    let status_line = lines.next().ok_or(HttpError::MissingStatusLine)?;
-    let mut status_parts = status_line.splitn(3, ' ');
-    let _http = status_parts.next();
-    let status = status_parts
-        .next()
-        .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| HttpError::BadStatusLine(status_line.to_string()))?;
-
-    let mut headers = Vec::new();
-    for line in lines {
-        if let Some(colon) = line.find(':') {
-            let key = line[..colon].trim().to_ascii_lowercase();
-            let value = line[colon + 1..].trim().to_string();
-            headers.push((key, value));
-        }
-    }
-
+    let (status, headers) = parse_head(&raw[..split])?;
     let mut body = raw[split + 4..].to_vec();
     let header_lookup = |name: &str| {
         headers
@@ -161,6 +241,32 @@ pub fn parse_response(raw: &[u8]) -> Result<HttpResponse, HttpError> {
         headers,
         body,
     })
+}
+
+/// Parse an HTTP/1.1 response head without the trailing `\r\n\r\n`.
+pub fn parse_head(head_bytes: &[u8]) -> Result<(u16, Vec<(String, String)>), HttpError> {
+    // Headers are ASCII/latin-1; lossy is safe and matches the reference parser.
+    let head = String::from_utf8_lossy(head_bytes);
+    let mut lines = head.split("\r\n");
+
+    let status_line = lines.next().ok_or(HttpError::MissingStatusLine)?;
+    let mut status_parts = status_line.splitn(3, ' ');
+    let _http = status_parts.next();
+    let status = status_parts
+        .next()
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or_else(|| HttpError::BadStatusLine(status_line.to_string()))?;
+
+    let mut headers = Vec::new();
+    for line in lines {
+        if let Some(colon) = line.find(':') {
+            let key = line[..colon].trim().to_ascii_lowercase();
+            let value = line[colon + 1..].trim().to_string();
+            headers.push((key, value));
+        }
+    }
+
+    Ok((status, headers))
 }
 
 /// Decode a `chunked` transfer-encoding body.
@@ -245,6 +351,51 @@ mod tests {
         let resp = parse_response(raw).unwrap();
         assert_eq!(resp.status, 401);
         assert!(!resp.is_success());
+    }
+
+    #[test]
+    fn parse_head_lowercases_headers() {
+        let (status, headers) =
+            parse_head(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream").unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(
+            headers,
+            vec![("content-type".to_string(), "text/event-stream".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_head_accepts_401() {
+        let (status, headers) =
+            parse_head(b"HTTP/1.1 401 UNAUTHORIZED\r\nWWW-Authenticate: Bearer").unwrap();
+        assert_eq!(status, 401);
+        assert_eq!(
+            headers,
+            vec![("www-authenticate".to_string(), "Bearer".to_string())]
+        );
+    }
+
+    #[test]
+    fn chunked_decoder_byte_at_a_time_reconstructs_body() {
+        let raw = b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let mut decoder = ChunkedDecoder::new();
+        let mut out = Vec::new();
+        for byte in raw {
+            out.extend(decoder.push(&[*byte]).unwrap());
+        }
+        assert_eq!(out, b"Wikipedia");
+    }
+
+    #[test]
+    fn chunked_decoder_handles_arbitrary_splits() {
+        let mut decoder = ChunkedDecoder::new();
+        let mut out = Vec::new();
+        out.extend(decoder.push(b"4\r\nWi").unwrap());
+        out.extend(decoder.push(b"ki\r\n5").unwrap());
+        out.extend(decoder.push(b"\r\npedia\r\n0\r").unwrap());
+        out.extend(decoder.push(b"\n\r\nignored").unwrap());
+        assert_eq!(out, b"Wikipedia");
+        assert_eq!(decoder.push(b"more").unwrap(), Vec::<u8>::new());
     }
 
     #[test]

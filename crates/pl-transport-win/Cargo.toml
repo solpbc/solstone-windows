@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Framed-mTLS PL transport + observer client/upload/heartbeat for the Windows observer. Drives observer-pl's pure wire over a rustls (ring) TLS socket with CA-fingerprint pinning + leaf-signature verification. rustls is cross-platform, so the whole crate is host-testable and the live pair+ingest gate can run off-Windows too."
 
 [dependencies]
+observer-log.workspace = true
 observer-pl.workspace = true
 observer-model.workspace = true
 observer-retention.workspace = true
@@ -22,6 +23,7 @@ tokio-tungstenite.workspace = true
 rustls-webpki.workspace = true
 webpki-roots.workspace = true
 futures-util.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

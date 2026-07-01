@@ -96,6 +96,15 @@ pub async fn open_about(app: tauri::AppHandle) -> Result<(), String> {
     crate::windows::open_about(&app).map_err(|e| e.to_string())
 }
 
+/// Open (create-or-focus) the native journal window backed by the loopback bridge.
+/// Refuses before creating any listener/window when not paired.
+#[tauri::command]
+pub async fn open_journal(app: tauri::AppHandle) -> Result<(), String> {
+    crate::windows::open_journal(&app)
+        .await
+        .map_err(|e| e.token().to_string())
+}
+
 /// The Windows release-history page — the in-app "read the full notes online"
 /// link's destination, the analog of macOS `UpdatesCopy.releaseNotesOnlineURL`.
 const RELEASE_NOTES_URL: &str = "https://solstone.app/releases/windows";

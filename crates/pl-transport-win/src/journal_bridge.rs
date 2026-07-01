@@ -1,0 +1,545 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+//! Hand-rolled loopback proxy for the paired journal dashboard.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use observer_pl::bridge::{
+    self, FailureCategory, RejectReason, RequestHead, BOOTSTRAP_ROUTE, CAP_COOKIE_NAME,
+};
+use observer_pl::mux::StreamItem;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
+
+use crate::client::ObserverClient;
+use crate::credential::PairedState;
+use crate::{transport_error_code, TransportError};
+
+const MAX_HEAD_BYTES: usize = 64 * 1024;
+const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+const READ_BUF_BYTES: usize = 4096;
+
+pub struct JournalBridgeHandle {
+    port: u16,
+    capability: String,
+    shutdown: oneshot::Sender<()>,
+    join: JoinHandle<()>,
+}
+
+impl JournalBridgeHandle {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn bootstrap_url(&self) -> String {
+        format!(
+            "http://127.0.0.1:{}{}?cap={}",
+            self.port, BOOTSTRAP_ROUTE, self.capability
+        )
+    }
+
+    pub fn begin_shutdown(self) {
+        let _ = self.shutdown.send(());
+    }
+
+    pub async fn shutdown_and_wait(self) {
+        let _ = self.shutdown.send(());
+        let _ = self.join.await;
+    }
+}
+
+#[derive(Debug)]
+pub enum BridgeStartError {
+    NotReady,
+    Client(TransportError),
+    Bind(std::io::Error),
+}
+
+pub async fn start(
+    paired: &PairedState,
+    state_path: PathBuf,
+) -> Result<JournalBridgeHandle, BridgeStartError> {
+    let credential = paired
+        .credential
+        .clone()
+        .ok_or(BridgeStartError::NotReady)?;
+    let observer_key = paired
+        .observer_key
+        .clone()
+        .ok_or(BridgeStartError::NotReady)?;
+
+    let mut journal_hosts = Vec::with_capacity(credential.endpoints.len() + 1);
+    journal_hosts.push("spl.local".to_string());
+    journal_hosts.extend(
+        credential
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.host.clone()),
+    );
+
+    let client = ObserverClient::new(credential)
+        .map_err(BridgeStartError::Client)?
+        .with_observer_key(Some(observer_key))
+        .with_state_path(state_path);
+    let client = Arc::new(client);
+
+    let capability = mint_capability()?;
+    let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            tracing::error!(
+                target: "journal_bridge",
+                category = FailureCategory::LocalBind.token(),
+                error_kind = ?error.kind()
+            );
+            return Err(BridgeStartError::Bind(error));
+        }
+    };
+    let port = listener
+        .local_addr()
+        .map_err(BridgeStartError::Bind)?
+        .port();
+    let loopback_origin = Arc::new(format!("http://127.0.0.1:{port}"));
+    let capability = Arc::new(capability);
+    let journal_hosts = Arc::new(journal_hosts);
+    let (shutdown, shutdown_rx) = oneshot::channel();
+
+    let join = tokio::spawn(accept_loop(
+        listener,
+        shutdown_rx,
+        client,
+        capability.clone(),
+        port,
+        journal_hosts,
+        loopback_origin,
+    ));
+
+    Ok(JournalBridgeHandle {
+        port,
+        capability: (*capability).clone(),
+        shutdown,
+        join,
+    })
+}
+
+fn mint_capability() -> Result<String, BridgeStartError> {
+    let mut bytes = [0u8; 32];
+    rustls::crypto::ring::default_provider()
+        .secure_random
+        .fill(&mut bytes)
+        .map_err(|error| {
+            BridgeStartError::Client(TransportError::Crypto(format!(
+                "journal bridge capability rng: {error:?}"
+            )))
+        })?;
+    Ok(hex_encode(&bytes))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+async fn accept_loop(
+    listener: TcpListener,
+    mut shutdown: oneshot::Receiver<()>,
+    client: Arc<ObserverClient>,
+    capability: Arc<String>,
+    port: u16,
+    journal_hosts: Arc<Vec<String>>,
+    loopback_origin: Arc<String>,
+) {
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            accepted = listener.accept() => {
+                let Ok((stream, _)) = accepted else {
+                    continue;
+                };
+                tokio::spawn(handle_conn(
+                    stream,
+                    client.clone(),
+                    capability.clone(),
+                    port,
+                    journal_hosts.clone(),
+                    loopback_origin.clone(),
+                ));
+            }
+        }
+    }
+}
+
+async fn handle_conn(
+    mut stream: TcpStream,
+    client: Arc<ObserverClient>,
+    capability: Arc<String>,
+    port: u16,
+    journal_hosts: Arc<Vec<String>>,
+    loopback_origin: Arc<String>,
+) {
+    let Some((head_bytes, body)) = read_request(&mut stream).await else {
+        return;
+    };
+    let Some(request_head) = bridge::parse_request_head(&head_bytes) else {
+        write_local(&mut stream, 400, b"bad request", "text/plain").await;
+        return;
+    };
+
+    if request_head.path() == BOOTSTRAP_ROUTE {
+        handle_bootstrap(&mut stream, &request_head, &capability, port).await;
+        return;
+    }
+
+    if let Err(reason) = bridge::authorize(&request_head, capability.as_bytes(), port) {
+        log_capability_reject(reason);
+        let status = if reason == RejectReason::BadMethod {
+            405
+        } else {
+            403
+        };
+        write_local(&mut stream, status, b"forbidden", "text/plain").await;
+        return;
+    }
+
+    let upstream_headers = bridge::upstream_request_headers(&request_head);
+    if request_head.method == "GET" && request_head.path() == "/sse/events" {
+        forward_sse(
+            &mut stream,
+            client,
+            &request_head,
+            &upstream_headers,
+            &journal_hosts,
+            &loopback_origin,
+        )
+        .await;
+    } else {
+        forward_buffered(
+            &mut stream,
+            client,
+            &request_head,
+            &upstream_headers,
+            &body,
+            &journal_hosts,
+            &loopback_origin,
+        )
+        .await;
+    }
+}
+
+async fn handle_bootstrap(
+    stream: &mut TcpStream,
+    request_head: &RequestHead,
+    capability: &str,
+    port: u16,
+) {
+    let expected_host = format!("127.0.0.1:{port}");
+    if request_head.host() != Some(expected_host.as_str()) {
+        log_capability_reject(RejectReason::BadHost);
+        write_local(stream, 403, b"forbidden", "text/plain").await;
+        return;
+    }
+    if request_head.method != "GET" {
+        log_capability_reject(RejectReason::BadMethod);
+        write_local(stream, 405, b"forbidden", "text/plain").await;
+        return;
+    }
+    if request_head.has_caller_auth() {
+        log_capability_reject(RejectReason::CallerAuth);
+        write_local(stream, 403, b"forbidden", "text/plain").await;
+        return;
+    }
+
+    let cap_ok = bridge::bootstrap_cap(&request_head.target)
+        .map(|presented| bridge::ct_eq(presented.as_bytes(), capability.as_bytes()))
+        .unwrap_or(false);
+    if !cap_ok {
+        log_capability_reject(RejectReason::BadCapability);
+        write_local(stream, 403, b"forbidden", "text/plain").await;
+        return;
+    }
+
+    let response = format!(
+        "HTTP/1.1 302 Found\r\nSet-Cookie: {CAP_COOKIE_NAME}={capability}; {}\r\nLocation: /\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        bridge::bootstrap_cookie_attributes()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+async fn forward_buffered(
+    stream: &mut TcpStream,
+    client: Arc<ObserverClient>,
+    request_head: &RequestHead,
+    upstream_headers: &[(String, String)],
+    body: &[u8],
+    journal_hosts: &[String],
+    loopback_origin: &str,
+) {
+    match client
+        .request(
+            &request_head.method,
+            &request_head.target,
+            upstream_headers,
+            body,
+        )
+        .await
+    {
+        Ok(resp) => {
+            if matches!(resp.status, 401 | 403) {
+                tracing::warn!(
+                    target: "journal_bridge",
+                    category = FailureCategory::UpstreamCredential.token(),
+                    status = resp.status
+                );
+            }
+            let headers = bridge::response_headers(&resp.headers, journal_hosts, loopback_origin);
+            let body = if request_head.method == "HEAD" {
+                &[][..]
+            } else {
+                resp.body.as_slice()
+            };
+            let content_length = if request_head.method == "HEAD" {
+                upstream_content_length(&resp.headers).unwrap_or(body.len())
+            } else {
+                body.len()
+            };
+            write_upstream_response(stream, resp.status, &headers, body, Some(content_length))
+                .await;
+        }
+        Err(error) => {
+            let category = if matches!(error, TransportError::NotPaired) {
+                FailureCategory::UpstreamCredential
+            } else {
+                FailureCategory::UpstreamUnreachable
+            };
+            tracing::warn!(
+                target: "journal_bridge",
+                category = category.token(),
+                code = %transport_error_code(&error)
+            );
+            write_local(stream, 502, b"journal unreachable", "text/plain").await;
+        }
+    }
+}
+
+async fn forward_sse(
+    stream: &mut TcpStream,
+    client: Arc<ObserverClient>,
+    request_head: &RequestHead,
+    upstream_headers: &[(String, String)],
+    journal_hosts: &[String],
+    loopback_origin: &str,
+) {
+    let (tx, mut rx) = mpsc::channel::<StreamItem>(16);
+    let target = request_head.target.clone();
+    let upstream = upstream_headers.to_vec();
+    let producer = tokio::spawn(async move {
+        let tx = tx;
+        client
+            .request_stream("GET", &target, &upstream, b"", &tx)
+            .await
+    });
+
+    let mut head_written = false;
+    while let Some(item) = rx.recv().await {
+        match item {
+            StreamItem::Head(head) => {
+                if matches!(head.status, 401 | 403) {
+                    tracing::warn!(
+                        target: "journal_bridge",
+                        category = FailureCategory::UpstreamCredential.token(),
+                        status = head.status
+                    );
+                }
+                let headers =
+                    bridge::response_headers(&head.headers, journal_hosts, loopback_origin);
+                write_stream_head(stream, head.status, &headers).await;
+                head_written = true;
+            }
+            StreamItem::Body(bytes) => {
+                if !head_written {
+                    break;
+                }
+                if stream.write_all(&bytes).await.is_err() {
+                    break;
+                }
+                if stream.flush().await.is_err() {
+                    break;
+                }
+            }
+            StreamItem::End(_) => break,
+        }
+    }
+    drop(rx);
+
+    let result = producer.await;
+    if !head_written {
+        let code = match &result {
+            Ok(Err(error)) => transport_error_code(error),
+            _ => "io".to_string(),
+        };
+        tracing::warn!(
+            target: "journal_bridge",
+            category = FailureCategory::UpstreamUnreachable.token(),
+            code = %code
+        );
+        write_local(stream, 502, b"journal unreachable", "text/plain").await;
+        return;
+    }
+    let _ = stream.shutdown().await;
+}
+
+async fn read_request(stream: &mut TcpStream) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut received = Vec::new();
+    let mut buf = [0u8; READ_BUF_BYTES];
+    let split = loop {
+        let n = stream.read(&mut buf).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        received.extend_from_slice(&buf[..n]);
+        if let Some(split) = find_header_end(&received) {
+            break split;
+        }
+        if received.len() > MAX_HEAD_BYTES {
+            return None;
+        }
+    };
+
+    let body_start = split + 4;
+    let head = received[..body_start].to_vec();
+    let content_length = parse_content_length(&head)?;
+    if content_length > MAX_BODY_BYTES {
+        return None;
+    }
+    let mut body = received[body_start..].to_vec();
+    if body.len() > content_length {
+        body.truncate(content_length);
+    }
+    while body.len() < content_length {
+        let remaining = content_length - body.len();
+        let n = stream
+            .read(&mut buf[..remaining.min(READ_BUF_BYTES)])
+            .await
+            .ok()?;
+        if n == 0 {
+            return None;
+        }
+        body.extend_from_slice(&buf[..n]);
+    }
+    Some((head, body))
+}
+
+fn parse_content_length(head: &[u8]) -> Option<usize> {
+    let text = String::from_utf8_lossy(head);
+    for line in text.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            return value.trim().parse::<usize>().ok();
+        }
+    }
+    Some(0)
+}
+
+fn find_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+async fn write_local(stream: &mut TcpStream, status: u16, body: &[u8], content_type: &str) {
+    let response = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        reason_phrase(status),
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.write_all(body).await;
+    let _ = stream.shutdown().await;
+}
+
+async fn write_upstream_response(
+    stream: &mut TcpStream,
+    status: u16,
+    headers: &[(String, String)],
+    body: &[u8],
+    content_length: Option<usize>,
+) {
+    let mut response = format!("HTTP/1.1 {status} {}\r\n", reason_phrase(status));
+    for (name, value) in headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    if let Some(content_length) = content_length {
+        response.push_str("content-length: ");
+        response.push_str(&content_length.to_string());
+        response.push_str("\r\n");
+    }
+    response.push_str("connection: close\r\n\r\n");
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.write_all(body).await;
+    let _ = stream.shutdown().await;
+}
+
+fn upstream_content_length(headers: &[(String, String)]) -> Option<usize> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.parse::<usize>().ok())
+}
+
+async fn write_stream_head(stream: &mut TcpStream, status: u16, headers: &[(String, String)]) {
+    let mut response = format!("HTTP/1.1 {status} {}\r\n", reason_phrase(status));
+    for (name, value) in headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("connection: close\r\n\r\n");
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
+}
+
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        206 => "Partial Content",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        410 => "Gone",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Status",
+    }
+}
+
+fn log_capability_reject(reason: RejectReason) {
+    tracing::warn!(
+        target: "journal_bridge",
+        category = FailureCategory::LocalCapabilityReject.token(),
+        reason = reason.token()
+    );
+}

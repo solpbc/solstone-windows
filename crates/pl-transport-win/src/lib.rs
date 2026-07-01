@@ -30,6 +30,7 @@ pub mod connection;
 pub mod coordinator;
 pub mod credential;
 pub mod heartbeat;
+pub mod journal_bridge;
 pub mod pairing;
 pub mod relay;
 pub(crate) mod relay_http;

@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use observer_pl::http::HttpResponse;
 use observer_pl::multipart::{self, FilePart};
+use observer_pl::mux::StreamItem;
 use observer_pl::wire::{
     HeartbeatEvent, IngestResponse, RegisterRequest, RegisterResponse, SegmentsResponse,
     ServerSegment,
@@ -25,10 +27,11 @@ use observer_pl::{
     paths, OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER,
 };
 use rustls::ClientConfig;
+use tokio::sync::mpsc;
 
-use crate::connection::request_once;
+use crate::connection::{request_once, request_stream as request_stream_once};
 use crate::credential::{Credential, PairedState};
-use crate::relay::request_once_relay;
+use crate::relay::{request_once_relay, request_stream_relay};
 use crate::relay_token::{refresh_device_token, RefreshOutcome};
 use crate::{tls, RelayError, TransportError};
 
@@ -197,6 +200,31 @@ impl ObserverClient {
         })
     }
 
+    /// Buffered generic authenticated request for the local journal bridge.
+    pub async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        browser_headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<HttpResponse, TransportError> {
+        let headers = self.compose_proxy_headers(browser_headers)?;
+        self.send(method, path, &headers, body).await
+    }
+
+    /// Streaming generic authenticated request for long-lived journal bridge responses.
+    pub async fn request_stream(
+        &self,
+        method: &str,
+        path: &str,
+        browser_headers: &[(String, String)],
+        body: &[u8],
+        tx: &mpsc::Sender<StreamItem>,
+    ) -> Result<(), TransportError> {
+        let headers = self.compose_proxy_headers(browser_headers)?;
+        self.send_stream(method, path, &headers, body, tx).await
+    }
+
     fn auth_headers(&self) -> Result<Vec<(String, String)>, TransportError> {
         let key = self
             .observer_key
@@ -210,6 +238,20 @@ impl ObserverClient {
                 OBSERVER_PROTOCOL_VERSION.to_string(),
             ),
         ])
+    }
+
+    fn compose_proxy_headers(
+        &self,
+        browser_headers: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, TransportError> {
+        let mut headers = self.auth_headers()?;
+        headers.extend(
+            browser_headers
+                .iter()
+                .filter(|(name, _)| !is_observer_auth_header(name))
+                .cloned(),
+        );
+        Ok(headers)
     }
 
     fn next_boundary(&self) -> String {
@@ -337,6 +379,62 @@ impl ObserverClient {
         }
     }
 
+    /// Send a streaming request through the relay after the direct LAN loop failed before head.
+    async fn send_stream_over_relay(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+        tx: &mpsc::Sender<StreamItem>,
+    ) -> Result<(), TransportError> {
+        let origin = self
+            .credential
+            .relay_origin
+            .as_deref()
+            .ok_or(TransportError::NoEndpoint)?;
+        let instance_id = &self.credential.instance_id;
+        let current = self.current_token().await;
+        if token_should_refresh(&current, now_secs()) {
+            if let RefreshAction::Terminal = self.refresh_if_current(origin, &current).await {
+                return Err(TransportError::Relay(RelayError::Unauthorized));
+            }
+        }
+
+        let mut reactive_refreshed = false;
+        loop {
+            let token = self.current_token().await;
+            match request_stream_relay(
+                self.config.clone(),
+                origin,
+                instance_id,
+                &token,
+                method,
+                path,
+                headers,
+                body,
+                tx,
+            )
+            .await
+            {
+                Ok(()) => return Ok(()),
+                Err(TransportError::Relay(RelayError::Unauthorized)) => {
+                    if reactive_refreshed {
+                        return Err(TransportError::Relay(RelayError::Unauthorized));
+                    }
+                    reactive_refreshed = true;
+                    match self.refresh_if_current(origin, &token).await {
+                        RefreshAction::Redial => continue,
+                        RefreshAction::Terminal | RefreshAction::Transient => {
+                            return Err(TransportError::Relay(RelayError::Unauthorized));
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Send a request, trying each journal endpoint and retrying transient
     /// connection/handshake failures. Connection-per-request means each call
     /// re-handshakes; a freshly-paired fingerprint can take a moment to reach
@@ -391,6 +489,46 @@ impl ObserverClient {
         }
         Err(lan_err)
     }
+
+    async fn send_stream(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+        tx: &mpsc::Sender<StreamItem>,
+    ) -> Result<(), TransportError> {
+        let mut last_err: Option<TransportError> = None;
+        for endpoint in &self.credential.endpoints {
+            match request_stream_once(
+                self.config.clone(),
+                &endpoint.host,
+                endpoint.port,
+                method,
+                path,
+                headers,
+                body,
+                tx,
+            )
+            .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        let lan_err = last_err.unwrap_or(TransportError::NoEndpoint);
+        let lan_unreachable = matches!(
+            lan_err,
+            TransportError::Tls(_) | TransportError::Io(_) | TransportError::NoEndpoint
+        );
+        if lan_unreachable && self.relay_eligible() {
+            return self
+                .send_stream_over_relay(method, path, headers, body, tx)
+                .await;
+        }
+        Err(lan_err)
+    }
 }
 
 /// Decode JWT lifetime and apply the observer-pl proactive refresh threshold.
@@ -406,6 +544,12 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn is_observer_auth_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization")
+        || name.eq_ignore_ascii_case(OBSERVER_HANDLE_HEADER)
+        || name.eq_ignore_ascii_case(PROTOCOL_VERSION_HEADER)
 }
 
 /// Relay faults that are worth retrying inside the bounded relay phase.

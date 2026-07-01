@@ -71,6 +71,9 @@ pub fn init(
     let mi_resume = MenuItemBuilder::with_id(observer_contract::tray::MENU_RESUME, "Resume")
         .enabled(false)
         .build(app)?;
+    let mi_open_journal =
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_JOURNAL, "Open Journal")
+            .build(app)?;
     let mi_open_settings =
         MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_SETTINGS, "Open Settings")
             .build(app)?;
@@ -86,6 +89,7 @@ pub fn init(
         .item(&pause_submenu)
         .item(&mi_resume)
         .item(&sep_one)
+        .item(&mi_open_journal)
         .item(&mi_open_settings)
         .item(&mi_about)
         .item(&sep_two)
@@ -116,6 +120,12 @@ pub fn init(
             }
             observer_contract::tray::MENU_RESUME => {
                 let _ = cmd_tx.send(EngineCommand::Resume);
+            }
+            observer_contract::tray::MENU_OPEN_JOURNAL => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::windows::open_journal(&app).await;
+                });
             }
             observer_contract::tray::MENU_OPEN_SETTINGS => {
                 let app = app.clone();

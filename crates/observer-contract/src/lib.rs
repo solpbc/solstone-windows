@@ -48,6 +48,7 @@ pub mod tray {
     pub const MENU_PAUSE_1H: &str = "tray.menu.pause1h";
     pub const MENU_PAUSE_INDEFINITE: &str = "tray.menu.pauseIndefinite";
     pub const MENU_RESUME: &str = "tray.menu.resume";
+    pub const MENU_OPEN_JOURNAL: &str = "tray.menu.openJournal";
     pub const MENU_OPEN_SETTINGS: &str = "tray.menu.openSettings";
     pub const MENU_ABOUT: &str = "tray.menu.about";
     pub const MENU_QUIT: &str = "tray.menu.quit";
@@ -67,6 +68,8 @@ pub mod settings {
     pub const PAIRING_JOURNAL: &str = "settings.pairing.journal";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
     pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
+    pub const JOURNAL_OPEN: &str = "settings.journal.open";
+    pub const JOURNAL_UNAVAILABLE: &str = "settings.journal.unavailable";
     /// Updates pane: honest state line, live last-checked, the control buttons,
     /// the auto-check / frequency / background-download settings, release notes.
     pub const UPDATES_STATE: &str = "settings.updates.state";
@@ -126,6 +129,7 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("tray.menu.pause1h", tray::MENU_PAUSE_1H),
         ("tray.menu.pauseIndefinite", tray::MENU_PAUSE_INDEFINITE),
         ("tray.menu.resume", tray::MENU_RESUME),
+        ("tray.menu.openJournal", tray::MENU_OPEN_JOURNAL),
         ("tray.menu.openSettings", tray::MENU_OPEN_SETTINGS),
         ("tray.menu.about", tray::MENU_ABOUT),
         ("tray.menu.quit", tray::MENU_QUIT),
@@ -149,6 +153,11 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.pairing.journal", settings::PAIRING_JOURNAL),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
+        ("settings.journal.open", settings::JOURNAL_OPEN),
+        (
+            "settings.journal.unavailable",
+            settings::JOURNAL_UNAVAILABLE,
+        ),
         ("settings.updates.state", settings::UPDATES_STATE),
         (
             "settings.updates.lastChecked",

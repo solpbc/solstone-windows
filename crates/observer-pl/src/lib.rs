@@ -32,6 +32,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bridge;
 pub mod ca;
 pub mod civil;
 pub mod crockford;

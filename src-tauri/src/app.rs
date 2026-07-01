@@ -35,6 +35,8 @@ pub struct AppState {
     /// Shutdown senders for spawned uploader tasks; kept alive for the process
     /// lifetime so the uploaders run (dropping a sender would stop them).
     pub _sync_shutdowns: Mutex<Vec<oneshot::Sender<()>>>,
+    /// Per-window loopback bridge backing the external journal window.
+    pub journal_bridge: Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>,
     /// Capture-exclusion rules controller (shared with the WGC screen source).
     pub exclusions: crate::exclusions::ExclusionController,
 }
@@ -150,6 +152,7 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
             crate::ipc::get_health,
             crate::ipc::open_settings,
             crate::ipc::open_about,
+            crate::ipc::open_journal,
             crate::ipc::log_frontend_error,
             crate::ipc::view_rendered,
             crate::ipc::pair,
@@ -341,6 +344,7 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
                 _sync_shutdowns: Mutex::new(sync_shutdowns),
+                journal_bridge: Mutex::new(None),
                 exclusions,
             });
 

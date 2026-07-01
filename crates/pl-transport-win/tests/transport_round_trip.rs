@@ -10,6 +10,7 @@
 //! replaced by a fixed echo. This is the deterministic, host-runnable proxy for
 //! the live cross-repo gate.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -18,19 +19,19 @@ use observer_model::{
     LAST_ERROR_REASON_MAX_LEN,
 };
 use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW};
-use observer_pl::mux::INITIAL_WINDOW;
+use observer_pl::mux::{HttpHead, StreamEnd, StreamItem, INITIAL_WINDOW};
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
-use pl_transport_win::credential::{Credential, EndpointAddr};
+use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::heartbeat::run_heartbeat;
 use pl_transport_win::tls::pairing_config;
-use pl_transport_win::TransportError;
+use pl_transport_win::{journal_bridge, TransportError};
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
@@ -109,18 +110,9 @@ fn request_body(request: &[u8]) -> serde_json::Value {
     serde_json::from_str(body).unwrap()
 }
 
-/// Accept one TLS connection, read the framed HTTP request, and frame back a
-/// fixed `{"status":"ok"}` response on the same stream. Returns the request body
-/// it received so the test can assert the wire bytes.
-async fn serve_one_response(
-    listener: TcpListener,
-    acceptor: TlsAcceptor,
-    status: &str,
-    body: &'static [u8],
-) -> Vec<u8> {
-    let (tcp, _) = listener.accept().await.unwrap();
-    let mut tls = acceptor.accept(tcp).await.unwrap();
-
+async fn read_framed_request(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+) -> (u32, Vec<u8>) {
     let mut decoder = FrameDecoder::new();
     let mut request = Vec::new();
     let mut stream_id = 1u32;
@@ -142,10 +134,36 @@ async fn serve_one_response(
             }
         }
     }
+    (stream_id, request)
+}
+
+/// Accept one TLS connection, read the framed HTTP request, and frame back a
+/// fixed `{"status":"ok"}` response on the same stream. Returns the request body
+/// it received so the test can assert the wire bytes.
+async fn serve_one_response(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    status: &str,
+    body: &'static [u8],
+) -> Vec<u8> {
+    serve_one_response_with_content_length(listener, acceptor, status, body, body.len()).await
+}
+
+async fn serve_one_response_with_content_length(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    status: &str,
+    body: &'static [u8],
+    content_length: usize,
+) -> Vec<u8> {
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut tls = acceptor.accept(tcp).await.unwrap();
+
+    let (stream_id, request) = read_framed_request(&mut tls).await;
 
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-        body.len(),
+        content_length,
         String::from_utf8_lossy(body)
     );
     let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
@@ -163,6 +181,403 @@ async fn serve_drop_then_one(listener: TcpListener, acceptor: TlsAcceptor) -> Ve
     let (tcp, _) = listener.accept().await.unwrap();
     drop(tcp);
     serve_one(listener, acceptor).await
+}
+
+#[derive(Clone, Copy)]
+enum SseMode {
+    Close,
+    ResetAfterFirst,
+    EofBeforeHead,
+    ChunkedClose,
+}
+
+async fn write_response_frame(
+    tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    stream_id: u32,
+    flags: u8,
+    payload: &[u8],
+) {
+    let frame = Frame::new(stream_id, flags, payload.to_vec());
+    tls.write_all(&frame.encode().unwrap()).await.unwrap();
+    tls.flush().await.unwrap();
+}
+
+async fn serve_sse_stream(listener: TcpListener, acceptor: TlsAcceptor, mode: SseMode) -> Vec<u8> {
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut tls = acceptor.accept(tcp).await.unwrap();
+    let (stream_id, request) = read_framed_request(&mut tls).await;
+
+    if matches!(mode, SseMode::EofBeforeHead) {
+        return request;
+    }
+
+    match mode {
+        SseMode::Close | SseMode::ResetAfterFirst => {
+            write_response_frame(
+                &mut tls,
+                stream_id,
+                FLAG_DATA,
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+            )
+            .await;
+            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 1\n\n").await;
+            if matches!(mode, SseMode::ResetAfterFirst) {
+                write_response_frame(&mut tls, stream_id, FLAG_RESET, b"").await;
+                return request;
+            }
+            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 2\n\n").await;
+            write_response_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
+        }
+        SseMode::ChunkedClose => {
+            write_response_frame(
+                &mut tls,
+                stream_id,
+                FLAG_DATA,
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            )
+            .await;
+            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"9\r\ndata: 1\n\n\r\n").await;
+            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"9").await;
+            write_response_frame(
+                &mut tls,
+                stream_id,
+                FLAG_DATA,
+                b"\r\ndata: 2\n\n\r\n0\r\n\r\n",
+            )
+            .await;
+            write_response_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
+        }
+        SseMode::EofBeforeHead => unreachable!("handled before writing a head"),
+    }
+
+    let _ = tls.shutdown().await;
+    request
+}
+
+async fn collect_stream_items(rx: mpsc::Receiver<StreamItem>) -> Vec<StreamItem> {
+    let mut rx = rx;
+    let mut items = Vec::new();
+    while let Some(item) = rx.recv().await {
+        items.push(item);
+    }
+    items
+}
+
+fn assert_sse_head(item: &StreamItem) {
+    match item {
+        StreamItem::Head(HttpHead { status, headers }) => {
+            assert_eq!(*status, 200);
+            assert!(headers.iter().any(|(name, value)| {
+                name == "content-type" && value.eq_ignore_ascii_case("text/event-stream")
+            }));
+        }
+        other => panic!("expected SSE head, got {other:?}"),
+    }
+}
+
+fn body_items(items: &[StreamItem]) -> Vec<Vec<u8>> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            StreamItem::Body(body) => Some(body.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn spawn_fixed_response(
+    status: &'static str,
+    body: &'static [u8],
+) -> (ObserverClient, JoinHandle<Vec<u8>>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
+    let client = ObserverClient::new(observer_credential(pin, port))
+        .unwrap()
+        .with_observer_key(Some("obs-handle".into()));
+    (client, server)
+}
+
+async fn spawn_sse(mode: SseMode) -> (ObserverClient, JoinHandle<Vec<u8>>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_sse_stream(listener, acceptor, mode));
+    let client = ObserverClient::new(observer_credential(pin, port))
+        .unwrap()
+        .with_observer_key(Some("obs-handle".into()));
+    (client, server)
+}
+
+static NEXT_TEMP_PATH: AtomicUsize = AtomicUsize::new(0);
+
+fn temp_state_path(name: &str) -> PathBuf {
+    let n = NEXT_TEMP_PATH.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "journal-bridge-test-{}-{name}-{n}.json",
+        std::process::id()
+    ))
+}
+
+fn paired_state(credential: Credential) -> PairedState {
+    PairedState {
+        credential: Some(credential),
+        observer_key: Some("obs-handle".to_string()),
+        observer_name: None,
+    }
+}
+
+fn capability_from(handle: &journal_bridge::JournalBridgeHandle) -> String {
+    handle
+        .bootstrap_url()
+        .split_once("cap=")
+        .map(|(_, cap)| cap.to_string())
+        .unwrap()
+}
+
+async fn start_bridge_with_response(
+    status: &'static str,
+    body: &'static [u8],
+) -> (journal_bridge::JournalBridgeHandle, JoinHandle<Vec<u8>>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
+    let paired = paired_state(observer_credential(pin, upstream_port));
+    let handle = journal_bridge::start(&paired, temp_state_path("response"))
+        .await
+        .unwrap();
+    (handle, server)
+}
+
+async fn start_bridge_with_response_content_length(
+    status: &'static str,
+    body: &'static [u8],
+    content_length: usize,
+) -> (journal_bridge::JournalBridgeHandle, JoinHandle<Vec<u8>>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_response_with_content_length(
+        listener,
+        acceptor,
+        status,
+        body,
+        content_length,
+    ));
+    let paired = paired_state(observer_credential(pin, upstream_port));
+    let handle = journal_bridge::start(&paired, temp_state_path("response-length"))
+        .await
+        .unwrap();
+    (handle, server)
+}
+
+async fn start_bridge_with_sse(
+    mode: SseMode,
+) -> (journal_bridge::JournalBridgeHandle, JoinHandle<Vec<u8>>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_sse_stream(listener, acceptor, mode));
+    let paired = paired_state(observer_credential(pin, upstream_port));
+    let handle = journal_bridge::start(&paired, temp_state_path("sse"))
+        .await
+        .unwrap();
+    (handle, server)
+}
+
+async fn start_bridge_with_counting_upstream() -> (
+    journal_bridge::JournalBridgeHandle,
+    Arc<AtomicUsize>,
+    JoinHandle<()>,
+) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let _acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let task = tokio::spawn({
+        let accepts = accepts.clone();
+        async move {
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    break;
+                };
+                accepts.fetch_add(1, Ordering::SeqCst);
+                drop(tcp);
+            }
+        }
+    });
+    let paired = paired_state(observer_credential(pin, upstream_port));
+    let handle = journal_bridge::start(&paired, temp_state_path("counting"))
+        .await
+        .unwrap();
+    (handle, accepts, task)
+}
+
+async fn raw_bridge_request(
+    port: u16,
+    method: &str,
+    target: &str,
+    host: Option<String>,
+    cookie: Option<String>,
+    extra_headers: &[(&str, &str)],
+    body: &[u8],
+) -> Vec<u8> {
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let mut request = format!("{method} {target} HTTP/1.1\r\n");
+    if let Some(host) = host {
+        request.push_str("Host: ");
+        request.push_str(&host);
+        request.push_str("\r\n");
+    }
+    if let Some(cookie) = cookie {
+        request.push_str("Cookie: ");
+        request.push_str(&cookie);
+        request.push_str("\r\n");
+    }
+    for (name, value) in extra_headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    if !body.is_empty() {
+        request.push_str("Content-Length: ");
+        request.push_str(&body.len().to_string());
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    if !body.is_empty() {
+        stream.write_all(body).await.unwrap();
+    }
+    stream.flush().await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    response
+}
+
+fn loopback_host(port: u16) -> String {
+    format!("127.0.0.1:{port}")
+}
+
+fn cap_cookie(cap: &str) -> String {
+    format!("{}={cap}", observer_pl::bridge::CAP_COOKIE_NAME)
+}
+
+fn response_text(response: &[u8]) -> String {
+    String::from_utf8_lossy(response).into_owned()
+}
+
+fn response_status(response: &[u8]) -> u16 {
+    response_text(response)
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn response_body(response: &[u8]) -> String {
+    let text = response_text(response);
+    text.split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap()
+}
+
+fn response_head(response: &[u8]) -> String {
+    let text = response_text(response);
+    text.split_once("\r\n\r\n")
+        .map(|(head, _)| head.to_ascii_lowercase())
+        .unwrap()
+}
+
+#[derive(Clone)]
+struct CapturingSubscriber {
+    lines: Arc<Mutex<Vec<String>>>,
+}
+
+impl tracing::Subscriber for CapturingSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.target() == "journal_bridge"
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        if !self.enabled(event.metadata()) {
+            return;
+        }
+        let mut visitor = LogVisitor::default();
+        event.record(&mut visitor);
+        self.lines.lock().unwrap().push(visitor.line);
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+#[derive(Default)]
+struct LogVisitor {
+    line: String,
+}
+
+impl LogVisitor {
+    fn field(&mut self, name: &str, value: impl std::fmt::Display) {
+        if !self.line.is_empty() {
+            self.line.push(' ');
+        }
+        self.line.push_str(name);
+        self.line.push('=');
+        self.line.push_str(&value.to_string());
+    }
+}
+
+impl tracing::field::Visit for LogVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.field(field.name(), format!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.field(field.name(), value);
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.field(field.name(), value);
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        self.field(field.name(), value);
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        self.field(field.name(), value);
+    }
 }
 
 async fn spawn_counting_relay() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
@@ -218,6 +633,503 @@ async fn round_trips_request_over_real_tls_and_framing() {
     assert!(received_text.contains("host: spl.local\r\n"));
     assert!(received_text.contains("Content-Type: application/json\r\n"));
     assert!(received_text.ends_with("{\"csr\":\"PEM\",\"device_label\":\"win\"}"));
+}
+
+#[tokio::test]
+async fn buffered_proxy_request_forwards_auth_accept_and_body() {
+    let (client, server) = spawn_fixed_response("200 OK", b"<html>ok</html>").await;
+
+    let response = client
+        .request(
+            "GET",
+            "/journal",
+            &[("accept".to_string(), "text/html".to_string())],
+            b"",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"<html>ok</html>");
+    let request = server.await.unwrap();
+    let request = String::from_utf8_lossy(&request);
+    assert!(request.starts_with("GET /journal HTTP/1.1\r\n"));
+    assert!(request.contains("X-Solstone-Observer: obs-handle\r\n"));
+    assert!(request.contains("Authorization: Bearer obs-handle\r\n"));
+    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
+    assert!(request.contains("accept: text/html\r\n"));
+}
+
+#[tokio::test]
+async fn buffered_proxy_request_preserves_401_as_response() {
+    let (client, server) = spawn_fixed_response("401 Unauthorized", b"{\"error\":\"auth\"}").await;
+
+    let response = client.request("GET", "/journal", &[], b"").await.unwrap();
+
+    assert_eq!(response.status, 401);
+    assert_eq!(response.body, b"{\"error\":\"auth\"}");
+    let _ = server.await.unwrap();
+}
+
+#[tokio::test]
+async fn buffered_proxy_request_strips_caller_auth_headers() {
+    let (client, server) = spawn_fixed_response("200 OK", b"{\"status\":\"ok\"}").await;
+
+    client
+        .request(
+            "GET",
+            "/journal",
+            &[
+                ("Authorization".to_string(), "Bearer attacker".to_string()),
+                ("X-Solstone-Observer".to_string(), "attacker".to_string()),
+                ("X-Solstone-Protocol-Version".to_string(), "999".to_string()),
+                ("accept".to_string(), "text/html".to_string()),
+            ],
+            b"",
+        )
+        .await
+        .unwrap();
+
+    let request = server.await.unwrap();
+    let request = String::from_utf8_lossy(&request);
+    assert!(request.contains("X-Solstone-Observer: obs-handle\r\n"));
+    assert!(request.contains("Authorization: Bearer obs-handle\r\n"));
+    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
+    assert!(!request.contains("attacker"));
+    assert!(!request.contains("999"));
+}
+
+#[tokio::test]
+async fn sse_streams_head_first_body_items_then_close() {
+    let (client, server) = spawn_sse(SseMode::Close).await;
+    let (tx, rx) = mpsc::channel(16);
+
+    let result = client
+        .request_stream("GET", "/sse/events", &[], b"", &tx)
+        .await;
+    drop(tx);
+    let items = collect_stream_items(rx).await;
+
+    result.unwrap();
+    let _ = server.await.unwrap();
+    assert_sse_head(&items[0]);
+    assert_eq!(
+        body_items(&items),
+        vec![b"data: 1\n\n".to_vec(), b"data: 2\n\n".to_vec()]
+    );
+    assert_eq!(items.last(), Some(&StreamItem::End(StreamEnd::Close)));
+}
+
+#[tokio::test]
+async fn sse_chunked_body_is_decoded_incrementally() {
+    let (client, server) = spawn_sse(SseMode::ChunkedClose).await;
+    let (tx, rx) = mpsc::channel(16);
+
+    let result = client
+        .request_stream("GET", "/sse/events", &[], b"", &tx)
+        .await;
+    drop(tx);
+    let items = collect_stream_items(rx).await;
+
+    result.unwrap();
+    let _ = server.await.unwrap();
+    assert!(matches!(items.first(), Some(StreamItem::Head(_))));
+    assert_eq!(
+        body_items(&items),
+        vec![b"data: 1\n\n".to_vec(), b"data: 2\n\n".to_vec()]
+    );
+    assert_eq!(items.last(), Some(&StreamItem::End(StreamEnd::Close)));
+}
+
+#[tokio::test]
+async fn sse_reset_after_head_returns_ok_with_reset_end() {
+    let (client, server) = spawn_sse(SseMode::ResetAfterFirst).await;
+    let (tx, rx) = mpsc::channel(16);
+
+    let result = client
+        .request_stream("GET", "/sse/events", &[], b"", &tx)
+        .await;
+    drop(tx);
+    let items = collect_stream_items(rx).await;
+
+    result.unwrap();
+    let _ = server.await.unwrap();
+    assert_sse_head(&items[0]);
+    assert_eq!(body_items(&items), vec![b"data: 1\n\n".to_vec()]);
+    assert_eq!(items.last(), Some(&StreamItem::End(StreamEnd::Reset)));
+}
+
+#[tokio::test]
+async fn sse_eof_before_head_returns_error_without_head_item() {
+    let (client, server) = spawn_sse(SseMode::EofBeforeHead).await;
+    let (tx, rx) = mpsc::channel(16);
+
+    let result = client
+        .request_stream("GET", "/sse/events", &[], b"", &tx)
+        .await;
+    drop(tx);
+    let items = collect_stream_items(rx).await;
+
+    assert!(result.is_err());
+    let _ = server.await.unwrap();
+    assert!(!items.iter().any(|item| matches!(item, StreamItem::Head(_))));
+}
+
+#[tokio::test]
+async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
+    let (handle, _accepts, upstream) = start_bridge_with_counting_upstream().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let ok = raw_bridge_request(
+        port,
+        "GET",
+        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        Some(loopback_host(port)),
+        None,
+        &[],
+        b"",
+    )
+    .await;
+    let ok_text = response_text(&ok);
+    assert_eq!(response_status(&ok), 302);
+    assert!(ok_text.contains(&format!(
+        "Set-Cookie: {}={cap}; Path=/; HttpOnly; SameSite=Strict",
+        observer_pl::bridge::CAP_COOKIE_NAME
+    )));
+    assert!(ok_text.contains("Location: /\r\n"));
+
+    let bad = raw_bridge_request(
+        port,
+        "GET",
+        &format!("{}?cap=wrong", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        Some(loopback_host(port)),
+        None,
+        &[],
+        b"",
+    )
+    .await;
+    assert_eq!(response_status(&bad), 403);
+    assert!(!response_text(&bad).contains("Set-Cookie:"));
+
+    let wrong_method = raw_bridge_request(
+        port,
+        "POST",
+        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        Some(loopback_host(port)),
+        None,
+        &[],
+        b"",
+    )
+    .await;
+    assert_eq!(response_status(&wrong_method), 405);
+    assert!(!response_text(&wrong_method).contains("Set-Cookie:"));
+
+    let caller_auth = raw_bridge_request(
+        port,
+        "GET",
+        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        Some(loopback_host(port)),
+        None,
+        &[("Authorization", "Bearer caller")],
+        b"",
+    )
+    .await;
+    assert_eq!(response_status(&caller_auth), 403);
+    assert!(!response_text(&caller_auth).contains("Set-Cookie:"));
+
+    handle.shutdown_and_wait().await;
+    upstream.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_authority_rejects_before_upstream() {
+    let (handle, accepts, upstream) = start_bridge_with_counting_upstream().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let cases = [
+        (
+            "GET",
+            "/journal",
+            Some(loopback_host(port)),
+            None,
+            vec![],
+            403,
+        ),
+        (
+            "GET",
+            "/journal",
+            Some(loopback_host(port)),
+            Some(cap_cookie("wrong")),
+            vec![],
+            403,
+        ),
+        (
+            "GET",
+            "/journal",
+            Some(loopback_host(port + 1)),
+            Some(cap_cookie(&cap)),
+            vec![],
+            403,
+        ),
+        (
+            "OPTIONS",
+            "/journal",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&cap)),
+            vec![],
+            405,
+        ),
+        (
+            "GET",
+            "/journal",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&cap)),
+            vec![("Authorization", "Bearer x")],
+            403,
+        ),
+    ];
+
+    for (method, target, host, cookie, headers, expected) in cases {
+        let response = raw_bridge_request(port, method, target, host, cookie, &headers, b"").await;
+        assert_eq!(response_status(&response), expected);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(accepts.load(Ordering::SeqCst), 0);
+    handle.shutdown_and_wait().await;
+    upstream.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_buffered_pass_through_injects_auth_and_strips_local_headers() {
+    let (handle, upstream) = start_bridge_with_response("200 OK", b"bridge ok").await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(
+        port,
+        "GET",
+        "/journal",
+        Some(loopback_host(port)),
+        Some(cap_cookie(&cap)),
+        &[("Accept", "text/html")],
+        b"",
+    )
+    .await;
+
+    assert_eq!(response_status(&response), 200);
+    assert_eq!(response_body(&response), "bridge ok");
+    let head = response_head(&response);
+    assert!(head.contains("content-length: 9"));
+    assert!(head.contains("connection: close"));
+
+    let request = upstream.await.unwrap();
+    let request = String::from_utf8_lossy(&request);
+    assert!(request.contains("X-Solstone-Observer: obs-handle\r\n"));
+    assert!(request.contains("Authorization: Bearer obs-handle\r\n"));
+    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
+    assert!(request.contains("accept: text/html\r\n"));
+    let lower = request.to_ascii_lowercase();
+    assert!(!lower.contains(observer_pl::bridge::CAP_COOKIE_NAME));
+    assert!(!lower.contains("cookie:"));
+    assert!(!lower.contains("host: 127.0.0.1"));
+
+    handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn journal_bridge_head_preserves_upstream_content_length_without_body() {
+    let (handle, upstream) = start_bridge_with_response_content_length("200 OK", b"", 42).await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(
+        port,
+        "HEAD",
+        "/journal",
+        Some(loopback_host(port)),
+        Some(cap_cookie(&cap)),
+        &[],
+        b"",
+    )
+    .await;
+
+    assert_eq!(response_status(&response), 200);
+    assert_eq!(response_body(&response), "");
+    let head = response_head(&response);
+    assert!(head.contains("content-length: 42"));
+    assert!(head.contains("connection: close"));
+
+    let request = upstream.await.unwrap();
+    let request = String::from_utf8_lossy(&request);
+    assert!(request.starts_with("HEAD /journal HTTP/1.1\r\n"));
+    handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn journal_bridge_forwards_journal_401_without_masking() {
+    let (handle, upstream) = start_bridge_with_response("401 Unauthorized", b"auth").await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(
+        port,
+        "GET",
+        "/journal",
+        Some(loopback_host(port)),
+        Some(cap_cookie(&cap)),
+        &[],
+        b"",
+    )
+    .await;
+
+    assert_eq!(response_status(&response), 401);
+    assert_eq!(response_body(&response), "auth");
+    let _ = upstream.await.unwrap();
+    handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn journal_bridge_sse_streams_without_local_framing_headers() {
+    let (handle, upstream) = start_bridge_with_sse(SseMode::Close).await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(
+        port,
+        "GET",
+        "/sse/events",
+        Some(loopback_host(port)),
+        Some(cap_cookie(&cap)),
+        &[],
+        b"",
+    )
+    .await;
+
+    assert_eq!(response_status(&response), 200);
+    let head = response_head(&response);
+    assert!(head.contains("content-type: text/event-stream"));
+    assert!(head.contains("connection: close"));
+    assert!(!head.contains("content-length"));
+    assert!(!head.contains("transfer-encoding"));
+    let body = response_body(&response);
+    assert!(body.contains("data: 1\n\n"));
+    assert!(body.contains("data: 2\n\n"));
+
+    let _ = upstream.await.unwrap();
+    handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn journal_bridge_sse_fail_before_head_returns_502() {
+    let (handle, upstream) = start_bridge_with_sse(SseMode::EofBeforeHead).await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(
+        port,
+        "GET",
+        "/sse/events",
+        Some(loopback_host(port)),
+        Some(cap_cookie(&cap)),
+        &[],
+        b"",
+    )
+    .await;
+
+    assert_eq!(response_status(&response), 502);
+    assert!(!response_text(&response).starts_with("HTTP/1.1 200"));
+    let _ = upstream.await.unwrap();
+    handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn journal_bridge_binds_loopback_and_serves_on_reported_port() {
+    let (handle, _accepts, upstream) = start_bridge_with_counting_upstream().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(
+        port,
+        "GET",
+        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        Some(loopback_host(port)),
+        None,
+        &[],
+        b"",
+    )
+    .await;
+
+    assert_eq!(response_status(&response), 302);
+    handle.shutdown_and_wait().await;
+    upstream.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_shutdown_frees_port() {
+    let (handle, _accepts, upstream) = start_bridge_with_counting_upstream().await;
+    let port = handle.port();
+
+    handle.shutdown_and_wait().await;
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err());
+    upstream.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_logs_redacted_failure_categories_only() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed_port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let paired = paired_state(observer_credential(vec![0; 16], closed_port));
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let subscriber = CapturingSubscriber {
+        lines: lines.clone(),
+    };
+    tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber))
+        .expect("install journal bridge log capture subscriber");
+    let handle = journal_bridge::start(&paired, temp_state_path("redaction"))
+        .await
+        .unwrap();
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let _ = raw_bridge_request(
+        port,
+        "GET",
+        "/secret/path?token=owner-secret",
+        Some(loopback_host(port)),
+        Some(cap_cookie("wrong-capability")),
+        &[],
+        b"body-secret",
+    )
+    .await;
+    let _ = raw_bridge_request(
+        port,
+        "GET",
+        "/journal?query=owner-secret",
+        Some(loopback_host(port)),
+        Some(cap_cookie(&cap)),
+        &[],
+        b"",
+    )
+    .await;
+
+    handle.shutdown_and_wait().await;
+    let logs = lines.lock().unwrap().join("\n");
+    assert!(logs.contains("category=local_capability_reject"));
+    assert!(logs.contains("reason=bad_capability"));
+    assert!(logs.contains("category=upstream_unreachable"));
+    assert!(logs.contains("code=io"));
+    assert!(!logs.contains(&cap));
+    assert!(!logs.contains("wrong-capability"));
+    assert!(!logs.contains(observer_pl::bridge::CAP_COOKIE_NAME));
+    assert!(!logs.contains("/secret/path"));
+    assert!(!logs.contains("owner-secret"));
+    assert!(!logs.contains("body-secret"));
 }
 
 /// A flow-control-enforcing peer, byte-identical in policy to the journal's
