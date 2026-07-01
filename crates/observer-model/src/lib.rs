@@ -495,6 +495,38 @@ pub struct HealthDump {
     pub views: BTreeMap<String, ViewRenderState>,
 }
 
+/// True when `next` differs from `previous` in a way the Settings/About UI
+/// renders, so the shell should re-emit `health://changed`. Fail-safe: the
+/// ignore-list below is CLOSED — only these five volatile leaves are masked;
+/// any other difference (including a field a future arc adds) forces an emit,
+/// so the predicate can never swallow a real discrete state change.
+///
+/// Ignored because they advance ~every 1 s tick during steady observing and are
+/// not displayed: `frame_rate`, `segment_seconds_remaining`,
+/// `pause.seconds_remaining` (the bounded-pause countdown, advanced UI-side off
+/// the 1 s timer instead), and the two `screen_encoder` counters
+/// `frames_consumed` / `samples_written`. The `pause`/`screen_encoder` PRESENCE
+/// and `pause.reason` / `screen_encoder.last_error` stay meaningful.
+pub fn should_emit(previous: &HealthDump, next: &HealthDump) -> bool {
+    canonicalize_for_emit(previous) != canonicalize_for_emit(next)
+}
+
+/// Clone `dump` with only the emit-ignored leaves masked to a fixed constant.
+/// Everything else is left intact so the derived `PartialEq` compares it.
+fn canonicalize_for_emit(dump: &HealthDump) -> HealthDump {
+    let mut d = dump.clone();
+    d.frame_rate = None;
+    d.segment_seconds_remaining = None;
+    if let Some(pause) = d.pause.as_mut() {
+        pause.seconds_remaining = None;
+    }
+    if let Some(encoder) = d.screen_encoder.as_mut() {
+        encoder.frames_consumed = 0;
+        encoder.samples_written = 0;
+    }
+    d
+}
+
 // ── Source traits ────────────────────────────────────────────────────────────
 // The pure tier defines the *seams*; the platform tier (capture-wgc /
 // capture-wasapi) implements them, and `capture-engine` is injected the
@@ -594,6 +626,52 @@ mod tests {
     use super::*;
     use strum::IntoEnumIterator;
 
+    fn base_dump() -> HealthDump {
+        HealthDump {
+            app_state: AppPhase::Observing,
+            sources: vec![SourceReport {
+                kind: SourceKind::Screen,
+                state: SourceState::Active,
+                device: Some("d".into()),
+            }],
+            frame_rate: Some(1),
+            segment_dir: Some("segments/2026-07-01T12-00-00Z".into()),
+            segment_seconds_remaining: Some(120),
+            engine_ready: true,
+            version: "test".into(),
+            sync: SyncSnapshot {
+                pairing: PairingState {
+                    phase: PairingPhase::Paired,
+                    journal_label: Some("journal".into()),
+                    observer_name: Some("observer".into()),
+                    detail: None,
+                },
+                upload: UploadStatus {
+                    pending_segments: 2,
+                    uploaded_segments: 3,
+                    failed_segments: 1,
+                    last_uploaded_segment: Some("120000".into()),
+                    last_error: None,
+                    last_successful_sync: Some(1_700_000_000_000),
+                    recent_error_count: 1,
+                    last_error_reason: Some("retry".into()),
+                    heartbeat_ok: true,
+                },
+            },
+            screen_encoder: Some(EncoderHealth {
+                frames_consumed: 10,
+                samples_written: 20,
+                last_error: None,
+            }),
+            exclusions: None,
+            pause: Some(PauseSnapshot {
+                reason: PauseReason::Operator,
+                seconds_remaining: Some(900),
+            }),
+            views: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn encoder_config_matches_ac1_media_foundation_defaults() {
         let config = EncoderConfig::for_frame_size(1920, 1080);
@@ -610,6 +688,111 @@ mod tests {
         assert!(!config.use_only_hardware_transforms);
         assert!(!config.use_d3d_manager);
         assert!(config.disable_throttling);
+    }
+
+    #[test]
+    fn equal_dumps_do_not_emit() {
+        assert!(!should_emit(&base_dump(), &base_dump()));
+    }
+
+    #[test]
+    fn ignored_leaves_do_not_emit() {
+        let base = base_dump();
+        let mut next = base.clone();
+        next.frame_rate = Some(2);
+        next.segment_seconds_remaining = Some(119);
+        next.pause.as_mut().unwrap().seconds_remaining = Some(899);
+        next.screen_encoder.as_mut().unwrap().frames_consumed = 11;
+        next.screen_encoder.as_mut().unwrap().samples_written = 21;
+        assert!(!should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.frame_rate = None;
+        assert!(!should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.pause.as_mut().unwrap().seconds_remaining = Some(1);
+        assert!(!should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.screen_encoder.as_mut().unwrap().samples_written = 999;
+        assert!(!should_emit(&base, &next));
+    }
+
+    #[test]
+    fn meaningful_differences_emit() {
+        let base = base_dump();
+
+        let mut next = base.clone();
+        next.app_state = AppPhase::Paused;
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.sources[0].state = SourceState::Faulted {
+            reason: ErrorReason::EndpointLost,
+            detail: "x".into(),
+        };
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.sync.pairing.phase = PairingPhase::Pairing;
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.pause = None;
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.pause.as_mut().unwrap().reason = PauseReason::SessionLocked;
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.sync.upload.uploaded_segments += 1;
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.segment_dir = Some("segments/2026-07-01T12-05-00Z".into());
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.exclusions = Some(ExclusionHealth {
+            rules_active: true,
+            frames_redacted: 1,
+            frames_dropped: 0,
+        });
+        assert!(should_emit(&base, &next));
+
+        let mut previous = base.clone();
+        previous.exclusions = Some(ExclusionHealth {
+            rules_active: true,
+            frames_redacted: 1,
+            frames_dropped: 0,
+        });
+        let mut next = previous.clone();
+        next.exclusions.as_mut().unwrap().frames_redacted = 2;
+        assert!(should_emit(&previous, &next));
+
+        let mut next = base.clone();
+        next.screen_encoder = None;
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.screen_encoder.as_mut().unwrap().last_error = Some("encoder failed".into());
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.views
+            .insert("settings".into(), ViewRenderState::Rendered);
+        assert!(should_emit(&base, &next));
+    }
+
+    #[test]
+    fn terminal_error_emits() {
+        let base = base_dump();
+        let mut terminal = base.clone();
+        terminal.app_state = AppPhase::Error;
+
+        assert!(should_emit(&base, &terminal));
     }
 
     #[test]

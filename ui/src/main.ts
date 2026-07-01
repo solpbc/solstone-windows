@@ -234,6 +234,13 @@ let pendingRerender = false;
 // The last-checked line node, refreshed each render; a 1s interval rewrites its
 // text so the relative clock ticks live — the JS analog of the macOS TimelineView.
 let lastCheckedEl: HTMLElement | null = null;
+// Bounded-pause status pills currently mounted (home route mounts two: the
+// status strip + the pause card). The 1 s timer advances their "X min left"
+// text without a rerender — (c2) no longer re-emits the per-second countdown.
+let pauseStatusEls: HTMLElement[] = [];
+// Wall-clock (epoch secs) when the current `latestHealth` was received; the
+// anchor for the display-only pause countdown.
+let healthReceivedAt: number | null = null;
 
 // The pair-link the owner typed/pasted. Held in a module var (never read back
 // from the DOM) so a health re-render never loses it.
@@ -1437,6 +1444,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
 
 function resetRoot(rootId: string): void {
   root.replaceChildren();
+  pauseStatusEls = [];
   root.dataset.automationId = rootId;
   root.style.minHeight = "100vh";
   root.style.padding = "";
@@ -1459,12 +1467,27 @@ function pauseRemainingLabel(secs: number): string {
   return m === 0 ? `${h} hr left` : `${h} hr ${m} min left`;
 }
 
+function pausedStatusText(secs: number): string {
+  return `paused — ${pauseRemainingLabel(secs)}`;
+}
+
 function statusStateLabel(dump: HealthDump): string {
   if (dump.app_state === "paused") {
     const secs = dump.pause?.seconds_remaining;
-    return secs != null ? `paused — ${pauseRemainingLabel(secs)}` : "paused";
+    return secs != null ? pausedStatusText(secs) : "paused";
   }
   return phaseLabel(dump.app_state);
+}
+
+// Capture a status pill's text node so the 1 s timer can advance its bounded
+// pause countdown in place. No-op unless this pill shows a bounded pause.
+function trackPausePill(dump: HealthDump, chip: HTMLElement): void {
+  if (dump.app_state === "paused" && dump.pause?.seconds_remaining != null) {
+    const textEl = chip.firstElementChild;
+    if (textEl instanceof HTMLElement) {
+      pauseStatusEls.push(textEl);
+    }
+  }
 }
 
 // ── Global pause/resume hotkey (observer-hotkey) ──────────────────────────────
@@ -2176,13 +2199,12 @@ function statusButton(labelText: string, value: string, route: Route): HTMLButto
 function renderStatusStrip(dump: HealthDump): HTMLElement {
   const strip = document.createElement("div");
   strip.classList.add("settings-status-strip");
+  const statePill = pill(statusStateLabel(dump), statusSeverity(dump.app_state));
+  trackPausePill(dump, statePill);
   strip.append(
     statusLine(
       "state",
-      automation(
-        pill(statusStateLabel(dump), statusSeverity(dump.app_state)),
-        ids["settings.status.appState.state"],
-      ),
+      automation(statePill, ids["settings.status.appState.state"]),
     ),
     statusButton("journal", syncSummary(dump.sync), "journal"),
     statusButton("sources", sourcesGlance(dump), "sources"),
@@ -2228,11 +2250,10 @@ function renderPauseCard(dump: HealthDump): HTMLElement {
     action = actionButton("pause", undefined, false, () => {});
   }
 
-  return homeCard(
-    "pause / resume",
-    pill(statusStateLabel(dump), statusSeverity(dump.app_state)),
-    action,
-  );
+  const statePill = pill(statusStateLabel(dump), statusSeverity(dump.app_state));
+  trackPausePill(dump, statePill);
+
+  return homeCard("pause / resume", statePill, action);
 }
 
 function renderJournalCard(dump: HealthDump): HTMLElement {
@@ -2439,6 +2460,11 @@ function renderAbout(dump: HealthDump): void {
 
 function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function setLatestHealth(dump: HealthDump | null): void {
+  latestHealth = dump;
+  healthReceivedAt = dump ? nowSecs() : null;
 }
 
 // Mirror of observer_update::last_checked_relative (the Rust-tested canonical
@@ -2983,7 +3009,7 @@ function renderUnavailable(): void {
 async function retryHealth(): Promise<void> {
   const health = await invoke<HealthDump>("get_health").catch(() => null);
   if (health) {
-    latestHealth = health;
+    setLatestHealth(health);
   }
   requestRerender();
 }
@@ -3010,7 +3036,7 @@ function scheduleRenderBeacon(): void {
 
 async function boot(): Promise<void> {
   if (label === "about") {
-    latestHealth = await invoke<HealthDump>("get_health").catch(() => null);
+    setLatestHealth(await invoke<HealthDump>("get_health").catch(() => null));
     rerender();
     return;
   }
@@ -3025,7 +3051,7 @@ async function boot(): Promise<void> {
     invoke<MicDeviceRef[]>("list_mic_devices").catch(() => [] as MicDeviceRef[]),
     invoke<RetentionConfig>("get_retention").catch(() => null),
   ]);
-  latestHealth = health;
+  setLatestHealth(health);
   latestStorage = storage;
   latestUpdate = update;
   latestExclusions = exclusions;
@@ -3039,7 +3065,7 @@ async function boot(): Promise<void> {
 
 void boot();
 void listen<HealthDump>("health://changed", (event) => {
-  latestHealth = event.payload;
+  setLatestHealth(event.payload);
   requestRerender();
 });
 void listen<UpdateView>("update://changed", (event) => {
@@ -3047,10 +3073,24 @@ void listen<UpdateView>("update://changed", (event) => {
   requestRerender();
 });
 
+function updatePauseLabels(): void {
+  if (pauseStatusEls.length === 0) return;
+  const secs = latestHealth?.pause?.seconds_remaining;
+  if (latestHealth?.app_state !== "paused" || secs == null || healthReceivedAt == null) {
+    return;
+  }
+  const remaining = Math.max(0, secs - (nowSecs() - healthReceivedAt));
+  const labelText = pausedStatusText(remaining);
+  for (const el of pauseStatusEls) {
+    el.textContent = labelText;
+  }
+}
+
 // Live last-checked clock: tick the relative string once a second without a full
 // re-render (the JS analog of the macOS TimelineView; <60s -> "just now").
 setInterval(() => {
   if (lastCheckedEl && latestUpdate) {
     lastCheckedEl.textContent = lastCheckedRelative(latestUpdate.last_checked_at, nowSecs());
   }
+  updatePauseLabels();
 }, 1000);

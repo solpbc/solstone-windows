@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
-use observer_model::{AppPhase, HealthDump, PauseReason, SourceKind, SourceState, SyncSnapshot};
+use observer_model::{
+    should_emit, AppPhase, HealthDump, PauseReason, SourceKind, SourceState, SyncSnapshot,
+};
 use observer_retention::RetentionConfig;
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::{run_uploader, SyncConfig};
@@ -430,6 +432,9 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
                     loop {
                         let dump = rx.borrow_and_update().clone();
                         log_health_transitions(previous.as_ref(), &dump);
+                        let changed = previous
+                            .as_ref()
+                            .map_or(true, |prev| should_emit(prev, &dump));
                         previous = Some(dump.clone());
                         crate::tray::apply_state(
                             &tray,
@@ -438,7 +443,9 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
                             &mi_resume,
                             &dump,
                         );
-                        let _ = app.emit("health://changed", &dump);
+                        if changed {
+                            let _ = app.emit("health://changed", &dump);
+                        }
                         if rx.changed().await.is_err() {
                             break;
                         }
