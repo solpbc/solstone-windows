@@ -6,6 +6,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-07-01
+
+### Changed
+
+- pairing your journal over the private network now uses a one-time pairing link
+  your journal opens for you. there is no shared code to copy or time. pair once
+  and solstone connects to your journal from anywhere: over the encrypted relay
+  when you are away, and directly when you are home.
+- app icon refreshed to the current sol mark.
+
 ## [0.2.5] - 2026-06-28
 
 ### Added
