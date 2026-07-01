@@ -7,6 +7,7 @@ use crate::http;
 
 pub const BOOTSTRAP_ROUTE: &str = "/_bridge/bootstrap";
 pub const CAP_COOKIE_NAME: &str = "__solstone_journal_cap";
+const UPSTREAM_COOKIE_PREFIX: &str = "__solstone_journal_up_";
 
 const REQUEST_ALLOWLIST: &[&str] = &[
     "accept",
@@ -16,6 +17,7 @@ const REQUEST_ALLOWLIST: &[&str] = &[
     "if-none-match",
     "if-modified-since",
     "range",
+    "user-agent",
 ];
 
 const HOP_BY_HOP: &[&str] = &[
@@ -163,11 +165,37 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 pub fn upstream_request_headers(head: &RequestHead) -> Vec<(String, String)> {
-    head.headers
-        .iter()
-        .filter(|(name, _)| REQUEST_ALLOWLIST.contains(&name.as_str()))
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect()
+    let mut out = Vec::new();
+    for (name, value) in &head.headers {
+        if name == "cookie" {
+            if let Some(cookie) = upstream_cookie_header(value) {
+                out.push((name.clone(), cookie));
+            }
+            continue;
+        }
+        if REQUEST_ALLOWLIST.contains(&name.as_str()) {
+            out.push((name.clone(), value.clone()));
+        }
+    }
+    out
+}
+
+fn upstream_cookie_header(value: &str) -> Option<String> {
+    let cookies = value
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| {
+            let (name, cookie_value) = part.split_once('=')?;
+            let name = name.trim();
+            if name == CAP_COOKIE_NAME {
+                return None;
+            }
+            let upstream_name = name.strip_prefix(UPSTREAM_COOKIE_PREFIX)?;
+            Some(format!("{upstream_name}={}", cookie_value.trim()))
+        })
+        .collect::<Vec<_>>();
+    (!cookies.is_empty()).then(|| cookies.join("; "))
 }
 
 pub fn response_headers(
@@ -199,7 +227,13 @@ pub fn rewrite_set_cookie(value: &str) -> String {
     let Some(first) = parts.next() else {
         return String::new();
     };
-    let mut out = vec![first.to_string()];
+    let first = first
+        .split_once('=')
+        .map(|(name, cookie_value)| {
+            format!("{UPSTREAM_COOKIE_PREFIX}{}={cookie_value}", name.trim())
+        })
+        .unwrap_or_else(|| first.to_string());
+    let mut out = vec![first];
 
     for attr in parts {
         if attr.is_empty() {
@@ -506,7 +540,11 @@ mod tests {
                 ("If-None-Match", "\"abc\""),
                 ("If-Modified-Since", "Wed, 01 Jul 2026 00:00:00 GMT"),
                 ("Range", "bytes=0-10"),
-                ("Cookie", "__solstone_journal_cap=secret; sid=journal"),
+                ("User-Agent", "WebView2"),
+                (
+                    "Cookie",
+                    "__solstone_journal_cap=secret; __solstone_journal_up_sid=journal; unrelated=drop",
+                ),
                 ("Origin", "http://127.0.0.1:49152"),
                 ("Referer", "http://127.0.0.1:49152/"),
                 ("Content-Length", "99"),
@@ -527,16 +565,31 @@ mod tests {
             "Wed, 01 Jul 2026 00:00:00 GMT".to_string()
         )));
         assert!(headers.contains(&("range".to_string(), "bytes=0-10".to_string())));
+        assert!(headers.contains(&("user-agent".to_string(), "WebView2".to_string())));
+        assert!(headers.contains(&("cookie".to_string(), "sid=journal".to_string())));
         assert!(!headers.iter().any(|(name, _)| matches!(
             name.as_str(),
-            "cookie"
-                | "host"
-                | "origin"
-                | "referer"
-                | "content-length"
-                | "connection"
-                | "authorization"
+            "host" | "origin" | "referer" | "content-length" | "connection" | "authorization"
         )));
+        assert!(!headers
+            .iter()
+            .any(|(_, value)| value.contains(CAP_COOKIE_NAME)
+                || value.contains("secret")
+                || value.contains("unrelated")));
+    }
+
+    #[test]
+    fn upstream_request_headers_omit_cookie_when_only_capability_cookie_present() {
+        let head = request(
+            "GET",
+            "/",
+            Some("127.0.0.1:49152"),
+            &[("Cookie", "__solstone_journal_cap=secret")],
+        );
+
+        let headers = upstream_request_headers(&head);
+
+        assert!(!headers.iter().any(|(name, _)| name == "cookie"));
     }
 
     #[test]
@@ -547,7 +600,7 @@ mod tests {
 
         assert_eq!(
             rewritten,
-            "sid=abc; Path=/; HttpOnly; SameSite=Lax; Max-Age=60"
+            "__solstone_journal_up_sid=abc; Path=/; HttpOnly; SameSite=Lax; Max-Age=60"
         );
     }
 
@@ -616,7 +669,7 @@ mod tests {
         assert!(headers.contains(&("x-content-type-options".to_string(), "nosniff".to_string())));
         assert!(headers.contains(&(
             "set-cookie".to_string(),
-            "sid=abc; Path=/; HttpOnly".to_string()
+            "__solstone_journal_up_sid=abc; Path=/; HttpOnly".to_string()
         )));
         assert!(headers.contains(&(
             "location".to_string(),
