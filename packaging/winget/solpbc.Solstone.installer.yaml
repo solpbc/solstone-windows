@@ -12,6 +12,12 @@ InstallerSwitches:
   Silent: "--silent"
   SilentWithProgress: "--silent"
 UpgradeBehavior: install
+# The Settings/About UI is a WebView2 surface; the observer relies on the OS
+# Evergreen WebView2 runtime (not bundled). Declaring it lets winget install the
+# runtime first on the rare machine that lacks it (older Win10/LTSC/Server images).
+Dependencies:
+  PackageDependencies:
+    - PackageIdentifier: Microsoft.EdgeWebView2Runtime
 ReleaseDate: 2026-06-23
 AppsAndFeaturesEntries:
   - DisplayName: solstone

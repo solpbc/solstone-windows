@@ -50,6 +50,14 @@ moderator/bot merges — so the PR is itself the install-validation gate.
 
 - Needs `komac` on the release host (the script prints install instructions if absent).
 - **First-ever package only** was a one-time `komac new` / hand PR; steady-state is `komac update`, which is what the target runs.
+- **WebView2 dependency (carry-forward caveat).** The reference manifest declares
+  `Dependencies.PackageDependencies: Microsoft.EdgeWebView2Runtime` (the Settings/About
+  UI needs the Evergreen WebView2 runtime). `komac update` preserves the *last published*
+  version's fields — so this block must exist in the merged winget manifest to propagate.
+  The pending `0.2.0` new-package PR predates it, so the **first update PR after 0.2.0
+  merges** must re-add the `Dependencies` block by hand (edit the komac-generated YAML
+  before `--submit`, or use the manual fallback below). Once one published version carries
+  it, subsequent `komac update`s keep it.
 - Manual fallback: bump the YAML in [`winget/`](winget/) (`PackageVersion` /
   `InstallerUrl` / `InstallerSha256` / `AppsAndFeaturesEntries.DisplayVersion`) and
   open the PR by hand. Validate first with `winget validate --manifest <dir>`.
