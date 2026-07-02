@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-07-02
+
 ### Fixed
 
 - the observer now starts on a clean windows machine that has never had the visual c++ runtime installed.
