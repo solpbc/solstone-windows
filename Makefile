@@ -31,12 +31,12 @@ WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
 .PHONY: install build test ui-test ci contract purity-check package publish publish-r2 \
-        publish-winget publish-scoop publish-packages \
-        pull-releases require-win-remote-host sync-win-host win-host-ci \
-        screenshots help
+	        publish-winget publish-scoop publish-packages \
+	        pull-releases require-win-remote-host sync-win-host win-host-ci \
+	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install build test ci contract purity-check package publish smoke run clean"
+	@echo "verbs: install build test ci contract purity-check package publish smoke screenshots journal-live run clean"
 	@echo "release: package (box) -> publish (box) -> pull-releases -> publish-r2 -> publish-packages"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
@@ -148,6 +148,11 @@ smoke:
 # Capture Settings/About in Session 1. Live target - run on the build box.
 screenshots:
 	$(PWSH) -File scripts/screenshot.ps1
+
+# Validate the native Journal window against a committed mock journal.
+# Live target - VPE-run on the build box, not part of ci.
+journal-live:
+	$(PWSH) -File scripts/journal-window-live.ps1
 
 # Launch from the tree and tail the logs.
 run:

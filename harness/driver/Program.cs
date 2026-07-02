@@ -25,6 +25,9 @@
 //                    if it dishonestly stays observing past the timeout -> non-0.
 //   --skip-tier1     run only the deterministic health/render gate.
 //   --tier1-only     run only the bounded advisory FlaUI/UIA native-chrome pass.
+//   --open-journal-only
+//                    invoke tray -> Open Journal for the live journal-window harness.
+//                    This is only a trigger; the PowerShell/mock transcript decides.
 //   --selftest       run the pure decision logic (contract parse, token match,
 //                    fail-inject decision) with no live target -> exit 0/non-0.
 
@@ -68,6 +71,19 @@ namespace Solstone.Harness
                 var contract = Contract.Load(opts.ContractPath);
                 var observing = contract.ObservingToken(); // from state_tokens.app_phase
                 Log($"observing token = '{observing}'; health url = {opts.HealthUrl}; timeout = {opts.TimeoutSecs}s");
+
+                if (opts.OpenJournalOnly)
+                {
+                    if (OpenJournalTrigger(contract))
+                    {
+                        Log("OK (trigger only): tray -> Open Journal invoked");
+                    }
+                    else
+                    {
+                        Log("WARN (trigger only): tray -> Open Journal was not reachable; transcript gate will decide");
+                    }
+                    return Ok;
+                }
 
                 if (opts.Tier1Only)
                 {
@@ -194,25 +210,17 @@ namespace Solstone.Harness
 
         private static int Tier1Interaction(Contract contract)
         {
-            var openSettingsId = contract.AutomationId("tray.menu.openSettings");
             var settingsRootId = contract.AutomationId("settings.window.root");
-            if (openSettingsId == null || settingsRootId == null) return ContractIdMissing;
+            if (settingsRootId == null) return ContractIdMissing;
 
             using (var automation = new UIA3Automation())
             {
                 var desktop = automation.GetDesktop();
 
-                // The tray context menu, once open, is a top-level popup; find the
-                // Open Settings item by AutomationId. Tray automation varies by
-                // Windows build — if the item isn't reachable headlessly the Tier-0
-                // gate above still stands and we report Tier-1 honestly.
-                var item = FindByAutomationId(desktop, openSettingsId, TimeSpan.FromSeconds(3));
-                if (item == null)
+                if (!InvokeTrayMenuItem(contract, desktop, "tray.menu.openSettings", "Open Settings"))
                 {
-                    Log($"Tier 1: '{openSettingsId}' not on the UIA surface (tray menu may need interactive opening on this build)");
                     return Tier1WindowNotFound;
                 }
-                try { item.AsMenuItem()?.Invoke(); } catch { try { item.Click(); } catch { /* best effort */ } }
 
                 var window = FindByAutomationId(desktop, settingsRootId, TimeSpan.FromSeconds(5));
                 if (window == null)
@@ -222,6 +230,41 @@ namespace Solstone.Harness
                 }
                 return Ok;
             }
+        }
+
+        private static bool OpenJournalTrigger(Contract contract)
+        {
+            using (var automation = new UIA3Automation())
+            {
+                return InvokeTrayMenuItem(
+                    contract,
+                    automation.GetDesktop(),
+                    "tray.menu.openJournal",
+                    "Open Journal");
+            }
+        }
+
+        private static bool InvokeTrayMenuItem(Contract contract, AutomationElement desktop, string contractKey, string label)
+        {
+            var id = contract.AutomationId(contractKey);
+            if (id == null)
+            {
+                Log($"Tier 1: contract key '{contractKey}' is missing");
+                return false;
+            }
+
+            // The tray context menu, once open, is a top-level popup; find the
+            // menu item by AutomationId. Tray automation varies by Windows build -
+            // if the item isn't reachable headlessly the caller reports honestly.
+            var item = FindByAutomationId(desktop, id, TimeSpan.FromSeconds(3));
+            if (item == null)
+            {
+                Log($"Tier 1: '{id}' not on the UIA surface (tray menu may need interactive opening on this build)");
+                return false;
+            }
+
+            try { item.AsMenuItem()?.Invoke(); return true; }
+            catch { try { item.Click(); return true; } catch { Log($"Tier 1: could not invoke '{label}'"); return false; } }
         }
 
         private static AutomationElement? FindByAutomationId(AutomationElement root, string id, TimeSpan timeout)
@@ -245,6 +288,7 @@ namespace Solstone.Harness
             var c = Contract.Parse(SampleContractJson());
             failures += Expect("observing token", c.ObservingToken() == "observing");
             failures += Expect("automation id lookup", c.AutomationId("settings.window.root") == "settings.window.root");
+            failures += Expect("journal tray id lookup", c.AutomationId("tray.menu.openJournal") == "tray.menu.openJournal");
             failures += Expect("missing id -> null", c.AutomationId("does.not.exist") == null);
 
             var observingDump = "{\"app_state\":\"observing\",\"sources\":[]}";
@@ -282,7 +326,8 @@ namespace Solstone.Harness
 
         private static string SampleContractJson()
         {
-            return "{\"_generated\":\"x\",\"automation_ids\":{\"settings.window.root\":\"settings.window.root\"},"
+            return "{\"_generated\":\"x\",\"automation_ids\":{\"settings.window.root\":\"settings.window.root\","
+                 + "\"tray.menu.openJournal\":\"tray.menu.openJournal\"},"
                  + "\"state_tokens\":{\"app_phase\":[\"error\",\"idle\",\"observing\",\"paused\",\"starting\"],"
                  + "\"view_render_state\":[\"pending\",\"rendered\"]}}";
         }
@@ -299,6 +344,7 @@ namespace Solstone.Harness
         public bool Selftest;
         public bool SkipTier1;
         public bool Tier1Only;
+        public bool OpenJournalOnly;
         public int Tier1TimeoutSecs = 15;
         public string RenderView = "settings";
 
@@ -316,11 +362,12 @@ namespace Solstone.Harness
                     case "--selftest": o.Selftest = true; break;
                     case "--skip-tier1": o.SkipTier1 = true; break;
                     case "--tier1-only": o.Tier1Only = true; break;
+                    case "--open-journal-only": o.OpenJournalOnly = true; break;
                     case "--tier1-timeout-secs": o.Tier1TimeoutSecs = int.Parse(Next(args, ref i)); break;
                     case "--render-view": o.RenderView = Next(args, ref i); break;
                     default:
                         Console.Error.WriteLine($"[driver] unknown arg '{args[i]}'");
-                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--render-view settings|about] [--skip-tier1] [--tier1-only] [--tier1-timeout-secs N] [--fail-inject] | --selftest");
+                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--render-view settings|about] [--skip-tier1] [--tier1-only] [--open-journal-only] [--tier1-timeout-secs N] [--fail-inject] | --selftest");
                         return null;
                 }
             }
