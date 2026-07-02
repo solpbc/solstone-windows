@@ -9,11 +9,18 @@
 //! from the contract SoT (`observer_contract::settings::WINDOW_ROOT`,
 //! `observer_contract::about::WINDOW_ROOT`); the journal is external content.
 
-use tauri::webview::ScrollBarStyle;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tauri::webview::{PageLoadEvent, ScrollBarStyle};
 use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tokio::sync::{oneshot, Notify};
 
 const WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,OverscrollHistoryNavigation,msExperimentalScrolling --disable-pinch";
+// Generous by design: first WebView2 startup plus the loopback bridge and PL/TLS
+// dial can be slow. A delayed real success is preferable to a spurious failure.
+const JOURNAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
 
 fn mica_effects() -> tauri::utils::config::WindowEffectsConfig {
     EffectsBuilder::new().effect(Effect::Mica).build()
@@ -67,6 +74,9 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 /// Open (or focus) the paired journal window.
 pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError> {
+    let state = app.state::<crate::app::AppState>();
+    let _open_guard = state.journal_open_lock.lock().await;
+
     if let Some(window) = app.get_webview_window("journal") {
         window.set_focus().ok();
         tracing::info!(
@@ -78,11 +88,7 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
         return Ok(());
     }
 
-    let state_path = app
-        .state::<crate::app::AppState>()
-        .sync_config
-        .state_path
-        .clone();
+    let state_path = state.sync_config.state_path.clone();
     let paired = pl_transport_win::credential::PairedState::load(&state_path)
         .map_err(|_| OpenJournalError::Unpaired)?;
 
@@ -106,7 +112,6 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     };
 
     let url = handle.bootstrap_url();
-    let state = app.state::<crate::app::AppState>();
     match state.journal_bridge.lock() {
         Ok(mut guard) => {
             if let Some(old) = guard.take() {
@@ -126,23 +131,25 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
         }
     }
 
-    let window = match build_journal_window(app, &url) {
+    let page_loaded = Arc::new(Notify::new());
+    let window = match build_journal_window_on_main_thread(app, url, page_loaded.clone()).await {
         Ok(window) => window,
         Err(_) => {
-            if let Ok(mut guard) = state.journal_bridge.lock() {
-                if let Some(handle) = guard.take() {
-                    handle.begin_shutdown();
-                }
-            }
-            tracing::warn!(
-                target: "window",
-                label = "journal",
-                outcome = "open_failed",
-                "window open"
-            );
+            shutdown_journal_bridge(&state);
+            log_journal_open_failed();
             return Err(OpenJournalError::OpenFailed);
         }
     };
+
+    let navigated = tokio::time::timeout(JOURNAL_READY_TIMEOUT, page_loaded.notified())
+        .await
+        .is_ok();
+    if !navigated || !journal_window_is_usable(&window) {
+        window.close().ok();
+        shutdown_journal_bridge(&state);
+        log_journal_open_failed();
+        return Err(OpenJournalError::OpenFailed);
+    }
 
     let teardown_app = app.clone();
     window.on_window_event(move |event| {
@@ -166,7 +173,64 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     Ok(())
 }
 
-fn build_journal_window(app: &tauri::AppHandle, url: &str) -> tauri::Result<WebviewWindow> {
+fn shutdown_journal_bridge(state: &crate::app::AppState) {
+    if let Ok(mut guard) = state.journal_bridge.lock() {
+        if let Some(handle) = guard.take() {
+            handle.begin_shutdown();
+        }
+    }
+}
+
+fn log_journal_open_failed() {
+    tracing::warn!(
+        target: "window",
+        label = "journal",
+        outcome = "open_failed",
+        "window open"
+    );
+}
+
+fn journal_window_is_usable(window: &WebviewWindow) -> bool {
+    let Ok(true) = window.is_visible() else {
+        return false;
+    };
+    let Ok(false) = window.is_minimized() else {
+        return false;
+    };
+    let Ok(inner) = window.inner_size() else {
+        return false;
+    };
+    let Ok(outer) = window.outer_size() else {
+        return false;
+    };
+
+    inner.width > 0 && inner.height > 0 && outer.width > 0 && outer.height > 0
+}
+
+// INVARIANT: `open_journal` must always run off the Tauri main thread. The tray
+// path spawns it onto `tauri::async_runtime`, and the IPC path is an async
+// command. Calling it from setup/main thread would deadlock while waiting for
+// this main-thread closure; there is no `--open-view journal` caller.
+async fn build_journal_window_on_main_thread(
+    app: &tauri::AppHandle,
+    url: String,
+    page_loaded: Arc<Notify>,
+) -> tauri::Result<WebviewWindow> {
+    let (tx, rx) = oneshot::channel();
+    let app_for_main = app.clone();
+    app.run_on_main_thread(move || {
+        let res = build_journal_window(&app_for_main, &url, page_loaded);
+        let _ = tx.send(res);
+    })?;
+
+    rx.await.map_err(|_| tauri::Error::FailedToReceiveMessage)?
+}
+
+fn build_journal_window(
+    app: &tauri::AppHandle,
+    url: &str,
+    page_loaded: Arc<Notify>,
+) -> tauri::Result<WebviewWindow> {
     let parsed: tauri::Url = url.parse().map_err(tauri::Error::InvalidUrl)?;
     WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(parsed))
         .title("solstone — journal")
@@ -174,6 +238,11 @@ fn build_journal_window(app: &tauri::AppHandle, url: &str) -> tauri::Result<Webv
         .min_inner_size(640.0, 480.0)
         .additional_browser_args(WEBVIEW_ARGS)
         .visible(true)
+        .on_page_load(move |_window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                page_loaded.notify_one();
+            }
+        })
         .build()
 }
 

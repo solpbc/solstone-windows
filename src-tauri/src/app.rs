@@ -35,6 +35,9 @@ pub struct AppState {
     /// Shutdown senders for spawned uploader tasks; kept alive for the process
     /// lifetime so the uploaders run (dropping a sender would stop them).
     pub _sync_shutdowns: Mutex<Vec<oneshot::Sender<()>>>,
+    /// Serializes journal opens so parallel user triggers do not race the single
+    /// Tauri window label and surface a spurious duplicate-label failure.
+    pub journal_open_lock: tokio::sync::Mutex<()>,
     /// Per-window loopback bridge backing the external journal window.
     pub journal_bridge: Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>,
     /// Capture-exclusion rules controller (shared with the WGC screen source).
@@ -344,6 +347,7 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
                 _sync_shutdowns: Mutex::new(sync_shutdowns),
+                journal_open_lock: tokio::sync::Mutex::new(()),
                 journal_bridge: Mutex::new(None),
                 exclusions,
             });

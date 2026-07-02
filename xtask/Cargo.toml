@@ -10,3 +10,6 @@ publish = false
 
 [dependencies]
 observer-contract.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

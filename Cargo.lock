@@ -5984,6 +5984,7 @@ name = "xtask"
 version = "0.2.6"
 dependencies = [
  "observer-contract",
+ "serde_json",
 ]
 
 [[package]]
