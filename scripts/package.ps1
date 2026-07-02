@@ -128,7 +128,14 @@ $vpkArgs = @(
     "--packTitle", "solstone",
     "--packAuthors", "sol pbc",
     "--icon", $Icon,
-    "--channel", "win"
+    "--channel", "win",
+    # Ensure the Evergreen WebView2 runtime. Setup.exe detects it and, only when
+    # absent, downloads Microsoft's Evergreen bootstrapper and installs it silently
+    # (a no-op where WebView2 is already present, i.e. Win11 / most Win10). The app
+    # renders its UI via WebView2, and vpk packaging bypasses Tauri's own installer,
+    # so this is where the runtime dependency gets ensured for direct Setup.exe
+    # installs on clean/minimal machines. Requires network at install time.
+    "--framework", "webview2"
 )
 # Thread the signing seam through only when populated (unsigned path leaves it out).
 if ($SignTemplate) { $vpkArgs += @("--signTemplate", $SignTemplate) }

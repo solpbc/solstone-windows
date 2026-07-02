@@ -6,6 +6,18 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- the observer now works on displays with unusual screen resolutions. some virtual
+  machines and monitor modes use sizes that previously showed a "screen" source error;
+  solstone now handles them automatically.
+
+### Changed
+
+- setup now installs Microsoft's WebView2 runtime for you when it is missing, so
+  solstone opens on a clean or minimal windows install without a manual step. most
+  machines already have it and see no change.
+
 ## [0.2.7] - 2026-07-02
 
 ### Fixed

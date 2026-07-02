@@ -3,7 +3,10 @@
 Velopack release packaging for the observer.
 
 - **Per-user, no UAC.** Installs to `%LocalAppData%`; never elevates.
-- **Evergreen WebView2.** Relies on the OS WebView2 runtime; no fixed-version bundle.
+- **Evergreen WebView2.** `vpk pack --framework webview2` makes `Setup.exe` install
+  Microsoft's Evergreen WebView2 runtime on demand when it is absent (downloaded from
+  MS's stable link, silent install) and no-op when already present; no runtime is
+  bundled and there is no fixed-version bundle. Needs network at install time.
 - **Update feed.** GitHub Releases serves the monotonic feed (full + delta `nupkg`,
   `Setup.exe`, feed JSON). Operator-driven via `make publish` — there is no hosted CI release path.
 
