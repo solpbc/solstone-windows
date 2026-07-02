@@ -116,6 +116,7 @@ fn clamp_round(value: f32, min: u8, max: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use observer_model::normalize_even;
     use std::sync::Arc;
 
     fn frame(
@@ -139,6 +140,37 @@ mod tests {
             pixels.extend_from_slice(&[r, g, b, 255]);
         }
         frame(2, 2, ScreenPixelFormat::Rgba8, pixels)
+    }
+
+    fn rgba_gradient(width: u32, height: u32) -> ScreenFrame {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                pixels.extend_from_slice(&[
+                    x as u8,
+                    y as u8,
+                    (x as u8).wrapping_mul(31).wrapping_add(y as u8),
+                    255,
+                ]);
+            }
+        }
+        frame(width, height, ScreenPixelFormat::Rgba8, pixels)
+    }
+
+    #[test]
+    fn normalized_odd_height_rgba_converts_to_nv12() {
+        let input = rgba_gradient(4, 3);
+        let normalized = normalize_even(&input);
+
+        assert!(rgba_or_bgra_to_nv12(&normalized).is_ok());
+    }
+
+    #[test]
+    fn normalized_odd_width_rgba_converts_to_nv12() {
+        let input = rgba_gradient(3, 4);
+        let normalized = normalize_even(&input);
+
+        assert!(rgba_or_bgra_to_nv12(&normalized).is_ok());
     }
 
     #[test]

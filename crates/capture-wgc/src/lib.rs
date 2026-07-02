@@ -53,8 +53,8 @@ mod imp {
 
     use observer_exclusion::{apply_redaction, evaluate, ExclusionDecision, ExclusionRules};
     use observer_model::{
-        CaptureSink, ErrorReason, ExclusionHealth, ScreenFrame, ScreenPixelFormat, ScreenSource,
-        SourceError, SourceState,
+        normalize_even, CaptureSink, ErrorReason, ExclusionHealth, ScreenFrame, ScreenPixelFormat,
+        ScreenSource, SourceError, SourceState,
     };
     use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
     use windows_capture::frame::Frame;
@@ -185,13 +185,14 @@ mod imp {
             }
 
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-            self.sink.emit_screen_frame(ScreenFrame {
+            let frame = normalize_even(&ScreenFrame {
                 seq,
                 width,
                 height,
                 pixel_format,
                 pixels: Arc::from(data),
             });
+            self.sink.emit_screen_frame(frame);
             self.set_state(SourceState::Active, Some(Instant::now()));
             Ok(())
         }

@@ -308,6 +308,8 @@ pub fn apply_redaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use observer_model::{normalize_even, ScreenFrame};
+    use std::sync::Arc;
 
     fn win(exe: &str, title: &str, bounds: Option<Rect>) -> WindowInfo {
         WindowInfo {
@@ -584,6 +586,15 @@ mod tests {
         [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
     }
 
+    fn source_px(x: usize, y: usize) -> [u8; 4] {
+        [
+            x as u8,
+            y as u8,
+            (x as u8).wrapping_mul(31).wrapping_add(y as u8),
+            255,
+        ]
+    }
+
     #[test]
     fn redaction_blacks_out_rect_only() {
         let (w, h) = (8usize, 6usize);
@@ -656,6 +667,51 @@ mod tests {
         );
         // no panic; the in-bounds prefix is blacked, trailing short row left alone
         assert_eq!(&buf[0..4], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn redaction_then_crop_keeps_redacted_offsets() {
+        // AC3 host-test path (D2 path (a)): redact at full capture dimensions, then crop.
+        let (w, h) = (5usize, 3usize);
+        let mut data = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                data.extend_from_slice(&source_px(x, y));
+            }
+        }
+        let redacted = rect(1, 0, 2, 2);
+
+        apply_redaction(
+            &mut data,
+            w as u32,
+            h as u32,
+            ScreenPixelFormat::Rgba8,
+            &[redacted],
+        );
+        let frame = ScreenFrame {
+            seq: 0,
+            width: w as u32,
+            height: h as u32,
+            pixel_format: ScreenPixelFormat::Rgba8,
+            pixels: Arc::from(data),
+        };
+        let cropped = normalize_even(&frame);
+
+        assert_eq!((cropped.width, cropped.height), (4, 2));
+        for y in 0..cropped.height as usize {
+            for x in 0..cropped.width as usize {
+                let expected = if (1..3).contains(&x) && y < 2 {
+                    [0, 0, 0, 255]
+                } else {
+                    source_px(x, y)
+                };
+                assert_eq!(
+                    px(&cropped.pixels, cropped.width as usize, x, y),
+                    expected,
+                    "pixel ({x},{y})"
+                );
+            }
+        }
     }
 
     // ── serde ──────────────────────────────────────────────────────────────────

@@ -169,6 +169,43 @@ pub struct ScreenFrame {
     pub pixels: Arc<[u8]>,
 }
 
+/// Crop a screen frame down to even dimensions for NV12 consumers.
+pub fn normalize_even(frame: &ScreenFrame) -> ScreenFrame {
+    let even_w = frame.width & !1;
+    let even_h = frame.height & !1;
+    if even_w == frame.width && even_h == frame.height {
+        return frame.clone();
+    }
+
+    let Some(expected) = (frame.width as usize)
+        .checked_mul(frame.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+    else {
+        return frame.clone();
+    };
+    if frame.pixels.len() != expected {
+        return frame.clone();
+    }
+
+    let src_stride = frame.width as usize * 4;
+    let new_w = even_w as usize;
+    let new_h = even_h as usize;
+    let row_bytes = new_w * 4;
+    let mut out = Vec::with_capacity(new_h * row_bytes);
+    for y in 0..new_h {
+        let start = y * src_stride;
+        out.extend_from_slice(&frame.pixels[start..start + row_bytes]);
+    }
+
+    ScreenFrame {
+        seq: frame.seq,
+        width: even_w,
+        height: even_h,
+        pixel_format: frame.pixel_format,
+        pixels: Arc::from(out),
+    }
+}
+
 /// Coarse encoder failure category. The engine maps all variants to
 /// [`ErrorReason::WriteFailed`] when surfacing a source fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -624,7 +661,46 @@ impl std::error::Error for SourceError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use strum::IntoEnumIterator;
+
+    fn px(x: usize, y: usize) -> [u8; 4] {
+        [
+            x as u8,
+            y as u8,
+            (x as u8).wrapping_mul(31).wrapping_add(y as u8),
+            255,
+        ]
+    }
+
+    fn build_frame(w: u32, h: u32) -> ScreenFrame {
+        let mut pixels = Vec::with_capacity(w as usize * h as usize * 4);
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                pixels.extend_from_slice(&px(x, y));
+            }
+        }
+        ScreenFrame {
+            seq: 7,
+            width: w,
+            height: h,
+            pixel_format: ScreenPixelFormat::Rgba8,
+            pixels: Arc::from(pixels),
+        }
+    }
+
+    fn assert_normalizes_to(input: &ScreenFrame, out_w: u32, out_h: u32) -> ScreenFrame {
+        let output = normalize_even(input);
+        assert_eq!((output.width, output.height), (out_w, out_h));
+        assert_eq!(output.pixels.len(), out_w as usize * out_h as usize * 4);
+        for y in 0..out_h as usize {
+            for x in 0..out_w as usize {
+                let i = (y * out_w as usize + x) * 4;
+                assert_eq!(&output.pixels[i..i + 4], &px(x, y), "pixel ({x},{y})");
+            }
+        }
+        output
+    }
 
     fn base_dump() -> HealthDump {
         HealthDump {
@@ -670,6 +746,52 @@ mod tests {
             }),
             views: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn normalize_even_preserves_even_frame_arc() {
+        let input = build_frame(4, 4);
+        let output = assert_normalizes_to(&input, 4, 4);
+
+        assert_eq!(output.pixels, input.pixels);
+        assert!(Arc::ptr_eq(&input.pixels, &output.pixels));
+    }
+
+    #[test]
+    fn normalize_even_crops_odd_height_only() {
+        let input = build_frame(4, 3);
+
+        assert_normalizes_to(&input, 4, 2);
+    }
+
+    #[test]
+    fn normalize_even_crops_odd_width_only() {
+        let input = build_frame(3, 4);
+
+        assert_normalizes_to(&input, 2, 4);
+    }
+
+    #[test]
+    fn normalize_even_crops_odd_width_and_height() {
+        let input = build_frame(3, 3);
+
+        assert_normalizes_to(&input, 2, 2);
+    }
+
+    #[test]
+    fn normalize_even_returns_malformed_frame_unchanged() {
+        let input = ScreenFrame {
+            seq: 9,
+            width: 3,
+            height: 3,
+            pixel_format: ScreenPixelFormat::Rgba8,
+            pixels: Arc::from(vec![1u8, 2, 3, 4]),
+        };
+        let output = normalize_even(&input);
+
+        assert_eq!((output.width, output.height), (3, 3));
+        assert_eq!(output.pixels, input.pixels);
+        assert!(Arc::ptr_eq(&input.pixels, &output.pixels));
     }
 
     #[test]
