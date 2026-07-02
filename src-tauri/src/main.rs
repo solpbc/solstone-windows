@@ -95,10 +95,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let mut open_journal = false;
     let mut open_view: Option<observer_model::View> = None;
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--open-view" {
+        if args[i] == "--open-journal" {
+            open_journal = true;
+        } else if args[i] == "--open-view" {
             match args
                 .get(i + 1)
                 .and_then(|name| observer_model::View::parse(name))
@@ -123,6 +126,6 @@ fn main() -> ExitCode {
         &platform_win::logs_dir(),
         std::env::var("RUST_LOG").ok().as_deref(),
     );
-    app::run(open_view, surface_on_launch);
+    app::run(open_view, surface_on_launch, open_journal);
     ExitCode::SUCCESS
 }

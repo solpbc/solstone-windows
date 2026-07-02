@@ -11,6 +11,7 @@ const SUPPRESS: &[&str] = &[
     "--apply-update",
     "--dump-windows",
     "--log-path",
+    "--open-journal",
     "--veloapp-install",
     "--veloapp-updated",
     "--veloapp-obsolete",
@@ -48,6 +49,7 @@ mod tests {
         assert!(!launch_should_surface(&["--apply-update"]));
         assert!(!launch_should_surface(&["--dump-windows"]));
         assert!(!launch_should_surface(&["--log-path"]));
+        assert!(!launch_should_surface(&["--open-journal"]));
     }
 
     #[test]

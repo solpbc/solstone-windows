@@ -112,6 +112,12 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     };
 
     let url = handle.bootstrap_url();
+    tracing::info!(
+        target: "window",
+        label = "journal",
+        bridge_port = handle.port(),
+        "journal bridge started"
+    );
     match state.journal_bridge.lock() {
         Ok(mut guard) => {
             if let Some(old) = guard.take() {
@@ -132,19 +138,29 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     }
 
     let page_loaded = Arc::new(Notify::new());
-    let window = match build_journal_window_on_main_thread(app, url, page_loaded.clone()).await {
-        Ok(window) => window,
-        Err(_) => {
-            shutdown_journal_bridge(&state);
-            log_journal_open_failed();
-            return Err(OpenJournalError::OpenFailed);
-        }
-    };
-
+    let window =
+        match build_journal_window_on_main_thread(app, url.clone(), page_loaded.clone()).await {
+            Ok(window) => window,
+            Err(_) => {
+                shutdown_journal_bridge(&state);
+                log_journal_open_failed();
+                return Err(OpenJournalError::OpenFailed);
+            }
+        };
+    log_journal_window_state(&window, "built");
     let navigated = tokio::time::timeout(JOURNAL_READY_TIMEOUT, page_loaded.notified())
         .await
         .is_ok();
-    if !navigated || !journal_window_is_usable(&window) {
+    let usable = journal_window_is_usable(&window);
+    if !navigated || !usable {
+        tracing::warn!(
+            target: "window",
+            label = "journal",
+            navigated,
+            usable,
+            "journal readiness failed"
+        );
+        log_journal_window_state(&window, "readiness_failed");
         window.close().ok();
         shutdown_journal_bridge(&state);
         log_journal_open_failed();
@@ -207,10 +223,34 @@ fn journal_window_is_usable(window: &WebviewWindow) -> bool {
     inner.width > 0 && inner.height > 0 && outer.width > 0 && outer.height > 0
 }
 
+fn log_journal_window_state(window: &WebviewWindow, stage: &'static str) {
+    let inner = window.inner_size().ok();
+    let outer = window.outer_size().ok();
+    let (inner_width, inner_height) = inner
+        .map(|size| (Some(size.width), Some(size.height)))
+        .unwrap_or((None, None));
+    let (outer_width, outer_height) = outer
+        .map(|size| (Some(size.width), Some(size.height)))
+        .unwrap_or((None, None));
+    tracing::info!(
+        target: "window",
+        label = "journal",
+        stage,
+        visible = ?window.is_visible().ok(),
+        minimized = ?window.is_minimized().ok(),
+        inner_width,
+        inner_height,
+        outer_width,
+        outer_height,
+        "journal window state"
+    );
+}
+
 // INVARIANT: `open_journal` must always run off the Tauri main thread. The tray
 // path spawns it onto `tauri::async_runtime`, and the IPC path is an async
 // command. Calling it from setup/main thread would deadlock while waiting for
-// this main-thread closure; there is no `--open-view journal` caller.
+// this main-thread closure; the `--open-journal` single-instance control verb
+// also dispatches onto the async runtime before it calls this function.
 async fn build_journal_window_on_main_thread(
     app: &tauri::AppHandle,
     url: String,
@@ -232,18 +272,59 @@ fn build_journal_window(
     page_loaded: Arc<Notify>,
 ) -> tauri::Result<WebviewWindow> {
     let parsed: tauri::Url = url.parse().map_err(tauri::Error::InvalidUrl)?;
-    WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(parsed))
+    let expected_port = parsed.port();
+    let window = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(parsed))
         .title("solstone — journal")
         .inner_size(1100.0, 800.0)
         .min_inner_size(640.0, 480.0)
         .additional_browser_args(WEBVIEW_ARGS)
-        .visible(true)
+        .visible(false)
+        .on_navigation(move |url| {
+            let allowed = url.scheme() == "http"
+                && url.host_str() == Some("127.0.0.1")
+                && url.port() == expected_port;
+            if allowed {
+                tracing::info!(
+                    target: "window",
+                    label = "journal",
+                    scheme = url.scheme(),
+                    host = url.host_str().unwrap_or(""),
+                    port = url.port().unwrap_or(0),
+                    "journal navigation"
+                );
+            } else {
+                tracing::warn!(
+                    target: "window",
+                    label = "journal",
+                    scheme = url.scheme(),
+                    host = url.host_str().unwrap_or(""),
+                    port = url.port().unwrap_or(0),
+                    "blocked journal navigation"
+                );
+            }
+            allowed
+        })
         .on_page_load(move |_window, payload| {
+            tracing::info!(
+                target: "window",
+                label = "journal",
+                event = match payload.event() {
+                    PageLoadEvent::Started => "started",
+                    PageLoadEvent::Finished => "finished",
+                },
+                "journal page load"
+            );
             if payload.event() == PageLoadEvent::Finished {
                 page_loaded.notify_one();
             }
         })
-        .build()
+        .build()?;
+
+    window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(1100.0, 800.0)))?;
+    window.center().ok();
+    window.show()?;
+    window.set_focus().ok();
+    Ok(window)
 }
 
 /// Open (or focus) the About window.

@@ -8,12 +8,10 @@
 # Success marker: JOURNAL_WINDOW_LIVE_OK
 # Artifacts: target\journal-window-live\<timestamp>\ contains pairing backup or
 # absence marker, mock stdout/stderr, mock-transcript.ndjson, window-evidence.json,
-# journal.png, and result.txt.
+# windows.json, journal.png, and result.txt.
 #
-# The trigger is native tray -> Open Journal by AutomationId
-# tray.menu.openJournal. If a Windows build does not expose the tray context menu
-# item on the UIA surface, the documented alternate real-user route is launching
-# Settings and invoking settings.journal.open; do not have the harness fetch mock
+# The trigger is the app-native --open-journal control verb. It calls the same
+# windows::open_journal path as tray/UI actions; the harness never fetches mock
 # dashboard routes directly.
 #
 # ASCII-only by policy: Windows PowerShell 5.1 reads non-BOM .ps1 in the system
@@ -46,12 +44,16 @@ $ReadyFile = Join-Path $OutputDir "mock-ready.json"
 $MockOut = Join-Path $OutputDir "mock.stdout.log"
 $MockErr = Join-Path $OutputDir "mock.stderr.log"
 $WindowEvidence = Join-Path $OutputDir "window-evidence.json"
+$WindowList = Join-Path $OutputDir "windows.json"
 $Screenshot = Join-Path $OutputDir "journal.png"
 $Done = Join-Path $OutputDir "DONE"
 $Result = Join-Path $OutputDir "result.txt"
 $TriggerLog = Join-Path $OutputDir "trigger.log"
 $TriggerErr = Join-Path $OutputDir "trigger.err"
 $TriggerExit = Join-Path $OutputDir "trigger.exit"
+$Session1Out = Join-Path $OutputDir "session1.stdout.log"
+$Session1Err = Join-Path $OutputDir "session1.stderr.log"
+$Session1Trace = Join-Path $OutputDir "session1.trace"
 $Marker = "SOLSTONE_JOURNAL_LIVE_$([guid]::NewGuid().ToString('N'))"
 $MockProc = $null
 $HadPairing = $false
@@ -68,7 +70,14 @@ function ConvertTo-CmdArg([string]$value) {
 }
 
 function Remove-Task([string]$name) {
-    schtasks /Delete /TN $name /F 2>$null | Out-Null
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        cmd /c "schtasks /Delete /TN `"$name`" /F >NUL 2>NUL" | Out-Null
+    } catch {
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
 }
 
 function Invoke-InSession1([string]$name, [string]$exe, [string]$args) {
@@ -193,8 +202,13 @@ try {
         $cand = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
         if (Test-Path $cand) { $Cargo = $cand } else { throw "cargo not found on PATH or at $cand" }
     }
-    & $Cargo build -p pl-transport-win --example mock_journal
-    if ($LASTEXITCODE -ne 0) { throw "mock_journal build failed ($LASTEXITCODE)" }
+    Push-Location $Root
+    try {
+        & $Cargo build -p pl-transport-win --example mock_journal
+        if ($LASTEXITCODE -ne 0) { throw "mock_journal build failed ($LASTEXITCODE)" }
+    } finally {
+        Pop-Location
+    }
     $MockExe = Join-Path $Root "target\debug\examples\mock_journal.exe"
     if (-not (Test-Path $MockExe)) { throw "mock_journal exe not found at $MockExe" }
     $mockArgs = @(
@@ -209,7 +223,7 @@ try {
 
     Write-Host "=== launch app in Session 1 ==="
     $LaunchCmd = Join-Path $OutputDir "journal-live-launch.cmd"
-    Set-Content -Path $LaunchCmd -Value @("@echo off", "start `"`" /b `"$AppExe`"") -Encoding ASCII
+    Set-Content -Path $LaunchCmd -Value @("@echo off", "start `"`" /b `"$AppExe`" --from-autostart") -Encoding ASCII
     Invoke-InSession1 "solstone-journal-live-app" $LaunchCmd ""
     Wait-ForProcess "solstone-windows-app"
     Start-Sleep -Seconds 5
@@ -218,18 +232,22 @@ try {
     $Session1Script = Join-Path $OutputDir "journal-live-session1.ps1"
     $Session1Cmd = Join-Path $OutputDir "journal-live-session1.cmd"
     $prelude = @(
-        "`$DriverExe = " + (ConvertTo-PsSingleQuoted $DriverExe),
-        "`$Contract = " + (ConvertTo-PsSingleQuoted $Contract),
-        "`$TriggerLog = " + (ConvertTo-PsSingleQuoted $TriggerLog),
-        "`$TriggerErr = " + (ConvertTo-PsSingleQuoted $TriggerErr),
-        "`$TriggerExit = " + (ConvertTo-PsSingleQuoted $TriggerExit),
-        "`$WindowEvidence = " + (ConvertTo-PsSingleQuoted $WindowEvidence),
-        "`$Screenshot = " + (ConvertTo-PsSingleQuoted $Screenshot),
-        "`$Done = " + (ConvertTo-PsSingleQuoted $Done),
-        "`$TimeoutSecs = $TimeoutSecs"
-    ) -join "`r`n"
+        ("`$AppExe = " + (ConvertTo-PsSingleQuoted $AppExe))
+        ("`$DriverExe = " + (ConvertTo-PsSingleQuoted $DriverExe))
+        ("`$Contract = " + (ConvertTo-PsSingleQuoted $Contract))
+        ("`$TriggerLog = " + (ConvertTo-PsSingleQuoted $TriggerLog))
+        ("`$TriggerErr = " + (ConvertTo-PsSingleQuoted $TriggerErr))
+        ("`$TriggerExit = " + (ConvertTo-PsSingleQuoted $TriggerExit))
+        ("`$Session1Trace = " + (ConvertTo-PsSingleQuoted $Session1Trace))
+        ("`$WindowEvidence = " + (ConvertTo-PsSingleQuoted $WindowEvidence))
+        ("`$WindowList = " + (ConvertTo-PsSingleQuoted $WindowList))
+        ("`$Screenshot = " + (ConvertTo-PsSingleQuoted $Screenshot))
+        ("`$Done = " + (ConvertTo-PsSingleQuoted $Done))
+        ("`$TimeoutSecs = $TimeoutSecs")
+    )
     $body = @'
 $ErrorActionPreference = "Continue"
+Set-Content -Path $Session1Trace -Value ("started {0:o}" -f (Get-Date)) -Encoding ASCII
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
 using System;
@@ -247,6 +265,7 @@ public static class W {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out int pv, int cb);
 }
 "@
@@ -254,23 +273,32 @@ try { [void][W]::SetProcessDPIAware() } catch {}
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $WindowEvidence) | Out-Null
 Remove-Item $Done -Force -ErrorAction SilentlyContinue
 
-& $DriverExe --contract $Contract --open-journal-only > $TriggerLog 2> $TriggerErr
+& $AppExe --open-journal > $TriggerLog 2> $TriggerErr
 ("exit={0}" -f $LASTEXITCODE) | Set-Content -Path $TriggerExit -Encoding ASCII
+Add-Content -Path $Session1Trace -Value ("trigger exit={0}" -f $LASTEXITCODE) -Encoding ASCII
 
 function Find-AppWindow {
   $pids = @{}; Get-Process solstone-windows-app -EA SilentlyContinue | % { $pids["$($_.Id)"] = $true }
   $script:best = $null; $script:bestArea = -1; $script:bestRect = $null; $script:bestTitle = ""
   $script:bestMin = $false; $script:bestCloaked = $null
+  $script:seen = New-Object System.Collections.ArrayList
   $cb = [W+Enum]{ param($h, $l)
     if (-not [W]::IsWindowVisible($h)) { return $true }
     [uint32]$p = 0; [void][W]::GetWindowThreadProcessId($h, [ref]$p)
     if (-not $pids.ContainsKey("$p")) { return $true }
     $r = New-Object W+R; if (-not [W]::GetWindowRect($h, [ref]$r)) { return $true }
     $w = $r.Rr - $r.L; $hh = $r.B - $r.T; $a = $w * $hh
-    if ($w -le 0 -or $hh -le 0 -or $a -le $script:bestArea) { return $true }
     $title = New-Object System.Text.StringBuilder 256; [void][W]::GetWindowText($h, $title, $title.Capacity)
+    $class = New-Object System.Text.StringBuilder 256; [void][W]::GetClassName($h, $class, $class.Capacity)
     $cloaked = 0; $cloakVal = $null
     try { if ([W]::DwmGetWindowAttribute($h, 14, [ref]$cloaked, 4) -eq 0) { $cloakVal = ($cloaked -ne 0) } } catch {}
+    [void]$script:seen.Add([ordered]@{
+      hwnd = $h.ToInt64(); pid = [int]$p; title = $title.ToString(); class = $class.ToString()
+      left = $r.L; top = $r.T; width = $w; height = $hh
+      visible = $true; minimized = [W]::IsIconic($h); cloaked = $cloakVal; area = $a
+    })
+    if ($title.ToString().ToLowerInvariant().IndexOf("settings") -ge 0) { return $true }
+    if ($w -le 0 -or $hh -le 0 -or $a -le $script:bestArea) { return $true }
     $script:bestArea = $a; $script:best = $h; $script:bestRect = $r; $script:bestTitle = $title.ToString()
     $script:bestMin = [W]::IsIconic($h); $script:bestCloaked = $cloakVal
     return $true
@@ -310,10 +338,14 @@ if ($win) {
   }
 }
 $evidence | ConvertTo-Json -Depth 4 | Set-Content -Path $WindowEvidence -Encoding ASCII
+if ($script:seen) {
+  $script:seen | Sort-Object area -Descending | ConvertTo-Json -Depth 4 | Set-Content -Path $WindowList -Encoding ASCII
+}
 Set-Content -Path $Done -Value ($(if ($ok) { "ok" } else { "fail" })) -Encoding ASCII
+Add-Content -Path $Session1Trace -Value ("done ok={0}" -f $ok) -Encoding ASCII
 '@
-    Set-Content -Path $Session1Script -Value ($prelude + "`r`n" + $body) -Encoding ASCII
-    Set-Content -Path $Session1Cmd -Value @("@echo off", "powershell -NoProfile -ExecutionPolicy Bypass -File `"$Session1Script`"") -Encoding ASCII
+    Set-Content -Path $Session1Script -Value ($prelude + ($body -split '\r?\n')) -Encoding ASCII
+    Set-Content -Path $Session1Cmd -Value @("@echo off", "powershell -NoProfile -ExecutionPolicy Bypass -File `"$Session1Script`" > `"$Session1Out`" 2> `"$Session1Err`"") -Encoding ASCII
     Invoke-InSession1 "solstone-journal-live-trigger" $Session1Cmd ""
 
     $deadline = (Get-Date).AddSeconds($TimeoutSecs + 20)

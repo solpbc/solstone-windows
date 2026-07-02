@@ -134,7 +134,11 @@ fn log_health_transitions(previous: Option<&HealthDump>, current: &HealthDump) {
 }
 
 /// Boot the tray-resident observer.
-pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
+pub fn run(
+    open_view: Option<observer_model::View>,
+    surface_on_launch: bool,
+    open_journal_on_launch: bool,
+) {
     tracing::info!(
         target: "lifecycle",
         version = env!("CARGO_PKG_VERSION"),
@@ -189,7 +193,9 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
                         outcome = "already_running",
                         "single instance"
                     );
-                    if surface_on_launch {
+                    if open_journal_on_launch {
+                        let _ = crate::control::signal_open_journal();
+                    } else if surface_on_launch {
                         let _ = crate::control::signal_surface();
                     }
                     app.handle().exit(0);
@@ -551,7 +557,20 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
             // AlreadyRunning early-return). No explicit view surfaces Settings only
             // for user-visible launches; autostart stays tray-first.
             let handle = app.handle();
-            match open_view {
+            if open_journal_on_launch {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = crate::windows::open_journal(&handle).await {
+                        tracing::warn!(
+                            target: "window",
+                            label = "journal",
+                            error = error.token(),
+                            "open-journal failed"
+                        );
+                    }
+                });
+            } else {
+                match open_view {
                 Some(view) => {
                     let result = match view {
                         observer_model::View::Settings => crate::windows::open_settings(handle),
@@ -567,6 +586,7 @@ pub fn run(open_view: Option<observer_model::View>, surface_on_launch: bool) {
                     }
                 }
                 None => {}
+                }
             }
 
             Ok(())

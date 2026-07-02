@@ -35,8 +35,7 @@ Evidence files:
 - `result.txt`: final ok/fail marker.
 
 The harness stages a mock `pairing.json`, launches the installed app in Session
-1, invokes the native tray `Open Journal` item by AutomationId
-`tray.menu.openJournal`, and then asserts both:
+1, invokes the app-native `--open-journal` control verb, and then asserts both:
 
 - Session 1 saw a normal visible app window, at least 640x480, not minimized or
   cloaked.
@@ -46,8 +45,6 @@ The harness stages a mock `pairing.json`, launches the installed app in Session
 The harness never fetches `/`, `/asset-a`, or `/asset-b` itself. Those requests
 must come from the app-opened WebView through the loopback bridge.
 
-Tray-trigger caveat: on some Windows builds the tray context menu may not be
-reachable on the UIA surface without interactive opening. If that happens, the
-documented alternate real-user route is to launch Settings and invoke the
-`settings.journal.open` button; keep the same mock transcript and window
-assertions as the source of truth.
+The trigger calls the same `windows::open_journal` path as the tray and Settings
+actions. It exists because tray-menu UIA is not reliably reachable from the
+Session 0 harness on all Windows builds.

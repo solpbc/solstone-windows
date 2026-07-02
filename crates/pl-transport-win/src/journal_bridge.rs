@@ -198,6 +198,17 @@ async fn handle_conn(
         write_local(&mut stream, 400, b"bad request", "text/plain").await;
         return;
     };
+    let route = if request_head.path() == BOOTSTRAP_ROUTE {
+        "bootstrap"
+    } else {
+        "upstream"
+    };
+    tracing::info!(
+        target: "journal_bridge",
+        method = request_head.method.as_str(),
+        route,
+        "local request"
+    );
 
     if request_head.path() == BOOTSTRAP_ROUTE {
         handle_bootstrap(&mut stream, &request_head, &capability, port).await;

@@ -9,9 +9,18 @@ use tokio::io::AsyncReadExt;
 
 pub const CONTROL_PORT: u16 = 49248;
 
+const OPEN_JOURNAL_VERB: &[u8] = b"open-journal\n";
 const SURFACE_VERB: &[u8] = b"surface-settings\n";
 
 pub fn signal_surface() -> bool {
+    signal(SURFACE_VERB)
+}
+
+pub fn signal_open_journal() -> bool {
+    signal(OPEN_JOURNAL_VERB)
+}
+
+fn signal(verb: &[u8]) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], CONTROL_PORT));
     let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
         Ok(stream) => stream,
@@ -25,7 +34,7 @@ pub fn signal_surface() -> bool {
         return false;
     }
 
-    stream.write_all(SURFACE_VERB).is_ok()
+    stream.write_all(verb).is_ok()
 }
 
 pub async fn serve(app: tauri::AppHandle, listener: tokio::net::TcpListener) {
@@ -48,7 +57,18 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: tokio::net::TcpStr
         Ok(Ok(n)) => n,
         _ => return,
     };
-    if buf[..n].starts_with(SURFACE_VERB) {
+    if buf[..n].starts_with(OPEN_JOURNAL_VERB) {
+        tokio::spawn(async move {
+            if let Err(error) = crate::windows::open_journal(&app).await {
+                tracing::warn!(
+                    target: "window",
+                    label = "journal",
+                    error = error.token(),
+                    "open-journal failed"
+                );
+            }
+        });
+    } else if buf[..n].starts_with(SURFACE_VERB) {
         std::thread::spawn(move || {
             let _ = crate::windows::open_settings(&app);
         });
