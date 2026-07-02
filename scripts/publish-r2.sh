@@ -65,7 +65,15 @@ put_one() {
   name="$(basename "$f")"
   ct="$(content_type_for "$name")"
   echo "publish-r2: put $PREFIX/$name ($ct)"
-  wrangler r2 object put "$BUCKET/$PREFIX/$name" --file="$f" --remote --content-type="$ct"
+  # no-cache: the Setup.exe / Portable.zip / feed JSON permalinks are STABLE
+  # names reused across every release (Solstone-win-Setup.exe never changes
+  # its URL), so a Cloudflare edge cache entry from a prior version's upload
+  # persists past this upload and serves stale bytes to real downloads until
+  # its TTL expires -- silently, since a HEAD request can still show fresh
+  # origin metadata while GETs hit the stale cached body. Found live 2026-07-02
+  # when a genuinely fresh browser download installed a stale pre-fix 0.2.6
+  # build hours after 0.2.7 was published and verified at the origin.
+  wrangler r2 object put "$BUCKET/$PREFIX/$name" --file="$f" --remote --content-type="$ct" --cache-control="no-cache"
 }
 
 # Everything except the feed, first.
