@@ -49,7 +49,7 @@ impl ExclusionStats {
 mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use observer_exclusion::{apply_redaction, evaluate, ExclusionDecision, ExclusionRules};
     use observer_model::{
@@ -73,30 +73,15 @@ mod imp {
 
     type HandlerError = String;
 
-    const FRAME_FRESHNESS: Duration = Duration::from_secs(3);
     // ~1 fps cap. At 1080p RGBA8 (~8.3 MB/frame), 1 fps * 300s is ~2.5 GB per
     // five-minute segment and ~15 GB per 30-minute soak; the encoder is deferred.
     const MINIMUM_UPDATE_INTERVAL: Duration = Duration::from_millis(1000);
     const SCREEN_COLOR_FORMAT: ColorFormat = ColorFormat::Rgba8;
 
-    struct SharedState {
-        state: SourceState,
-        last_frame: Option<Instant>,
-    }
-
-    impl Default for SharedState {
-        fn default() -> Self {
-            Self {
-                state: SourceState::Inactive,
-                last_frame: None,
-            }
-        }
-    }
-
     #[derive(Clone)]
     struct HandlerFlags {
         sink: Arc<dyn CaptureSink>,
-        state: Arc<Mutex<SharedState>>,
+        state: Arc<Mutex<SourceState>>,
         seq: Arc<AtomicU64>,
         color_format: ColorFormat,
         rules: Arc<RwLock<ExclusionRules>>,
@@ -105,7 +90,7 @@ mod imp {
 
     struct WgcHandler {
         sink: Arc<dyn CaptureSink>,
-        state: Arc<Mutex<SharedState>>,
+        state: Arc<Mutex<SourceState>>,
         seq: Arc<AtomicU64>,
         color_format: ColorFormat,
         rules: Arc<RwLock<ExclusionRules>>,
@@ -114,10 +99,8 @@ mod imp {
     }
 
     impl WgcHandler {
-        fn set_state(&self, state: SourceState, last_frame: Option<Instant>) {
-            let mut guard = self.state.lock().unwrap();
-            guard.state = state;
-            guard.last_frame = last_frame;
+        fn set_state(&self, state: SourceState) {
+            *self.state.lock().unwrap() = state;
         }
     }
 
@@ -158,8 +141,8 @@ mod imp {
             // The owner's rules drive an enumerate -> evaluate -> redact/drop pass;
             // anything that can't be redacted safely drops the whole frame (fail
             // closed). Skipped entirely when no rule is configured (no per-frame
-            // cost). A dropped frame still keeps the source `Active` + fresh — the
-            // observer is healthy, just excluding — and is counted into health.
+            // cost). A dropped frame still keeps the source `Active` — the observer
+            // is healthy, just excluding — and is counted into health.
             let rules = self.rules.read().map(|r| r.clone()).unwrap_or_default();
             if rules.is_active() {
                 match window_enum::enumerate_primary_monitor_windows(width, height) {
@@ -171,14 +154,14 @@ mod imp {
                         }
                         ExclusionDecision::Drop => {
                             self.stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
-                            self.set_state(SourceState::Active, Some(Instant::now()));
+                            self.set_state(SourceState::Active);
                             return Ok(());
                         }
                     },
                     Err(()) => {
                         // We can't prove the frame is clean — fail closed.
                         self.stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
-                        self.set_state(SourceState::Active, Some(Instant::now()));
+                        self.set_state(SourceState::Active);
                         return Ok(());
                     }
                 }
@@ -193,18 +176,15 @@ mod imp {
                 pixels: Arc::from(data),
             });
             self.sink.emit_screen_frame(frame);
-            self.set_state(SourceState::Active, Some(Instant::now()));
+            self.set_state(SourceState::Active);
             Ok(())
         }
 
         fn on_closed(&mut self) -> Result<(), Self::Error> {
-            self.set_state(
-                SourceState::Faulted {
-                    reason: ErrorReason::EndpointLost,
-                    detail: "graphics capture item closed".to_string(),
-                },
-                None,
-            );
+            self.set_state(SourceState::Faulted {
+                reason: ErrorReason::EndpointLost,
+                detail: "graphics capture item closed".to_string(),
+            });
             Ok(())
         }
     }
@@ -212,7 +192,7 @@ mod imp {
     /// WGC-backed screen source.
     pub struct WgcScreenSource {
         control: Option<CaptureControl<WgcHandler, HandlerError>>,
-        state: Arc<Mutex<SharedState>>,
+        state: Arc<Mutex<SourceState>>,
         last_sink: Option<Arc<dyn CaptureSink>>,
         seq: Arc<AtomicU64>,
         rules: Arc<RwLock<ExclusionRules>>,
@@ -226,7 +206,7 @@ mod imp {
         pub fn new(rules: Arc<RwLock<ExclusionRules>>) -> Self {
             Self {
                 control: None,
-                state: Arc::new(Mutex::new(SharedState::default())),
+                state: Arc::new(Mutex::new(SourceState::Inactive)),
                 last_sink: None,
                 seq: Arc::new(AtomicU64::new(0)),
                 rules,
@@ -234,10 +214,8 @@ mod imp {
             }
         }
 
-        fn set_state(&self, state: SourceState, last_frame: Option<Instant>) {
-            let mut guard = self.state.lock().unwrap();
-            guard.state = state;
-            guard.last_frame = last_frame;
+        fn set_state(&self, state: SourceState) {
+            *self.state.lock().unwrap() = state;
         }
 
         fn source_error(detail: impl Into<String>) -> SourceError {
@@ -273,7 +251,7 @@ mod imp {
         fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
             self.stop();
             self.last_sink = Some(Arc::clone(&sink));
-            self.set_state(SourceState::Inactive, None);
+            self.set_state(SourceState::Inactive);
             let settings = self.settings(sink)?;
             match WgcHandler::start_free_threaded(settings) {
                 Ok(control) => {
@@ -282,13 +260,10 @@ mod imp {
                 }
                 Err(err) => {
                     let error = Self::source_error(err.to_string());
-                    self.set_state(
-                        SourceState::Faulted {
-                            reason: error.reason,
-                            detail: error.detail.clone(),
-                        },
-                        None,
-                    );
+                    self.set_state(SourceState::Faulted {
+                        reason: error.reason,
+                        detail: error.detail.clone(),
+                    });
                     Err(error)
                 }
             }
@@ -298,45 +273,91 @@ mod imp {
             if let Some(control) = self.control.take() {
                 let _ = control.stop();
             }
-            self.set_state(SourceState::Inactive, None);
+            self.set_state(SourceState::Inactive);
         }
 
+        /// A running WGC session reports `Active`. The capture API is
+        /// change-driven, so a static screen delivering no frames is expected and
+        /// healthy; there is no frame-freshness heuristic. Accepted residual: a
+        /// silently-wedged session that never fires `on_closed()` reports `Active`
+        /// indefinitely. A silent-stall watchdog is deferred (YAGNI), and the old
+        /// freshness signal did not usefully cover this because it false-fired on
+        /// every healthy static screen.
         fn state(&self) -> SourceState {
-            let guard = self.state.lock().unwrap();
-            match &guard.state {
-                SourceState::Active => {
-                    if guard
-                        .last_frame
-                        .is_some_and(|last_frame| last_frame.elapsed() <= FRAME_FRESHNESS)
-                    {
-                        SourceState::Active
-                    } else {
-                        SourceState::Inactive
-                    }
-                }
-                state => state.clone(),
-            }
+            self.state.lock().unwrap().clone()
         }
 
         fn on_display_changed(&mut self) {
             let Some(sink) = self.last_sink.clone() else {
-                self.set_state(SourceState::Inactive, None);
+                self.set_state(SourceState::Inactive);
                 return;
             };
             if let Err(error) = self.start(sink) {
-                self.set_state(
-                    SourceState::Faulted {
-                        reason: error.reason,
-                        detail: error.detail,
-                    },
-                    None,
-                );
+                self.set_state(SourceState::Faulted {
+                    reason: error.reason,
+                    detail: error.detail,
+                });
             }
         }
 
         fn exclusion_health(&self) -> Option<ExclusionHealth> {
             let active = self.rules.read().map(|r| r.is_active()).unwrap_or(false);
             Some(self.stats.snapshot(active))
+        }
+    }
+
+    #[cfg(all(windows, test))]
+    mod tests {
+        use super::*;
+
+        struct FakeSink;
+
+        impl CaptureSink for FakeSink {
+            fn emit(&self, _chunk: observer_model::CaptureChunk) {}
+
+            fn emit_screen_frame(&self, _frame: ScreenFrame) {}
+        }
+
+        #[test]
+        fn on_closed_faults_with_endpoint_lost() {
+            let state = Arc::new(Mutex::new(SourceState::Inactive));
+            let mut handler = WgcHandler {
+                sink: Arc::new(FakeSink),
+                state: Arc::clone(&state),
+                seq: Arc::new(AtomicU64::new(0)),
+                color_format: SCREEN_COLOR_FORMAT,
+                rules: Arc::new(RwLock::new(ExclusionRules::default())),
+                stats: Arc::new(ExclusionStats::default()),
+                scratch: Vec::new(),
+            };
+
+            handler.on_closed().unwrap();
+
+            let got = state.lock().unwrap().clone();
+            assert_eq!(
+                got,
+                SourceState::Faulted {
+                    reason: ErrorReason::EndpointLost,
+                    detail: "graphics capture item closed".to_string(),
+                }
+            );
+        }
+
+        #[test]
+        fn stop_transitions_active_source_to_inactive() {
+            let mut src = WgcScreenSource::new(Arc::new(RwLock::new(ExclusionRules::default())));
+            *src.state.lock().unwrap() = SourceState::Active;
+
+            src.stop();
+
+            assert_eq!(src.state(), SourceState::Inactive);
+        }
+
+        #[test]
+        fn fresh_source_without_frames_reports_inactive() {
+            let src = WgcScreenSource::new(Arc::new(RwLock::new(ExclusionRules::default())));
+
+            assert_eq!(src.state(), SourceState::Inactive);
         }
     }
 }
