@@ -17,13 +17,11 @@ use std::time::Duration;
 
 use futures_util::{Sink, Stream};
 use observer_pl::http::HttpResponse;
-use observer_pl::mux::StreamItem;
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio_rustls::TlsConnector;
+use tokio_rustls::{client::TlsStream, TlsConnector};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
@@ -34,7 +32,7 @@ use tokio_tungstenite::{
     connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
 };
 
-use crate::connection::{run_request_over_stream, run_request_stream_over_stream};
+use crate::connection::run_request_over_stream;
 use crate::tls::pinned_server_name;
 use crate::{RelayError, TransportError};
 
@@ -123,18 +121,37 @@ fn ws_io_error(kind: io::ErrorKind, message: &'static str) -> io::Error {
     io::Error::new(kind, message)
 }
 
-struct WsByteDuplex {
+#[derive(Clone)]
+pub(crate) struct RelayTerminationHandle(Arc<Mutex<Option<WsTermination>>>);
+
+impl RelayTerminationHandle {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+
+    fn current(&self) -> Option<WsTermination> {
+        current_termination(&self.0)
+    }
+
+    pub(crate) fn current_error(&self) -> Option<RelayError> {
+        self.current().map(relay_error_from_termination)
+    }
+
+    fn record(&self, value: WsTermination) {
+        record_termination(&self.0, value);
+    }
+}
+
+pub(crate) struct WsByteDuplex {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     read_tail: Vec<u8>,
     read_pos: usize,
-    termination: Arc<Mutex<Option<WsTermination>>>,
+    termination: RelayTerminationHandle,
 }
 
 impl WsByteDuplex {
-    fn new(
-        ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    ) -> (Self, Arc<Mutex<Option<WsTermination>>>) {
-        let termination = Arc::new(Mutex::new(None));
+    fn new(ws: WebSocketStream<MaybeTlsStream<TcpStream>>) -> (Self, RelayTerminationHandle) {
+        let termination = RelayTerminationHandle::new();
         (
             Self {
                 ws,
@@ -201,18 +218,18 @@ impl AsyncRead for WsByteDuplex {
                     let code = frame
                         .map(|close| u16::from(close.code))
                         .unwrap_or_else(|| u16::from(CloseCode::Normal));
-                    record_termination(&self.termination, WsTermination::Close(code));
+                    self.termination.record(WsTermination::Close(code));
                     return Poll::Ready(Ok(()));
                 }
                 Poll::Ready(Some(Ok(Message::Text(_) | Message::Frame(_)))) => {
-                    record_termination(&self.termination, WsTermination::Abnormal);
+                    self.termination.record(WsTermination::Abnormal);
                     return Poll::Ready(Err(ws_io_error(
                         io::ErrorKind::InvalidData,
                         "unexpected relay websocket message",
                     )));
                 }
                 Poll::Ready(Some(Err(_))) => {
-                    record_termination(&self.termination, WsTermination::Abnormal);
+                    self.termination.record(WsTermination::Abnormal);
                     return Poll::Ready(Err(ws_io_error(
                         io::ErrorKind::BrokenPipe,
                         "relay websocket read failed",
@@ -373,21 +390,24 @@ pub async fn request_once_over_ws_with_peer_leaf(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn request_stream_over_ws(
-    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+pub(crate) struct RelayCarrier {
+    pub(crate) stream: TlsStream<WsByteDuplex>,
+    pub(crate) termination: RelayTerminationHandle,
+}
+
+pub(crate) async fn dial_relay_carrier(
     inner_config: Arc<ClientConfig>,
-    handshake_timeout: Duration,
-    method: &str,
-    path: &str,
-    headers: &[(String, String)],
-    body: &[u8],
-    tx: &mpsc::Sender<StreamItem>,
-) -> Result<(), TransportError> {
+    relay_origin: &str,
+    instance_id: &str,
+    device_token: &str,
+) -> Result<RelayCarrier, TransportError> {
+    let url = observer_pl::relay::dial_url(relay_origin, instance_id)
+        .map_err(|e| TransportError::PairLink(format!("relay origin: {e}")))?;
+    let ws = dial_relay_ws(&url, device_token, outer_config()).await?;
     let (duplex, termination) = WsByteDuplex::new(ws);
     let connector = TlsConnector::from(inner_config);
     let tls = match tokio::time::timeout(
-        handshake_timeout,
+        RELAY_HANDSHAKE_TIMEOUT,
         connector.connect(pinned_server_name(), duplex),
     )
     .await
@@ -395,23 +415,17 @@ pub async fn request_stream_over_ws(
         Err(_) => return Err(TransportError::Relay(RelayError::Stalled)),
         Ok(Ok(tls)) => tls,
         Ok(Err(e)) => {
-            if let Some(value) = current_termination(&termination) {
-                return Err(TransportError::Relay(relay_error_from_termination(value)));
+            if let Some(error) = termination.current_error() {
+                return Err(TransportError::Relay(error));
             }
             return Err(TransportError::Tls(format!("inner relay handshake: {e}")));
         }
     };
 
-    match run_request_stream_over_stream(tls, method, path, headers, body, tx).await {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            if let Some(value) = current_termination(&termination) {
-                Err(TransportError::Relay(relay_error_from_termination(value)))
-            } else {
-                Err(error)
-            }
-        }
-    }
+    Ok(RelayCarrier {
+        stream: tls,
+        termination,
+    })
 }
 
 async fn request_once_over_ws_inner(
@@ -434,7 +448,7 @@ async fn request_once_over_ws_inner(
         Err(_) => return Err(TransportError::Relay(RelayError::Stalled)),
         Ok(Ok(tls)) => tls,
         Ok(Err(e)) => {
-            if let Some(value) = current_termination(&termination) {
+            if let Some(value) = termination.current() {
                 return Err(TransportError::Relay(relay_error_from_termination(value)));
             }
             return Err(TransportError::Tls(format!("inner relay handshake: {e}")));
@@ -450,7 +464,7 @@ async fn request_once_over_ws_inner(
     match run_request_over_stream(tls, method, path, headers, body).await {
         Ok(response) => Ok((response, peer_leaf)),
         Err(error) => {
-            if let Some(value) = current_termination(&termination) {
+            if let Some(value) = termination.current() {
                 Err(TransportError::Relay(relay_error_from_termination(value)))
             } else {
                 Err(error)
@@ -481,34 +495,6 @@ pub async fn request_once_relay(
         path,
         headers,
         body,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn request_stream_relay(
-    inner_config: Arc<ClientConfig>,
-    relay_origin: &str,
-    instance_id: &str,
-    device_token: &str,
-    method: &str,
-    path: &str,
-    headers: &[(String, String)],
-    body: &[u8],
-    tx: &mpsc::Sender<StreamItem>,
-) -> Result<(), TransportError> {
-    let url = observer_pl::relay::dial_url(relay_origin, instance_id)
-        .map_err(|e| TransportError::PairLink(format!("relay origin: {e}")))?;
-    let ws = dial_relay_ws(&url, device_token, outer_config()).await?;
-    request_stream_over_ws(
-        ws,
-        inner_config,
-        RELAY_HANDSHAKE_TIMEOUT,
-        method,
-        path,
-        headers,
-        body,
-        tx,
     )
     .await
 }

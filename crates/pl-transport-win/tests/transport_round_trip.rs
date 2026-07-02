@@ -10,6 +10,7 @@
 //! replaced by a fixed echo. This is the deterministic, host-runnable proxy for
 //! the live cross-repo gate.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,7 +20,7 @@ use observer_model::{
     LAST_ERROR_REASON_MAX_LEN,
 };
 use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW};
-use observer_pl::mux::{HttpHead, StreamEnd, StreamItem, INITIAL_WINDOW};
+use observer_pl::mux::INITIAL_WINDOW;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
@@ -186,9 +187,7 @@ async fn serve_drop_then_one(listener: TcpListener, acceptor: TlsAcceptor) -> Ve
 #[derive(Clone, Copy)]
 enum SseMode {
     Close,
-    ResetAfterFirst,
     EofBeforeHead,
-    ChunkedClose,
 }
 
 async fn write_response_frame(
@@ -211,107 +210,19 @@ async fn serve_sse_stream(listener: TcpListener, acceptor: TlsAcceptor, mode: Ss
         return request;
     }
 
-    match mode {
-        SseMode::Close | SseMode::ResetAfterFirst => {
-            write_response_frame(
-                &mut tls,
-                stream_id,
-                FLAG_DATA,
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
-            )
-            .await;
-            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 1\n\n").await;
-            if matches!(mode, SseMode::ResetAfterFirst) {
-                write_response_frame(&mut tls, stream_id, FLAG_RESET, b"").await;
-                return request;
-            }
-            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 2\n\n").await;
-            write_response_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
-        }
-        SseMode::ChunkedClose => {
-            write_response_frame(
-                &mut tls,
-                stream_id,
-                FLAG_DATA,
-                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
-            )
-            .await;
-            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"9\r\ndata: 1\n\n\r\n").await;
-            write_response_frame(&mut tls, stream_id, FLAG_DATA, b"9").await;
-            write_response_frame(
-                &mut tls,
-                stream_id,
-                FLAG_DATA,
-                b"\r\ndata: 2\n\n\r\n0\r\n\r\n",
-            )
-            .await;
-            write_response_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
-        }
-        SseMode::EofBeforeHead => unreachable!("handled before writing a head"),
-    }
+    write_response_frame(
+        &mut tls,
+        stream_id,
+        FLAG_DATA,
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+    )
+    .await;
+    write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 1\n\n").await;
+    write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 2\n\n").await;
+    write_response_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
 
     let _ = tls.shutdown().await;
     request
-}
-
-async fn collect_stream_items(rx: mpsc::Receiver<StreamItem>) -> Vec<StreamItem> {
-    let mut rx = rx;
-    let mut items = Vec::new();
-    while let Some(item) = rx.recv().await {
-        items.push(item);
-    }
-    items
-}
-
-fn assert_sse_head(item: &StreamItem) {
-    match item {
-        StreamItem::Head(HttpHead { status, headers }) => {
-            assert_eq!(*status, 200);
-            assert!(headers.iter().any(|(name, value)| {
-                name == "content-type" && value.eq_ignore_ascii_case("text/event-stream")
-            }));
-        }
-        other => panic!("expected SSE head, got {other:?}"),
-    }
-}
-
-fn body_items(items: &[StreamItem]) -> Vec<Vec<u8>> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            StreamItem::Body(body) => Some(body.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-async fn spawn_fixed_response(
-    status: &'static str,
-    body: &'static [u8],
-) -> (ObserverClient, JoinHandle<Vec<u8>>) {
-    let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
-    let client = ObserverClient::new(observer_credential(pin, port))
-        .unwrap()
-        .with_observer_key(Some("obs-handle".into()));
-    (client, server)
-}
-
-async fn spawn_sse(mode: SseMode) -> (ObserverClient, JoinHandle<Vec<u8>>) {
-    let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve_sse_stream(listener, acceptor, mode));
-    let client = ObserverClient::new(observer_credential(pin, port))
-        .unwrap()
-        .with_observer_key(Some("obs-handle".into()));
-    (client, server)
 }
 
 static NEXT_TEMP_PATH: AtomicUsize = AtomicUsize::new(0);
@@ -425,6 +336,174 @@ async fn start_bridge_with_counting_upstream() -> (
         .await
         .unwrap();
     (handle, accepts, task)
+}
+
+struct PersistentRequest {
+    carrier_index: usize,
+    stream_id: u32,
+    bytes: Vec<u8>,
+}
+
+enum PersistentWrite {
+    Frame(Vec<u8>),
+    CloseCarrier,
+}
+
+struct PersistentBridgeServer {
+    accepts: Arc<AtomicUsize>,
+    requests: mpsc::Receiver<PersistentRequest>,
+    writes: mpsc::UnboundedSender<PersistentWrite>,
+    task: JoinHandle<()>,
+}
+
+impl PersistentBridgeServer {
+    async fn next_request(&mut self) -> PersistentRequest {
+        tokio::time::timeout(std::time::Duration::from_secs(3), self.requests.recv())
+            .await
+            .expect("timed out waiting for upstream mux request")
+            .expect("persistent upstream closed before request")
+    }
+
+    fn send_http(&self, stream_id: u32, status: &str, body: &[u8]) {
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        self.send_frame(stream_id, FLAG_DATA | FLAG_CLOSE, response.as_bytes());
+    }
+
+    fn send_sse_head(&self, stream_id: u32) {
+        self.send_frame(
+            stream_id,
+            FLAG_DATA,
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+        );
+    }
+
+    fn send_body(&self, stream_id: u32, body: &[u8]) {
+        self.send_frame(stream_id, FLAG_DATA, body);
+    }
+
+    fn close_stream(&self, stream_id: u32) {
+        self.send_frame(stream_id, FLAG_CLOSE, b"");
+    }
+
+    fn reset_stream(&self, stream_id: u32) {
+        self.send_frame(stream_id, FLAG_RESET, b"");
+    }
+
+    fn send_frame(&self, stream_id: u32, flags: u8, payload: &[u8]) {
+        let frame = Frame::new(stream_id, flags, payload.to_vec())
+            .encode()
+            .unwrap();
+        self.writes.send(PersistentWrite::Frame(frame)).unwrap();
+    }
+
+    fn close_current_carrier(&self) {
+        self.writes.send(PersistentWrite::CloseCarrier).unwrap();
+    }
+
+    fn accepted_carriers(&self) -> usize {
+        self.accepts.load(Ordering::SeqCst)
+    }
+
+    fn abort(self) {
+        self.task.abort();
+    }
+}
+
+async fn start_bridge_with_persistent_server(
+) -> (journal_bridge::JournalBridgeHandle, PersistentBridgeServer) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let (request_tx, request_rx) = mpsc::channel(16);
+    let (write_tx, mut write_rx) = mpsc::unbounded_channel::<PersistentWrite>();
+    let task = tokio::spawn({
+        let accepts = accepts.clone();
+        async move {
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    break;
+                };
+                let carrier_index = accepts.fetch_add(1, Ordering::SeqCst) + 1;
+                let tls = acceptor.accept(tcp).await.unwrap();
+                let (mut read, mut write) = tokio::io::split(tls);
+                let mut decoder = FrameDecoder::new();
+                let mut requests: HashMap<u32, Vec<u8>> = HashMap::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    tokio::select! {
+                        read_result = read.read(&mut buf) => {
+                            let Ok(n) = read_result else {
+                                break;
+                            };
+                            if n == 0 {
+                                break;
+                            }
+                            decoder.feed(&buf[..n]);
+                            for frame in decoder.drain().unwrap() {
+                                if let Some(pong) = frame.control_pong() {
+                                    let bytes = pong.encode().unwrap();
+                                    write.write_all(&bytes).await.unwrap();
+                                    write.flush().await.unwrap();
+                                    continue;
+                                }
+                                if frame.flags & FLAG_DATA != 0 {
+                                    requests
+                                        .entry(frame.stream_id)
+                                        .or_default()
+                                        .extend_from_slice(&frame.payload);
+                                }
+                                if frame.flags & FLAG_CLOSE != 0 {
+                                    let bytes = requests.remove(&frame.stream_id).unwrap_or_default();
+                                    request_tx
+                                        .send(PersistentRequest {
+                                            carrier_index,
+                                            stream_id: frame.stream_id,
+                                            bytes,
+                                        })
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                        }
+                        write_command = write_rx.recv() => {
+                            match write_command {
+                                Some(PersistentWrite::Frame(bytes)) => {
+                                    if write.write_all(&bytes).await.is_err() || write.flush().await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Some(PersistentWrite::CloseCarrier) => {
+                                    let _ = write.shutdown().await;
+                                    break;
+                                }
+                                None => return,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let paired = paired_state(observer_credential(pin, upstream_port));
+    let handle = journal_bridge::start(&paired, temp_state_path("persistent"))
+        .await
+        .unwrap();
+    (
+        handle,
+        PersistentBridgeServer {
+            accepts,
+            requests: request_rx,
+            writes: write_tx,
+            task,
+        },
+    )
 }
 
 async fn raw_bridge_request(
@@ -633,146 +712,6 @@ async fn round_trips_request_over_real_tls_and_framing() {
     assert!(received_text.contains("host: spl.local\r\n"));
     assert!(received_text.contains("Content-Type: application/json\r\n"));
     assert!(received_text.ends_with("{\"csr\":\"PEM\",\"device_label\":\"win\"}"));
-}
-
-#[tokio::test]
-async fn buffered_proxy_request_forwards_auth_accept_and_body() {
-    let (client, server) = spawn_fixed_response("200 OK", b"<html>ok</html>").await;
-
-    let response = client
-        .request(
-            "GET",
-            "/journal",
-            &[("accept".to_string(), "text/html".to_string())],
-            b"",
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status, 200);
-    assert_eq!(response.body, b"<html>ok</html>");
-    let request = server.await.unwrap();
-    let request = String::from_utf8_lossy(&request);
-    assert!(request.starts_with("GET /journal HTTP/1.1\r\n"));
-    assert!(request.contains("X-Solstone-Observer: obs-handle\r\n"));
-    assert!(request.contains("Authorization: Bearer obs-handle\r\n"));
-    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
-    assert!(request.contains("accept: text/html\r\n"));
-}
-
-#[tokio::test]
-async fn buffered_proxy_request_preserves_401_as_response() {
-    let (client, server) = spawn_fixed_response("401 Unauthorized", b"{\"error\":\"auth\"}").await;
-
-    let response = client.request("GET", "/journal", &[], b"").await.unwrap();
-
-    assert_eq!(response.status, 401);
-    assert_eq!(response.body, b"{\"error\":\"auth\"}");
-    let _ = server.await.unwrap();
-}
-
-#[tokio::test]
-async fn buffered_proxy_request_strips_caller_auth_headers() {
-    let (client, server) = spawn_fixed_response("200 OK", b"{\"status\":\"ok\"}").await;
-
-    client
-        .request(
-            "GET",
-            "/journal",
-            &[
-                ("Authorization".to_string(), "Bearer attacker".to_string()),
-                ("X-Solstone-Observer".to_string(), "attacker".to_string()),
-                ("X-Solstone-Protocol-Version".to_string(), "999".to_string()),
-                ("accept".to_string(), "text/html".to_string()),
-            ],
-            b"",
-        )
-        .await
-        .unwrap();
-
-    let request = server.await.unwrap();
-    let request = String::from_utf8_lossy(&request);
-    assert!(request.contains("X-Solstone-Observer: obs-handle\r\n"));
-    assert!(request.contains("Authorization: Bearer obs-handle\r\n"));
-    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
-    assert!(!request.contains("attacker"));
-    assert!(!request.contains("999"));
-}
-
-#[tokio::test]
-async fn sse_streams_head_first_body_items_then_close() {
-    let (client, server) = spawn_sse(SseMode::Close).await;
-    let (tx, rx) = mpsc::channel(16);
-
-    let result = client
-        .request_stream("GET", "/sse/events", &[], b"", &tx)
-        .await;
-    drop(tx);
-    let items = collect_stream_items(rx).await;
-
-    result.unwrap();
-    let _ = server.await.unwrap();
-    assert_sse_head(&items[0]);
-    assert_eq!(
-        body_items(&items),
-        vec![b"data: 1\n\n".to_vec(), b"data: 2\n\n".to_vec()]
-    );
-    assert_eq!(items.last(), Some(&StreamItem::End(StreamEnd::Close)));
-}
-
-#[tokio::test]
-async fn sse_chunked_body_is_decoded_incrementally() {
-    let (client, server) = spawn_sse(SseMode::ChunkedClose).await;
-    let (tx, rx) = mpsc::channel(16);
-
-    let result = client
-        .request_stream("GET", "/sse/events", &[], b"", &tx)
-        .await;
-    drop(tx);
-    let items = collect_stream_items(rx).await;
-
-    result.unwrap();
-    let _ = server.await.unwrap();
-    assert!(matches!(items.first(), Some(StreamItem::Head(_))));
-    assert_eq!(
-        body_items(&items),
-        vec![b"data: 1\n\n".to_vec(), b"data: 2\n\n".to_vec()]
-    );
-    assert_eq!(items.last(), Some(&StreamItem::End(StreamEnd::Close)));
-}
-
-#[tokio::test]
-async fn sse_reset_after_head_returns_ok_with_reset_end() {
-    let (client, server) = spawn_sse(SseMode::ResetAfterFirst).await;
-    let (tx, rx) = mpsc::channel(16);
-
-    let result = client
-        .request_stream("GET", "/sse/events", &[], b"", &tx)
-        .await;
-    drop(tx);
-    let items = collect_stream_items(rx).await;
-
-    result.unwrap();
-    let _ = server.await.unwrap();
-    assert_sse_head(&items[0]);
-    assert_eq!(body_items(&items), vec![b"data: 1\n\n".to_vec()]);
-    assert_eq!(items.last(), Some(&StreamItem::End(StreamEnd::Reset)));
-}
-
-#[tokio::test]
-async fn sse_eof_before_head_returns_error_without_head_item() {
-    let (client, server) = spawn_sse(SseMode::EofBeforeHead).await;
-    let (tx, rx) = mpsc::channel(16);
-
-    let result = client
-        .request_stream("GET", "/sse/events", &[], b"", &tx)
-        .await;
-    drop(tx);
-    let items = collect_stream_items(rx).await;
-
-    assert!(result.is_err());
-    let _ = server.await.unwrap();
-    assert!(!items.iter().any(|item| matches!(item, StreamItem::Head(_))));
 }
 
 #[tokio::test]
@@ -1043,6 +982,468 @@ async fn journal_bridge_sse_fail_before_head_returns_502() {
     assert!(!response_text(&response).starts_with("HTTP/1.1 200"));
     let _ = upstream.await.unwrap();
     handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn journal_bridge_reuses_one_carrier_for_sequential_requests() {
+    let (handle, mut server) = start_bridge_with_persistent_server().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let first_cap = cap.clone();
+    let first = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/first",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&first_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let first_request = server.next_request().await;
+    assert!(String::from_utf8_lossy(&first_request.bytes).starts_with("GET /first HTTP/1.1\r\n"));
+    server.send_http(first_request.stream_id, "200 OK", b"first");
+    let first_response = first.await.unwrap();
+    assert_eq!(response_status(&first_response), 200);
+    assert_eq!(response_body(&first_response), "first");
+
+    let second_cap = cap.clone();
+    let second = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/second",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&second_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let second_request = server.next_request().await;
+    assert!(String::from_utf8_lossy(&second_request.bytes).starts_with("GET /second HTTP/1.1\r\n"));
+    server.send_http(second_request.stream_id, "200 OK", b"second");
+    let second_response = second.await.unwrap();
+    assert_eq!(response_status(&second_response), 200);
+    assert_eq!(response_body(&second_response), "second");
+
+    assert_eq!(server.accepted_carriers(), 1);
+    handle.shutdown_and_wait().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_first_load_concurrent_requests_coalesce_one_carrier() {
+    let (handle, mut server) = start_bridge_with_persistent_server().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let first_cap = cap.clone();
+    let first = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/first-load-a",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&first_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let second_cap = cap.clone();
+    let second = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/first-load-b",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&second_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+
+    let req_a = server.next_request().await;
+    let req_b = server.next_request().await;
+    assert_eq!(req_a.carrier_index, 1);
+    assert_eq!(req_b.carrier_index, 1);
+    let mut stream_ids = [req_a.stream_id, req_b.stream_id];
+    stream_ids.sort();
+    assert_eq!(stream_ids, [1, 3]);
+    server.send_http(req_a.stream_id, "200 OK", b"a");
+    server.send_http(req_b.stream_id, "200 OK", b"b");
+
+    assert_eq!(response_status(&first.await.unwrap()), 200);
+    assert_eq!(response_status(&second.await.unwrap()), 200);
+    assert_eq!(server.accepted_carriers(), 1);
+
+    handle.shutdown_and_wait().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_two_handles_use_separate_caps_and_carriers() {
+    let (handle1, mut server1) = start_bridge_with_persistent_server().await;
+    let (handle2, mut server2) = start_bridge_with_persistent_server().await;
+    let port1 = handle1.port();
+    let port2 = handle2.port();
+    let cap1 = capability_from(&handle1);
+    let cap2 = capability_from(&handle2);
+    assert_ne!(cap1, cap2);
+
+    let cap1_for_request = cap1.clone();
+    let one = tokio::spawn(async move {
+        raw_bridge_request(
+            port1,
+            "GET",
+            "/one",
+            Some(loopback_host(port1)),
+            Some(cap_cookie(&cap1_for_request)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let cap2_for_request = cap2.clone();
+    let two = tokio::spawn(async move {
+        raw_bridge_request(
+            port2,
+            "GET",
+            "/two",
+            Some(loopback_host(port2)),
+            Some(cap_cookie(&cap2_for_request)),
+            &[],
+            b"",
+        )
+        .await
+    });
+
+    let req1 = server1.next_request().await;
+    let req2 = server2.next_request().await;
+    assert!(String::from_utf8_lossy(&req1.bytes).starts_with("GET /one HTTP/1.1\r\n"));
+    assert!(String::from_utf8_lossy(&req2.bytes).starts_with("GET /two HTTP/1.1\r\n"));
+    server1.send_http(req1.stream_id, "200 OK", b"one");
+    server2.send_http(req2.stream_id, "200 OK", b"two");
+
+    assert_eq!(response_body(&one.await.unwrap()), "one");
+    assert_eq!(response_body(&two.await.unwrap()), "two");
+    assert_eq!(server1.accepted_carriers(), 1);
+    assert_eq!(server2.accepted_carriers(), 1);
+
+    handle1.shutdown_and_wait().await;
+    handle2.shutdown_and_wait().await;
+    server1.abort();
+    server2.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_interleaves_streams_to_correct_clients_on_one_carrier() {
+    let (handle, mut server) = start_bridge_with_persistent_server().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let first_cap = cap.clone();
+    let first = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/first",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&first_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let second_cap = cap.clone();
+    let second = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/second",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&second_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+
+    let req_a = server.next_request().await;
+    let req_b = server.next_request().await;
+    let text_a = String::from_utf8_lossy(&req_a.bytes);
+    let (first_req, second_req) = if text_a.starts_with("GET /first ") {
+        (req_a, req_b)
+    } else {
+        (req_b, req_a)
+    };
+    assert!(String::from_utf8_lossy(&first_req.bytes).starts_with("GET /first HTTP/1.1\r\n"));
+    assert!(String::from_utf8_lossy(&second_req.bytes).starts_with("GET /second HTTP/1.1\r\n"));
+
+    server.send_http(second_req.stream_id, "200 OK", b"second");
+    server.send_http(first_req.stream_id, "200 OK", b"first");
+
+    let first_response = first.await.unwrap();
+    let second_response = second.await.unwrap();
+    assert_eq!(response_body(&first_response), "first");
+    assert_eq!(response_body(&second_response), "second");
+    assert_eq!(server.accepted_carriers(), 1);
+
+    handle.shutdown_and_wait().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_reset_isolates_one_stream_on_shared_carrier() {
+    let (handle, mut server) = start_bridge_with_persistent_server().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let reset_cap = cap.clone();
+    let reset_client = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/reset-me",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&reset_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let ok_cap = cap.clone();
+    let ok_client = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/still-ok",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&ok_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+
+    let req_a = server.next_request().await;
+    let req_b = server.next_request().await;
+    let text_a = String::from_utf8_lossy(&req_a.bytes);
+    let (reset_req, ok_req) = if text_a.starts_with("GET /reset-me ") {
+        (req_a, req_b)
+    } else {
+        (req_b, req_a)
+    };
+    assert!(String::from_utf8_lossy(&reset_req.bytes).starts_with("GET /reset-me HTTP/1.1\r\n"));
+    assert!(String::from_utf8_lossy(&ok_req.bytes).starts_with("GET /still-ok HTTP/1.1\r\n"));
+
+    server.reset_stream(reset_req.stream_id);
+    server.send_http(ok_req.stream_id, "200 OK", b"survived");
+
+    let reset_response = reset_client.await.unwrap();
+    let ok_response = ok_client.await.unwrap();
+    assert_eq!(response_status(&reset_response), 502);
+    assert_eq!(response_status(&ok_response), 200);
+    assert_eq!(response_body(&ok_response), "survived");
+    assert_eq!(server.accepted_carriers(), 1);
+
+    handle.shutdown_and_wait().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_sse_does_not_block_second_get_on_same_carrier() {
+    let (handle, mut server) = start_bridge_with_persistent_server().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let sse_cap = cap.clone();
+    let sse = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/sse/events",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&sse_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let sse_request = server.next_request().await;
+    assert!(String::from_utf8_lossy(&sse_request.bytes).starts_with("GET /sse/events HTTP/1.1\r\n"));
+    server.send_sse_head(sse_request.stream_id);
+    server.send_body(sse_request.stream_id, b"data: 1\n\n");
+
+    let get_cap = cap.clone();
+    let get = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/journal",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&get_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let get_request = server.next_request().await;
+    assert!(String::from_utf8_lossy(&get_request.bytes).starts_with("GET /journal HTTP/1.1\r\n"));
+    server.send_http(get_request.stream_id, "200 OK", b"ok while sse open");
+
+    let get_response = tokio::time::timeout(std::time::Duration::from_millis(500), get)
+        .await
+        .expect("second GET should not wait for SSE to close")
+        .unwrap();
+    assert_eq!(response_status(&get_response), 200);
+    assert_eq!(response_body(&get_response), "ok while sse open");
+
+    server.send_body(sse_request.stream_id, b"data: 2\n\n");
+    server.close_stream(sse_request.stream_id);
+    let sse_response = tokio::time::timeout(std::time::Duration::from_secs(1), sse)
+        .await
+        .expect("SSE should close after upstream close")
+        .unwrap();
+    assert_eq!(response_status(&sse_response), 200);
+    let sse_body = response_body(&sse_response);
+    assert!(sse_body.contains("data: 1\n\n"));
+    assert!(sse_body.contains("data: 2\n\n"));
+    assert_eq!(server.accepted_carriers(), 1);
+
+    handle.shutdown_and_wait().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_shutdown_closes_active_carrier_and_streams() {
+    let (handle, mut server) = start_bridge_with_persistent_server().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let mut local = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let request = format!(
+        "GET /sse/events HTTP/1.1\r\nHost: {}\r\nCookie: {}\r\n\r\n",
+        loopback_host(port),
+        cap_cookie(&cap)
+    );
+    local.write_all(request.as_bytes()).await.unwrap();
+    local.flush().await.unwrap();
+
+    let sse_request = server.next_request().await;
+    server.send_sse_head(sse_request.stream_id);
+    server.send_body(sse_request.stream_id, b"data: one\n\n");
+
+    let mut sse_response = Vec::new();
+    let mut buf = [0u8; 256];
+    while !response_text(&sse_response).contains("data: one\n\n") {
+        let n = tokio::time::timeout(std::time::Duration::from_secs(1), local.read(&mut buf))
+            .await
+            .expect("SSE bytes should arrive before shutdown")
+            .unwrap();
+        assert!(n > 0, "SSE closed before first body item");
+        sse_response.extend_from_slice(&buf[..n]);
+    }
+
+    handle.shutdown_and_wait().await;
+    let mut tail = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        local.read_to_end(&mut tail),
+    )
+    .await
+    .expect("shutdown should close active SSE")
+    .unwrap();
+    sse_response.extend_from_slice(&tail);
+    assert_eq!(response_status(&sse_response), 200);
+    assert!(response_body(&sse_response).contains("data: one\n\n"));
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err());
+    server.abort();
+}
+
+#[tokio::test]
+async fn journal_bridge_carrier_death_redials_without_replaying_failed_stream() {
+    let (handle, mut server) = start_bridge_with_persistent_server().await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let ok_cap = cap.clone();
+    let ok = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/ok",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&ok_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let ok_request = server.next_request().await;
+    assert_eq!(ok_request.carrier_index, 1);
+    assert!(String::from_utf8_lossy(&ok_request.bytes).starts_with("GET /ok HTTP/1.1\r\n"));
+    server.send_http(ok_request.stream_id, "200 OK", b"ok");
+    assert_eq!(response_body(&ok.await.unwrap()), "ok");
+
+    let dying_cap = cap.clone();
+    let dying = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/dies",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&dying_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let dying_request = server.next_request().await;
+    assert_eq!(dying_request.carrier_index, 1);
+    assert!(String::from_utf8_lossy(&dying_request.bytes).starts_with("GET /dies HTTP/1.1\r\n"));
+    server.close_current_carrier();
+    let dying_response = tokio::time::timeout(std::time::Duration::from_secs(1), dying)
+        .await
+        .expect("dead carrier should fail in-flight local request")
+        .unwrap();
+    assert_eq!(response_status(&dying_response), 502);
+
+    let after_cap = cap.clone();
+    let after = tokio::spawn(async move {
+        raw_bridge_request(
+            port,
+            "GET",
+            "/after",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&after_cap)),
+            &[],
+            b"",
+        )
+        .await
+    });
+    let after_request = server.next_request().await;
+    assert_eq!(after_request.carrier_index, 2);
+    assert!(String::from_utf8_lossy(&after_request.bytes).starts_with("GET /after HTTP/1.1\r\n"));
+    assert!(
+        !String::from_utf8_lossy(&after_request.bytes).starts_with("GET /dies HTTP/1.1\r\n"),
+        "failed in-flight request must not be replayed on the new carrier"
+    );
+    server.send_http(after_request.stream_id, "200 OK", b"after");
+    assert_eq!(response_body(&after.await.unwrap()), "after");
+    assert_eq!(server.accepted_carriers(), 2);
+
+    handle.shutdown_and_wait().await;
+    server.abort();
 }
 
 #[tokio::test]

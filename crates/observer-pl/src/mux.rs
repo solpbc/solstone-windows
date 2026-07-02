@@ -22,6 +22,8 @@
 //! encoded screen segment is ~37.5 MB) uploadable; before it, the client was
 //! only correct for bodies that fit the 1 MiB initial window.
 
+use std::collections::HashMap;
+
 use crate::frame::{
     Frame, FrameDecoder, FrameError, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, FLAG_RESET, MAX_PAYLOAD,
     RECOMMENDED_CHUNK,
@@ -176,11 +178,16 @@ pub enum StreamItem {
     End(StreamEnd),
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct StreamingFeed {
+#[derive(Debug, Default)]
+pub struct DemuxOutput {
+    /// Encoded PONG frames that must be written back for inbound stream-0 PINGs.
     pub pongs: Vec<Vec<u8>>,
-    pub window_grants: Vec<u32>,
-    pub items: Vec<StreamItem>,
+    /// Nonces from inbound stream-0 PONGs.
+    pub inbound_pongs: Vec<[u8; 8]>,
+    /// Per-stream response items, tagged by mux stream id.
+    pub stream_events: Vec<(u32, StreamItem)>,
+    /// Per-stream upload credit grants, tagged by mux stream id.
+    pub window_grants: Vec<(u32, u32)>,
 }
 
 /// Re-assembles response frames for one dialer stream into the HTTP body.
@@ -257,82 +264,35 @@ impl ResponseAssembler {
     }
 }
 
-/// Head-first streaming response assembler for long-lived journal responses.
-pub struct StreamingResponseAssembler {
-    stream_id: u32,
-    decoder: FrameDecoder,
+/// Decoder-free HTTP response stream assembler.
+///
+/// This owns the response-head, body, and chunked-transfer state for one mux
+/// stream. Transport-level frame decoding and stream-id routing live outside it.
+pub struct HttpStreamAssembler {
     head_buf: Vec<u8>,
     head_emitted: bool,
     chunked: bool,
     chunked_decoder: ChunkedDecoder,
     closed: bool,
-    reset: bool,
 }
 
-impl StreamingResponseAssembler {
-    pub fn new(stream_id: u32) -> Self {
+impl HttpStreamAssembler {
+    pub fn new() -> Self {
         Self {
-            stream_id,
-            decoder: FrameDecoder::new(),
             head_buf: Vec::new(),
             head_emitted: false,
             chunked: false,
             chunked_decoder: ChunkedDecoder::new(),
             closed: false,
-            reset: false,
         }
     }
 
-    pub fn feed(&mut self, data: &[u8]) -> Result<StreamingFeed, MuxError> {
-        self.decoder.feed(data);
-        let mut out = StreamingFeed::default();
-        for frame in self.decoder.drain()? {
-            if let Some(pong) = frame.control_pong() {
-                out.pongs.push(pong.encode()?);
-                continue;
-            }
-            if frame.stream_id != self.stream_id {
-                continue;
-            }
-            if let Some(credit) = frame.window_credit() {
-                out.window_grants.push(credit);
-                continue;
-            }
-            if frame.flags & FLAG_RESET != 0 {
-                self.reset = true;
-                self.closed = true;
-                out.items.push(StreamItem::End(StreamEnd::Reset));
-                continue;
-            }
-            if frame.flags & FLAG_DATA != 0 {
-                self.feed_data(&frame.payload, &mut out.items)?;
-            }
-            if frame.flags & FLAG_CLOSE != 0 {
-                self.closed = true;
-                out.items.push(StreamItem::End(StreamEnd::Close));
-            }
-        }
-        Ok(out)
-    }
-
-    pub fn head_emitted(&self) -> bool {
-        self.head_emitted
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.closed
-    }
-
-    pub fn finish_eof(&mut self) -> StreamEnd {
-        self.closed = true;
-        StreamEnd::Eof
-    }
-
-    fn feed_data(&mut self, payload: &[u8], items: &mut Vec<StreamItem>) -> Result<(), MuxError> {
+    pub fn feed_data(&mut self, payload: &[u8]) -> Result<Vec<StreamItem>, MuxError> {
+        let mut items = Vec::new();
         if !self.head_emitted {
             self.head_buf.extend_from_slice(payload);
             let Some(split) = http::find_subsequence(&self.head_buf, b"\r\n\r\n") else {
-                return Ok(());
+                return Ok(items);
             };
             let (status, headers) = http::parse_head(&self.head_buf[..split])?;
             self.chunked = headers
@@ -347,12 +307,36 @@ impl StreamingResponseAssembler {
             let body = self.head_buf[body_start..].to_vec();
             self.head_buf.clear();
             if !body.is_empty() {
-                self.feed_body(&body, items)?;
+                self.feed_body(&body, &mut items)?;
             }
-            return Ok(());
+            return Ok(items);
         }
 
-        self.feed_body(payload, items)
+        self.feed_body(payload, &mut items)?;
+        Ok(items)
+    }
+
+    pub fn close(&mut self) -> StreamItem {
+        self.closed = true;
+        StreamItem::End(StreamEnd::Close)
+    }
+
+    pub fn reset(&mut self) -> StreamItem {
+        self.closed = true;
+        StreamItem::End(StreamEnd::Reset)
+    }
+
+    pub fn finish_eof(&mut self) -> StreamItem {
+        self.closed = true;
+        StreamItem::End(StreamEnd::Eof)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    pub fn head_emitted(&self) -> bool {
+        self.head_emitted
     }
 
     fn feed_body(&mut self, payload: &[u8], items: &mut Vec<StreamItem>) -> Result<(), MuxError> {
@@ -371,6 +355,100 @@ impl StreamingResponseAssembler {
     }
 }
 
+impl Default for HttpStreamAssembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Central demux state for a persistent carrier with multiple active streams.
+#[derive(Default)]
+pub struct CarrierDemux {
+    decoder: FrameDecoder,
+    streams: HashMap<u32, HttpStreamAssembler>,
+}
+
+impl CarrierDemux {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn open_stream(&mut self, stream_id: u32) {
+        self.streams.insert(stream_id, HttpStreamAssembler::new());
+    }
+
+    pub fn remove_stream(&mut self, stream_id: u32) {
+        self.streams.remove(&stream_id);
+    }
+
+    pub fn feed(&mut self, data: &[u8]) -> Result<DemuxOutput, MuxError> {
+        self.decoder.feed(data);
+        let mut out = DemuxOutput::default();
+        for frame in self.decoder.drain()? {
+            if let Some(pong) = frame.control_pong() {
+                out.pongs.push(pong.encode()?);
+                continue;
+            }
+            if let Some(nonce) = frame.control_pong_nonce() {
+                out.inbound_pongs.push(nonce);
+                continue;
+            }
+
+            let stream_id = frame.stream_id;
+            if !self.streams.contains_key(&stream_id) {
+                continue;
+            }
+            if let Some(credit) = frame.window_credit() {
+                out.window_grants.push((stream_id, credit));
+                continue;
+            }
+
+            if frame.flags & FLAG_DATA != 0 {
+                let items = match self
+                    .streams
+                    .get_mut(&stream_id)
+                    .expect("stream exists after contains_key")
+                    .feed_data(&frame.payload)
+                {
+                    Ok(items) => items,
+                    Err(MuxError::Http(_)) => {
+                        out.stream_events
+                            .push((stream_id, StreamItem::End(StreamEnd::Reset)));
+                        self.streams.remove(&stream_id);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                out.stream_events
+                    .extend(items.into_iter().map(|item| (stream_id, item)));
+            }
+
+            let end = if frame.flags & FLAG_RESET != 0 {
+                Some(
+                    self.streams
+                        .get_mut(&stream_id)
+                        .expect("stream exists after contains_key")
+                        .reset(),
+                )
+            } else if frame.flags & FLAG_CLOSE != 0 {
+                Some(
+                    self.streams
+                        .get_mut(&stream_id)
+                        .expect("stream exists after contains_key")
+                        .close(),
+                )
+            } else {
+                None
+            };
+            if let Some(item) = end {
+                out.stream_events.push((stream_id, item));
+                self.streams.remove(&stream_id);
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,6 +464,28 @@ mod tests {
             dec.feed(&bytes);
         }
         dec.drain().unwrap()
+    }
+
+    fn encode_frames(frames: &[Frame]) -> Vec<u8> {
+        let mut wire = Vec::new();
+        for frame in frames {
+            wire.extend(frame.encode().unwrap());
+        }
+        wire
+    }
+
+    fn text_event_head() -> StreamItem {
+        StreamItem::Head(HttpHead {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
+        })
+    }
+
+    fn plain_head() -> StreamItem {
+        StreamItem::Head(HttpHead {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+        })
     }
 
     #[test]
@@ -481,117 +581,213 @@ mod tests {
     }
 
     #[test]
-    fn streaming_emits_head_then_body_from_one_data_frame() {
-        let resp_bytes = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: a\n\n";
-        let server_frame = Frame::new(1, FLAG_DATA, resp_bytes.to_vec());
-        let mut asm = StreamingResponseAssembler::new(1);
+    fn http_stream_assembler_emits_head_body_and_split_head() {
+        let mut asm = HttpStreamAssembler::new();
 
-        let out = asm.feed(&server_frame.encode().unwrap()).unwrap();
+        let items = asm.feed_data(b"HTTP/1.1 200 OK\r\nContent-Type").unwrap();
+        assert!(items.is_empty());
+        assert!(!asm.head_emitted());
 
+        let items = asm
+            .feed_data(b": text/event-stream\r\n\r\ndata: b\n\n")
+            .unwrap();
         assert_eq!(
-            out.items,
-            vec![
-                StreamItem::Head(HttpHead {
-                    status: 200,
-                    headers: vec![("content-type".to_string(), "text/event-stream".to_string())],
-                }),
-                StreamItem::Body(b"data: a\n\n".to_vec()),
-            ]
+            items,
+            vec![text_event_head(), StreamItem::Body(b"data: b\n\n".to_vec())]
         );
         assert!(asm.head_emitted());
+
+        let items = asm.feed_data(b"data: c\n\n").unwrap();
+        assert_eq!(items, vec![StreamItem::Body(b"data: c\n\n".to_vec())]);
         assert!(!asm.is_closed());
     }
 
     #[test]
-    fn streaming_waits_for_split_head_terminator() {
-        let mut asm = StreamingResponseAssembler::new(1);
-        let first = Frame::new(1, FLAG_DATA, b"HTTP/1.1 200 OK\r\nContent-Type".to_vec());
-        let second = Frame::new(
-            1,
-            FLAG_DATA,
-            b": text/event-stream\r\n\r\ndata: b\n\n".to_vec(),
-        );
-        let third = Frame::new(1, FLAG_DATA, b"data: c\n\n".to_vec());
+    fn http_stream_assembler_dechunks_incrementally() {
+        let mut asm = HttpStreamAssembler::new();
 
-        let out = asm.feed(&first.encode().unwrap()).unwrap();
-        assert!(out.items.is_empty());
-        assert!(!asm.head_emitted());
+        let items = asm
+            .feed_data(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            .unwrap();
+        assert!(matches!(items.as_slice(), [StreamItem::Head(_)]));
 
-        let out = asm.feed(&second.encode().unwrap()).unwrap();
-        assert_eq!(out.items.len(), 2);
-        assert!(matches!(out.items[0], StreamItem::Head(_)));
-        assert_eq!(out.items[1], StreamItem::Body(b"data: b\n\n".to_vec()));
-        assert!(asm.head_emitted());
+        let items = asm.feed_data(b"4\r\nWiki\r\n").unwrap();
+        assert_eq!(items, vec![StreamItem::Body(b"Wiki".to_vec())]);
 
-        let out = asm.feed(&third.encode().unwrap()).unwrap();
-        assert_eq!(out.items, vec![StreamItem::Body(b"data: c\n\n".to_vec())]);
+        let items = asm.feed_data(b"5").unwrap();
+        assert!(items.is_empty());
+
+        let items = asm.feed_data(b"\r\npedia\r\n0\r\n\r\n").unwrap();
+        assert_eq!(items, vec![StreamItem::Body(b"pedia".to_vec())]);
     }
 
     #[test]
-    fn streaming_dechunks_incrementally() {
-        let mut asm = StreamingResponseAssembler::new(1);
-        let head = Frame::new(
-            1,
-            FLAG_DATA,
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec(),
-        );
-        let first_chunk = Frame::new(1, FLAG_DATA, b"4\r\nWiki\r\n".to_vec());
-        let split_size = Frame::new(1, FLAG_DATA, b"5".to_vec());
-        let rest = Frame::new(1, FLAG_DATA, b"\r\npedia\r\n0\r\n\r\n".to_vec());
+    fn http_stream_assembler_end_methods_mark_closed() {
+        let mut close = HttpStreamAssembler::new();
+        assert_eq!(close.close(), StreamItem::End(StreamEnd::Close));
+        assert!(close.is_closed());
 
-        let out = asm.feed(&head.encode().unwrap()).unwrap();
-        assert_eq!(out.items.len(), 1);
-        assert!(matches!(out.items[0], StreamItem::Head(_)));
+        let mut reset = HttpStreamAssembler::new();
+        assert_eq!(reset.reset(), StreamItem::End(StreamEnd::Reset));
+        assert!(reset.is_closed());
 
-        let out = asm.feed(&first_chunk.encode().unwrap()).unwrap();
-        assert_eq!(out.items, vec![StreamItem::Body(b"Wiki".to_vec())]);
-
-        let out = asm.feed(&split_size.encode().unwrap()).unwrap();
-        assert!(out.items.is_empty());
-
-        let out = asm.feed(&rest.encode().unwrap()).unwrap();
-        assert_eq!(out.items, vec![StreamItem::Body(b"pedia".to_vec())]);
+        let mut eof = HttpStreamAssembler::new();
+        assert_eq!(eof.finish_eof(), StreamItem::End(StreamEnd::Eof));
+        assert!(eof.is_closed());
     }
 
     #[test]
-    fn streaming_close_after_body_emits_end() {
-        let resp_bytes = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: a\n\n";
-        let server_frame = Frame::new(1, FLAG_DATA | FLAG_CLOSE, resp_bytes.to_vec());
-        let mut asm = StreamingResponseAssembler::new(1);
-
-        let out = asm.feed(&server_frame.encode().unwrap()).unwrap();
-
-        assert_eq!(out.items.last(), Some(&StreamItem::End(StreamEnd::Close)));
-        assert!(asm.is_closed());
-    }
-
-    #[test]
-    fn streaming_reset_mid_stream_emits_end_and_closes() {
-        let mut asm = StreamingResponseAssembler::new(1);
-        asm.feed(
-            &Frame::new(
+    fn carrier_demux_routes_interleaved_streams() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        demux.open_stream(3);
+        let wire = encode_frames(&[
+            Frame::new(
                 1,
                 FLAG_DATA,
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n".to_vec(),
-            )
-            .encode()
-            .unwrap(),
-        )
-        .unwrap();
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\none".to_vec(),
+            ),
+            Frame::new(
+                3,
+                FLAG_DATA,
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nthree".to_vec(),
+            ),
+            Frame::new(1, FLAG_CLOSE, Vec::new()),
+            Frame::new(3, FLAG_CLOSE, Vec::new()),
+        ]);
 
-        let out = asm
-            .feed(&Frame::new(1, FLAG_RESET, Vec::new()).encode().unwrap())
-            .unwrap();
+        let out = demux.feed(&wire).unwrap();
 
-        assert_eq!(out.items, vec![StreamItem::End(StreamEnd::Reset)]);
-        assert!(asm.is_closed());
+        assert!(out.pongs.is_empty());
+        assert!(out.inbound_pongs.is_empty());
+        assert!(out.window_grants.is_empty());
+        assert_eq!(
+            out.stream_events,
+            vec![
+                (1, plain_head()),
+                (1, StreamItem::Body(b"one".to_vec())),
+                (3, plain_head()),
+                (3, StreamItem::Body(b"three".to_vec())),
+                (1, StreamItem::End(StreamEnd::Close)),
+                (3, StreamItem::End(StreamEnd::Close)),
+            ]
+        );
     }
 
     #[test]
-    fn streaming_finish_eof_marks_closed() {
-        let mut asm = StreamingResponseAssembler::new(1);
-        assert_eq!(asm.finish_eof(), StreamEnd::Eof);
-        assert!(asm.is_closed());
+    fn carrier_demux_control_and_window_outputs_are_tagged() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        demux.open_stream(3);
+        let ping_nonce = [9, 8, 7, 6, 5, 4, 3, 2];
+        let pong_nonce = [1, 3, 5, 7, 9, 11, 13, 15];
+        let wire = encode_frames(&[
+            Frame::control_ping(ping_nonce),
+            Frame::new(0, FLAG_PONG, pong_nonce.to_vec()),
+            Frame::new(1, FLAG_WINDOW, vec![0x00, 0x08, 0x00, 0x00]),
+            Frame::new(3, FLAG_WINDOW, vec![0x00, 0x10, 0x00, 0x00]),
+            Frame::new(5, FLAG_WINDOW, vec![0x00, 0x20, 0x00, 0x00]),
+        ]);
+
+        let out = demux.feed(&wire).unwrap();
+
+        assert_eq!(out.pongs.len(), 1);
+        let mut dec = FrameDecoder::new();
+        dec.feed(&out.pongs[0]);
+        let pong = dec.next_frame().unwrap().unwrap();
+        assert_eq!(pong.flags, FLAG_PONG);
+        assert_eq!(pong.stream_id, 0);
+        assert_eq!(pong.payload, ping_nonce.to_vec());
+        assert_eq!(out.inbound_pongs, vec![pong_nonce]);
+        assert_eq!(out.window_grants, vec![(1, 512 * 1024), (3, 1024 * 1024)]);
+        assert!(out.stream_events.is_empty());
+    }
+
+    #[test]
+    fn carrier_demux_drops_unknown_or_closed_stream_frames() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        let wire = encode_frames(&[
+            Frame::new(9, FLAG_DATA, b"ignored".to_vec()),
+            Frame::new(
+                1,
+                FLAG_DATA | FLAG_CLOSE,
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok".to_vec(),
+            ),
+        ]);
+
+        let out = demux.feed(&wire).unwrap();
+        assert_eq!(
+            out.stream_events,
+            vec![
+                (1, plain_head()),
+                (1, StreamItem::Body(b"ok".to_vec())),
+                (1, StreamItem::End(StreamEnd::Close)),
+            ]
+        );
+
+        let out = demux
+            .feed(&Frame::new(1, FLAG_DATA, b"late".to_vec()).encode().unwrap())
+            .unwrap();
+        assert!(out.stream_events.is_empty());
+    }
+
+    #[test]
+    fn carrier_demux_data_close_orders_body_before_end() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        let frame = Frame::new(
+            1,
+            FLAG_DATA | FLAG_CLOSE,
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nbody".to_vec(),
+        );
+
+        let out = demux.feed(&frame.encode().unwrap()).unwrap();
+
+        assert_eq!(
+            out.stream_events,
+            vec![
+                (1, plain_head()),
+                (1, StreamItem::Body(b"body".to_vec())),
+                (1, StreamItem::End(StreamEnd::Close)),
+            ]
+        );
+    }
+
+    #[test]
+    fn carrier_demux_isolates_http_parse_error_to_one_stream() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        demux.open_stream(3);
+        let wire = encode_frames(&[
+            Frame::new(1, FLAG_DATA, b"GARBAGE NOT HTTP\r\n\r\n".to_vec()),
+            Frame::new(
+                3,
+                FLAG_DATA | FLAG_CLOSE,
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok".to_vec(),
+            ),
+        ]);
+
+        let out = demux.feed(&wire).unwrap();
+
+        assert_eq!(
+            out.stream_events,
+            vec![
+                (1, StreamItem::End(StreamEnd::Reset)),
+                (3, plain_head()),
+                (3, StreamItem::Body(b"ok".to_vec())),
+                (3, StreamItem::End(StreamEnd::Close)),
+            ]
+        );
+
+        let out = demux
+            .feed(
+                &Frame::new(1, FLAG_DATA | FLAG_CLOSE, b"late".to_vec())
+                    .encode()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(out.stream_events.is_empty());
     }
 
     #[test]
@@ -605,26 +801,6 @@ mod tests {
         let pong = dec.next_frame().unwrap().unwrap();
         assert_eq!(pong.flags, FLAG_PONG);
         assert_eq!(pong.payload, vec![9, 8, 7, 6, 5, 4, 3, 2]);
-    }
-
-    #[test]
-    fn streaming_surfaces_control_pong_and_window_grant() {
-        let mut asm = StreamingResponseAssembler::new(3);
-        let ping = Frame::new(0, FLAG_PING, vec![9, 8, 7, 6, 5, 4, 3, 2]);
-        let ours = Frame::new(3, FLAG_WINDOW, vec![0x00, 0x08, 0x00, 0x00]);
-        let mut wire = ping.encode().unwrap();
-        wire.extend(ours.encode().unwrap());
-
-        let out = asm.feed(&wire).unwrap();
-
-        assert_eq!(out.pongs.len(), 1);
-        let mut dec = FrameDecoder::new();
-        dec.feed(&out.pongs[0]);
-        let pong = dec.next_frame().unwrap().unwrap();
-        assert_eq!(pong.flags, FLAG_PONG);
-        assert_eq!(out.window_grants, vec![512 * 1024]);
-        assert!(out.items.is_empty());
-        assert!(!asm.is_closed());
     }
 
     #[test]

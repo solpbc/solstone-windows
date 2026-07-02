@@ -14,11 +14,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use observer_pl::http::HttpResponse;
 use observer_pl::multipart::{self, FilePart};
-use observer_pl::mux::StreamItem;
 use observer_pl::wire::{
     HeartbeatEvent, IngestResponse, RegisterRequest, RegisterResponse, SegmentsResponse,
     ServerSegment,
@@ -27,11 +25,11 @@ use observer_pl::{
     paths, OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER,
 };
 use rustls::ClientConfig;
-use tokio::sync::mpsc;
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::connection::{request_once, request_stream as request_stream_once};
+use crate::connection::{dial_tls, request_once};
 use crate::credential::{Credential, PairedState};
-use crate::relay::{request_once_relay, request_stream_relay};
+use crate::relay::{dial_relay_carrier, request_once_relay, RelayTerminationHandle};
 use crate::relay_token::{refresh_device_token, RefreshOutcome};
 use crate::{tls, RelayError, TransportError};
 
@@ -42,6 +40,20 @@ enum RefreshAction {
     Redial,
     Terminal,
     Transient,
+}
+
+pub(crate) trait CarrierIo: AsyncRead + AsyncWrite + Send + Unpin {}
+
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> CarrierIo for T {}
+
+pub(crate) struct DialedCarrier {
+    pub(crate) stream: Box<dyn CarrierIo>,
+    pub(crate) kind: CarrierKind,
+}
+
+pub(crate) enum CarrierKind {
+    Lan,
+    Relay { termination: RelayTerminationHandle },
 }
 
 /// An observer talking to its paired journal over framed-mTLS.
@@ -200,31 +212,6 @@ impl ObserverClient {
         })
     }
 
-    /// Buffered generic authenticated request for the local journal bridge.
-    pub async fn request(
-        &self,
-        method: &str,
-        path: &str,
-        browser_headers: &[(String, String)],
-        body: &[u8],
-    ) -> Result<HttpResponse, TransportError> {
-        let headers = self.compose_proxy_headers(browser_headers)?;
-        self.send(method, path, &headers, body).await
-    }
-
-    /// Streaming generic authenticated request for long-lived journal bridge responses.
-    pub async fn request_stream(
-        &self,
-        method: &str,
-        path: &str,
-        browser_headers: &[(String, String)],
-        body: &[u8],
-        tx: &mpsc::Sender<StreamItem>,
-    ) -> Result<(), TransportError> {
-        let headers = self.compose_proxy_headers(browser_headers)?;
-        self.send_stream(method, path, &headers, body, tx).await
-    }
-
     fn auth_headers(&self) -> Result<Vec<(String, String)>, TransportError> {
         let key = self
             .observer_key
@@ -240,7 +227,7 @@ impl ObserverClient {
         ])
     }
 
-    fn compose_proxy_headers(
+    pub(crate) fn proxy_headers(
         &self,
         browser_headers: &[(String, String)],
     ) -> Result<Vec<(String, String)>, TransportError> {
@@ -252,6 +239,40 @@ impl ObserverClient {
                 .cloned(),
         );
         Ok(headers)
+    }
+
+    pub(crate) async fn dial_carrier(&self) -> Result<DialedCarrier, TransportError> {
+        const MAX_ATTEMPTS: usize = 5;
+        let mut last_err: Option<TransportError> = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            for endpoint in &self.credential.endpoints {
+                match dial_tls(self.config.clone(), &endpoint.host, endpoint.port).await {
+                    Ok(stream) => {
+                        return Ok(DialedCarrier {
+                            stream: Box::new(stream),
+                            kind: CarrierKind::Lan,
+                        });
+                    }
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            match &last_err {
+                Some(TransportError::Tls(_)) | Some(TransportError::Io(_)) => {
+                    tokio::time::sleep(Duration::from_millis(250 * (attempt as u64 + 1))).await;
+                }
+                _ => break,
+            }
+        }
+
+        let lan_err = last_err.unwrap_or(TransportError::NoEndpoint);
+        let lan_unreachable = matches!(
+            lan_err,
+            TransportError::Tls(_) | TransportError::Io(_) | TransportError::NoEndpoint
+        );
+        if lan_unreachable && self.relay_eligible() {
+            return self.dial_carrier_over_relay().await;
+        }
+        Err(lan_err)
     }
 
     fn next_boundary(&self) -> String {
@@ -379,15 +400,8 @@ impl ObserverClient {
         }
     }
 
-    /// Send a streaming request through the relay after the direct LAN loop failed before head.
-    async fn send_stream_over_relay(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        tx: &mpsc::Sender<StreamItem>,
-    ) -> Result<(), TransportError> {
+    /// Dial a persistent carrier through the relay after the direct LAN loop has exhausted.
+    async fn dial_carrier_over_relay(&self) -> Result<DialedCarrier, TransportError> {
         let origin = self
             .credential
             .relay_origin
@@ -402,22 +416,18 @@ impl ObserverClient {
         }
 
         let mut reactive_refreshed = false;
+        let mut transient_attempt = 0usize;
         loop {
             let token = self.current_token().await;
-            match request_stream_relay(
-                self.config.clone(),
-                origin,
-                instance_id,
-                &token,
-                method,
-                path,
-                headers,
-                body,
-                tx,
-            )
-            .await
-            {
-                Ok(()) => return Ok(()),
+            match dial_relay_carrier(self.config.clone(), origin, instance_id, &token).await {
+                Ok(carrier) => {
+                    return Ok(DialedCarrier {
+                        stream: Box::new(carrier.stream),
+                        kind: CarrierKind::Relay {
+                            termination: carrier.termination,
+                        },
+                    });
+                }
                 Err(TransportError::Relay(RelayError::Unauthorized)) => {
                     if reactive_refreshed {
                         return Err(TransportError::Relay(RelayError::Unauthorized));
@@ -429,6 +439,13 @@ impl ObserverClient {
                             return Err(TransportError::Relay(RelayError::Unauthorized));
                         }
                     }
+                }
+                Err(e) if relay_fault_is_transient_err(&e) => {
+                    transient_attempt += 1;
+                    if transient_attempt >= RELAY_MAX_TRANSIENT_ATTEMPTS {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(Duration::from_millis(250 * transient_attempt as u64)).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -486,46 +503,6 @@ impl ObserverClient {
         );
         if lan_unreachable && self.relay_eligible() {
             return self.send_over_relay(method, path, headers, body).await;
-        }
-        Err(lan_err)
-    }
-
-    async fn send_stream(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        tx: &mpsc::Sender<StreamItem>,
-    ) -> Result<(), TransportError> {
-        let mut last_err: Option<TransportError> = None;
-        for endpoint in &self.credential.endpoints {
-            match request_stream_once(
-                self.config.clone(),
-                &endpoint.host,
-                endpoint.port,
-                method,
-                path,
-                headers,
-                body,
-                tx,
-            )
-            .await
-            {
-                Ok(()) => return Ok(()),
-                Err(e) => last_err = Some(e),
-            }
-        }
-
-        let lan_err = last_err.unwrap_or(TransportError::NoEndpoint);
-        let lan_unreachable = matches!(
-            lan_err,
-            TransportError::Tls(_) | TransportError::Io(_) | TransportError::NoEndpoint
-        );
-        if lan_unreachable && self.relay_eligible() {
-            return self
-                .send_stream_over_relay(method, path, headers, body, tx)
-                .await;
         }
         Err(lan_err)
     }

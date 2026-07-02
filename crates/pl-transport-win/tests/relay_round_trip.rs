@@ -22,6 +22,7 @@ use observer_pl::mux::INITIAL_WINDOW;
 use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
+use pl_transport_win::journal_bridge;
 use pl_transport_win::relay::{dial_relay_ws, request_once_over_ws, request_once_relay};
 use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{transport_error_code, RelayError, TransportError};
@@ -155,6 +156,139 @@ fn heartbeat_client(credential: Credential) -> ObserverClient {
     ObserverClient::new(credential)
         .unwrap()
         .with_observer_key(Some("observer-key".into()))
+}
+
+fn relay_bridge_state(credential: Credential) -> PairedState {
+    PairedState {
+        credential: Some(credential),
+        observer_key: Some("observer-key".into()),
+        observer_name: None,
+    }
+}
+
+fn capability_from(handle: &journal_bridge::JournalBridgeHandle) -> String {
+    handle
+        .bootstrap_url()
+        .split_once("cap=")
+        .map(|(_, cap)| cap.to_string())
+        .unwrap()
+}
+
+fn loopback_host(port: u16) -> String {
+    format!("127.0.0.1:{port}")
+}
+
+fn cap_cookie(cap: &str) -> String {
+    format!("{}={cap}", observer_pl::bridge::CAP_COOKIE_NAME)
+}
+
+async fn raw_bridge_request(port: u16, target: &str, cap: &str) -> Vec<u8> {
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let request = format!(
+        "GET {target} HTTP/1.1\r\nHost: {}\r\nCookie: {}\r\n\r\n",
+        loopback_host(port),
+        cap_cookie(cap)
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    response
+}
+
+fn response_text(response: &[u8]) -> String {
+    String::from_utf8_lossy(response).into_owned()
+}
+
+fn response_status(response: &[u8]) -> u16 {
+    response_text(response)
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn response_body(response: &[u8]) -> String {
+    response_text(response)
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap()
+}
+
+#[derive(Clone)]
+struct CapturingSubscriber {
+    lines: Arc<Mutex<Vec<String>>>,
+}
+
+impl tracing::Subscriber for CapturingSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.target() == "journal_bridge"
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        if !self.enabled(event.metadata()) {
+            return;
+        }
+        let mut visitor = LogVisitor::default();
+        event.record(&mut visitor);
+        self.lines.lock().unwrap().push(visitor.line);
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+#[derive(Default)]
+struct LogVisitor {
+    line: String,
+}
+
+impl LogVisitor {
+    fn field(&mut self, name: &str, value: impl std::fmt::Display) {
+        if !self.line.is_empty() {
+            self.line.push(' ');
+        }
+        self.line.push_str(name);
+        self.line.push('=');
+        self.line.push_str(&value.to_string());
+    }
+}
+
+impl tracing::field::Visit for LogVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.field(field.name(), format!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.field(field.name(), value);
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.field(field.name(), value);
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        self.field(field.name(), value);
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        self.field(field.name(), value);
+    }
 }
 
 async fn pump_ws(
@@ -1271,6 +1405,92 @@ async fn relay_unauthorized_refreshes_and_redials_once() {
     );
     relay.abort();
 }
+
+#[tokio::test]
+async fn relay_bridge_carrier_refreshes_on_4401_then_succeeds() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay =
+        spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
+    let credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token);
+    let paired = relay_bridge_state(credential);
+    let handle = journal_bridge::start(&paired, temp_pairing_path("bridge-refresh"))
+        .await
+        .unwrap();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(handle.port(), "/journal", &cap).await;
+
+    assert_eq!(response_status(&response), 200);
+    assert_eq!(response_body(&response), "{\"status\":\"ok\"}");
+    assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 2);
+    assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        relay.state.auth_headers.lock().unwrap().last().cloned(),
+        Some(format!("Bearer {fresh_token}"))
+    );
+    {
+        let requests = relay.state.inner_requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(String::from_utf8_lossy(&requests[0]).starts_with("GET /journal HTTP/1.1\r\n"));
+    }
+
+    handle.shutdown_and_wait().await;
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_bridge_initial_dial_failure_returns_502_and_next_request_redials() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay = spawn_combined_relay(
+        acceptor,
+        CombinedWsMode::AlwaysUnauthorized,
+        fresh_token.clone(),
+    )
+    .await;
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let subscriber = CapturingSubscriber {
+        lines: lines.clone(),
+    };
+    let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
+    let credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token.clone());
+    let paired = relay_bridge_state(credential);
+    let handle = journal_bridge::start(&paired, temp_pairing_path("bridge-relay-fail"))
+        .await
+        .unwrap();
+    let cap = capability_from(&handle);
+
+    let first = raw_bridge_request(handle.port(), "/fail", &cap).await;
+    assert_eq!(response_status(&first), 502);
+    let first_dials = relay.state.ws_dials.load(Ordering::SeqCst);
+    assert!(first_dials >= 2);
+
+    let second = raw_bridge_request(handle.port(), "/fail-again", &cap).await;
+    assert_eq!(response_status(&second), 502);
+    assert!(
+        relay.state.ws_dials.load(Ordering::SeqCst) > first_dials,
+        "failed relay carrier must not be cached as live"
+    );
+
+    handle.shutdown_and_wait().await;
+    let logs = lines.lock().unwrap().join("\n");
+    assert!(logs.contains("category=upstream_unreachable"));
+    assert!(logs.contains("code=relay_unauthorized"));
+    assert!(!logs.contains(&old_token));
+    assert!(!logs.contains(&fresh_token));
+    assert!(!logs.contains(&relay.origin));
+    relay.abort();
+}
+
+// Multi-stream-over-relay does not get a separate live harness here: after
+// `dial_carrier` returns, LAN and relay both feed the same transport-agnostic
+// `MuxCarrier` coordinator. The duplex and persistent-TLS tests cover that mux
+// behavior; these relay tests cover the relay-specific dial and refresh branch.
 
 #[tokio::test]
 async fn relay_unauthorized_persists_after_refresh_is_terminal_no_storm() {

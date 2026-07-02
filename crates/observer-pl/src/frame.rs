@@ -81,6 +81,11 @@ impl Frame {
         Ok(out)
     }
 
+    /// Build a control PING (stream 0, 8-byte nonce).
+    pub fn control_ping(nonce: [u8; CONTROL_NONCE_LEN]) -> Frame {
+        Frame::new(0, FLAG_PING, nonce.to_vec())
+    }
+
     /// If this is a control PING (stream 0, 8-byte nonce), the PONG to return.
     pub fn control_pong(&self) -> Option<Frame> {
         if self.stream_id == 0
@@ -88,6 +93,20 @@ impl Frame {
             && self.payload.len() == CONTROL_NONCE_LEN
         {
             Some(Frame::new(0, FLAG_PONG, self.payload.clone()))
+        } else {
+            None
+        }
+    }
+
+    /// If this is a control PONG (stream 0, 8-byte nonce), return the nonce.
+    pub fn control_pong_nonce(&self) -> Option<[u8; CONTROL_NONCE_LEN]> {
+        if self.stream_id == 0
+            && self.flags & FLAG_PONG != 0
+            && self.payload.len() == CONTROL_NONCE_LEN
+        {
+            let mut nonce = [0u8; CONTROL_NONCE_LEN];
+            nonce.copy_from_slice(&self.payload);
+            Some(nonce)
         } else {
             None
         }
@@ -220,9 +239,34 @@ mod tests {
     }
 
     #[test]
+    fn control_ping_builds_stream_zero_ping() {
+        let nonce = [1, 2, 3, 4, 5, 6, 7, 8];
+        let ping = Frame::control_ping(nonce);
+        assert_eq!(ping.stream_id, 0);
+        assert_eq!(ping.flags, FLAG_PING);
+        assert_eq!(ping.payload, nonce.to_vec());
+    }
+
+    #[test]
+    fn control_pong_nonce_round_trips() {
+        let nonce = [9, 8, 7, 6, 5, 4, 3, 2];
+        let ping = Frame::control_ping(nonce);
+        let pong = ping.control_pong().unwrap();
+        assert_eq!(pong.control_pong_nonce(), Some(nonce));
+    }
+
+    #[test]
     fn non_ping_is_not_a_pong() {
         let data = Frame::new(1, FLAG_DATA, vec![1, 2, 3, 4, 5, 6, 7, 8]);
         assert!(data.control_pong().is_none());
+    }
+
+    #[test]
+    fn non_pong_is_not_a_pong_nonce() {
+        let data = Frame::new(1, FLAG_DATA, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(data.control_pong_nonce().is_none());
+        let malformed = Frame::new(0, FLAG_PONG, vec![1, 2, 3]);
+        assert!(malformed.control_pong_nonce().is_none());
     }
 
     #[test]

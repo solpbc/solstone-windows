@@ -12,11 +12,12 @@ use observer_pl::bridge::{
 use observer_pl::mux::StreamItem;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::client::ObserverClient;
 use crate::credential::PairedState;
+use crate::journal_bridge_carrier::MuxCarrier;
 use crate::{transport_error_code, TransportError};
 
 const MAX_HEAD_BYTES: usize = 64 * 1024;
@@ -86,6 +87,7 @@ pub async fn start(
         .with_observer_key(Some(observer_key))
         .with_state_path(state_path);
     let client = Arc::new(client);
+    let carrier = Arc::new(MuxCarrier::new(client));
 
     let capability = mint_capability()?;
     let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
@@ -111,7 +113,7 @@ pub async fn start(
     let join = tokio::spawn(accept_loop(
         listener,
         shutdown_rx,
-        client,
+        carrier,
         capability.clone(),
         port,
         journal_hosts,
@@ -152,7 +154,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 async fn accept_loop(
     listener: TcpListener,
     mut shutdown: oneshot::Receiver<()>,
-    client: Arc<ObserverClient>,
+    carrier: Arc<MuxCarrier>,
     capability: Arc<String>,
     port: u16,
     journal_hosts: Arc<Vec<String>>,
@@ -160,14 +162,17 @@ async fn accept_loop(
 ) {
     loop {
         tokio::select! {
-            _ = &mut shutdown => break,
+            _ = &mut shutdown => {
+                carrier.shutdown().await;
+                break;
+            }
             accepted = listener.accept() => {
                 let Ok((stream, _)) = accepted else {
                     continue;
                 };
                 tokio::spawn(handle_conn(
                     stream,
-                    client.clone(),
+                    carrier.clone(),
                     capability.clone(),
                     port,
                     journal_hosts.clone(),
@@ -180,7 +185,7 @@ async fn accept_loop(
 
 async fn handle_conn(
     mut stream: TcpStream,
-    client: Arc<ObserverClient>,
+    carrier: Arc<MuxCarrier>,
     capability: Arc<String>,
     port: u16,
     journal_hosts: Arc<Vec<String>>,
@@ -214,7 +219,7 @@ async fn handle_conn(
     if request_head.method == "GET" && request_head.path() == "/sse/events" {
         forward_sse(
             &mut stream,
-            client,
+            carrier,
             &request_head,
             &upstream_headers,
             &journal_hosts,
@@ -224,7 +229,7 @@ async fn handle_conn(
     } else {
         forward_buffered(
             &mut stream,
-            client,
+            carrier,
             &request_head,
             &upstream_headers,
             &body,
@@ -277,15 +282,15 @@ async fn handle_bootstrap(
 
 async fn forward_buffered(
     stream: &mut TcpStream,
-    client: Arc<ObserverClient>,
+    carrier: Arc<MuxCarrier>,
     request_head: &RequestHead,
     upstream_headers: &[(String, String)],
     body: &[u8],
     journal_hosts: &[String],
     loopback_origin: &str,
 ) {
-    match client
-        .request(
+    let mut rx = match carrier
+        .open_stream(
             &request_head.method,
             &request_head.target,
             upstream_headers,
@@ -293,61 +298,81 @@ async fn forward_buffered(
         )
         .await
     {
-        Ok(resp) => {
-            if matches!(resp.status, 401 | 403) {
-                tracing::warn!(
-                    target: "journal_bridge",
-                    category = FailureCategory::UpstreamCredential.token(),
-                    status = resp.status
-                );
-            }
-            let headers = bridge::response_headers(&resp.headers, journal_hosts, loopback_origin);
-            let body = if request_head.method == "HEAD" {
-                &[][..]
-            } else {
-                resp.body.as_slice()
-            };
-            let content_length = if request_head.method == "HEAD" {
-                upstream_content_length(&resp.headers).unwrap_or(body.len())
-            } else {
-                body.len()
-            };
-            write_upstream_response(stream, resp.status, &headers, body, Some(content_length))
-                .await;
-        }
+        Ok(rx) => rx,
         Err(error) => {
-            let category = if matches!(error, TransportError::NotPaired) {
-                FailureCategory::UpstreamCredential
-            } else {
-                FailureCategory::UpstreamUnreachable
-            };
-            tracing::warn!(
-                target: "journal_bridge",
-                category = category.token(),
-                code = %transport_error_code(&error)
-            );
+            log_upstream_open_error(&error);
             write_local(stream, 502, b"journal unreachable", "text/plain").await;
+            return;
         }
+    };
+
+    let mut response_head = None;
+    let mut response_body = Vec::new();
+    while let Some(item) = rx.recv().await {
+        match item {
+            StreamItem::Head(head) => {
+                if matches!(head.status, 401 | 403) {
+                    tracing::warn!(
+                        target: "journal_bridge",
+                        category = FailureCategory::UpstreamCredential.token(),
+                        status = head.status
+                    );
+                }
+                response_head = Some(head);
+            }
+            StreamItem::Body(bytes) => response_body.extend_from_slice(&bytes),
+            StreamItem::End(_) => break,
+        }
+    }
+
+    let Some(head) = response_head else {
+        tracing::warn!(
+            target: "journal_bridge",
+            category = FailureCategory::UpstreamUnreachable.token(),
+            code = "io"
+        );
+        write_local(stream, 502, b"journal unreachable", "text/plain").await;
+        return;
+    };
+
+    let headers = bridge::response_headers(&head.headers, journal_hosts, loopback_origin);
+    let body = if request_head.method == "HEAD" {
+        &[][..]
+    } else {
+        response_body.as_slice()
+    };
+    let content_length = if request_head.method == "HEAD" {
+        upstream_content_length(&head.headers).unwrap_or(body.len())
+    } else {
+        body.len()
+    };
+    if write_upstream_response(stream, head.status, &headers, body, Some(content_length))
+        .await
+        .is_err()
+    {
+        rx.cancel();
     }
 }
 
 async fn forward_sse(
     stream: &mut TcpStream,
-    client: Arc<ObserverClient>,
+    carrier: Arc<MuxCarrier>,
     request_head: &RequestHead,
     upstream_headers: &[(String, String)],
     journal_hosts: &[String],
     loopback_origin: &str,
 ) {
-    let (tx, mut rx) = mpsc::channel::<StreamItem>(16);
-    let target = request_head.target.clone();
-    let upstream = upstream_headers.to_vec();
-    let producer = tokio::spawn(async move {
-        let tx = tx;
-        client
-            .request_stream("GET", &target, &upstream, b"", &tx)
-            .await
-    });
+    let mut rx = match carrier
+        .open_stream("GET", &request_head.target, upstream_headers, b"")
+        .await
+    {
+        Ok(rx) => rx,
+        Err(error) => {
+            log_upstream_open_error(&error);
+            write_local(stream, 502, b"journal unreachable", "text/plain").await;
+            return;
+        }
+    };
 
     let mut head_written = false;
     while let Some(item) = rx.recv().await {
@@ -362,40 +387,51 @@ async fn forward_sse(
                 }
                 let headers =
                     bridge::response_headers(&head.headers, journal_hosts, loopback_origin);
-                write_stream_head(stream, head.status, &headers).await;
+                if write_stream_head(stream, head.status, &headers)
+                    .await
+                    .is_err()
+                {
+                    rx.cancel();
+                    return;
+                }
                 head_written = true;
             }
             StreamItem::Body(bytes) => {
                 if !head_written {
                     break;
                 }
-                if stream.write_all(&bytes).await.is_err() {
-                    break;
-                }
-                if stream.flush().await.is_err() {
-                    break;
+                if stream.write_all(&bytes).await.is_err() || stream.flush().await.is_err() {
+                    rx.cancel();
+                    return;
                 }
             }
             StreamItem::End(_) => break,
         }
     }
-    drop(rx);
 
-    let result = producer.await;
     if !head_written {
-        let code = match &result {
-            Ok(Err(error)) => transport_error_code(error),
-            _ => "io".to_string(),
-        };
         tracing::warn!(
             target: "journal_bridge",
             category = FailureCategory::UpstreamUnreachable.token(),
-            code = %code
+            code = "io"
         );
         write_local(stream, 502, b"journal unreachable", "text/plain").await;
         return;
     }
     let _ = stream.shutdown().await;
+}
+
+fn log_upstream_open_error(error: &TransportError) {
+    let category = if matches!(error, TransportError::NotPaired) {
+        FailureCategory::UpstreamCredential
+    } else {
+        FailureCategory::UpstreamUnreachable
+    };
+    tracing::warn!(
+        target: "journal_bridge",
+        category = category.token(),
+        code = %transport_error_code(error)
+    );
 }
 
 async fn read_request(stream: &mut TcpStream) -> Option<(Vec<u8>, Vec<u8>)> {
@@ -473,7 +509,7 @@ async fn write_upstream_response(
     headers: &[(String, String)],
     body: &[u8],
     content_length: Option<usize>,
-) {
+) -> std::io::Result<()> {
     let mut response = format!("HTTP/1.1 {status} {}\r\n", reason_phrase(status));
     for (name, value) in headers {
         response.push_str(name);
@@ -487,9 +523,9 @@ async fn write_upstream_response(
         response.push_str("\r\n");
     }
     response.push_str("connection: close\r\n\r\n");
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.write_all(body).await;
-    let _ = stream.shutdown().await;
+    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.shutdown().await
 }
 
 fn upstream_content_length(headers: &[(String, String)]) -> Option<usize> {
@@ -499,7 +535,11 @@ fn upstream_content_length(headers: &[(String, String)]) -> Option<usize> {
         .and_then(|(_, value)| value.parse::<usize>().ok())
 }
 
-async fn write_stream_head(stream: &mut TcpStream, status: u16, headers: &[(String, String)]) {
+async fn write_stream_head(
+    stream: &mut TcpStream,
+    status: u16,
+    headers: &[(String, String)],
+) -> std::io::Result<()> {
     let mut response = format!("HTTP/1.1 {status} {}\r\n", reason_phrase(status));
     for (name, value) in headers {
         response.push_str(name);
@@ -508,8 +548,8 @@ async fn write_stream_head(stream: &mut TcpStream, status: u16, headers: &[(Stri
         response.push_str("\r\n");
     }
     response.push_str("connection: close\r\n\r\n");
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.flush().await;
+    stream.write_all(response.as_bytes()).await?;
+    stream.flush().await
 }
 
 fn reason_phrase(status: u16) -> &'static str {
