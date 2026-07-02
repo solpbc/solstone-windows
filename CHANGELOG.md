@@ -8,6 +8,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [0.2.6] - 2026-07-01
 
+### Added
+
+- open your journal right from solstone: a new "Open Journal" entry point in the
+  tray and in settings opens your paired journal in its own window, already
+  signed in over your existing connection. no browser, no separate sign-in.
+
 ### Changed
 
 - pairing your journal over the private network now uses a one-time pairing link
@@ -15,6 +21,13 @@ All notable changes to `solstone-windows` are recorded here. The format follows
   and solstone connects to your journal from anywhere: over the encrypted relay
   when you are away, and directly when you are home.
 - app icon refreshed to the current sol mark.
+
+### Fixed
+
+- the pending count on the home pane no longer freezes partway through an
+  upload; it now counts down as each item finishes.
+- settings no longer flickers every second; it now only redraws when something
+  on the screen actually changes.
 
 ## [0.2.5] - 2026-06-28
 
