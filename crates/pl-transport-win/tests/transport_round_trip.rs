@@ -19,7 +19,9 @@ use observer_model::{
     AppPhase, HealthDump, PairingPhase, PairingState, SyncSnapshot, UploadStatus,
     LAST_ERROR_REASON_MAX_LEN,
 };
-use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW};
+use observer_pl::frame::{
+    Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RESET_CANCEL,
+};
 use observer_pl::mux::INITIAL_WINDOW;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
@@ -390,7 +392,7 @@ impl PersistentBridgeServer {
     }
 
     fn reset_stream(&self, stream_id: u32) {
-        self.send_frame(stream_id, FLAG_RESET, b"");
+        self.send_frame(stream_id, FLAG_RESET, &[RESET_CANCEL]);
     }
 
     fn send_frame(&self, stream_id: u32, flags: u8, payload: &[u8]) {

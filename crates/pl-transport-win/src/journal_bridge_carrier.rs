@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use observer_pl::bridge::FailureCategory;
-use observer_pl::frame::{Frame, FrameDialer, FLAG_RESET};
+use observer_pl::frame::{Frame, FrameDialer, FLAG_RESET, RESET_CANCEL};
 use observer_pl::http;
 use observer_pl::mux::{CarrierDemux, MuxError, StreamEnd, StreamItem, WindowedUpload};
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -23,6 +23,7 @@ use crate::{transport_error_code, TransportError};
 const READ_BUF_BYTES: usize = 64 * 1024;
 const COMMAND_QUEUE: usize = 64;
 const STREAM_QUEUE: usize = 16;
+const WRITER_QUEUE: usize = 256;
 
 type CarrierRead = ReadHalf<Box<dyn CarrierIo>>;
 type CarrierWrite = WriteHalf<Box<dyn CarrierIo>>;
@@ -104,7 +105,7 @@ impl MuxCarrier {
         let dialed = self.client.dial_carrier().await?;
         let (read, write) = split(dialed.stream);
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_QUEUE);
-        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE);
         let alive = Arc::new(AtomicBool::new(true));
         let handle = Arc::new(CarrierHandle {
             commands: commands_tx,
@@ -254,7 +255,7 @@ struct OutstandingProbe {
 
 async fn writer_task(
     mut write: CarrierWrite,
-    mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut rx: mpsc::Receiver<Vec<u8>>,
     alive: Arc<AtomicBool>,
 ) {
     while let Some(bytes) = rx.recv().await {
@@ -269,7 +270,7 @@ async fn coordinator_task(
     mut read: CarrierRead,
     mut commands: mpsc::Receiver<CarrierCommand>,
     command_sender: mpsc::Sender<CarrierCommand>,
-    writer: mpsc::UnboundedSender<Vec<u8>>,
+    writer: mpsc::Sender<Vec<u8>>,
     alive: Arc<AtomicBool>,
     kind: CarrierKind,
     keepalive: KeepaliveConfig,
@@ -335,16 +336,32 @@ async fn coordinator_task(
                             Ok(rx) => {
                                 let stream_id = rx.stream_id;
                                 if reply.send(Ok(rx)).is_err() {
-                                    reset_active_stream(stream_id, &mut demux, &mut streams, &writer);
+                                    if let Err(error) =
+                                        reset_active_stream(stream_id, &mut demux, &mut streams, &writer)
+                                    {
+                                        fanout_eof(&mut streams);
+                                        log_carrier_teardown(&kind, &transport_error_code(&error));
+                                        break;
+                                    }
                                 }
                             }
                             Err(error) => {
+                                let code = transport_error_code(&error);
                                 let _ = reply.send(Err(error));
+                                fanout_eof(&mut streams);
+                                log_carrier_teardown(&kind, &code);
+                                break;
                             }
                         }
                     }
                     CarrierCommand::CancelStream { stream_id } => {
-                        reset_active_stream(stream_id, &mut demux, &mut streams, &writer);
+                        if let Err(error) =
+                            reset_active_stream(stream_id, &mut demux, &mut streams, &writer)
+                        {
+                            fanout_eof(&mut streams);
+                            log_carrier_teardown(&kind, &transport_error_code(&error));
+                            break;
+                        }
                     }
                     CarrierCommand::Shutdown => {
                         fanout_eof(&mut streams);
@@ -371,7 +388,7 @@ async fn coordinator_task(
 fn handle_read(
     demux: &mut CarrierDemux,
     streams: &mut HashMap<u32, StreamState>,
-    writer: &mpsc::UnboundedSender<Vec<u8>>,
+    writer: &mpsc::Sender<Vec<u8>>,
     data: &[u8],
     outstanding: &mut Option<OutstandingProbe>,
     missed: &mut u32,
@@ -407,7 +424,7 @@ fn open_stream_on_carrier(
     dialer: &mut FrameDialer,
     demux: &mut CarrierDemux,
     streams: &mut HashMap<u32, StreamState>,
-    writer: &mpsc::UnboundedSender<Vec<u8>>,
+    writer: &mpsc::Sender<Vec<u8>>,
     commands: mpsc::Sender<CarrierCommand>,
 ) -> Result<StreamRx, TransportError> {
     let stream_id = dialer.allocate();
@@ -436,7 +453,7 @@ fn deliver_stream_item(
     item: StreamItem,
     demux: &mut CarrierDemux,
     streams: &mut HashMap<u32, StreamState>,
-    writer: &mpsc::UnboundedSender<Vec<u8>>,
+    writer: &mpsc::Sender<Vec<u8>>,
 ) -> Result<(), TransportError> {
     let ended = matches!(item, StreamItem::End(_));
     let Some(state) = streams.get(&stream_id) else {
@@ -454,7 +471,7 @@ fn deliver_stream_item(
             if ended {
                 streams.remove(&stream_id);
             } else {
-                reset_active_stream(stream_id, demux, streams, writer);
+                reset_active_stream(stream_id, demux, streams, writer)?;
             }
         }
     }
@@ -462,7 +479,7 @@ fn deliver_stream_item(
 }
 
 fn pump_upload(
-    writer: &mpsc::UnboundedSender<Vec<u8>>,
+    writer: &mpsc::Sender<Vec<u8>>,
     state: &mut StreamState,
 ) -> Result<(), TransportError> {
     while let Some(frame) = state
@@ -479,15 +496,16 @@ fn reset_active_stream(
     stream_id: u32,
     demux: &mut CarrierDemux,
     streams: &mut HashMap<u32, StreamState>,
-    writer: &mpsc::UnboundedSender<Vec<u8>>,
-) {
+    writer: &mpsc::Sender<Vec<u8>>,
+) -> Result<(), TransportError> {
     if streams.remove(&stream_id).is_none() {
-        return;
+        return Ok(());
     }
     demux.remove_stream(stream_id);
-    if let Ok(frame) = Frame::new(stream_id, FLAG_RESET, Vec::new()).encode() {
-        let _ = send_writer(writer, frame);
-    }
+    let frame = Frame::new(stream_id, FLAG_RESET, vec![RESET_CANCEL])
+        .encode()
+        .map_err(|e| TransportError::Mux(MuxError::Frame(e)))?;
+    send_writer(writer, frame)
 }
 
 fn fanout_eof(streams: &mut HashMap<u32, StreamState>) {
@@ -497,7 +515,7 @@ fn fanout_eof(streams: &mut HashMap<u32, StreamState>) {
 }
 
 fn handle_keepalive(
-    writer: &mpsc::UnboundedSender<Vec<u8>>,
+    writer: &mpsc::Sender<Vec<u8>>,
     outstanding: &mut Option<OutstandingProbe>,
     missed: &mut u32,
     next_nonce: &mut u64,
@@ -517,7 +535,7 @@ fn handle_keepalive(
     let nonce = next_nonce.to_be_bytes();
     *next_nonce = next_nonce.saturating_add(1);
     let frame = Frame::control_ping(nonce).encode().map_err(|_| ())?;
-    writer.send(frame).map_err(|_| ())?;
+    send_writer(writer, frame).map_err(|_| ())?;
     *outstanding = Some(OutstandingProbe {
         nonce,
         deadline: now + keepalive.deadline,
@@ -525,15 +543,13 @@ fn handle_keepalive(
     Ok(())
 }
 
-fn send_writer(
-    writer: &mpsc::UnboundedSender<Vec<u8>>,
-    frame: Vec<u8>,
-) -> Result<(), TransportError> {
-    writer.send(frame).map_err(|_| {
-        TransportError::Io(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "carrier writer stopped",
-        ))
+fn send_writer(writer: &mpsc::Sender<Vec<u8>>, frame: Vec<u8>) -> Result<(), TransportError> {
+    writer.try_send(frame).map_err(|error| {
+        let reason = match error {
+            mpsc::error::TrySendError::Full(_) => "carrier writer queue full",
+            mpsc::error::TrySendError::Closed(_) => "carrier writer stopped",
+        };
+        TransportError::Io(io::Error::new(io::ErrorKind::BrokenPipe, reason))
     })
 }
 
@@ -557,6 +573,7 @@ mod tests {
     use super::*;
     use observer_pl::frame::{
         FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, FLAG_PING, FLAG_PONG, FLAG_WINDOW,
+        RESET_CANCEL,
     };
     use observer_pl::mux::INITIAL_WINDOW;
     use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
@@ -580,7 +597,7 @@ mod tests {
         let stream: Box<dyn CarrierIo> = Box::new(client);
         let (read, write) = split(stream);
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_QUEUE);
-        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE);
         let alive = Arc::new(AtomicBool::new(true));
         tokio::spawn(writer_task(write, writer_rx, alive.clone()));
         tokio::spawn(coordinator_task(
@@ -672,6 +689,7 @@ mod tests {
         loop {
             let frame = next_frame(stream, decoder).await;
             if frame.stream_id == stream_id && frame.flags & FLAG_RESET != 0 {
+                assert_eq!(frame.payload, vec![RESET_CANCEL]);
                 return;
             }
         }

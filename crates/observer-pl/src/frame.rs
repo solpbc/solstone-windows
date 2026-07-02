@@ -30,6 +30,13 @@ pub const FLAG_PING: u8 = 0x20;
 pub const FLAG_PONG: u8 = 0x40;
 pub const FLAG_RESERVED_MASK: u8 = 0x80;
 
+pub const RESET_PROTOCOL_ERROR: u8 = 0x01;
+pub const RESET_FLOW_CONTROL_ERROR: u8 = 0x02;
+pub const RESET_STREAM_LIMIT_EXCEEDED: u8 = 0x03;
+pub const RESET_INTERNAL_ERROR: u8 = 0x04;
+pub const RESET_CANCEL: u8 = 0x05;
+pub const RESET_UNSPECIFIED: u8 = 0xff;
+
 pub const HEADER_LEN: usize = 8;
 /// Max payload that fits the 3-byte length field (16 MiB - 1).
 pub const MAX_PAYLOAD: usize = (1 << 24) - 1;
