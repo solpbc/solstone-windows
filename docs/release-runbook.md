@@ -19,7 +19,7 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 
 - Velopack, per-user `%LocalAppData%`, **no UAC**.
 - Evergreen WebView2 runtime (no fixed-version bundle).
-- `Releases/` carries the full (+ delta) `nupkg`, `Solstone-win-Setup.exe`,
+- `Releases/` carries the full (+ delta) `nupkg`, `solstone-setup-{version}.exe`,
   `Solstone-win-Portable.zip`, and the feed (`releases.win.json`).
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
   registers the per-user autostart login item.
@@ -58,7 +58,7 @@ signing box; both publishes are mandatory):
 2. On the release host: `make pull-releases` (scp the box's `Releases/` over),
    then `make publish-r2` — uploads every artifact, **feed-last**
    (`releases.win.json` after the nupkgs/Setup.exe), then HEAD-checks the feed +
-   the `Solstone-win-Setup.exe` permalink target. Requires `wrangler` authed to
+   the `solstone-setup-{version}.exe` artifact. Requires `wrangler` authed to
    the Cloudflare account + `curl`.
 3. **Required GitHub mirror:** on the **release host** (same host as `publish-r2`,
    not the build box — the box has no `gh`), `make publish` → `scripts/publish-gh.sh`
@@ -71,8 +71,9 @@ signing box; both publishes are mandatory):
    Requires `gh` authed to the repo.
 
 `make publish-r2` accumulates: nupkgs are version-named (prior deltas/fulls stay),
-`Solstone-win-Setup.exe` is a stable name overwritten with the latest. The
-`solstone.app/download/windows` permalink 302s to that stable Setup.exe.
+and the setup installer is versioned per release, giving each release a
+never-reused URL. The `solstone.app/download/windows` permalink points at the
+current release's versioned installer.
 
 ## Package-manager channels (winget / scoop) — submission timing
 

@@ -30,7 +30,7 @@ WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
 WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: install build test ui-test ci contract purity-check package publish publish-r2 \
+.PHONY: install build test ui-test test-scripts ci contract purity-check package publish publish-r2 \
 	        publish-winget publish-scoop publish-packages \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
@@ -58,6 +58,10 @@ build:
 test:
 	$(CARGO) test --workspace $(REMOTE_CRATES)
 
+# The host-testable shell publish-name contract check on the Linux mill.
+test-scripts:
+	sh scripts/lib/artifact-names.test.sh
+
 # UI unit tests (vitest+jsdom) on the Linux mill. Reinstall first so the new
 # vitest/jsdom devDeps (added after the lode-start `npm install`) are present.
 ui-test:
@@ -77,6 +81,7 @@ ci:
 	$(CARGO) test --workspace $(REMOTE_CRATES)
 	$(CARGO) deny check
 	$(MAKE) ui-test
+	$(MAKE) test-scripts
 	$(MAKE) win-host-ci
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.

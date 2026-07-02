@@ -142,4 +142,14 @@ Write-Host "package.ps1: vpk pack Solstone $Version -> $Releases"
 & $Vpk @vpkArgs
 if ($LASTEXITCODE -ne 0) { throw "vpk pack failed (exit $LASTEXITCODE)." }
 
-Write-Host "package.ps1: done. Releases/ carries Setup.exe + full nupkg (+ delta when a prior release was present) + releases.win.json$(if ($NotesFile) { ' (with release notes)' })."
+# Versioned installer URLs avoid stale CDN cache bugs. Rename instead of copy so
+# only the new name ships. Signing ran during pack; Authenticode signs file
+# content, not the filename, so the post-sign rename keeps the signature valid.
+$DefaultSetupName = "Solstone-win-Setup.exe"
+$DefaultSetup = Join-Path $Releases $DefaultSetupName
+if (-not (Test-Path $DefaultSetup)) { throw "package.ps1: expected vpk output '$DefaultSetupName' not found in $Releases after pack - vpk Setup.exe naming may have changed." }
+$VersionedSetup = Join-Path $Releases "solstone-setup-$Version.exe"
+Move-Item -Force $DefaultSetup $VersionedSetup
+Write-Host "package.ps1: renamed $DefaultSetupName -> solstone-setup-$Version.exe"
+
+Write-Host "package.ps1: done. Releases/ carries solstone-setup-$Version.exe + full nupkg (+ delta when a prior release was present) + releases.win.json$(if ($NotesFile) { ' (with release notes)' })."

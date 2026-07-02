@@ -4,7 +4,7 @@
 #
 # Open a winget version-update PR (solpbc.Solstone -> microsoft/winget-pkgs) for a
 # published release. Runs on the RELEASE HOST after `make publish` -- the GitHub
-# release and its Solstone-win-Setup.exe asset must already exist.
+# release and its solstone-setup-<version>.exe asset must already exist.
 #
 # Operator-driven, no CI path. winget requires a PR per version (the community repo
 # has no push API); this codifies the one command that opens it. The PR is validated
@@ -17,12 +17,14 @@
 # below. VERSION defaults to the workspace package version; pass an arg to override.
 set -eu
 
+. "$(dirname "$0")/lib/artifact-names.sh"
+
 REPO="solpbc/solstone-windows"
 PKG="solpbc.Solstone"
 
 VERSION="${1:-$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')}"
 [ -n "$VERSION" ] || { echo "publish-winget: could not determine VERSION (pass it as an arg)" >&2; exit 1; }
-URL="https://github.com/$REPO/releases/download/v$VERSION/Solstone-win-Setup.exe"
+URL="$(winget_installer_url "$REPO" "$VERSION")"
 
 if ! command -v komac >/dev/null 2>&1; then
   echo "publish-winget: komac not found." >&2

@@ -6,8 +6,8 @@ the R2 update feed:
 
 | Channel | Artifact | Who owns updates |
 |---------|----------|------------------|
-| Direct download (`solstone.app/download/windows`) | `Solstone-win-Setup.exe` | the app itself (in-app updater) |
-| **winget** (`winget install solstone`) | `Solstone-win-Setup.exe` | the app itself; `winget upgrade` is a redundant catch-up |
+| Direct download (`solstone.app/download/windows`) | `solstone-setup-{version}.exe` | the app itself (in-app updater) |
+| **winget** (`winget install solstone`) | `solstone-setup-{version}.exe` | the app itself; `winget upgrade` is a redundant catch-up |
 | **scoop** (`scoop install solstone`) | `Solstone-win-Portable.zip` | scoop (the portable build's in-app updater is inert) |
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to

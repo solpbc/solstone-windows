@@ -19,11 +19,12 @@
 
 set -eu
 
+. "$(dirname "$0")/lib/artifact-names.sh"
+
 BUCKET="solstone-updates"
 PREFIX="solstone-windows"
 BASE_URL="https://updates.solstone.app"
 FEED="releases.win.json"
-SETUP="Solstone-win-Setup.exe"
 # Cloudflare account id. `wrangler whoami` must list this -- catches a silently
 # degraded OAuth token before any upload (the ~24h OAuth decay; same gate the
 # macOS appcast publish uses).
@@ -38,6 +39,12 @@ if [ ! -f "$RELEASES/$FEED" ]; then
   echo "publish-r2: no $FEED in '$RELEASES' -- not a Velopack output dir." >&2
   exit 1
 fi
+VERSION="$(resolve_release_version "$RELEASES")"
+if [ -z "$VERSION" ]; then
+  echo "publish-r2: could not resolve a version from full nupkgs in '$RELEASES'" >&2
+  exit 1
+fi
+SETUP="$(setup_exe_name "$VERSION")"
 
 # Preflight: fail fast if wrangler's Cloudflare auth has degraded. whoami
 # exercises the same account-lookup path the uploads need.
@@ -65,14 +72,13 @@ put_one() {
   name="$(basename "$f")"
   ct="$(content_type_for "$name")"
   echo "publish-r2: put $PREFIX/$name ($ct)"
-  # no-cache: the Setup.exe / Portable.zip / feed JSON permalinks are STABLE
-  # names reused across every release (Solstone-win-Setup.exe never changes
-  # its URL), so a Cloudflare edge cache entry from a prior version's upload
-  # persists past this upload and serves stale bytes to real downloads until
-  # its TTL expires -- silently, since a HEAD request can still show fresh
-  # origin metadata while GETs hit the stale cached body. Found live 2026-07-02
-  # when a genuinely fresh browser download installed a stale pre-fix 0.2.6
-  # build hours after 0.2.7 was published and verified at the origin.
+  # no-cache: releases.win.json and Solstone-win-Portable.zip are stable names
+  # reused across releases, so a Cloudflare edge cache entry from a prior upload
+  # can serve stale bytes to real downloads until its TTL expires. Found live
+  # 2026-07-02 when a fresh browser download installed stale bytes after a newer
+  # release was published and verified at the origin. Versioning the setup
+  # artifact is the structural fix for that case; no-cache remains correct for
+  # the still-stable names and harmless for immutable versioned artifacts.
   wrangler r2 object put "$BUCKET/$PREFIX/$name" --file="$f" --remote --content-type="$ct" --cache-control="no-cache"
 }
 
@@ -86,7 +92,7 @@ done
 # The feed LAST -- so the client never resolves a feed ahead of its assets.
 put_one "$RELEASES/$FEED"
 
-# Sanity: the feed + the stable Setup.exe permalink target must be reachable.
+# Sanity: the feed + the versioned setup artifact must be reachable.
 feed_url="$BASE_URL/$PREFIX/$FEED"
 setup_url="$BASE_URL/$PREFIX/$SETUP"
 for u in "$feed_url" "$setup_url"; do
