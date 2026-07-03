@@ -6,11 +6,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-02
+
 ### Fixed
 
 - the observer now works on displays with unusual screen resolutions. some virtual
   machines and monitor modes use sizes that previously showed a "screen" source error;
   solstone now handles them automatically.
+- the observer no longer flickers its status when your screen is still. a static
+  screen — reading, watching, or stepped away — now stays "observing" instead of
+  flipping to "starting."
 
 ### Changed
 
