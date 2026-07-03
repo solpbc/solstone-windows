@@ -2925,6 +2925,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 name = "pl-transport-win"
 version = "0.2.8"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "observer-log",
  "observer-model",
@@ -2941,6 +2942,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "webpki-roots",
+ "windows 0.58.0",
 ]
 
 [[package]]

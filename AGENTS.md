@@ -118,13 +118,14 @@ The **DAG rule**: dependency arrows never point pure → platform. The pure tier
 holds all the logic worth testing; the platform tier holds the `unsafe`
 WinRT/COM seams.
 
-**`pl-transport-win` is the one platform-tier crate with no `windows-rs` and no
-`unsafe`** — it is built on rustls (ring), which is cross-platform. It sits in the
-platform tier because it owns the OS-adjacent transport (sockets, TLS, the network
-seam), but it compiles and tests on the Linux dev host too. That is deliberate: the
-live cross-repo pair+ingest gate can run off-Windows against a journal on the dev
-box (see `crates/pl-transport-win/examples/live_gate.rs`), and the box's
-`win-host-ci` still builds + tests it on real MSVC alongside the windows-rs tier.
+**`pl-transport-win` keeps its transport core rustls-based and host-testable; its
+only `windows-rs` / `unsafe` use is the target-gated DPAPI credential-wrap at rest**.
+It sits in the platform tier because it owns the OS-adjacent transport (sockets,
+TLS, the network seam), but it compiles and tests on the Linux dev host too.
+That is deliberate: the live cross-repo pair+ingest gate can run off-Windows
+against a journal on the dev box (see `crates/pl-transport-win/examples/live_gate.rs`),
+and the box's `win-host-ci` still builds + tests it on real MSVC alongside the
+windows-rs tier.
 
 ## 5. The contract
 

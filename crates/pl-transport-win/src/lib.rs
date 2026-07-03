@@ -23,7 +23,8 @@
 //! state is published into a shared [`observer_model::SyncSnapshot`] the engine
 //! folds into the health dump.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 
 pub mod client;
 pub mod connection;
