@@ -315,7 +315,7 @@ impl UploadCoordinator {
             let segment_key = civil::segment_key_string_local(
                 segment.boundary_epoch_secs,
                 offset,
-                self.period_secs,
+                segment.len_secs.unwrap_or(self.period_secs),
             );
 
             // Read the per-source files + compute their sha256 for reconcile.
@@ -625,6 +625,7 @@ mod tests {
                 segment: SealedSegment {
                     index: 1,
                     boundary_epoch_secs,
+                    len_secs: None,
                     files: vec![file_name.to_string()],
                 },
                 file_name: file_name.to_string(),

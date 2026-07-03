@@ -11,7 +11,7 @@ mod imp {
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;
     use std::ptr;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread::{self, JoinHandle};
 
@@ -57,6 +57,7 @@ mod imp {
         frames_consumed: AtomicU64,
         samples_written: AtomicU64,
         clamp_events: AtomicU64,
+        last_end_100ns: AtomicI64,
         last_error: Mutex<Option<String>>,
     }
 
@@ -215,6 +216,15 @@ mod imp {
             self.accounting.samples_written.load(Ordering::Relaxed)
         }
 
+        fn video_end_secs(&self) -> Option<f64> {
+            let end = self.accounting.last_end_100ns.load(Ordering::Relaxed);
+            if end > 0 {
+                Some(end as f64 / 10_000_000.0)
+            } else {
+                None
+            }
+        }
+
         fn last_error(&self) -> Option<String> {
             self.accounting.last_error()
         }
@@ -256,6 +266,7 @@ mod imp {
                             failure: None,
                         });
                         accounting.clear_error();
+                        accounting.last_end_100ns.store(0, Ordering::Relaxed);
                         Ok(())
                     } else {
                         Err(EncoderError::new(
@@ -373,9 +384,13 @@ mod imp {
         let flushed = if let Some(timer) = segment.timer.as_mut() {
             let before = timer.clamp_events();
             let sample = timer.flush(DEFAULT_SEGMENT_SECS as i64 * 10_000_000);
+            let timer_last_end = timer.last_end_100ns();
             accounting
                 .clamp_events
                 .fetch_add(timer.clamp_events() - before, Ordering::Relaxed);
+            accounting
+                .last_end_100ns
+                .store(timer_last_end, Ordering::Relaxed);
             sample
         } else {
             None
@@ -913,6 +928,10 @@ mod imp {
 
         fn samples_written(&self) -> u64 {
             0
+        }
+
+        fn video_end_secs(&self) -> Option<f64> {
+            None
         }
 
         fn last_error(&self) -> Option<String> {

@@ -32,3 +32,5 @@ windows = { version = "0.58", features = ["Win32_Security_Cryptography", "Win32_
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "test-util"] }
 rcgen = { workspace = true, features = ["x509-parser"] }
+observer-segment.workspace = true
+platform-win.workspace = true

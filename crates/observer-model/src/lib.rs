@@ -32,6 +32,12 @@ pub const SCREEN_FILE_NAME: &str = "display_1_screen.mp4";
 /// Final combined-audio filename inside a sealed segment.
 pub const AUDIO_FILE_NAME: &str = "audio.flac";
 
+/// Sealed-dir sidecar holding the honest captured-media duration (whole seconds,
+/// ASCII decimal) for the segment-key LEN suffix.
+///
+/// Excluded from upload, mirroring the .uploaded marker.
+pub const LEN_FILE_NAME: &str = ".len";
+
 /// The observer's top-level phase. **Computed** from real source state by the
 /// reducer in `observer-state` — never set directly by the UI or any command.
 ///
@@ -674,6 +680,10 @@ pub trait ScreenEncoder: Send {
     fn finalize(&mut self) -> Result<(), EncoderError>;
     fn frames_consumed(&self) -> u64;
     fn samples_written(&self) -> u64;
+    /// The last video sample's end offset in seconds for the just-finalized
+    /// segment, or None if the segment produced no video. Feeds the honest LEN
+    /// only when audio is absent.
+    fn video_end_secs(&self) -> Option<f64>;
     fn last_error(&self) -> Option<String>;
     fn health(&self) -> EncoderHealth;
 }

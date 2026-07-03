@@ -291,8 +291,9 @@ where
 
         if let Some(segment) = self.current_segment.take() {
             if self.finalize_screen_encoder().is_ok() {
+                let video_end = self.video_end_for_finalized_segment(&segment);
                 self.segment_fs
-                    .finalize(segment.key)
+                    .finalize(segment.key, video_end)
                     .map_err(EngineError::Segment)?;
             }
         }
@@ -412,8 +413,9 @@ where
         self.drain_events()?;
         if let Some(segment) = self.current_segment.take() {
             if self.finalize_screen_encoder().is_ok() {
+                let video_end = self.video_end_for_finalized_segment(&segment);
                 self.segment_fs
-                    .finalize(segment.key)
+                    .finalize(segment.key, video_end)
                     .map_err(EngineError::Segment)?;
             }
         }
@@ -540,8 +542,9 @@ where
 
         let old_segment = self.current_segment.take().expect("current checked above");
         if self.finalize_screen_encoder().is_ok() {
+            let video_end = self.video_end_for_finalized_segment(&old_segment);
             self.segment_fs
-                .finalize(old_segment.key)
+                .finalize(old_segment.key, video_end)
                 .map_err(EngineError::Segment)?;
         }
 
@@ -568,6 +571,13 @@ where
                 Err(error)
             }
         }
+    }
+
+    fn video_end_for_finalized_segment(&self, segment: &OpenSegment) -> Option<f64> {
+        segment
+            .screen_encoder_open
+            .then(|| self.sources.screen_encoder.video_end_secs())
+            .flatten()
     }
 
     fn fold_source_states(&mut self) {
@@ -855,6 +865,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSegmentState {
         writes: Vec<(SegmentKey, SourceKind, u64)>,
+        video_ends: Vec<Option<f64>>,
         fail_open: bool,
     }
 
@@ -871,6 +882,10 @@ mod tests {
 
         fn writes(&self) -> Vec<(SegmentKey, SourceKind, u64)> {
             self.state.lock().unwrap().writes.clone()
+        }
+
+        fn video_ends(&self) -> Vec<Option<f64>> {
+            self.state.lock().unwrap().video_ends.clone()
         }
 
         fn event_log(&self) -> Arc<Mutex<Vec<FsEvent>>> {
@@ -904,7 +919,12 @@ mod tests {
             Ok(())
         }
 
-        fn finalize(&mut self, key: SegmentKey) -> Result<(), Self::Error> {
+        fn finalize(
+            &mut self,
+            key: SegmentKey,
+            video_end_secs: Option<f64>,
+        ) -> Result<(), Self::Error> {
+            self.state.lock().unwrap().video_ends.push(video_end_secs);
             self.events.lock().unwrap().push(FsEvent::Finalize(key));
             Ok(())
         }
@@ -1067,6 +1087,7 @@ mod tests {
         opened: Option<(String, u32, u32)>,
         frames_consumed: u64,
         samples_written: u64,
+        video_end_secs: Option<f64>,
         last_error: Option<String>,
         open_errors: VecDeque<EncoderError>,
         encode_errors: VecDeque<EncoderError>,
@@ -1091,6 +1112,10 @@ mod tests {
 
         fn health_snapshot(&self) -> EncoderHealth {
             self.inner.lock().unwrap().health()
+        }
+
+        fn set_video_end_secs(&self, video_end_secs: Option<f64>) {
+            self.inner.lock().unwrap().video_end_secs = video_end_secs;
         }
 
         fn open_count(&self) -> usize {
@@ -1197,6 +1222,10 @@ mod tests {
 
         fn health(&self) -> EncoderHealth {
             self.inner.lock().unwrap().health()
+        }
+
+        fn video_end_secs(&self) -> Option<f64> {
+            self.inner.lock().unwrap().video_end_secs
         }
     }
 
@@ -1582,6 +1611,48 @@ mod tests {
             .position(|event| *event == FsEvent::Finalize(old))
             .unwrap();
         assert!(encoder_finalize < segment_finalize);
+    }
+
+    #[test]
+    fn stop_threads_video_end_hint_to_segment_finalize() {
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        let encoder = FakeScreenEncoder::default();
+        encoder.set_video_end_secs(Some(123.0));
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            segment_fs,
+            EngineConfig::default(),
+            sources,
+        );
+
+        engine.start().unwrap();
+        emit_screen(&engine.sink(), 0..1);
+        engine.pump().unwrap();
+        engine.stop().unwrap();
+
+        assert_eq!(segment_view.video_ends(), vec![Some(123.0)]);
+    }
+
+    #[test]
+    fn stop_does_not_reuse_stale_video_end_when_segment_had_no_screen_frames() {
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        let encoder = FakeScreenEncoder::default();
+        encoder.set_video_end_secs(Some(123.0));
+        let (sources, _) = active_sources_with_encoder(encoder);
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            segment_fs,
+            EngineConfig::default(),
+            sources,
+        );
+
+        engine.start().unwrap();
+        engine.stop().unwrap();
+
+        assert_eq!(segment_view.video_ends(), vec![None]);
     }
 
     #[test]

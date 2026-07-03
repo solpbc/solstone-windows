@@ -3065,6 +3065,8 @@ dependencies = [
  "observer-model",
  "observer-pl",
  "observer-retention",
+ "observer-segment",
+ "platform-win",
  "rcgen",
  "rustls",
  "rustls-webpki",

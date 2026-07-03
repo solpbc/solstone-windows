@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use observer_model::AUDIO_FILE_NAME;
+use observer_model::{AUDIO_FILE_NAME, LEN_FILE_NAME};
 
 /// A sealed segment ready to upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +20,11 @@ pub struct SealedSegment {
     pub index: u64,
     /// `index * period_secs` — the segment's aligned start instant (epoch secs).
     pub boundary_epoch_secs: u64,
+    /// Persisted honest LEN in whole seconds.
+    ///
+    /// `None` for dirs sealed before this existed; the uploader falls back to
+    /// the nominal period.
+    pub len_secs: Option<u64>,
     /// File names inside the segment dir.
     pub files: Vec<String>,
 }
@@ -126,10 +131,17 @@ impl LocalSealedStore {
             if is_confirmed != want_confirmed {
                 continue;
             }
+            let len_secs = std::fs::read_to_string(entry.path().join(LEN_FILE_NAME))
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok());
             out.push(SealedSegment {
                 index,
                 boundary_epoch_secs: index.saturating_mul(self.period_secs),
-                files: files.into_iter().filter(|f| f != UPLOADED_MARKER).collect(),
+                len_secs,
+                files: files
+                    .into_iter()
+                    .filter(|f| f != UPLOADED_MARKER && f != LEN_FILE_NAME)
+                    .collect(),
             });
         }
         out.sort_by_key(|s| s.index);
@@ -162,7 +174,11 @@ impl SealedStore for LocalSealedStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observer_model::{AUDIO_FILE_NAME, SCREEN_FILE_NAME};
+    use observer_model::{
+        AudioFormat, CaptureChunk, SegmentKey, SourceKind, AUDIO_FILE_NAME, LEN_FILE_NAME,
+        SCREEN_FILE_NAME,
+    };
+    use observer_segment::SegmentFs;
 
     fn temp_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -229,6 +245,89 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME]);
         assert_eq!(store.read_file(9, &segs[0].files[0]).unwrap(), b"MP4");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_reads_len_sidecar_and_filters_it_from_files() {
+        let root = temp_root();
+        let seg = root.join("10");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+        std::fs::write(seg.join(LEN_FILE_NAME), b"42\n").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        let segs = store.scan().unwrap();
+
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].len_secs, Some(42));
+        assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_missing_len_sidecar_reports_none() {
+        let root = temp_root();
+        let seg = root.join("11");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        let segs = store.scan().unwrap();
+
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].len_secs, None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seal_then_restart_scan_uses_persisted_len() {
+        let root = temp_root();
+        let key = SegmentKey {
+            index: 12,
+            boundary_epoch_secs: 12 * 300,
+        };
+        let mut fs_impl = platform_win::LocalSegmentFs::new(root.clone());
+        fs_impl.open_incomplete(key).unwrap();
+
+        let mut data = Vec::new();
+        for _ in 0..(16_000 * 3) {
+            data.extend_from_slice(&1000i16.to_le_bytes());
+        }
+        fs_impl
+            .write_chunk(
+                key,
+                &CaptureChunk {
+                    source: SourceKind::Mic,
+                    seq: 1,
+                    data,
+                    format: Some(AudioFormat {
+                        sample_rate_hz: 16_000,
+                        channels: 1,
+                        bits_per_sample: 16,
+                        is_float: false,
+                    }),
+                },
+            )
+            .unwrap();
+        fs_impl.finalize(key, None).unwrap();
+        drop(fs_impl);
+
+        let store = LocalSealedStore::new(&root, 300);
+        let segs = store.scan().unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].len_secs, Some(3));
+
+        let segment_key = observer_pl::civil::segment_key_string_local(
+            segs[0].boundary_epoch_secs,
+            0,
+            segs[0].len_secs.unwrap_or(300),
+        );
+        assert!(segment_key.ends_with("_3"));
+        assert!(!segment_key.ends_with("_300"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

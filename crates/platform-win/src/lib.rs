@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use observer_model::{
-    AudioFormat, CaptureChunk, SegmentKey, SourceKind, AUDIO_FILE_NAME, SCREEN_FILE_NAME,
+    AudioFormat, CaptureChunk, SegmentKey, SourceKind, AUDIO_FILE_NAME, LEN_FILE_NAME,
+    SCREEN_FILE_NAME,
 };
 use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
@@ -174,6 +175,24 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Compute and durably persist the honest LEN sidecar for a sealed segment.
+/// Reads the sealed audio.flac duration if present; else uses the video end
+/// hint (normal seal) or the ceiling (recovery, hint None). Written BEFORE the
+/// atomic rename so a persist failure fails the seal visibly (dir stays
+/// .incomplete for recovery) rather than falling through to a nominal LEN.
+fn persist_seal_len(dir: &Path, video_end_secs: Option<f64>, period_secs: u64) -> io::Result<u64> {
+    let audio_secs = match fs::read(dir.join(AUDIO_FILE_NAME)) {
+        Ok(bytes) => observer_audio::flac_duration_secs(&bytes),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err),
+    };
+    let len = observer_segment::duration::resolve_len_secs(audio_secs, video_end_secs, period_secs);
+    let mut file = File::create(dir.join(LEN_FILE_NAME))?;
+    file.write_all(len.to_string().as_bytes())?;
+    file.sync_all()?;
+    Ok(len)
 }
 
 fn remove_partial_media(dir: &Path) -> io::Result<()> {
@@ -584,7 +603,7 @@ impl SegmentFs for LocalSegmentFs {
         let dir = incomplete_dir(&self.root, key);
         fs::create_dir_all(&dir)?;
         let handle_key = (key, chunk.source);
-        if !self.handles.contains_key(&handle_key) {
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.handles.entry(handle_key) {
             if let Some(format) = chunk.format {
                 let sidecar_path = dir.join(source_fmt_file_name(chunk.source));
                 if !sidecar_path.exists() {
@@ -596,7 +615,7 @@ impl SegmentFs for LocalSegmentFs {
             }
             let path = dir.join(source_file_name(chunk.source));
             let file = OpenOptions::new().create(true).append(true).open(path)?;
-            self.handles.insert(handle_key, file);
+            entry.insert(file);
         }
         let file = self.handles.get_mut(&handle_key).expect("handle inserted");
         file.write_all(&chunk.data)?;
@@ -609,7 +628,11 @@ impl SegmentFs for LocalSegmentFs {
         Ok(())
     }
 
-    fn finalize(&mut self, key: SegmentKey) -> Result<(), Self::Error> {
+    fn finalize(
+        &mut self,
+        key: SegmentKey,
+        video_end_secs: Option<f64>,
+    ) -> Result<(), Self::Error> {
         let to_drop: Vec<_> = self
             .handles
             .keys()
@@ -624,6 +647,7 @@ impl SegmentFs for LocalSegmentFs {
         }
         let dir = incomplete_dir(&self.root, key);
         seal_audio_flac(&dir)?;
+        persist_seal_len(&dir, video_end_secs, DEFAULT_SEGMENT_SECS)?;
         fs::rename(dir, sealed_dir(&self.root, key))
     }
 }
@@ -710,6 +734,7 @@ impl RecoveryFs for LocalRecoveryFs {
         let dir = Path::new(&seg.path);
         remove_partial_media(dir)?;
         seal_audio_flac(dir)?;
+        persist_seal_len(dir, None, DEFAULT_SEGMENT_SECS)?;
         fs::rename(&seg.path, sealed_dir(&self.root, seg.key))
     }
 
@@ -791,6 +816,10 @@ mod tests {
         .unwrap();
     }
 
+    fn len_sidecar(root: &Path, index: u64) -> String {
+        fs::read_to_string(root.join(format!("{index}/{LEN_FILE_NAME}"))).unwrap()
+    }
+
     #[test]
     fn data_root_is_under_solstone() {
         assert!(local_data_root().ends_with("Solstone") || local_data_root().ends_with("solstone"));
@@ -818,7 +847,7 @@ mod tests {
         fs_impl
             .write_chunk(key, &audio_chunk(SourceKind::Mic, &[2000; 16]))
             .unwrap();
-        fs_impl.finalize(key).unwrap();
+        fs_impl.finalize(key, None).unwrap();
 
         assert!(!root.join("7.incomplete").exists());
         assert!(root.join(format!("7/{AUDIO_FILE_NAME}")).is_file());
@@ -826,6 +855,72 @@ mod tests {
         assert!(!root.join("7/mic.pcm").exists());
         assert!(!root.join("7/system-audio.fmt.json").exists());
         assert!(!root.join("7/mic.fmt.json").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normal_seal_persists_len_from_audio_flac_duration() {
+        let root = temp_root("normal-audio-len");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(15);
+        let samples = vec![1000; 48_000];
+
+        fs_impl.open_incomplete(key).unwrap();
+        fs_impl
+            .write_chunk(key, &audio_chunk(SourceKind::Mic, &samples))
+            .unwrap();
+        fs_impl.finalize(key, Some(120.0)).unwrap();
+
+        assert_eq!(len_sidecar(&root, 15), "3");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normal_seal_video_only_persists_len_from_video_end_hint() {
+        let root = temp_root("normal-video-len");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(16);
+
+        fs_impl.open_incomplete(key).unwrap();
+        fs::write(root.join("16.incomplete").join(SCREEN_FILE_NAME), b"mp4").unwrap();
+        fs_impl.finalize(key, Some(120.0)).unwrap();
+
+        assert_eq!(len_sidecar(&root, 16), "120");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normal_seal_len_persist_failure_leaves_incomplete_unsealed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("normal-len-failure");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(19);
+
+        fs_impl.open_incomplete(key).unwrap();
+        let incomplete = root.join("19.incomplete");
+        fs::write(incomplete.join(SCREEN_FILE_NAME), b"mp4").unwrap();
+
+        let mut perms = fs::metadata(&incomplete).unwrap().permissions();
+        perms.set_mode(0o555);
+        fs::set_permissions(&incomplete, perms).unwrap();
+
+        let err = fs_impl.finalize(key, Some(120.0)).unwrap_err();
+
+        let mut perms = fs::metadata(&incomplete).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&incomplete, perms).unwrap();
+
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(incomplete.is_dir());
+        assert!(!root.join("19").exists());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -905,7 +1000,7 @@ mod tests {
 
         assert!(has_sealable_media(&incomplete).unwrap());
 
-        fs_impl.finalize(key).unwrap();
+        fs_impl.finalize(key, None).unwrap();
 
         let sealed = root.join("14");
         assert!(!sealed.join(AUDIO_FILE_NAME).exists());
@@ -1044,6 +1139,45 @@ mod tests {
     }
 
     #[test]
+    fn recovery_seal_persists_len_from_audio_flac_duration() {
+        let root = temp_root("recovery-audio-len");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("17.incomplete");
+        let samples = vec![1000; 48_000];
+        fs::create_dir_all(&orphan).unwrap();
+        write_audio_file(&orphan, SourceKind::Mic, &samples);
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+
+        recovery.finalize(&stale[0]).unwrap();
+
+        assert_eq!(len_sidecar(&root, 17), "3");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_seal_orphaned_audio_uses_ceiling_len() {
+        let root = temp_root("recovery-orphan-len");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("18.incomplete");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("mic.pcm"), pcm_i16(&[1000; 16])).unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+
+        recovery.finalize(&stale[0]).unwrap();
+
+        assert_eq!(len_sidecar(&root, 18), "300");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn recovery_converges_after_audio_flac_written_before_pcm_delete() {
         let root = temp_root("seal-crash-before-delete");
         let _ = fs::remove_dir_all(&root);
@@ -1099,7 +1233,7 @@ mod tests {
         let key = key(12);
 
         fs_impl.open_incomplete(key).unwrap();
-        fs_impl.finalize(key).unwrap();
+        fs_impl.finalize(key, None).unwrap();
 
         assert!(root.join("12").is_dir());
         assert!(!root.join(format!("12/{AUDIO_FILE_NAME}")).exists());

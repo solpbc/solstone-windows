@@ -189,6 +189,21 @@ fn encode_flac(samples: &[i32]) -> Result<Vec<u8>, AudioError> {
     Ok(sink.as_slice().to_vec())
 }
 
+pub fn flac_duration_secs(flac: &[u8]) -> Option<f64> {
+    if flac.len() < 42 || &flac[0..4] != b"fLaC" || (flac[4] & 0x7f) != 0 {
+        return None;
+    }
+
+    let field = u64::from_be_bytes(flac[18..26].try_into().ok()?);
+    let rate = (field >> 44) & 0xF_FFFF;
+    let total = field & 0xF_FFFF_FFFF;
+    if rate == 0 || total == 0 {
+        return None;
+    }
+
+    Some(total as f64 / rate as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +264,36 @@ mod tests {
 
     fn right(samples: &[i32]) -> Vec<i32> {
         samples.chunks_exact(2).map(|frame| frame[1]).collect()
+    }
+
+    #[test]
+    fn flac_duration_reads_streaminfo_total_samples() {
+        let pcm = i16_bytes(&[1000; 32_000]);
+        let flac = combine_to_flac(Some((&pcm, i16_format(16_000, 1))), None)
+            .unwrap()
+            .unwrap();
+
+        let duration = flac_duration_secs(&flac).unwrap();
+
+        assert!((duration - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn flac_duration_uses_padded_count_for_sub_minimum_block() {
+        let pcm = i16_bytes(&[1000]);
+        let flac = combine_to_flac(Some((&pcm, i16_format(16_000, 1))), None)
+            .unwrap()
+            .unwrap();
+
+        let duration = flac_duration_secs(&flac).unwrap();
+
+        assert!((duration - (16.0 / 16_000.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn flac_duration_rejects_invalid_or_truncated_input() {
+        assert_eq!(flac_duration_secs(b"XXXX"), None);
+        assert_eq!(flac_duration_secs(&[0; 41]), None);
     }
 
     #[test]

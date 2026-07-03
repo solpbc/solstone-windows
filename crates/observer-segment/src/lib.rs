@@ -19,6 +19,20 @@ use observer_model::{CaptureChunk, SegmentKey};
 /// Default rotation period: five minutes, aligned to the wall clock.
 pub const DEFAULT_SEGMENT_SECS: u64 = 5 * 60;
 
+pub mod duration {
+    /// Honest whole-second LEN for the segment key, clamped to [1, period_secs].
+    ///
+    /// Precedence: audio duration -> (normal-seal only) video end -> ceiling(period).
+    pub fn resolve_len_secs(
+        audio_secs: Option<f64>,
+        video_secs: Option<f64>,
+        period_secs: u64,
+    ) -> u64 {
+        let raw = audio_secs.or(video_secs).unwrap_or(period_secs as f64);
+        (raw.round().max(0.0) as u64).clamp(1, period_secs.max(1))
+    }
+}
+
 /// The aligned [`SegmentKey`] that a given instant falls into.
 ///
 /// `index` is derived deterministically from the boundary, so the same instant
@@ -67,7 +81,8 @@ pub fn is_live_segment(key: SegmentKey, now_epoch_secs: u64, period_secs: u64) -
 /// Real impl lives in `platform-win` (`%LocalAppData%`); tests inject a fake.
 /// Open creates an `.incomplete` segment dir, writes append owned chunks to
 /// per-source files inside it, and finalize atomically renames it to its sealed
-/// name.
+/// name. The `video_end_secs` hint is used only when audio is absent; recovery
+/// passes `None`.
 pub trait SegmentFs {
     type Error: core::fmt::Debug;
 
@@ -78,12 +93,48 @@ pub trait SegmentFs {
     fn write_chunk(&mut self, key: SegmentKey, chunk: &CaptureChunk) -> Result<(), Self::Error>;
 
     /// Atomically seal the `.incomplete` segment for `key` to its final name.
-    fn finalize(&mut self, key: SegmentKey) -> Result<(), Self::Error>;
+    fn finalize(&mut self, key: SegmentKey, video_end_secs: Option<f64>)
+        -> Result<(), Self::Error>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_audio_near_ceiling_rounds_to_period() {
+        assert_eq!(duration::resolve_len_secs(Some(299.95), None, 300), 300);
+    }
+
+    #[test]
+    fn duration_audio_rounds_to_whole_seconds() {
+        assert_eq!(duration::resolve_len_secs(Some(42.4), None, 300), 42);
+    }
+
+    #[test]
+    fn duration_audio_rounds_up_to_minimum_one() {
+        assert_eq!(duration::resolve_len_secs(Some(0.3), None, 300), 1);
+    }
+
+    #[test]
+    fn duration_absent_media_uses_ceiling() {
+        assert_eq!(duration::resolve_len_secs(None, None, 300), 300);
+    }
+
+    #[test]
+    fn duration_uses_video_when_audio_absent() {
+        assert_eq!(duration::resolve_len_secs(None, Some(120.0), 300), 120);
+    }
+
+    #[test]
+    fn duration_audio_wins_over_video() {
+        assert_eq!(duration::resolve_len_secs(Some(50.0), Some(120.0), 300), 50);
+    }
+
+    #[test]
+    fn duration_clamps_to_period() {
+        assert_eq!(duration::resolve_len_secs(Some(500.0), None, 300), 300);
+    }
 
     #[test]
     fn boundary_is_clock_aligned_not_start_aligned() {
