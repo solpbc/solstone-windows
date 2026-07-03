@@ -16,6 +16,7 @@ members = [
     "crates/observer-log",
     "crates/observer-pl",
     "crates/observer-nv12",
+    "crates/observer-audio",
     "crates/capture-screen-encode",
     "crates/capture-wgc",
     "crates/capture-wasapi",
@@ -34,7 +35,7 @@ version = "0.2.8"
 edition = "2021"
 license = "AGPL-3.0-only"
 authors = ["sol pbc"]
-rust-version = "1.82"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Pure-tier shared deps (no platform).
@@ -46,6 +47,9 @@ sha2 = "0.10"
 hkdf = "0.12"
 base64 = "0.22"
 tracing = "0.1"
+rubato = "3.0"
+flacenc = { version = "0.5", default-features = false }
+claxon = "0.4"
 
 # Composition / shell deps.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
@@ -83,6 +87,7 @@ observer-update = { path = "crates/observer-update" }
 observer-log = { path = "crates/observer-log" }
 observer-pl = { path = "crates/observer-pl" }
 observer-nv12 = { path = "crates/observer-nv12" }
+observer-audio = { path = "crates/observer-audio" }
 capture-screen-encode = { path = "crates/capture-screen-encode" }
 capture-wgc = { path = "crates/capture-wgc" }
 capture-wasapi = { path = "crates/capture-wasapi" }

@@ -14,6 +14,8 @@ observer-mic.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Media_Audio",
+    "Win32_Media_Multimedia",
+    "Win32_Media_KernelStreaming",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_UI_Shell_PropertiesSystem",

@@ -4,13 +4,14 @@
 //! The sealed-segment source the uploader drains.
 //!
 //! W1 seals each finished segment into `…/segments/<index>/` (renamed from
-//! `<index>.incomplete`) holding the per-source files (`display_1_screen.mp4`,
-//! `system-audio.pcm`, `mic.pcm`). The clock-aligned boundary is
-//! `index * period_secs` epoch seconds, which the uploader turns into the
-//! journal's `day` / `segment` keys. Behind a trait so the coordinator is
-//! host-testable with a temp dir.
+//! `<index>.incomplete`) holding the screen MP4 and, when audio was present,
+//! `audio.flac`. The clock-aligned boundary is `index * period_secs` epoch
+//! seconds, which the uploader turns into the journal's `day` / `segment` keys.
+//! Behind a trait so the coordinator is host-testable with a temp dir.
 
 use std::path::{Path, PathBuf};
+
+use observer_model::AUDIO_FILE_NAME;
 
 /// A sealed segment ready to upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +51,7 @@ pub trait SealedStore: Send + Sync {
 /// by filename and globs the pipeline by name, so this is advisory.
 pub fn content_type_for(name: &str) -> String {
     match name {
-        "system-audio.pcm" | "mic.pcm" => "audio/L16".to_string(),
+        AUDIO_FILE_NAME => "audio/flac".to_string(),
         name if name.ends_with(".mp4") => "video/mp4".to_string(),
         _ => "application/octet-stream".to_string(),
     }
@@ -161,7 +162,7 @@ impl SealedStore for LocalSealedStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observer_model::SCREEN_FILE_NAME;
+    use observer_model::{AUDIO_FILE_NAME, SCREEN_FILE_NAME};
 
     fn temp_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -181,7 +182,7 @@ mod tests {
         let seg = root.join("7");
         std::fs::create_dir_all(&seg).unwrap();
         std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
-        std::fs::write(seg.join("system-audio.pcm"), b"PCM").unwrap();
+        std::fs::write(seg.join(AUDIO_FILE_NAME), b"FLAC").unwrap();
         // an in-flight dir that must be ignored
         std::fs::create_dir_all(root.join("8.incomplete")).unwrap();
         // a stray non-numeric dir
@@ -192,7 +193,7 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].index, 7);
         assert_eq!(segs[0].boundary_epoch_secs, 7 * 300);
-        assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME, "system-audio.pcm"]);
+        assert_eq!(segs[0].files, vec![AUDIO_FILE_NAME, SCREEN_FILE_NAME]);
         assert_eq!(store.read_file(7, SCREEN_FILE_NAME).unwrap(), b"MP4");
 
         store.remove(7).unwrap();
@@ -203,6 +204,16 @@ mod tests {
     #[test]
     fn mp4_content_type_is_video_mp4() {
         assert_eq!(content_type_for(SCREEN_FILE_NAME), "video/mp4");
+    }
+
+    #[test]
+    fn flac_content_type_is_audio_flac() {
+        assert_eq!(content_type_for(AUDIO_FILE_NAME), "audio/flac");
+        assert_eq!(
+            content_type_for("system-audio.pcm"),
+            "application/octet-stream"
+        );
+        assert_eq!(content_type_for("mic.pcm"), "application/octet-stream");
     }
 
     #[test]
@@ -234,7 +245,7 @@ mod tests {
         for idx in [3u64, 4] {
             let seg = root.join(idx.to_string());
             std::fs::create_dir_all(&seg).unwrap();
-            std::fs::write(seg.join("system-audio.pcm"), b"PCM").unwrap();
+            std::fs::write(seg.join(AUDIO_FILE_NAME), b"FLAC").unwrap();
         }
         let store = LocalSealedStore::new(&root, 300);
 
@@ -253,7 +264,7 @@ mod tests {
         assert_eq!(confirmed[0].index, 3);
         assert_eq!(confirmed[0].boundary_epoch_secs, 3 * 300);
         assert!(!confirmed[0].files.iter().any(|f| f == UPLOADED_MARKER));
-        assert!(confirmed[0].files.contains(&"system-audio.pcm".to_string()));
+        assert!(confirmed[0].files.contains(&AUDIO_FILE_NAME.to_string()));
 
         // A confirmed segment can still be removed (the prune path).
         store.remove(3).unwrap();

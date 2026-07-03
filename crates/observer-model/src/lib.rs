@@ -29,6 +29,9 @@ pub use tray_status::{classify_tray, TrayVisual};
 /// Final screen media filename inside a sealed segment.
 pub const SCREEN_FILE_NAME: &str = "display_1_screen.mp4";
 
+/// Final combined-audio filename inside a sealed segment.
+pub const AUDIO_FILE_NAME: &str = "audio.flac";
+
 /// The observer's top-level phase. **Computed** from real source state by the
 /// reducer in `observer-state` — never set directly by the UI or any command.
 ///
@@ -130,6 +133,15 @@ pub enum SourceState {
     Faulted { reason: ErrorReason, detail: String },
 }
 
+/// PCM format of one audio source, captured at WASAPI client-open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioFormat {
+    pub sample_rate_hz: u32,
+    pub channels: u16,
+    pub bits_per_sample: u16,
+    pub is_float: bool,
+}
+
 /// A reported source plus which kind it is and the device label, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceReport {
@@ -150,6 +162,7 @@ pub struct CaptureChunk {
     pub source: SourceKind,
     pub seq: u64,
     pub data: Vec<u8>,
+    pub format: Option<AudioFormat>,
 }
 
 /// CPU pixel format for screen frames crossing the pure capture seam.

@@ -97,6 +97,7 @@ crates/
   observer-lifecycle/  backoff + circuit-breaker state machine
   observer-contract/   AutomationId source of truth + the JSON generator
   observer-pl/         pair-link parse + spl framing + observer wire + multipart + CA-fp pin (pure)
+  observer-audio/      combine + downmix + resample + FLAC-encode segment audio
   ── platform tier ── (windows-rs quarantine, target-gated; unsafe only here)
   capture-wgc/         Windows.Graphics.Capture screen source
   capture-wasapi/      WASAPI loopback system audio + eCapture mic (owns NoInputDevice)

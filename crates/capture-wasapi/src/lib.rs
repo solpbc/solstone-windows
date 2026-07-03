@@ -21,8 +21,8 @@ mod imp {
 
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
-        CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError, SourceKind, SourceState,
-        SystemAudioSource,
+        AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError, SourceKind,
+        SourceState, SystemAudioSource,
     };
     use windows::core::{Error as WindowsError, Result as WindowsResult, PCWSTR};
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
@@ -31,6 +31,13 @@ mod imp {
         eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
         IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
         AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE, WAVEFORMATEX,
+        WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
+    };
+    use windows::Win32::Media::KernelStreaming::{
+        KSDATAFORMAT_SUBTYPE_PCM, WAVE_FORMAT_EXTENSIBLE,
+    };
+    use windows::Win32::Media::Multimedia::{
+        KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT,
     };
     use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
     use windows::Win32::System::Com::{
@@ -101,10 +108,40 @@ mod imp {
     }
 
     fn bytes_per_frame(format: *const WAVEFORMATEX) -> usize {
-        let format = unsafe { &*format };
-        let channels = format.nChannels as usize;
-        let bits = format.wBitsPerSample as usize;
+        let channels = unsafe { ptr::addr_of!((*format).nChannels).read_unaligned() } as usize;
+        let bits = unsafe { ptr::addr_of!((*format).wBitsPerSample).read_unaligned() } as usize;
         channels * bits / 8
+    }
+
+    fn audio_format_from(format: *const WAVEFORMATEX) -> AudioFormat {
+        let sample_rate_hz = unsafe { ptr::addr_of!((*format).nSamplesPerSec).read_unaligned() };
+        let channels = unsafe { ptr::addr_of!((*format).nChannels).read_unaligned() };
+        let bits_per_sample = unsafe { ptr::addr_of!((*format).wBitsPerSample).read_unaligned() };
+        let tag = unsafe { ptr::addr_of!((*format).wFormatTag).read_unaligned() } as u32;
+        let cb_size = unsafe { ptr::addr_of!((*format).cbSize).read_unaligned() };
+        let is_float = match tag {
+            WAVE_FORMAT_PCM => false,
+            WAVE_FORMAT_IEEE_FLOAT => true,
+            WAVE_FORMAT_EXTENSIBLE if cb_size >= 22 => {
+                let ext = format as *const WAVEFORMATEXTENSIBLE;
+                let sub_format = unsafe { ptr::addr_of!((*ext).SubFormat).read_unaligned() };
+                if sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+                    true
+                } else if sub_format == KSDATAFORMAT_SUBTYPE_PCM {
+                    false
+                } else {
+                    bits_per_sample == 32
+                }
+            }
+            _ => bits_per_sample == 32,
+        };
+
+        AudioFormat {
+            sample_rate_hz,
+            channels,
+            bits_per_sample,
+            is_float,
+        }
     }
 
     fn has_input_device_result() -> WindowsResult<bool> {
@@ -257,8 +294,9 @@ mod imp {
             };
             let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
             let format = unsafe { client.GetMixFormat()? };
+            let audio_format = audio_format_from(format);
             let bpf = bytes_per_frame(format);
-            let bits = unsafe { (*format).wBitsPerSample };
+            let bits = audio_format.bits_per_sample;
             if bpf == 0 {
                 unsafe { CoTaskMemFree(Some(format.cast())) };
                 thread::sleep(MIC_RESELECT_INTERVAL);
@@ -311,6 +349,7 @@ mod imp {
                             source: SourceKind::Mic,
                             seq,
                             data,
+                            format: Some(audio_format),
                         });
                     }
                     unsafe { capture.ReleaseBuffer(frames)? };
@@ -388,6 +427,7 @@ mod imp {
         let device = default_device(&enumerator, kind)?;
         let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
         let format = unsafe { client.GetMixFormat()? };
+        let audio_format = audio_format_from(format);
         let bpf = bytes_per_frame(format);
         if bpf == 0 {
             unsafe { CoTaskMemFree(Some(format.cast())) };
@@ -444,6 +484,7 @@ mod imp {
                         source: kind,
                         seq,
                         data,
+                        format: Some(audio_format),
                     });
                 }
                 unsafe { capture.ReleaseBuffer(frames)? };

@@ -20,7 +20,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use observer_model::{CaptureChunk, SegmentKey, SourceKind, SCREEN_FILE_NAME};
+use observer_model::{
+    AudioFormat, CaptureChunk, SegmentKey, SourceKind, AUDIO_FILE_NAME, SCREEN_FILE_NAME,
+};
 use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
@@ -70,16 +72,108 @@ fn source_file_name(source: SourceKind) -> &'static str {
     }
 }
 
+fn source_fmt_file_name(source: SourceKind) -> &'static str {
+    match source {
+        SourceKind::Screen => unreachable!("screen chunks do not have audio format sidecars"),
+        SourceKind::SystemAudio => "system-audio.fmt.json",
+        SourceKind::Mic => "mic.fmt.json",
+    }
+}
+
 fn has_sealable_media(dir: &Path) -> io::Result<bool> {
     // Partial files are never counted as sealable media because only the bare
     // final per-source filenames are probed here.
-    for source in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
-        let path = dir.join(source_file_name(source));
+    for name in [
+        SCREEN_FILE_NAME,
+        source_file_name(SourceKind::SystemAudio),
+        source_file_name(SourceKind::Mic),
+        AUDIO_FILE_NAME,
+    ] {
+        let path = dir.join(name);
         if path.is_file() && path.metadata()?.len() > 0 {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+struct PresentSealAudioSource {
+    pcm_path: PathBuf,
+    fmt_path: PathBuf,
+    bytes: Vec<u8>,
+    format: AudioFormat,
+}
+
+enum SealAudioSource {
+    Absent,
+    Orphan,
+    Present(PresentSealAudioSource),
+}
+
+impl SealAudioSource {
+    fn combine_input(&self) -> Option<(&[u8], AudioFormat)> {
+        match self {
+            Self::Present(source) => Some((source.bytes.as_slice(), source.format)),
+            Self::Absent | Self::Orphan => None,
+        }
+    }
+}
+
+fn read_seal_audio_source(dir: &Path, source: SourceKind) -> io::Result<SealAudioSource> {
+    let pcm_path = dir.join(source_file_name(source));
+    if !pcm_path.is_file() || pcm_path.metadata()?.len() == 0 {
+        return Ok(SealAudioSource::Absent);
+    }
+
+    let fmt_path = dir.join(source_fmt_file_name(source));
+    let fmt_bytes = match fs::read(&fmt_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(SealAudioSource::Orphan),
+        Err(err) => return Err(err),
+    };
+    let Ok(format) = serde_json::from_slice::<AudioFormat>(&fmt_bytes) else {
+        return Ok(SealAudioSource::Orphan);
+    };
+
+    Ok(SealAudioSource::Present(PresentSealAudioSource {
+        bytes: fs::read(&pcm_path)?,
+        pcm_path,
+        fmt_path,
+        format,
+    }))
+}
+
+fn seal_audio_flac(dir: &Path) -> io::Result<()> {
+    let mic = read_seal_audio_source(dir, SourceKind::Mic)?;
+    let sys = read_seal_audio_source(dir, SourceKind::SystemAudio)?;
+    if matches!(mic, SealAudioSource::Orphan) || matches!(sys, SealAudioSource::Orphan) {
+        return Ok(());
+    }
+
+    let flac = observer_audio::combine_to_flac(mic.combine_input(), sys.combine_input())
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+
+    let Some(bytes) = flac else {
+        return Ok(());
+    };
+
+    let path = dir.join(AUDIO_FILE_NAME);
+    let mut file = File::create(&path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+
+    for source in [&mic, &sys] {
+        if let SealAudioSource::Present(source) = source {
+            fs::remove_file(&source.pcm_path)?;
+            match fs::remove_file(&source.fmt_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn remove_partial_media(dir: &Path) -> io::Result<()> {
@@ -491,6 +585,15 @@ impl SegmentFs for LocalSegmentFs {
         fs::create_dir_all(&dir)?;
         let handle_key = (key, chunk.source);
         if !self.handles.contains_key(&handle_key) {
+            if let Some(format) = chunk.format {
+                let sidecar_path = dir.join(source_fmt_file_name(chunk.source));
+                if !sidecar_path.exists() {
+                    let mut sidecar = File::create(sidecar_path)?;
+                    serde_json::to_writer(&mut sidecar, &format)
+                        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+                    sidecar.sync_all()?;
+                }
+            }
             let path = dir.join(source_file_name(chunk.source));
             let file = OpenOptions::new().create(true).append(true).open(path)?;
             self.handles.insert(handle_key, file);
@@ -519,7 +622,9 @@ impl SegmentFs for LocalSegmentFs {
                 file.sync_all()?;
             }
         }
-        fs::rename(incomplete_dir(&self.root, key), sealed_dir(&self.root, key))
+        let dir = incomplete_dir(&self.root, key);
+        seal_audio_flac(&dir)?;
+        fs::rename(dir, sealed_dir(&self.root, key))
     }
 }
 
@@ -602,7 +707,9 @@ impl RecoveryFs for LocalRecoveryFs {
         // Never abandon usable captured data: a truncated PCM is still usable,
         // a moov-less mp4 is not. Drop dead screen partials before sealing the
         // remaining final media files.
-        remove_partial_media(Path::new(&seg.path))?;
+        let dir = Path::new(&seg.path);
+        remove_partial_media(dir)?;
+        seal_audio_flac(dir)?;
         fs::rename(&seg.path, sealed_dir(&self.root, seg.key))
     }
 
@@ -645,7 +752,43 @@ mod tests {
             source,
             seq: 0,
             data: data.to_vec(),
+            format: None,
         }
+    }
+
+    fn audio_format() -> AudioFormat {
+        AudioFormat {
+            sample_rate_hz: 16_000,
+            channels: 1,
+            bits_per_sample: 16,
+            is_float: false,
+        }
+    }
+
+    fn pcm_i16(samples: &[i16]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn audio_chunk(source: SourceKind, samples: &[i16]) -> CaptureChunk {
+        CaptureChunk {
+            source,
+            seq: 0,
+            data: pcm_i16(samples),
+            format: Some(audio_format()),
+        }
+    }
+
+    fn write_audio_file(dir: &Path, source: SourceKind, samples: &[i16]) {
+        fs::write(dir.join(source_file_name(source)), pcm_i16(samples)).unwrap();
+        fs::write(
+            dir.join(source_fmt_file_name(source)),
+            serde_json::to_vec(&audio_format()).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -670,19 +813,106 @@ mod tests {
         assert!(root.join("7.incomplete").is_dir());
 
         fs_impl
-            .write_chunk(key, &chunk(SourceKind::SystemAudio, b"pcm-sys"))
+            .write_chunk(key, &audio_chunk(SourceKind::SystemAudio, &[1000; 16]))
             .unwrap();
         fs_impl
-            .write_chunk(key, &chunk(SourceKind::Mic, b"pcm-mic"))
+            .write_chunk(key, &audio_chunk(SourceKind::Mic, &[2000; 16]))
             .unwrap();
         fs_impl.finalize(key).unwrap();
 
         assert!(!root.join("7.incomplete").exists());
-        assert_eq!(
-            fs::read(root.join("7/system-audio.pcm")).unwrap(),
-            b"pcm-sys"
-        );
-        assert_eq!(fs::read(root.join("7/mic.pcm")).unwrap(), b"pcm-mic");
+        assert!(root.join(format!("7/{AUDIO_FILE_NAME}")).is_file());
+        assert!(!root.join("7/system-audio.pcm").exists());
+        assert!(!root.join("7/mic.pcm").exists());
+        assert!(!root.join("7/system-audio.fmt.json").exists());
+        assert!(!root.join("7/mic.fmt.json").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sidecar_is_written_once_across_reopened_segment_fs() {
+        let root = temp_root("sidecar-once");
+        let _ = fs::remove_dir_all(&root);
+        let key = key(11);
+        let first = AudioFormat {
+            sample_rate_hz: 16_000,
+            channels: 1,
+            bits_per_sample: 16,
+            is_float: false,
+        };
+        let second = AudioFormat {
+            sample_rate_hz: 48_000,
+            channels: 2,
+            bits_per_sample: 32,
+            is_float: true,
+        };
+
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        fs_impl.open_incomplete(key).unwrap();
+        fs_impl
+            .write_chunk(
+                key,
+                &CaptureChunk {
+                    source: SourceKind::SystemAudio,
+                    seq: 0,
+                    data: pcm_i16(&[1000; 16]),
+                    format: Some(first),
+                },
+            )
+            .unwrap();
+        drop(fs_impl);
+
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        fs_impl
+            .write_chunk(
+                key,
+                &CaptureChunk {
+                    source: SourceKind::SystemAudio,
+                    seq: 1,
+                    data: pcm_i16(&[2000; 16]),
+                    format: Some(second),
+                },
+            )
+            .unwrap();
+
+        let sidecar: AudioFormat = serde_json::from_slice(
+            &fs::read(root.join("11.incomplete/system-audio.fmt.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sidecar, first);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn segment_finalize_leaves_all_audio_raw_when_any_source_is_orphan() {
+        let root = temp_root("mixed-orphan");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(14);
+
+        fs_impl.open_incomplete(key).unwrap();
+        fs_impl
+            .write_chunk(key, &audio_chunk(SourceKind::Mic, &[2000; 16]))
+            .unwrap();
+        let incomplete = root.join("14.incomplete");
+        fs::write(
+            incomplete.join(source_file_name(SourceKind::SystemAudio)),
+            pcm_i16(&[1000; 16]),
+        )
+        .unwrap();
+
+        assert!(has_sealable_media(&incomplete).unwrap());
+
+        fs_impl.finalize(key).unwrap();
+
+        let sealed = root.join("14");
+        assert!(!sealed.join(AUDIO_FILE_NAME).exists());
+        assert!(sealed.join("mic.pcm").is_file());
+        assert!(sealed.join("system-audio.pcm").is_file());
+        assert!(sealed.join("mic.fmt.json").is_file());
+        assert!(!sealed.join("system-audio.fmt.json").exists());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -795,7 +1025,7 @@ mod tests {
             b"moovless",
         )
         .unwrap();
-        fs::write(orphan.join("system-audio.pcm"), b"pcm").unwrap();
+        write_audio_file(&orphan, SourceKind::SystemAudio, &[1000; 16]);
 
         let mut recovery = LocalRecoveryFs::new(root.clone());
         let stale = recovery.scan_incomplete().unwrap();
@@ -804,9 +1034,97 @@ mod tests {
 
         recovery.finalize(&stale[0]).unwrap();
 
-        assert!(root.join("2/system-audio.pcm").is_file());
+        assert!(root.join(format!("2/{AUDIO_FILE_NAME}")).is_file());
+        assert!(!root.join("2/system-audio.pcm").exists());
+        assert!(!root.join("2/system-audio.fmt.json").exists());
         assert!(!root.join(format!("2/{SCREEN_FILE_NAME}.partial")).exists());
         assert!(!root.join("2.incomplete").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_converges_after_audio_flac_written_before_pcm_delete() {
+        let root = temp_root("seal-crash-before-delete");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("6.incomplete");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join(AUDIO_FILE_NAME), b"stale-flac").unwrap();
+        write_audio_file(&orphan, SourceKind::Mic, &[3000; 16]);
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].has_usable_data);
+
+        recovery.finalize(&stale[0]).unwrap();
+
+        assert!(root.join(format!("6/{AUDIO_FILE_NAME}")).is_file());
+        assert!(!root.join("6/mic.pcm").exists());
+        assert!(!root.join("6/mic.fmt.json").exists());
+        assert!(!root.join("6.incomplete").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_seals_audio_flac_only_after_pcm_delete_before_rename() {
+        let root = temp_root("seal-crash-after-delete");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("7.incomplete");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join(AUDIO_FILE_NAME), b"flac").unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].has_usable_data);
+
+        recovery.finalize(&stale[0]).unwrap();
+
+        assert_eq!(
+            fs::read(root.join(format!("7/{AUDIO_FILE_NAME}"))).unwrap(),
+            b"flac"
+        );
+        assert!(!root.join("7.incomplete").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finalize_with_no_audio_sources_writes_no_audio_flac() {
+        let root = temp_root("no-audio");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(12);
+
+        fs_impl.open_incomplete(key).unwrap();
+        fs_impl.finalize(key).unwrap();
+
+        assert!(root.join("12").is_dir());
+        assert!(!root.join(format!("12/{AUDIO_FILE_NAME}")).exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_leaves_pre_upgrade_pcm_orphan_without_sidecar() {
+        let root = temp_root("pcm-orphan");
+        let _ = fs::remove_dir_all(&root);
+        let orphan = root.join("13.incomplete");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("system-audio.pcm"), pcm_i16(&[1000; 16])).unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].has_usable_data);
+
+        recovery.finalize(&stale[0]).unwrap();
+
+        assert!(root.join("13/system-audio.pcm").is_file());
+        assert!(!root.join(format!("13/{AUDIO_FILE_NAME}")).exists());
+        assert!(!root.join("13.incomplete").exists());
 
         let _ = fs::remove_dir_all(&root);
     }

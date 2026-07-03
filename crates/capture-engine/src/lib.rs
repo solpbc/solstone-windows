@@ -1292,6 +1292,7 @@ mod tests {
                 source,
                 seq,
                 data: vec![seq as u8],
+                format: None,
             });
         }
     }
