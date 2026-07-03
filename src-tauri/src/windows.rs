@@ -190,7 +190,7 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
             target: "window",
             label = "journal",
             mode = mode.token(),
-            usable_failure_reason = usable_reason.map(UsableFailureReason::token).unwrap_or("none"),
+            usable_failure_reason = usable_reason.as_ref().map(UsableFailureReason::token).unwrap_or("none"),
             bridge_contacted,
             page_load_started = page_started,
             navigated,
