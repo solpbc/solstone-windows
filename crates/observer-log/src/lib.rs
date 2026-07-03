@@ -19,12 +19,17 @@ use writer::LogMakeWriter;
 
 pub mod filter;
 pub mod frontend;
+pub mod journal_open;
 pub mod panic;
 pub mod redact;
 pub mod time;
 pub mod writer;
 
 pub use frontend::{FrontendErrorKind, FrontendErrorRecord, FrontendLevel, FrontendOrigin};
+pub use journal_open::{
+    classify_journal_open_failure, strip_cap, usable_failure_reason, JournalOpenFailure,
+    UsableFailureReason,
+};
 pub use redact::{redact_pair_link, redact_secret, redact_titles, RedactedSecret, TitleSummary};
 pub use time::format_rfc3339_utc;
 pub use writer::RotatingFileWriter;

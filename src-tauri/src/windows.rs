@@ -9,9 +9,14 @@
 //! from the contract SoT (`observer_contract::settings::WINDOW_ROOT`,
 //! `observer_contract::about::WINDOW_ROOT`); the journal is external content.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
+use observer_log::{
+    classify_journal_open_failure, strip_cap, usable_failure_reason, UsableFailureReason,
+};
 use tauri::webview::{PageLoadEvent, ScrollBarStyle};
 use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -138,27 +143,61 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     }
 
     let page_loaded = Arc::new(Notify::new());
-    let window =
-        match build_journal_window_on_main_thread(app, url.clone(), page_loaded.clone()).await {
-            Ok(window) => window,
-            Err(_) => {
-                shutdown_journal_bridge(&state);
-                log_journal_open_failed();
-                return Err(OpenJournalError::OpenFailed);
-            }
-        };
+    let page_load_started = Arc::new(AtomicBool::new(false));
+    let window = match build_journal_window_on_main_thread(
+        app,
+        url.clone(),
+        page_loaded.clone(),
+        page_load_started.clone(),
+    )
+    .await
+    {
+        Ok(window) => window,
+        Err(error) => {
+            tracing::warn!(
+                target: "window",
+                label = "journal",
+                error = %error,
+                "journal window construction failed"
+            );
+            shutdown_journal_bridge(&state);
+            log_journal_open_failed();
+            return Err(OpenJournalError::OpenFailed);
+        }
+    };
     log_journal_window_state(&window, "built");
+    let started = Instant::now();
     let navigated = tokio::time::timeout(JOURNAL_READY_TIMEOUT, page_loaded.notified())
         .await
         .is_ok();
-    let usable = journal_window_is_usable(&window);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let usable_reason = journal_window_is_usable(&window);
+    let usable = usable_reason.is_none();
     if !navigated || !usable {
+        let bridge_contacted = state
+            .journal_bridge
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|handle| handle.contacted()))
+            .unwrap_or(false);
+        let page_started = page_load_started.load(Ordering::Relaxed);
+        let mode = classify_journal_open_failure(navigated, page_started, bridge_contacted, usable);
+        let url = window
+            .url()
+            .map(|u| strip_cap(u.as_str()))
+            .unwrap_or_else(|_| "url_error".to_string());
         tracing::warn!(
             target: "window",
             label = "journal",
+            mode = mode.token(),
+            usable_failure_reason = usable_reason.map(UsableFailureReason::token).unwrap_or("none"),
+            bridge_contacted,
+            page_load_started = page_started,
             navigated,
             usable,
-            "journal readiness failed"
+            url = %url,
+            elapsed_ms,
+            "journal open failed"
         );
         log_journal_window_state(&window, "readiness_failed");
         window.close().ok();
@@ -206,21 +245,19 @@ fn log_journal_open_failed() {
     );
 }
 
-fn journal_window_is_usable(window: &WebviewWindow) -> bool {
-    let Ok(true) = window.is_visible() else {
-        return false;
-    };
-    let Ok(false) = window.is_minimized() else {
-        return false;
-    };
-    let Ok(inner) = window.inner_size() else {
-        return false;
-    };
-    let Ok(outer) = window.outer_size() else {
-        return false;
-    };
-
-    inner.width > 0 && inner.height > 0 && outer.width > 0 && outer.height > 0
+fn journal_window_is_usable(window: &WebviewWindow) -> Option<UsableFailureReason> {
+    usable_failure_reason(
+        window.is_visible().ok(),
+        window.is_minimized().ok(),
+        window
+            .inner_size()
+            .ok()
+            .map(|size| (size.width, size.height)),
+        window
+            .outer_size()
+            .ok()
+            .map(|size| (size.width, size.height)),
+    )
 }
 
 fn log_journal_window_state(window: &WebviewWindow, stage: &'static str) {
@@ -255,11 +292,12 @@ async fn build_journal_window_on_main_thread(
     app: &tauri::AppHandle,
     url: String,
     page_loaded: Arc<Notify>,
+    page_load_started: Arc<AtomicBool>,
 ) -> tauri::Result<WebviewWindow> {
     let (tx, rx) = oneshot::channel();
     let app_for_main = app.clone();
     app.run_on_main_thread(move || {
-        let res = build_journal_window(&app_for_main, &url, page_loaded);
+        let res = build_journal_window(&app_for_main, &url, page_loaded, page_load_started);
         let _ = tx.send(res);
     })?;
 
@@ -270,6 +308,7 @@ fn build_journal_window(
     app: &tauri::AppHandle,
     url: &str,
     page_loaded: Arc<Notify>,
+    page_load_started: Arc<AtomicBool>,
 ) -> tauri::Result<WebviewWindow> {
     let parsed: tauri::Url = url.parse().map_err(tauri::Error::InvalidUrl)?;
     let expected_port = parsed.port();
@@ -305,6 +344,9 @@ fn build_journal_window(
             allowed
         })
         .on_page_load(move |_window, payload| {
+            if payload.event() == PageLoadEvent::Started {
+                page_load_started.store(true, Ordering::Relaxed);
+            }
             tracing::info!(
                 target: "window",
                 label = "journal",
@@ -324,6 +366,12 @@ fn build_journal_window(
     window.center().ok();
     window.show()?;
     window.set_focus().ok();
+    tracing::info!(
+        target: "window",
+        label = "journal",
+        visible_after_show = ?window.is_visible().ok(),
+        "journal window shown"
+    );
     Ok(window)
 }
 

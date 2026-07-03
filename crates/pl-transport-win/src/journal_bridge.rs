@@ -4,6 +4,7 @@
 //! Hand-rolled loopback proxy for the paired journal dashboard.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use observer_pl::bridge::{
@@ -27,6 +28,7 @@ const READ_BUF_BYTES: usize = 4096;
 pub struct JournalBridgeHandle {
     port: u16,
     capability: String,
+    contacted: Arc<AtomicBool>,
     shutdown: oneshot::Sender<()>,
     join: JoinHandle<()>,
 }
@@ -34,6 +36,12 @@ pub struct JournalBridgeHandle {
 impl JournalBridgeHandle {
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Whether the loopback listener has accepted at least one TCP connection.
+    /// Write-once observation flag (set at accept, before HTTP parse).
+    pub fn contacted(&self) -> bool {
+        self.contacted.load(Ordering::Relaxed)
     }
 
     pub fn bootstrap_url(&self) -> String {
@@ -110,6 +118,7 @@ pub async fn start(
     let journal_hosts = Arc::new(journal_hosts);
     let (shutdown, shutdown_rx) = oneshot::channel();
 
+    let contacted = Arc::new(AtomicBool::new(false));
     let join = tokio::spawn(accept_loop(
         listener,
         shutdown_rx,
@@ -118,11 +127,13 @@ pub async fn start(
         port,
         journal_hosts,
         loopback_origin,
+        contacted.clone(),
     ));
 
     Ok(JournalBridgeHandle {
         port,
         capability: (*capability).clone(),
+        contacted,
         shutdown,
         join,
     })
@@ -151,6 +162,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     listener: TcpListener,
     mut shutdown: oneshot::Receiver<()>,
@@ -159,6 +171,7 @@ async fn accept_loop(
     port: u16,
     journal_hosts: Arc<Vec<String>>,
     loopback_origin: Arc<String>,
+    contacted: Arc<AtomicBool>,
 ) {
     loop {
         tokio::select! {
@@ -170,6 +183,7 @@ async fn accept_loop(
                 let Ok((stream, _)) = accepted else {
                     continue;
                 };
+                contacted.store(true, Ordering::Relaxed);
                 tokio::spawn(handle_conn(
                     stream,
                     carrier.clone(),
