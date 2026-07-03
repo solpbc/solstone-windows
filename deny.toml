@@ -85,6 +85,19 @@ yanked = "warn"
 # upgrade, and the shipped product targets Windows/WebView2, not GTK3/Linux.
 # Security vulnerabilities are still checked across the whole graph regardless.
 unmaintained = "workspace"
+# TEMPORARY, tracked for removal. Two DoS advisories against quick-xml 0.39.4,
+# reachable ONLY transitively via plist <- tauri-utils <- the Tauri stack. The fix
+# is quick-xml >=0.41.0, but as of 2026-07-03 no upstream release propagates it:
+# plist 1.9.0 (the latest published plist) still pins `quick-xml = "^0.39.2"`, and
+# tauri 2.11.2 (latest) rides that plist — so there is no registry path to the fix
+# and a `[patch]` can't cross plist's semver requirement. Remove BOTH ids and verify
+# the real bump (`cargo update -p plist` then `cargo update -p quick-xml`) once plist
+# ships a release accepting quick-xml >=0.41. Not silenced globally — the whole graph
+# is still gated; only these two known-transitive ids are waived.
+ignore = [
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml." },
+]
 
 [sources]
 unknown-registry = "deny"
