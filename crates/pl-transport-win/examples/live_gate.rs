@@ -6,8 +6,8 @@
 //! Drives the real production path against a real `solstone` journal: parse a
 //! pair-link, pair over framed-mTLS, register the observer, fabricate one tiny
 //! sealed segment, then run a single [`UploadCoordinator`] tick (ingest +
-//! reconcile-by-sha256). Prints `LIVE_GATE_PASS` only when the journal confirms
-//! the segment landed with matching sha256.
+//! custody proof). Prints `LIVE_GATE_PASS` only when the journal confirms it
+//! holds the submitted files.
 //!
 //! Usage: `SOLSTONE_PAIR_LINK='https://go.solstone.app/p#…' cargo run -p
 //! pl-transport-win --example live_gate`. Because rustls is cross-platform, this
@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use observer_model::{SyncSnapshot, SCREEN_FILE_NAME};
+use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot, SCREEN_FILE_NAME};
 use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::coordinator::UploadCoordinator;
@@ -25,6 +25,22 @@ use pl_transport_win::sealed::LocalSealedStore;
 
 const PERIOD_SECS: u64 = 300;
 const PLATFORM: &str = "windows";
+
+#[derive(Debug)]
+struct EnvLocalOffset;
+
+impl LocalOffset for EnvLocalOffset {
+    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
+        let offset = std::env::var("SOLSTONE_LOCAL_OFFSET_SECS")
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        println!(
+            "LOCAL_OFFSET: using offset_secs={offset} (set SOLSTONE_LOCAL_OFFSET_SECS to override)"
+        );
+        Ok(offset)
+    }
+}
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -132,6 +148,7 @@ async fn main() {
         PLATFORM,
         PERIOD_SECS,
         retention,
+        Arc::new(EnvLocalOffset),
     );
     let confirmed = coordinator.tick().await.expect("upload tick failed");
     let snapshot = sync.lock().unwrap().clone();
@@ -148,7 +165,7 @@ async fn main() {
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
     assert!(
         confirmed >= 1 && snapshot.upload.uploaded_segments >= 1,
-        "segment did not confirm-land in the journal (reconcile by sha256 failed)"
+        "segment did not confirm-land in the journal (custody proof failed)"
     );
     println!("LIVE_GATE_PASS");
 }

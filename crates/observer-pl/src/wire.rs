@@ -149,7 +149,11 @@ impl HeartbeatEvent {
 
 // ── /app/observer/ingest/segments/<day> (reconcile) ──────────────────────────
 
-/// One file recorded on the journal for a segment, used to reconcile by sha256.
+/// One file recorded on the journal for a segment, used to reconcile by filename,
+/// sha256, and held status. `current_path` is omitted because the client only
+/// needs whether the file is held; segment `original_key` is omitted because the
+/// ingest response tells the client which server key to reconcile and serde
+/// ignores unknown fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerFile {
     pub name: String,
@@ -157,6 +161,22 @@ pub struct ServerFile {
     pub sha256: Option<String>,
     #[serde(default)]
     pub size: Option<u64>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub submitted_name: Option<String>,
+}
+
+impl ServerFile {
+    /// The client-submitted filename this entry corresponds to.
+    fn submitted_or_name(&self) -> &str {
+        self.submitted_name.as_deref().unwrap_or(self.name.as_str())
+    }
+
+    /// Physically held by the journal (present or relocated); `missing`/unknown proves nothing.
+    fn is_held(&self) -> bool {
+        matches!(self.status.as_deref(), Some("present") | Some("relocated"))
+    }
 }
 
 /// One segment the journal has on record for the day.
@@ -179,10 +199,16 @@ pub struct SegmentsResponse {
 }
 
 impl SegmentsResponse {
-    /// True if the journal records `sha` for any file under `segment`.
-    pub fn has_segment_sha(&self, segment: &str, sha: &str) -> bool {
+    /// The journal proves it holds `(filename, sha)` under `segment_key`: some file
+    /// entry whose submitted-or-name == filename AND sha256 == sha AND status ∈ {present, relocated}.
+    pub fn proves_file_held(&self, segment_key: &str, filename: &str, sha: &str) -> bool {
         self.items.iter().any(|item| {
-            item.key == segment && item.files.iter().any(|f| f.sha256.as_deref() == Some(sha))
+            item.key == segment_key
+                && item.files.iter().any(|f| {
+                    f.submitted_or_name() == filename
+                        && f.sha256.as_deref() == Some(sha)
+                        && f.is_held()
+                })
         })
     }
 }
@@ -308,11 +334,13 @@ mod tests {
     }
 
     #[test]
-    fn segments_response_reconciles_by_sha() {
-        let raw = r#"{"items":[{"key":"143000_300","files":[{"name":"display_1_screen.mp4","sha256":"abcd","size":10}]}],"total":1,"protocol_version":2}"#;
+    fn segments_response_proves_file_held() {
+        let raw = r#"{"items":[{"key":"143000_300","files":[{"name":"display_1_screen.mp4","submitted_name":"143000_300_display_1_screen.mp4","sha256":"abcd","size":10,"status":"present"},{"name":"missing.mp4","sha256":"abcd","size":10,"status":"missing"}]}],"total":1,"protocol_version":2}"#;
         let resp: SegmentsResponse = serde_json::from_str(raw).unwrap();
-        assert!(resp.has_segment_sha("143000_300", "abcd"));
-        assert!(!resp.has_segment_sha("143000_300", "ffff"));
-        assert!(!resp.has_segment_sha("000000_300", "abcd"));
+        assert!(resp.proves_file_held("143000_300", "143000_300_display_1_screen.mp4", "abcd"));
+        assert!(!resp.proves_file_held("143000_300", "143000_300_display_1_screen.mp4", "ffff"));
+        assert!(!resp.proves_file_held("000000_300", "143000_300_display_1_screen.mp4", "abcd"));
+        assert!(!resp.proves_file_held("143000_300", "display_1_screen.mp4", "abcd"));
+        assert!(!resp.proves_file_held("143000_300", "missing.mp4", "abcd"));
     }
 }

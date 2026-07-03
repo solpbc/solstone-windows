@@ -20,7 +20,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use observer_model::{SyncSnapshot, TransportPath};
+use observer_model::{LocalOffset, SyncSnapshot, TransportPath};
 use observer_pl::ca;
 use observer_pl::civil;
 use observer_pl::multipart::FilePart;
@@ -202,6 +202,7 @@ pub struct UploadCoordinator {
     /// confirmed segment is deleted on confirmation (don't-keep) or retained and
     /// pruned past the window.
     retention: Arc<RwLock<RetentionConfig>>,
+    local_offset: Arc<dyn LocalOffset>,
 }
 
 impl UploadCoordinator {
@@ -212,8 +213,17 @@ impl UploadCoordinator {
         platform: impl Into<String>,
         period_secs: u64,
         retention: Arc<RwLock<RetentionConfig>>,
+        local_offset: Arc<dyn LocalOffset>,
     ) -> Self {
-        Self::new_with_client(client, store, sync, platform, period_secs, retention)
+        Self::new_with_client(
+            client,
+            store,
+            sync,
+            platform,
+            period_secs,
+            retention,
+            local_offset,
+        )
     }
 
     fn new_with_client(
@@ -223,6 +233,7 @@ impl UploadCoordinator {
         platform: impl Into<String>,
         period_secs: u64,
         retention: Arc<RwLock<RetentionConfig>>,
+        local_offset: Arc<dyn LocalOffset>,
     ) -> Self {
         Self {
             client,
@@ -231,6 +242,7 @@ impl UploadCoordinator {
             platform: platform.into(),
             period_secs: period_secs.max(1),
             retention,
+            local_offset,
         }
     }
 
@@ -278,9 +290,33 @@ impl UploadCoordinator {
         let mut confirmed_now = 0usize;
 
         for segment in segments {
-            let day = civil::day_string(segment.boundary_epoch_secs);
-            let segment_key =
-                civil::segment_key_string(segment.boundary_epoch_secs, self.period_secs);
+            let offset_started = Instant::now();
+            let offset = match self
+                .local_offset
+                .local_offset_secs(segment.boundary_epoch_secs)
+            {
+                Ok(offset) => offset,
+                Err(_) => {
+                    let error = TransportError::LocalOffset;
+                    UploadEvent::new(
+                        format!("idx_{}", segment.index),
+                        0,
+                        elapsed_ms(offset_started),
+                        UploadOutcome::Failed,
+                        None,
+                        Some(transport_error_code(&error)),
+                    )
+                    .emit();
+                    self.on_error(&error);
+                    return Err(error);
+                }
+            };
+            let day = civil::day_string_local(segment.boundary_epoch_secs, offset);
+            let segment_key = civil::segment_key_string_local(
+                segment.boundary_epoch_secs,
+                offset,
+                self.period_secs,
+            );
 
             // Read the per-source files + compute their sha256 for reconcile.
             let mut parts = Vec::with_capacity(segment.files.len());
@@ -309,12 +345,16 @@ impl UploadCoordinator {
             {
                 Ok((response, metadata)) if response.is_accepted() => {
                     let duration_ms = elapsed_ms(started);
-                    let server_key = response.segment.clone().unwrap_or(segment_key.clone());
+                    let server_key = response
+                        .segment
+                        .clone()
+                        .or_else(|| response.existing_segment.clone())
+                        .unwrap_or_else(|| segment_key.clone());
                     let listed = self.client.list_segments(&day).await;
                     let confirmed = match &listed {
                         Ok(listed) => shas
                             .iter()
-                            .all(|(_, sha)| listed.has_segment_sha(&server_key, sha)),
+                            .all(|(name, sha)| listed.proves_file_held(&server_key, name, sha)),
                         Err(_) => false,
                     };
                     UploadEvent::new(
@@ -469,6 +509,60 @@ mod tests {
     use crate::credential::{Credential, EndpointAddr};
     use crate::sealed::SealedSegment;
 
+    #[derive(Debug)]
+    struct FixedOffset(i64);
+
+    impl observer_model::LocalOffset for FixedOffset {
+        fn local_offset_secs(
+            &self,
+            _epoch_secs: u64,
+        ) -> Result<i64, observer_model::LocalOffsetError> {
+            Ok(self.0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingOffset;
+
+    impl observer_model::LocalOffset for FailingOffset {
+        fn local_offset_secs(
+            &self,
+            _epoch_secs: u64,
+        ) -> Result<i64, observer_model::LocalOffsetError> {
+            Err(observer_model::LocalOffsetError::Lookup)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailOnceOffset {
+        failed: Mutex<bool>,
+        offset: i64,
+    }
+
+    impl FailOnceOffset {
+        fn new(offset: i64) -> Self {
+            Self {
+                failed: Mutex::new(false),
+                offset,
+            }
+        }
+    }
+
+    impl observer_model::LocalOffset for FailOnceOffset {
+        fn local_offset_secs(
+            &self,
+            _epoch_secs: u64,
+        ) -> Result<i64, observer_model::LocalOffsetError> {
+            let mut failed = self.failed.lock().unwrap();
+            if !*failed {
+                *failed = true;
+                Err(observer_model::LocalOffsetError::Lookup)
+            } else {
+                Ok(self.offset)
+            }
+        }
+    }
+
     struct EmptyStore;
 
     impl SealedStore for EmptyStore {
@@ -518,7 +612,7 @@ mod tests {
     }
 
     struct OneSegmentStore {
-        removed: Mutex<bool>,
+        removed: Arc<Mutex<bool>>,
         segment: SealedSegment,
         file_name: String,
         bytes: Vec<u8>,
@@ -527,7 +621,7 @@ mod tests {
     impl OneSegmentStore {
         fn new(boundary_epoch_secs: u64, file_name: &str, bytes: Vec<u8>) -> Self {
             Self {
-                removed: Mutex::new(false),
+                removed: Arc::new(Mutex::new(false)),
                 segment: SealedSegment {
                     index: 1,
                     boundary_epoch_secs,
@@ -536,6 +630,10 @@ mod tests {
                 file_name: file_name.to_string(),
                 bytes,
             }
+        }
+
+        fn removed_handle(&self) -> Arc<Mutex<bool>> {
+            self.removed.clone()
         }
     }
 
@@ -643,6 +741,14 @@ mod tests {
         store: Box<dyn SealedStore>,
         sync: Arc<Mutex<SyncSnapshot>>,
     ) -> UploadCoordinator {
+        coordinator_with_offset(store, sync, Arc::new(FixedOffset(0)))
+    }
+
+    fn coordinator_with_offset(
+        store: Box<dyn SealedStore>,
+        sync: Arc<Mutex<SyncSnapshot>>,
+        local_offset: Arc<dyn LocalOffset>,
+    ) -> UploadCoordinator {
         UploadCoordinator::new(
             dummy_client(),
             store,
@@ -650,6 +756,7 @@ mod tests {
             "windows",
             300,
             Arc::new(RwLock::new(RetentionConfig::default())),
+            local_offset,
         )
     }
 
@@ -658,6 +765,15 @@ mod tests {
         store: Box<dyn SealedStore>,
         sync: Arc<Mutex<SyncSnapshot>>,
     ) -> UploadCoordinator {
+        coordinator_with_client_and_offset(client, store, sync, Arc::new(FixedOffset(0)))
+    }
+
+    fn coordinator_with_client_and_offset(
+        client: Arc<dyn UploadClient>,
+        store: Box<dyn SealedStore>,
+        sync: Arc<Mutex<SyncSnapshot>>,
+        local_offset: Arc<dyn LocalOffset>,
+    ) -> UploadCoordinator {
         UploadCoordinator::new_with_client(
             client,
             store,
@@ -665,15 +781,25 @@ mod tests {
             "windows",
             300,
             Arc::new(RwLock::new(RetentionConfig::default())),
+            local_offset,
         )
     }
 
     fn accepted_ingest(attempts: u32) -> Result<(IngestResponse, SendMetadata), TransportError> {
+        scripted_ingest("ok", None, None, attempts)
+    }
+
+    fn scripted_ingest(
+        status: &str,
+        segment: Option<&str>,
+        existing_segment: Option<&str>,
+        attempts: u32,
+    ) -> Result<(IngestResponse, SendMetadata), TransportError> {
         Ok((
             IngestResponse {
-                status: "ok".into(),
-                segment: None,
-                existing_segment: None,
+                status: status.into(),
+                segment: segment.map(ToOwned::to_owned),
+                existing_segment: existing_segment.map(ToOwned::to_owned),
                 files: None,
                 bytes: None,
             },
@@ -698,6 +824,16 @@ mod tests {
         sha: String,
         size: u64,
     ) -> Result<SegmentsResponse, TransportError> {
+        listed_segments(segment_key, file_name, sha, size, Some("present"))
+    }
+
+    fn listed_segments(
+        segment_key: String,
+        file_name: &str,
+        sha: String,
+        size: u64,
+        status: Option<&str>,
+    ) -> Result<SegmentsResponse, TransportError> {
         Ok(SegmentsResponse {
             items: vec![ServerSegment {
                 key: segment_key,
@@ -705,6 +841,8 @@ mod tests {
                     name: file_name.to_string(),
                     sha256: Some(sha),
                     size: Some(size),
+                    status: status.map(ToOwned::to_owned),
+                    submitted_name: None,
                 }],
             }],
             total: Some(1),
@@ -825,7 +963,7 @@ mod tests {
         let file_name = "display_1_screen.mp4";
         let bytes = b"segment bytes".to_vec();
         let sha = ca::sha256_hex(&bytes);
-        let segment_key = civil::segment_key_string(boundary, 300);
+        let segment_key = civil::segment_key_string_local(boundary, 0, 300);
         let client = FakeClient::new(
             vec![accepted_ingest(2), accepted_ingest(3)],
             vec![
@@ -877,5 +1015,143 @@ mod tests {
             Some(bytes.len() as u64)
         );
         assert_eq!(third_snapshot.upload.last_upload_duration_ms, duration);
+    }
+
+    #[tokio::test]
+    async fn local_offset_failure_aborts_without_submitting_key_and_retries() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "display_1_screen.mp4";
+        let bytes = b"segment bytes".to_vec();
+        let sha = ca::sha256_hex(&bytes);
+        let segment_key = civil::segment_key_string_local(boundary, 0, 300);
+        assert!(matches!(
+            FailingOffset.local_offset_secs(boundary),
+            Err(observer_model::LocalOffsetError::Lookup)
+        ));
+        let client = FakeClient::new(
+            vec![accepted_ingest(1)],
+            vec![confirmed_segments(
+                segment_key,
+                file_name,
+                sha,
+                bytes.len() as u64,
+            )],
+        );
+        let coordinator = coordinator_with_client_and_offset(
+            client.clone(),
+            Box::new(OneSegmentStore::new(boundary, file_name, bytes)),
+            sync.clone(),
+            Arc::new(FailOnceOffset::new(0)),
+        );
+
+        let first = coordinator.tick().await;
+        assert!(matches!(first, Err(TransportError::LocalOffset)));
+        let first_snapshot = sync.lock().unwrap().clone();
+        assert_eq!(
+            first_snapshot.upload.last_error_reason.as_deref(),
+            Some("local_offset")
+        );
+        assert_eq!(first_snapshot.upload.failed_segments, 1);
+        assert_eq!(client.ingests.lock().unwrap().len(), 1);
+
+        let second = coordinator.tick().await.unwrap();
+        assert_eq!(second, 1);
+        let second_snapshot = sync.lock().unwrap().clone();
+        assert_eq!(second_snapshot.upload.uploaded_segments, 1);
+        assert_eq!(second_snapshot.upload.last_error_reason, None);
+    }
+
+    #[tokio::test]
+    async fn duplicate_reconciles_against_existing_segment_key() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "display_1_screen.mp4";
+        let bytes = b"segment bytes".to_vec();
+        let sha = ca::sha256_hex(&bytes);
+        let local_key = civil::segment_key_string_local(boundary, 0, 300);
+        let server_key = "111111_300";
+        assert_ne!(local_key, server_key);
+        let client = FakeClient::new(
+            vec![scripted_ingest("duplicate", None, Some(server_key), 1)],
+            vec![confirmed_segments(
+                server_key.to_string(),
+                file_name,
+                sha,
+                bytes.len() as u64,
+            )],
+        );
+        let store = OneSegmentStore::new(boundary, file_name, bytes);
+        let removed = store.removed_handle();
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        let confirmed = coordinator.tick().await.unwrap();
+
+        assert_eq!(confirmed, 1);
+        assert!(*removed.lock().unwrap());
+        assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 1);
+    }
+
+    #[tokio::test]
+    async fn collision_reconciles_against_remapped_segment_key() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "display_1_screen.mp4";
+        let bytes = b"segment bytes".to_vec();
+        let sha = ca::sha256_hex(&bytes);
+        let remapped_key = "222222_300";
+        let client = FakeClient::new(
+            vec![scripted_ingest("collision", Some(remapped_key), None, 1)],
+            vec![confirmed_segments(
+                remapped_key.to_string(),
+                file_name,
+                sha,
+                bytes.len() as u64,
+            )],
+        );
+        let store = OneSegmentStore::new(boundary, file_name, bytes);
+        let removed = store.removed_handle();
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        let confirmed = coordinator.tick().await.unwrap();
+
+        assert_eq!(confirmed, 1);
+        assert!(*removed.lock().unwrap());
+        assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 1);
+    }
+
+    #[tokio::test]
+    async fn missing_status_does_not_confirm_or_delete_until_held() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "display_1_screen.mp4";
+        let bytes = b"segment bytes".to_vec();
+        let sha = ca::sha256_hex(&bytes);
+        let segment_key = civil::segment_key_string_local(boundary, 0, 300);
+        let client = FakeClient::new(
+            vec![accepted_ingest(1), accepted_ingest(2)],
+            vec![
+                listed_segments(
+                    segment_key.clone(),
+                    file_name,
+                    sha.clone(),
+                    bytes.len() as u64,
+                    Some("missing"),
+                ),
+                confirmed_segments(segment_key, file_name, sha, bytes.len() as u64),
+            ],
+        );
+        let store = OneSegmentStore::new(boundary, file_name, bytes);
+        let removed = store.removed_handle();
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        let first = coordinator.tick().await.unwrap();
+        assert_eq!(first, 0);
+        assert!(!*removed.lock().unwrap());
+        assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 0);
+
+        let second = coordinator.tick().await.unwrap();
+        assert_eq!(second, 1);
+        assert!(*removed.lock().unwrap());
     }
 }

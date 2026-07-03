@@ -25,6 +25,9 @@ use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
 pub mod autostart;
+pub mod local_offset;
+
+pub use local_offset::WindowsLocalOffset;
 
 /// The per-user data root: `%LocalAppData%\Solstone`. Falls back to a temp path
 /// off-Windows so the type is host-constructible for tests.

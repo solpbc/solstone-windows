@@ -13,7 +13,7 @@
 //! 2. **Register** ([`client`]) — over mTLS, `/app/observer/register`, learn the
 //!    observer handle.
 //! 3. **Upload** ([`coordinator`]) — ship sealed segments to
-//!    `/app/observer/ingest`, reconcile by sha256, retry with backoff.
+//!    `/app/observer/ingest`, prove journal custody, retry with backoff.
 //! 4. **Heartbeat** ([`heartbeat`]) — periodic `observe.status` POST so the
 //!    journal sees the observer as live.
 //!
@@ -151,6 +151,8 @@ pub enum TransportError {
     NoEndpoint,
     #[error("not paired")]
     NotPaired,
+    #[error("local offset lookup failed")]
+    LocalOffset,
 }
 
 pub fn transport_error_code(err: &TransportError) -> String {
@@ -181,6 +183,7 @@ pub fn transport_error_code(err: &TransportError) -> String {
         }
         TransportError::NoEndpoint => "no_endpoint".to_string(),
         TransportError::NotPaired => "not_paired".to_string(),
+        TransportError::LocalOffset => "local_offset".to_string(),
     }
 }
 
@@ -259,6 +262,7 @@ mod tests {
             ),
             (TransportError::NoEndpoint, "no_endpoint"),
             (TransportError::NotPaired, "not_paired"),
+            (TransportError::LocalOffset, "local_offset"),
         ];
 
         for (error, expected) in cases {

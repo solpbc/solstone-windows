@@ -22,7 +22,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use observer_model::SCREEN_FILE_NAME;
+use observer_model::{LocalOffset, LocalOffsetError, SCREEN_FILE_NAME};
 use observer_pl::multipart::{self, FilePart};
 use observer_pl::{
     civil, paths, OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER,
@@ -33,6 +33,22 @@ use pl_transport_win::tls;
 
 const PERIOD_SECS: u64 = 300;
 const PLATFORM: &str = "windows";
+
+#[derive(Debug)]
+struct EnvLocalOffset;
+
+impl LocalOffset for EnvLocalOffset {
+    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
+        let offset = std::env::var("SOLSTONE_LOCAL_OFFSET_SECS")
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        println!(
+            "LOCAL_OFFSET: using offset_secs={offset} (set SOLSTONE_LOCAL_OFFSET_SECS to override)"
+        );
+        Ok(offset)
+    }
+}
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -69,8 +85,10 @@ async fn main() {
         .unwrap()
         .as_secs();
     let boundary_start = (now / PERIOD_SECS) * PERIOD_SECS;
-    let day = civil::day_string(boundary_start);
-    let segment = civil::segment_key_string(boundary_start, PERIOD_SECS);
+    let local_offset = EnvLocalOffset;
+    let offset = local_offset.local_offset_secs(boundary_start).unwrap();
+    let day = civil::day_string_local(boundary_start, offset);
+    let segment = civil::segment_key_string_local(boundary_start, offset, PERIOD_SECS);
     let boundary = format!("----solstonewindowsrelaylive{}", std::process::id());
     let fields = [
         ("segment", segment.as_str()),

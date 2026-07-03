@@ -67,6 +67,7 @@ fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
         state_path: platform_win::local_data_root().join("pairing.json"),
         segments_root: platform_win::segments_dir(),
         retention,
+        local_offset: Arc::new(platform_win::WindowsLocalOffset),
     }
 }
 

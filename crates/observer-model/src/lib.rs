@@ -418,7 +418,7 @@ pub struct PairingState {
 
 /// The honest upload/sync state surfaced in the health dump. Counts are earned
 /// from real ingest outcomes — a segment counts as `uploaded` only after the
-/// journal confirms it (reconcile by sha256), never on optimistic send.
+/// journal proves it holds the submitted files, never on optimistic send.
 pub const RECENT_ERROR_COUNT_MAX: u8 = 99;
 pub const LAST_ERROR_REASON_MAX_LEN: usize = 200;
 
@@ -609,6 +609,23 @@ pub trait CaptureSink: Send + Sync {
 /// fake clock.
 pub trait Clock: Send + Sync {
     fn now_epoch_secs(&self) -> u64;
+}
+
+/// Device-local UTC-offset seam. The Windows impl lives in `platform-win`
+/// (windows-rs quarantine); off-Windows it is an honest error, never UTC.
+pub trait LocalOffset: Send + Sync + std::fmt::Debug {
+    /// Signed local-minus-UTC offset in seconds, DST-correct for `epoch_secs`.
+    fn local_offset_secs(&self, epoch_secs: u64) -> Result<i64, LocalOffsetError>;
+}
+
+/// Why a local-offset lookup failed. Payload-free so no host-specific string
+/// (timezone-db path, etc.) can leak into a log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalOffsetError {
+    /// The platform local-time lookup call failed.
+    Lookup,
+    /// No local-offset source on this platform (off-Windows stub).
+    Unsupported,
 }
 
 /// A screen capture source (implemented by `capture-wgc` on the build box).

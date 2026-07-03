@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use observer_model::{HealthDump, PairingPhase, PairingState, SyncSnapshot};
+use observer_model::{HealthDump, LocalOffset, PairingPhase, PairingState, SyncSnapshot};
 use observer_retention::RetentionConfig;
 use tokio::sync::oneshot;
 
@@ -45,6 +45,8 @@ pub struct SyncConfig {
     /// Owner cache-retention policy (shared, edited over IPC) the upload
     /// coordinator honors when a segment's upload is confirmed.
     pub retention: Arc<RwLock<RetentionConfig>>,
+    /// Device-local UTC-offset provider used to derive journal segment keys.
+    pub local_offset: Arc<dyn LocalOffset>,
 }
 
 fn set_pairing(sync: &Arc<Mutex<SyncSnapshot>>, state: PairingState) {
@@ -177,6 +179,7 @@ pub async fn run_uploader(
         cfg.platform.clone(),
         cfg.period_secs,
         cfg.retention.clone(),
+        cfg.local_offset.clone(),
     );
 
     let (co_shutdown_tx, co_shutdown_rx) = oneshot::channel();
