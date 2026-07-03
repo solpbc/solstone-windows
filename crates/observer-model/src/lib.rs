@@ -422,6 +422,23 @@ pub struct PairingState {
 pub const RECENT_ERROR_COUNT_MAX: u8 = 99;
 pub const LAST_ERROR_REASON_MAX_LEN: usize = 200;
 
+/// The observed transport path used by an upload request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportPath {
+    Direct,
+    Relay,
+}
+
+impl TransportPath {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Relay => "relay",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct UploadStatus {
     /// Sealed segments on disk not yet confirmed uploaded.
@@ -442,6 +459,14 @@ pub struct UploadStatus {
     pub last_error_reason: Option<String>,
     /// Whether the most recent heartbeat to the journal succeeded.
     pub heartbeat_ok: bool,
+    /// Duration in milliseconds of the last confirmed upload.
+    pub last_upload_duration_ms: Option<u64>,
+    /// Total bytes in the last confirmed upload.
+    pub last_upload_bytes: Option<u64>,
+    /// Observed transport path for the last confirmed upload.
+    pub last_upload_path: Option<TransportPath>,
+    /// Dial attempts taken by the winning leg of the last confirmed upload.
+    pub last_upload_dial_attempts: Option<u32>,
 }
 
 impl UploadStatus {
@@ -732,6 +757,10 @@ mod tests {
                     recent_error_count: 1,
                     last_error_reason: Some("retry".into()),
                     heartbeat_ok: true,
+                    last_upload_duration_ms: Some(42),
+                    last_upload_bytes: Some(12_345),
+                    last_upload_path: Some(TransportPath::Direct),
+                    last_upload_dial_attempts: Some(2),
                 },
             },
             screen_encoder: Some(EncoderHealth {
@@ -986,6 +1015,74 @@ mod tests {
         assert_eq!(upload.recent_error_count, 0);
         assert_eq!(upload.last_error_reason, None);
         assert_eq!(upload.last_successful_sync, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn transport_path_tokens_round_trip_as_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&TransportPath::Direct).unwrap(),
+            "\"direct\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TransportPath::Relay).unwrap(),
+            "\"relay\""
+        );
+
+        let direct: TransportPath = serde_json::from_str("\"direct\"").unwrap();
+        let relay: TransportPath = serde_json::from_str("\"relay\"").unwrap();
+
+        assert_eq!(direct, TransportPath::Direct);
+        assert_eq!(direct.as_str(), "direct");
+        assert_eq!(relay, TransportPath::Relay);
+        assert_eq!(relay.as_str(), "relay");
+    }
+
+    #[test]
+    fn upload_status_serializes_earned_last_upload_fields() {
+        let upload = UploadStatus {
+            pending_segments: 2,
+            uploaded_segments: 3,
+            failed_segments: 1,
+            last_uploaded_segment: Some("120000_300".into()),
+            last_error: None,
+            last_successful_sync: Some(1_700_000_000_000),
+            recent_error_count: 1,
+            last_error_reason: Some("retry".into()),
+            heartbeat_ok: true,
+            last_upload_duration_ms: Some(42),
+            last_upload_bytes: Some(12_345),
+            last_upload_path: Some(TransportPath::Direct),
+            last_upload_dial_attempts: Some(2),
+        };
+
+        let value = serde_json::to_value(&upload).unwrap();
+
+        assert_eq!(value["pending_segments"], 2);
+        assert_eq!(value["uploaded_segments"], 3);
+        assert_eq!(value["failed_segments"], 1);
+        assert_eq!(value["last_uploaded_segment"], "120000_300");
+        assert_eq!(value["last_error"], serde_json::Value::Null);
+        assert_eq!(value["last_successful_sync"], 1_700_000_000_000u64);
+        assert_eq!(value["recent_error_count"], 1);
+        assert_eq!(value["last_error_reason"], "retry");
+        assert_eq!(value["heartbeat_ok"], true);
+        assert_eq!(value["last_upload_duration_ms"], 42);
+        assert_eq!(value["last_upload_bytes"], 12_345);
+        assert_eq!(value["last_upload_path"], "direct");
+        assert_eq!(value["last_upload_dial_attempts"], 2);
+
+        let default_value = serde_json::to_value(UploadStatus::default()).unwrap();
+        for key in [
+            "last_upload_duration_ms",
+            "last_upload_bytes",
+            "last_upload_path",
+            "last_upload_dial_attempts",
+        ] {
+            let Some(value) = default_value.get(key) else {
+                continue;
+            };
+            assert!(value.is_null(), "{key} should default to null when present");
+        }
     }
 
     #[test]

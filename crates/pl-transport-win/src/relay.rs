@@ -125,7 +125,7 @@ fn ws_io_error(kind: io::ErrorKind, message: &'static str) -> io::Error {
 pub(crate) struct RelayTerminationHandle(Arc<Mutex<Option<WsTermination>>>);
 
 impl RelayTerminationHandle {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Arc::new(Mutex::new(None)))
     }
 

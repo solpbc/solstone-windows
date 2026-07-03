@@ -14,8 +14,10 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use observer_model::TransportPath;
+use observer_pl::http::HttpResponse;
 use observer_pl::multipart::{self, FilePart};
 use observer_pl::wire::{
     HeartbeatEvent, IngestResponse, RegisterRequest, RegisterResponse, SegmentsResponse,
@@ -31,7 +33,7 @@ use crate::connection::{dial_tls, request_once};
 use crate::credential::{Credential, PairedState};
 use crate::relay::{dial_relay_carrier, request_once_relay, RelayTerminationHandle};
 use crate::relay_token::{refresh_device_token, RefreshOutcome};
-use crate::{tls, RelayError, TransportError};
+use crate::{tls, transport_error_code, RelayError, TransportError};
 
 /// Relay transient retry count. Mirrors the LAN connection/handshake retry bound.
 const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
@@ -54,6 +56,26 @@ pub(crate) struct DialedCarrier {
 pub(crate) enum CarrierKind {
     Lan,
     Relay { termination: RelayTerminationHandle },
+}
+
+impl From<&CarrierKind> for TransportPath {
+    fn from(kind: &CarrierKind) -> Self {
+        match kind {
+            CarrierKind::Lan => Self::Direct,
+            CarrierKind::Relay { .. } => Self::Relay,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendMetadata {
+    pub path: TransportPath,
+    pub attempts: u32,
+}
+
+struct SendOutcome {
+    response: HttpResponse,
+    metadata: SendMetadata,
 }
 
 /// An observer talking to its paired journal over framed-mTLS.
@@ -130,7 +152,8 @@ impl ObserverClient {
         };
         let body = serde_json::to_vec(&request)?;
         let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-        let response = self.send("POST", paths::REGISTER, &headers, &body).await?;
+        let SendOutcome { response, .. } =
+            self.send("POST", paths::REGISTER, &headers, &body).await?;
         if !response.is_success() {
             return Err(TransportError::Rejected {
                 status: response.status,
@@ -150,7 +173,7 @@ impl ObserverClient {
         day: &str,
         platform: &str,
         files: &[FilePart],
-    ) -> Result<IngestResponse, TransportError> {
+    ) -> Result<(IngestResponse, SendMetadata), TransportError> {
         let boundary = self.next_boundary();
         let fields = [("segment", segment), ("day", day), ("platform", platform)];
         let body = multipart::build(&boundary, &fields, files);
@@ -161,14 +184,15 @@ impl ObserverClient {
             multipart::content_type(&boundary),
         ));
 
-        let response = self.send("POST", paths::INGEST, &headers, &body).await?;
+        let SendOutcome { response, metadata } =
+            self.send("POST", paths::INGEST, &headers, &body).await?;
         if !response.is_success() {
             return Err(TransportError::Rejected {
                 status: response.status,
                 body: response.body_text(),
             });
         }
-        Ok(serde_json::from_slice(&response.body)?)
+        Ok((serde_json::from_slice(&response.body)?, metadata))
     }
 
     /// Post the `observe.status` heartbeat so the journal sees the observer live.
@@ -176,7 +200,7 @@ impl ObserverClient {
         let body = serde_json::to_vec(event)?;
         let mut headers = self.auth_headers()?;
         headers.push(("Content-Type".to_string(), "application/json".to_string()));
-        let response = self
+        let SendOutcome { response, .. } = self
             .send("POST", paths::INGEST_EVENT, &headers, &body)
             .await?;
         if !response.is_success() {
@@ -192,7 +216,7 @@ impl ObserverClient {
     pub async fn list_segments(&self, day: &str) -> Result<SegmentsResponse, TransportError> {
         let path = format!("{}/{}", paths::INGEST_SEGMENTS, day);
         let headers = self.auth_headers()?;
-        let response = self.send("GET", &path, &headers, b"").await?;
+        let SendOutcome { response, .. } = self.send("GET", &path, &headers, b"").await?;
         if !response.is_success() {
             return Err(TransportError::Rejected {
                 status: response.status,
@@ -342,24 +366,30 @@ impl ObserverClient {
         path: &str,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<observer_pl::http::HttpResponse, TransportError> {
-        let origin = self
-            .credential
-            .relay_origin
-            .as_deref()
-            .ok_or(TransportError::NoEndpoint)?;
+    ) -> Result<(HttpResponse, u32), TransportError> {
+        let Some(origin) = self.credential.relay_origin.as_deref() else {
+            let err = TransportError::NoEndpoint;
+            log_dial_failed(path, 0, &err);
+            return Err(err);
+        };
         let instance_id = &self.credential.instance_id;
         let current = self.current_token().await;
         if token_should_refresh(&current, now_secs()) {
             if let RefreshAction::Terminal = self.refresh_if_current(origin, &current).await {
-                return Err(TransportError::Relay(RelayError::Unauthorized));
+                let err = TransportError::Relay(RelayError::Unauthorized);
+                log_dial_failed(path, 0, &err);
+                return Err(err);
             }
         }
 
         let mut reactive_refreshed = false;
         let mut transient_attempt = 0usize;
+        let mut attempts = 0u32;
         loop {
             let token = self.current_token().await;
+            attempts = attempts.saturating_add(1);
+            log_dial_start(path, attempts);
+            let started = Instant::now();
             match request_once_relay(
                 self.config.clone(),
                 origin,
@@ -372,30 +402,41 @@ impl ObserverClient {
             )
             .await
             {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    log_dial_success(path, attempts, elapsed_ms(started));
+                    log_path_selected(TransportPath::Relay);
+                    return Ok((response, attempts));
+                }
                 Err(TransportError::Relay(RelayError::Unauthorized)) => {
                     if reactive_refreshed {
-                        return Err(TransportError::Relay(RelayError::Unauthorized));
+                        let err = TransportError::Relay(RelayError::Unauthorized);
+                        log_dial_failed(path, attempts, &err);
+                        return Err(err);
                     }
                     reactive_refreshed = true;
                     match self.refresh_if_current(origin, &token).await {
                         RefreshAction::Redial => continue,
                         RefreshAction::Terminal | RefreshAction::Transient => {
-                            return Err(TransportError::Relay(RelayError::Unauthorized));
+                            let err = TransportError::Relay(RelayError::Unauthorized);
+                            log_dial_failed(path, attempts, &err);
+                            return Err(err);
                         }
                     }
                 }
                 Err(e) if relay_fault_is_transient_err(&e) => {
                     transient_attempt += 1;
                     if transient_attempt >= RELAY_MAX_TRANSIENT_ATTEMPTS {
+                        log_dial_failed(path, attempts, &e);
                         return Err(e);
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        250 * transient_attempt as u64,
-                    ))
-                    .await;
+                    let backoff_ms = 250 * transient_attempt as u64;
+                    log_transient_retry(path, attempts, backoff_ms, &e);
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    log_dial_failed(path, attempts, &e);
+                    return Err(e);
+                }
             }
         }
     }
@@ -464,11 +505,15 @@ impl ObserverClient {
         path: &str,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<observer_pl::http::HttpResponse, TransportError> {
+    ) -> Result<SendOutcome, TransportError> {
         const MAX_ATTEMPTS: usize = 5;
         let mut last_err: Option<TransportError> = None;
+        let mut attempts = 0u32;
         for attempt in 0..MAX_ATTEMPTS {
             for endpoint in &self.credential.endpoints {
+                attempts = attempts.saturating_add(1);
+                log_dial_start(path, attempts);
+                let started = Instant::now();
                 match request_once(
                     self.config.clone(),
                     &endpoint.host,
@@ -480,7 +525,18 @@ impl ObserverClient {
                 )
                 .await
                 {
-                    Ok(response) => return Ok(response),
+                    Ok(response) => {
+                        log_dial_success(path, attempts, elapsed_ms(started));
+                        let transport_path = TransportPath::Direct;
+                        log_path_selected(transport_path);
+                        return Ok(SendOutcome {
+                            response,
+                            metadata: SendMetadata {
+                                path: transport_path,
+                                attempts,
+                            },
+                        });
+                    }
                     Err(e) => last_err = Some(e),
                 }
             }
@@ -488,10 +544,11 @@ impl ObserverClient {
             // error (e.g. 401) is deterministic and returned immediately.
             match &last_err {
                 Some(TransportError::Tls(_)) | Some(TransportError::Io(_)) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        250 * (attempt as u64 + 1),
-                    ))
-                    .await;
+                    let backoff_ms = 250 * (attempt as u64 + 1);
+                    if let Some(error) = &last_err {
+                        log_transient_retry(path, attempts, backoff_ms, error);
+                    }
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 }
                 _ => break,
             }
@@ -502,10 +559,78 @@ impl ObserverClient {
             TransportError::Tls(_) | TransportError::Io(_) | TransportError::NoEndpoint
         );
         if lan_unreachable && self.relay_eligible() {
-            return self.send_over_relay(method, path, headers, body).await;
+            tracing::info!(
+                target: "pl_transport",
+                route = path,
+                from = "direct",
+                to = "relay",
+                "transport fallback"
+            );
+            let (response, relay_attempts) =
+                self.send_over_relay(method, path, headers, body).await?;
+            return Ok(SendOutcome {
+                response,
+                metadata: SendMetadata {
+                    path: TransportPath::Relay,
+                    attempts: relay_attempts,
+                },
+            });
         }
+        log_dial_failed(path, attempts, &lan_err);
         Err(lan_err)
     }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn log_dial_start(route: &str, attempt: u32) {
+    tracing::info!(
+        target: "pl_transport",
+        route,
+        attempt,
+        "dial start"
+    );
+}
+
+fn log_dial_success(route: &str, attempts: u32, duration_ms: u64) {
+    tracing::info!(
+        target: "pl_transport",
+        route,
+        attempts,
+        duration_ms,
+        "dial success"
+    );
+}
+
+fn log_path_selected(path: TransportPath) {
+    tracing::info!(
+        target: "pl_transport",
+        path = path.as_str(),
+        "path selected"
+    );
+}
+
+fn log_transient_retry(route: &str, attempt: u32, backoff_ms: u64, err: &TransportError) {
+    tracing::info!(
+        target: "pl_transport",
+        route,
+        attempt,
+        backoff_ms,
+        reason = %transport_error_code(err),
+        "transient retry"
+    );
+}
+
+fn log_dial_failed(route: &str, attempts: u32, err: &TransportError) {
+    tracing::warn!(
+        target: "pl_transport",
+        route,
+        attempts,
+        reason = %transport_error_code(err),
+        "dial failed"
+    );
 }
 
 /// Decode JWT lifetime and apply the observer-pl proactive refresh threshold.
@@ -545,6 +670,19 @@ fn relay_fault_is_transient_err(err: &TransportError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn carrier_kind_maps_to_transport_path() {
+        assert_eq!(
+            TransportPath::from(&CarrierKind::Lan),
+            TransportPath::Direct
+        );
+
+        let relay = CarrierKind::Relay {
+            termination: RelayTerminationHandle::new(),
+        };
+        assert_eq!(TransportPath::from(&relay), TransportPath::Relay);
+    }
 
     #[test]
     fn relay_fault_is_transient_truth_table() {
