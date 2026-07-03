@@ -17,6 +17,7 @@ export const automationContract = {
     "settings.exclusions.titleAdd": "settings.exclusions.titleAdd",
     "settings.exclusions.titleInput": "settings.exclusions.titleInput",
     "settings.exclusions.titlesList": "settings.exclusions.titlesList",
+    "settings.home.kinship": "settings.home.kinship",
     "settings.hotkey.clear": "settings.hotkey.clear",
     "settings.hotkey.combo": "settings.hotkey.combo",
     "settings.hotkey.enabled": "settings.hotkey.enabled",

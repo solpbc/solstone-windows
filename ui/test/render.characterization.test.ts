@@ -59,6 +59,48 @@ describe("settings renderer characterization", () => {
     expect(present(ids["settings.status.appState.state"]).textContent).toContain("observing");
   });
 
+  it("renders the kinship intro on not-paired home", () => {
+    const dump = notPairedDump();
+    app.__test__.setRoute("home");
+    app.__test__.setHealth(dump);
+
+    app.__test__.renderSettings(dump);
+
+    const block = present(ids["settings.home.kinship"]);
+    expect(block.textContent).toContain("this is sol, part of solstone.");
+    expect(block.textContent).toContain(
+      "sol lives on your devices, experiences your day with you, and keeps it all in your journal.",
+    );
+    expect(block.textContent).toContain("your journal is always private, only yours.");
+  });
+
+  it("omits the kinship intro once paired", () => {
+    const dump = observingDump();
+    app.__test__.setRoute("home");
+    app.__test__.setHealth(dump);
+
+    app.__test__.renderSettings(dump);
+
+    absent(ids["settings.home.kinship"]);
+  });
+
+  it.each(["pairing", "failed"] as const)(
+    "omits the kinship intro while %s",
+    (phase) => {
+      const base = notPairedDump();
+      const dump = {
+        ...base,
+        sync: { ...base.sync, pairing: { ...base.sync.pairing, phase } },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.setHealth(dump);
+
+      app.__test__.renderSettings(dump);
+
+      absent(ids["settings.home.kinship"]);
+    },
+  );
+
   it("renders the observing sources emitted ids", () => {
     const dump = observingDump();
     app.__test__.setRoute("sources");

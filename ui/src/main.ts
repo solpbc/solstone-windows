@@ -581,6 +581,21 @@ a:focus-visible,
 	  overflow-wrap: anywhere;
 	}
 
+	.settings-kinship {
+	  display: grid;
+	  gap: 8px;
+	  padding: 15px;
+	  border: 1px solid var(--border);
+	  border-radius: var(--radius-card);
+	  background: var(--fill);
+	}
+
+	.settings-kinship-body {
+	  font-size: 13px;
+	  color: var(--fg-subtle);
+	  overflow-wrap: anywhere;
+	}
+
 	.settings-card-grid {
 	  display: grid;
 	  grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2229,6 +2244,27 @@ function renderUpdatesCard(): HTMLElement {
   );
 }
 
+function renderKinshipCard(): HTMLElement {
+  const card = document.createElement("div");
+  card.classList.add("settings-kinship");
+  automation(card, ids["settings.home.kinship"]);
+
+  const heading = text("h2", "this is sol, part of solstone.");
+  heading.classList.add("settings-card-title");
+
+  const body1 = text(
+    "div",
+    "sol lives on your devices, experiences your day with you, and keeps it all in your journal.",
+  );
+  body1.classList.add("settings-kinship-body");
+
+  const body2 = text("div", "your journal is always private, only yours.");
+  body2.classList.add("settings-kinship-body");
+
+  card.append(heading, body1, body2);
+  return card;
+}
+
 function renderHome(dump: HealthDump): HTMLElement {
   const home = document.createElement("div");
   home.classList.add("settings-home");
@@ -2242,7 +2278,11 @@ function renderHome(dump: HealthDump): HTMLElement {
     renderUpdatesCard(),
   );
 
-  home.append(renderStatusStrip(dump), cards);
+  if (dump.sync.pairing.phase === "not_paired") {
+    home.append(renderKinshipCard(), renderStatusStrip(dump), cards);
+  } else {
+    home.append(renderStatusStrip(dump), cards);
+  }
   return home;
 }
 
