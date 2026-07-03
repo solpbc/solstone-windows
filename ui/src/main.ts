@@ -1090,7 +1090,7 @@ function renderJournalOpenSection(dump: HealthDump): HTMLElement {
 
 function renderPairingSection(dump: HealthDump): HTMLElement {
   const pairing = dump.sync.pairing;
-  const pane = section("Pairing");
+  const pane = section("pairing");
   pane.append(
     valueRow(
       "status",
@@ -1237,7 +1237,7 @@ function removableList(
 }
 
 function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLElement {
-  const pane = section("Privacy");
+  const pane = section("privacy");
   pane.append(
     helpCaption("choose what sol keeps out of your journal. changes take effect right away."),
   );
@@ -1660,7 +1660,7 @@ async function applyHotkey(next: HotkeyConfig): Promise<void> {
 }
 
 function renderHotkeySection(view: HotkeyView): HTMLElement {
-  const pane = section("Global shortcut");
+  const pane = section("global shortcut");
   const cfg = view.config;
 
   pane.append(helpCaption("a global shortcut to pause and resume sol from anywhere."));
@@ -1830,7 +1830,7 @@ function reorderButton(
 }
 
 function renderMicSection(view: MicView): HTMLElement {
-  const pane = section("Microphones");
+  const pane = section("microphones");
   const cfg = view.config;
   const ordered = orderedMicDevices(cfg, micDevices);
 
@@ -1968,7 +1968,7 @@ function renderMicSection(view: MicView): HTMLElement {
 }
 
 function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
-  const pane = section("Local storage");
+  const pane = section("local storage");
   pane.append(
     helpCaption(
       "after a segment safely reaches your journal, how long should sol keep its local copy on this computer?",
@@ -2045,7 +2045,7 @@ function clearLastSectionDivider(container: HTMLElement): void {
 }
 
 function renderSourcesSection(dump: HealthDump): HTMLElement {
-  const sources = section("Sources");
+  const sources = section("sources");
   const screen = sourceByKind(dump, "screen");
   const systemAudio = sourceByKind(dump, "system_audio");
   const mic = sourceByKind(dump, "mic");
@@ -2787,7 +2787,7 @@ function updateNotesOnlineLink(): HTMLAnchorElement {
 }
 
 function renderUpdatesSection(view: UpdateView): HTMLElement {
-  const pane = section("Updates");
+  const pane = section("updates");
   const a = view.actions;
 
   // Focal state headline + a quiet subtitle (the macOS Updates header hierarchy),
