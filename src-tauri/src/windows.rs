@@ -59,7 +59,7 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
 
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
-        .title("solstone — settings")
+        .title("sol — settings")
         .inner_size(820.0, 580.0)
         .min_inner_size(460.0, 480.0)
         .transparent(true)
@@ -313,7 +313,7 @@ fn build_journal_window(
     let parsed: tauri::Url = url.parse().map_err(tauri::Error::InvalidUrl)?;
     let expected_port = parsed.port();
     let window = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(parsed))
-        .title("solstone — journal")
+        .title("your journal")
         .inner_size(1100.0, 800.0)
         .min_inner_size(640.0, 480.0)
         .additional_browser_args(WEBVIEW_ARGS)
@@ -389,7 +389,7 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
 
     WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into()))
-        .title("about solstone")
+        .title("about sol")
         .inner_size(360.0, 280.0)
         .transparent(true)
         .effects(mica_effects())

@@ -56,7 +56,7 @@ describe("settings renderer characterization", () => {
     app.__test__.renderSettings(dump);
 
     present(ids["settings.window.root"]);
-    expect(present(ids["settings.status.appState.state"]).textContent).toContain("observing");
+    expect(present(ids["settings.status.appState.state"]).textContent).toBe("on");
   });
 
   it("renders the kinship intro on not-paired home", () => {

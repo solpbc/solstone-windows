@@ -18,28 +18,27 @@ pub fn classify_tray(
     pause: Option<&PauseSnapshot>,
 ) -> (TrayVisual, String) {
     match app {
-        AppPhase::Idle => (TrayVisual::Pending, "solstone — idle".to_string()),
-        AppPhase::Starting => (TrayVisual::Pending, "solstone — starting".to_string()),
+        AppPhase::Idle => (TrayVisual::Pending, "sol — idle".to_string()),
+        AppPhase::Starting => (TrayVisual::Pending, "sol — starting…".to_string()),
         AppPhase::Paused => {
             let tooltip = match pause.and_then(|p| p.seconds_remaining) {
-                Some(secs) => format!("solstone — paused, {} left", format_remaining(secs)),
-                None => "solstone — paused".to_string(),
+                Some(secs) => format!("sol — paused, {} left", format_remaining(secs)),
+                None => "sol — paused".to_string(),
             };
             (TrayVisual::Cloud, tooltip)
         }
-        AppPhase::Error => (TrayVisual::Error, "solstone — attention needed".to_string()),
+        AppPhase::Error => (TrayVisual::Error, "sol — needs attention".to_string()),
         AppPhase::Observing => match (sync.pairing.phase, sync.upload.heartbeat_ok) {
             (PairingPhase::Paired, true) => (
                 TrayVisual::Full,
-                "solstone — observing, connected".to_string(),
+                "sol — on, connected to your journal".to_string(),
             ),
-            (PairingPhase::Paired, false) => (
-                TrayVisual::Half,
-                "solstone — observing, saved on this PC".to_string(),
-            ),
+            (PairingPhase::Paired, false) => {
+                (TrayVisual::Half, "sol — on, saved on this PC".to_string())
+            }
             _ => (
                 TrayVisual::Half,
-                "solstone — observing, no journal connected".to_string(),
+                "sol — on, no journal connected".to_string(),
             ),
         },
     }
@@ -103,21 +102,21 @@ mod tests {
             &sync,
             None,
             TrayVisual::Pending,
-            "solstone — idle",
+            "sol — idle",
         );
         assert_tray(
             AppPhase::Starting,
             &sync,
             None,
             TrayVisual::Pending,
-            "solstone — starting",
+            "sol — starting…",
         );
         assert_tray(
             AppPhase::Error,
             &sync,
             None,
             TrayVisual::Error,
-            "solstone — attention needed",
+            "sol — needs attention",
         );
     }
 
@@ -128,21 +127,21 @@ mod tests {
             &sync(PairingPhase::NotPaired, false),
             None,
             TrayVisual::Half,
-            "solstone — observing, no journal connected",
+            "sol — on, no journal connected",
         );
         assert_tray(
             AppPhase::Observing,
             &sync(PairingPhase::Paired, true),
             None,
             TrayVisual::Full,
-            "solstone — observing, connected",
+            "sol — on, connected to your journal",
         );
         assert_tray(
             AppPhase::Observing,
             &sync(PairingPhase::Paired, false),
             None,
             TrayVisual::Half,
-            "solstone — observing, saved on this PC",
+            "sol — on, saved on this PC",
         );
     }
 
@@ -158,7 +157,7 @@ mod tests {
             &sync,
             Some(&indefinite),
             TrayVisual::Cloud,
-            "solstone — paused",
+            "sol — paused",
         );
 
         let bounded = PauseSnapshot {
@@ -170,7 +169,7 @@ mod tests {
             &sync,
             Some(&bounded),
             TrayVisual::Cloud,
-            "solstone — paused, 14 min left",
+            "sol — paused, 14 min left",
         );
     }
 

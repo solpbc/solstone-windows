@@ -207,14 +207,25 @@ signing box. See `docs/release-runbook.md`.
 
 ## 9. Two-register brand voice
 
-- **Owner-facing copy** uses "observers + journal" and "sol the keeper". The
-  brand is lowercase in copy.
-- **Banned surveillance verbs in owner-visible copy:** `watch`, `capture`,
-  `record`, `monitor`, `track`, `collect`. Use "observe" / "gather" / "the
-  journal receives".
-- **Code identifiers keep technical terms verbatim** — `capture-engine`,
-  `ScreenSource`, the `capture-wgc` crate, etc. `capture` is fine in code; not in
-  owner-visible copy.
+- The app is **sol** (in UI copy the app calls itself "sol"); the memory is
+  **your journal**; **solstone** is the platform/family (store listing, platform
+  references, domains); **sol pbc** is the company. Brand names are lowercase
+  always.
+- "observer/observers/observe/observing" is engineering-internal vocabulary that
+  NEVER appears in user-visible copy.
+- Approved sol-subject verbs (owner-visible): lives · experiences (…your day /
+  …with you) · takes in what you take in · keeps · remembers · tends · notices.
+  Plain mechanism verbs (uses, connects, syncs, falls back, recognizes, needs)
+  are fine.
+- Never (user-visible): bare "sol listens/hears" (mirrored "sol hears what you
+  hear" is ok); "sol observes/watches/sees/captures/records/monitors/tracks";
+  "keeper" as a title (say "sol keeps your journal", a verb); "meet sol"; "sol
+  agent".
+- Banned surveillance verbs describing the app in owner-visible copy: watch,
+  capture, record, monitor, track, collect.
+- **Code identifiers keep technical terms verbatim** (`capture-engine`,
+  `ScreenSource`, the `capture-wgc` crate) — `capture`/`observer` are fine in
+  code, never in owner-visible copy.
 
 ## 10. SPDX Source Headers
 

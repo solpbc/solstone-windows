@@ -21,8 +21,8 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "category": "Utility",
-    "shortDescription": "Local-first solstone observer for Windows",
-    "longDescription": "A per-user, tray-resident solstone observer: it gathers screen and system audio (plus microphone when present) into local, owner-controlled segments for the owner's journal."
+    "shortDescription": "sol for Windows — part of solstone.",
+    "longDescription": "sol runs quietly in the tray, takes in your screen and system audio (plus the microphone when present), and keeps it in local, owner-controlled segments for your journal."
   },
   "plugins": {}
 }

@@ -20,7 +20,7 @@ Dependencies:
     - PackageIdentifier: Microsoft.EdgeWebView2Runtime
 ReleaseDate: 2026-06-23
 AppsAndFeaturesEntries:
-  - DisplayName: solstone
+  - DisplayName: sol
     Publisher: sol pbc
     DisplayVersion: 0.2.0
     InstallerType: exe

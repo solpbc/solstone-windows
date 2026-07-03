@@ -125,7 +125,7 @@ $vpkArgs = @(
     "--packDir", $Stage,
     "--mainExe", "solstone-windows-app.exe",
     "--outputDir", $Releases,
-    "--packTitle", "solstone",
+    "--packTitle", "sol",
     "--packAuthors", "sol pbc",
     "--icon", $Icon,
     "--channel", "win",

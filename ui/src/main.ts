@@ -906,13 +906,13 @@ function phaseLabel(phase: AppPhase): string {
     case "idle":
       return "idle";
     case "starting":
-      return "starting";
+      return "starting…";
     case "observing":
-      return "observing";
+      return "on";
     case "paused":
       return "paused";
     case "error":
-      return "attention needed";
+      return "needs attention";
   }
 }
 
@@ -1053,7 +1053,7 @@ function renderJournalOpenSection(dump: HealthDump): HTMLElement {
     journalOpenError = false;
     pane.append(
       automation(
-        text("div", "pair your observer to open your journal"),
+        text("div", "pair this PC to your journal to open it"),
         ids["settings.journal.unavailable"],
       ),
     );
@@ -1239,7 +1239,7 @@ function removableList(
 function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLElement {
   const pane = section("Privacy");
   pane.append(
-    helpCaption("choose what solstone keeps out of your journal. changes take effect right away."),
+    helpCaption("choose what sol keeps out of your journal. changes take effect right away."),
   );
 
   // Private browsing — title-heuristic auto-exclude, on by default. The honest
@@ -1256,7 +1256,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   );
   pane.append(
     microCaption(
-      "solstone recognizes private and incognito windows by their title — it catches the major browsers in their default private mode.",
+      "sol recognizes private and incognito windows by their title — it catches the major browsers in their default private mode.",
     ),
   );
 
@@ -1663,7 +1663,7 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   const pane = section("Global shortcut");
   const cfg = view.config;
 
-  pane.append(helpCaption("a global shortcut to pause and resume solstone from anywhere."));
+  pane.append(helpCaption("a global shortcut to pause and resume sol from anywhere."));
 
   pane.append(
     toggleRow(
@@ -1836,7 +1836,7 @@ function renderMicSection(view: MicView): HTMLElement {
 
   pane.append(
     helpCaption(
-      "solstone observes through one microphone at a time. set which one, and how much to boost it.",
+      "sol uses one microphone at a time. set which one, and how much to boost it.",
     ),
   );
 
@@ -1844,7 +1844,7 @@ function renderMicSection(view: MicView): HTMLElement {
   pane.append(subheadLabel("device priority"));
   pane.append(
     helpCaption(
-      "the top enabled microphone is used. use ↑ ↓ to set the order; solstone falls back to the next if one is unavailable.",
+      "the top enabled microphone is used. use ↑ ↓ to set the order; sol falls back to the next if one is unavailable.",
     ),
   );
   const list = automation(document.createElement("div"), ids["settings.mic.devices"]);
@@ -1971,7 +1971,7 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
   const pane = section("Local storage");
   pane.append(
     helpCaption(
-      "after a segment safely reaches your journal, how long should solstone keep its local copy on this computer?",
+      "after a segment safely reaches your journal, how long should sol keep its local copy on this computer?",
     ),
   );
   pane.append(
@@ -2009,7 +2009,7 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
   pane.append(valueRow("keep segments", sel));
   pane.append(
     trustFootnote(
-      "your unsynced segments are never deleted — solstone only clears local copies of segments already saved to your journal.",
+      "your unsynced segments are never deleted — sol only clears local copies of segments already saved to your journal.",
     ),
   );
 
@@ -2351,7 +2351,7 @@ function renderRail(): HTMLElement {
   rail.classList.add("settings-rail");
   rail.setAttribute("aria-label", "settings");
 
-  const title = text("div", "solstone");
+  const title = text("div", "sol");
   title.classList.add("settings-rail-title");
   rail.append(title);
 
@@ -2433,20 +2433,28 @@ function renderAbout(dump: HealthDump): void {
   root.style.padding = "22px";
   root.style.boxSizing = "border-box";
 
-  const title = text("h1", "solstone");
+  const title = text("h1", "sol");
   title.style.margin = "0 0 12px";
   title.style.fontSize = "24px";
 
-  const body = text("p", "observers and the owner's journal, with sol the keeper");
-  body.style.margin = "0 0 18px";
-  body.style.lineHeight = "1.5";
-  body.style.color = "var(--fg-subtle)";
+  const body1 = text(
+    "p",
+    "sol lives on your devices, experiences your day with you, and keeps it all in your journal. your journal is always private, only yours.",
+  );
+  const body2 = text("p", "sol is part of solstone — open source, local-first.");
+  const body3 = text("p", "made by sol pbc.");
+  for (const body of [body1, body2, body3]) {
+    body.style.margin = "0 0 12px";
+    body.style.lineHeight = "1.5";
+    body.style.color = "var(--fg-subtle)";
+  }
+  body3.style.margin = "0 0 18px";
 
   const version = selectable(automation(text("div", dump.version), ids["about.version"]));
   version.style.fontSize = "13px";
   version.style.color = "var(--fg-subtle)";
 
-  root.append(title, body, version);
+  root.append(title, body1, body2, body3, version);
 }
 
 function nowSecs(): number {
@@ -2483,25 +2491,25 @@ function lastCheckedRelative(checkedAt: number | null, secsNow: number): string 
 function updateHeadline(view: UpdateView): string {
   const v = view.available_version ?? "";
   if (view.activity === "installing") {
-    return v ? `installing solstone ${v}…` : "installing…";
+    return v ? `installing sol ${v}…` : "installing…";
   }
   switch (view.display) {
     case "never_checked":
       return "not checked for updates yet";
     case "up_to_date":
-      return "solstone is up to date";
+      return "sol is up to date";
     case "checking":
       return "checking for updates…";
     case "available":
-      return `solstone ${v} is available`;
+      return `sol ${v} is available`;
     case "downloading":
-      return `downloading solstone ${v}`;
+      return `downloading sol ${v}`;
     case "staged":
-      return `solstone ${v} is ready to install`;
+      return `sol ${v} is ready to install`;
     case "failed":
       return "couldn't check for updates";
     case "failed_with_available":
-      return `couldn't check — solstone ${v} found earlier`;
+      return `couldn't check — sol ${v} found earlier`;
     case "unavailable":
       return "this build can't update itself";
   }
@@ -2522,7 +2530,7 @@ function updateSubtitle(
     case "never_checked":
       return {
         text: view.prefs.auto_check
-          ? "automatic checks are on — solstone will check on its own"
+          ? "automatic checks are on — sol will check on its own"
           : "automatic checks are off",
         live: false,
       };
@@ -2530,7 +2538,7 @@ function updateSubtitle(
     case "downloading":
       return null;
     case "staged":
-      return { text: "it installs the next time solstone restarts", live: false };
+      return { text: "it installs the next time sol restarts", live: false };
     case "unavailable":
       return {
         text: "download the latest from solstone.app/download/windows",
@@ -2929,7 +2937,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   foot.style.borderTop = "1px solid var(--border-subtle)";
   const footText = text(
     "div",
-    "solstone never sends usage data. update checks only fetch the version manifest.",
+    "no usage data is ever sent — update checks only fetch the version manifest.",
   );
   footText.style.fontSize = "12px";
   footText.style.color = "var(--fg-subtle)";
@@ -2969,13 +2977,13 @@ function renderUnavailable(): void {
   const rootId = label === "about" ? ids["about.window.root"] : ids["settings.window.root"];
   resetRoot(rootId);
 
-  const title = text("h1", "solstone");
+  const title = text("h1", "sol");
   title.style.margin = "0";
   title.style.padding = "18px 20px 8px";
   title.style.fontSize = "22px";
   title.style.fontWeight = "700";
 
-  const msg = text("p", "couldn't load the observer status just now.");
+  const msg = text("p", "couldn't load sol's status just now.");
   msg.style.padding = "0 20px";
   msg.style.color = "var(--fg-subtle)";
 

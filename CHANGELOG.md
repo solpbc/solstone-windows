@@ -6,6 +6,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- the app now calls itself sol: sol is the app, your journal is the memory, and
+  solstone is the platform it all comes from.
+
 ## [0.2.8] - 2026-07-02
 
 ### Fixed
