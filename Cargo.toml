@@ -17,6 +17,7 @@ members = [
     "crates/observer-pl",
     "crates/observer-nv12",
     "crates/observer-audio",
+    "crates/observer-sample-timing",
     "crates/capture-screen-encode",
     "crates/capture-wgc",
     "crates/capture-wasapi",
@@ -88,6 +89,7 @@ observer-log = { path = "crates/observer-log" }
 observer-pl = { path = "crates/observer-pl" }
 observer-nv12 = { path = "crates/observer-nv12" }
 observer-audio = { path = "crates/observer-audio" }
+observer-sample-timing = { path = "crates/observer-sample-timing" }
 capture-screen-encode = { path = "crates/capture-screen-encode" }
 capture-wgc = { path = "crates/capture-wgc" }
 capture-wasapi = { path = "crates/capture-wasapi" }

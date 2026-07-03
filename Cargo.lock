@@ -493,6 +493,8 @@ version = "0.2.8"
 dependencies = [
  "observer-model",
  "observer-nv12",
+ "observer-sample-timing",
+ "observer-segment",
  "windows 0.58.0",
 ]
 
@@ -2831,6 +2833,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "observer-sample-timing"
+version = "0.2.8"
 
 [[package]]
 name = "observer-segment"

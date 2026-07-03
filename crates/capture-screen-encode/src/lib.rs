@@ -19,6 +19,8 @@ mod imp {
         EncoderConfig, EncoderError, EncoderErrorKind, EncoderHealth, ScreenEncoder, ScreenFrame,
         SCREEN_FILE_NAME,
     };
+    use observer_sample_timing::{SampleTimer, MIN_SAMPLE_DURATION_100NS};
+    use observer_segment::DEFAULT_SEGMENT_SECS;
     use windows::core::{Interface, GUID, HRESULT, PCWSTR, VARIANT};
     use windows::Win32::Media::MediaFoundation::{
         eAVEncH264VProfile_High, CODECAPI_AVEncMPVGOPSize, ICodecAPI, IMFAttributes, IMFMediaType,
@@ -34,7 +36,6 @@ mod imp {
     };
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
-    const FRAME_DURATION_100NS: i64 = 10_000_000;
     const PARTIAL_SUFFIX: &str = ".partial";
     const DXGI_ERROR_DEVICE_REMOVED: HRESULT = HRESULT(0x887A0005_u32 as i32);
     const GUID_NULL: GUID = GUID::from_u128(0);
@@ -55,6 +56,7 @@ mod imp {
     struct Accounting {
         frames_consumed: AtomicU64,
         samples_written: AtomicU64,
+        clamp_events: AtomicU64,
         last_error: Mutex<Option<String>>,
     }
 
@@ -79,6 +81,7 @@ mod imp {
             EncoderHealth {
                 frames_consumed: self.frames_consumed.load(Ordering::Relaxed),
                 samples_written: self.samples_written.load(Ordering::Relaxed),
+                clamp_events: self.clamp_events.load(Ordering::Relaxed),
                 last_error: self.last_error(),
             }
         }
@@ -101,7 +104,8 @@ mod imp {
         dir: PathBuf,
         config: EncoderConfig,
         writer: Option<ActiveWriter>,
-        frame_index: u64,
+        timer: Option<SampleTimer>,
+        pending_nv12: Option<Vec<u8>>,
         failure: Option<EncoderError>,
     }
 
@@ -247,7 +251,8 @@ mod imp {
                             dir: PathBuf::from(dir),
                             config,
                             writer: None,
-                            frame_index: 0,
+                            timer: None,
+                            pending_nv12: None,
                             failure: None,
                         });
                         accounting.clear_error();
@@ -267,7 +272,7 @@ mod imp {
                 }
                 EncoderCommand::Finalize { ack } => {
                     let result = if runtime.is_some() {
-                        finalize_on_worker(&mut segment)
+                        finalize_on_worker(&mut segment, &accounting)
                     } else {
                         Err(EncoderError::new(
                             EncoderErrorKind::Unavailable,
@@ -281,7 +286,7 @@ mod imp {
                 }
                 EncoderCommand::Shutdown => {
                     if runtime.is_some() {
-                        let _ = finalize_on_worker(&mut segment);
+                        let _ = finalize_on_worker(&mut segment, &accounting);
                     }
                     break;
                 }
@@ -348,25 +353,47 @@ mod imp {
             }
         }
 
-        let result = write_frame(segment, &frame);
-        match result {
-            Ok(()) => {
-                accounting.samples_written.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(error) => {
-                accounting.set_error(error.detail.clone());
-                segment.failure = Some(error);
-            }
+        if let Err(error) = write_frame(segment, &frame, accounting) {
+            accounting.set_error(error.detail.clone());
+            segment.failure = Some(error);
         }
     }
 
-    fn finalize_on_worker(segment: &mut Option<SegmentState>) -> Result<(), EncoderError> {
+    fn finalize_on_worker(
+        segment: &mut Option<SegmentState>,
+        accounting: &Accounting,
+    ) -> Result<(), EncoderError> {
         let Some(mut segment) = segment.take() else {
             return Ok(());
         };
         if let Some(error) = segment.failure.take() {
             return Err(error);
         }
+
+        let flushed = if let Some(timer) = segment.timer.as_mut() {
+            let before = timer.clamp_events();
+            let sample = timer.flush(DEFAULT_SEGMENT_SECS as i64 * 10_000_000);
+            accounting
+                .clamp_events
+                .fetch_add(timer.clamp_events() - before, Ordering::Relaxed);
+            sample
+        } else {
+            None
+        };
+        if let Some(sample) = flushed {
+            if let Some(pending) = segment.pending_nv12.take() {
+                if let Some(active) = segment.writer.as_ref() {
+                    write_mf_sample(
+                        active,
+                        &pending,
+                        sample.sample_time_100ns,
+                        sample.sample_duration_100ns,
+                        accounting,
+                    )?;
+                }
+            }
+        }
+
         let Some(active) = segment.writer.take() else {
             return Ok(());
         };
@@ -581,21 +608,67 @@ mod imp {
         Ok(media_type)
     }
 
-    fn write_frame(segment: &mut SegmentState, frame: &ScreenFrame) -> Result<(), EncoderError> {
-        let active = segment
-            .writer
-            .as_ref()
-            .expect("writer exists before write_frame");
+    fn write_frame(
+        segment: &mut SegmentState,
+        frame: &ScreenFrame,
+        accounting: &Accounting,
+    ) -> Result<(), EncoderError> {
         let nv12 = observer_nv12::rgba_or_bgra_to_nv12(frame).map_err(|error| {
             EncoderError::new(
                 EncoderErrorKind::EncodeFailed,
                 format!("NV12 conversion failed: {error}"),
             )
         })?;
-        let len: u32 = nv12.bytes.len().try_into().map_err(|_| {
+
+        if segment.timer.is_none() {
+            segment.timer = Some(SampleTimer::new(
+                frame.arrival_100ns,
+                MIN_SAMPLE_DURATION_100NS,
+            ));
+        }
+        let finished = {
+            let timer = segment.timer.as_mut().expect("timer just initialized");
+            let before = timer.clamp_events();
+            let finished = timer.push(frame.arrival_100ns);
+            accounting
+                .clamp_events
+                .fetch_add(timer.clamp_events() - before, Ordering::Relaxed);
+            finished
+        };
+        if let Some(sample) = finished {
+            let prev = segment
+                .pending_nv12
+                .take()
+                .expect("pending nv12 present when push emits");
+            {
+                let active = segment
+                    .writer
+                    .as_ref()
+                    .expect("writer exists before write_frame");
+                write_mf_sample(
+                    active,
+                    &prev,
+                    sample.sample_time_100ns,
+                    sample.sample_duration_100ns,
+                    accounting,
+                )?;
+            }
+        }
+        segment.pending_nv12 = Some(nv12.bytes);
+        Ok(())
+    }
+
+    fn write_mf_sample(
+        active: &ActiveWriter,
+        nv12_bytes: &[u8],
+        sample_time_100ns: i64,
+        sample_duration_100ns: i64,
+        accounting: &Accounting,
+    ) -> Result<(), EncoderError> {
+        let len: u32 = nv12_bytes.len().try_into().map_err(|_| {
             EncoderError::new(
                 EncoderErrorKind::EncodeFailed,
-                format!("NV12 buffer too large: {} bytes", nv12.bytes.len()),
+                format!("NV12 buffer too large: {} bytes", nv12_bytes.len()),
             )
         })?;
 
@@ -619,7 +692,7 @@ mod imp {
                     error,
                 )
             })?;
-            ptr::copy_nonoverlapping(nv12.bytes.as_ptr(), dst, nv12.bytes.len());
+            ptr::copy_nonoverlapping(nv12_bytes.as_ptr(), dst, nv12_bytes.len());
             buffer.Unlock().map_err(|error| {
                 windows_error(
                     EncoderErrorKind::EncodeFailed,
@@ -649,17 +722,15 @@ mod imp {
                     error,
                 )
             })?;
+            sample.SetSampleTime(sample_time_100ns).map_err(|error| {
+                windows_error(
+                    EncoderErrorKind::EncodeFailed,
+                    "IMFSample::SetSampleTime",
+                    error,
+                )
+            })?;
             sample
-                .SetSampleTime((segment.frame_index as i64) * FRAME_DURATION_100NS)
-                .map_err(|error| {
-                    windows_error(
-                        EncoderErrorKind::EncodeFailed,
-                        "IMFSample::SetSampleTime",
-                        error,
-                    )
-                })?;
-            sample
-                .SetSampleDuration(FRAME_DURATION_100NS)
+                .SetSampleDuration(sample_duration_100ns)
                 .map_err(|error| {
                     windows_error(
                         EncoderErrorKind::EncodeFailed,
@@ -678,7 +749,7 @@ mod imp {
                     )
                 })?;
         }
-        segment.frame_index = segment.frame_index.saturating_add(1);
+        accounting.samples_written.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 

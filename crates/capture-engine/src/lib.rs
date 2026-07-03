@@ -1113,6 +1113,7 @@ mod tests {
             EncoderHealth {
                 frames_consumed: self.frames_consumed,
                 samples_written: self.samples_written,
+                clamp_events: 0,
                 last_error: self.last_error.clone(),
             }
         }
@@ -1263,6 +1264,7 @@ mod tests {
         for seq in seqs {
             sink.emit_screen_frame(ScreenFrame {
                 seq,
+                arrival_100ns: 0,
                 width: 2,
                 height: 2,
                 pixel_format: ScreenPixelFormat::Rgba8,
@@ -1275,6 +1277,7 @@ mod tests {
         let len = width as usize * height as usize * 4;
         sink.emit_screen_frame(ScreenFrame {
             seq,
+            arrival_100ns: 0,
             width,
             height,
             pixel_format: ScreenPixelFormat::Rgba8,

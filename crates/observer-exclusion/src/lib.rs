@@ -690,6 +690,7 @@ mod tests {
         );
         let frame = ScreenFrame {
             seq: 0,
+            arrival_100ns: 0,
             width: w as u32,
             height: h as u32,
             pixel_format: ScreenPixelFormat::Rgba8,

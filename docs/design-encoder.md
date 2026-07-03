@@ -242,12 +242,19 @@ Decided async error reporting: the engine reads `screen_encoder.last_error()`/`s
 
 Timestamp policy:
 
-- Deterministic per-segment uniform clock.
-- `FRAME_DURATION_100NS = 10_000_000`.
-- Per-segment encoded frame index starts at 0 on `open`.
-- `sample_time = frame_index * FRAME_DURATION_100NS`.
-- `sample_duration = FRAME_DURATION_100NS`.
-- Do not use wall-clock arrival time; this avoids jitter and gappy timelines.
+- Encoded sample time/duration derive from the real WGC frame-arrival timestamp
+  carried by `ScreenFrame::arrival_100ns` (`SystemRelativeTime`, 100ns ticks).
+- `observer-sample-timing::SampleTimer` is pure and host-tested. It is
+  first-frame anchored (`anchor = first frame arrival`), emits each prior sample
+  with duration equal to the gap to the next frame, and flushes the final sample
+  at `finalize` bounded by the segment window.
+- `SampleTimer` clamps starts to `>= 0` and keeps samples monotonic with a
+  minimum duration. Clamp events are counted and surfaced through
+  `EncoderHealth::clamp_events`.
+- The MF encoder buffers one frame of lookahead and pairs each NV12 buffer with
+  the stamped `(sample_time, sample_duration)` from `SampleTimer`.
+- On-box Media Foundation validation of variable/sparse sample durations rides
+  the next Windows release-validation pass.
 
 AC7 behaviors:
 

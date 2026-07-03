@@ -127,6 +127,7 @@ mod tests {
     ) -> ScreenFrame {
         ScreenFrame {
             seq: 0,
+            arrival_100ns: 0,
             width,
             height,
             pixel_format,

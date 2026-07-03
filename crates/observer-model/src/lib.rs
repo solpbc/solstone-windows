@@ -176,6 +176,8 @@ pub enum ScreenPixelFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenFrame {
     pub seq: u64,
+    /// Boot-relative SystemRelativeTime (QueryPerformanceCounter-derived), 100ns ticks.
+    pub arrival_100ns: i64,
     pub width: u32,
     pub height: u32,
     pub pixel_format: ScreenPixelFormat,
@@ -212,6 +214,7 @@ pub fn normalize_even(frame: &ScreenFrame) -> ScreenFrame {
 
     ScreenFrame {
         seq: frame.seq,
+        arrival_100ns: frame.arrival_100ns,
         width: even_w,
         height: even_h,
         pixel_format: frame.pixel_format,
@@ -261,6 +264,10 @@ impl std::error::Error for EncoderError {}
 pub struct EncoderHealth {
     pub frames_consumed: u64,
     pub samples_written: u64,
+    /// Samples whose time was clamped to stay monotonic / >= 0.
+    ///
+    /// Systematic clamping surfaces here.
+    pub clamp_events: u64,
     pub last_error: Option<String>,
 }
 
@@ -579,9 +586,10 @@ pub struct HealthDump {
 /// Ignored because they advance ~every 1 s tick during steady observing and are
 /// not displayed: `frame_rate`, `segment_seconds_remaining`,
 /// `pause.seconds_remaining` (the bounded-pause countdown, advanced UI-side off
-/// the 1 s timer instead), and the two `screen_encoder` counters
-/// `frames_consumed` / `samples_written`. The `pause`/`screen_encoder` PRESENCE
-/// and `pause.reason` / `screen_encoder.last_error` stay meaningful.
+/// the 1 s timer instead), and the `screen_encoder` counters
+/// `frames_consumed` / `samples_written` / `clamp_events`. The
+/// `pause`/`screen_encoder` PRESENCE and `pause.reason` /
+/// `screen_encoder.last_error` stay meaningful.
 pub fn should_emit(previous: &HealthDump, next: &HealthDump) -> bool {
     canonicalize_for_emit(previous) != canonicalize_for_emit(next)
 }
@@ -598,6 +606,7 @@ fn canonicalize_for_emit(dump: &HealthDump) -> HealthDump {
     if let Some(encoder) = d.screen_encoder.as_mut() {
         encoder.frames_consumed = 0;
         encoder.samples_written = 0;
+        encoder.clamp_events = 0;
     }
     d
 }
@@ -737,6 +746,7 @@ mod tests {
         }
         ScreenFrame {
             seq: 7,
+            arrival_100ns: 0,
             width: w,
             height: h,
             pixel_format: ScreenPixelFormat::Rgba8,
@@ -796,6 +806,7 @@ mod tests {
             screen_encoder: Some(EncoderHealth {
                 frames_consumed: 10,
                 samples_written: 20,
+                clamp_events: 0,
                 last_error: None,
             }),
             exclusions: None,
@@ -841,6 +852,7 @@ mod tests {
     fn normalize_even_returns_malformed_frame_unchanged() {
         let input = ScreenFrame {
             seq: 9,
+            arrival_100ns: 0,
             width: 3,
             height: 3,
             pixel_format: ScreenPixelFormat::Rgba8,

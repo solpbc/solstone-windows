@@ -134,6 +134,7 @@ mod imp {
             };
             let width = frame.width();
             let height = frame.height();
+            let arrival_100ns = frame.timestamp().map(|ts| ts.Duration).unwrap_or(0);
             let frame_buffer = frame.buffer().map_err(|err| err.to_string())?;
             let mut data = frame_buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
 
@@ -170,6 +171,7 @@ mod imp {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
             let frame = normalize_even(&ScreenFrame {
                 seq,
+                arrival_100ns,
                 width,
                 height,
                 pixel_format,
