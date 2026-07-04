@@ -4,12 +4,40 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.9] - 2026-07-04
+
+### Fixed
+
+- pausing and resuming observing no longer risks stopping capture permanently.
+  the same applies to disk hiccups (a full disk, an antivirus briefly holding a
+  file): sol now retries in the background and recovers on its own instead of
+  needing a relaunch.
+- what sol saves now lands on the right day and time in your journal. segments
+  were previously filed under UTC, which shifted evening hours onto the next day
+  for anyone west of it.
+- one problematic segment can no longer hold up everything behind it. a segment
+  your journal repeatedly declines is set aside and counted in health while the
+  rest keep uploading.
+- pairing with a different journal now cleanly stops the previous connection, so
+  nothing keeps uploading to the journal you left.
+- sol now reliably notices sleep, wake, and display changes. these system
+  notifications previously never reached it.
+- system audio keeps flowing when you switch where sound plays — headphones, a
+  dock, or bluetooth.
+- the video timeline inside each segment now matches the wall clock, so what you
+  saw lines up with what you heard.
+- if your exclusion rules ever fail to load, sol now drops those frames entirely
+  rather than falling back to default rules. privacy fails closed.
 
 ### Changed
 
 - the app now calls itself sol: sol is the app, your journal is the memory, and
   solstone is the platform it all comes from.
+- a friendlier first-run introduction when sol isn't paired with a journal yet.
+- audio is now stored as a single compact file per segment (about 100x smaller),
+  and your pairing credentials are encrypted at rest with Windows' built-in
+  protection.
+- removed the start menu item from the tray that could never be enabled.
 
 ## [0.2.8] - 2026-07-02
 
