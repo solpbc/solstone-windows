@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use observer_model::{
     AudioFormat, CaptureChunk, SegmentKey, SourceKind, AUDIO_FILE_NAME, LEN_FILE_NAME,
@@ -680,11 +680,28 @@ mod notification_pump {
 #[cfg(windows)]
 pub use notification_pump::NotificationPump;
 
+const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Debug)]
+struct SegmentHandle {
+    file: File,
+    last_flush: Option<Instant>,
+}
+
+/// First write flushes immediately so recovery's file-length check promptly sees
+/// durable data; after that, flush no more than about once per second per source.
+fn flush_due(elapsed_since_last: Option<Duration>) -> bool {
+    match elapsed_since_last {
+        None => true,
+        Some(duration) => duration >= FLUSH_INTERVAL,
+    }
+}
+
 /// Real `%LocalAppData%`-backed segment filesystem.
 #[derive(Debug)]
 pub struct LocalSegmentFs {
     root: PathBuf,
-    handles: BTreeMap<(SegmentKey, SourceKind), File>,
+    handles: BTreeMap<(SegmentKey, SourceKind), SegmentHandle>,
 }
 
 impl LocalSegmentFs {
@@ -734,16 +751,26 @@ impl SegmentFs for LocalSegmentFs {
             }
             let path = dir.join(source_file_name(chunk.source));
             let file = OpenOptions::new().create(true).append(true).open(path)?;
-            entry.insert(file);
+            entry.insert(SegmentHandle {
+                file,
+                last_flush: None,
+            });
         }
-        let file = self.handles.get_mut(&handle_key).expect("handle inserted");
-        file.write_all(&chunk.data)?;
-        // Durably commit each chunk. Without this, a 5-minute segment's frames sit
-        // in the OS write cache until finalize: a crash would lose the whole
-        // in-flight segment, and recovery's usable-data check (file length) would
-        // read 0 for a segment that actually captured data and wrongly quarantine
-        // it. At the capped ~1 fps this is ~1 fsync/sec — negligible.
-        file.sync_all()?;
+        let handle = self.handles.get_mut(&handle_key).expect("handle inserted");
+        handle.file.write_all(&chunk.data)?;
+        // Commit durability on a ~1s per-handle cadence, not per chunk. Audio
+        // flows here at the 100ms WASAPI pull cadence from two sources, so
+        // per-chunk fsync was ~10-20/sec. The first chunk syncs immediately so
+        // recovery's file-length check sees nonzero promptly; steady state is
+        // ~1 fsync/sec/source, capping crash exposure to <=~1s of audio per
+        // source. finalize flushes+syncs every handle at seal.
+        let elapsed = handle
+            .last_flush
+            .map(|last_flush| Instant::now().duration_since(last_flush));
+        if flush_due(elapsed) {
+            handle.file.sync_all()?;
+            handle.last_flush = Some(Instant::now());
+        }
         Ok(())
     }
 
@@ -759,9 +786,9 @@ impl SegmentFs for LocalSegmentFs {
             .filter(|(handle_key, _)| *handle_key == key)
             .collect();
         for handle_key in to_drop {
-            if let Some(mut file) = self.handles.remove(&handle_key) {
-                file.flush()?;
-                file.sync_all()?;
+            if let Some(mut handle) = self.handles.remove(&handle_key) {
+                handle.file.flush()?;
+                handle.file.sync_all()?;
             }
         }
         let dir = incomplete_dir(&self.root, key);
@@ -889,6 +916,13 @@ mod tests {
             boundary_epoch_secs: index * DEFAULT_SEGMENT_SECS,
             index,
         }
+    }
+
+    #[test]
+    fn flush_due_flushes_first_chunk_and_at_interval() {
+        assert!(flush_due(None));
+        assert!(!flush_due(Some(FLUSH_INTERVAL - Duration::from_millis(1))));
+        assert!(flush_due(Some(FLUSH_INTERVAL)));
     }
 
     fn chunk(source: SourceKind, data: &[u8]) -> CaptureChunk {
