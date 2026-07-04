@@ -155,7 +155,8 @@ mod imp {
 
     fn device_id(device: &IMMDevice) -> Option<String> {
         let id_pw = unsafe { device.GetId().ok()? };
-        let id = id_pw.to_string().unwrap_or_default();
+        // SAFETY: GetId returned a valid null-terminated PWSTR we free below.
+        let id = unsafe { id_pw.to_string() }.unwrap_or_default();
         unsafe { CoTaskMemFree(Some(id_pw.0 as *const _)) };
         if id.is_empty() {
             None
