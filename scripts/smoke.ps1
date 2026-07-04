@@ -111,7 +111,13 @@ if ($FailInject) {
     & $DriverExe @GateArgs
     if ($LASTEXITCODE -ne 0) { throw "precondition (reach observing + render) failed ($LASTEXITCODE)" }
     try { Stop-Service -Name Audiosrv -Force -ErrorAction Stop; Write-Host "stopped Audiosrv" }
-    catch { Write-Warning "could not stop Audiosrv ($_): live fail-injection needs privilege; selftest already proved the decision logic"; Remove-Task "solstone-smoke-app"; exit 0 }
+    catch {
+        # Exit 3 = SKIPPED, distinct from pass (0) and fail (1): a validation mode
+        # that could not inject must not report green.
+        Write-Warning "could not stop Audiosrv ($_): live fail-injection needs privilege; SKIPPED (exit 3) -- selftest covers the decision logic"
+        Remove-Task "solstone-smoke-app"
+        exit 3
+    }
     $GateArgs += "--fail-inject"
 }
 

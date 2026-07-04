@@ -37,11 +37,10 @@ fi
 repo_args=""
 [ -n "$REPO" ] && repo_args="--repo $REPO"
 
-# Version = the HIGHEST version among the packed full nupkgs (Releases/ accumulates
-# every prior full/delta, so 'first' would wrongly pick the oldest). sort -V = semver.
-VERSION="$(ls "$RELEASES"/Solstone-*-full.nupkg 2>/dev/null \
-  | sed -E 's#.*/Solstone-(.+)-full\.nupkg#\1#; s/-win$//' \
-  | sort -V | tail -1)"
+# Version resolution is shared (and tested) in lib/artifact-names.sh -- same
+# source publish-r2.sh uses, so the R2 feed and this mirror can never drift.
+. "$(dirname "$0")/lib/artifact-names.sh"
+VERSION="$(resolve_release_version "$RELEASES")"
 if [ -z "$VERSION" ]; then
   echo "publish-gh: no full nupkg in '$RELEASES' -- not a packed release dir." >&2
   exit 1
@@ -51,7 +50,7 @@ TAG="v$VERSION"
 # Release notes: the CHANGELOG.md "## [<version>]" section body (mirrors package.ps1
 # / the R2 feed's NotesMarkdown), written to a temp file for `gh --notes-file`.
 # Falls back to a bare title line only if the section is absent.
-notes_args="--notes Solstone $VERSION"
+notes_file=""
 if [ -f "$CHANGELOG" ]; then
   notes_file="$(mktemp)"
   awk -v ver="$VERSION" '
@@ -62,25 +61,31 @@ if [ -f "$CHANGELOG" ]; then
   # Trim leading blank lines too.
   sed -i '/./,$!d' "$notes_file" 2>/dev/null || true
   if [ -s "$notes_file" ]; then
-    notes_args="--notes-file $notes_file"
     echo "publish-gh: release notes from $CHANGELOG ## [$VERSION]"
   else
     echo "publish-gh: WARNING -- no '## [$VERSION]' section in $CHANGELOG; using bare title." >&2
   fi
 fi
 
+# Build the create argv positionally (set --): no eval, no word-splitting or
+# quote-nesting hazards for paths/notes with spaces.
+set -- release create "$TAG" --title "$TAG"
+[ -n "$REPO" ] && set -- "$@" --repo "$REPO"
+if [ -n "$notes_file" ] && [ -s "$notes_file" ]; then
+  set -- "$@" --notes-file "$notes_file"
+else
+  set -- "$@" --notes "Solstone $VERSION"
+fi
 # Every asset except the feed JSON (uploaded last, below).
-assets=""
 for f in "$RELEASES"/*; do
   [ -f "$f" ] || continue
   [ "$(basename "$f")" = "releases.win.json" ] && continue
-  assets="$assets \"$f\""
+  set -- "$@" "$f"
 done
 
 echo "publish-gh: creating GitHub release $TAG"
 # Fail loud on an existing tag (no --clobber) -> the monotonic feed is never silently overwritten.
-# shellcheck disable=SC2086
-eval gh release create "$TAG" $repo_args --title "$TAG" $notes_args $assets
+gh "$@"
 
 echo "publish-gh: uploading the update feed (releases.win.json) last"
 # shellcheck disable=SC2086
