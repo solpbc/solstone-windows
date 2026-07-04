@@ -37,11 +37,14 @@ mod imp {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
     const PARTIAL_SUFFIX: &str = ".partial";
+    /// Bound queued RGBA frames to about 33 MB at 1080p. When full, drop newest:
+    /// at ~1 fps that sheds about one second of video with no reorder machinery.
+    const ENCODE_QUEUE_DEPTH: usize = 4;
     const DXGI_ERROR_DEVICE_REMOVED: HRESULT = HRESULT(0x887A0005_u32 as i32);
     const GUID_NULL: GUID = GUID::from_u128(0);
 
     pub struct MfScreenEncoder {
-        tx: mpsc::Sender<EncoderCommand>,
+        tx: mpsc::SyncSender<EncoderCommand>,
         worker: Option<JoinHandle<()>>,
         accounting: Arc<Accounting>,
         cached: Mutex<Option<CachedOpen>>,
@@ -55,6 +58,7 @@ mod imp {
     #[derive(Default)]
     struct Accounting {
         frames_consumed: AtomicU64,
+        frames_dropped: AtomicU64,
         samples_written: AtomicU64,
         clamp_events: AtomicU64,
         last_end_100ns: AtomicI64,
@@ -81,6 +85,7 @@ mod imp {
         fn health(&self) -> EncoderHealth {
             EncoderHealth {
                 frames_consumed: self.frames_consumed.load(Ordering::Relaxed),
+                frames_dropped: self.frames_dropped.load(Ordering::Relaxed),
                 samples_written: self.samples_written.load(Ordering::Relaxed),
                 clamp_events: self.clamp_events.load(Ordering::Relaxed),
                 last_error: self.last_error(),
@@ -122,7 +127,7 @@ mod imp {
     impl MfScreenEncoder {
         pub fn new() -> Self {
             let accounting = Arc::new(Accounting::default());
-            let (tx, rx) = mpsc::channel();
+            let (tx, rx) = mpsc::sync_channel(ENCODE_QUEUE_DEPTH);
             let worker_accounting = Arc::clone(&accounting);
             let worker = thread::spawn(move || worker_loop(rx, worker_accounting));
             Self {
@@ -191,13 +196,20 @@ mod imp {
                 return Err(error);
             }
 
-            self.tx
-                .send(EncoderCommand::EncodeFrame(frame.clone()))
-                .map_err(|_| {
+            match self.tx.try_send(EncoderCommand::EncodeFrame(frame.clone())) {
+                Ok(()) => Ok(()),
+                Err(mpsc::TrySendError::Full(_)) => {
+                    self.accounting
+                        .frames_dropped
+                        .fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
                     let error = Self::worker_stopped_error();
                     self.accounting.set_error(error.detail.clone());
-                    error
-                })
+                    Err(error)
+                }
+            }
         }
 
         fn finalize(&mut self) -> Result<(), EncoderError> {
@@ -892,6 +904,49 @@ mod imp {
             kind,
             format!("{context} failed: {:?}: {error}", error.code()),
         )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use observer_model::{ScreenEncoder, ScreenFrame, ScreenPixelFormat};
+        use std::sync::{mpsc, Arc, Mutex};
+
+        fn frame() -> ScreenFrame {
+            ScreenFrame {
+                seq: 0,
+                arrival_100ns: 0,
+                width: 2,
+                height: 2,
+                pixel_format: ScreenPixelFormat::Rgba8,
+                pixels: Arc::from(vec![0_u8; 16]),
+            }
+        }
+
+        #[test]
+        fn full_encode_queue_drops_newest_and_counts_it() {
+            let accounting = Arc::new(Accounting::default());
+            let (tx, rx) = mpsc::sync_channel(ENCODE_QUEUE_DEPTH);
+            for _ in 0..ENCODE_QUEUE_DEPTH {
+                tx.send(EncoderCommand::Shutdown).unwrap();
+            }
+            let mut encoder = MfScreenEncoder {
+                tx,
+                worker: None,
+                accounting,
+                cached: Mutex::new(Some(CachedOpen {
+                    width: 2,
+                    height: 2,
+                })),
+            };
+
+            encoder.encode_frame(&frame()).unwrap();
+
+            let health = encoder.health();
+            assert_eq!(health.frames_consumed, 1);
+            assert_eq!(health.frames_dropped, 1);
+            drop(rx);
+        }
     }
 }
 

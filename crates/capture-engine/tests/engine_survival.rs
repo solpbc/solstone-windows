@@ -133,6 +133,7 @@ impl ScreenEncoder for FakeEncoder {
     fn health(&self) -> EncoderHealth {
         EncoderHealth {
             frames_consumed: 0,
+            frames_dropped: 0,
             samples_written: 0,
             clamp_events: 0,
             last_error: None,
@@ -196,7 +197,7 @@ fn pause_resume_same_window_seals_once_and_preserves_audio_duration() {
     let _ = std::fs::remove_dir_all(&root);
     let clock = FakeClock::new(100);
     let (sources, screen) = sources();
-    let mut recovery = platform_win::LocalRecoveryFs::new(root.clone());
+    let mut recovery = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
     let segment_fs = platform_win::LocalSegmentFs::new(root.clone());
     let (mut engine, outcomes) = CaptureEngine::new(
         sources,

@@ -635,7 +635,7 @@ fn log_dial_failed(route: &str, attempts: u32, err: &TransportError) {
 
 /// Decode JWT lifetime and apply the observer-pl proactive refresh threshold.
 fn token_should_refresh(token: &str, now_secs: i64) -> bool {
-    observer_pl::jwt::decode_claims(token)
+    observer_pl::jwt::decode_unverified_claims(token)
         .map(|claims| observer_pl::jwt::should_refresh(&claims, now_secs))
         .unwrap_or(false)
 }

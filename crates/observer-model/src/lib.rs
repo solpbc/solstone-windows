@@ -269,6 +269,7 @@ impl std::error::Error for EncoderError {}
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct EncoderHealth {
     pub frames_consumed: u64,
+    pub frames_dropped: u64,
     pub samples_written: u64,
     /// Samples whose time was clamped to stay monotonic / >= 0.
     ///
@@ -602,7 +603,7 @@ pub struct HealthDump {
 
 /// True when `next` differs from `previous` in a way the Settings/About UI
 /// renders, so the shell should re-emit `health://changed`. Fail-safe: the
-/// ignore-list below is CLOSED — only these five volatile leaves are masked;
+/// ignore-list below is CLOSED — only these six volatile leaves are masked;
 /// any other difference (including a field a future arc adds) forces an emit,
 /// so the predicate can never swallow a real discrete state change.
 ///
@@ -610,7 +611,7 @@ pub struct HealthDump {
 /// not displayed: `frame_rate`, `segment_seconds_remaining`,
 /// `pause.seconds_remaining` (the bounded-pause countdown, advanced UI-side off
 /// the 1 s timer instead), and the `screen_encoder` counters
-/// `frames_consumed` / `samples_written` / `clamp_events`. The
+/// `frames_consumed` / `frames_dropped` / `samples_written` / `clamp_events`. The
 /// `pause`/`screen_encoder` PRESENCE and `pause.reason` /
 /// `screen_encoder.last_error` stay meaningful.
 pub fn should_emit(previous: &HealthDump, next: &HealthDump) -> bool {
@@ -628,6 +629,7 @@ fn canonicalize_for_emit(dump: &HealthDump) -> HealthDump {
     }
     if let Some(encoder) = d.screen_encoder.as_mut() {
         encoder.frames_consumed = 0;
+        encoder.frames_dropped = 0;
         encoder.samples_written = 0;
         encoder.clamp_events = 0;
     }
@@ -833,6 +835,7 @@ mod tests {
             },
             screen_encoder: Some(EncoderHealth {
                 frames_consumed: 10,
+                frames_dropped: 0,
                 samples_written: 20,
                 clamp_events: 0,
                 last_error: None,
@@ -926,6 +929,7 @@ mod tests {
         next.segment_seconds_remaining = Some(119);
         next.pause.as_mut().unwrap().seconds_remaining = Some(899);
         next.screen_encoder.as_mut().unwrap().frames_consumed = 11;
+        next.screen_encoder.as_mut().unwrap().frames_dropped = 1;
         next.screen_encoder.as_mut().unwrap().samples_written = 21;
         assert!(!should_emit(&base, &next));
 

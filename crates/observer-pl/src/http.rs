@@ -46,6 +46,8 @@ pub enum HttpError {
     MissingStatusLine,
     #[error("bad HTTP status line: {0}")]
     BadStatusLine(String),
+    #[error("HTTP response body truncated")]
+    TruncatedBody,
     #[error("chunked body is malformed: {0}")]
     BadChunkedBody(String),
 }
@@ -233,6 +235,8 @@ pub fn parse_response(raw: &[u8]) -> Result<HttpResponse, HttpError> {
     {
         if len < body.len() {
             body.truncate(len);
+        } else if len > body.len() {
+            return Err(HttpError::TruncatedBody);
         }
     }
 
@@ -291,7 +295,7 @@ pub fn dechunk(raw: &[u8]) -> Result<Vec<u8>, HttpError> {
         out.extend_from_slice(&raw[index..index + size]);
         index += size + 2; // skip the chunk data + trailing CRLF
     }
-    Ok(out)
+    Err(HttpError::BadChunkedBody("missing terminal chunk".into()))
 }
 
 #[cfg(test)]
@@ -339,10 +343,25 @@ mod tests {
     }
 
     #[test]
+    fn short_content_length_is_an_error() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nhi";
+        assert_eq!(parse_response(raw).unwrap_err(), HttpError::TruncatedBody);
+    }
+
+    #[test]
     fn parses_chunked_response() {
         let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
         let resp = parse_response(raw).unwrap();
         assert_eq!(resp.body, b"Wikipedia");
+    }
+
+    #[test]
+    fn chunked_response_without_terminal_chunk_is_an_error() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n";
+        assert_eq!(
+            parse_response(raw).unwrap_err(),
+            HttpError::BadChunkedBody("missing terminal chunk".into())
+        );
     }
 
     #[test]

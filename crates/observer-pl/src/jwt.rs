@@ -19,7 +19,9 @@ struct RawClaims {
     exp: i64,
 }
 
-pub fn decode_claims(token: &str) -> Option<JwtClaims> {
+/// Decode token lifetime claims without authenticating the JWT. This is a
+/// self-held token lifetime hint only; it is not an authorization decision.
+pub fn decode_unverified_claims(token: &str) -> Option<JwtClaims> {
     let mut parts = token.split('.');
     let _header = parts.next()?;
     let payload = parts.next()?;
@@ -61,20 +63,26 @@ mod tests {
     fn decodes_valid_claims() {
         let token = token_with_payload(br#"{"iat":100,"exp":200}"#);
         assert_eq!(
-            decode_claims(&token),
+            decode_unverified_claims(&token),
             Some(JwtClaims { iat: 100, exp: 200 })
         );
     }
 
     #[test]
     fn malformed_tokens_decode_to_none() {
-        assert_eq!(decode_claims("two.parts"), None);
-        assert_eq!(decode_claims("too.many.parts.here"), None);
-        assert_eq!(decode_claims("header.!!!!.sig"), None);
-        assert_eq!(decode_claims(&token_with_payload(b"not json")), None);
-        assert_eq!(decode_claims(&token_with_payload(br#"{"iat":100}"#)), None);
+        assert_eq!(decode_unverified_claims("two.parts"), None);
+        assert_eq!(decode_unverified_claims("too.many.parts.here"), None);
+        assert_eq!(decode_unverified_claims("header.!!!!.sig"), None);
         assert_eq!(
-            decode_claims(&token_with_payload(br#"{"iat":"100","exp":200}"#)),
+            decode_unverified_claims(&token_with_payload(b"not json")),
+            None
+        );
+        assert_eq!(
+            decode_unverified_claims(&token_with_payload(br#"{"iat":100}"#)),
+            None
+        );
+        assert_eq!(
+            decode_unverified_claims(&token_with_payload(br#"{"iat":"100","exp":200}"#)),
             None
         );
     }

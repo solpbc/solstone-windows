@@ -30,7 +30,7 @@ use observer_segment::{
 };
 use observer_state::{reduce, AppEvent, StateMachine};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
@@ -38,7 +38,6 @@ pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
 /// Commands the shell and lifecycle pump can send to the engine loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineCommand {
-    Start,
     /// Pause capture. `duration_secs` bounds an operator pause (15m / 30m / 1h)
     /// after which the engine auto-resumes; `None` is an indefinite pause (the
     /// operator's "until I resume", or a system lock/suspend pause).
@@ -370,9 +369,6 @@ where
 
     pub fn apply_command(&mut self, command: EngineCommand) {
         match command {
-            EngineCommand::Start => {
-                self.reduce(AppEvent::RequestedStart);
-            }
             EngineCommand::Pause {
                 reason,
                 duration_secs,
@@ -862,34 +858,50 @@ where
 /// bind to 127.0.0.1, never a wildcard address.
 pub async fn serve_health(listener: TcpListener, dump: Arc<Mutex<HealthDump>>) -> io::Result<()> {
     loop {
-        let (mut stream, _) = listener.accept().await?;
-        let mut request = Vec::new();
-        let mut buf = [0u8; 1024];
-        loop {
-            let n = stream.read(&mut buf).await?;
-            if n == 0 {
-                break;
+        let (stream, _) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                tracing::error!(target: "health", error = %error, "health server accept failed");
+                return Err(error);
             }
-            request.extend_from_slice(&buf[..n]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-
-        let body = {
-            let locked = dump
-                .lock()
-                .map_err(|_| io::Error::other("health dump mutex poisoned"))?;
-            observer_health::to_pretty_json(&locked).map_err(io::Error::other)?
         };
-        let response = format!(
+        if let Err(error) = handle_health_connection(stream, &dump).await {
+            tracing::warn!(target: "health", error = %error, "health connection failed");
+        }
+    }
+}
+
+async fn handle_health_connection(
+    mut stream: TcpStream,
+    dump: &Arc<Mutex<HealthDump>>,
+) -> io::Result<()> {
+    let mut request = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        request.extend_from_slice(&buf[..n]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let body = {
+        let locked = dump
+            .lock()
+            .map_err(|_| io::Error::other("health dump mutex poisoned"))?;
+        observer_health::to_pretty_json(&locked).map_err(io::Error::other)?
+    };
+    let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );
-        stream.write_all(response.as_bytes()).await?;
-        stream.shutdown().await?;
-    }
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1233,6 +1245,7 @@ mod tests {
         fn health(&self) -> EncoderHealth {
             EncoderHealth {
                 frames_consumed: self.frames_consumed,
+                frames_dropped: 0,
                 samples_written: self.samples_written,
                 clamp_events: 0,
                 last_error: self.last_error.clone(),
@@ -1463,11 +1476,6 @@ mod tests {
             sources,
         );
         let mut rx = engine.health_watch();
-
-        rx.mark_unchanged();
-        engine.apply_command(EngineCommand::Start);
-        assert!(rx.has_changed().unwrap());
-        assert_eq!(engine.health_dump().app_state, AppPhase::Starting);
 
         engine.start();
 
@@ -2250,6 +2258,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(serve_health(listener, Arc::new(Mutex::new(fed))));
+
+        let mut bad = TcpStream::connect(addr).await.unwrap();
+        bad.shutdown().await.unwrap();
+        drop(bad);
 
         let mut stream = TcpStream::connect(addr).await.unwrap();
         stream

@@ -7,7 +7,7 @@
 //!
 //!  1. **AutomationId identifiers** — the namespaced `data-automation-id` /
 //!     UIA AutomationId strings the FlaUI harness and the webview both reference
-//!     (`tray.menu.start`, `settings.status.appState.state`, …). Declared as
+//!     (`tray.menu.pause`, `settings.status.appState.state`, …). Declared as
 //!     `const`s below so a rename is a compile-time event.
 //!  2. **State/source token vocabulary** — the serialized enum tokens
 //!     (`idle`/`observing`/…, `screen`/`system_audio`/…, `active`/
@@ -40,7 +40,6 @@ pub const GENERATED_BANNER: &str = "DO NOT EDIT — run make contract";
 /// Tray surface.
 pub mod tray {
     pub const ROOT: &str = "tray.root";
-    pub const MENU_START: &str = "tray.menu.start";
     /// The Pause submenu root; its children are the duration choices below.
     pub const MENU_PAUSE: &str = "tray.menu.pause";
     pub const MENU_PAUSE_15M: &str = "tray.menu.pause15m";
@@ -124,7 +123,6 @@ pub mod about {
 fn automation_ids() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([
         ("tray.root", tray::ROOT),
-        ("tray.menu.start", tray::MENU_START),
         ("tray.menu.pause", tray::MENU_PAUSE),
         ("tray.menu.pause15m", tray::MENU_PAUSE_15M),
         ("tray.menu.pause30m", tray::MENU_PAUSE_30M),

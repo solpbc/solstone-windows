@@ -15,6 +15,7 @@
 //! correct (no concurrent-stream bookkeeping); the cost is a handshake per call,
 //! fine at observer cadence (one ingest per segment, one heartbeat per 15s).
 
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,9 @@ use crate::tls::pinned_server_name;
 use crate::TransportError;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Upper bound on outbound writes. A stalled write means the peer is dead or no
+/// longer draining; fail fast and let the coordinator's backoff retry.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Upper bound on a single inbound read while uploading/awaiting the response.
 /// A healthy journal replenishes the window at 50% consumed and answers
 /// promptly; a stall this long is a dead peer, not back-pressure — fail fast and
@@ -102,11 +106,17 @@ where
                 .poll_send()
                 .map_err(|e| TransportError::Mux(MuxError::Frame(e)))?
             {
-                stream.write_all(&frame).await?;
+                write_all_with_timeout(
+                    &mut stream,
+                    &frame,
+                    "PL write timed out sending request frame",
+                )
+                .await?;
                 wrote = true;
             }
             if wrote {
-                stream.flush().await?;
+                flush_with_timeout(&mut stream, "PL write timed out flushing request frames")
+                    .await?;
             }
         }
         if assembler.is_closed() {
@@ -132,13 +142,88 @@ where
         }
         if !out.pongs.is_empty() {
             for pong in out.pongs {
-                stream.write_all(&pong).await?;
+                write_all_with_timeout(&mut stream, &pong, "PL write timed out sending pong")
+                    .await?;
             }
-            stream.flush().await?;
+            flush_with_timeout(&mut stream, "PL write timed out flushing pongs").await?;
         }
     }
     // Best-effort clean close.
     let _ = stream.shutdown().await;
 
     Ok(assembler.into_response()?)
+}
+
+async fn write_all_with_timeout<S>(
+    stream: &mut S,
+    bytes: &[u8],
+    message: &'static str,
+) -> Result<(), TransportError>
+where
+    S: AsyncWrite + Unpin,
+{
+    tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(bytes))
+        .await
+        .map_err(|_| TransportError::Io(io::Error::new(io::ErrorKind::TimedOut, message)))??;
+    Ok(())
+}
+
+async fn flush_with_timeout<S>(stream: &mut S, message: &'static str) -> Result<(), TransportError>
+where
+    S: AsyncWrite + Unpin,
+{
+    tokio::time::timeout(WRITE_TIMEOUT, stream.flush())
+        .await
+        .map_err(|_| TransportError::Io(io::Error::new(io::ErrorKind::TimedOut, message)))??;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::ReadBuf;
+
+    struct PendingWriteStream;
+
+    impl AsyncRead for PendingWriteStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for PendingWriteStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_write_times_out_without_waiting() {
+        let err = run_request_over_stream(PendingWriteStream, "POST", "/x", &[], b"body")
+            .await
+            .unwrap_err();
+
+        match err {
+            TransportError::Io(error) => assert_eq!(error.kind(), io::ErrorKind::TimedOut),
+            other => panic!("expected timed out io error, got {other:?}"),
+        }
+    }
 }

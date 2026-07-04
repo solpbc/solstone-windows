@@ -7,21 +7,11 @@
 //! set UI state. The webview cannot mint status — it has no input but the
 //! `health://changed` event it subscribes to — so "status earned, never
 //! asserted" holds by construction. Commands mirror the boundary contract:
-//! `start_observing / pause / resume / get_health / open_settings / open_about`.
+//! `pause / resume / get_health / open_settings / open_about`.
 
 use capture_engine::EngineCommand;
 use observer_model::HealthDump;
 use observer_model::PauseReason;
-
-/// Ask the engine to begin observing. The resulting phase is *computed* by the
-/// reducer once sources go active — this command does not return "observing".
-#[tauri::command]
-pub fn start_observing(state: tauri::State<'_, crate::app::AppState>) -> Result<(), String> {
-    state
-        .commands
-        .send(EngineCommand::Start)
-        .map_err(|error| error.to_string())
-}
 
 /// Ask the engine to pause. `reason` is an owner-meaningful token;
 /// `duration_secs` bounds an operator pause (auto-resume after it elapses) and is

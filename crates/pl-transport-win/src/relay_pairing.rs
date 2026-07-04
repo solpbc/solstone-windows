@@ -92,7 +92,8 @@ pub async fn pair_over_relay(
         .ok_or_else(|| TransportError::Pairing("relay response missing home attestation".into()))?;
     let device_token =
         enroll_device(&link.relay_origin, &pair.instance_id, home_attestation).await?;
-    let device_token_expires_at = observer_pl::jwt::decode_claims(&device_token).map(|c| c.exp);
+    let device_token_expires_at =
+        observer_pl::jwt::decode_unverified_claims(&device_token).map(|c| c.exp);
     let ca_fp_prefix = ca::sha256(pinned_ca.as_ref())[..16].to_vec();
     let endpoints = endpoint_addrs_from_local_endpoints(pair.local_endpoints.as_ref());
 

@@ -41,7 +41,7 @@ async fn refresh_device_token_inner(
     if response.is_success() {
         let parsed: RefreshResponse = serde_json::from_slice(&response.body)
             .map_err(|_| TransportError::Pairing("relay refresh response malformed".into()))?;
-        let claims = observer_pl::jwt::decode_claims(&parsed.device_token)
+        let claims = observer_pl::jwt::decode_unverified_claims(&parsed.device_token)
             .ok_or_else(|| TransportError::Pairing("relay refresh response malformed".into()))?;
         return Ok(RefreshOutcome::Refreshed {
             device_token: parsed.device_token,

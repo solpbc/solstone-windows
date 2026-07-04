@@ -129,7 +129,7 @@ fn observer_relay_credential(
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let params = CertificateParams::new(vec!["observer.test".to_string()]).unwrap();
     let cert = params.self_signed(&key).unwrap();
-    let expires_at = observer_pl::jwt::decode_claims(&token).map(|claims| claims.exp);
+    let expires_at = observer_pl::jwt::decode_unverified_claims(&token).map(|claims| claims.exp);
     Credential {
         client_key_pem: key.serialize_pem(),
         client_cert_pem: cert.pem(),

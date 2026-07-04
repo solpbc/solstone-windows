@@ -41,7 +41,10 @@ pub async fn serve(app: tauri::AppHandle, listener: tokio::net::TcpListener) {
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(accepted) => accepted,
-            Err(_) => continue,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
         };
         let app = app.clone();
         tokio::spawn(async move {

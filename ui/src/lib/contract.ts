@@ -61,7 +61,6 @@ export const automationContract = {
     "tray.menu.pauseIndefinite": "tray.menu.pauseIndefinite",
     "tray.menu.quit": "tray.menu.quit",
     "tray.menu.resume": "tray.menu.resume",
-    "tray.menu.start": "tray.menu.start",
     "tray.root": "tray.root"
   },
   "state_tokens": {

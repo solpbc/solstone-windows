@@ -22,6 +22,9 @@
 //! stub so the Linux dev host can compile the workspace.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
+
+use observer_exclusion::ExclusionRules;
 
 /// Per-frame capture-exclusion counters, shared between the WGC capture thread
 /// (which increments them) and the health reporter (which snapshots them). It
@@ -30,11 +33,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// `ScreenSource` trait, keeping exclusion activity visible in health (never
 /// silent) without leaking a platform type into the engine.
 #[derive(Debug, Default)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct ExclusionStats {
     frames_redacted: AtomicU64,
     frames_dropped: AtomicU64,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl ExclusionStats {
     fn snapshot(&self, rules_active: bool) -> observer_model::ExclusionHealth {
         observer_model::ExclusionHealth {
@@ -42,6 +47,38 @@ impl ExclusionStats {
             frames_redacted: self.frames_redacted.load(Ordering::Relaxed),
             frames_dropped: self.frames_dropped.load(Ordering::Relaxed),
         }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn resolve_rules_or_drop(
+    rules: &RwLock<ExclusionRules>,
+    stats: &ExclusionStats,
+) -> Option<ExclusionRules> {
+    match rules.read() {
+        Ok(guard) => Some(guard.clone()),
+        Err(_) => {
+            stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poisoned_rules_lock_drops_frame_and_counts_it() {
+        let rules = RwLock::new(ExclusionRules::default());
+        let stats = ExclusionStats::default();
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = rules.write().unwrap();
+            panic!("poison rules lock");
+        });
+
+        assert!(resolve_rules_or_drop(&rules, &stats).is_none());
+        assert_eq!(stats.snapshot(false).frames_dropped, 1);
     }
 }
 
@@ -65,7 +102,7 @@ mod imp {
         MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
     };
 
-    use super::ExclusionStats;
+    use super::{resolve_rules_or_drop, ExclusionStats};
 
     mod window_enum;
 
@@ -144,7 +181,10 @@ mod imp {
             // closed). Skipped entirely when no rule is configured (no per-frame
             // cost). A dropped frame still keeps the source `Active` — the observer
             // is healthy, just excluding — and is counted into health.
-            let rules = self.rules.read().map(|r| r.clone()).unwrap_or_default();
+            let Some(rules) = resolve_rules_or_drop(&self.rules, &self.stats) else {
+                self.set_state(SourceState::Active);
+                return Ok(());
+            };
             if rules.is_active() {
                 match window_enum::enumerate_primary_monitor_windows(width, height) {
                     Ok(windows) => match evaluate(&rules, &windows) {

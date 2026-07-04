@@ -213,6 +213,13 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
         let source = entry.path();
         let target = sealed.join(entry.file_name());
         if target.exists() {
+            // The warn is the fix: preserve existing merge behavior, but make loss visible.
+            tracing::warn!(
+                target: "recovery",
+                source = %source.display(),
+                target = %target.display(),
+                "seal_or_merge dropping conflicting file (target exists)"
+            );
             drop_entry(&source)?;
         } else {
             fs::rename(&source, target)?;
@@ -802,17 +809,18 @@ impl SegmentFs for LocalSegmentFs {
 #[derive(Debug)]
 pub struct LocalRecoveryFs {
     root: PathBuf,
+    period_secs: u64,
 }
 
 impl LocalRecoveryFs {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(root: PathBuf, period_secs: u64) -> Self {
+        Self { root, period_secs }
     }
 }
 
 impl Default for LocalRecoveryFs {
     fn default() -> Self {
-        Self::new(segments_dir())
+        Self::new(segments_dir(), DEFAULT_SEGMENT_SECS)
     }
 }
 
@@ -857,10 +865,10 @@ impl RecoveryFs for LocalRecoveryFs {
                 continue;
             };
             let key = SegmentKey {
-                boundary_epoch_secs: index * DEFAULT_SEGMENT_SECS,
+                boundary_epoch_secs: index * self.period_secs,
                 index,
             };
-            if is_live_segment(key, now_epoch_secs, DEFAULT_SEGMENT_SECS) {
+            if is_live_segment(key, now_epoch_secs, self.period_secs) {
                 continue;
             }
             stale.push(StaleSegment {
@@ -880,7 +888,7 @@ impl RecoveryFs for LocalRecoveryFs {
         let dir = Path::new(&seg.path);
         remove_partial_media(dir)?;
         seal_audio_flac(dir)?;
-        persist_seal_len(dir, None, DEFAULT_SEGMENT_SECS)?;
+        persist_seal_len(dir, None, self.period_secs)?;
         seal_or_merge(dir, &sealed_dir(&self.root, seg.key))
     }
 
@@ -1218,12 +1226,49 @@ mod tests {
         )
         .unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
 
         // Only the past-window orphan is returned; the live segment is skipped.
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].key, key(1));
+        assert!(stale[0].has_usable_data);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_scan_uses_custom_period_for_keys_and_live_window() {
+        let root = temp_root("custom-period");
+        let _ = fs::remove_dir_all(&root);
+        let period_secs = 60;
+        let live = segment_for(now_epoch_secs(), period_secs);
+        let stale_index = live.index - 1;
+
+        fs::create_dir_all(root.join(format!("{stale_index}.incomplete"))).unwrap();
+        fs::write(
+            root.join(format!("{stale_index}.incomplete/{SCREEN_FILE_NAME}")),
+            b"stale",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join(format!("{}.incomplete", live.index))).unwrap();
+        fs::write(
+            root.join(format!("{}.incomplete/{SCREEN_FILE_NAME}", live.index)),
+            b"live",
+        )
+        .unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone(), period_secs);
+        let stale = recovery.scan_incomplete().unwrap();
+
+        assert_eq!(stale.len(), 1);
+        assert_eq!(
+            stale[0].key,
+            SegmentKey {
+                boundary_epoch_secs: stale_index * period_secs,
+                index: stale_index,
+            }
+        );
         assert!(stale[0].has_usable_data);
 
         let _ = fs::remove_dir_all(&root);
@@ -1249,7 +1294,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
 
         assert_eq!(stale.len(), 1);
@@ -1275,7 +1320,7 @@ mod tests {
         .unwrap();
         write_audio_file(&orphan, SourceKind::SystemAudio, &[1000; 16]);
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
         assert!(stale[0].has_usable_data);
@@ -1300,7 +1345,7 @@ mod tests {
         fs::create_dir_all(&orphan).unwrap();
         write_audio_file(&orphan, SourceKind::Mic, &samples);
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
 
@@ -1319,7 +1364,7 @@ mod tests {
         fs::create_dir_all(&orphan).unwrap();
         fs::write(orphan.join("mic.pcm"), pcm_i16(&[1000; 16])).unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
 
@@ -1382,7 +1427,7 @@ mod tests {
         fs::write(orphan.join(AUDIO_FILE_NAME), b"flac").unwrap();
         fs::write(orphan.join(LEN_FILE_NAME), b"3").unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let seg = StaleSegment {
             key: key(21),
             path: absolute_string(&orphan).unwrap(),
@@ -1414,7 +1459,7 @@ mod tests {
         fs::write(orphan.join(AUDIO_FILE_NAME), b"stale-flac").unwrap();
         write_audio_file(&orphan, SourceKind::Mic, &[3000; 16]);
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
         assert!(stale[0].has_usable_data);
@@ -1437,7 +1482,7 @@ mod tests {
         fs::create_dir_all(&orphan).unwrap();
         fs::write(orphan.join(AUDIO_FILE_NAME), b"flac").unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
         assert!(stale[0].has_usable_data);
@@ -1477,7 +1522,7 @@ mod tests {
         fs::create_dir_all(&orphan).unwrap();
         fs::write(orphan.join("system-audio.pcm"), pcm_i16(&[1000; 16])).unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
         assert!(stale[0].has_usable_data);
@@ -1503,7 +1548,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
         assert!(!stale[0].has_usable_data);
@@ -1528,7 +1573,7 @@ mod tests {
         fs::create_dir_all(&orphan).unwrap();
         fs::write(orphan.join(SCREEN_FILE_NAME), b"mp4").unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
         assert!(stale[0].has_usable_data);
@@ -1547,7 +1592,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("5.incomplete")).unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let stale = recovery.scan_incomplete().unwrap();
         assert_eq!(stale.len(), 1);
         assert!(!stale[0].has_usable_data);
@@ -1568,7 +1613,7 @@ mod tests {
         fs::write(root.join("3.incomplete/system-audio.pcm"), b"pcm").unwrap();
         fs::create_dir_all(root.join("4.incomplete")).unwrap();
 
-        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
         let seg3 = StaleSegment {
             key: key(3),
             path: absolute_string(&root.join("3.incomplete")).unwrap(),

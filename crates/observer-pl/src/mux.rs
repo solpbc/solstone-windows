@@ -35,6 +35,9 @@ use thiserror::Error;
 /// `convey/secure_listener/framing.py::INITIAL_WINDOW` and the iOS
 /// `MuxConstants.initialCredit`.
 pub const INITIAL_WINDOW: usize = 1 << 20;
+/// Robustness cap for assembled response bytes. Only the pinned journal can send
+/// these bytes, but a bad peer must not grow memory without bound.
+const MAX_ASSEMBLED_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MuxError {
@@ -46,6 +49,8 @@ pub enum MuxError {
     Incomplete,
     #[error("http parse error: {0}")]
     Http(#[from] HttpError),
+    #[error("assembled response exceeded cap")]
+    CapExceeded,
 }
 
 /// Send-side flow control for one dialer stream.
@@ -235,6 +240,9 @@ impl ResponseAssembler {
             }
             if frame.flags & FLAG_DATA != 0 {
                 self.body.extend_from_slice(&frame.payload);
+                if self.body.len() > MAX_ASSEMBLED_BYTES {
+                    return Err(MuxError::CapExceeded);
+                }
             }
             if frame.flags & FLAG_CLOSE != 0 {
                 self.closed = true;
@@ -292,6 +300,9 @@ impl HttpStreamAssembler {
         if !self.head_emitted {
             self.head_buf.extend_from_slice(payload);
             let Some(split) = http::find_subsequence(&self.head_buf, b"\r\n\r\n") else {
+                if self.head_buf.len() > MAX_ASSEMBLED_BYTES {
+                    return Err(MuxError::CapExceeded);
+                }
                 return Ok(items);
             };
             let (status, headers) = http::parse_head(&self.head_buf[..split])?;
@@ -411,7 +422,7 @@ impl CarrierDemux {
                     .feed_data(&frame.payload)
                 {
                     Ok(items) => items,
-                    Err(MuxError::Http(_)) => {
+                    Err(MuxError::Http(_)) | Err(MuxError::CapExceeded) => {
                         out.stream_events
                             .push((stream_id, StreamItem::End(StreamEnd::Reset)));
                         self.streams.remove(&stream_id);
@@ -578,6 +589,17 @@ mod tests {
         let response = asm.into_response().unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"hi");
+    }
+
+    #[test]
+    fn response_assembler_rejects_over_cap_response() {
+        let server_frame = Frame::new(1, FLAG_DATA, vec![b'x'; MAX_ASSEMBLED_BYTES + 1]);
+        let mut asm = ResponseAssembler::new(1);
+
+        assert_eq!(
+            asm.feed(&server_frame.encode().unwrap()).unwrap_err(),
+            MuxError::CapExceeded
+        );
     }
 
     #[test]
@@ -788,6 +810,25 @@ mod tests {
             )
             .unwrap();
         assert!(out.stream_events.is_empty());
+    }
+
+    #[test]
+    fn carrier_demux_isolates_head_cap_to_one_stream() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        demux.open_stream(3);
+        let oversized_head = Frame::new(1, FLAG_DATA, vec![b'x'; MAX_ASSEMBLED_BYTES + 1])
+            .encode()
+            .unwrap();
+
+        let out = demux.feed(&oversized_head).unwrap();
+
+        assert_eq!(
+            out.stream_events,
+            vec![(1, StreamItem::End(StreamEnd::Reset))]
+        );
+        assert!(!demux.streams.contains_key(&1));
+        assert!(demux.streams.contains_key(&3));
     }
 
     #[test]

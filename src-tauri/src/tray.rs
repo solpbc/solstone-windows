@@ -37,15 +37,11 @@ fn pause_for(duration_secs: Option<u64>) -> EngineCommand {
 }
 
 /// Install the tray icon + menu. Returns the handles `apply_state` re-renders:
-/// the Start item, the Pause submenu (enabled/disabled as a whole), and Resume.
+/// the Pause submenu (enabled/disabled as a whole), and Resume.
 pub fn init(
     app: &mut App,
     cmd_tx: mpsc::UnboundedSender<EngineCommand>,
-) -> tauri::Result<(TrayIcon, MenuItem<Wry>, Submenu<Wry>, MenuItem<Wry>)> {
-    let mi_start = MenuItemBuilder::with_id(observer_contract::tray::MENU_START, "Start")
-        .enabled(false)
-        .build(app)?;
-
+) -> tauri::Result<(TrayIcon, Submenu<Wry>, MenuItem<Wry>)> {
     let mi_pause_15 =
         MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_15M, "For 15 minutes")
             .build(app)?;
@@ -85,7 +81,6 @@ pub fn init(
     let sep_two = PredefinedMenuItem::separator(app)?;
 
     let menu = MenuBuilder::new(app)
-        .item(&mi_start)
         .item(&pause_submenu)
         .item(&mi_resume)
         .item(&sep_one)
@@ -103,9 +98,6 @@ pub fn init(
         .icon(icon_for(visual))
         .tooltip(tooltip)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            observer_contract::tray::MENU_START => {
-                let _ = cmd_tx.send(EngineCommand::Start);
-            }
             observer_contract::tray::MENU_PAUSE_15M => {
                 let _ = cmd_tx.send(pause_for(Some(PAUSE_15M_SECS)));
             }
@@ -144,12 +136,11 @@ pub fn init(
         })
         .build(app)?;
 
-    Ok((tray, mi_start, pause_submenu, mi_resume))
+    Ok((tray, pause_submenu, mi_resume))
 }
 
 pub fn apply_state(
     tray: &TrayIcon,
-    mi_start: &MenuItem<Wry>,
     pause_submenu: &Submenu<Wry>,
     mi_resume: &MenuItem<Wry>,
     dump: &HealthDump,
@@ -158,7 +149,6 @@ pub fn apply_state(
     let (visual, tooltip) = classify_tray(dump.app_state, &dump.sync, dump.pause.as_ref());
     let _ = tray.set_icon(Some(icon_for(visual)));
     let _ = tray.set_tooltip(Some(tooltip));
-    let _ = mi_start.set_enabled(matches!(phase, AppPhase::Idle));
     let _ = pause_submenu.set_enabled(matches!(phase, AppPhase::Starting | AppPhase::Observing));
     let _ = mi_resume.set_enabled(matches!(phase, AppPhase::Paused));
 }

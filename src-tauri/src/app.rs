@@ -153,7 +153,6 @@ pub fn run(
         // outbound reach is the fixed-URL command below.
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            crate::ipc::start_observing,
             crate::ipc::pause,
             crate::ipc::resume,
             crate::ipc::get_health,
@@ -283,12 +282,14 @@ pub fn run(
                     mic.active_handle(),
                 )),
             };
-            let mut recovery = platform_win::LocalRecoveryFs::default();
+            let engine_config = EngineConfig::default();
+            let mut recovery =
+                platform_win::LocalRecoveryFs::new(platform_win::segments_dir(), engine_config.segment_secs);
             let segment_fs = platform_win::LocalSegmentFs::default();
             tracing::info!(target: "engine", operation = "start", "engine start");
             let (mut engine, _outcomes) = CaptureEngine::new(
                 sources,
-                EngineConfig::default(),
+                engine_config,
                 &mut recovery,
                 segment_fs,
                 Box::new(SystemClock),
@@ -374,8 +375,7 @@ pub fn run(
             app.manage(mic.clone());
             app.manage(retention.clone());
 
-            let (tray, mi_start, pause_submenu, mi_resume) =
-                crate::tray::init(app, cmd_tx.clone())?;
+            let (tray, pause_submenu, mi_resume) = crate::tray::init(app, cmd_tx.clone())?;
 
             tauri::async_runtime::spawn(async move {
                 let exit = engine.run(shutdown_rx, cmd_rx).await;
@@ -389,7 +389,13 @@ pub fn run(
                         .await
                     {
                         Ok(listener) => {
-                            let _ = capture_engine::serve_health(listener, health).await;
+                            if let Err(error) = capture_engine::serve_health(listener, health).await {
+                                tracing::error!(
+                                    target: "health",
+                                    error = %error,
+                                    "health server exited"
+                                );
+                            }
                         }
                         Err(error) => {
                             tracing::error!(
@@ -431,7 +437,6 @@ pub fn run(
                 let app = app.handle().clone();
                 let health = health.clone();
                 let tray = tray.clone();
-                let mi_start = mi_start.clone();
                 let pause_submenu = pause_submenu.clone();
                 let mi_resume = mi_resume.clone();
                 let mut rx = watch_rx;
@@ -446,7 +451,6 @@ pub fn run(
                         previous = Some(dump.clone());
                         crate::tray::apply_state(
                             &tray,
-                            &mi_start,
                             &pause_submenu,
                             &mi_resume,
                             &dump,
@@ -501,7 +505,6 @@ pub fn run(
                     }
                     crate::tray::apply_state(
                         &tray,
-                        &mi_start,
                         &pause_submenu,
                         &mi_resume,
                         &terminal,
