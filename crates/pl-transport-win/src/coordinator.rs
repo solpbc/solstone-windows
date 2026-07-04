@@ -27,10 +27,11 @@ use observer_pl::civil;
 use observer_pl::multipart::FilePart;
 use observer_pl::wire::{IngestResponse, SegmentsResponse};
 use observer_retention::RetentionConfig;
+use tokio::sync::watch;
 
 use crate::client::{ObserverClient, SendMetadata};
 use crate::sealed::{content_type_for, SealedStore};
-use crate::{transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
+use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
 const MAX_BACKOFF_SECS: u64 = 300;
 const QUARANTINE_AFTER_REJECTS: u32 = 5;
@@ -352,7 +353,15 @@ impl UploadCoordinator {
     /// One pass: upload + reconcile every sealed segment currently on disk.
     /// Returns the number of segments confirmed landed this pass.
     pub async fn tick(&self) -> Result<usize, TransportError> {
-        let result = self.tick_inner().await;
+        let (_tx, rx) = watch::channel(false);
+        self.tick_with_cancel(&rx).await
+    }
+
+    async fn tick_with_cancel(
+        &self,
+        cancel: &watch::Receiver<bool>,
+    ) -> Result<usize, TransportError> {
+        let result = self.tick_inner(cancel).await;
         match &result {
             Ok(_) => self.note_tick_success(),
             Err(error) => self.note_tick_failure(error),
@@ -360,7 +369,7 @@ impl UploadCoordinator {
         result
     }
 
-    async fn tick_inner(&self) -> Result<usize, TransportError> {
+    async fn tick_inner(&self, cancel: &watch::Receiver<bool>) -> Result<usize, TransportError> {
         // Prune retained-and-confirmed segments past the window first (cheap, local).
         self.prune_retained();
 
@@ -369,6 +378,9 @@ impl UploadCoordinator {
         let mut confirmed_now = 0usize;
 
         'segments: for segment in segments {
+            if *cancel.borrow() {
+                break 'segments;
+            }
             let offset_started = Instant::now();
             let offset = match self
                 .local_offset
@@ -556,14 +568,15 @@ impl UploadCoordinator {
         Ok(confirmed_now)
     }
 
-    /// Run forever (until `shutdown`), ticking with exponential backoff on error.
-    pub async fn run(self, mut shutdown: tokio::sync::oneshot::Receiver<()>) {
+    /// Run forever (until `cancel`), ticking with exponential backoff on error.
+    pub async fn run(self, mut cancel: watch::Receiver<bool>) {
+        let tick_cancel = cancel.clone();
         let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
         loop {
             tokio::select! {
-                _ = &mut shutdown => break,
+                _ = cancelled(&mut cancel) => break,
                 _ = tokio::time::sleep(Duration::from_secs(backoff)) => {
-                    match self.tick().await {
+                    match self.tick_with_cancel(&tick_cancel).await {
                         Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
                         Err(_) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
                     }
@@ -631,6 +644,7 @@ impl UploadCoordinator {
 mod tests {
     use super::*;
     use std::collections::{HashSet, VecDeque};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use observer_model::RECENT_ERROR_COUNT_MAX;
     use observer_pl::wire::{ServerFile, ServerSegment};
@@ -996,6 +1010,74 @@ mod tests {
                 .pop_front()
                 .expect("scripted list result");
             Box::pin(async move { result })
+        }
+    }
+
+    struct CancelAfterFirstListClient {
+        ingests: Mutex<VecDeque<Result<(IngestResponse, SendMetadata), TransportError>>>,
+        lists: Mutex<VecDeque<Result<SegmentsResponse, TransportError>>>,
+        cancel: watch::Sender<bool>,
+        ingest_count: Arc<AtomicUsize>,
+        list_count: AtomicUsize,
+    }
+
+    impl CancelAfterFirstListClient {
+        fn new(
+            ingests: Vec<Result<(IngestResponse, SendMetadata), TransportError>>,
+            lists: Vec<Result<SegmentsResponse, TransportError>>,
+            cancel: watch::Sender<bool>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                ingests: Mutex::new(VecDeque::from(ingests)),
+                lists: Mutex::new(VecDeque::from(lists)),
+                cancel,
+                ingest_count: Arc::new(AtomicUsize::new(0)),
+                list_count: AtomicUsize::new(0),
+            })
+        }
+
+        fn ingest_count(&self) -> usize {
+            self.ingest_count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl UploadClient for CancelAfterFirstListClient {
+        fn ingest<'a>(
+            &'a self,
+            _segment: &'a str,
+            _day: &'a str,
+            _platform: &'a str,
+            _files: &'a [FilePart],
+        ) -> IngestFuture<'a> {
+            let result = self
+                .ingests
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted ingest result");
+            let ingest_count = self.ingest_count.clone();
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                ingest_count.fetch_add(1, Ordering::SeqCst);
+                result
+            })
+        }
+
+        fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
+            let result = self
+                .lists
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted list result");
+            let should_cancel = self.list_count.fetch_add(1, Ordering::SeqCst) == 0;
+            let cancel = self.cancel.clone();
+            Box::pin(async move {
+                if should_cancel {
+                    let _ = cancel.send(true);
+                }
+                result
+            })
         }
     }
 
@@ -1426,6 +1508,47 @@ mod tests {
         assert!(matches!(result, Err(TransportError::Io(_))));
         assert_eq!(snapshot.upload.quarantined_segments, 0);
         assert_eq!(snapshot.upload.recent_error_count, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_between_segments_stops_before_next_ingest() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary1 = 1_700_000_100;
+        let boundary2 = boundary1 + 300;
+        let boundary3 = boundary2 + 300;
+        let bytes1 = b"first segment".to_vec();
+        let bytes2 = b"second segment".to_vec();
+        let bytes3 = b"third segment".to_vec();
+        let key1 = civil::segment_key_string_local(boundary1, 0, 300);
+        let sha1 = ca::sha256_hex(&bytes1);
+        let store = MultiSegmentStore::new(vec![
+            (1, boundary1, file_name, bytes1.clone()),
+            (2, boundary2, file_name, bytes2),
+            (3, boundary3, file_name, bytes3),
+        ]);
+        let handle = store.clone();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let client = CancelAfterFirstListClient::new(
+            vec![accepted_ingest(1)],
+            vec![confirmed_segments(
+                key1,
+                file_name,
+                sha1,
+                bytes1.len() as u64,
+            )],
+            cancel_tx,
+        );
+        let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
+
+        let run_task = tokio::spawn(coordinator.run(cancel_rx));
+        tokio::time::advance(Duration::from_secs(DEFAULT_UPLOAD_INTERVAL_SECS)).await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        run_task.await.unwrap();
+
+        assert_eq!(client.ingest_count(), 1);
+        assert_eq!(handle.pending_indices(), vec![2, 3]);
+        assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 1);
     }
 
     #[tokio::test]

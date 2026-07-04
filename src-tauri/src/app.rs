@@ -19,7 +19,8 @@ use observer_model::{
 };
 use observer_retention::RetentionConfig;
 use pl_transport_win::credential::PairedState;
-use pl_transport_win::service::{run_uploader, SyncConfig};
+use pl_transport_win::service::SyncConfig;
+use pl_transport_win::UploaderSlot;
 use tauri::{Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
@@ -31,9 +32,8 @@ pub struct AppState {
     /// Static identity + paths the sync layer needs to pair/upload.
     pub sync_config: SyncConfig,
     pub _shutdown: Mutex<Option<oneshot::Sender<()>>>,
-    /// Shutdown senders for spawned uploader tasks; kept alive for the process
-    /// lifetime so the uploaders run (dropping a sender would stop them).
-    pub _sync_shutdowns: Mutex<Vec<oneshot::Sender<()>>>,
+    /// Single uploader lifecycle slot; also serializes pair/replace requests.
+    pub uploader_slot: tokio::sync::Mutex<UploaderSlot>,
     /// Serializes journal opens so parallel user triggers do not race the single
     /// Tauri window label and surface a spurious duplicate-label failure.
     pub journal_open_lock: tokio::sync::Mutex<()>,
@@ -306,11 +306,9 @@ pub fn run(
             // upload + heartbeat loop now. A fresh pairing is started by the
             // `pair` IPC command instead.
             let sync_config = build_sync_config(retention.config_handle());
-            let mut sync_shutdowns: Vec<oneshot::Sender<()>> = Vec::new();
+            let mut slot = UploaderSlot::new();
             match PairedState::load(&sync_config.state_path) {
                 Ok(paired) if paired.is_paired() => {
-                    let (up_tx, up_rx) = oneshot::channel();
-                    sync_shutdowns.push(up_tx);
                     let cfg = sync_config.clone();
                     let health_for_sync = health.clone();
                     let sync_for_sync = sync.clone();
@@ -319,19 +317,16 @@ pub fn run(
                         source = "resume",
                         "uploader started"
                     );
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) =
-                            run_uploader(paired, cfg, health_for_sync, sync_for_sync, up_rx).await
-                        {
-                            let error = error.to_string();
-                            tracing::warn!(
-                                target: "sync",
-                                source = "resume",
-                                error = %observer_log::redact_secret("uploader-error", &error),
-                                "uploader exited"
-                            );
-                        }
-                    });
+                    tauri::async_runtime::block_on(slot.replace(move |rx| async move {
+                        pl_transport_win::run_uploader(
+                            paired,
+                            cfg,
+                            health_for_sync,
+                            sync_for_sync,
+                            rx,
+                        )
+                        .await;
+                    }));
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -350,7 +345,7 @@ pub fn run(
                 sync: sync.clone(),
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
-                _sync_shutdowns: Mutex::new(sync_shutdowns),
+                uploader_slot: tokio::sync::Mutex::new(slot),
                 journal_open_lock: tokio::sync::Mutex::new(()),
                 journal_bridge: Mutex::new(None),
                 exclusions,

@@ -14,14 +14,15 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use observer_model::{HealthDump, LocalOffset, PairingPhase, PairingState, SyncSnapshot};
 use observer_retention::RetentionConfig;
-use tokio::sync::oneshot;
+use tokio::sync::watch;
+use tokio::task::{JoinError, JoinHandle};
 
 use crate::client::ObserverClient;
 use crate::coordinator::UploadCoordinator;
 use crate::credential::PairedState;
 use crate::heartbeat::run_heartbeat;
 use crate::sealed::{LocalSealedStore, SealedStore};
-use crate::{pairing, transport_error_code, TransportError};
+use crate::{cancelled, pairing, transport_error_code, TransportError};
 
 /// Static identity + paths the sync layer needs.
 #[derive(Debug, Clone)]
@@ -124,15 +125,56 @@ async fn pair_and_register_inner(
     Ok((paired, journal_label, registration.name))
 }
 
+struct UploaderParts {
+    client: Arc<ObserverClient>,
+    coordinator: UploadCoordinator,
+    stream_type: String,
+    version: String,
+}
+
 /// Run the upload coordinator + heartbeat for an already-paired observer until
-/// `shutdown` fires. Registers first if the stored state has no observer handle.
+/// `cancel` fires. Registers first if the stored state has no observer handle.
 pub async fn run_uploader(
     paired: PairedState,
     cfg: SyncConfig,
     health: Arc<Mutex<HealthDump>>,
     sync: Arc<Mutex<SyncSnapshot>>,
-    shutdown: oneshot::Receiver<()>,
-) -> Result<(), TransportError> {
+    cancel: watch::Receiver<bool>,
+) {
+    let parts = match setup_uploader(paired, cfg, sync.clone()).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            let code = transport_error_code(&error);
+            mark_uploader_dead(&sync, "uploader_setup_failed");
+            tracing::warn!(
+                target: "sync",
+                reason = code.as_str(),
+                "uploader setup failed"
+            );
+            return;
+        }
+    };
+
+    let (inner_tx, inner_rx) = watch::channel(false);
+    let coordinator_task = tokio::spawn(parts.coordinator.run(inner_rx.clone()));
+    let heartbeat_task = tokio::spawn(run_heartbeat(
+        parts.client,
+        health,
+        sync.clone(),
+        parts.stream_type,
+        parts.version,
+        inner_rx.clone(),
+    ));
+    drop(inner_rx);
+
+    supervise(&sync, cancel, inner_tx, coordinator_task, heartbeat_task).await;
+}
+
+async fn setup_uploader(
+    paired: PairedState,
+    cfg: SyncConfig,
+    sync: Arc<Mutex<SyncSnapshot>>,
+) -> Result<UploaderParts, TransportError> {
     let credential = paired.credential.clone().ok_or(TransportError::NotPaired)?;
     let journal_label = credential.home_label.clone();
     let mut client =
@@ -183,29 +225,81 @@ pub async fn run_uploader(
         cfg.local_offset.clone(),
     );
 
-    let (co_shutdown_tx, co_shutdown_rx) = oneshot::channel();
-    let (hb_shutdown_tx, hb_shutdown_rx) = oneshot::channel();
-    let coordinator_task = tokio::spawn(coordinator.run(co_shutdown_rx));
-    let heartbeat_task = tokio::spawn(run_heartbeat(
-        client.clone(),
-        health,
-        sync.clone(),
-        cfg.stream_type.clone(),
-        cfg.version.clone(),
-        hb_shutdown_rx,
-    ));
+    Ok(UploaderParts {
+        client,
+        coordinator,
+        stream_type: cfg.stream_type,
+        version: cfg.version,
+    })
+}
 
-    let _ = shutdown.await;
-    let _ = co_shutdown_tx.send(());
-    let _ = hb_shutdown_tx.send(());
-    let _ = coordinator_task.await;
-    let _ = heartbeat_task.await;
-    Ok(())
+enum Outcome {
+    Cancelled,
+    Coordinator(Result<(), JoinError>),
+    Heartbeat(Result<(), JoinError>),
+}
+
+pub(crate) async fn supervise(
+    sync: &Arc<Mutex<SyncSnapshot>>,
+    mut external_cancel: watch::Receiver<bool>,
+    inner_tx: watch::Sender<bool>,
+    mut coordinator_task: JoinHandle<()>,
+    mut heartbeat_task: JoinHandle<()>,
+) {
+    let outcome = tokio::select! {
+        _ = cancelled(&mut external_cancel) => Outcome::Cancelled,
+        res = &mut coordinator_task => Outcome::Coordinator(res),
+        res = &mut heartbeat_task => Outcome::Heartbeat(res),
+    };
+    let _ = inner_tx.send(true);
+    match outcome {
+        Outcome::Cancelled => {
+            let _ = coordinator_task.await;
+            let _ = heartbeat_task.await;
+        }
+        Outcome::Coordinator(res) => {
+            let code = dead_code(&res);
+            mark_uploader_dead(sync, code);
+            warn_dead("coordinator", code);
+            let _ = heartbeat_task.await;
+        }
+        Outcome::Heartbeat(res) => {
+            let code = dead_code(&res);
+            mark_uploader_dead(sync, code);
+            warn_dead("heartbeat", code);
+            let _ = coordinator_task.await;
+        }
+    }
+}
+
+fn dead_code(res: &Result<(), JoinError>) -> &'static str {
+    match res {
+        Err(error) if error.is_panic() => "uploader_panicked",
+        _ => "uploader_stopped",
+    }
+}
+
+fn warn_dead(which: &'static str, code: &'static str) {
+    tracing::warn!(
+        target: "sync",
+        task = which,
+        reason = code,
+        "uploader task exited"
+    );
+}
+
+fn mark_uploader_dead(sync: &Arc<Mutex<SyncSnapshot>>, code: &'static str) {
+    if let Ok(mut snap) = sync.lock() {
+        snap.upload.last_error = Some(code.to_string());
+        snap.upload.heartbeat_ok = false;
+        snap.upload.record_failure(code);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn failed_pairing_state_redacts_detail() {
@@ -225,5 +319,74 @@ mod tests {
         assert!(!detail.contains("https://"));
         assert!(!detail.contains("sha256"));
         assert!(!detail.contains("10.0.0.5"));
+    }
+
+    #[tokio::test]
+    async fn supervise_marks_panicked_coordinator_dead_and_cancels_heartbeat() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let (_external_tx, external_rx) = watch::channel(false);
+        let (inner_tx, mut inner_rx) = watch::channel(false);
+        let heartbeat_cancelled = Arc::new(AtomicBool::new(false));
+        let heartbeat_cancelled_for_task = heartbeat_cancelled.clone();
+
+        let coordinator_task = tokio::spawn(async {
+            panic!("boom");
+        });
+        let heartbeat_task = tokio::spawn(async move {
+            crate::cancelled(&mut inner_rx).await;
+            heartbeat_cancelled_for_task.store(true, Ordering::SeqCst);
+        });
+
+        supervise(
+            &sync,
+            external_rx,
+            inner_tx,
+            coordinator_task,
+            heartbeat_task,
+        )
+        .await;
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(
+            snapshot.upload.last_error.as_deref(),
+            Some("uploader_panicked")
+        );
+        assert!(!snapshot.upload.heartbeat_ok);
+        assert_eq!(snapshot.upload.recent_error_count, 1);
+        let last_error = snapshot.upload.last_error.unwrap();
+        assert_eq!(last_error, "uploader_panicked");
+        assert!(!last_error.contains("SECRET"));
+        assert!(!last_error.contains("token"));
+        assert!(!last_error.contains("Users"));
+        assert!(heartbeat_cancelled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn supervise_marks_clean_early_coordinator_exit_as_stopped() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let (_external_tx, external_rx) = watch::channel(false);
+        let (inner_tx, mut inner_rx) = watch::channel(false);
+
+        let coordinator_task = tokio::spawn(async {});
+        let heartbeat_task = tokio::spawn(async move {
+            crate::cancelled(&mut inner_rx).await;
+        });
+
+        supervise(
+            &sync,
+            external_rx,
+            inner_tx,
+            coordinator_task,
+            heartbeat_task,
+        )
+        .await;
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(
+            snapshot.upload.last_error.as_deref(),
+            Some("uploader_stopped")
+        );
+        assert!(!snapshot.upload.heartbeat_ok);
+        assert_eq!(snapshot.upload.recent_error_count, 1);
     }
 }

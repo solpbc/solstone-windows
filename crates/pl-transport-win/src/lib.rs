@@ -40,6 +40,7 @@ pub mod relay_pairing;
 pub mod relay_token;
 pub mod sealed;
 pub mod service;
+pub mod slot;
 pub(crate) mod spki_pin;
 pub mod tls;
 
@@ -49,11 +50,22 @@ use observer_pl::http::HttpError;
 use observer_pl::mux::MuxError;
 use thiserror::Error;
 
+pub use service::run_uploader;
+pub use slot::UploaderSlot;
+
 /// Default upload poll interval when there is nothing to do.
 pub const DEFAULT_UPLOAD_INTERVAL_SECS: u64 = 5;
 
 /// Heartbeat cadence — matches the macOS `HeartbeatService` (15s).
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
+
+pub(crate) async fn cancelled(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            break;
+        }
+    }
+}
 
 /// Typed relay upgrade/close outcomes. Retryability noted per-variant (doc only;
 /// W3 owns the retry policy).

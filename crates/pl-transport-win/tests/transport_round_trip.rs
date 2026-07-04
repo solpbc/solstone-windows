@@ -34,7 +34,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
@@ -1699,7 +1699,7 @@ async fn heartbeat_immediate_post_success_sets_heartbeat_ok_and_sends_safe_paylo
         },
         upload,
     }));
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let task = tokio::spawn(run_heartbeat(
         client,
         health,
@@ -1710,7 +1710,7 @@ async fn heartbeat_immediate_post_success_sets_heartbeat_ok_and_sends_safe_paylo
     ));
 
     let request = server.await.unwrap();
-    let _ = shutdown_tx.send(());
+    let _ = shutdown_tx.send(true);
     task.await.unwrap();
 
     assert!(sync.lock().unwrap().upload.heartbeat_ok);
@@ -1781,7 +1781,7 @@ async fn heartbeat_immediate_post_rejection_is_non_fatal_and_sets_heartbeat_not_
     );
     let health = Arc::new(Mutex::new(test_health(AppPhase::Paused)));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let task = tokio::spawn(run_heartbeat(
         client,
         health,
@@ -1792,7 +1792,7 @@ async fn heartbeat_immediate_post_rejection_is_non_fatal_and_sets_heartbeat_not_
     ));
 
     let request = server.await.unwrap();
-    let _ = shutdown_tx.send(());
+    let _ = shutdown_tx.send(true);
     task.await.unwrap();
 
     assert!(!sync.lock().unwrap().upload.heartbeat_ok);

@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use observer_model::{AppPhase, HealthDump, SyncSnapshot, UploadStatus};
 use observer_pl::wire::{HealthBeacon, HeartbeatEvent};
+use tokio::sync::watch;
 
 use crate::client::ObserverClient;
-use crate::HEARTBEAT_INTERVAL_SECS;
+use crate::{cancelled, HEARTBEAT_INTERVAL_SECS};
 use crate::{transport_error_code, TransportError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,21 +102,21 @@ async fn post_heartbeat_once(
     }
 }
 
-/// Run the heartbeat until `shutdown` fires.
+/// Run the heartbeat until `cancel` fires.
 pub async fn run_heartbeat(
     client: Arc<ObserverClient>,
     health: Arc<Mutex<HealthDump>>,
     sync: Arc<Mutex<SyncSnapshot>>,
     stream_type: String,
     version: String,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    mut cancel: watch::Receiver<bool>,
 ) {
     let started = Instant::now();
     post_heartbeat_once(&client, &health, &sync, &stream_type, &version, started).await;
 
     loop {
         tokio::select! {
-            _ = &mut shutdown => break,
+            _ = cancelled(&mut cancel) => break,
             _ = tokio::time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)) => {
                 post_heartbeat_once(&client, &health, &sync, &stream_type, &version, started).await;
             }

@@ -170,15 +170,13 @@ pub async fn pair(
     state: tauri::State<'_, crate::app::AppState>,
     link: String,
 ) -> Result<(), String> {
-    // Snapshot everything we need before the first await — never hold the State
-    // borrow across it.
+    // Snapshot everything needed by the uploader; the slot lock below serializes
+    // the pairing handshake and replacement so concurrent pair attempts cannot
+    // spawn competing uploaders.
     let cfg = state.sync_config.clone();
     let sync = state.sync.clone();
     let health = state.health.clone();
-    let (up_tx, up_rx) = tokio::sync::oneshot::channel();
-    if let Ok(mut shutdowns) = state._sync_shutdowns.lock() {
-        shutdowns.push(up_tx);
-    }
+    let mut slot = state.uploader_slot.lock().await;
 
     tracing::info!(
         target: "sync",
@@ -208,19 +206,10 @@ pub async fn pair(
         source = "fresh_pair",
         "uploader started"
     );
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            pl_transport_win::service::run_uploader(paired, cfg, health, sync, up_rx).await
-        {
-            let error = error.to_string();
-            tracing::warn!(
-                target: "sync",
-                source = "fresh_pair",
-                error = %observer_log::redact_secret("uploader-error", &error),
-                "uploader exited"
-            );
-        }
-    });
+    slot.replace(move |rx| async move {
+        pl_transport_win::run_uploader(paired, cfg, health, sync, rx).await;
+    })
+    .await;
     Ok(())
 }
 
