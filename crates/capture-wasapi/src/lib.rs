@@ -11,6 +11,59 @@
 //! Off-Windows, the same public source types are honest inert stubs so the Linux
 //! dev host can compile and test the pure/composition tiers.
 
+#[cfg_attr(not(windows), allow(dead_code))]
+mod reselect {
+    /// Pure copy of the Windows `AUDCLNT_E_DEVICE_INVALIDATED` HRESULT,
+    /// drift-guarded by a cfg(windows) test.
+    pub(crate) const AUDCLNT_E_DEVICE_INVALIDATED_CODE: i32 = 0x8889_0004u32 as i32;
+
+    /// Reopen when the opened render endpoint id differs from the current
+    /// default. None-vs-None means no reopen because neither side provided an id.
+    pub(crate) fn render_reopen_needed(
+        opened_id: Option<&str>,
+        current_default_id: Option<&str>,
+    ) -> bool {
+        opened_id != current_default_id
+    }
+
+    /// An `AUDCLNT_E_DEVICE_INVALIDATED`-class HRESULT is a render-endpoint
+    /// reselect trigger, not a terminal capture fault.
+    pub(crate) fn is_render_reselect_error(code: i32) -> bool {
+        code == AUDCLNT_E_DEVICE_INVALIDATED_CODE
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn render_reopen_needed_tracks_default_identity() {
+            assert!(!render_reopen_needed(Some("a"), Some("a")));
+            assert!(render_reopen_needed(Some("a"), Some("b")));
+            assert!(render_reopen_needed(Some("a"), None));
+            assert!(!render_reopen_needed(None, None));
+        }
+
+        #[test]
+        fn render_reselect_error_only_matches_device_invalidated() {
+            assert!(is_render_reselect_error(AUDCLNT_E_DEVICE_INVALIDATED_CODE));
+            assert!(!is_render_reselect_error(0));
+            assert!(!is_render_reselect_error(0x8000_4005u32 as i32));
+        }
+
+        #[cfg(windows)]
+        mod windows_drift {
+            #[test]
+            fn device_invalidated_code_matches_windows_constant() {
+                assert_eq!(
+                    super::super::AUDCLNT_E_DEVICE_INVALIDATED_CODE,
+                    windows::Win32::Media::Audio::AUDCLNT_E_DEVICE_INVALIDATED.0
+                );
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use std::ptr;
@@ -19,6 +72,7 @@ mod imp {
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
+    use crate::reselect::{is_render_reselect_error, render_reopen_needed};
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
         AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError, SourceKind,
@@ -95,16 +149,19 @@ mod imp {
         *state.lock().unwrap() = next;
     }
 
-    fn default_device(
-        enumerator: &IMMDeviceEnumerator,
-        kind: SourceKind,
-    ) -> WindowsResult<IMMDevice> {
-        let flow = match kind {
-            SourceKind::SystemAudio => eRender,
-            SourceKind::Mic => eCapture,
-            SourceKind::Screen => unreachable!("screen is not a WASAPI source"),
-        };
-        unsafe { enumerator.GetDefaultAudioEndpoint(flow, eConsole) }
+    fn default_render_device(enumerator: &IMMDeviceEnumerator) -> WindowsResult<IMMDevice> {
+        unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+    }
+
+    fn device_id(device: &IMMDevice) -> Option<String> {
+        let id_pw = unsafe { device.GetId().ok()? };
+        let id = id_pw.to_string().unwrap_or_default();
+        unsafe { CoTaskMemFree(Some(id_pw.0 as *const _)) };
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
     }
 
     fn bytes_per_frame(format: *const WAVEFORMATEX) -> usize {
@@ -408,113 +465,193 @@ mod imp {
         }
     }
 
-    fn run_pull_loop(
-        kind: SourceKind,
+    /// Render-loopback capture loop. It follows the OS default render endpoint,
+    /// re-checking on the same 1s cadence as mic reselect and reopening on a
+    /// default-device change or `AUDCLNT_E_DEVICE_INVALIDATED`, so a switch costs
+    /// <=~1s of system audio. State is honest: `Active` only while streaming,
+    /// `Inactive` during a transient reopen, `NoInputDevice` when no render
+    /// endpoint exists, and device churn is never `Faulted` because system audio is
+    /// a required source and a fault would flip the app to Error. On reopen we
+    /// re-read the mix format and keep emitting chunks with the new format; the
+    /// per-segment sidecar remains the segment's open-time format, so a mid-segment
+    /// render-format switch may mislabel the <=5-minute PCM tail until rotation.
+    /// That is deliberate v1: no format-conversion machinery here.
+    fn run_loopback_loop(
         sink: Arc<dyn CaptureSink>,
         state: Arc<Mutex<SourceState>>,
         stop: Arc<AtomicBool>,
         seq: Arc<AtomicU64>,
-        loopback: bool,
     ) -> WindowsResult<()> {
         let _com = ComApartment::new()?;
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-        if kind == SourceKind::Mic && !has_input_device_result()? {
-            set_state(&state, SourceState::NoInputDevice);
-            return Ok(());
-        }
-
-        let device = default_device(&enumerator, kind)?;
-        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
-        let format = unsafe { client.GetMixFormat()? };
-        let audio_format = audio_format_from(format);
-        let bpf = bytes_per_frame(format);
-        if bpf == 0 {
-            unsafe { CoTaskMemFree(Some(format.cast())) };
-            return Err(WindowsError::from_win32());
-        }
-
-        let stream_flags = if loopback {
-            AUDCLNT_STREAMFLAGS_LOOPBACK
-        } else {
-            0
-        };
-        let initialize = unsafe {
-            client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                stream_flags,
-                WASAPI_BUFFER_DURATION_100NS,
-                0,
-                format,
-                None,
-            )
-        };
-        unsafe { CoTaskMemFree(Some(format.cast())) };
-        initialize?;
-
-        let capture: IAudioCaptureClient = unsafe { client.GetService()? };
-        unsafe { client.Start()? };
-        set_state(&state, SourceState::Active);
 
         while !stop.load(Ordering::Relaxed) {
-            thread::sleep(PULL_INTERVAL);
-            loop {
-                let packet = unsafe { capture.GetNextPacketSize()? };
-                if packet == 0 {
-                    break;
+            let device = match default_render_device(&enumerator) {
+                Ok(device) => device,
+                Err(_) => {
+                    set_state(&state, SourceState::NoInputDevice);
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
                 }
+            };
+            let opened_id = device_id(&device);
 
-                let mut data_ptr: *mut u8 = ptr::null_mut();
-                let mut frames: u32 = 0;
-                let mut flags: u32 = 0;
-                unsafe {
-                    capture.GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)?;
+            let client: IAudioClient = match unsafe { device.Activate(CLSCTX_ALL, None) } {
+                Ok(client) => client,
+                Err(err) if is_render_reselect_error(err.code().0) => {
+                    set_state(&state, SourceState::Inactive);
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
                 }
+                Err(err) => return Err(err),
+            };
+            let format = match unsafe { client.GetMixFormat() } {
+                Ok(format) => format,
+                Err(err) if is_render_reselect_error(err.code().0) => {
+                    set_state(&state, SourceState::Inactive);
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let audio_format = audio_format_from(format);
+            let bpf = bytes_per_frame(format);
+            if bpf == 0 {
+                unsafe { CoTaskMemFree(Some(format.cast())) };
+                set_state(&state, SourceState::Inactive);
+                thread::sleep(MIC_RESELECT_INTERVAL);
+                continue;
+            }
 
-                if frames > 0 {
-                    let byte_len = frames as usize * bpf;
-                    let data =
-                        if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data_ptr.is_null() {
+            let initialize = unsafe {
+                client.Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_LOOPBACK,
+                    WASAPI_BUFFER_DURATION_100NS,
+                    0,
+                    format,
+                    None,
+                )
+            };
+            unsafe { CoTaskMemFree(Some(format.cast())) };
+            match initialize {
+                Ok(()) => {}
+                Err(err) if is_render_reselect_error(err.code().0) => {
+                    set_state(&state, SourceState::Inactive);
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+
+            let capture: IAudioCaptureClient = match unsafe { client.GetService() } {
+                Ok(capture) => capture,
+                Err(err) if is_render_reselect_error(err.code().0) => {
+                    set_state(&state, SourceState::Inactive);
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            match unsafe { client.Start() } {
+                Ok(()) => {}
+                Err(err) if is_render_reselect_error(err.code().0) => {
+                    set_state(&state, SourceState::Inactive);
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+            set_state(&state, SourceState::Active);
+
+            let mut since_reselect = Duration::ZERO;
+            'inner: while !stop.load(Ordering::Relaxed) {
+                thread::sleep(PULL_INTERVAL);
+                since_reselect += PULL_INTERVAL;
+                loop {
+                    let packet = match unsafe { capture.GetNextPacketSize() } {
+                        Ok(packet) => packet,
+                        Err(err) if is_render_reselect_error(err.code().0) => {
+                            set_state(&state, SourceState::Inactive);
+                            break 'inner;
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    if packet == 0 {
+                        break;
+                    }
+
+                    let mut data_ptr: *mut u8 = ptr::null_mut();
+                    let mut frames: u32 = 0;
+                    let mut flags: u32 = 0;
+                    match unsafe {
+                        capture.GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)
+                    } {
+                        Ok(()) => {}
+                        Err(err) if is_render_reselect_error(err.code().0) => {
+                            set_state(&state, SourceState::Inactive);
+                            break 'inner;
+                        }
+                        Err(err) => return Err(err),
+                    }
+
+                    if frames > 0 {
+                        let byte_len = frames as usize * bpf;
+                        let data = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0
+                            || data_ptr.is_null()
+                        {
                             vec![0; byte_len]
                         } else {
                             unsafe { std::slice::from_raw_parts(data_ptr, byte_len) }.to_vec()
                         };
-                    let seq = seq.fetch_add(1, Ordering::Relaxed);
-                    sink.emit(CaptureChunk {
-                        source: kind,
-                        seq,
-                        data,
-                        format: Some(audio_format),
-                    });
+                        let seq = seq.fetch_add(1, Ordering::Relaxed);
+                        sink.emit(CaptureChunk {
+                            source: SourceKind::SystemAudio,
+                            seq,
+                            data,
+                            format: Some(audio_format),
+                        });
+                    }
+                    match unsafe { capture.ReleaseBuffer(frames) } {
+                        Ok(()) => {}
+                        Err(err) if is_render_reselect_error(err.code().0) => {
+                            set_state(&state, SourceState::Inactive);
+                            break 'inner;
+                        }
+                        Err(err) => return Err(err),
+                    }
                 }
-                unsafe { capture.ReleaseBuffer(frames)? };
+                if since_reselect >= MIC_RESELECT_INTERVAL {
+                    since_reselect = Duration::ZERO;
+                    let current = default_render_device(&enumerator)
+                        .ok()
+                        .and_then(|device| device_id(&device));
+                    if render_reopen_needed(opened_id.as_deref(), current.as_deref()) {
+                        set_state(&state, SourceState::Inactive);
+                        break 'inner;
+                    }
+                }
+            }
+            unsafe {
+                let _ = client.Stop();
             }
         }
 
-        unsafe { client.Stop()? };
         set_state(&state, SourceState::Inactive);
         Ok(())
     }
 
-    fn spawn_worker(
-        kind: SourceKind,
+    fn spawn_loopback_worker(
         sink: Arc<dyn CaptureSink>,
         state: Arc<Mutex<SourceState>>,
         seq: Arc<AtomicU64>,
-        loopback: bool,
     ) -> Worker {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_state = Arc::clone(&state);
         let join = thread::spawn(move || {
-            if let Err(err) = run_pull_loop(
-                kind,
-                sink,
-                Arc::clone(&worker_state),
-                worker_stop,
-                seq,
-                loopback,
-            ) {
+            if let Err(err) = run_loopback_loop(sink, Arc::clone(&worker_state), worker_stop, seq) {
                 set_state(
                     &worker_state,
                     SourceState::Faulted {
@@ -558,12 +695,10 @@ mod imp {
         fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
             self.stop();
             set_state(&self.state, SourceState::Inactive);
-            self.worker = Some(spawn_worker(
-                SourceKind::SystemAudio,
+            self.worker = Some(spawn_loopback_worker(
                 sink,
                 Arc::clone(&self.state),
                 Arc::clone(&self.seq),
-                true,
             ));
             Ok(())
         }
