@@ -36,6 +36,8 @@ pub enum AppEvent {
     SourceUpdated(SourceReport),
     /// A required source faulted.
     SourceFaulted(SourceKind),
+    /// Segment storage entered or left a persistence fault.
+    StorageFaultChanged(bool),
 }
 
 /// A pause in effect: why, and an optional absolute deadline for automatic
@@ -53,6 +55,7 @@ pub struct StateMachine {
     engine_ready: bool,
     run_requested: bool,
     paused: Option<PauseState>,
+    storage_faulted: bool,
     screen: Option<SourceState>,
     system_audio: Option<SourceState>,
     // Mic is intentionally NOT required for `Observing`: a machine with no mic
@@ -81,7 +84,7 @@ impl StateMachine {
         if !self.engine_ready {
             return AppPhase::Starting;
         }
-        if self.any_required_faulted() {
+        if self.storage_faulted || self.any_required_faulted() {
             return AppPhase::Error;
         }
         if self.all_required_active() {
@@ -168,6 +171,9 @@ pub fn reduce(state: &mut StateMachine, event: AppEvent) -> AppPhase {
                 SourceKind::SystemAudio => state.system_audio = Some(faulted),
                 SourceKind::Mic => state.mic = Some(faulted),
             }
+        }
+        AppEvent::StorageFaultChanged(faulted) => {
+            state.storage_faulted = faulted;
         }
     }
     state.phase()
@@ -256,6 +262,38 @@ mod tests {
             )),
         );
         assert_eq!(p, AppPhase::Error);
+    }
+
+    #[test]
+    fn storage_fault_drops_out_of_observing_but_pause_still_wins() {
+        let mut sm = StateMachine::new();
+        reduce(&mut sm, AppEvent::RequestedStart);
+        reduce(&mut sm, AppEvent::EngineReady);
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)),
+        );
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
+        );
+        assert_eq!(sm.phase(), AppPhase::Observing);
+
+        let p = reduce(&mut sm, AppEvent::StorageFaultChanged(true));
+        assert_eq!(p, AppPhase::Error);
+
+        let p = reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: None,
+            },
+        );
+        assert_eq!(p, AppPhase::Paused);
+
+        reduce(&mut sm, AppEvent::StorageFaultChanged(false));
+        reduce(&mut sm, AppEvent::RequestedResume);
+        assert_eq!(sm.phase(), AppPhase::Observing);
     }
 
     #[test]

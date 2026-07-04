@@ -386,7 +386,8 @@ pub fn run(
                 crate::tray::init(app, cmd_tx.clone())?;
 
             tauri::async_runtime::spawn(async move {
-                let _ = engine.run(shutdown_rx, cmd_rx).await;
+                let exit = engine.run(shutdown_rx, cmd_rx).await;
+                tracing::info!(target: "engine", reason = ?exit, "capture engine loop exited");
             });
 
             tauri::async_runtime::spawn({
@@ -493,6 +494,7 @@ pub fn run(
                         sync,
                         screen_encoder: None,
                         exclusions,
+                        storage: None,
                         pause: None,
                         views,
                     };

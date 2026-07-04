@@ -123,6 +123,7 @@ Add pure/runtime deps only:
 ```toml
 observer-health.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
+tracing.workspace = true
 ```
 
 No `capture-wgc`, `capture-wasapi`, or `platform-win` dependency. Verify with:
@@ -137,8 +138,10 @@ Engine support types:
 pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
 
 #[derive(Debug)]
-pub enum EngineError<SegmentError: core::fmt::Debug> {
-    Segment(SegmentError),
+pub enum EngineExit {
+    Shutdown,
+    CommandChannelClosed,
+    EventChannelClosed,
 }
 
 pub struct SystemClock;
@@ -230,28 +233,30 @@ pub fn segment_secs(&self) -> u64;
 pub fn sink(&self) -> Arc<dyn CaptureSink>;
 pub fn health_handle(&self) -> Arc<std::sync::Mutex<HealthDump>>;
 pub fn health_dump(&self) -> HealthDump;
-pub fn start(&mut self) -> Result<(), EngineError<SFS::Error>>;
-pub fn stop(&mut self) -> Result<(), EngineError<SFS::Error>>;
+pub fn start(&mut self);
+pub fn stop(&mut self);
 pub fn on_display_changed(&mut self);
-pub fn pump(&mut self) -> Result<(), EngineError<SFS::Error>>;
+pub fn pump(&mut self);
+pub fn apply_command(&mut self, command: EngineCommand);
 pub async fn run(
     &mut self,
     shutdown: tokio::sync::oneshot::Receiver<()>,
-) -> Result<(), EngineError<SFS::Error>>;
+    command_rx: tokio::sync::mpsc::UnboundedReceiver<EngineCommand>,
+) -> EngineExit;
 ```
 
 Private helper list:
 
 ```rust
 fn reduce(&mut self, event: AppEvent) -> AppPhase;
-fn open_current_segment(&mut self) -> Result<(), EngineError<SFS::Error>>;
-fn drain_chunks(&mut self) -> Result<(), EngineError<SFS::Error>>;
-fn write_chunk(&mut self, chunk: CaptureChunk) -> Result<(), EngineError<SFS::Error>>;
-fn rotate_if_needed(&mut self) -> Result<(), EngineError<SFS::Error>>;
+fn open_current_segment(&mut self);
+fn drain_chunks(&mut self);
+fn write_chunk(&mut self, chunk: CaptureChunk);
+fn rotate_if_needed(&mut self);
 fn fold_source_states(&mut self);
 fn apply_source_report(&mut self, report: SourceReport);
 fn handle_fault_transition(&mut self, kind: SourceKind, previous: Option<&SourceState>, current: &SourceState);
-fn retry_due_sources(&mut self) -> Result<(), EngineError<SFS::Error>>;
+fn retry_due_sources(&mut self);
 fn refresh_health(&mut self);
 ```
 
@@ -263,7 +268,7 @@ fn refresh_health(&mut self);
 4. Convert any source `start()` error into a mirrored `SourceState::Faulted { reason, detail }`, reduce through `SourceUpdated`, run the lifecycle/breaker path, and continue.
 5. Poll/fold states once and refresh health.
 
-Only an infrastructural segment-open failure makes `start()` return `Err(EngineError::Segment(..))`.
+Segment-open and write failures are folded into the storage facet; `start()` does not abort.
 
 `stop()` stops all sources and finalizes the current open segment if present.
 

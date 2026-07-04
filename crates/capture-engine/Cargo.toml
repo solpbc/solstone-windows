@@ -15,3 +15,10 @@ observer-health.workspace = true
 observer-recovery.workspace = true
 observer-lifecycle.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
+tracing.workspace = true
+
+[dev-dependencies]
+observer-audio.workspace = true
+observer-pl.workspace = true
+platform-win.workspace = true
+pl-transport-win.workspace = true

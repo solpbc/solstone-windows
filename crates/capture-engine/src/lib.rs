@@ -22,7 +22,7 @@ use observer_lifecycle::{BackoffConfig, Lifecycle, RetryDecision};
 use observer_model::{
     AppPhase, CaptureChunk, CaptureSink, Clock, EncoderError, ErrorReason, HealthDump, MicSource,
     PauseReason, ScreenEncoder, ScreenFrame, ScreenSource, SourceError, SourceKind, SourceReport,
-    SourceState, SyncSnapshot, SystemAudioSource,
+    SourceState, StorageHealth, SyncSnapshot, SystemAudioSource,
 };
 use observer_recovery::{recover_all, RecoveryFs, RecoveryOutcome};
 use observer_segment::{
@@ -54,11 +54,11 @@ pub enum EngineCommand {
     DisplayChanged,
 }
 
-/// Engine-level errors. Source start failures are folded into honest state and
-/// do not abort `start`; segment fs failures are infrastructural and do abort.
-#[derive(Debug)]
-pub enum EngineError<SegmentError: core::fmt::Debug> {
-    Segment(SegmentError),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineExit {
+    Shutdown,
+    CommandChannelClosed,
+    EventChannelClosed,
 }
 
 /// Real clock implementation for production.
@@ -139,6 +139,11 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     source_reports: BTreeMap<SourceKind, SourceReport>,
     lifecycles: BTreeMap<SourceKind, Lifecycle>,
     retry_at_epoch_secs: BTreeMap<SourceKind, u64>,
+    pending_seals: BTreeMap<observer_model::SegmentKey, Option<f64>>,
+    write_stalled: bool,
+    storage_fault: Option<String>,
+    storage_lifecycle: Lifecycle,
+    storage_retry_at: Option<u64>,
     shared_health: Arc<Mutex<HealthDump>>,
     health_tx: watch::Sender<HealthDump>,
     /// Wave-2 sync (pairing + upload) snapshot, published by the sync layer and
@@ -182,6 +187,11 @@ where
             source_reports: BTreeMap::new(),
             lifecycles: Self::new_lifecycles(config.lifecycle),
             retry_at_epoch_secs: BTreeMap::new(),
+            pending_seals: BTreeMap::new(),
+            write_stalled: false,
+            storage_fault: None,
+            storage_lifecycle: Lifecycle::new(Self::storage_backoff_config()),
+            storage_retry_at: None,
             shared_health: Arc::new(Mutex::new(Self::empty_health())),
             health_tx,
             sync: Arc::new(Mutex::new(SyncSnapshot::default())),
@@ -264,6 +274,9 @@ where
                 .is_some()
                 .then(|| self.sources.screen_encoder.health()),
             exclusions: self.sources.screen.exclusion_health(),
+            storage: self.storage_fault.as_ref().map(|detail| StorageHealth {
+                detail: detail.clone(),
+            }),
             pause: self.state.pause_snapshot(now),
             views: Default::default(),
         }
@@ -271,35 +284,28 @@ where
 
     /// Start every source and open the current segment. Source start failures are
     /// folded into state and do not abort the engine.
-    pub fn start(&mut self) -> Result<(), EngineError<SFS::Error>> {
+    pub fn start(&mut self) {
         self.reduce(AppEvent::RequestedStart);
-        self.open_current_segment()?;
+        self.open_current_segment();
         for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
             self.start_source(kind);
         }
         self.fold_source_states();
         self.refresh_health();
-        Ok(())
     }
 
     /// Stop every source and seal the current segment, when one is open.
-    pub fn stop(&mut self) -> Result<(), EngineError<SFS::Error>> {
+    pub fn stop(&mut self) {
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
-        self.drain_events()?;
+        self.drain_events();
 
         if let Some(segment) = self.current_segment.take() {
-            if self.finalize_screen_encoder().is_ok() {
-                let video_end = self.video_end_for_finalized_segment(&segment);
-                self.segment_fs
-                    .finalize(segment.key, video_end)
-                    .map_err(EngineError::Segment)?;
-            }
+            self.seal_segment(segment);
         }
         self.fold_source_states();
         self.refresh_health();
-        Ok(())
     }
 
     /// Forward display changes to the screen source. Segment rotation stays
@@ -309,14 +315,14 @@ where
     }
 
     /// Deterministic, host-testable unit of engine work.
-    pub fn pump(&mut self) -> Result<(), EngineError<SFS::Error>> {
-        self.drain_events()?;
-        self.auto_resume_if_due()?;
-        self.rotate_if_needed()?;
+    pub fn pump(&mut self) {
+        self.drain_events();
+        self.auto_resume_if_due();
+        self.rotate_if_needed();
+        self.service_storage();
         self.retry_due_sources();
         self.fold_source_states();
         self.refresh_health();
-        Ok(())
     }
 
     /// Production loop. Shutdown exits cleanly; source facts and health are
@@ -325,29 +331,30 @@ where
         &mut self,
         mut shutdown: oneshot::Receiver<()>,
         mut command_rx: mpsc::UnboundedReceiver<EngineCommand>,
-    ) -> Result<(), EngineError<SFS::Error>> {
+    ) -> EngineExit {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
                 _ = &mut shutdown => {
-                    return Ok(());
+                    return EngineExit::Shutdown;
                 }
                 cmd = command_rx.recv() => {
                     match cmd {
-                        Some(command) => self.apply_command(command)?,
-                        None => return Ok(()),
+                        Some(command) => self.apply_command(command),
+                        None => return EngineExit::CommandChannelClosed,
                     }
                 }
                 event = self.rx.recv() => {
                     if let Some(event) = event {
-                        self.handle_event(event)?;
+                        self.handle_event(event);
                     } else {
-                        return Ok(());
+                        return EngineExit::EventChannelClosed;
                     }
                 }
                 _ = interval.tick() => {
-                    self.auto_resume_if_due()?;
-                    self.rotate_if_needed()?;
+                    self.auto_resume_if_due();
+                    self.rotate_if_needed();
+                    self.service_storage();
                     self.retry_due_sources();
                     self.fold_source_states();
                     self.refresh_health();
@@ -360,7 +367,7 @@ where
         reduce(&mut self.state, event)
     }
 
-    fn apply_command(&mut self, command: EngineCommand) -> Result<(), EngineError<SFS::Error>> {
+    pub fn apply_command(&mut self, command: EngineCommand) {
         match command {
             EngineCommand::Start => {
                 self.reduce(AppEvent::RequestedStart);
@@ -376,24 +383,24 @@ where
                     expires_at_epoch_secs,
                 });
                 // A pause must actually stop capture, not merely relabel the
-                // phase: stop every source and seal the open segment so nothing
-                // is gathered while paused. Honest state — "paused" is true.
-                self.pause_capture()?;
+                // phase: stop every source so nothing is gathered while paused.
+                // The open segment stays incomplete until a boundary or stop.
+                self.pause_capture();
             }
             EngineCommand::Resume => {
                 self.reduce(AppEvent::RequestedResume);
-                self.resume_capture()?;
+                self.resume_capture();
             }
             EngineCommand::TogglePause => {
                 if self.state.phase() == AppPhase::Paused {
                     self.reduce(AppEvent::RequestedResume);
-                    self.resume_capture()?;
+                    self.resume_capture();
                 } else {
                     self.reduce(AppEvent::RequestedPause {
                         reason: PauseReason::Operator,
                         expires_at_epoch_secs: None,
                     });
-                    self.pause_capture()?;
+                    self.pause_capture();
                 }
             }
             EngineCommand::DisplayChanged => {
@@ -401,58 +408,51 @@ where
             }
         }
         self.refresh_health();
-        Ok(())
     }
 
-    /// Stop all sources and seal the open segment so capture truly halts while
-    /// paused. Idempotent: a no-op when nothing is open.
-    fn pause_capture(&mut self) -> Result<(), EngineError<SFS::Error>> {
+    /// Stop all sources so capture truly halts while paused. The open segment
+    /// stays incomplete and is sealed only at a boundary or stop.
+    fn pause_capture(&mut self) {
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
-        self.drain_events()?;
-        if let Some(segment) = self.current_segment.take() {
-            if self.finalize_screen_encoder().is_ok() {
-                let video_end = self.video_end_for_finalized_segment(&segment);
-                self.segment_fs
-                    .finalize(segment.key, video_end)
-                    .map_err(EngineError::Segment)?;
-            }
-        }
+        self.drain_events();
+        self.write_stalled = false;
+        self.attempt_clear_storage();
         self.fold_source_states();
-        Ok(())
     }
 
     /// Re-open the current segment and restart every source. The inverse of
     /// [`Self::pause_capture`], used by both an explicit resume and auto-resume.
-    fn resume_capture(&mut self) -> Result<(), EngineError<SFS::Error>> {
-        self.open_current_segment()?;
+    fn resume_capture(&mut self) {
+        self.open_current_segment();
         for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
             self.start_source(kind);
         }
         self.fold_source_states();
-        Ok(())
     }
 
     /// Auto-resume when a duration-bounded pause has reached its deadline.
-    fn auto_resume_if_due(&mut self) -> Result<(), EngineError<SFS::Error>> {
+    fn auto_resume_if_due(&mut self) {
         if self.state.pause_due_to_expire(self.clock.now_epoch_secs()) {
             self.reduce(AppEvent::RequestedResume);
-            self.resume_capture()?;
+            self.resume_capture();
         }
-        Ok(())
     }
 
-    fn open_current_segment(&mut self) -> Result<(), EngineError<SFS::Error>> {
+    fn open_current_segment(&mut self) {
         if self.current_segment.is_some() {
-            return Ok(());
+            return;
         }
         let now = self.clock.now_epoch_secs();
         let key = segment_for(now, self.config.segment_secs);
-        let dir = self
-            .segment_fs
-            .open_incomplete(key)
-            .map_err(EngineError::Segment)?;
+        let dir = match self.segment_fs.open_incomplete(key) {
+            Ok(dir) => dir,
+            Err(error) => {
+                self.note_storage_fault(format!("{error:?}"));
+                return;
+            }
+        };
         self.current_segment = Some(OpenSegment {
             key,
             dir,
@@ -460,45 +460,41 @@ where
             screen_chunks: 0,
             screen_encoder_open: false,
         });
-        Ok(())
+        self.attempt_clear_storage();
     }
 
-    fn drain_events(&mut self) -> Result<(), EngineError<SFS::Error>> {
+    fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
-            self.handle_event(event)?;
+            self.handle_event(event);
         }
-        Ok(())
     }
 
-    fn handle_event(&mut self, event: CaptureEvent) -> Result<(), EngineError<SFS::Error>> {
+    fn handle_event(&mut self, event: CaptureEvent) {
         match event {
             CaptureEvent::Audio(chunk) => self.write_audio_chunk(chunk),
             CaptureEvent::Screen(frame) => {
                 self.encode_screen_frame(frame);
-                Ok(())
             }
         }
     }
 
-    fn write_audio_chunk(&mut self, chunk: CaptureChunk) -> Result<(), EngineError<SFS::Error>> {
+    fn write_audio_chunk(&mut self, chunk: CaptureChunk) {
         let Some(segment) = self.current_segment.as_mut() else {
-            return Ok(());
+            return;
         };
 
-        if let Err(error) = self.segment_fs.write_chunk(segment.key, &chunk) {
-            let detail = format!("{error:?}");
-            self.apply_source_report(SourceReport {
-                kind: chunk.source,
-                state: SourceState::Faulted {
-                    reason: ErrorReason::WriteFailed,
-                    detail,
-                },
-                device: None,
-            });
-            return Err(EngineError::Segment(error));
+        match self.segment_fs.write_chunk(segment.key, &chunk) {
+            Ok(()) => {
+                if self.write_stalled {
+                    self.write_stalled = false;
+                    self.attempt_clear_storage();
+                }
+            }
+            Err(error) => {
+                self.write_stalled = true;
+                self.note_storage_fault(format!("{error:?}"));
+            }
         }
-
-        Ok(())
     }
 
     fn encode_screen_frame(&mut self, frame: ScreenFrame) {
@@ -531,36 +527,21 @@ where
         }
     }
 
-    fn rotate_if_needed(&mut self) -> Result<(), EngineError<SFS::Error>> {
+    fn rotate_if_needed(&mut self) {
         let now = self.clock.now_epoch_secs();
         let Some(current) = self.current_segment.as_ref() else {
-            return Ok(());
+            return;
         };
         if !should_rotate(current.key, now, self.config.segment_secs) {
-            return Ok(());
+            return;
         }
 
         let old_segment = self.current_segment.take().expect("current checked above");
-        if self.finalize_screen_encoder().is_ok() {
-            let video_end = self.video_end_for_finalized_segment(&old_segment);
-            self.segment_fs
-                .finalize(old_segment.key, video_end)
-                .map_err(EngineError::Segment)?;
-        }
+        self.seal_segment(old_segment);
 
-        let next_key = segment_for(now, self.config.segment_secs);
-        let dir = self
-            .segment_fs
-            .open_incomplete(next_key)
-            .map_err(EngineError::Segment)?;
-        self.current_segment = Some(OpenSegment {
-            key: next_key,
-            dir,
-            opened_epoch_secs: now,
-            screen_chunks: 0,
-            screen_encoder_open: false,
-        });
-        Ok(())
+        if self.should_be_capturing() {
+            self.open_current_segment();
+        }
     }
 
     fn finalize_screen_encoder(&mut self) -> Result<(), EncoderError> {
@@ -578,6 +559,90 @@ where
             .screen_encoder_open
             .then(|| self.sources.screen_encoder.video_end_secs())
             .flatten()
+    }
+
+    fn should_be_capturing(&self) -> bool {
+        !matches!(self.state.phase(), AppPhase::Idle | AppPhase::Paused)
+    }
+
+    fn storage_healthy(&self) -> bool {
+        self.pending_seals.is_empty()
+            && !self.write_stalled
+            && !(self.should_be_capturing() && self.current_segment.is_none())
+    }
+
+    fn note_storage_fault(&mut self, detail: String) {
+        tracing::warn!(target: "storage", detail = %detail, "segment storage fault");
+        self.storage_fault = Some(detail);
+        self.reduce(AppEvent::StorageFaultChanged(true));
+    }
+
+    fn clear_storage_fault(&mut self) {
+        self.storage_fault = None;
+        self.storage_retry_at = None;
+        self.storage_lifecycle.on_success();
+        self.reduce(AppEvent::StorageFaultChanged(false));
+    }
+
+    fn attempt_clear_storage(&mut self) {
+        if self.storage_fault.is_some() && self.storage_healthy() {
+            self.clear_storage_fault();
+        }
+    }
+
+    fn seal_segment(&mut self, segment: OpenSegment) {
+        if self.finalize_screen_encoder().is_ok() {
+            let video_end = self.video_end_for_finalized_segment(&segment);
+            if let Err(error) = self.segment_fs.finalize(segment.key, video_end) {
+                self.pending_seals.insert(segment.key, video_end);
+                self.note_storage_fault(format!("{error:?}"));
+            } else {
+                self.attempt_clear_storage();
+            }
+        }
+    }
+
+    fn service_storage(&mut self) {
+        if self.storage_fault.is_none() {
+            return;
+        }
+
+        let now = self.clock.now_epoch_secs();
+        let retry_due = self.storage_retry_at.is_none_or(|retry_at| now >= retry_at);
+        if retry_due {
+            let pending: Vec<_> = self
+                .pending_seals
+                .iter()
+                .map(|(key, video_end)| (*key, *video_end))
+                .collect();
+            for (key, video_end) in pending {
+                match self.segment_fs.finalize(key, video_end) {
+                    Ok(()) => {
+                        self.pending_seals.remove(&key);
+                    }
+                    Err(error) => {
+                        self.note_storage_fault(format!("{error:?}"));
+                    }
+                }
+            }
+
+            if self.should_be_capturing() && self.current_segment.is_none() {
+                self.open_current_segment();
+            }
+        }
+
+        if self.storage_healthy() {
+            self.clear_storage_fault();
+        } else if retry_due {
+            let delay_secs = match self.storage_lifecycle.on_failure() {
+                RetryDecision::RetryAfter(delay) => delay.as_secs(),
+                RetryDecision::GiveUp => {
+                    // Storage uses u32::MAX as a practical never-open breaker; keep retrying anyway.
+                    Self::storage_backoff_config().max.as_secs()
+                }
+            };
+            self.storage_retry_at = Some(now.saturating_add(delay_secs));
+        }
     }
 
     fn fold_source_states(&mut self) {
@@ -763,6 +828,13 @@ where
         ])
     }
 
+    fn storage_backoff_config() -> BackoffConfig {
+        BackoffConfig {
+            breaker_threshold: u32::MAX,
+            ..BackoffConfig::default()
+        }
+    }
+
     fn empty_health() -> HealthDump {
         HealthDump {
             app_state: AppPhase::Idle,
@@ -775,6 +847,7 @@ where
             sync: SyncSnapshot::default(),
             screen_encoder: None,
             exclusions: None,
+            storage: None,
             pause: None,
             views: Default::default(),
         }
@@ -867,6 +940,8 @@ mod tests {
         writes: Vec<(SegmentKey, SourceKind, u64)>,
         video_ends: Vec<Option<f64>>,
         fail_open: bool,
+        write_failures_remaining: usize,
+        finalize_failures_remaining: usize,
     }
 
     #[derive(Clone, Default)]
@@ -891,6 +966,14 @@ mod tests {
         fn event_log(&self) -> Arc<Mutex<Vec<FsEvent>>> {
             self.events.clone()
         }
+
+        fn fail_next_writes(&self, count: usize) {
+            self.state.lock().unwrap().write_failures_remaining = count;
+        }
+
+        fn fail_next_finalizes(&self, count: usize) {
+            self.state.lock().unwrap().finalize_failures_remaining = count;
+        }
     }
 
     impl SegmentFs for FakeSegmentFs {
@@ -911,6 +994,10 @@ mod tests {
             chunk: &CaptureChunk,
         ) -> Result<(), Self::Error> {
             let mut state = self.state.lock().unwrap();
+            if state.write_failures_remaining > 0 {
+                state.write_failures_remaining -= 1;
+                return Err("write failed");
+            }
             self.events
                 .lock()
                 .unwrap()
@@ -924,7 +1011,12 @@ mod tests {
             key: SegmentKey,
             video_end_secs: Option<f64>,
         ) -> Result<(), Self::Error> {
-            self.state.lock().unwrap().video_ends.push(video_end_secs);
+            let mut state = self.state.lock().unwrap();
+            if state.finalize_failures_remaining > 0 {
+                state.finalize_failures_remaining -= 1;
+                return Err("finalize failed");
+            }
+            state.video_ends.push(video_end_secs);
             self.events.lock().unwrap().push(FsEvent::Finalize(key));
             Ok(())
         }
@@ -1350,11 +1442,11 @@ mod tests {
         assert_eq!(handles.screen.starts(), 0);
         assert_eq!(engine.segment_secs(), DEFAULT_SEGMENT_SECS);
 
-        engine.start().unwrap();
+        engine.start();
         assert_eq!(handles.screen.starts(), 1);
         assert_eq!(handles.system_audio.starts(), 1);
         assert_eq!(handles.mic.starts(), 1);
-        engine.stop().unwrap();
+        engine.stop();
     }
 
     #[test]
@@ -1369,43 +1461,41 @@ mod tests {
         let mut rx = engine.health_watch();
 
         rx.mark_unchanged();
-        engine.apply_command(EngineCommand::Start).unwrap();
+        engine.apply_command(EngineCommand::Start);
         assert!(rx.has_changed().unwrap());
         assert_eq!(engine.health_dump().app_state, AppPhase::Starting);
 
-        engine.start().unwrap();
+        engine.start();
 
         rx.mark_unchanged();
-        engine
-            .apply_command(EngineCommand::Pause {
-                reason: PauseReason::Operator,
-                duration_secs: None,
-            })
-            .unwrap();
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
         assert!(rx.has_changed().unwrap());
         assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
 
         rx.mark_unchanged();
-        engine.apply_command(EngineCommand::Resume).unwrap();
+        engine.apply_command(EngineCommand::Resume);
         assert!(rx.has_changed().unwrap());
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
 
         let display_changes = handles.screen.display_changes();
         rx.mark_unchanged();
-        engine.apply_command(EngineCommand::DisplayChanged).unwrap();
+        engine.apply_command(EngineCommand::DisplayChanged);
         assert!(rx.has_changed().unwrap());
         assert_eq!(handles.screen.display_changes(), display_changes + 1);
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
     }
 
     #[test]
-    fn pause_stops_capture_seals_segment_and_auto_resumes_at_deadline() {
+    fn pause_stops_capture_seals_at_boundary_and_auto_resumes_at_deadline() {
         let clock = FakeClock::new(1_000);
         let segment_fs = FakeSegmentFs::default();
         let segment_view = segment_fs.clone();
         let (sources, handles) = active_sources();
         let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
-        engine.start().unwrap();
+        engine.start();
         assert!(
             engine.health_dump().segment_dir.is_some(),
             "a segment is open while observing"
@@ -1413,48 +1503,66 @@ mod tests {
         let stops_before = handles.screen.stops();
 
         // Pause for 900s at t=1000 -> auto-resume deadline 1900.
-        engine
-            .apply_command(EngineCommand::Pause {
-                reason: PauseReason::Operator,
-                duration_secs: Some(900),
-            })
-            .unwrap();
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: Some(900),
+        });
 
-        // A real pause: sources stopped, the open segment sealed, phase Paused,
-        // and the honest countdown surfaced.
+        // A real pause: sources stopped, phase Paused, and the open segment
+        // remains incomplete until its clock boundary.
         assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
         assert!(
             handles.screen.stops() > stops_before,
             "screen source stopped"
         );
         assert!(
-            engine.health_dump().segment_dir.is_none(),
-            "the open segment is sealed on pause — nothing is captured"
+            engine.health_dump().segment_dir.is_some(),
+            "the open segment stays unsealed while paused"
         );
         assert!(
             segment_view
                 .events()
                 .iter()
-                .any(|e| matches!(e, FsEvent::Finalize(_))),
-            "the segment was finalized on pause"
+                .all(|e| !matches!(e, FsEvent::Finalize(_))),
+            "pause must not finalize the segment"
         );
         assert_eq!(
             engine.health_dump().pause.unwrap().seconds_remaining,
             Some(900)
         );
 
-        // Before the deadline, pumping keeps it paused.
-        clock.set(1_899);
-        engine.pump().unwrap();
+        // Before the boundary and deadline, pumping keeps it paused and unsealed.
+        clock.set(1_199);
+        engine.pump();
         assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
         assert_eq!(
             engine.health_dump().pause.unwrap().seconds_remaining,
-            Some(1)
+            Some(701)
         );
+        assert!(
+            segment_view
+                .events()
+                .iter()
+                .all(|e| !matches!(e, FsEvent::Finalize(_))),
+            "pre-boundary pump must not finalize"
+        );
+
+        // At the boundary, the paused segment seals once and no successor opens.
+        clock.set(1_200);
+        engine.pump();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert!(
+            segment_view
+                .events()
+                .iter()
+                .any(|e| matches!(e, FsEvent::Finalize(_))),
+            "the segment is finalized on the first boundary tick"
+        );
+        assert!(engine.health_dump().segment_dir.is_none());
 
         // At the deadline, the engine auto-resumes and re-opens a segment.
         clock.set(1_900);
-        engine.pump().unwrap();
+        engine.pump();
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
         assert!(engine.health_dump().pause.is_none());
         assert!(
@@ -1472,16 +1580,16 @@ mod tests {
             EngineConfig::default(),
             sources,
         );
-        engine.start().unwrap();
+        engine.start();
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
 
         // Hotkey once -> indefinite pause.
-        engine.apply_command(EngineCommand::TogglePause).unwrap();
+        engine.apply_command(EngineCommand::TogglePause);
         assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
         assert_eq!(engine.health_dump().pause.unwrap().seconds_remaining, None);
 
         // Hotkey again -> resume.
-        engine.apply_command(EngineCommand::TogglePause).unwrap();
+        engine.apply_command(EngineCommand::TogglePause);
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
         assert!(engine.health_dump().pause.is_none());
     }
@@ -1496,16 +1604,14 @@ mod tests {
             EngineConfig::default(),
             sources,
         );
-        engine.start().unwrap();
-        engine
-            .apply_command(EngineCommand::Pause {
-                reason: PauseReason::Operator,
-                duration_secs: None,
-            })
-            .unwrap();
+        engine.start();
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
         assert_eq!(engine.health_dump().pause.unwrap().seconds_remaining, None);
         clock.set(u64::MAX / 2);
-        engine.pump().unwrap();
+        engine.pump();
         assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
     }
 
@@ -1549,18 +1655,18 @@ mod tests {
         let segment_view = segment_fs.clone();
         let (sources, _) = active_sources();
         let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
-        engine.start().unwrap();
+        engine.start();
         let sink = engine.sink();
 
         emit_audio(&sink, SourceKind::SystemAudio, 0..5);
-        engine.pump().unwrap();
+        engine.pump();
 
         clock.set(300);
         emit_audio(&sink, SourceKind::SystemAudio, 5..8);
-        engine.pump().unwrap();
+        engine.pump();
 
         emit_audio(&sink, SourceKind::SystemAudio, 8..11);
-        engine.pump().unwrap();
+        engine.pump();
 
         let writes = segment_view.writes();
         let seqs: BTreeSet<u64> = writes.iter().map(|(_, _, seq)| *seq).collect();
@@ -1592,13 +1698,13 @@ mod tests {
         let encoder = FakeScreenEncoder::with_events(segment_view.event_log());
         let (sources, _) = active_sources_with_encoder(encoder);
         let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
-        engine.start().unwrap();
+        engine.start();
 
         emit_screen(&engine.sink(), 0..1);
-        engine.pump().unwrap();
+        engine.pump();
 
         clock.set(300);
-        engine.pump().unwrap();
+        engine.pump();
 
         let old = segment_for(299, DEFAULT_SEGMENT_SECS);
         let events = segment_view.events();
@@ -1627,10 +1733,10 @@ mod tests {
             sources,
         );
 
-        engine.start().unwrap();
+        engine.start();
         emit_screen(&engine.sink(), 0..1);
-        engine.pump().unwrap();
-        engine.stop().unwrap();
+        engine.pump();
+        engine.stop();
 
         assert_eq!(segment_view.video_ends(), vec![Some(123.0)]);
     }
@@ -1649,8 +1755,8 @@ mod tests {
             sources,
         );
 
-        engine.start().unwrap();
-        engine.stop().unwrap();
+        engine.start();
+        engine.stop();
 
         assert_eq!(segment_view.video_ends(), vec![None]);
     }
@@ -1672,8 +1778,8 @@ mod tests {
             sources,
         );
 
-        engine.start().unwrap();
-        engine.pump().unwrap();
+        engine.start();
+        engine.pump();
 
         let dump = engine.health_dump();
         let screen = dump
@@ -1709,7 +1815,7 @@ mod tests {
             SourceState::NoInputDevice,
         );
         let mut engine = engine_with(FakeClock::new(0), FakeSegmentFs::default(), config, sources);
-        engine.start().unwrap();
+        engine.start();
 
         let screen = engine
             .health_dump()
@@ -1740,7 +1846,7 @@ mod tests {
             SourceState::NoInputDevice,
         );
         let mut engine = engine_with(FakeClock::new(0), FakeSegmentFs::default(), config, sources);
-        engine.start().unwrap();
+        engine.start();
 
         let screen = engine
             .health_dump()
@@ -1766,10 +1872,128 @@ mod tests {
             sources,
         );
 
-        engine.start().unwrap();
-        engine.pump().unwrap();
+        engine.start();
+        engine.pump();
 
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+    }
+
+    #[test]
+    fn storage_finalize_failures_retry_past_source_breaker_threshold_and_recover() {
+        let config = EngineConfig {
+            segment_secs: 10_000,
+            ..EngineConfig::default()
+        };
+        let clock = FakeClock::new(9_999);
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        segment_fs.fail_next_finalizes(10);
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(clock.clone(), segment_fs, config, sources);
+
+        engine.start();
+        clock.set(10_000);
+        engine.pump();
+
+        assert!(engine.health_dump().storage.is_some());
+        assert_ne!(engine.health_dump().app_state, AppPhase::Observing);
+        assert_eq!(engine.pending_seals.len(), 1);
+
+        for _ in 0..10 {
+            if engine.pending_seals.is_empty() {
+                break;
+            }
+            let retry_at = engine.storage_retry_at.unwrap();
+            clock.set(retry_at.saturating_add(60));
+            engine.pump();
+        }
+
+        assert!(engine.pending_seals.is_empty());
+        assert!(engine.health_dump().storage.is_none());
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+
+        clock.set(20_000);
+        engine.pump();
+        let later = segment_for(10_000, config.segment_secs);
+        assert!(segment_view.events().contains(&FsEvent::Finalize(later)));
+    }
+
+    #[test]
+    fn storage_write_fault_uses_storage_facet_not_audio_source_fault() {
+        let clock = FakeClock::new(0);
+        let segment_fs = FakeSegmentFs::default();
+        segment_fs.fail_next_writes(1);
+        let (sources, handles) = active_sources();
+        let mut engine = engine_with(clock, segment_fs, EngineConfig::default(), sources);
+        engine.start();
+
+        emit_audio(&engine.sink(), SourceKind::SystemAudio, 0..1);
+        engine.pump();
+
+        let dump = engine.health_dump();
+        assert!(dump.storage.is_some());
+        assert_ne!(dump.app_state, AppPhase::Observing);
+        for kind in [SourceKind::SystemAudio, SourceKind::Mic] {
+            let report = dump
+                .sources
+                .iter()
+                .find(|source| source.kind == kind)
+                .unwrap();
+            assert!(
+                !matches!(
+                    report.state,
+                    SourceState::Faulted {
+                        reason: ErrorReason::WriteFailed,
+                        ..
+                    }
+                ),
+                "{kind:?} should not be blamed for storage writes"
+            );
+        }
+
+        let display_changes = handles.screen.display_changes();
+        engine.apply_command(EngineCommand::DisplayChanged);
+        assert_eq!(handles.screen.display_changes(), display_changes + 1);
+    }
+
+    #[test]
+    fn pending_seal_sweep_accumulates_multiple_past_keys_and_never_seals_live_key() {
+        let clock = FakeClock::new(299);
+        let segment_fs = FakeSegmentFs::default();
+        let segment_view = segment_fs.clone();
+        segment_fs.fail_next_finalizes(10);
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(
+            clock.clone(),
+            segment_fs.clone(),
+            EngineConfig::default(),
+            sources,
+        );
+
+        engine.start();
+        clock.set(300);
+        engine.pump();
+        clock.set(600);
+        engine.pump();
+
+        let first = segment_for(299, DEFAULT_SEGMENT_SECS);
+        let second = segment_for(300, DEFAULT_SEGMENT_SECS);
+        let live = segment_for(600, DEFAULT_SEGMENT_SECS);
+        assert_eq!(engine.pending_seals.len(), 2);
+        assert!(engine.pending_seals.contains_key(&first));
+        assert!(engine.pending_seals.contains_key(&second));
+        assert_eq!(engine.current_segment.as_ref().unwrap().key, live);
+
+        segment_fs.fail_next_finalizes(0);
+        let retry_at = engine.storage_retry_at.unwrap();
+        clock.set(retry_at.saturating_add(1));
+        engine.pump();
+
+        assert!(engine.pending_seals.is_empty());
+        let events = segment_view.events();
+        assert!(events.contains(&FsEvent::Finalize(first)));
+        assert!(events.contains(&FsEvent::Finalize(second)));
+        assert!(!events.contains(&FsEvent::Finalize(live)));
     }
 
     #[test]
@@ -1797,12 +2021,12 @@ mod tests {
             EngineConfig::default(),
             sources,
         );
-        engine.start().unwrap();
+        engine.start();
         let sink = engine.sink();
 
         clock.set(5);
         emit_screen(&sink, 0..10);
-        engine.pump().unwrap();
+        engine.pump();
 
         assert_eq!(engine.health_dump().frame_rate, Some(2));
     }
@@ -1819,12 +2043,12 @@ mod tests {
         ));
         let (sources, _) = active_sources_with_encoder(encoder);
         let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
-        engine.start().unwrap();
+        engine.start();
         emit_screen(&engine.sink(), 0..1);
-        engine.pump().unwrap();
+        engine.pump();
 
         clock.set(300);
-        engine.pump().unwrap();
+        engine.pump();
 
         let old = segment_for(299, DEFAULT_SEGMENT_SECS);
         assert!(!segment_view.events().contains(&FsEvent::Finalize(old)));
@@ -1854,9 +2078,9 @@ mod tests {
             EngineConfig::default(),
             sources,
         );
-        engine.start().unwrap();
+        engine.start();
         emit_screen(&engine.sink(), 0..3);
-        engine.pump().unwrap();
+        engine.pump();
 
         let health = engine.health_dump().screen_encoder.unwrap();
         assert_eq!(health, encoder_view.health_snapshot());
@@ -1879,9 +2103,9 @@ mod tests {
             EngineConfig::default(),
             sources,
         );
-        engine.start().unwrap();
+        engine.start();
         emit_screen(&engine.sink(), 0..1);
-        engine.pump().unwrap();
+        engine.pump();
 
         let screen = engine
             .health_dump()
@@ -1910,12 +2134,12 @@ mod tests {
             EngineConfig::default(),
             sources,
         );
-        engine.start().unwrap();
+        engine.start();
         let sink = engine.sink();
 
         emit_screen_size(&sink, 0, 2, 2);
         emit_screen_size(&sink, 1, 4, 2);
-        engine.pump().unwrap();
+        engine.pump();
 
         let health = encoder_view.health_snapshot();
         assert_eq!(health.frames_consumed, 2);
@@ -1923,9 +2147,9 @@ mod tests {
         assert!(health.last_error.unwrap().contains("do not match"));
 
         clock.set(300);
-        engine.pump().unwrap();
+        engine.pump();
         emit_screen_size(&sink, 2, 4, 2);
-        engine.pump().unwrap();
+        engine.pump();
 
         let health = encoder_view.health_snapshot();
         assert_eq!(health.frames_consumed, 3);
@@ -1946,14 +2170,14 @@ mod tests {
         ));
         let (sources, _) = active_sources_with_encoder(encoder);
         let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
-        engine.start().unwrap();
+        engine.start();
 
         emit_screen(&engine.sink(), 0..1);
-        engine.pump().unwrap();
+        engine.pump();
         clock.set(300);
-        engine.pump().unwrap();
+        engine.pump();
         emit_screen(&engine.sink(), 1..2);
-        engine.pump().unwrap();
+        engine.pump();
 
         let old = segment_for(299, DEFAULT_SEGMENT_SECS);
         assert!(!segment_view.events().contains(&FsEvent::Finalize(old)));
@@ -1969,10 +2193,10 @@ mod tests {
         let encoder = FakeScreenEncoder::with_events(segment_view.event_log());
         let (sources, _) = active_sources_with_encoder(encoder);
         let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
-        engine.start().unwrap();
+        engine.start();
 
         clock.set(300);
-        engine.pump().unwrap();
+        engine.pump();
 
         assert!(!segment_view.events().iter().any(|event| matches!(
             event,
@@ -1994,6 +2218,7 @@ mod tests {
             sync: SyncSnapshot::default(),
             screen_encoder: None,
             exclusions: None,
+            storage: None,
             pause: None,
             views: Default::default(),
         };

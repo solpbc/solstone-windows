@@ -195,6 +195,32 @@ fn persist_seal_len(dir: &Path, video_end_secs: Option<f64>, period_secs: u64) -
     Ok(len)
 }
 
+fn drop_entry(path: &Path) -> io::Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
+    if !sealed.exists() {
+        return fs::rename(incomplete, sealed);
+    }
+
+    for entry in fs::read_dir(incomplete)? {
+        let entry = entry?;
+        let source = entry.path();
+        let target = sealed.join(entry.file_name());
+        if target.exists() {
+            drop_entry(&source)?;
+        } else {
+            fs::rename(&source, target)?;
+        }
+    }
+    fs::remove_dir(incomplete)
+}
+
 fn remove_partial_media(dir: &Path) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -648,7 +674,7 @@ impl SegmentFs for LocalSegmentFs {
         let dir = incomplete_dir(&self.root, key);
         seal_audio_flac(&dir)?;
         persist_seal_len(&dir, video_end_secs, DEFAULT_SEGMENT_SECS)?;
-        fs::rename(dir, sealed_dir(&self.root, key))
+        seal_or_merge(&dir, &sealed_dir(&self.root, key))
     }
 }
 
@@ -735,7 +761,7 @@ impl RecoveryFs for LocalRecoveryFs {
         remove_partial_media(dir)?;
         seal_audio_flac(dir)?;
         persist_seal_len(dir, None, DEFAULT_SEGMENT_SECS)?;
-        fs::rename(&seg.path, sealed_dir(&self.root, seg.key))
+        seal_or_merge(dir, &sealed_dir(&self.root, seg.key))
     }
 
     fn quarantine(&mut self, seg: &StaleSegment) -> Result<(), Self::Error> {
@@ -1173,6 +1199,81 @@ mod tests {
         recovery.finalize(&stale[0]).unwrap();
 
         assert_eq!(len_sidecar(&root, 18), "300");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_segment_finalize_merges_when_sealed_dir_already_exists() {
+        let root = temp_root("normal-merge-existing");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(20);
+        let sealed = root.join("20");
+
+        fs_impl.open_incomplete(key).unwrap();
+        fs_impl
+            .write_chunk(key, &audio_chunk(SourceKind::Mic, &[2000; 16]))
+            .unwrap();
+        fs::create_dir_all(&sealed).unwrap();
+        fs::write(sealed.join(SCREEN_FILE_NAME), b"existing-mp4").unwrap();
+        fs::write(sealed.join(LEN_FILE_NAME), b"99").unwrap();
+
+        fs_impl.finalize(key, None).unwrap();
+
+        assert!(!root.join("20.incomplete").exists());
+        assert_eq!(
+            fs::read(sealed.join(SCREEN_FILE_NAME)).unwrap(),
+            b"existing-mp4"
+        );
+        assert!(sealed.join(AUDIO_FILE_NAME).is_file());
+        assert_eq!(
+            fs::read_to_string(sealed.join(LEN_FILE_NAME)).unwrap(),
+            "99"
+        );
+
+        let audio_files = fs::read_dir(&sealed)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name() == AUDIO_FILE_NAME)
+            .count();
+        assert_eq!(audio_files, 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_finalize_merges_with_existing_sealed_target() {
+        let root = temp_root("recovery-merge-existing");
+        let _ = fs::remove_dir_all(&root);
+        let sealed = root.join("21");
+        let orphan = root.join("21.incomplete");
+        fs::create_dir_all(&sealed).unwrap();
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(sealed.join(SCREEN_FILE_NAME), b"existing-mp4").unwrap();
+        fs::write(sealed.join(LEN_FILE_NAME), b"10").unwrap();
+        fs::write(orphan.join(AUDIO_FILE_NAME), b"flac").unwrap();
+        fs::write(orphan.join(LEN_FILE_NAME), b"3").unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone());
+        let seg = StaleSegment {
+            key: key(21),
+            path: absolute_string(&orphan).unwrap(),
+            has_usable_data: true,
+        };
+
+        recovery.finalize(&seg).unwrap();
+
+        assert!(!orphan.exists());
+        assert_eq!(
+            fs::read(sealed.join(SCREEN_FILE_NAME)).unwrap(),
+            b"existing-mp4"
+        );
+        assert_eq!(fs::read(sealed.join(AUDIO_FILE_NAME)).unwrap(), b"flac");
+        assert_eq!(
+            fs::read_to_string(sealed.join(LEN_FILE_NAME)).unwrap(),
+            "10"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -543,6 +543,12 @@ pub struct PauseSnapshot {
     pub seconds_remaining: Option<u64>,
 }
 
+/// Storage persistence fault surfaced separately from capture-source state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageHealth {
+    pub detail: String,
+}
+
 /// The single honest-state payload, defined once and serialized identically
 /// three ways: the `--dump-state` CLI JSON, the localhost `/healthz` body, and
 /// the `health://changed` event the shell subscribes to. There is no second
@@ -571,6 +577,9 @@ pub struct HealthDump {
     /// Capture-exclusion accounting, present when the screen source enforces it.
     #[serde(default)]
     pub exclusions: Option<ExclusionHealth>,
+    /// Storage fault detail, present while segment persistence is unhealthy.
+    #[serde(default)]
+    pub storage: Option<StorageHealth>,
     /// Honest pause detail (reason + countdown to auto-resume), present only
     /// while the observer is paused. `None` in every non-paused phase.
     #[serde(default)]
@@ -820,6 +829,7 @@ mod tests {
                 last_error: None,
             }),
             exclusions: None,
+            storage: None,
             pause: Some(PauseSnapshot {
                 reason: PauseReason::Operator,
                 seconds_remaining: Some(900),
@@ -984,6 +994,12 @@ mod tests {
         assert!(should_emit(&base, &next));
 
         let mut next = base.clone();
+        next.storage = Some(StorageHealth {
+            detail: "disk full".into(),
+        });
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
         next.views
             .insert("settings".into(), ViewRenderState::Rendered);
         assert!(should_emit(&base, &next));
@@ -1011,6 +1027,7 @@ mod tests {
             sync: SyncSnapshot::default(),
             screen_encoder: None,
             exclusions: None,
+            storage: None,
             pause: None,
             views: BTreeMap::new(),
         };

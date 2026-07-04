@@ -102,6 +102,7 @@ fn test_health(app_state: AppPhase) -> HealthDump {
         sync: SyncSnapshot::default(),
         screen_encoder: None,
         exclusions: None,
+        storage: None,
         pause: None,
         views: Default::default(),
     }

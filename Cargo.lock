@@ -478,13 +478,18 @@ dependencies = [
 name = "capture-engine"
 version = "0.2.8"
 dependencies = [
+ "observer-audio",
  "observer-health",
  "observer-lifecycle",
  "observer-model",
+ "observer-pl",
  "observer-recovery",
  "observer-segment",
  "observer-state",
+ "pl-transport-win",
+ "platform-win",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
