@@ -7,10 +7,10 @@ owner's journal.
 
 ## Status
 
-Public bootstrap. The crate skeletons compile and the pure tier is host-testable;
-the live capture, shell, packaging, and FlaUI smoke are filled in by subsequent
-waves. It is a pairing client, not a journal host — pairing and upload arrive in
-a later wave.
+Shipped alpha. Live screen + system-audio + microphone capture, the tray shell,
+pairing and upload to a journal, signed Velopack packaging with delta
+auto-updates, and the FlaUI smoke gate are all in place and releasing (see
+[CHANGELOG.md](CHANGELOG.md)). It is a pairing client, not a journal host.
 
 ## Layout
 

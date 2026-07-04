@@ -1,5 +1,9 @@
 # Design 1A: capture core
 
+> Historical design record — superseded by shipped code (see `architecture.md`).
+> The shipped engine differs materially: screen frames flow through an H.264
+> encoder (not raw `SegmentFs` chunks), and sealing is once-per-window.
+
 Status: design-only. No production code is implemented by this document.
 
 ## Validation notes

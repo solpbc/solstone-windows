@@ -1,5 +1,7 @@
 # Screen H.264 encoder design
 
+> Historical design record — superseded by shipped code (see `architecture.md`).
+
 ## Purpose
 
 Add a Windows screen H.264 encoder that writes one MP4 screen file per clock-aligned segment while preserving the existing engine-owned rotation model, honest health, and pure/platform DAG.
