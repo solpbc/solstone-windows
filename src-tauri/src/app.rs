@@ -10,7 +10,6 @@
 //! `observer-model` trait seam (`capture-wgc` / `capture-wasapi`), keeping the
 //! engine itself Windows-agnostic.
 
-use std::io;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
