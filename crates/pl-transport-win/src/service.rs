@@ -21,7 +21,7 @@ use crate::coordinator::UploadCoordinator;
 use crate::credential::PairedState;
 use crate::heartbeat::run_heartbeat;
 use crate::sealed::{LocalSealedStore, SealedStore};
-use crate::{pairing, TransportError};
+use crate::{pairing, transport_error_code, TransportError};
 
 /// Static identity + paths the sync layer needs.
 #[derive(Debug, Clone)]
@@ -55,6 +55,14 @@ fn set_pairing(sync: &Arc<Mutex<SyncSnapshot>>, state: PairingState) {
     }
 }
 
+fn failed_pairing_state(error: &TransportError) -> PairingState {
+    PairingState {
+        phase: PairingPhase::Failed,
+        detail: Some(transport_error_code(error)),
+        ..Default::default()
+    }
+}
+
 /// Pair from a pasted/scanned link, register the observer, persist, and update
 /// the sync snapshot. Returns the persisted [`PairedState`].
 pub async fn pair_and_register(
@@ -84,14 +92,7 @@ pub async fn pair_and_register(
             Ok(paired)
         }
         Err(e) => {
-            set_pairing(
-                &sync,
-                PairingState {
-                    phase: PairingPhase::Failed,
-                    detail: Some(e.to_string()),
-                    ..Default::default()
-                },
-            );
+            set_pairing(&sync, failed_pairing_state(&e));
             Err(e)
         }
     }
@@ -200,4 +201,29 @@ pub async fn run_uploader(
     let _ = coordinator_task.await;
     let _ = heartbeat_task.await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_pairing_state_redacts_detail() {
+        let error = TransportError::Rejected {
+            status: 403,
+            body: "SECRET https://10.0.0.5/y?token=abc C:\\Users\\me\\seg.mp4 sha256:abc".into(),
+        };
+
+        let state = failed_pairing_state(&error);
+
+        assert_eq!(state.phase, PairingPhase::Failed);
+        assert_eq!(state.detail.as_deref(), Some("http_403"));
+        let detail = state.detail.unwrap();
+        assert!(!detail.contains("SECRET"));
+        assert!(!detail.contains("token"));
+        assert!(!detail.contains("Users"));
+        assert!(!detail.contains("https://"));
+        assert!(!detail.contains("sha256"));
+        assert!(!detail.contains("10.0.0.5"));
+    }
 }

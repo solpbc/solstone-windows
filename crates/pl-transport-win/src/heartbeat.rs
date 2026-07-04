@@ -19,6 +19,26 @@ use observer_pl::wire::{HealthBeacon, HeartbeatEvent};
 
 use crate::client::ObserverClient;
 use crate::HEARTBEAT_INTERVAL_SECS;
+use crate::{transport_error_code, TransportError};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeartbeatOutcome {
+    ok: bool,
+    warn_code: Option<String>,
+}
+
+fn classify_heartbeat(result: Result<(), TransportError>) -> HeartbeatOutcome {
+    match result {
+        Ok(()) => HeartbeatOutcome {
+            ok: true,
+            warn_code: None,
+        },
+        Err(error) => HeartbeatOutcome {
+            ok: false,
+            warn_code: Some(transport_error_code(&error)),
+        },
+    }
+}
 
 pub(crate) fn build_beacon(
     name: Option<String>,
@@ -68,9 +88,16 @@ async fn post_heartbeat_once(
         &upload,
     );
     let event = HeartbeatEvent::observe_status(paused, beacon);
-    let ok = client.heartbeat(&event).await.is_ok();
+    let outcome = classify_heartbeat(client.heartbeat(&event).await);
+    if let Some(code) = &outcome.warn_code {
+        tracing::warn!(
+            target: "pl_heartbeat",
+            reason = code.as_str(),
+            "heartbeat post failed"
+        );
+    }
     if let Ok(mut snapshot) = sync.lock() {
-        snapshot.upload.heartbeat_ok = ok;
+        snapshot.upload.heartbeat_ok = outcome.ok;
     }
 }
 
@@ -128,5 +155,27 @@ mod tests {
         assert!(!json.contains("token"));
         assert!(!json.contains("Users"));
         assert!(!json.contains("https://"));
+    }
+
+    #[test]
+    fn classify_heartbeat_redacts_and_flags_failure() {
+        let outcome = classify_heartbeat(Err(TransportError::Rejected {
+            status: 503,
+            body: "SECRET https://10.0.0.5/y?token=abc C:\\Users\\me\\seg.mp4 sha256:abc".into(),
+        }));
+
+        assert!(!outcome.ok);
+        assert_eq!(outcome.warn_code.as_deref(), Some("http_503"));
+        let code = outcome.warn_code.unwrap();
+        assert!(!code.contains("SECRET"));
+        assert!(!code.contains("token"));
+        assert!(!code.contains("Users"));
+        assert!(!code.contains("https://"));
+        assert!(!code.contains("sha256"));
+        assert!(!code.contains("10.0.0.5"));
+
+        let ok = classify_heartbeat(Ok(()));
+        assert!(ok.ok);
+        assert_eq!(ok.warn_code, None);
     }
 }

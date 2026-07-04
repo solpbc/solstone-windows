@@ -44,6 +44,12 @@ pub trait SealedStore: Send + Sync {
     fn scan(&self) -> std::io::Result<Vec<SealedSegment>>;
     fn read_file(&self, index: u64, name: &str) -> std::io::Result<Vec<u8>>;
     fn remove(&self, index: u64) -> std::io::Result<()>;
+    /// Move a rejected sealed segment aside without deleting it.
+    ///
+    /// The target is `<root>/quarantine/<index>` (bare index, no extension), which
+    /// stays scan-invisible because the top-level `quarantine` directory is not a
+    /// decimal sealed segment name.
+    fn quarantine(&self, index: u64) -> std::io::Result<()>;
     /// Mark a segment confirmed-uploaded (retain locally). Writes [`UPLOADED_MARKER`].
     fn mark_confirmed(&self, index: u64) -> std::io::Result<()>;
     /// Confirmed-but-retained segments (those **with** the marker), for the
@@ -162,6 +168,16 @@ impl SealedStore for LocalSealedStore {
         std::fs::remove_dir_all(self.segment_dir(index))
     }
 
+    fn quarantine(&self, index: u64) -> std::io::Result<()> {
+        let quarantine = self.root.join("quarantine");
+        std::fs::create_dir_all(&quarantine)?;
+        let target = quarantine.join(index.to_string());
+        if target.exists() {
+            std::fs::remove_dir_all(&target)?;
+        }
+        std::fs::rename(self.segment_dir(index), target)
+    }
+
     fn mark_confirmed(&self, index: u64) -> std::io::Result<()> {
         std::fs::write(self.segment_dir(index).join(UPLOADED_MARKER), [])
     }
@@ -230,6 +246,27 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(content_type_for("mic.pcm"), "application/octet-stream");
+    }
+
+    #[test]
+    fn quarantine_moves_dir_aside_and_scan_ignores_it() {
+        let root = temp_root();
+        let seg = root.join("7");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        store.quarantine(7).unwrap();
+
+        assert!(!root.join("7").exists());
+        assert!(root.join("quarantine/7").is_dir());
+        assert_eq!(
+            std::fs::read(root.join(format!("quarantine/7/{SCREEN_FILE_NAME}"))).unwrap(),
+            b"MP4"
+        );
+        assert!(store.scan().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -473,6 +473,9 @@ pub struct UploadStatus {
     pub uploaded_segments: u64,
     /// Segments whose upload last failed (will be retried with backoff).
     pub failed_segments: u64,
+    /// Segments moved aside after repeated journal rejections.
+    #[serde(default)]
+    pub quarantined_segments: u64,
     /// The last segment confirmed landed (`HHMMSS_LEN`).
     pub last_uploaded_segment: Option<String>,
     /// The last upload error detail, when one occurred.
@@ -810,6 +813,7 @@ mod tests {
                     pending_segments: 2,
                     uploaded_segments: 3,
                     failed_segments: 1,
+                    quarantined_segments: 0,
                     last_uploaded_segment: Some("120000".into()),
                     last_error: None,
                     last_successful_sync: Some(1_700_000_000_000),
@@ -1112,6 +1116,7 @@ mod tests {
             pending_segments: 2,
             uploaded_segments: 3,
             failed_segments: 1,
+            quarantined_segments: 4,
             last_uploaded_segment: Some("120000_300".into()),
             last_error: None,
             last_successful_sync: Some(1_700_000_000_000),
@@ -1129,6 +1134,7 @@ mod tests {
         assert_eq!(value["pending_segments"], 2);
         assert_eq!(value["uploaded_segments"], 3);
         assert_eq!(value["failed_segments"], 1);
+        assert_eq!(value["quarantined_segments"], 4);
         assert_eq!(value["last_uploaded_segment"], "120000_300");
         assert_eq!(value["last_error"], serde_json::Value::Null);
         assert_eq!(value["last_successful_sync"], 1_700_000_000_000u64);
@@ -1141,6 +1147,7 @@ mod tests {
         assert_eq!(value["last_upload_dial_attempts"], 2);
 
         let default_value = serde_json::to_value(UploadStatus::default()).unwrap();
+        assert_eq!(default_value["quarantined_segments"], 0);
         for key in [
             "last_upload_duration_ms",
             "last_upload_bytes",

@@ -44,6 +44,7 @@ function uploadStatus() {
     pending_segments: 0,
     uploaded_segments: 1,
     failed_segments: 0,
+    quarantined_segments: 0,
     last_uploaded_segment: null,
     last_error: null,
     heartbeat_ok: true,

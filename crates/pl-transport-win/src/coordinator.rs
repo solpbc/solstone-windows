@@ -15,6 +15,7 @@
 //! maintain the diagnostics-only health beacon fields: consecutive failure code
 //! and last successful sync epoch milliseconds.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
@@ -32,6 +33,26 @@ use crate::sealed::{content_type_for, SealedStore};
 use crate::{transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
 const MAX_BACKOFF_SECS: u64 = 300;
+const QUARANTINE_AFTER_REJECTS: u32 = 5;
+
+fn is_reject_class(err: &TransportError) -> bool {
+    match err {
+        TransportError::Io(_) => false,
+        TransportError::Tls(_) => false,
+        TransportError::Crypto(_) => false,
+        TransportError::Mux(_) => false,
+        TransportError::Http(_) => false,
+        TransportError::Json(_) => true,
+        TransportError::PairLink(_) => false,
+        TransportError::Pairing(_) => false,
+        TransportError::Rejected { .. } => true,
+        TransportError::Relay(_) => false,
+        TransportError::RelayControlRejected { .. } => true,
+        TransportError::NoEndpoint => false,
+        TransportError::NotPaired => false,
+        TransportError::LocalOffset => false,
+    }
+}
 
 fn now_epoch_secs() -> u64 {
     SystemTime::now()
@@ -203,6 +224,7 @@ pub struct UploadCoordinator {
     /// pruned past the window.
     retention: Arc<RwLock<RetentionConfig>>,
     local_offset: Arc<dyn LocalOffset>,
+    quarantine_counts: Mutex<HashMap<u64, u32>>,
 }
 
 impl UploadCoordinator {
@@ -243,12 +265,53 @@ impl UploadCoordinator {
             period_secs: period_secs.max(1),
             retention,
             local_offset,
+            quarantine_counts: Mutex::new(HashMap::new()),
         }
     }
 
     /// The current retention policy (defaulting on a poisoned lock).
     fn retention(&self) -> RetentionConfig {
         self.retention.read().map(|r| *r).unwrap_or_default()
+    }
+
+    fn register_reject(&self, index: u64) {
+        let should_quarantine = {
+            let mut counts = self
+                .quarantine_counts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let count = counts.entry(index).or_insert(0);
+            *count = count.saturating_add(1);
+            *count >= QUARANTINE_AFTER_REJECTS
+        };
+
+        if !should_quarantine {
+            return;
+        }
+
+        match self.store.quarantine(index) {
+            Ok(()) => {
+                self.on_quarantined();
+                self.quarantine_counts
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&index);
+            }
+            Err(error) => tracing::warn!(
+                target: "pl_upload",
+                index,
+                reason = "quarantine_failed",
+                kind = ?error.kind(),
+                "quarantine failed"
+            ),
+        }
+    }
+
+    fn clear_reject(&self, index: u64) {
+        self.quarantine_counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&index);
     }
 
     /// Prune confirmed-and-retained local segments older than the retention
@@ -261,12 +324,28 @@ impl UploadCoordinator {
             return;
         }
         let now = now_epoch_secs();
-        if let Ok(confirmed) = self.store.confirmed() {
-            for segment in confirmed {
-                if policy.should_prune(segment.boundary_epoch_secs, now) {
-                    let _ = self.store.remove(segment.index);
+        match self.store.confirmed() {
+            Ok(confirmed) => {
+                for segment in confirmed {
+                    if policy.should_prune(segment.boundary_epoch_secs, now) {
+                        if let Err(error) = self.store.remove(segment.index) {
+                            tracing::warn!(
+                                target: "pl_upload",
+                                index = segment.index,
+                                reason = "retention_prune_failed",
+                                kind = ?error.kind(),
+                                "prune remove failed"
+                            );
+                        }
+                    }
                 }
             }
+            Err(error) => tracing::warn!(
+                target: "pl_upload",
+                reason = "retention_scan_failed",
+                kind = ?error.kind(),
+                "prune scan failed"
+            ),
         }
     }
 
@@ -289,7 +368,7 @@ impl UploadCoordinator {
         self.set_pending(segments.len() as u64);
         let mut confirmed_now = 0usize;
 
-        for segment in segments {
+        'segments: for segment in segments {
             let offset_started = Instant::now();
             let offset = match self
                 .local_offset
@@ -319,10 +398,27 @@ impl UploadCoordinator {
             );
 
             // Read the per-source files + compute their sha256 for reconcile.
+            let read_started = Instant::now();
             let mut parts = Vec::with_capacity(segment.files.len());
             let mut shas = Vec::with_capacity(segment.files.len());
             for name in &segment.files {
-                let bytes = self.store.read_file(segment.index, name)?;
+                let bytes = match self.store.read_file(segment.index, name) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        let error = TransportError::Io(error);
+                        UploadEvent::new(
+                            &segment_key,
+                            0,
+                            elapsed_ms(read_started),
+                            UploadOutcome::Failed,
+                            None,
+                            Some(transport_error_code(&error)),
+                        )
+                        .emit();
+                        self.on_error(&error);
+                        continue 'segments;
+                    }
+                };
                 shas.push((name.clone(), ca::sha256_hex(&bytes)));
                 parts.push(FilePart {
                     filename: name.clone(),
@@ -357,6 +453,7 @@ impl UploadCoordinator {
                             .all(|(name, sha)| listed.proves_file_held(&server_key, name, sha)),
                         Err(_) => false,
                     };
+                    self.clear_reject(segment.index);
                     UploadEvent::new(
                         &segment_key,
                         bytes,
@@ -375,9 +472,25 @@ impl UploadCoordinator {
                         // or retain it (mark confirmed so it isn't re-uploaded) for
                         // the prune pass to remove once it's past the window.
                         if self.retention().delete_on_confirm() {
-                            self.store.remove(segment.index)?;
+                            if let Err(error) = self.store.remove(segment.index) {
+                                tracing::warn!(
+                                    target: "pl_upload",
+                                    segment = segment_key.as_str(),
+                                    reason = "confirmed_remove_failed",
+                                    kind = ?error.kind(),
+                                    "confirmed cleanup failed"
+                                );
+                            }
                         } else {
-                            self.store.mark_confirmed(segment.index)?;
+                            if let Err(error) = self.store.mark_confirmed(segment.index) {
+                                tracing::warn!(
+                                    target: "pl_upload",
+                                    segment = segment_key.as_str(),
+                                    reason = "confirmed_mark_failed",
+                                    kind = ?error.kind(),
+                                    "confirmed cleanup failed"
+                                );
+                            }
                         }
                         confirmed_now += 1;
                         self.on_confirmed(
@@ -390,7 +503,12 @@ impl UploadCoordinator {
                     }
                     match listed {
                         Ok(_) => {}
-                        Err(error) => return Err(error),
+                        Err(error) => {
+                            if is_reject_class(&error) {
+                                continue;
+                            }
+                            return Err(error);
+                        }
                     }
                     // If not yet confirmed, leave it on disk for the next tick.
                 }
@@ -409,7 +527,9 @@ impl UploadCoordinator {
                         Some(transport_error_code(&error)),
                     )
                     .emit();
-                    return Err(error);
+                    self.on_error(&error);
+                    self.register_reject(segment.index);
+                    continue;
                 }
                 Err(e) => {
                     let duration_ms = elapsed_ms(started);
@@ -423,6 +543,10 @@ impl UploadCoordinator {
                     )
                     .emit();
                     self.on_error(&e);
+                    if is_reject_class(&e) {
+                        self.register_reject(segment.index);
+                        continue;
+                    }
                     return Err(e);
                 }
             }
@@ -480,7 +604,13 @@ impl UploadCoordinator {
     fn on_error(&self, err: &TransportError) {
         if let Ok(mut snapshot) = self.sync.lock() {
             snapshot.upload.failed_segments += 1;
-            snapshot.upload.last_error = Some(err.to_string());
+            snapshot.upload.last_error = Some(transport_error_code(err));
+        }
+    }
+
+    fn on_quarantined(&self) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.quarantined_segments += 1;
         }
     }
 
@@ -500,7 +630,7 @@ impl UploadCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
+    use std::collections::{HashSet, VecDeque};
 
     use observer_model::RECENT_ERROR_COUNT_MAX;
     use observer_pl::wire::{ServerFile, ServerSegment};
@@ -578,6 +708,10 @@ mod tests {
             Ok(())
         }
 
+        fn quarantine(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
         fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
             Ok(())
         }
@@ -599,6 +733,10 @@ mod tests {
         }
 
         fn remove(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn quarantine(&self, _index: u64) -> std::io::Result<()> {
             Ok(())
         }
 
@@ -657,6 +795,10 @@ mod tests {
             Ok(())
         }
 
+        fn quarantine(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
         fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
             *self.removed.lock().unwrap() = true;
             Ok(())
@@ -664,6 +806,151 @@ mod tests {
 
         fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>> {
             Ok(Vec::new())
+        }
+    }
+
+    #[derive(Clone)]
+    struct MultiSegmentStore {
+        state: Arc<Mutex<MultiSegmentState>>,
+    }
+
+    struct MultiSegmentState {
+        segments: Vec<SealedSegment>,
+        bytes: HashMap<u64, Vec<u8>>,
+        read_errors: HashMap<u64, String>,
+        removed: HashSet<u64>,
+        confirmed: HashSet<u64>,
+        quarantined: HashSet<u64>,
+        remove_fails_once: HashSet<u64>,
+        mark_confirmed_fails_once: HashSet<u64>,
+    }
+
+    impl MultiSegmentStore {
+        fn new(segments: Vec<(u64, u64, &str, Vec<u8>)>) -> Self {
+            let mut sealed = Vec::with_capacity(segments.len());
+            let mut bytes = HashMap::new();
+            for (index, boundary_epoch_secs, file_name, data) in segments {
+                sealed.push(SealedSegment {
+                    index,
+                    boundary_epoch_secs,
+                    len_secs: None,
+                    files: vec![file_name.to_string()],
+                });
+                bytes.insert(index, data);
+            }
+            sealed.sort_by_key(|segment| segment.index);
+            Self {
+                state: Arc::new(Mutex::new(MultiSegmentState {
+                    segments: sealed,
+                    bytes,
+                    read_errors: HashMap::new(),
+                    removed: HashSet::new(),
+                    confirmed: HashSet::new(),
+                    quarantined: HashSet::new(),
+                    remove_fails_once: HashSet::new(),
+                    mark_confirmed_fails_once: HashSet::new(),
+                })),
+            }
+        }
+
+        fn with_read_error(self, index: u64, message: &str) -> Self {
+            self.state
+                .lock()
+                .unwrap()
+                .read_errors
+                .insert(index, message.to_string());
+            self
+        }
+
+        fn with_remove_fails_once(self, index: u64) -> Self {
+            self.state.lock().unwrap().remove_fails_once.insert(index);
+            self
+        }
+
+        fn with_mark_confirmed_fails_once(self, index: u64) -> Self {
+            self.state
+                .lock()
+                .unwrap()
+                .mark_confirmed_fails_once
+                .insert(index);
+            self
+        }
+
+        fn removed(&self, index: u64) -> bool {
+            self.state.lock().unwrap().removed.contains(&index)
+        }
+
+        fn quarantined(&self, index: u64) -> bool {
+            self.state.lock().unwrap().quarantined.contains(&index)
+        }
+
+        fn pending_indices(&self) -> Vec<u64> {
+            self.scan()
+                .unwrap()
+                .into_iter()
+                .map(|segment| segment.index)
+                .collect()
+        }
+    }
+
+    impl SealedStore for MultiSegmentStore {
+        fn scan(&self) -> std::io::Result<Vec<SealedSegment>> {
+            let state = self.state.lock().unwrap();
+            Ok(state
+                .segments
+                .iter()
+                .filter(|segment| {
+                    !state.removed.contains(&segment.index)
+                        && !state.confirmed.contains(&segment.index)
+                        && !state.quarantined.contains(&segment.index)
+                })
+                .cloned()
+                .collect())
+        }
+
+        fn read_file(&self, index: u64, _name: &str) -> std::io::Result<Vec<u8>> {
+            let state = self.state.lock().unwrap();
+            if let Some(message) = state.read_errors.get(&index) {
+                return Err(std::io::Error::other(message.clone()));
+            }
+            state
+                .bytes
+                .get(&index)
+                .cloned()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing bytes"))
+        }
+
+        fn remove(&self, index: u64) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if state.remove_fails_once.remove(&index) {
+                return Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"));
+            }
+            state.removed.insert(index);
+            Ok(())
+        }
+
+        fn quarantine(&self, index: u64) -> std::io::Result<()> {
+            self.state.lock().unwrap().quarantined.insert(index);
+            Ok(())
+        }
+
+        fn mark_confirmed(&self, index: u64) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if state.mark_confirmed_fails_once.remove(&index) {
+                return Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"));
+            }
+            state.confirmed.insert(index);
+            Ok(())
+        }
+
+        fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>> {
+            let state = self.state.lock().unwrap();
+            Ok(state
+                .segments
+                .iter()
+                .filter(|segment| state.confirmed.contains(&segment.index))
+                .cloned()
+                .collect())
         }
     }
 
@@ -769,6 +1056,23 @@ mod tests {
         coordinator_with_client_and_offset(client, store, sync, Arc::new(FixedOffset(0)))
     }
 
+    fn coordinator_with_client_and_retention(
+        client: Arc<dyn UploadClient>,
+        store: Box<dyn SealedStore>,
+        sync: Arc<Mutex<SyncSnapshot>>,
+        retention: RetentionConfig,
+    ) -> UploadCoordinator {
+        UploadCoordinator::new_with_client(
+            client,
+            store,
+            sync,
+            "windows",
+            300,
+            Arc::new(RwLock::new(retention)),
+            Arc::new(FixedOffset(0)),
+        )
+    }
+
     fn coordinator_with_client_and_offset(
         client: Arc<dyn UploadClient>,
         store: Box<dyn SealedStore>,
@@ -849,6 +1153,361 @@ mod tests {
             total: Some(1),
             protocol_version: Some(2),
         })
+    }
+
+    fn adversarial_body() -> String {
+        "SECRET https://10.0.0.5/y?token=abc C:\\Users\\me\\seg.mp4 sha256:abc".into()
+    }
+
+    #[test]
+    fn is_reject_class_partitions_transport_errors() {
+        let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let cases = [
+            (
+                TransportError::Io(std::io::Error::other("C:\\Users\\me\\seg.mp4")),
+                false,
+            ),
+            (TransportError::Tls("tls secret".into()), false),
+            (TransportError::Crypto("crypto secret".into()), false),
+            (
+                TransportError::Mux(observer_pl::mux::MuxError::Incomplete),
+                false,
+            ),
+            (
+                TransportError::Http(observer_pl::http::HttpError::BadStatusLine(
+                    "HTTP/1.1 SECRET".into(),
+                )),
+                false,
+            ),
+            (TransportError::Json(json_error), true),
+            (TransportError::PairLink("token=abc".into()), false),
+            (TransportError::Pairing("sha256:abc".into()), false),
+            (
+                TransportError::Rejected {
+                    status: 503,
+                    body: adversarial_body(),
+                },
+                true,
+            ),
+            (TransportError::Relay(crate::RelayError::HomeOffline), false),
+            (
+                TransportError::RelayControlRejected {
+                    endpoint: crate::RelayControlEndpoint::EnrollDevice,
+                    status: 409,
+                },
+                true,
+            ),
+            (TransportError::NoEndpoint, false),
+            (TransportError::NotPaired, false),
+            (TransportError::LocalOffset, false),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(is_reject_class(&error), expected, "{error:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reject_isolation_processes_later_segments() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary1 = 1_700_000_100;
+        let boundary2 = boundary1 + 300;
+        let bytes1 = b"poison segment".to_vec();
+        let bytes2 = b"healthy segment".to_vec();
+        let key2 = civil::segment_key_string_local(boundary2, 0, 300);
+        let sha2 = ca::sha256_hex(&bytes2);
+        let store = MultiSegmentStore::new(vec![
+            (1, boundary1, file_name, bytes1),
+            (2, boundary2, file_name, bytes2.clone()),
+        ]);
+        let handle = store.clone();
+        let client = FakeClient::new(
+            vec![
+                Err(TransportError::Rejected {
+                    status: 503,
+                    body: adversarial_body(),
+                }),
+                accepted_ingest(1),
+            ],
+            vec![confirmed_segments(
+                key2,
+                file_name,
+                sha2,
+                bytes2.len() as u64,
+            )],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        let confirmed = coordinator.tick().await.unwrap();
+        let snapshot = sync.lock().unwrap().clone();
+
+        assert_eq!(confirmed, 1);
+        assert_eq!(handle.pending_indices(), vec![1]);
+        assert!(handle.removed(2));
+        assert_eq!(snapshot.upload.pending_segments, 1);
+        assert!(snapshot.upload.failed_segments >= 1);
+        assert_eq!(snapshot.upload.quarantined_segments, 0);
+        assert_eq!(snapshot.upload.recent_error_count, 0);
+    }
+
+    #[tokio::test]
+    async fn quarantines_segment_after_five_consecutive_rejects() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary = 1_700_000_100;
+        let bytes = b"poison segment".to_vec();
+        let store = MultiSegmentStore::new(vec![(1, boundary, file_name, bytes)]);
+        let handle = store.clone();
+        let client = FakeClient::new(
+            (0..QUARANTINE_AFTER_REJECTS)
+                .map(|_| {
+                    Err(TransportError::Rejected {
+                        status: 422,
+                        body: adversarial_body(),
+                    })
+                })
+                .collect(),
+            vec![],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        for tick in 1..=QUARANTINE_AFTER_REJECTS {
+            assert_eq!(coordinator.tick().await.unwrap(), 0);
+            let snapshot = sync.lock().unwrap().clone();
+            if tick < QUARANTINE_AFTER_REJECTS {
+                assert_eq!(snapshot.upload.quarantined_segments, 0);
+                assert_eq!(handle.pending_indices(), vec![1]);
+            }
+        }
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert!(handle.quarantined(1));
+        assert!(handle.pending_indices().is_empty());
+        assert_eq!(snapshot.upload.quarantined_segments, 1);
+        assert_eq!(snapshot.upload.pending_segments, 0);
+        assert_eq!(snapshot.upload.recent_error_count, 0);
+        assert_eq!(snapshot.upload.last_error.as_deref(), Some("http_422"));
+        let last_error = snapshot.upload.last_error.unwrap();
+        assert!(!last_error.contains("SECRET"));
+        assert!(!last_error.contains("token"));
+        assert!(!last_error.contains("Users"));
+        assert!(!last_error.contains("https://"));
+        assert!(!last_error.contains("sha256"));
+        assert!(!last_error.contains("10.0.0.5"));
+    }
+
+    #[tokio::test]
+    async fn transport_error_aborts_tick_and_leaves_rest_untried() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary1 = 1_700_000_100;
+        let boundary2 = boundary1 + 300;
+        let store = MultiSegmentStore::new(vec![
+            (1, boundary1, file_name, b"first".to_vec()),
+            (2, boundary2, file_name, b"second".to_vec()),
+        ]);
+        let client = FakeClient::new(
+            vec![
+                Err(TransportError::Io(std::io::Error::other(
+                    "C:\\Users\\me\\seg.mp4",
+                ))),
+                accepted_ingest(1),
+            ],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
+
+        let result = coordinator.tick().await;
+        let snapshot = sync.lock().unwrap().clone();
+
+        assert!(matches!(result, Err(TransportError::Io(_))));
+        assert_eq!(client.ingests.lock().unwrap().len(), 1);
+        assert_eq!(snapshot.upload.quarantined_segments, 0);
+        assert_eq!(snapshot.upload.recent_error_count, 1);
+        assert_eq!(snapshot.upload.last_error.as_deref(), Some("io"));
+        assert!(!snapshot
+            .upload
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("Users"));
+    }
+
+    #[tokio::test]
+    async fn read_error_skips_segment_without_quarantine() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary1 = 1_700_000_100;
+        let boundary2 = boundary1 + 300;
+        let bytes2 = b"healthy segment".to_vec();
+        let key2 = civil::segment_key_string_local(boundary2, 0, 300);
+        let sha2 = ca::sha256_hex(&bytes2);
+        let store = MultiSegmentStore::new(vec![
+            (1, boundary1, file_name, b"locked".to_vec()),
+            (2, boundary2, file_name, bytes2.clone()),
+        ])
+        .with_read_error(1, "C:\\Users\\me\\seg.mp4");
+        let handle = store.clone();
+        let client = FakeClient::new(
+            vec![accepted_ingest(1)],
+            vec![confirmed_segments(
+                key2,
+                file_name,
+                sha2,
+                bytes2.len() as u64,
+            )],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        let confirmed = coordinator.tick().await.unwrap();
+        let snapshot = sync.lock().unwrap().clone();
+
+        assert_eq!(confirmed, 1);
+        assert_eq!(handle.pending_indices(), vec![1]);
+        assert!(handle.removed(2));
+        assert_eq!(snapshot.upload.quarantined_segments, 0);
+        assert!(snapshot.upload.failed_segments >= 1);
+    }
+
+    #[tokio::test]
+    async fn list_reject_does_not_feed_quarantine_counter() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary = 1_700_000_100;
+        let store = MultiSegmentStore::new(vec![(1, boundary, file_name, b"segment".to_vec())]);
+        let handle = store.clone();
+        let mut ingests = Vec::new();
+        for _ in 0..(QUARANTINE_AFTER_REJECTS - 1) {
+            ingests.push(Err(TransportError::Rejected {
+                status: 503,
+                body: adversarial_body(),
+            }));
+        }
+        ingests.push(accepted_ingest(1));
+        let client = FakeClient::new(
+            ingests,
+            vec![Err(TransportError::Rejected {
+                status: 403,
+                body: adversarial_body(),
+            })],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        for _ in 0..(QUARANTINE_AFTER_REJECTS - 1) {
+            assert_eq!(coordinator.tick().await.unwrap(), 0);
+        }
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        let snapshot = sync.lock().unwrap().clone();
+
+        assert_eq!(handle.pending_indices(), vec![1]);
+        assert!(!handle.quarantined(1));
+        assert_eq!(snapshot.upload.quarantined_segments, 0);
+        assert_eq!(snapshot.upload.recent_error_count, 0);
+    }
+
+    #[tokio::test]
+    async fn list_transport_error_aborts_after_accepted_ingest() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary = 1_700_000_100;
+        let store = MultiSegmentStore::new(vec![(1, boundary, file_name, b"segment".to_vec())]);
+        let client = FakeClient::new(
+            vec![accepted_ingest(1)],
+            vec![Err(TransportError::Io(std::io::Error::other(
+                "C:\\Users\\me\\seg.mp4",
+            )))],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        let result = coordinator.tick().await;
+        let snapshot = sync.lock().unwrap().clone();
+
+        assert!(matches!(result, Err(TransportError::Io(_))));
+        assert_eq!(snapshot.upload.quarantined_segments, 0);
+        assert_eq!(snapshot.upload.recent_error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn cleanup_remove_failure_is_nonfatal_and_reconfirms_next_tick() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary1 = 1_700_000_100;
+        let boundary2 = boundary1 + 300;
+        let bytes1 = b"first segment".to_vec();
+        let bytes2 = b"second segment".to_vec();
+        let key1 = civil::segment_key_string_local(boundary1, 0, 300);
+        let key2 = civil::segment_key_string_local(boundary2, 0, 300);
+        let sha1 = ca::sha256_hex(&bytes1);
+        let sha2 = ca::sha256_hex(&bytes2);
+        let store = MultiSegmentStore::new(vec![
+            (1, boundary1, file_name, bytes1.clone()),
+            (2, boundary2, file_name, bytes2.clone()),
+        ])
+        .with_remove_fails_once(1);
+        let handle = store.clone();
+        let client = FakeClient::new(
+            vec![
+                accepted_ingest(1),
+                accepted_ingest(1),
+                scripted_ingest("duplicate", None, Some(&key1), 2),
+            ],
+            vec![
+                confirmed_segments(key1.clone(), file_name, sha1.clone(), bytes1.len() as u64),
+                confirmed_segments(key2, file_name, sha2, bytes2.len() as u64),
+                confirmed_segments(key1, file_name, sha1, bytes1.len() as u64),
+            ],
+        );
+        let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
+
+        let first = coordinator.tick().await.unwrap();
+        assert_eq!(first, 2);
+        assert_eq!(client.ingests.lock().unwrap().len(), 1);
+        assert!(!handle.removed(1));
+        assert!(handle.removed(2));
+        assert_eq!(handle.pending_indices(), vec![1]);
+
+        let second = coordinator.tick().await.unwrap();
+        assert_eq!(second, 1);
+        assert!(handle.removed(1));
+        assert!(handle.pending_indices().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_mark_confirmed_failure_is_nonfatal_and_reconfirms_next_tick() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "display_1_screen.mp4";
+        let boundary = 1_700_000_100;
+        let bytes = b"retained segment".to_vec();
+        let key = civil::segment_key_string_local(boundary, 0, 300);
+        let sha = ca::sha256_hex(&bytes);
+        let store = MultiSegmentStore::new(vec![(1, boundary, file_name, bytes.clone())])
+            .with_mark_confirmed_fails_once(1);
+        let handle = store.clone();
+        let client = FakeClient::new(
+            vec![
+                accepted_ingest(1),
+                scripted_ingest("duplicate", None, Some(&key), 2),
+            ],
+            vec![
+                confirmed_segments(key.clone(), file_name, sha.clone(), bytes.len() as u64),
+                confirmed_segments(key, file_name, sha, bytes.len() as u64),
+            ],
+        );
+        let coordinator = coordinator_with_client_and_retention(
+            client,
+            Box::new(store),
+            sync,
+            RetentionConfig { keep_days: 1 },
+        );
+
+        let first = coordinator.tick().await.unwrap();
+        assert_eq!(first, 1);
+        assert_eq!(handle.pending_indices(), vec![1]);
+
+        let second = coordinator.tick().await.unwrap();
+        assert_eq!(second, 1);
+        assert!(handle.pending_indices().is_empty());
     }
 
     #[test]

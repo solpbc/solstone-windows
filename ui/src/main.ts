@@ -102,6 +102,7 @@ interface UploadStatus {
   pending_segments: number;
   uploaded_segments: number;
   failed_segments: number;
+  quarantined_segments?: number;
   last_uploaded_segment: string | null;
   last_error: string | null;
   last_successful_sync?: number;
