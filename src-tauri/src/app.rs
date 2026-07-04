@@ -475,6 +475,10 @@ pub fn run(
                         .lock()
                         .map(|health| health.views.clone())
                         .unwrap_or_default();
+                    let pump_degraded = health
+                        .lock()
+                        .map(|health| health.pump_degraded)
+                        .unwrap_or_default();
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -489,6 +493,7 @@ pub fn run(
                         storage: None,
                         pause: None,
                         views,
+                        pump_degraded,
                     };
                     log_health_transitions(previous.as_ref(), &terminal);
                     if let Ok(mut health) = health.lock() {
@@ -507,11 +512,15 @@ pub fn run(
 
             std::thread::spawn({
                 let cmd_tx = cmd_tx.clone();
+                let health = health.clone();
                 let hotkey_desired = hotkey.desired_handle();
                 let hotkey_outcome = hotkey.outcome_handle();
                 move || {
                     let mut pump =
                         platform_win::NotificationPump::with_hotkey(hotkey_desired, hotkey_outcome);
+                    if let Ok(mut h) = health.lock() {
+                        h.pump_degraded = pump.is_degraded();
+                    }
                     loop {
                         for notification in pump.poll() {
                             let command = match notification {

@@ -38,6 +38,7 @@ pub fn not_running_snapshot() -> HealthDump {
         storage: None,
         pause: None,
         views: Default::default(),
+        pump_degraded: false,
     }
 }
 

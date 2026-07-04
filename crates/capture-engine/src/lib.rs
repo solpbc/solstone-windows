@@ -279,6 +279,7 @@ where
             }),
             pause: self.state.pause_snapshot(now),
             views: Default::default(),
+            pump_degraded: false,
         }
     }
 
@@ -779,6 +780,8 @@ where
             // The engine rebuilds the dump from scratch each tick, so carry the
             // earned beacon forward — never clobber it back to empty.
             dump.views = shared.views.clone();
+            // `pump_degraded` is app-owned like `views`; carry it forward too.
+            dump.pump_degraded = shared.pump_degraded;
             *shared = dump.clone();
         }
         self.health_tx.send_replace(dump);
@@ -850,6 +853,7 @@ where
             storage: None,
             pause: None,
             views: Default::default(),
+            pump_degraded: false,
         }
     }
 }
@@ -1649,6 +1653,25 @@ mod tests {
     }
 
     #[test]
+    fn refresh_health_carries_pump_degraded_forward() {
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        let handle = engine.health_handle();
+        handle.lock().unwrap().pump_degraded = true;
+
+        assert!(!engine.health_dump().pump_degraded);
+        engine.refresh_health();
+
+        assert!(handle.lock().unwrap().pump_degraded);
+        assert!(engine.health_watch().borrow().pump_degraded);
+    }
+
+    #[test]
     fn rotation_preserves_every_audio_chunk_once_and_splits_segments() {
         let clock = FakeClock::new(299);
         let segment_fs = FakeSegmentFs::default();
@@ -2221,6 +2244,7 @@ mod tests {
             storage: None,
             pause: None,
             views: Default::default(),
+            pump_degraded: false,
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

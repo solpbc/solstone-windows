@@ -321,6 +321,10 @@ impl NotificationPump {
         Self
     }
 
+    pub fn is_degraded(&self) -> bool {
+        false
+    }
+
     /// Drain any pending notifications. Empty on non-Windows hosts.
     pub fn poll(&mut self) -> Vec<SystemNotification> {
         Vec::new()
@@ -334,7 +338,8 @@ mod notification_pump {
     use observer_hotkey::{HotkeyConfig, HotkeyRegistration};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
-        ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+        GetLastError, ERROR_CLASS_ALREADY_EXISTS, ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND,
+        LPARAM, LRESULT, WPARAM,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::RemoteDesktop::{
@@ -346,17 +351,67 @@ mod notification_pump {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW,
-        TranslateMessage, HWND_MESSAGE, MSG, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_REMOVE,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_DISPLAYCHANGE, WM_HOTKEY, WM_POWERBROADCAST,
-        WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+        TranslateMessage, MSG, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_REMOVE, WINDOW_STYLE,
+        WM_DISPLAYCHANGE, WM_HOTKEY, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW,
+        WS_EX_TOOLWINDOW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
     };
 
     use super::{SystemNotification, HOTKEY_ID};
 
     static QUEUE: OnceLock<Mutex<Vec<SystemNotification>>> = OnceLock::new();
 
+    const PUMP_CLASS: &str = "SolstoneNotificationPump";
+
+    struct WindowSetup {
+        hwnd: HWND,
+        degraded: bool,
+    }
+
     fn queue() -> &'static Mutex<Vec<SystemNotification>> {
         QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    fn module_instance() -> HINSTANCE {
+        unsafe {
+            let module = GetModuleHandleW(PCWSTR::null()).ok();
+            module.map_or(HINSTANCE::default(), HINSTANCE::from)
+        }
+    }
+
+    fn build_window(class: &[u16]) -> WindowSetup {
+        let instance = module_instance();
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                PCWSTR(class.as_ptr()),
+                PCWSTR(class.as_ptr()),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                HWND::default(),
+                None,
+                instance,
+                None,
+            )
+            .unwrap_or_default()
+        };
+        let mut degraded = false;
+        if hwnd.is_invalid() {
+            tracing::error!(target: "pump", "CreateWindowExW failed; pump degraded");
+            degraded = true;
+        } else if let Err(err) =
+            unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) }
+        {
+            tracing::error!(
+                target: "pump",
+                %err,
+                "WTSRegisterSessionNotification failed; lock/unlock will not arrive"
+            );
+            degraded = true;
+        }
+        WindowSetup { hwnd, degraded }
     }
 
     unsafe extern "system" fn wnd_proc(
@@ -448,6 +503,7 @@ mod notification_pump {
     #[derive(Debug)]
     pub struct NotificationPump {
         hwnd: HWND,
+        degraded: bool,
         hotkey: Option<HotkeyBinding>,
     }
 
@@ -462,8 +518,10 @@ mod notification_pump {
 
     impl NotificationPump {
         pub fn new() -> Self {
+            let setup = Self::create_window();
             Self {
-                hwnd: Self::create_window(),
+                hwnd: setup.hwnd,
+                degraded: setup.degraded,
                 hotkey: None,
             }
         }
@@ -476,8 +534,10 @@ mod notification_pump {
             desired: Arc<Mutex<HotkeyConfig>>,
             outcome: Arc<Mutex<HotkeyRegistration>>,
         ) -> Self {
+            let setup = Self::create_window();
             Self {
-                hwnd: Self::create_window(),
+                hwnd: setup.hwnd,
+                degraded: setup.degraded,
                 hotkey: Some(HotkeyBinding {
                     desired,
                     outcome,
@@ -487,37 +547,38 @@ mod notification_pump {
             }
         }
 
-        fn create_window() -> HWND {
-            let class = wide_z("SolstoneNotificationPump");
+        pub fn is_degraded(&self) -> bool {
+            self.degraded
+        }
+
+        fn create_window() -> WindowSetup {
+            let class = wide_z(PUMP_CLASS);
             unsafe {
-                let module = GetModuleHandleW(PCWSTR::null()).ok();
-                let instance = module.map_or(HINSTANCE::default(), HINSTANCE::from);
+                let instance = module_instance();
                 let wc = WNDCLASSW {
                     lpfnWndProc: Some(wnd_proc),
                     hInstance: instance,
                     lpszClassName: PCWSTR(class.as_ptr()),
                     ..Default::default()
                 };
-                let _ = RegisterClassW(&wc);
-                let hwnd = CreateWindowExW(
-                    WINDOW_EX_STYLE::default(),
-                    PCWSTR(class.as_ptr()),
-                    PCWSTR(class.as_ptr()),
-                    WINDOW_STYLE::default(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    HWND_MESSAGE,
-                    None,
-                    instance,
-                    None,
-                )
-                .unwrap_or_default();
-                if !hwnd.is_invalid() {
-                    let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+                let atom = RegisterClassW(&wc);
+                let register_degraded = if atom == 0 {
+                    let err = GetLastError();
+                    if err == ERROR_CLASS_ALREADY_EXISTS {
+                        tracing::debug!(target: "pump", "pump window class already registered");
+                        false
+                    } else {
+                        tracing::error!(target: "pump", ?err, "RegisterClassW failed");
+                        true
+                    }
+                } else {
+                    false
+                };
+                let built = build_window(&class);
+                WindowSetup {
+                    hwnd: built.hwnd,
+                    degraded: register_degraded || built.degraded,
                 }
-                hwnd
             }
         }
 
@@ -580,6 +641,38 @@ mod notification_pump {
                     }
                 }
             }
+        }
+    }
+
+    #[cfg(all(test, windows))]
+    mod tests {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::{GetParent, IsWindowVisible};
+
+        #[test]
+        fn pump_window_is_hidden_top_level() {
+            let pump = NotificationPump::new();
+
+            assert!(!pump.hwnd.is_invalid());
+            assert!(unsafe { GetParent(pump.hwnd) }
+                .unwrap_or_default()
+                .is_invalid());
+            assert!(!unsafe { IsWindowVisible(pump.hwnd).as_bool() });
+            assert!(!pump.is_degraded());
+        }
+
+        #[test]
+        fn build_window_degrades_on_unregistered_class() {
+            let setup = build_window(&wide_z("SolstonePumpNeverRegisteredXYZ"));
+            assert!(setup.degraded);
+
+            let mut pump = NotificationPump {
+                hwnd: setup.hwnd,
+                degraded: setup.degraded,
+                hotkey: None,
+            };
+            assert!(pump.is_degraded());
+            assert!(pump.poll().is_empty());
         }
     }
 }

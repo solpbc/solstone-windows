@@ -44,6 +44,7 @@ mod tests {
             storage: None,
             pause: None,
             views: Default::default(),
+            pump_degraded: false,
         }
     }
 

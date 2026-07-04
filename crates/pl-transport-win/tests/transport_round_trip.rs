@@ -105,6 +105,7 @@ fn test_health(app_state: AppPhase) -> HealthDump {
         storage: None,
         pause: None,
         views: Default::default(),
+        pump_degraded: false,
     }
 }
 

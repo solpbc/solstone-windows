@@ -593,6 +593,11 @@ pub struct HealthDump {
     /// proves it painted.
     #[serde(default)]
     pub views: BTreeMap<String, ViewRenderState>,
+    /// App-owned platform notification pump setup flag. The engine never computes
+    /// this; it carries the value forward like `views` after the pump thread
+    /// writes it once.
+    #[serde(default)]
+    pub pump_degraded: bool,
 }
 
 /// True when `next` differs from `previous` in a way the Settings/About UI
@@ -839,6 +844,7 @@ mod tests {
                 seconds_remaining: Some(900),
             }),
             views: BTreeMap::new(),
+            pump_degraded: false,
         }
     }
 
@@ -1034,6 +1040,7 @@ mod tests {
             storage: None,
             pause: None,
             views: BTreeMap::new(),
+            pump_degraded: false,
         };
 
         let empty_json = serde_json::to_string(&dump).unwrap();

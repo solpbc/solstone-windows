@@ -3096,6 +3096,7 @@ dependencies = [
  "observer-recovery",
  "observer-segment",
  "serde_json",
+ "tracing",
  "windows 0.58.0",
  "winreg",
 ]
