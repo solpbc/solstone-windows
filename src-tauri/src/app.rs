@@ -294,9 +294,7 @@ pub fn run(
                 segment_fs,
                 Box::new(SystemClock),
             )?;
-            engine
-                .start()
-                .map_err(|error| io::Error::other(format!("engine start failed: {error:?}")))?;
+            engine.start();
             tracing::info!(target: "engine", outcome = "started", "engine start");
 
             let health = engine.health_handle();
