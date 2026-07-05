@@ -60,6 +60,7 @@ export const automationContract = {
     "tray.menu.pause30m": "tray.menu.pause30m",
     "tray.menu.pauseIndefinite": "tray.menu.pauseIndefinite",
     "tray.menu.quit": "tray.menu.quit",
+    "tray.menu.restartObserving": "tray.menu.restartObserving",
     "tray.menu.resume": "tray.menu.resume",
     "tray.root": "tray.root"
   },

@@ -15,7 +15,10 @@
 //! the timer); the tray tooltip shows the live time remaining while paused.
 
 use capture_engine::EngineCommand;
-use observer_model::{classify_tray, AppPhase, HealthDump, PauseReason, SyncSnapshot, TrayVisual};
+use observer_model::{
+    classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, AppPhase,
+    HealthDump, PauseReason, SyncSnapshot, TrayVisual,
+};
 use tauri::image::Image;
 use tauri::menu::{
     MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder,
@@ -37,11 +40,11 @@ fn pause_for(duration_secs: Option<u64>) -> EngineCommand {
 }
 
 /// Install the tray icon + menu. Returns the handles `apply_state` re-renders:
-/// the Pause submenu (enabled/disabled as a whole), and Resume.
+/// the Pause submenu (enabled/disabled as a whole), Resume, and Restart observing.
 pub fn init(
     app: &mut App,
     cmd_tx: mpsc::UnboundedSender<EngineCommand>,
-) -> tauri::Result<(TrayIcon, Submenu<Wry>, MenuItem<Wry>)> {
+) -> tauri::Result<(TrayIcon, Submenu<Wry>, MenuItem<Wry>, MenuItem<Wry>)> {
     let mi_pause_15 =
         MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_15M, "For 15 minutes")
             .build(app)?;
@@ -67,6 +70,12 @@ pub fn init(
     let mi_resume = MenuItemBuilder::with_id(observer_contract::tray::MENU_RESUME, "Resume")
         .enabled(false)
         .build(app)?;
+    let mi_restart = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_RESTART_OBSERVING,
+        "Restart observing",
+    )
+    .enabled(false)
+    .build(app)?;
     let mi_open_journal =
         MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_JOURNAL, "Open Journal")
             .build(app)?;
@@ -83,6 +92,7 @@ pub fn init(
     let menu = MenuBuilder::new(app)
         .item(&pause_submenu)
         .item(&mi_resume)
+        .item(&mi_restart)
         .item(&sep_one)
         .item(&mi_open_journal)
         .item(&mi_open_settings)
@@ -91,7 +101,7 @@ pub fn init(
         .item(&mi_quit)
         .build()?;
 
-    let (visual, tooltip) = classify_tray(AppPhase::Starting, &SyncSnapshot::default(), None);
+    let (visual, tooltip) = classify_tray(AppPhase::Starting, &SyncSnapshot::default(), None, None);
 
     let tray = TrayIconBuilder::with_id(observer_contract::tray::ROOT)
         .menu(&menu)
@@ -111,6 +121,9 @@ pub fn init(
                 let _ = cmd_tx.send(pause_for(None));
             }
             observer_contract::tray::MENU_RESUME => {
+                let _ = cmd_tx.send(EngineCommand::Resume);
+            }
+            observer_contract::tray::MENU_RESTART_OBSERVING => {
                 let _ = cmd_tx.send(EngineCommand::Resume);
             }
             observer_contract::tray::MENU_OPEN_JOURNAL => {
@@ -136,21 +149,28 @@ pub fn init(
         })
         .build(app)?;
 
-    Ok((tray, pause_submenu, mi_resume))
+    Ok((tray, pause_submenu, mi_resume, mi_restart))
 }
 
 pub fn apply_state(
     tray: &TrayIcon,
     pause_submenu: &Submenu<Wry>,
     mi_resume: &MenuItem<Wry>,
+    mi_restart: &MenuItem<Wry>,
     dump: &HealthDump,
 ) {
-    let phase = &dump.app_state;
-    let (visual, tooltip) = classify_tray(dump.app_state, &dump.sync, dump.pause.as_ref());
+    let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref());
+    let (visual, tooltip) = classify_tray(
+        dump.app_state,
+        &dump.sync,
+        dump.pause.as_ref(),
+        fault_detail.as_deref(),
+    );
     let _ = tray.set_icon(Some(icon_for(visual)));
     let _ = tray.set_tooltip(Some(tooltip));
-    let _ = pause_submenu.set_enabled(matches!(phase, AppPhase::Starting | AppPhase::Observing));
-    let _ = mi_resume.set_enabled(matches!(phase, AppPhase::Paused));
+    let _ = pause_submenu.set_enabled(pause_enabled(dump.app_state));
+    let _ = mi_resume.set_enabled(resume_enabled(dump.app_state));
+    let _ = mi_restart.set_enabled(restart_enabled(dump.app_state));
 }
 
 fn icon_for(visual: TrayVisual) -> Image<'static> {

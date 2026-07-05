@@ -375,7 +375,8 @@ pub fn run(
             app.manage(mic.clone());
             app.manage(retention.clone());
 
-            let (tray, pause_submenu, mi_resume) = crate::tray::init(app, cmd_tx.clone())?;
+            let (tray, pause_submenu, mi_resume, mi_restart) =
+                crate::tray::init(app, cmd_tx.clone())?;
 
             tauri::async_runtime::spawn(async move {
                 let exit = engine.run(shutdown_rx, cmd_rx).await;
@@ -439,6 +440,7 @@ pub fn run(
                 let tray = tray.clone();
                 let pause_submenu = pause_submenu.clone();
                 let mi_resume = mi_resume.clone();
+                let mi_restart = mi_restart.clone();
                 let mut rx = watch_rx;
                 async move {
                     let mut previous: Option<HealthDump> = None;
@@ -453,6 +455,7 @@ pub fn run(
                             &tray,
                             &pause_submenu,
                             &mi_resume,
+                            &mi_restart,
                             &dump,
                         );
                         if changed {
@@ -507,6 +510,7 @@ pub fn run(
                         &tray,
                         &pause_submenu,
                         &mi_resume,
+                        &mi_restart,
                         &terminal,
                     );
                     let _ = app.emit("health://changed", &terminal);

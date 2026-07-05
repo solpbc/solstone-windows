@@ -2209,6 +2209,10 @@ function renderPauseCard(dump: HealthDump): HTMLElement {
     action = actionButton("resume", undefined, true, () => {
       void invoke("resume").then(() => retryHealth());
     });
+  } else if (phase === "error") {
+    action = actionButton("restart observing", undefined, true, () => {
+      void invoke("resume").then(() => retryHealth());
+    });
   } else {
     action = actionButton("pause", undefined, false, () => {});
   }

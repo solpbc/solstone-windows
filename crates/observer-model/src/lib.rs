@@ -24,13 +24,18 @@ pub mod launch;
 pub mod tray_status;
 
 pub use launch::{launch_should_surface, FROM_AUTOSTART_ARG};
-pub use tray_status::{classify_tray, TrayVisual};
+pub use tray_status::{
+    classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, TrayVisual,
+};
 
 /// Final screen media filename inside a sealed segment.
 pub const SCREEN_FILE_NAME: &str = "display_1_screen.mp4";
 
 /// Final combined-audio filename inside a sealed segment.
 pub const AUDIO_FILE_NAME: &str = "audio.flac";
+
+/// Prefix added to fault details when a source lifecycle breaker is open.
+pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
 
 /// Sealed-dir sidecar holding the honest captured-media duration (whole seconds,
 /// ASCII decimal) for the segment-key LEN suffix.

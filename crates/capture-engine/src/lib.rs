@@ -33,7 +33,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
 
-pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
+pub use observer_model::BREAKER_OPEN_MARKER;
 
 /// Commands the shell and lifecycle pump can send to the engine loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1095,6 +1095,10 @@ mod tests {
             self.inner.lock().unwrap().state.clone()
         }
 
+        fn set_state(&self, state: SourceState) {
+            self.inner.lock().unwrap().state = state;
+        }
+
         fn starts(&self) -> usize {
             self.inner.lock().unwrap().starts
         }
@@ -1115,6 +1119,10 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+
+        fn queue_start_error(&self, error: SourceError) {
+            self.inner.lock().unwrap().start_errors.push_back(error);
         }
 
         fn stop(&self) {
@@ -1396,6 +1404,41 @@ mod tests {
         CaptureEngine::new(sources, config, &mut recovery, segment_fs, Box::new(clock))
             .unwrap()
             .0
+    }
+
+    fn breaker_open_engine() -> (CaptureEngine<FakeSegmentFs>, Handles) {
+        let config = EngineConfig {
+            lifecycle: BackoffConfig {
+                breaker_threshold: 1,
+                ..BackoffConfig::default()
+            },
+            ..EngineConfig::default()
+        };
+        let (sources, handles) = fake_sources(
+            SourceState::Faulted {
+                reason: ErrorReason::EndpointLost,
+                detail: "gone".into(),
+            },
+            SourceState::Active,
+            SourceState::NoInputDevice,
+        );
+        let mut engine = engine_with(FakeClock::new(0), FakeSegmentFs::default(), config, sources);
+        engine.start();
+
+        let dump = engine.health_dump();
+        assert_eq!(dump.app_state, AppPhase::Error);
+        assert!(fault_details_contain(&dump, BREAKER_OPEN_MARKER));
+
+        (engine, handles)
+    }
+
+    fn fault_details_contain(dump: &HealthDump, needle: &str) -> bool {
+        dump.sources.iter().any(|source| {
+            matches!(
+                &source.state,
+                SourceState::Faulted { detail, .. } if detail.contains(needle)
+            )
+        })
     }
 
     fn emit_screen(sink: &Arc<dyn CaptureSink>, seqs: impl Iterator<Item = u64>) {
@@ -1891,6 +1934,52 @@ mod tests {
             }
             other => panic!("expected faulted state, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resume_from_breaker_open_restarts_sources_and_clears_marker() {
+        let (mut engine, handles) = breaker_open_engine();
+        let starts_before = (
+            handles.screen.starts(),
+            handles.system_audio.starts(),
+            handles.mic.starts(),
+        );
+
+        handles.screen.set_state(SourceState::Active);
+        engine.apply_command(EngineCommand::Resume);
+
+        assert_eq!(handles.screen.starts(), starts_before.0 + 1);
+        assert_eq!(handles.system_audio.starts(), starts_before.1 + 1);
+        assert_eq!(handles.mic.starts(), starts_before.2 + 1);
+        assert!(!fault_details_contain(
+            &engine.health_dump(),
+            BREAKER_OPEN_MARKER
+        ));
+    }
+
+    #[test]
+    fn resume_from_cleared_fault_rederives_observing() {
+        let (mut engine, handles) = breaker_open_engine();
+
+        handles.screen.set_state(SourceState::Active);
+        engine.apply_command(EngineCommand::Resume);
+
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+    }
+
+    #[test]
+    fn resume_with_persistent_fault_stays_error() {
+        let (mut engine, handles) = breaker_open_engine();
+        handles
+            .screen
+            .queue_start_error(SourceError::new(ErrorReason::EndpointLost, "still gone"));
+
+        engine.apply_command(EngineCommand::Resume);
+
+        let phase = engine.health_dump().app_state;
+        assert_eq!(phase, AppPhase::Error);
+        assert_ne!(phase, AppPhase::Starting);
+        assert_ne!(phase, AppPhase::Observing);
     }
 
     #[test]
