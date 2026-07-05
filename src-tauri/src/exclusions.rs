@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use observer_exclusion::ExclusionRules;
+use serde::Serialize;
 
 /// Agent-native diagnostic for `--dump-windows`: the windows the exclusion
 /// enumerator currently sees on the primary monitor, the active rules, and the
@@ -43,6 +44,14 @@ pub struct ExclusionController {
     path: Arc<PathBuf>,
 }
 
+/// IPC outcome of a `set_exclusions`: whether the new rules were durably
+/// written to disk. The rules take effect in memory regardless; `persisted`
+/// is false only when the disk write (or serialize) failed.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct SetExclusionsOutcome {
+    pub persisted: bool,
+}
+
 impl ExclusionController {
     /// Load rules from `path` (defaulting when absent or corrupt), normalize
     /// them, hold them behind a shared lock, and seed/normalize the file on disk.
@@ -56,7 +65,9 @@ impl ExclusionController {
             rules: Arc::new(RwLock::new(loaded.clone())),
             path: Arc::new(path),
         };
-        ctrl.persist(&loaded);
+        // A seed-write failure is non-fatal: rules are live in memory and the
+        // failure was already logged.
+        let _ = ctrl.persist(&loaded);
         ctrl
     }
 
@@ -72,15 +83,17 @@ impl ExclusionController {
 
     /// Replace the rules: normalize, update the live shared handle (effective on
     /// the next frame), and persist to disk.
-    pub fn set(&self, rules: ExclusionRules) {
+    pub fn set(&self, rules: ExclusionRules) -> SetExclusionsOutcome {
         let normalized = rules.normalized();
         if let Ok(mut guard) = self.rules.write() {
             *guard = normalized.clone();
         }
-        self.persist(&normalized);
+        SetExclusionsOutcome {
+            persisted: self.persist(&normalized),
+        }
     }
 
-    fn persist(&self, rules: &ExclusionRules) {
+    fn persist(&self, rules: &ExclusionRules) -> bool {
         match serde_json::to_string_pretty(rules) {
             Ok(text) => {
                 if let Some(dir) = self.path.parent() {
@@ -94,14 +107,63 @@ impl ExclusionController {
                         error = %e,
                         "persist failed"
                     );
+                    false
+                } else {
+                    true
                 }
             }
-            Err(e) => tracing::warn!(
-                target: "config",
-                area = "exclusions",
-                error = %e,
-                "serialize failed"
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    target: "config",
+                    area = "exclusions",
+                    error = %e,
+                    "serialize failed"
+                );
+                false
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn unique_root(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!(
+            "solstone-exclusions-{name}-{}-{stamp}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn persist_failure_reports_unpersisted() {
+        let root = unique_root("persist-failure");
+        std::fs::create_dir_all(&root).unwrap();
+        let ctrl = ExclusionController::new(root.clone());
+
+        let outcome = ctrl.set(ExclusionRules::default());
+
+        assert!(!outcome.persisted);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persist_success_reports_persisted() {
+        let root = unique_root("persist-success");
+        let path = root.join("exclusions.json");
+        let ctrl = ExclusionController::new(path.clone());
+
+        let outcome = ctrl.set(ExclusionRules::default());
+
+        assert!(outcome.persisted);
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

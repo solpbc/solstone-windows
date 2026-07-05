@@ -170,7 +170,20 @@ interface RunningApp {
   display_name: string;
 }
 
+interface SetExclusionsOutcome {
+  persisted: boolean;
+}
+
+type ExclusionEdit =
+  | { kind: "toggle" }
+  | { kind: "appAdd" }
+  | { kind: "titleAdd" }
+  | { kind: "appRemove"; value: string }
+  | { kind: "titleRemove"; value: string };
+
 const SELF_EXE = "solstone-windows-app.exe";
+const STORE_APPS_LABEL =
+  "Store apps (all) — Windows Store apps share one entry; excluding it excludes them all";
 
 // ── Updater (observer-update) ────────────────────────────────────────────────
 // Update state arrives on its own `update://changed` event, separate from the
@@ -252,6 +265,8 @@ let journalOpenError = false;
 // preserves a half-typed title keyword across re-renders (like pairingDraft).
 let latestExclusions: ExclusionRules | null = null;
 let latestHotkey: HotkeyView | null = null;
+let exclusionsPending: ExclusionEdit | null = null;
+let exclusionsPersisted = true;
 // True while the press-to-capture field is listening for the owner's next combo.
 // Held in a module var so a 1s health re-render keeps the capturing state; the
 // keydown listener lives on the window, added once when capture starts.
@@ -1167,15 +1182,33 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   return pane;
 }
 
-async function applyExclusions(next: ExclusionRules): Promise<void> {
-  latestExclusions = next;
+async function applyExclusions(next: ExclusionRules, edit: ExclusionEdit): Promise<void> {
+  if (exclusionsPending) return;
+  exclusionsPending = edit;
   rerender();
+  let ok = true;
+  let persisted = true;
   try {
-    await invoke("set_exclusions", { rules: next });
+    const outcome = await invoke<SetExclusionsOutcome>("set_exclusions", { rules: next });
+    persisted = outcome.persisted;
   } catch {
-    // Persistence failures are logged backend-side; the in-memory rules already
-    // took effect. The next get on restart reflects the last persisted state.
+    ok = false;
   }
+  // Settled rules always come from the refetch (earned), never the optimistic
+  // copy. set_exclusions is synchronous backend-side, so a short delay is enough
+  // to keep the pending affordance perceptible before the honest state lands.
+  setTimeout(() => {
+    void invoke<ExclusionRules>("get_exclusions")
+      .then((rules) => {
+        latestExclusions = rules;
+        if (ok) exclusionsPersisted = persisted;
+      })
+      .catch(() => {})
+      .finally(() => {
+        exclusionsPending = null;
+        rerender();
+      });
+  }, 150);
 }
 
 function exclusionActivityLabel(health: ExclusionHealth | null): string {
@@ -1195,6 +1228,7 @@ function removableList(
   listAutomationId: string,
   onRemove: (value: string) => void,
   emptyText = "none yet",
+  pendingValue: string | null = null,
 ): HTMLElement {
   const list = automation(document.createElement("div"), listAutomationId);
   list.style.display = "flex";
@@ -1230,7 +1264,12 @@ function removableList(
     remove.style.fontSize = "15px";
     remove.style.lineHeight = "1";
     remove.style.padding = "0 2px";
-    remove.onclick = () => onRemove(value);
+    if (value === pendingValue) {
+      remove.disabled = true;
+      remove.setAttribute("aria-busy", "true");
+    } else {
+      remove.onclick = () => onRemove(value);
+    }
     chip.append(remove);
     list.append(chip);
   }
@@ -1242,6 +1281,13 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   pane.append(
     helpCaption("choose what sol keeps out of your journal. changes take effect right away."),
   );
+  if (!exclusionsPersisted) {
+    const warn = helpCaption(
+      "These rules are active now but couldn't be saved — they may not survive a restart.",
+    );
+    warn.style.color = "var(--danger)";
+    pane.append(warn);
+  }
 
   // Private browsing — title-heuristic auto-exclude, on by default. The honest
   // caveat (a title heuristic, not a structural exclude) is stated, not implied.
@@ -1251,8 +1297,9 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
       ids["settings.exclusions.privateBrowsing"],
       rules.exclude_private_browsing,
       (on) => {
-        void applyExclusions({ ...rules, exclude_private_browsing: on });
+        void applyExclusions({ ...rules, exclude_private_browsing: on }, { kind: "toggle" });
       },
+      exclusionsPending?.kind === "toggle",
     ),
   );
   pane.append(
@@ -1291,7 +1338,10 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   for (const app of choices) {
     const opt = document.createElement("option");
     opt.value = app.exe_name;
-    opt.textContent = app.display_name || app.exe_name;
+    opt.textContent =
+      app.exe_name === "applicationframehost.exe"
+        ? STORE_APPS_LABEL
+        : app.display_name || app.exe_name;
     opt.title = app.exe_name;
     appSelect.append(opt);
   }
@@ -1305,8 +1355,12 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
       if (!exe || rules.excluded_exes.includes(exe)) {
         return;
       }
-      void applyExclusions({ ...rules, excluded_exes: [...rules.excluded_exes, exe] });
+      void applyExclusions(
+        { ...rules, excluded_exes: [...rules.excluded_exes, exe] },
+        { kind: "appAdd" },
+      );
     },
+    exclusionsPending?.kind === "appAdd",
   );
   appPickRow.append(appSelect, appAdd);
   pane.append(appPickRow);
@@ -1315,12 +1369,16 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
       rules.excluded_exes,
       ids["settings.exclusions.appsList"],
       (exe) => {
-        void applyExclusions({
-          ...rules,
-          excluded_exes: rules.excluded_exes.filter((e) => e !== exe),
-        });
+        void applyExclusions(
+          {
+            ...rules,
+            excluded_exes: rules.excluded_exes.filter((e) => e !== exe),
+          },
+          { kind: "appRemove", value: exe },
+        );
       },
       "nothing excluded yet",
+      exclusionsPending?.kind === "appRemove" ? exclusionsPending.value : null,
     ),
   );
 
@@ -1356,7 +1414,10 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
       return;
     }
     titleDraft = "";
-    void applyExclusions({ ...rules, title_patterns: [...rules.title_patterns, keyword] });
+    void applyExclusions(
+      { ...rules, title_patterns: [...rules.title_patterns, keyword] },
+      { kind: "titleAdd" },
+    );
   };
   titleInput.onkeydown = (event) => {
     if (event.key === "Enter") {
@@ -1364,7 +1425,13 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
     }
   };
 
-  const titleAdd = actionButton("add", ids["settings.exclusions.titleAdd"], true, addTitle);
+  const titleAdd = actionButton(
+    "add",
+    ids["settings.exclusions.titleAdd"],
+    true,
+    addTitle,
+    exclusionsPending?.kind === "titleAdd",
+  );
   titleRow.append(titleInput, titleAdd);
   pane.append(titleRow);
   pane.append(
@@ -1372,12 +1439,22 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
       rules.title_patterns,
       ids["settings.exclusions.titlesList"],
       (keyword) => {
-        void applyExclusions({
-          ...rules,
-          title_patterns: rules.title_patterns.filter((k) => k !== keyword),
-        });
+        void applyExclusions(
+          {
+            ...rules,
+            title_patterns: rules.title_patterns.filter((k) => k !== keyword),
+          },
+          { kind: "titleRemove", value: keyword },
+        );
       },
       "no keywords yet",
+      exclusionsPending?.kind === "titleRemove" ? exclusionsPending.value : null,
+    ),
+  );
+
+  pane.append(
+    microCaption(
+      "A window that closes or moves can appear for up to one frame before exclusion applies.",
     ),
   );
 
@@ -2562,22 +2639,27 @@ function actionButton(
   automationId: string | undefined,
   enabled: boolean,
   onClick: () => void,
+  busy = false,
 ): HTMLButtonElement {
+  const effEnabled = enabled && !busy;
   const b = document.createElement("button");
   b.textContent = labelText;
-  b.disabled = !enabled;
+  b.disabled = !effEnabled;
+  if (busy) {
+    b.setAttribute("aria-busy", "true");
+  }
   if (automationId) {
     b.dataset.automationId = automationId;
   }
-  b.classList.add(enabled ? "fluent-accent" : "fluent-control");
+  b.classList.add(effEnabled ? "fluent-accent" : "fluent-control");
   b.style.fontSize = "13px";
   b.style.padding = "6px 12px";
-  b.style.border = enabled ? "1px solid var(--accent)" : "1px solid var(--border)";
+  b.style.border = effEnabled ? "1px solid var(--accent)" : "1px solid var(--border)";
   b.style.borderRadius = "var(--radius-control)";
-  b.style.background = enabled ? "var(--accent)" : "var(--fill)";
-  b.style.color = enabled ? "var(--accent-fg)" : "var(--muted)";
-  b.style.cursor = enabled ? "pointer" : "default";
-  if (enabled) {
+  b.style.background = effEnabled ? "var(--accent)" : "var(--fill)";
+  b.style.color = effEnabled ? "var(--accent-fg)" : "var(--muted)";
+  b.style.cursor = effEnabled ? "pointer" : "default";
+  if (effEnabled) {
     b.onclick = onClick;
   }
   return b;
@@ -2632,6 +2714,7 @@ function toggleRow(
   automationId: string,
   checked: boolean,
   onChange: (on: boolean) => void,
+  busy = false,
 ): HTMLElement {
   const lab = document.createElement("label");
   lab.style.display = "flex";
@@ -2645,6 +2728,10 @@ function toggleRow(
   const box = document.createElement("input");
   box.type = "checkbox";
   box.checked = checked;
+  box.disabled = busy;
+  if (busy) {
+    box.setAttribute("aria-busy", "true");
+  }
   box.dataset.automationId = automationId;
   box.style.margin = "0";
   box.onchange = () => onChange(box.checked);
@@ -3251,6 +3338,8 @@ export const __test__ = {
     latestUpdate = null;
     latestExclusions = null;
     latestHotkey = null;
+    exclusionsPending = null;
+    exclusionsPersisted = true;
     latestMic = null;
     micDevices = [];
     latestRetention = null;

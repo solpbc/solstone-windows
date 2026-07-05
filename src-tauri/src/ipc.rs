@@ -218,13 +218,13 @@ pub fn get_exclusions(
 }
 
 /// Replace the capture-exclusion rules. Effective on the next captured frame and
-/// persisted to `exclusions.json`.
+/// reports whether the new rules were persisted to `exclusions.json`.
 #[tauri::command]
 pub fn set_exclusions(
     state: tauri::State<'_, crate::app::AppState>,
     rules: observer_exclusion::ExclusionRules,
-) {
-    state.exclusions.set(rules);
+) -> crate::exclusions::SetExclusionsOutcome {
+    state.exclusions.set(rules)
 }
 
 /// The distinct running apps the owner can pick to exclude (exe + a friendly

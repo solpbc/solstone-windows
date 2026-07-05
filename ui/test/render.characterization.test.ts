@@ -19,6 +19,10 @@ import {
 } from "./fixtures";
 
 const ids = automationContract.automation_ids;
+const STORE_APPS_LABEL =
+  "Store apps (all) — Windows Store apps share one entry; excluding it excludes them all";
+const EXCLUSION_BOUNDARY =
+  "A window that closes or moves can appear for up to one frame before exclusion applies.";
 const byId = (id: string): HTMLElement | null =>
   document.querySelector(`[data-automation-id="${id}"]`);
 
@@ -184,6 +188,34 @@ describe("settings renderer characterization", () => {
     expect(options).not.toContain("solstone-windows-app.exe");
     expect(options).not.toContain("secret.exe");
     present(ids["settings.exclusions.activity"]);
+  });
+
+  it("renders store-app label, boundary caption, and unchanged exclusion activity", () => {
+    const dump = exclusionsDump();
+    const rules = exclusionRules({ exes: [], titles: [] });
+    app.__test__.setRoute("privacy");
+    app.__test__.setHealth(dump);
+    app.__test__.setExclusions(rules);
+    app.__test__.setRunningApps([
+      { exe_name: "applicationframehost.exe", display_name: "Some Window" },
+    ]);
+
+    app.__test__.renderSettings(dump);
+
+    const select = present(ids["settings.exclusions.appInput"]) as HTMLSelectElement;
+    const storeOption = Array.from(select.options).find(
+      (option) => option.value === "applicationframehost.exe",
+    );
+    expect(storeOption?.textContent).toBe(STORE_APPS_LABEL);
+    expect(storeOption?.value).toBe("applicationframehost.exe");
+    expect(
+      Array.from(document.querySelectorAll("div")).some(
+        (el) => el.textContent === EXCLUSION_BOUNDARY,
+      ),
+    ).toBe(true);
+    expect(present(ids["settings.exclusions.activity"]).textContent).toBe(
+      "3 frames kept out of your journal this session · 1 dropped",
+    );
   });
 
   it("renders one microphone row per ordered device", () => {
