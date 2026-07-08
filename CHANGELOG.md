@@ -4,6 +4,18 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.10] - 2026-07-08
+
+### Fixed
+
+- sol's Windows taskbar and title bar icon now keeps a cream center behind the
+  mark, so the word stays readable on light, dark, and busy desktop backgrounds.
+- when something needs attention, sol now gives you a restart action in the tray
+  and on the home pane instead of leaving recovery to a relaunch.
+- privacy exclusions now show the state sol actually saved. changes wait for the
+  confirmed setting, failed saves roll back visibly, and Microsoft Store apps are
+  labeled as one shared entry.
+
 ## [0.2.9] - 2026-07-04
 
 ### Fixed
