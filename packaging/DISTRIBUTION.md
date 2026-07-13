@@ -91,6 +91,13 @@ interactive Windows-Sandbox install) before a moderator/bot merges — so the PR
 itself the install-validation gate.
 
 - Needs `gh` (authed, with a fork of `microsoft/winget-pkgs`), `curl`, `jq`. **No komac.**
+- **Keep Actions disabled on the fork.** The fork inherits winget-pkgs' workflows, and
+  every branch push triggers its Spell Checking run — which fails on package jargon and
+  emails the fork owner a "build error" that looks like the PR failed. It is fork-local
+  noise: upstream gates on CLA + the Azure validation pipeline only (verified against the
+  merged first-package PR, which had no spell-check run). Disabled 2026-07-13
+  (`gh api -X PUT repos/<owner>/winget-pkgs/actions/permissions -F enabled=false`);
+  re-disable if the fork is ever recreated.
 - Version-update PRs are the fast path — frequently auto-merged with no human,
   unlike the multi-day first-package gate.
 - Dry run: `WINGET_DRY_RUN=1 sh scripts/publish-winget.sh <version>` renders to
