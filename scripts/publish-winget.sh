@@ -166,6 +166,22 @@ for f in solpbc.Solstone.yaml solpbc.Solstone.installer.yaml solpbc.Solstone.loc
 done
 TREE="$(printf '%s' "$TREE_ITEMS" | jq -sc --arg bt "$BASETREE" '{base_tree:$bt, tree:.}' \
         | gh api -X POST "repos/$FORK/git/trees" --input - --jq '.sha')"
+
+# Tree-completeness assertion -- NON-NEGOTIABLE. If base_tree is dropped (an empty
+# var, a flag-parsing quirk, an API change), the new tree contains ONLY our files and
+# the commit silently becomes a deletion of the entire winget-pkgs repository. GitHub
+# then can't even render the diff, so the winget bot never labels the PR and it sits
+# dead -- or worse, a human moderator opens a PR that nukes 4M files. This happened
+# (PR #401803, 2026-07-13, hand-driven -- caught before the pipeline saw it). The
+# root tree entry count must match the base's exactly: we only ever add files UNDER
+# the existing manifests/ tree, never at the root.
+ROOT_N="$(gh api "repos/$FORK/git/trees/$TREE" --jq '.tree | length')"
+BASE_N="$(gh api "repos/$FORK/git/trees/$BASETREE" --jq '.tree | length')"
+[ "$ROOT_N" = "$BASE_N" ] || {
+  echo "publish-winget: FATAL tree incomplete -- root has $ROOT_N entries, base has $BASE_N." >&2
+  echo "  base_tree was dropped building the tree; refusing to commit a repo-wide deletion." >&2
+  exit 1; }
+
 COMMIT="$(jq -nc --arg m "New version: $PKG version $VERSION" --arg t "$TREE" --arg p "$BASE" \
           '{message:$m, tree:$t, parents:[$p]}' \
           | gh api -X POST "repos/$FORK/git/commits" --input - --jq '.sha')"
