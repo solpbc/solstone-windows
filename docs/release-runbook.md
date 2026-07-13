@@ -93,6 +93,12 @@ are **community-moderated**, so factor the wait into release planning, don't blo
   genuinely urgent items moderators watch the community Discord. (Research:
   `records/decisions/260625-vpx-solstone-windows-settings-native-redesign-0.2.4.md`.)
 - **scoop** — bucket PR, lighter process.
+- **After publishing, run `make check-channels`** — it asserts each channel actually
+  carries the release and exits non-zero on drift. `make publish-packages` is an
+  operator step nothing forces, and a channel that is never updated raises no error;
+  it just keeps serving the old version. winget sat **ten releases stale** (0.2.0
+  while we shipped 0.2.10) before anyone noticed. Manifest source of truth is in-repo
+  (`packaging/winget/`, `packaging/scoop/`) — see `packaging/DISTRIBUTION.md`.
 - **Chocolatey** — a third channel (enterprise/IT-admin reach) we have **not** adopted;
   its community repo is also human-moderated. Evaluate deliberately, below winget/scoop.
 

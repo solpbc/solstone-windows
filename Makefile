@@ -31,7 +31,7 @@ WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
 .PHONY: install build test ui-test test-scripts ci contract purity-check package publish publish-r2 \
-	        publish-winget publish-scoop publish-packages \
+	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
@@ -137,6 +137,12 @@ publish-scoop:
 	sh scripts/publish-scoop.sh $(VERSION)
 
 publish-packages: publish-winget publish-scoop
+
+# Assert the package-manager channels actually carry the current release. Read-only.
+# `publish-packages` is an operator step that fails quietly -- winget silently drifted
+# ten releases behind before anyone noticed. Run this after a release.
+check-channels:
+	sh scripts/check-channels.sh $(VERSION)
 
 # Pull the box's packed Releases/ to the release host so publish-r2 can upload it.
 # The box checks the working tree out under ~/swbuild (sync-win-host's bundle).

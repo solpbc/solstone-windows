@@ -12,8 +12,39 @@ the R2 update feed:
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to
 `%LocalAppData%\Solstone` with no elevation, and registers an Add/Remove-Programs
-entry (`DisplayName=solstone`, `Publisher=sol pbc`, `DisplayVersion`) that winget
-uses for version detection.
+entry that winget uses for version detection. **That entry's `DisplayName` is `sol`**
+— Velopack names it after `--packTitle` (see `scripts/package.ps1`), *not* after the
+pack id (`Solstone`). Manifest correlation fields must match it exactly or `winget
+upgrade` cannot tell the package is installed.
+
+## The manifests live in this repo
+
+**`packaging/winget/` and `packaging/scoop/` are the source of truth.** Edit the
+copy there and the next release publishes it. Both publish scripts render *from*
+those files and push the whole manifest.
+
+This is worth stating loudly because it was not true until 2026-07-13, and the
+silence cost us. Both publish scripts used to be *version bumpers*: they took the
+last **published** manifest and changed only version/url/hash. Every other field —
+product copy, dependencies, ARP correlation, the scoop `bin` — carried forward from
+whatever was first published, and nothing in this repo could correct it. Three live
+defects came out of that single shape:
+
+- **winget sat at 0.2.0 for ten releases.** `publish-winget.sh` shelled out to
+  `komac update`, which requires `komac` on the release host. It was not installed,
+  so the step exited 1 and was skipped in silence while every other channel shipped.
+- **winget's published copy kept retired product vocabulary,** and its
+  `AppsAndFeaturesEntries.DisplayName` said `Solstone` (not `sol`), so `winget
+  upgrade` could not correlate the installed app. The corrected copy had been sitting
+  in `packaging/winget/` the whole time — unread.
+- **`scoop install solstone` was outright broken in 0.2.9 and 0.2.10.** The brand
+  sweep renamed `--packTitle` to `sol`, so the portable zip's launcher became
+  `sol.exe`; the bucket manifest went on shimming `Solstone.exe`, a file that no
+  longer exists. `publish-scoop.sh` only ever touched version/url/hash, so it never
+  noticed.
+
+**The rule that prevents a fourth: a publish script must push the whole manifest
+from this repo, never patch selected fields of the live one.**
 
 ## Release step
 
@@ -34,47 +65,65 @@ defaults to the workspace version; override with `make publish-packages VERSION=
 There is no GitHub Actions / webhook path for this — it is an operator-run release
 step, same posture as `publish` / `publish-r2`.
 
+Both scripts re-render their manifest source in place at publish time, so
+**`git status` will show `packaging/` dirty after a release — commit it.** That is
+what keeps the repo a faithful mirror of what is actually published.
+
+Then **`make check-channels`** (read-only) asserts that each channel actually carries
+the release, and exits non-zero on drift. Run it after every release. Nothing forces
+`publish-packages`, and a channel that is simply never updated raises no error — it
+just keeps serving the old version. That is precisely how winget went ten releases
+stale unnoticed. Silence is not health; make the check say so.
+
 ## winget
 
 Manifests live in the community repo `microsoft/winget-pkgs` under
 `manifests/s/solpbc/Solstone/<version>/` — **not** the Microsoft Store (no Store
-account / MSIX). A reference copy of the current manifest set is in
-[`winget/`](winget/).
+account / MSIX). Our source of truth is [`winget/`](winget/).
 
 **Per release: `make publish-winget`** (`scripts/publish-winget.sh`). winget has no
-push API — every version is a PR to the community repo — so the target opens a
-version-update PR via [`komac`](https://github.com/russellbanks/Komac) (which
-fetches the `Setup.exe` asset, computes the SHA256, and submits). winget's pipeline
-then validates (schema, hash, an interactive Windows-Sandbox install) before a
-moderator/bot merges — so the PR is itself the install-validation gate.
+push API — every version is a PR to the community repo — so the script renders
+[`winget/`](winget/) at the release version (installer URL, SHA256 over the
+*published* asset, release date, and `ReleaseNotes` derived from the `CHANGELOG.md`
+section), builds the branch through the GitHub API (winget-pkgs is far too large to
+clone), and opens the PR. winget's pipeline then validates (schema, hash, an
+interactive Windows-Sandbox install) before a moderator/bot merges — so the PR is
+itself the install-validation gate.
 
-- Needs `komac` on the release host (the script prints install instructions if absent).
-- **First-ever package only** was a one-time `komac new` / hand PR; steady-state is `komac update`, which is what the target runs.
-- **WebView2 dependency (carry-forward caveat).** The reference manifest declares
-  `Dependencies.PackageDependencies: Microsoft.EdgeWebView2Runtime` (the Settings/About
-  UI needs the Evergreen WebView2 runtime). `komac update` preserves the *last published*
-  version's fields — so this block must exist in the merged winget manifest to propagate.
-  The pending `0.2.0` new-package PR predates it, so the **first update PR after 0.2.0
-  merges** must re-add the `Dependencies` block by hand (edit the komac-generated YAML
-  before `--submit`, or use the manual fallback below). Once one published version carries
-  it, subsequent `komac update`s keep it.
-- Manual fallback: bump the YAML in [`winget/`](winget/) (`PackageVersion` /
-  `InstallerUrl` / `InstallerSha256` / `AppsAndFeaturesEntries.DisplayVersion`) and
-  open the PR by hand. Validate first with `winget validate --manifest <dir>`.
+- Needs `gh` (authed, with a fork of `microsoft/winget-pkgs`), `curl`, `jq`. **No komac.**
+- Version-update PRs are the fast path — frequently auto-merged with no human,
+  unlike the multi-day first-package gate.
+- Dry run: `WINGET_DRY_RUN=1 sh scripts/publish-winget.sh <version>` renders to
+  `target/winget/` and stops — no repo write, no branch, no PR. On Windows,
+  `winget validate --manifest target/winget/`.
+
+**Two things a tool will try to "fix" wrongly — don't let it:**
+
+- **`Architecture: x64` is correct.** Velopack's `Setup.exe` is a 32-bit stub, so
+  anything that sniffs the PE header (komac did) writes `x86`. The application it
+  installs, `solstone-windows-app.exe`, is PE32+ x86-64. Architecture describes the
+  app's applicability, not the stub.
+- **`AppsAndFeaturesEntries.DisplayName: sol`** — the ARP name, not `Solstone`.
+  Every field listed there must match the real ARP entry or correlation fails.
 
 ## scoop
 
 Bucket: [`solpbc/scoop-solstone`](https://github.com/solpbc/scoop-solstone).
 Users add it with `scoop bucket add solstone https://github.com/solpbc/scoop-solstone`.
 
-The manifest (`bucket/solstone.json`) points at `Solstone-win-Portable.zip` and
-carries `checkver`/`autoupdate` blocks (the latter let a maintainer auto-refresh
-from a scoop checkout — `bin/checkver.ps1 solstone -u`).
+Our source of truth is [`scoop/solstone.json`](scoop/solstone.json). It points at
+`Solstone-win-Portable.zip` and carries `checkver`/`autoupdate` blocks (the latter
+let a maintainer auto-refresh from a scoop checkout — `bin/checkver.ps1 solstone -u`).
 
 **Per release: `make publish-scoop`** (`scripts/publish-scoop.sh`) — hashes the
-published `Portable.zip` and bumps the manifest's `version` + `hash` in
-`solpbc/scoop-solstone` via the GitHub API. No external CI/bot: it is an
-operator-run release step. (Hand fallback: edit `bucket/solstone.json` directly.)
+published `Portable.zip`, renders the repo manifest at that version, and pushes the
+whole file to `solpbc/scoop-solstone` via the GitHub API. No external CI/bot: it is
+an operator-run release step.
+
+**`bin` / `shortcuts` must name a file that exists in the portable zip.** Velopack
+names the top-level launcher after `--packTitle` — today `sol.exe`. If `--packTitle`
+ever changes again, these change with it, or `scoop install` breaks at shim time.
+Check with `unzip -Z1 Solstone-win-Portable.zip`.
 
 ## Coexistence
 
