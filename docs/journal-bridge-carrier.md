@@ -42,14 +42,17 @@ New types:
   - Methods: `new`, `open_stream(stream_id)`, `remove_stream(stream_id)`,
     `consume(stream_id, bytes)`, and
     `feed(bytes) -> Result<DemuxOutput, MuxError>`.
-  - Behavior: decode frames once per carrier; answer stream-0 PINGs; surface
-    stream-0 PONG nonces; route DATA/CLOSE/RESET/WINDOW by stream id; drop
-    frames for unknown or already-removed streams.
+  - Behavior: decode frames once per carrier; validate flags through
+    `frame::flags_valid`; answer exact stream-0 PINGs; surface exact stream-0
+    PONG nonces; treat other stream-0 frames as tunnel-fatal; route active-stream
+    DATA/CLOSE/RESET/WINDOW; reset unknown DATA/WINDOW while tolerating pure
+    unknown CLOSE/RESET.
 - `DemuxOutput`
   - Fields: `pongs: Vec<Vec<u8>>`, `inbound_pongs: Vec<[u8; 8]>`,
     `stream_events: Vec<(u32, StreamEvent)>` with per-Body wire costs,
-    `window_grants: Vec<(u32, u32)>`, and `emit_frames: Vec<Vec<u8>>` for
-    originated WINDOW and RESET frames.
+    `window_grants: Vec<(u32, u32)>`, `emit_frames: Vec<Vec<u8>>` for originated
+    WINDOW and RESET frames, and header-only `violations` records for structured
+    logging.
 - `HttpStreamAssembler`
   - Decoder-free, stream-id-agnostic helper extracted from current
     `StreamingResponseAssembler::feed_data` / `feed_body`.
@@ -282,12 +285,23 @@ Inbound frame:
 
 - DATA debits the stream receive window and emits `Head` and/or costed `Body`
   events through `HttpStreamAssembler`.
-- WINDOW grants credit only to that stream's `WindowedUpload`.
+- Valid WINDOW grants credit only to that stream's `WindowedUpload`; a grant
+  that would raise remaining send credit above 2^31 - 1 resets that stream.
 - CLOSE emits `End(Close)` and frees stream state.
-- RESET emits `End(Reset)` and frees stream state.
+- RESET emits `End(Reset(reason))` and frees stream state; known protocol and
+  flow-control reasons are typed, while missing, unknown, and other reasons are
+  surfaced as unspecified.
+- Invalid flag combinations, inbound OPEN, nonzero-stream PING/PONG, and
+  malformed WINDOW frames emit RESET(PROTOCOL_ERROR) for the attributable
+  stream without delivering payload bytes.
+- Stream-0 misuse and malformed stream-0 control frames are tunnel-fatal.
 - DATA beyond the available receive credit emits RESET(FLOW_CONTROL_ERROR),
   ends only that local stream, and leaves the carrier and siblings alive.
-- Unknown/closed stream frames are dropped defensively.
+- Unknown/closed DATA and WINDOW frames receive RESET(PROTOCOL_ERROR); pure
+  CLOSE and RESET are dropped defensively to avoid reset ping-pong.
+- Reset-worthy framing violations surface header-only stream id, flags, and
+  length records for `framing_protocol_violation` logging; payload is never
+  included.
 
 Local consumer back-pressure:
 
@@ -482,7 +496,7 @@ Add Tokio `test-util` to `pl-transport-win` dev-dependencies so tests can use
 
 ## Test Map
 
-Because the external scope's section 7 is not in this file, these are the 16
+Because the external scope's section 7 is not in this file, these are the 18
 tests this design expects to carry the requested coverage.
 
 Pure `observer-pl`:
@@ -496,32 +510,41 @@ Pure `observer-pl`:
 4. `carrier_demux_routes_interleaved_streams`: two stream ids receive only their
    own head/body/end events.
 5. `carrier_demux_control_and_window_outputs_are_tagged`: PING returns one PONG,
-   inbound PONG nonce is surfaced, and WINDOW grants are tagged by stream id.
-6. `carrier_demux_drops_unknown_or_closed_stream_frames`: defensive drops do not
-   panic or leak events.
+   inbound PONG nonce is surfaced, active WINDOW grants are tagged by stream id,
+   and an unknown WINDOW receives a protocol reset and violation record.
+6. `carrier_demux_discriminates_unknown_or_closed_stream_frames`: unknown
+   DATA/WINDOW receive one protocol reset per frame, pure CLOSE/RESET are
+   tolerated, and no unknown-stream event leaks locally.
+7. The `carrier_demux_rejects_*` conformance tests pin exact flag validation,
+   dialer-role OPEN/control rejection, malformed WINDOW handling, stream-0 fatal
+   behavior and its latch, while `carrier_demux_reserved_flag_remains_frame_fatal`
+   keeps bit 7 codec-fatal.
+8. `windowed_upload_accepts_max_remaining_credit_and_rejects_one_over` and
+   `windowed_upload_credit_cap_excludes_consumed_credit` pin the remaining-credit
+   cap; reset-reason tests pin tolerant typed parsing.
 
 `pl-transport-win` bridge/carrier integration:
 
-7. `journal_bridge_bootstrap_cookie_contract_unchanged`: current bootstrap 302
+9. `journal_bridge_bootstrap_cookie_contract_unchanged`: current bootstrap 302
    and reject behavior stays byte-identical.
-8. `journal_bridge_rejects_before_carrier_dial`: bad host/cap/method/auth all
+10. `journal_bridge_rejects_before_carrier_dial`: bad host/cap/method/auth all
    return 403/405 and upstream accept count is zero, including POST bootstrap.
-9. `journal_bridge_first_load_coalesces_one_carrier`: concurrent authorized
+11. `journal_bridge_first_load_coalesces_one_carrier`: concurrent authorized
    requests result in one upstream TLS accept and distinct odd stream ids.
-10. `journal_bridge_buffered_pass_through_on_shared_carrier`: status/body,
+12. `journal_bridge_buffered_pass_through_on_shared_carrier`: status/body,
    auth injection, local header stripping, response headers, content-length, and
    connection close match current behavior.
-11. `journal_bridge_head_preserves_content_length_on_shared_carrier`: HEAD keeps
+13. `journal_bridge_head_preserves_content_length_on_shared_carrier`: HEAD keeps
    upstream content length and sends no body.
-12. `journal_bridge_forwards_401_403_and_warns`: both statuses pass through
+14. `journal_bridge_forwards_401_403_and_warns`: both statuses pass through
    unmasked with `upstream_credential`.
-13. `journal_bridge_sse_does_not_block_buffered_request`: long-lived SSE stream
+15. `journal_bridge_sse_does_not_block_buffered_request`: long-lived SSE stream
    and normal GET complete concurrently on one carrier.
-14. `journal_bridge_sse_before_head_502_after_head_close`: before-head EOF/RESET
+16. `journal_bridge_sse_before_head_502_after_head_close`: before-head EOF/RESET
    maps to 502; after-head close/reset just closes local stream.
-15. `journal_bridge_local_write_failure_resets_only_that_stream`: abandoned or
+17. `journal_bridge_local_write_failure_resets_only_that_stream`: abandoned or
    full local consumer sends RESET for one stream and siblings continue.
-16. `journal_bridge_carrier_death_redials_without_replay`: carrier EOF/error
+18. `journal_bridge_carrier_death_redials_without_replay`: carrier EOF/error
    ends active streams, marks slot dead, next request dials a fresh carrier, and
    no old request is replayed.
 

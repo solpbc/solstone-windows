@@ -19,7 +19,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use observer_pl::frame::FrameDialer;
+use observer_pl::frame::{Frame, FrameDialer, RESET_FLOW_CONTROL_ERROR};
 use observer_pl::http::{self, HttpResponse};
 use observer_pl::mux::{MuxError, ResponseAssembler, WindowedUpload};
 use rustls::ClientConfig;
@@ -139,7 +139,23 @@ where
         }
         let out = assembler.feed(&buf[..n])?;
         for credit in out.window_grants {
-            upload.grant(credit);
+            if upload.grant(credit).is_err() {
+                let reset = Frame::reset(stream_id, RESET_FLOW_CONTROL_ERROR)
+                    .encode()
+                    .map_err(|error| TransportError::Mux(MuxError::Frame(error)))?;
+                write_all_with_timeout(
+                    &mut stream,
+                    &reset,
+                    "PL write timed out sending flow-control reset",
+                )
+                .await?;
+                flush_with_timeout(
+                    &mut stream,
+                    "PL write timed out flushing flow-control reset",
+                )
+                .await?;
+                return Err(TransportError::Mux(MuxError::FlowControl));
+            }
         }
         let mut originated = false;
         for pong in out.pongs {
@@ -370,6 +386,51 @@ mod tests {
             TransportError::Mux(error) => assert_eq!(format!("{error:?}"), "FlowControl"),
             other => panic!("expected mux flow-control error, got {other:?}"),
         }
+        fake_peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_shot_excess_send_credit_writes_flow_control_reset_before_error() {
+        let (client, mut peer) = tokio::io::duplex(INITIAL_WINDOW * 2);
+        let body = vec![b'x'; INITIAL_WINDOW + 257];
+        let fake_peer = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let mut stream_id = None;
+            let mut data = 0usize;
+            while data < INITIAL_WINDOW {
+                let frame = next_frame(&mut peer, &mut decoder).await;
+                if frame.flags & FLAG_DATA != 0 {
+                    stream_id = Some(frame.stream_id);
+                    data += frame.payload.len();
+                }
+            }
+            assert_eq!(data, INITIAL_WINDOW);
+            let stream_id = stream_id.unwrap();
+
+            send_frame(
+                &mut peer,
+                stream_id,
+                observer_pl::frame::FLAG_WINDOW,
+                &u32::MAX.to_be_bytes(),
+            )
+            .await;
+            let reset =
+                tokio::time::timeout(Duration::from_secs(1), next_frame(&mut peer, &mut decoder))
+                    .await
+                    .expect("client should reset excess send credit");
+            assert_eq!(reset.stream_id, stream_id);
+            assert_eq!(reset.flags, observer_pl::frame::FLAG_RESET);
+            assert_eq!(reset.payload, vec![RESET_FLOW_CONTROL_ERROR]);
+        });
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_request_over_stream(client, "POST", "/excess-credit", &[], &body),
+        )
+        .await
+        .expect("excess send credit should fail promptly")
+        .unwrap_err();
+        assert!(matches!(error, TransportError::Mux(MuxError::FlowControl)));
         fake_peer.await.unwrap();
     }
 }

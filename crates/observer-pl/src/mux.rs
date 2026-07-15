@@ -23,8 +23,9 @@
 use std::collections::HashMap;
 
 use crate::frame::{
-    Frame, FrameDecoder, FrameError, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, FLAG_RESET, MAX_PAYLOAD,
-    RECOMMENDED_CHUNK, RESET_FLOW_CONTROL_ERROR,
+    flags_valid, Frame, FrameDecoder, FrameError, FrameViolation, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN,
+    FLAG_PING, FLAG_PONG, FLAG_RESET, FLAG_WINDOW, MAX_PAYLOAD, RECOMMENDED_CHUNK,
+    RESET_FLOW_CONTROL_ERROR, RESET_PROTOCOL_ERROR,
 };
 use crate::http::{self, ChunkedDecoder, HttpError, HttpResponse};
 use thiserror::Error;
@@ -53,6 +54,8 @@ pub enum MuxError {
     CapExceeded,
     #[error("peer sent DATA beyond the receive window")]
     FlowControl,
+    #[error("peer framing protocol violation: {0:?}")]
+    Protocol(FrameViolation),
 }
 
 /// Receive-side credit for one mux stream.
@@ -146,10 +149,22 @@ impl WindowedUpload {
         }
     }
 
-    /// Credit an inbound `WINDOW` grant. Saturating: a malicious/huge grant can
-    /// never overflow, and we never send beyond the bytes we actually have.
-    pub fn grant(&mut self, credit: u32) {
-        self.send_credit = self.send_credit.saturating_add(credit as usize);
+    /// Credit an inbound `WINDOW` grant without allowing remaining credit to
+    /// exceed the spl protocol cap of 2^31 - 1 bytes.
+    pub fn grant(&mut self, credit: u32) -> Result<(), FrameViolation> {
+        let violation = || FrameViolation {
+            stream_id: self.stream_id,
+            flags: FLAG_WINDOW,
+            length: 4,
+        };
+        let Some(next) = self.send_credit.checked_add(credit as usize) else {
+            return Err(violation());
+        };
+        if next > i32::MAX as usize {
+            return Err(violation());
+        }
+        self.send_credit = next;
+        Ok(())
     }
 
     /// The next frame to write, or `None` when there is nothing to send right now
@@ -237,9 +252,26 @@ pub struct HttpHead {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetReason {
+    ProtocolError,
+    FlowControlError,
+    Unspecified,
+}
+
+impl ResetReason {
+    fn from_payload(payload: &[u8]) -> Self {
+        match payload.first().copied() {
+            Some(RESET_PROTOCOL_ERROR) => Self::ProtocolError,
+            Some(RESET_FLOW_CONTROL_ERROR) => Self::FlowControlError,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamEnd {
     Close,
-    Reset,
+    Reset(ResetReason),
     Eof,
 }
 
@@ -278,6 +310,8 @@ pub struct DemuxOutput {
     /// Encoded originated frames for the transport to write, currently WINDOW
     /// grants and RESET(FLOW_CONTROL_ERROR).
     pub emit_frames: Vec<Vec<u8>>,
+    /// Header-only records for attributable peer framing violations.
+    pub violations: Vec<FrameViolation>,
 }
 
 /// Re-assembles response frames for one dialer stream into the HTTP body.
@@ -467,10 +501,10 @@ impl HttpStreamAssembler {
         StreamItem::End(StreamEnd::Close)
     }
 
-    pub fn reset(&mut self) -> StreamItem {
+    pub fn reset(&mut self, reason: ResetReason) -> StreamItem {
         self.closed = true;
         self.pending_body_wire = 0;
-        StreamItem::End(StreamEnd::Reset)
+        StreamItem::End(StreamEnd::Reset(reason))
     }
 
     pub fn finish_eof(&mut self) -> StreamItem {
@@ -519,6 +553,7 @@ impl Default for HttpStreamAssembler {
 pub struct CarrierDemux {
     decoder: FrameDecoder,
     streams: HashMap<u32, CarrierStream>,
+    fatal_violation: Option<FrameViolation>,
 }
 
 struct CarrierStream {
@@ -558,32 +593,79 @@ impl CarrierDemux {
     }
 
     pub fn feed(&mut self, data: &[u8]) -> Result<DemuxOutput, MuxError> {
+        if let Some(violation) = self.fatal_violation {
+            return Err(MuxError::Protocol(violation));
+        }
         self.decoder.feed(data);
         let mut out = DemuxOutput::default();
         for frame in self.decoder.drain()? {
-            if let Some(pong) = frame.control_pong() {
-                out.pongs.push(pong.encode()?);
-                continue;
-            }
-            if let Some(nonce) = frame.control_pong_nonce() {
-                out.inbound_pongs.push(nonce);
-                continue;
-            }
-
             let stream_id = frame.stream_id;
-            if !self.streams.contains_key(&stream_id) {
+            if stream_id == 0 {
+                if let Some(pong) = frame.control_pong() {
+                    out.pongs.push(pong.encode()?);
+                    continue;
+                }
+                if let Some(nonce) = frame.control_pong_nonce() {
+                    out.inbound_pongs.push(nonce);
+                    continue;
+                }
+                let violation = frame_violation(&frame);
+                self.fatal_violation = Some(violation);
+                return Err(MuxError::Protocol(violation));
+            }
+
+            if !flags_valid(frame.flags) {
+                self.reject_attributable(&frame, &mut out)?;
                 continue;
             }
-            if let Some(credit) = frame.window_credit() {
-                out.window_grants.push((stream_id, credit));
+            if frame.flags & FLAG_OPEN != 0 {
+                self.reject_attributable(&frame, &mut out)?;
+                continue;
+            }
+            if matches!(frame.flags, FLAG_PING | FLAG_PONG) {
+                self.reject_attributable(&frame, &mut out)?;
                 continue;
             }
 
-            if frame.flags & FLAG_DATA != 0 {
+            if !self.streams.contains_key(&stream_id) {
+                if frame.flags & FLAG_DATA != 0 || frame.flags == FLAG_WINDOW {
+                    self.reject_attributable(&frame, &mut out)?;
+                }
+                continue;
+            }
+
+            if frame.flags == FLAG_RESET {
+                let reason = ResetReason::from_payload(&frame.payload);
+                let item = self
+                    .streams
+                    .get_mut(&stream_id)
+                    .expect("known stream exists")
+                    .assembler
+                    .reset(reason);
+                remove_emitted_windows(&mut out.emit_frames, stream_id);
+                out.stream_events
+                    .push((stream_id, StreamEvent::uncosted(item)));
+                self.streams.remove(&stream_id);
+                continue;
+            }
+            if frame.flags == FLAG_CLOSE {
+                let item = self
+                    .streams
+                    .get_mut(&stream_id)
+                    .expect("known stream exists")
+                    .assembler
+                    .close();
+                remove_emitted_windows(&mut out.emit_frames, stream_id);
+                out.stream_events
+                    .push((stream_id, StreamEvent::uncosted(item)));
+                self.streams.remove(&stream_id);
+                continue;
+            }
+            if frame.flags == FLAG_DATA || frame.flags == (FLAG_DATA | FLAG_CLOSE) {
                 let debit = self
                     .streams
                     .get_mut(&stream_id)
-                    .expect("stream exists after contains_key")
+                    .expect("known stream exists")
                     .recv_window
                     .debit(frame.payload.len());
                 if debit.is_err() {
@@ -592,7 +674,9 @@ impl CarrierDemux {
                         .push(Frame::reset(stream_id, RESET_FLOW_CONTROL_ERROR).encode()?);
                     out.stream_events.push((
                         stream_id,
-                        StreamEvent::uncosted(StreamItem::End(StreamEnd::Reset)),
+                        StreamEvent::uncosted(StreamItem::End(StreamEnd::Reset(
+                            ResetReason::FlowControlError,
+                        ))),
                     ));
                     self.streams.remove(&stream_id);
                     continue;
@@ -601,7 +685,7 @@ impl CarrierDemux {
                 let assembled = match self
                     .streams
                     .get_mut(&stream_id)
-                    .expect("stream exists after successful debit")
+                    .expect("known stream exists after successful debit")
                     .assembler
                     .feed_data(&frame.payload)
                 {
@@ -610,7 +694,9 @@ impl CarrierDemux {
                         remove_emitted_windows(&mut out.emit_frames, stream_id);
                         out.stream_events.push((
                             stream_id,
-                            StreamEvent::uncosted(StreamItem::End(StreamEnd::Reset)),
+                            StreamEvent::uncosted(StreamItem::End(StreamEnd::Reset(
+                                ResetReason::Unspecified,
+                            ))),
                         ));
                         self.streams.remove(&stream_id);
                         continue;
@@ -620,7 +706,7 @@ impl CarrierDemux {
                 if let Some(grant) = self
                     .streams
                     .get_mut(&stream_id)
-                    .expect("stream exists after successful assembly")
+                    .expect("known stream exists after successful assembly")
                     .recv_window
                     .consume(assembled.auto_consumed)
                 {
@@ -629,35 +715,61 @@ impl CarrierDemux {
                 }
                 out.stream_events
                     .extend(assembled.events.into_iter().map(|event| (stream_id, event)));
+                if frame.flags == (FLAG_DATA | FLAG_CLOSE) {
+                    let item = self
+                        .streams
+                        .get_mut(&stream_id)
+                        .expect("known stream exists after successful DATA")
+                        .assembler
+                        .close();
+                    remove_emitted_windows(&mut out.emit_frames, stream_id);
+                    out.stream_events
+                        .push((stream_id, StreamEvent::uncosted(item)));
+                    self.streams.remove(&stream_id);
+                }
+                continue;
             }
-
-            let end = if frame.flags & FLAG_RESET != 0 {
-                Some(
-                    self.streams
-                        .get_mut(&stream_id)
-                        .expect("stream exists after contains_key")
-                        .assembler
-                        .reset(),
-                )
-            } else if frame.flags & FLAG_CLOSE != 0 {
-                Some(
-                    self.streams
-                        .get_mut(&stream_id)
-                        .expect("stream exists after contains_key")
-                        .assembler
-                        .close(),
-                )
-            } else {
-                None
+            debug_assert_eq!(frame.flags, FLAG_WINDOW);
+            let Some(credit) = frame.window_credit() else {
+                self.reject_attributable(&frame, &mut out)?;
+                continue;
             };
-            if let Some(item) = end {
-                remove_emitted_windows(&mut out.emit_frames, stream_id);
-                out.stream_events
-                    .push((stream_id, StreamEvent::uncosted(item)));
-                self.streams.remove(&stream_id);
-            }
+            out.window_grants.push((stream_id, credit));
         }
         Ok(out)
+    }
+
+    fn reject_attributable(
+        &mut self,
+        frame: &Frame,
+        out: &mut DemuxOutput,
+    ) -> Result<(), MuxError> {
+        let stream_id = frame.stream_id;
+        let known = self.streams.contains_key(&stream_id);
+        if known {
+            remove_emitted_windows(&mut out.emit_frames, stream_id);
+        }
+        out.emit_frames
+            .push(Frame::reset(stream_id, RESET_PROTOCOL_ERROR).encode()?);
+        if known {
+            out.stream_events.push((
+                stream_id,
+                StreamEvent::uncosted(StreamItem::End(StreamEnd::Reset(
+                    ResetReason::ProtocolError,
+                ))),
+            ));
+            self.streams.remove(&stream_id);
+        }
+        out.violations.push(frame_violation(frame));
+        Ok(())
+    }
+}
+
+fn frame_violation(frame: &Frame) -> FrameViolation {
+    FrameViolation {
+        stream_id: frame.stream_id,
+        flags: frame.flags,
+        length: frame.payload.len(),
     }
 }
 
@@ -803,7 +915,7 @@ mod tests {
         // until the whole body — plus the half-closing CLOSE — is out.
         let mut guard = 0;
         while !up.is_done() {
-            up.grant((INITIAL_WINDOW / 2) as u32);
+            up.grant((INITIAL_WINDOW / 2) as u32).unwrap();
             while let Some(bytes) = up.poll_send().unwrap() {
                 all.feed(&bytes);
             }
@@ -821,6 +933,57 @@ mod tests {
             .iter()
             .filter(|f| f.flags & FLAG_DATA != 0)
             .all(|f| f.payload.len() <= RECOMMENDED_CHUNK));
+    }
+
+    #[test]
+    fn windowed_upload_accepts_max_remaining_credit_and_rejects_one_over() {
+        let mut upload = WindowedUpload::new(7, b"request");
+        upload
+            .grant((i32::MAX as usize - INITIAL_WINDOW) as u32)
+            .unwrap();
+        assert_eq!(upload.send_credit, i32::MAX as usize);
+
+        assert_eq!(
+            upload.grant(1),
+            Err(FrameViolation {
+                stream_id: 7,
+                flags: FLAG_WINDOW,
+                length: 4,
+            })
+        );
+        assert_eq!(upload.send_credit, i32::MAX as usize);
+    }
+
+    #[test]
+    fn windowed_upload_credit_cap_excludes_consumed_credit() {
+        let request = vec![b'x'; INITIAL_WINDOW + 1];
+        let mut upload = WindowedUpload::new(9, &request);
+        let first = decode_single(&upload.poll_send().unwrap().unwrap());
+        assert_eq!(first.payload.len(), RECOMMENDED_CHUNK);
+        let remaining = INITIAL_WINDOW - RECOMMENDED_CHUNK;
+        let grant = i32::MAX as usize - remaining;
+
+        upload.grant(grant as u32).unwrap();
+        assert_eq!(upload.send_credit, i32::MAX as usize);
+    }
+
+    #[test]
+    fn reset_reason_parses_known_unknown_empty_and_overlong_payloads() {
+        assert_eq!(
+            ResetReason::from_payload(&[RESET_PROTOCOL_ERROR]),
+            ResetReason::ProtocolError
+        );
+        assert_eq!(
+            ResetReason::from_payload(&[RESET_FLOW_CONTROL_ERROR]),
+            ResetReason::FlowControlError
+        );
+        assert_eq!(ResetReason::from_payload(&[]), ResetReason::Unspecified);
+        assert_eq!(ResetReason::from_payload(&[0x03]), ResetReason::Unspecified);
+        assert_eq!(ResetReason::from_payload(&[0xff]), ResetReason::Unspecified);
+        assert_eq!(
+            ResetReason::from_payload(&[RESET_FLOW_CONTROL_ERROR, 0xaa]),
+            ResetReason::FlowControlError
+        );
     }
 
     #[test]
@@ -981,7 +1144,10 @@ mod tests {
         assert!(close.is_closed());
 
         let mut reset = HttpStreamAssembler::new();
-        assert_eq!(reset.reset(), StreamItem::End(StreamEnd::Reset));
+        assert_eq!(
+            reset.reset(ResetReason::ProtocolError),
+            StreamItem::End(StreamEnd::Reset(ResetReason::ProtocolError))
+        );
         assert!(reset.is_closed());
 
         let mut eof = HttpStreamAssembler::new();
@@ -1028,6 +1194,249 @@ mod tests {
     }
 
     #[test]
+    fn carrier_demux_surfaces_inbound_reset_reason() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        demux.open_stream(3);
+        demux.open_stream(5);
+        let wire = encode_frames(&[
+            Frame::new(1, FLAG_RESET, vec![RESET_PROTOCOL_ERROR]),
+            Frame::new(3, FLAG_RESET, vec![RESET_FLOW_CONTROL_ERROR, 0xaa]),
+            Frame::new(5, FLAG_RESET, Vec::new()),
+        ]);
+
+        let out = demux.feed(&wire).unwrap();
+
+        assert_eq!(
+            out.stream_events,
+            vec![
+                stream_event(
+                    1,
+                    StreamItem::End(StreamEnd::Reset(ResetReason::ProtocolError)),
+                    0,
+                ),
+                stream_event(
+                    3,
+                    StreamItem::End(StreamEnd::Reset(ResetReason::FlowControlError)),
+                    0,
+                ),
+                stream_event(
+                    5,
+                    StreamItem::End(StreamEnd::Reset(ResetReason::Unspecified)),
+                    0,
+                ),
+            ]
+        );
+        assert!(out.emit_frames.is_empty());
+        assert!(out.violations.is_empty());
+    }
+
+    #[test]
+    fn carrier_demux_rejects_invalid_flag_combinations_without_delivering_payload() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nforbidden";
+        for flags in [FLAG_DATA | FLAG_RESET, FLAG_DATA | FLAG_WINDOW] {
+            let mut demux = CarrierDemux::new();
+            demux.open_stream(1);
+            demux.open_stream(3);
+            let wire = encode_frames(&[
+                Frame::new(1, flags, response.to_vec()),
+                Frame::new(
+                    3,
+                    FLAG_DATA | FLAG_CLOSE,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok".to_vec(),
+                ),
+            ]);
+
+            let out = demux.feed(&wire).unwrap();
+
+            assert_eq!(out.emit_frames.len(), 1);
+            let reset = decode_single(&out.emit_frames[0]);
+            assert_eq!(reset.stream_id, 1);
+            assert_eq!(reset.flags, FLAG_RESET);
+            assert_eq!(reset.payload, vec![RESET_PROTOCOL_ERROR]);
+            assert_eq!(
+                out.stream_events,
+                vec![
+                    stream_event(
+                        1,
+                        StreamItem::End(StreamEnd::Reset(ResetReason::ProtocolError)),
+                        0,
+                    ),
+                    stream_event(3, plain_head(), 0),
+                    stream_event(3, StreamItem::Body(b"ok".to_vec()), 2),
+                    stream_event(3, StreamItem::End(StreamEnd::Close), 0),
+                ]
+            );
+            assert_eq!(
+                out.violations,
+                vec![FrameViolation {
+                    stream_id: 1,
+                    flags,
+                    length: response.len(),
+                }]
+            );
+        }
+
+        let mut demux = CarrierDemux::new();
+        let invalid = Frame::new(9, FLAG_DATA | FLAG_WINDOW, vec![0; 4]);
+        let out = demux.feed(&invalid.encode().unwrap()).unwrap();
+        assert_eq!(out.emit_frames.len(), 1);
+        assert_eq!(decode_single(&out.emit_frames[0]).stream_id, 9);
+        assert_eq!(out.violations.len(), 1);
+        assert!(out.stream_events.is_empty());
+
+        let zero = Frame::new(11, 0, Vec::new());
+        let out = demux.feed(&zero.encode().unwrap()).unwrap();
+        assert_eq!(out.emit_frames.len(), 1);
+        assert_eq!(decode_single(&out.emit_frames[0]).stream_id, 11);
+        assert_eq!(out.violations, vec![frame_violation(&zero)]);
+    }
+
+    #[test]
+    fn carrier_demux_rejects_window_close_as_protocol_error() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        let frame = Frame::new(1, FLAG_WINDOW | FLAG_CLOSE, 17u32.to_be_bytes().to_vec());
+
+        let out = demux.feed(&frame.encode().unwrap()).unwrap();
+
+        assert!(out.window_grants.is_empty());
+        assert_eq!(out.emit_frames.len(), 1);
+        assert_eq!(
+            decode_single(&out.emit_frames[0]).payload,
+            vec![RESET_PROTOCOL_ERROR]
+        );
+        assert_eq!(
+            out.stream_events,
+            vec![stream_event(
+                1,
+                StreamItem::End(StreamEnd::Reset(ResetReason::ProtocolError)),
+                0,
+            )]
+        );
+        assert_eq!(out.violations, vec![frame_violation(&frame)]);
+    }
+
+    #[test]
+    fn carrier_demux_rejects_inbound_open_for_dialer_role() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        let known = Frame::new(1, FLAG_OPEN | FLAG_DATA, b"not delivered".to_vec());
+        let unknown = Frame::new(8, FLAG_OPEN, Vec::new());
+        let wire = encode_frames(&[known.clone(), unknown.clone()]);
+
+        let out = demux.feed(&wire).unwrap();
+
+        assert_eq!(out.emit_frames.len(), 2);
+        assert_eq!(
+            out.violations,
+            vec![frame_violation(&known), frame_violation(&unknown)]
+        );
+        assert_eq!(
+            out.stream_events,
+            vec![stream_event(
+                1,
+                StreamItem::End(StreamEnd::Reset(ResetReason::ProtocolError)),
+                0,
+            )]
+        );
+    }
+
+    #[test]
+    fn carrier_demux_rejects_ping_pong_on_nonzero_streams() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        let ping = Frame::new(1, FLAG_PING, vec![0; 8]);
+        let pong = Frame::new(9, FLAG_PONG, vec![1; 8]);
+        let wire = encode_frames(&[ping.clone(), pong.clone()]);
+
+        let out = demux.feed(&wire).unwrap();
+
+        assert!(out.pongs.is_empty());
+        assert!(out.inbound_pongs.is_empty());
+        assert_eq!(out.emit_frames.len(), 2);
+        assert_eq!(
+            out.violations,
+            vec![frame_violation(&ping), frame_violation(&pong)]
+        );
+        assert_eq!(
+            out.stream_events,
+            vec![stream_event(
+                1,
+                StreamItem::End(StreamEnd::Reset(ResetReason::ProtocolError)),
+                0,
+            )]
+        );
+    }
+
+    #[test]
+    fn carrier_demux_rejects_malformed_window_payload() {
+        let mut demux = CarrierDemux::new();
+        demux.open_stream(1);
+        let frame = Frame::new(1, FLAG_WINDOW, vec![0, 0, 1]);
+
+        let out = demux.feed(&frame.encode().unwrap()).unwrap();
+
+        assert!(out.window_grants.is_empty());
+        assert_eq!(out.emit_frames.len(), 1);
+        assert_eq!(out.violations, vec![frame_violation(&frame)]);
+        assert_eq!(
+            out.stream_events,
+            vec![stream_event(
+                1,
+                StreamItem::End(StreamEnd::Reset(ResetReason::ProtocolError)),
+                0,
+            )]
+        );
+    }
+
+    #[test]
+    fn carrier_demux_stream_zero_misuse_is_tunnel_fatal() {
+        let cases = [
+            Frame::new(0, FLAG_DATA, b"x".to_vec()),
+            Frame::new(0, FLAG_WINDOW, 1u32.to_be_bytes().to_vec()),
+            Frame::new(0, FLAG_OPEN, Vec::new()),
+            Frame::new(0, FLAG_CLOSE, Vec::new()),
+            Frame::new(0, FLAG_RESET, vec![RESET_PROTOCOL_ERROR]),
+            Frame::new(0, 0, Vec::new()),
+            Frame::new(0, FLAG_PING, vec![0; 7]),
+            Frame::new(0, FLAG_PING | FLAG_PONG, vec![0; 8]),
+        ];
+
+        for frame in cases {
+            let mut demux = CarrierDemux::new();
+            assert_eq!(
+                demux.feed(&frame.encode().unwrap()).unwrap_err(),
+                MuxError::Protocol(frame_violation(&frame))
+            );
+        }
+    }
+
+    #[test]
+    fn carrier_demux_tunnel_fatal_is_latched() {
+        let mut demux = CarrierDemux::new();
+        let fatal = Frame::new(0, FLAG_DATA, b"fatal".to_vec());
+        let expected = MuxError::Protocol(frame_violation(&fatal));
+        assert_eq!(demux.feed(&fatal.encode().unwrap()).unwrap_err(), expected);
+
+        let ping = Frame::control_ping([1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            demux.feed(&ping.encode().unwrap()).unwrap_err(),
+            MuxError::Protocol(frame_violation(&fatal))
+        );
+    }
+
+    #[test]
+    fn carrier_demux_reserved_flag_remains_frame_fatal() {
+        let wire = [0, 0, 0, 1, crate::frame::FLAG_RESERVED_MASK, 0, 0, 0];
+        let mut demux = CarrierDemux::new();
+        assert_eq!(
+            demux.feed(&wire).unwrap_err(),
+            MuxError::Frame(FrameError::ReservedFlag(crate::frame::FLAG_RESERVED_MASK))
+        );
+    }
+
+    #[test]
     fn carrier_demux_control_and_window_outputs_are_tagged() {
         let mut demux = CarrierDemux::new();
         demux.open_stream(1);
@@ -1054,14 +1463,30 @@ mod tests {
         assert_eq!(out.inbound_pongs, vec![pong_nonce]);
         assert_eq!(out.window_grants, vec![(1, 512 * 1024), (3, 1024 * 1024)]);
         assert!(out.stream_events.is_empty());
+        assert_eq!(out.emit_frames.len(), 1);
+        let reset = decode_single(&out.emit_frames[0]);
+        assert_eq!(reset.stream_id, 5);
+        assert_eq!(reset.flags, FLAG_RESET);
+        assert_eq!(reset.payload, vec![RESET_PROTOCOL_ERROR]);
+        assert_eq!(
+            out.violations,
+            vec![FrameViolation {
+                stream_id: 5,
+                flags: FLAG_WINDOW,
+                length: 4,
+            }]
+        );
     }
 
     #[test]
-    fn carrier_demux_drops_unknown_or_closed_stream_frames() {
+    fn carrier_demux_discriminates_unknown_or_closed_stream_frames() {
         let mut demux = CarrierDemux::new();
         demux.open_stream(1);
         let wire = encode_frames(&[
             Frame::new(9, FLAG_DATA, b"ignored".to_vec()),
+            Frame::new(11, FLAG_WINDOW, 17u32.to_be_bytes().to_vec()),
+            Frame::new(13, FLAG_CLOSE, Vec::new()),
+            Frame::new(15, FLAG_RESET, vec![RESET_PROTOCOL_ERROR]),
             Frame::new(
                 1,
                 FLAG_DATA | FLAG_CLOSE,
@@ -1078,11 +1503,34 @@ mod tests {
                 stream_event(1, StreamItem::End(StreamEnd::Close), 0),
             ]
         );
+        assert_eq!(out.emit_frames.len(), 2);
+        assert_eq!(decode_single(&out.emit_frames[0]).stream_id, 9);
+        assert_eq!(decode_single(&out.emit_frames[1]).stream_id, 11);
+        assert_eq!(
+            out.violations,
+            vec![
+                FrameViolation {
+                    stream_id: 9,
+                    flags: FLAG_DATA,
+                    length: 7,
+                },
+                FrameViolation {
+                    stream_id: 11,
+                    flags: FLAG_WINDOW,
+                    length: 4,
+                },
+            ]
+        );
 
         let out = demux
             .feed(&Frame::new(1, FLAG_DATA, b"late".to_vec()).encode().unwrap())
             .unwrap();
         assert!(out.stream_events.is_empty());
+        assert_eq!(out.emit_frames.len(), 1);
+        let reset = decode_single(&out.emit_frames[0]);
+        assert_eq!(reset.stream_id, 1);
+        assert_eq!(reset.payload, vec![RESET_PROTOCOL_ERROR]);
+        assert_eq!(out.violations.len(), 1);
     }
 
     #[test]
@@ -1126,7 +1574,11 @@ mod tests {
         assert_eq!(
             out.stream_events,
             vec![
-                stream_event(1, StreamItem::End(StreamEnd::Reset), 0),
+                stream_event(
+                    1,
+                    StreamItem::End(StreamEnd::Reset(ResetReason::Unspecified)),
+                    0,
+                ),
                 stream_event(3, plain_head(), 0),
                 stream_event(3, StreamItem::Body(b"ok".to_vec()), 2),
                 stream_event(3, StreamItem::End(StreamEnd::Close), 0),
@@ -1141,6 +1593,12 @@ mod tests {
             )
             .unwrap();
         assert!(out.stream_events.is_empty());
+        assert_eq!(out.emit_frames.len(), 1);
+        assert_eq!(
+            decode_single(&out.emit_frames[0]).payload,
+            vec![RESET_PROTOCOL_ERROR]
+        );
+        assert_eq!(out.violations.len(), 1);
     }
 
     #[test]
@@ -1157,7 +1615,11 @@ mod tests {
 
         assert_eq!(
             out.stream_events,
-            vec![stream_event(1, StreamItem::End(StreamEnd::Reset), 0)]
+            vec![stream_event(
+                1,
+                StreamItem::End(StreamEnd::Reset(ResetReason::Unspecified)),
+                0,
+            )]
         );
         assert!(!demux.streams.contains_key(&1));
         assert!(demux.streams.contains_key(&3));
@@ -1187,7 +1649,11 @@ mod tests {
         assert_eq!(
             out.stream_events,
             vec![
-                stream_event(1, StreamItem::End(StreamEnd::Reset), 0),
+                stream_event(
+                    1,
+                    StreamItem::End(StreamEnd::Reset(ResetReason::FlowControlError)),
+                    0,
+                ),
                 stream_event(3, plain_head(), 0),
                 stream_event(3, StreamItem::Body(b"ok".to_vec()), 2),
                 stream_event(3, StreamItem::End(StreamEnd::Close), 0),

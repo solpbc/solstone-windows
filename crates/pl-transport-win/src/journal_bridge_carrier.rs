@@ -10,10 +10,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use observer_pl::bridge::FailureCategory;
-use observer_pl::frame::{Frame, FrameDialer, RESET_CANCEL};
+use observer_pl::frame::{
+    Frame, FrameDialer, FrameViolation, RESET_CANCEL, RESET_FLOW_CONTROL_ERROR,
+};
 use observer_pl::http;
 use observer_pl::mux::{
-    CarrierDemux, MuxError, StreamEnd, StreamEvent, StreamItem, WindowedUpload,
+    CarrierDemux, MuxError, ResetReason, StreamEnd, StreamEvent, StreamItem, WindowedUpload,
 };
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -419,7 +421,17 @@ fn handle_read(
     outstanding: &mut Option<OutstandingProbe>,
     missed: &mut u32,
 ) -> Result<(), TransportError> {
-    let out = demux.feed(data)?;
+    let out = match demux.feed(data) {
+        Ok(out) => out,
+        Err(MuxError::Protocol(violation)) => {
+            log_frame_violation(violation);
+            return Err(TransportError::Mux(MuxError::Protocol(violation)));
+        }
+        Err(error) => return Err(TransportError::Mux(error)),
+    };
+    for violation in out.violations {
+        log_frame_violation(violation);
+    }
     for pong in out.pongs {
         send_writer(writer, pong)?;
     }
@@ -437,9 +449,35 @@ fn handle_read(
         }
     }
     for (stream_id, credit) in out.window_grants {
-        if let Some(state) = streams.get_mut(&stream_id) {
-            state.upload.grant(credit);
-            pump_upload(writer, state)?;
+        let grant = streams
+            .get_mut(&stream_id)
+            .map(|state| state.upload.grant(credit));
+        match grant {
+            Some(Ok(())) => {
+                let state = streams
+                    .get_mut(&stream_id)
+                    .expect("stream exists after successful grant");
+                pump_upload(writer, state)?;
+            }
+            Some(Err(violation)) => {
+                log_frame_violation(violation);
+                let reset = Frame::reset(stream_id, RESET_FLOW_CONTROL_ERROR)
+                    .encode()
+                    .map_err(|error| TransportError::Mux(MuxError::Frame(error)))?;
+                send_writer(writer, reset)?;
+                demux.remove_stream(stream_id);
+                deliver_stream_item(
+                    stream_id,
+                    StreamEvent {
+                        item: StreamItem::End(StreamEnd::Reset(ResetReason::FlowControlError)),
+                        wire_cost: 0,
+                    },
+                    demux,
+                    streams,
+                    writer,
+                )?;
+            }
+            None => {}
         }
     }
     for (stream_id, event) in out.stream_events {
@@ -609,6 +647,16 @@ fn log_carrier_teardown(kind: &CarrierKind, fallback_code: &str) {
         target: "journal_bridge",
         category = FailureCategory::UpstreamUnreachable.token(),
         code = %code
+    );
+}
+
+fn log_frame_violation(violation: FrameViolation) {
+    tracing::warn!(
+        target: "journal_bridge",
+        code = "framing_protocol_violation",
+        stream_id = violation.stream_id,
+        flags = violation.flags,
+        length = violation.length
     );
 }
 
@@ -923,6 +971,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn carrier_excess_send_credit_resets_only_owning_upload() {
+        let (commands, _alive, mut server) =
+            spawn_duplex_carrier(test_keepalive(3), INITIAL_WINDOW * 4);
+        let mut decoder = FrameDecoder::new();
+        let body_a = vec![b'a'; INITIAL_WINDOW + 257];
+        let body_b = vec![b'b'; INITIAL_WINDOW + 257];
+        let request_b_len = http::build_request("POST", "/b", &[], &body_b).len();
+        let mut rx_a = open_test_stream(&commands, "/a", body_a).await;
+        let mut rx_b = open_test_stream(&commands, "/b", body_b).await;
+
+        let mut data_a = 0usize;
+        let mut data_b = 0usize;
+        while data_a < INITIAL_WINDOW || data_b < INITIAL_WINDOW {
+            let frame = next_frame(&mut server, &mut decoder).await;
+            if frame.flags & FLAG_DATA == 0 {
+                continue;
+            }
+            match frame.stream_id {
+                1 => data_a += frame.payload.len(),
+                3 => data_b += frame.payload.len(),
+                other => panic!("unexpected stream {other}"),
+            }
+        }
+
+        send_frame(&mut server, 1, FLAG_WINDOW, &u32::MAX.to_be_bytes()).await;
+        let reset = tokio::time::timeout(
+            Duration::from_secs(1),
+            next_frame(&mut server, &mut decoder),
+        )
+        .await
+        .expect("excess send credit should reset the owning stream");
+        assert_eq!(reset.stream_id, 1);
+        assert_eq!(reset.flags, FLAG_RESET);
+        assert_eq!(reset.payload, vec![RESET_FLOW_CONTROL_ERROR]);
+        assert_eq!(
+            rx_a.recv().await,
+            Some(StreamItem::End(StreamEnd::Reset(
+                ResetReason::FlowControlError
+            )))
+        );
+
+        send_frame(
+            &mut server,
+            3,
+            FLAG_WINDOW,
+            &(request_b_len as u32).to_be_bytes(),
+        )
+        .await;
+        read_request_close(&mut server, &mut decoder, 3).await;
+        let response = http_response(b"b-ok");
+        send_frame(&mut server, 3, FLAG_DATA | FLAG_CLOSE, &response).await;
+        assert_stream_completes(&mut rx_b, b"b-ok").await;
+    }
+
+    #[tokio::test]
     async fn carrier_response_over_initial_window_replenishes_credit_on_consumer_drain() {
         const BODY_BYTES: usize = 1_600_000;
 
@@ -1135,7 +1238,9 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), rx_a.recv())
                 .await
                 .expect("offending stream should end promptly"),
-            Some(StreamItem::End(StreamEnd::Reset))
+            Some(StreamItem::End(StreamEnd::Reset(
+                ResetReason::FlowControlError
+            )))
         );
         let reset = tokio::time::timeout(
             Duration::from_secs(1),
@@ -1148,6 +1253,24 @@ mod tests {
         assert_eq!(reset.payload, vec![RESET_FLOW_CONTROL_ERROR]);
 
         send_frame(&mut server, 1, FLAG_DATA, b"late").await;
+        let late_reset = tokio::time::timeout(
+            Duration::from_secs(1),
+            next_frame(&mut server, &mut decoder),
+        )
+        .await
+        .expect("late DATA should receive a protocol reset");
+        assert_eq!(late_reset.stream_id, 1);
+        assert_eq!(late_reset.flags, FLAG_RESET);
+        assert_eq!(
+            late_reset.payload,
+            vec![observer_pl::frame::RESET_PROTOCOL_ERROR]
+        );
+        assert_eq!(
+            rx_a.recv().await,
+            None,
+            "late DATA must not deliver a second End"
+        );
+
         let sibling_body = vec![b'b'; 19_731];
         let sibling_response = http_response(&sibling_body);
         send_frame(&mut server, 3, FLAG_DATA | FLAG_CLOSE, &sibling_response).await;
@@ -1159,7 +1282,7 @@ mod tests {
             )
             .await
             .is_err(),
-            "late offending-stream DATA must not trigger a second reset"
+            "late offending-stream DATA must trigger exactly one protocol reset"
         );
     }
 

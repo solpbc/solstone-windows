@@ -15,9 +15,9 @@
 //! ```
 //!
 //! The flag bitfield names exactly one of OPEN/DATA/CLOSE/RESET/WINDOW/PING/PONG
-//! per frame, except the two legal combos `OPEN|DATA` (open with initial bytes)
-//! and `DATA|CLOSE` (last data + half-close). PING/PONG ride stream 0 only with
-//! an 8-byte nonce. Bit 7 is reserved and must be zero.
+//! per frame, except the legal `OPEN|DATA`, `DATA|CLOSE`, `OPEN|CLOSE`, and
+//! `OPEN|DATA|CLOSE` compositions. PING/PONG ride stream 0 only with an 8-byte
+//! nonce. Bit 7 is reserved and must be zero.
 
 use thiserror::Error;
 
@@ -44,6 +44,25 @@ pub const MAX_PAYLOAD: usize = (1 << 24) - 1;
 pub const RECOMMENDED_CHUNK: usize = 64 * 1024;
 /// PING/PONG control-nonce length.
 pub const CONTROL_NONCE_LEN: usize = 8;
+
+/// Whether `flags` is one of the exact combinations permitted by the spl
+/// framing contract. Stream-role and payload-length validation happen at
+/// dispatch.
+pub fn flags_valid(flags: u8) -> bool {
+    matches!(
+        flags,
+        0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07 | 0x08 | 0x10 | 0x20 | 0x40
+    )
+}
+
+/// Header-only metadata for one peer framing violation. Payload bytes are
+/// deliberately absent so callers cannot accidentally log them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameViolation {
+    pub stream_id: u32,
+    pub flags: u8,
+    pub length: usize,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
@@ -105,9 +124,7 @@ impl Frame {
 
     /// If this is a control PING (stream 0, 8-byte nonce), the PONG to return.
     pub fn control_pong(&self) -> Option<Frame> {
-        if self.stream_id == 0
-            && self.flags & FLAG_PING != 0
-            && self.payload.len() == CONTROL_NONCE_LEN
+        if self.stream_id == 0 && self.flags == FLAG_PING && self.payload.len() == CONTROL_NONCE_LEN
         {
             Some(Frame::new(0, FLAG_PONG, self.payload.clone()))
         } else {
@@ -117,9 +134,7 @@ impl Frame {
 
     /// If this is a control PONG (stream 0, 8-byte nonce), return the nonce.
     pub fn control_pong_nonce(&self) -> Option<[u8; CONTROL_NONCE_LEN]> {
-        if self.stream_id == 0
-            && self.flags & FLAG_PONG != 0
-            && self.payload.len() == CONTROL_NONCE_LEN
+        if self.stream_id == 0 && self.flags == FLAG_PONG && self.payload.len() == CONTROL_NONCE_LEN
         {
             let mut nonce = [0u8; CONTROL_NONCE_LEN];
             nonce.copy_from_slice(&self.payload);
@@ -253,6 +268,27 @@ mod tests {
         assert_eq!(pong.flags, FLAG_PONG);
         assert_eq!(pong.stream_id, 0);
         assert_eq!(pong.payload, ping.payload);
+    }
+
+    #[test]
+    fn flags_valid_matches_exact_spl_set() {
+        let valid = [
+            0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x10, 0x20, 0x40,
+        ];
+        for flags in u8::MIN..=u8::MAX {
+            assert_eq!(
+                flags_valid(flags),
+                valid.contains(&flags),
+                "unexpected validity for {flags:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_helpers_require_exact_flags() {
+        let combined = Frame::new(0, FLAG_PING | FLAG_PONG, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(combined.control_pong().is_none());
+        assert!(combined.control_pong_nonce().is_none());
     }
 
     #[test]
