@@ -10,6 +10,7 @@
 //! honors `content-length`, and de-chunks `transfer-encoding: chunked` — the
 //! same shape the Android parser handles.
 
+use crate::frame::MAX_PAYLOAD;
 use thiserror::Error;
 
 /// A parsed HTTP response.
@@ -52,6 +53,18 @@ pub enum HttpError {
     BadChunkedBody(String),
 }
 
+fn parse_chunk_size(line: &str) -> Result<usize, HttpError> {
+    let size_field = line.split(';').next().unwrap_or("").trim();
+    let size = usize::from_str_radix(size_field, 16)
+        .map_err(|_| HttpError::BadChunkedBody(format!("bad chunk size {size_field:?}")))?;
+    if size > MAX_PAYLOAD {
+        return Err(HttpError::BadChunkedBody(format!(
+            "chunk size {size} exceeds max {MAX_PAYLOAD}"
+        )));
+    }
+    Ok(size)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChunkState {
     Size,
@@ -59,6 +72,7 @@ enum ChunkState {
     DataCrlf,
     Trailer,
     Done,
+    Failed,
 }
 
 /// Incremental decoder for `Transfer-Encoding: chunked` response bodies.
@@ -66,6 +80,7 @@ enum ChunkState {
 /// `push` buffers partial size lines, chunk data, and terminators across calls,
 /// returning only newly decoded body bytes. The terminal zero-size chunk does
 /// not itself produce bytes; trailers are consumed and ignored.
+/// Each declared chunk is capped at [`MAX_PAYLOAD`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct ChunkedDecoder {
     buf: Vec<u8>,
@@ -86,9 +101,20 @@ impl ChunkedDecoder {
         Self::default()
     }
 
+    fn fail(&mut self, err: HttpError) -> HttpError {
+        self.state = ChunkState::Failed;
+        self.buf.clear();
+        err
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<u8>, HttpError> {
         if self.state == ChunkState::Done {
             return Ok(Vec::new());
+        }
+        if self.state == ChunkState::Failed {
+            return Err(HttpError::BadChunkedBody(
+                "decoder previously failed".into(),
+            ));
         }
 
         self.buf.extend_from_slice(bytes);
@@ -101,10 +127,10 @@ impl ChunkedDecoder {
                         break;
                     };
                     let size_text = String::from_utf8_lossy(&self.buf[..line_end]);
-                    let size_field = size_text.split(';').next().unwrap_or("").trim();
-                    let size = usize::from_str_radix(size_field, 16).map_err(|_| {
-                        HttpError::BadChunkedBody(format!("bad chunk size {size_field:?}"))
-                    })?;
+                    let size = match parse_chunk_size(&size_text) {
+                        Ok(size) => size,
+                        Err(err) => return Err(self.fail(err)),
+                    };
                     self.buf.drain(..line_end + 2);
                     self.state = if size == 0 {
                         ChunkState::Trailer
@@ -125,7 +151,8 @@ impl ChunkedDecoder {
                         break;
                     }
                     if &self.buf[..2] != b"\r\n" {
-                        return Err(HttpError::BadChunkedBody("missing chunk terminator".into()));
+                        let err = HttpError::BadChunkedBody("missing chunk terminator".into());
+                        return Err(self.fail(err));
                     }
                     self.buf.drain(..2);
                     self.state = ChunkState::Size;
@@ -144,7 +171,7 @@ impl ChunkedDecoder {
                     self.state = ChunkState::Done;
                     break;
                 }
-                ChunkState::Done => break,
+                ChunkState::Done | ChunkState::Failed => break,
             }
         }
 
@@ -274,6 +301,7 @@ pub fn parse_head(head_bytes: &[u8]) -> Result<(u16, Vec<(String, String)>), Htt
 }
 
 /// Decode a `chunked` transfer-encoding body.
+/// Each declared chunk is capped at [`MAX_PAYLOAD`].
 pub fn dechunk(raw: &[u8]) -> Result<Vec<u8>, HttpError> {
     let mut out = Vec::new();
     let mut index = 0;
@@ -282,9 +310,7 @@ pub fn dechunk(raw: &[u8]) -> Result<Vec<u8>, HttpError> {
             .map(|p| index + p)
             .ok_or_else(|| HttpError::BadChunkedBody("missing size line".into()))?;
         let size_text = String::from_utf8_lossy(&raw[index..line_end]);
-        let size_field = size_text.split(';').next().unwrap_or("").trim();
-        let size = usize::from_str_radix(size_field, 16)
-            .map_err(|_| HttpError::BadChunkedBody(format!("bad chunk size {size_field:?}")))?;
+        let size = parse_chunk_size(&size_text)?;
         index = line_end + 2;
         if size == 0 {
             return Ok(out);
@@ -415,6 +441,93 @@ mod tests {
         out.extend(decoder.push(b"\n\r\nignored").unwrap());
         assert_eq!(out, b"Wikipedia");
         assert_eq!(decoder.push(b"more").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn dechunk_rejects_usize_max_chunk_size() {
+        assert_eq!(
+            dechunk(b"ffffffffffffffff\r\nshort").unwrap_err(),
+            HttpError::BadChunkedBody(format!(
+                "chunk size {} exceeds max {MAX_PAYLOAD}",
+                usize::MAX
+            ))
+        );
+    }
+
+    #[test]
+    fn dechunk_rejects_first_over_cap_size_before_truncated_chunk() {
+        assert_eq!(
+            dechunk(b"1000000\r\nshort").unwrap_err(),
+            HttpError::BadChunkedBody(format!(
+                "chunk size {} exceeds max {MAX_PAYLOAD}",
+                MAX_PAYLOAD + 1
+            ))
+        );
+    }
+
+    #[test]
+    fn dechunk_accepts_chunk_at_max_payload() {
+        let mut raw = format!("{MAX_PAYLOAD:x}\r\n").into_bytes();
+        let body_start = raw.len();
+        raw.resize(body_start + MAX_PAYLOAD, b'x');
+        raw.extend_from_slice(b"\r\n0\r\n\r\n");
+
+        let body = dechunk(&raw).unwrap();
+
+        assert_eq!(body.len(), MAX_PAYLOAD);
+        assert_eq!(body[0], b'x');
+        assert_eq!(body[MAX_PAYLOAD / 2], b'x');
+        assert_eq!(body[MAX_PAYLOAD - 1], b'x');
+    }
+
+    #[test]
+    fn chunked_decoder_rejects_over_cap_size_and_latches_failure() {
+        let mut decoder = ChunkedDecoder::new();
+
+        assert_eq!(
+            decoder.push(b"2000000\r\n").unwrap_err(),
+            HttpError::BadChunkedBody(format!(
+                "chunk size {} exceeds max {MAX_PAYLOAD}",
+                0x2000000
+            ))
+        );
+        assert_eq!(decoder.state, ChunkState::Failed);
+        assert!(decoder.buf.is_empty());
+
+        let mut trickled = 0;
+        for bytes in [&b"a"[..], &b"bc"[..], &b"def"[..]] {
+            trickled += bytes.len();
+            assert_eq!(
+                decoder.push(bytes).unwrap_err(),
+                HttpError::BadChunkedBody("decoder previously failed".into())
+            );
+            assert!(decoder.buf.len() <= trickled);
+            assert!(decoder.buf.len() <= MAX_PAYLOAD);
+        }
+    }
+
+    #[test]
+    fn chunked_decoder_allows_total_body_over_per_chunk_cap() {
+        const CHUNK_SIZE: usize = 8 * 1024 * 1024;
+
+        let mut decoder = ChunkedDecoder::new();
+        let mut body = Vec::new();
+        for byte in [b'a', b'b', b'c'] {
+            let mut chunk = format!("{CHUNK_SIZE:x}\r\n").into_bytes();
+            let data_start = chunk.len();
+            chunk.resize(data_start + CHUNK_SIZE, byte);
+            chunk.extend_from_slice(b"\r\n");
+            body.extend(decoder.push(&chunk).unwrap());
+        }
+        assert_eq!(decoder.push(b"0\r\n\r\n").unwrap(), Vec::<u8>::new());
+
+        assert_eq!(body.len(), CHUNK_SIZE * 3);
+        assert!(body.len() > MAX_PAYLOAD);
+        assert_eq!(body[0], b'a');
+        assert_eq!(body[CHUNK_SIZE - 1], b'a');
+        assert_eq!(body[CHUNK_SIZE], b'b');
+        assert_eq!(body[CHUNK_SIZE * 2], b'c');
+        assert_eq!(body[CHUNK_SIZE * 3 - 1], b'c');
     }
 
     #[test]
