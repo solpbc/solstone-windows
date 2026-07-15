@@ -173,9 +173,15 @@ impl ServerFile {
         self.submitted_name.as_deref().unwrap_or(self.name.as_str())
     }
 
-    /// Physically held by the journal (present or relocated); `missing`/unknown proves nothing.
+    /// Terminal proof the journal received this byte (present or processed);
+    /// missing/unknown proves nothing.
+    ///
+    /// `present` means the raw file is on journal disk at its recorded path. `processed` means
+    /// the journal intentionally consumed the raw byte after verified processing and
+    /// deliberately does not keep that raw file on journal disk — it is still terminal proof
+    /// the byte arrived, which is what makes re-uploading it pointless.
     fn is_held(&self) -> bool {
-        matches!(self.status.as_deref(), Some("present") | Some("relocated"))
+        matches!(self.status.as_deref(), Some("present") | Some("processed"))
     }
 }
 
@@ -200,7 +206,7 @@ pub struct SegmentsResponse {
 
 impl SegmentsResponse {
     /// The journal proves it holds `(filename, sha)` under `segment_key`: some file
-    /// entry whose submitted-or-name == filename AND sha256 == sha AND status ∈ {present, relocated}.
+    /// entry whose submitted-or-name == filename AND sha256 == sha AND status ∈ {present, processed}.
     pub fn proves_file_held(&self, segment_key: &str, filename: &str, sha: &str) -> bool {
         self.items.iter().any(|item| {
             item.key == segment_key
@@ -342,5 +348,43 @@ mod tests {
         assert!(!resp.proves_file_held("000000_300", "143000_300_display_1_screen.mp4", "abcd"));
         assert!(!resp.proves_file_held("143000_300", "display_1_screen.mp4", "abcd"));
         assert!(!resp.proves_file_held("143000_300", "missing.mp4", "abcd"));
+    }
+
+    #[test]
+    fn proves_file_held_accepts_processed() {
+        let raw = r#"{"items":[{"key":"143500_300","files":[{"name":"display_1_screen.mp4","submitted_name":"143500_300_display_1_screen.mp4","sha256":"abcd","size":10,"status":"processed"}]}],"total":1,"protocol_version":2}"#;
+        let resp: SegmentsResponse = serde_json::from_str(raw).unwrap();
+        assert!(resp.proves_file_held("143500_300", "143500_300_display_1_screen.mp4", "abcd"));
+    }
+
+    #[test]
+    fn proves_file_held_accepts_processed_in_mixed_segment() {
+        let raw = r#"{"items":[{"key":"144000_300","files":[{"name":"display_1_screen.mp4","submitted_name":"144000_300_display_1_screen.mp4","sha256":"abcd","size":10,"status":"present"},{"name":"system_audio.flac","submitted_name":"144000_300_system_audio.flac","sha256":"ef01","size":20,"status":"processed"}]}],"total":1,"protocol_version":2}"#;
+        let resp: SegmentsResponse = serde_json::from_str(raw).unwrap();
+        assert!(resp.proves_file_held("144000_300", "144000_300_system_audio.flac", "ef01"));
+    }
+
+    #[test]
+    fn proves_file_held_rejects_relocated() {
+        let raw = r#"{"items":[{"key":"144500_300","files":[{"name":"display_1_screen.mp4","submitted_name":"144500_300_display_1_screen.mp4","sha256":"abcd","size":10,"status":"relocated"}]}],"total":1,"protocol_version":2}"#;
+        let resp: SegmentsResponse = serde_json::from_str(raw).unwrap();
+        assert!(!resp.proves_file_held("144500_300", "144500_300_display_1_screen.mp4", "abcd"));
+    }
+
+    #[test]
+    fn proves_file_held_rejects_processed_sha_mismatch() {
+        let raw = r#"{"items":[{"key":"145000_300","files":[{"name":"display_1_screen.mp4","submitted_name":"145000_300_display_1_screen.mp4","sha256":"abcd","size":10,"status":"processed"}]}],"total":1,"protocol_version":2}"#;
+        let resp: SegmentsResponse = serde_json::from_str(raw).unwrap();
+        assert!(!resp.proves_file_held("145000_300", "145000_300_display_1_screen.mp4", "ffff"));
+    }
+
+    #[test]
+    fn proves_file_held_rejects_nonterminal_statuses() {
+        let raw = r#"{"items":[{"key":"145500_300","files":[{"name":"null.mp4","submitted_name":"145500_300_null.mp4","sha256":"aaaa","size":10,"status":null},{"name":"absent.mp4","submitted_name":"145500_300_absent.mp4","sha256":"bbbb","size":10},{"name":"empty.mp4","submitted_name":"145500_300_empty.mp4","sha256":"cccc","size":10,"status":""},{"name":"archived.mp4","submitted_name":"145500_300_archived.mp4","sha256":"dddd","size":10,"status":"archived"}]}],"total":1,"protocol_version":2}"#;
+        let resp: SegmentsResponse = serde_json::from_str(raw).unwrap();
+        assert!(!resp.proves_file_held("145500_300", "145500_300_null.mp4", "aaaa"));
+        assert!(!resp.proves_file_held("145500_300", "145500_300_absent.mp4", "bbbb"));
+        assert!(!resp.proves_file_held("145500_300", "145500_300_empty.mp4", "cccc"));
+        assert!(!resp.proves_file_held("145500_300", "145500_300_archived.mp4", "dddd"));
     }
 }
