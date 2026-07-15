@@ -35,9 +35,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// longer draining; fail fast and let the coordinator's backoff retry.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Upper bound on a single inbound read while uploading/awaiting the response.
-/// A healthy journal replenishes the window at 50% consumed and answers
-/// promptly; a stall this long is a dead peer, not back-pressure — fail fast and
-/// let the coordinator's backoff retry rather than hang a segment forever.
+/// The journal returns upload credit as it consumes request DATA, and this client
+/// returns response credit as it decodes DATA; a 60 s stall is therefore a dead
+/// or wedged peer, not flow-control back-pressure. Fail fast and let the
+/// coordinator's backoff retry.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_BUF: usize = 64 * 1024;
 

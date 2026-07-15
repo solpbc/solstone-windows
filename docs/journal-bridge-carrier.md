@@ -62,6 +62,8 @@ Frame helper additions in `crates/observer-pl/src/frame.rs`:
 
 - `Frame::control_ping(nonce: [u8; 8]) -> Frame`.
 - `Frame::control_pong_nonce(&self) -> Option<[u8; 8]>`.
+- `Frame::window(stream_id: u32, credit: u32) -> Frame`.
+- `Frame::reset(stream_id: u32, reason: u8) -> Frame`.
 
 Deletion after replacement:
 
@@ -291,10 +293,13 @@ Local consumer back-pressure:
 
 - Per-stream delivery is bounded, default `channel(16)`.
 - Coordinator uses `try_send`.
-- Response-head and non-deliverable framing bytes are consumed at decode time.
-  Body-attributed DATA bytes return credit only when `StreamRx::recv` drains the
-  Body item. WINDOW grants contain all consumed bytes once the accumulated
-  amount reaches half the initial window.
+- Only response-HEAD bytes are auto-consumed at decode time. After the head, all
+  chunked wire bytes, including framing-only and partial-chunk frames, accumulate
+  in `pending_body_wire` and attach to the next emitted Body event; terminal
+  residue is dropped at End, so a single chunk larger than the receive window
+  stalls at zero credit. Body-attributed DATA bytes return credit only when
+  `StreamRx::recv` drains the Body item, with a WINDOW grant for all consumed
+  bytes once the accumulated amount reaches half the initial window.
 - Stream receive-window state is removed immediately on CLOSE or RESET, so
   queued Body drains after End do not emit late WINDOW frames.
 - `Full` or `Closed` means the local browser side is slow or gone. Coordinator
@@ -529,19 +534,32 @@ Additional transport stress:
 
 Receive-window flow control:
 
-- Pure builder and `RecvWindow` tests pin WINDOW/RESET encoding, initial credit,
-  the half-window threshold, all-consumed grant amount, and over-credit debit.
-- `one_shot_response_over_initial_window_replenishes_peer_credit` and
+- A1: `window_and_reset_builders_encode_protocol_payloads`,
+  `recv_window_grants_all_consumed_bytes_at_half_window`, and
+  `recv_window_rejects_over_credit_without_mutation` pin the pure frame and
+  receive-window primitives.
+- B1: `one_shot_response_over_initial_window_replenishes_peer_credit` and
   `carrier_response_over_initial_window_replenishes_credit_on_consumer_drain`
   reproduce the former 1 MiB stall at both transport seams.
-- `carrier_without_body_drain_depletes_window_then_flow_control_resets` proves a
-  full delivery queue cannot manufacture grants or trigger RESET(CANCEL).
-- Exact-grant and subthreshold tests cover one-shot and carrier responses;
-  `carrier_chunked_window_counts_framing_wire_bytes_on_drain` additionally pins
-  chunk-framing wire-byte attribution.
-- One-shot and carrier over-window tests pin RESET(FLOW_CONTROL_ERROR), prompt
-  local teardown, and carrier sibling isolation.
-- `response_assembler_cap_remains_exactly_four_mib` keeps the one-shot 4 MiB
+- B2: `carrier_without_body_drain_depletes_window_then_flow_control_resets`
+  proves a full delivery queue cannot manufacture grants or trigger
+  RESET(CANCEL).
+- B3: `response_assembler_grants_exact_wire_bytes_at_half_window` and
+  `response_assembler_subthreshold_response_emits_no_window` cover one-shot;
+  `carrier_grants_exact_wire_bytes_after_body_drain` and
+  `carrier_subthreshold_response_emits_no_window` cover the carrier; and
+  `carrier_chunked_window_counts_framing_wire_bytes_on_drain` pins chunk-framing
+  wire-byte attribution.
+- B4: `response_assembler_over_credit_emits_one_flow_control_reset` and
+  `carrier_demux_over_credit_resets_only_offending_stream` provide pure-tier
+  coverage; `one_shot_over_window_writes_one_flow_control_reset_before_error`
+  and `carrier_over_window_resets_one_stream_and_keeps_sibling_alive` cover both
+  transport seams.
+- End-time accounting: `response_assembler_close_suppresses_terminal_window`,
+  `carrier_consume_after_close_emits_no_late_window`, and
+  `carrier_close_suppresses_decode_time_window` pin immediate state removal and
+  the absence of late grants.
+- B5: `response_assembler_cap_remains_exactly_four_mib` keeps the one-shot 4 MiB
   assembled-response ceiling independent of replenished receive credit.
 
 ## Implementation Order

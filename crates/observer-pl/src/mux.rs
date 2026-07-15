@@ -213,9 +213,10 @@ impl WindowedUpload {
     }
 }
 
-/// What a [`ResponseAssembler::feed`] pass surfaced for the transport to act on:
-/// control `PONG`s to write back, and inbound `WINDOW` grants to credit the
-/// matching [`WindowedUpload`].
+/// What a [`ResponseAssembler::feed`] pass surfaced for the transport: control
+/// `PONG`s and encoded originated frames to write, inbound `WINDOW` grants to
+/// credit the matching [`WindowedUpload`], and an optional terminal error to
+/// surface after originated frames are written.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct FeedOutput {
     /// Encoded `PONG` frames that must be written back to keep the mux alive.
