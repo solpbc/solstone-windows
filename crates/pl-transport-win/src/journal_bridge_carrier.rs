@@ -10,9 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use observer_pl::bridge::FailureCategory;
-use observer_pl::frame::{Frame, FrameDialer, FLAG_RESET, RESET_CANCEL};
+use observer_pl::frame::{Frame, FrameDialer, RESET_CANCEL};
 use observer_pl::http;
-use observer_pl::mux::{CarrierDemux, MuxError, StreamEnd, StreamItem, WindowedUpload};
+use observer_pl::mux::{
+    CarrierDemux, MuxError, StreamEnd, StreamEvent, StreamItem, WindowedUpload,
+};
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -176,18 +178,31 @@ pub(crate) struct CarrierHandle {
 
 pub(crate) struct StreamRx {
     stream_id: u32,
-    rx: mpsc::Receiver<StreamItem>,
+    rx: mpsc::Receiver<StreamEvent>,
     commands: mpsc::Sender<CarrierCommand>,
     cancelled: bool,
 }
 
 impl StreamRx {
     pub(crate) async fn recv(&mut self) -> Option<StreamItem> {
-        let item = self.rx.recv().await;
-        if item.is_none() || matches!(item, Some(StreamItem::End(_))) {
+        let Some(event) = self.rx.recv().await else {
+            self.cancelled = true;
+            return None;
+        };
+        if event.wire_cost != 0 {
+            debug_assert!(matches!(event.item, StreamItem::Body(_)));
+            let _ = self
+                .commands
+                .send(CarrierCommand::Consume {
+                    stream_id: self.stream_id,
+                    bytes: event.wire_cost,
+                })
+                .await;
+        }
+        if matches!(event.item, StreamItem::End(_)) {
             self.cancelled = true;
         }
-        item
+        Some(event.item)
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -240,12 +255,16 @@ enum CarrierCommand {
     CancelStream {
         stream_id: u32,
     },
+    Consume {
+        stream_id: u32,
+        bytes: u64,
+    },
     Shutdown,
 }
 
 struct StreamState {
     upload: WindowedUpload,
-    delivery: mpsc::Sender<StreamItem>,
+    delivery: mpsc::Sender<StreamEvent>,
 }
 
 struct OutstandingProbe {
@@ -363,6 +382,13 @@ async fn coordinator_task(
                             break;
                         }
                     }
+                    CarrierCommand::Consume { stream_id, bytes } => {
+                        if let Err(error) = consume_stream(stream_id, bytes, &mut demux, &writer) {
+                            fanout_eof(&mut streams);
+                            log_carrier_teardown(&kind, &transport_error_code(&error));
+                            break;
+                        }
+                    }
                     CarrierCommand::Shutdown => {
                         fanout_eof(&mut streams);
                         break;
@@ -397,6 +423,9 @@ fn handle_read(
     for pong in out.pongs {
         send_writer(writer, pong)?;
     }
+    for frame in out.emit_frames {
+        send_writer(writer, frame)?;
+    }
     for nonce in out.inbound_pongs {
         if outstanding
             .as_ref()
@@ -413,8 +442,20 @@ fn handle_read(
             pump_upload(writer, state)?;
         }
     }
-    for (stream_id, item) in out.stream_events {
-        deliver_stream_item(stream_id, item, demux, streams, writer)?;
+    for (stream_id, event) in out.stream_events {
+        deliver_stream_item(stream_id, event, demux, streams, writer)?;
+    }
+    Ok(())
+}
+
+fn consume_stream(
+    stream_id: u32,
+    bytes: u64,
+    demux: &mut CarrierDemux,
+    writer: &mpsc::Sender<Vec<u8>>,
+) -> Result<(), TransportError> {
+    if let Some(frame) = demux.consume(stream_id, bytes)? {
+        send_writer(writer, frame)?;
     }
     Ok(())
 }
@@ -450,16 +491,16 @@ fn open_stream_on_carrier(
 
 fn deliver_stream_item(
     stream_id: u32,
-    item: StreamItem,
+    event: StreamEvent,
     demux: &mut CarrierDemux,
     streams: &mut HashMap<u32, StreamState>,
     writer: &mpsc::Sender<Vec<u8>>,
 ) -> Result<(), TransportError> {
-    let ended = matches!(item, StreamItem::End(_));
+    let ended = matches!(event.item, StreamItem::End(_));
     let Some(state) = streams.get(&stream_id) else {
         return Ok(());
     };
-    let sent = state.delivery.try_send(item);
+    let sent = state.delivery.try_send(event);
 
     match sent {
         Ok(()) => {
@@ -502,7 +543,7 @@ fn reset_active_stream(
         return Ok(());
     }
     demux.remove_stream(stream_id);
-    let frame = Frame::new(stream_id, FLAG_RESET, vec![RESET_CANCEL])
+    let frame = Frame::reset(stream_id, RESET_CANCEL)
         .encode()
         .map_err(|e| TransportError::Mux(MuxError::Frame(e)))?;
     send_writer(writer, frame)
@@ -510,7 +551,10 @@ fn reset_active_stream(
 
 fn fanout_eof(streams: &mut HashMap<u32, StreamState>) {
     for (_, state) in streams.drain() {
-        let _ = state.delivery.try_send(StreamItem::End(StreamEnd::Eof));
+        let _ = state.delivery.try_send(StreamEvent {
+            item: StreamItem::End(StreamEnd::Eof),
+            wire_cost: 0,
+        });
     }
 }
 
@@ -572,8 +616,8 @@ fn log_carrier_teardown(kind: &CarrierKind, fallback_code: &str) {
 mod tests {
     use super::*;
     use observer_pl::frame::{
-        FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, FLAG_PING, FLAG_PONG, FLAG_WINDOW,
-        RESET_CANCEL,
+        FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, FLAG_PING, FLAG_PONG, FLAG_RESET,
+        FLAG_WINDOW, RECOMMENDED_CHUNK, RESET_CANCEL, RESET_FLOW_CONTROL_ERROR,
     };
     use observer_pl::mux::INITIAL_WINDOW;
     use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
@@ -704,6 +748,53 @@ mod tests {
         .into_bytes()
     }
 
+    fn http_head(content_length: usize) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {content_length}\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    async fn send_credit_respecting_response<S>(
+        stream: &mut S,
+        decoder: &mut FrameDecoder,
+        stream_id: u32,
+        response: &[u8],
+    ) where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        assert!(response.len() > INITIAL_WINDOW);
+        let mut offset = 0usize;
+        let mut send_credit = INITIAL_WINDOW;
+        while offset < response.len() {
+            if send_credit == 0 {
+                loop {
+                    let frame = next_frame(stream, decoder).await;
+                    if frame.stream_id == stream_id {
+                        if let Some(grant) = frame.window_credit() {
+                            send_credit += grant as usize;
+                            break;
+                        }
+                    }
+                }
+            }
+            let count = (response.len() - offset)
+                .min(observer_pl::frame::RECOMMENDED_CHUNK)
+                .min(send_credit);
+            send_frame(
+                stream,
+                stream_id,
+                FLAG_DATA,
+                &response[offset..offset + count],
+            )
+            .await;
+            offset += count;
+            send_credit -= count;
+            tokio::task::yield_now().await;
+        }
+        send_frame(stream, stream_id, FLAG_CLOSE, &[]).await;
+    }
+
     async fn assert_stream_completes(rx: &mut StreamRx, expected_body: &[u8]) {
         let mut saw_head = false;
         let mut body = Vec::new();
@@ -829,6 +920,247 @@ mod tests {
             }
         }
         assert_eq!(data_b, request_b_len);
+    }
+
+    #[tokio::test]
+    async fn carrier_response_over_initial_window_replenishes_credit_on_consumer_drain() {
+        const BODY_BYTES: usize = 1_600_000;
+
+        let (commands, _alive, mut server) =
+            spawn_duplex_carrier(KeepaliveConfig::default(), INITIAL_WINDOW * 2);
+        let mut decoder = FrameDecoder::new();
+        let mut rx = open_test_stream(&commands, "/large", Vec::new()).await;
+        read_request_close(&mut server, &mut decoder, 1).await;
+
+        let expected_body = vec![b'x'; BODY_BYTES];
+        let response = http_response(&expected_body);
+        let fake_peer = tokio::spawn(async move {
+            send_credit_respecting_response(&mut server, &mut decoder, 1, &response).await;
+        });
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            assert_stream_completes(&mut rx, &expected_body),
+        )
+        .await
+        .expect("carrier response should complete after consumer drain grants receive credit");
+        fake_peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn carrier_without_body_drain_depletes_window_then_flow_control_resets() {
+        let (commands, _alive, mut server) =
+            spawn_duplex_carrier(KeepaliveConfig::default(), INITIAL_WINDOW * 2);
+        let mut decoder = FrameDecoder::new();
+        let mut rx = open_test_stream(&commands, "/no-drain", Vec::new()).await;
+        read_request_close(&mut server, &mut decoder, 1).await;
+
+        let head = http_head(1_700_321);
+        send_frame(&mut server, 1, FLAG_DATA, &head).await;
+        assert!(matches!(rx.recv().await, Some(StreamItem::Head(_))));
+
+        let mut remaining = INITIAL_WINDOW - head.len();
+        for _ in 0..STREAM_QUEUE {
+            let count = remaining.min(RECOMMENDED_CHUNK);
+            let payload = vec![b'x'; count];
+            send_frame(&mut server, 1, FLAG_DATA, &payload).await;
+            remaining -= count;
+        }
+        assert_eq!(remaining, 0);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                next_frame(&mut server, &mut decoder)
+            )
+            .await
+            .is_err(),
+            "a non-draining consumer must receive neither WINDOW nor RESET(CANCEL)"
+        );
+
+        send_frame(&mut server, 1, FLAG_DATA, b"x").await;
+        let reset = tokio::time::timeout(
+            Duration::from_secs(1),
+            next_frame(&mut server, &mut decoder),
+        )
+        .await
+        .expect("over-window DATA should be reset promptly");
+        assert_eq!(reset.stream_id, 1);
+        assert_eq!(reset.flags, FLAG_RESET);
+        assert_eq!(reset.payload, vec![RESET_FLOW_CONTROL_ERROR]);
+    }
+
+    #[tokio::test]
+    async fn carrier_grants_exact_wire_bytes_after_body_drain() {
+        const BODY_BYTES: usize = 524_803;
+
+        let (commands, _alive, mut server) =
+            spawn_duplex_carrier(KeepaliveConfig::default(), INITIAL_WINDOW * 2);
+        let mut decoder = FrameDecoder::new();
+        let mut rx = open_test_stream(&commands, "/exact-window", Vec::new()).await;
+        read_request_close(&mut server, &mut decoder, 1).await;
+
+        let head = http_head(BODY_BYTES);
+        send_frame(&mut server, 1, FLAG_DATA, &head).await;
+        assert!(matches!(rx.recv().await, Some(StreamItem::Head(_))));
+
+        let body = vec![b'x'; BODY_BYTES];
+        let mut offset = 0usize;
+        for _ in 0..7 {
+            send_frame(
+                &mut server,
+                1,
+                FLAG_DATA,
+                &body[offset..offset + RECOMMENDED_CHUNK],
+            )
+            .await;
+            assert!(matches!(rx.recv().await, Some(StreamItem::Body(_))));
+            offset += RECOMMENDED_CHUNK;
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                next_frame(&mut server, &mut decoder)
+            )
+            .await
+            .is_err(),
+            "consumption below the half-window threshold must not grant"
+        );
+
+        send_frame(&mut server, 1, FLAG_DATA, &body[offset..]).await;
+        assert!(matches!(rx.recv().await, Some(StreamItem::Body(_))));
+        let window = tokio::time::timeout(
+            Duration::from_secs(1),
+            next_frame(&mut server, &mut decoder),
+        )
+        .await
+        .expect("body drain should return receive credit");
+        assert_eq!(window.stream_id, 1);
+        assert_eq!(window.flags, FLAG_WINDOW);
+        assert_eq!(
+            window.window_credit(),
+            Some((head.len() + BODY_BYTES) as u32)
+        );
+
+        send_frame(&mut server, 1, FLAG_CLOSE, &[]).await;
+        assert_eq!(rx.recv().await, Some(StreamItem::End(StreamEnd::Close)));
+    }
+
+    #[tokio::test]
+    async fn carrier_subthreshold_response_emits_no_window() {
+        const BODY_BYTES: usize = 271_337;
+
+        let (commands, _alive, mut server) =
+            spawn_duplex_carrier(KeepaliveConfig::default(), INITIAL_WINDOW);
+        let mut decoder = FrameDecoder::new();
+        let mut rx = open_test_stream(&commands, "/small", Vec::new()).await;
+        read_request_close(&mut server, &mut decoder, 1).await;
+
+        let body = vec![b's'; BODY_BYTES];
+        let response = http_response(&body);
+        send_frame(&mut server, 1, FLAG_DATA | FLAG_CLOSE, &response).await;
+        assert_stream_completes(&mut rx, &body).await;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                next_frame(&mut server, &mut decoder)
+            )
+            .await
+            .is_err(),
+            "a completed subthreshold response must not emit WINDOW"
+        );
+    }
+
+    #[tokio::test]
+    async fn carrier_chunked_window_counts_framing_wire_bytes_on_drain() {
+        const BODY_BYTES: usize = 524_777;
+
+        let (commands, _alive, mut server) =
+            spawn_duplex_carrier(KeepaliveConfig::default(), INITIAL_WINDOW * 2);
+        let mut decoder = FrameDecoder::new();
+        let mut rx = open_test_stream(&commands, "/chunked", Vec::new()).await;
+        read_request_close(&mut server, &mut decoder, 1).await;
+
+        let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        send_frame(&mut server, 1, FLAG_DATA, head).await;
+        assert!(matches!(rx.recv().await, Some(StreamItem::Head(_))));
+
+        let body = vec![b'c'; BODY_BYTES];
+        let mut chunk_wire = format!("{BODY_BYTES:x}\r\n").into_bytes();
+        chunk_wire.extend_from_slice(&body);
+        chunk_wire.extend_from_slice(b"\r\n0\r\n\r\n");
+        for part in chunk_wire.chunks(RECOMMENDED_CHUNK) {
+            send_frame(&mut server, 1, FLAG_DATA, part).await;
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                next_frame(&mut server, &mut decoder)
+            )
+            .await
+            .is_err(),
+            "buffered chunk bytes must wait for Body drain"
+        );
+
+        assert_eq!(rx.recv().await, Some(StreamItem::Body(body)));
+        let window = tokio::time::timeout(
+            Duration::from_secs(1),
+            next_frame(&mut server, &mut decoder),
+        )
+        .await
+        .expect("draining the decoded chunk should grant its wire cost");
+        assert_eq!(window.stream_id, 1);
+        assert_eq!(window.flags, FLAG_WINDOW);
+        assert_eq!(
+            window.window_credit(),
+            Some((head.len() + chunk_wire.len()) as u32)
+        );
+
+        send_frame(&mut server, 1, FLAG_CLOSE, &[]).await;
+        assert_eq!(rx.recv().await, Some(StreamItem::End(StreamEnd::Close)));
+    }
+
+    #[tokio::test]
+    async fn carrier_over_window_resets_one_stream_and_keeps_sibling_alive() {
+        let (commands, _alive, mut server) =
+            spawn_duplex_carrier(KeepaliveConfig::default(), INITIAL_WINDOW * 2);
+        let mut decoder = FrameDecoder::new();
+        let mut rx_a = open_test_stream(&commands, "/over-window", Vec::new()).await;
+        let mut rx_b = open_test_stream(&commands, "/sibling", Vec::new()).await;
+        read_request_close(&mut server, &mut decoder, 1).await;
+        read_request_close(&mut server, &mut decoder, 3).await;
+
+        let overrun = vec![b'x'; INITIAL_WINDOW + 37];
+        send_frame(&mut server, 1, FLAG_DATA, &overrun).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rx_a.recv())
+                .await
+                .expect("offending stream should end promptly"),
+            Some(StreamItem::End(StreamEnd::Reset))
+        );
+        let reset = tokio::time::timeout(
+            Duration::from_secs(1),
+            next_frame(&mut server, &mut decoder),
+        )
+        .await
+        .expect("peer should receive flow-control reset");
+        assert_eq!(reset.stream_id, 1);
+        assert_eq!(reset.flags, FLAG_RESET);
+        assert_eq!(reset.payload, vec![RESET_FLOW_CONTROL_ERROR]);
+
+        send_frame(&mut server, 1, FLAG_DATA, b"late").await;
+        let sibling_body = vec![b'b'; 19_731];
+        let sibling_response = http_response(&sibling_body);
+        send_frame(&mut server, 3, FLAG_DATA | FLAG_CLOSE, &sibling_response).await;
+        assert_stream_completes(&mut rx_b, &sibling_body).await;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                next_frame(&mut server, &mut decoder)
+            )
+            .await
+            .is_err(),
+            "late offending-stream DATA must not trigger a second reset"
+        );
     }
 
     #[tokio::test]

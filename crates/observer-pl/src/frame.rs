@@ -93,6 +93,16 @@ impl Frame {
         Frame::new(0, FLAG_PING, nonce.to_vec())
     }
 
+    /// Build a per-stream receive-window credit grant.
+    pub fn window(stream_id: u32, credit: u32) -> Frame {
+        Frame::new(stream_id, FLAG_WINDOW, credit.to_be_bytes().to_vec())
+    }
+
+    /// Build a per-stream reset carrying one protocol reason code.
+    pub fn reset(stream_id: u32, reason: u8) -> Frame {
+        Frame::new(stream_id, FLAG_RESET, vec![reason])
+    }
+
     /// If this is a control PING (stream 0, 8-byte nonce), the PONG to return.
     pub fn control_pong(&self) -> Option<Frame> {
         if self.stream_id == 0
@@ -252,6 +262,20 @@ mod tests {
         assert_eq!(ping.stream_id, 0);
         assert_eq!(ping.flags, FLAG_PING);
         assert_eq!(ping.payload, nonce.to_vec());
+    }
+
+    #[test]
+    fn window_and_reset_builders_encode_protocol_payloads() {
+        let window = Frame::window(5, 524_599);
+        assert_eq!(window.stream_id, 5);
+        assert_eq!(window.flags, FLAG_WINDOW);
+        assert_eq!(window.payload, 524_599u32.to_be_bytes());
+        assert_eq!(window.window_credit(), Some(524_599));
+
+        let reset = Frame::reset(7, RESET_FLOW_CONTROL_ERROR);
+        assert_eq!(reset.stream_id, 7);
+        assert_eq!(reset.flags, FLAG_RESET);
+        assert_eq!(reset.payload, vec![RESET_FLOW_CONTROL_ERROR]);
     }
 
     #[test]

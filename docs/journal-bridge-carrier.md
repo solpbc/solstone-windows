@@ -37,22 +37,25 @@ one pure, host-testable module.
 New types:
 
 - `CarrierDemux`
-  - Fields: one `FrameDecoder`; `HashMap<u32, HttpStreamAssembler>` for active
-    response streams.
+  - Fields: one `FrameDecoder`; per-stream `HttpStreamAssembler` and
+    receive-window state for active response streams.
   - Methods: `new`, `open_stream(stream_id)`, `remove_stream(stream_id)`,
+    `consume(stream_id, bytes)`, and
     `feed(bytes) -> Result<DemuxOutput, MuxError>`.
   - Behavior: decode frames once per carrier; answer stream-0 PINGs; surface
     stream-0 PONG nonces; route DATA/CLOSE/RESET/WINDOW by stream id; drop
     frames for unknown or already-removed streams.
 - `DemuxOutput`
   - Fields: `pongs: Vec<Vec<u8>>`, `inbound_pongs: Vec<[u8; 8]>`,
-    `stream_events: Vec<(u32, StreamItem)>`,
-    `window_grants: Vec<(u32, u32)>`.
+    `stream_events: Vec<(u32, StreamEvent)>` with per-Body wire costs,
+    `window_grants: Vec<(u32, u32)>`, and `emit_frames: Vec<Vec<u8>>` for
+    originated WINDOW and RESET frames.
 - `HttpStreamAssembler`
   - Decoder-free, stream-id-agnostic helper extracted from current
     `StreamingResponseAssembler::feed_data` / `feed_body`.
-  - Fields: `head_buf`, `head_emitted`, `chunked`, `ChunkedDecoder`, `closed`.
-  - Methods: `feed_data(payload) -> Result<Vec<StreamItem>, MuxError>`,
+  - Fields: `head_buf`, `head_emitted`, `chunked`, `ChunkedDecoder`, deferred
+    body wire cost, and `closed`.
+  - Methods: `feed_data(payload) -> Result<AssemblerOutput, MuxError>`,
     `close() -> StreamItem`, `reset() -> StreamItem`, `finish_eof()`.
 
 Frame helper additions in `crates/observer-pl/src/frame.rs`:
@@ -215,7 +218,9 @@ Owns:
 The coordinator never touches the TLS write half. On every event it emits
 encoded frame bytes to the writer channel. It pumps each `WindowedUpload` after
 stream open and after matching WINDOW grants. WINDOW grants are routed only to
-the owning stream id.
+the owning stream id. `StreamRx::recv` sends a lossless `Consume` command after
+it drains a costed Body item; the coordinator returns any resulting receive
+credit as an encoded WINDOW frame through the writer task.
 
 ### Writer task
 
@@ -273,16 +278,25 @@ Open:
 
 Inbound frame:
 
-- DATA emits `Head` and/or `Body` through `HttpStreamAssembler`.
+- DATA debits the stream receive window and emits `Head` and/or costed `Body`
+  events through `HttpStreamAssembler`.
 - WINDOW grants credit only to that stream's `WindowedUpload`.
 - CLOSE emits `End(Close)` and frees stream state.
 - RESET emits `End(Reset)` and frees stream state.
+- DATA beyond the available receive credit emits RESET(FLOW_CONTROL_ERROR),
+  ends only that local stream, and leaves the carrier and siblings alive.
 - Unknown/closed stream frames are dropped defensively.
 
 Local consumer back-pressure:
 
 - Per-stream delivery is bounded, default `channel(16)`.
 - Coordinator uses `try_send`.
+- Response-head and non-deliverable framing bytes are consumed at decode time.
+  Body-attributed DATA bytes return credit only when `StreamRx::recv` drains the
+  Body item. WINDOW grants contain all consumed bytes once the accumulated
+  amount reaches half the initial window.
+- Stream receive-window state is removed immediately on CLOSE or RESET, so
+  queued Body drains after End do not emit late WINDOW frames.
 - `Full` or `Closed` means the local browser side is slow or gone. Coordinator
   sends RESET for that stream only, frees that stream, and siblings continue.
 
@@ -512,6 +526,23 @@ Additional transport stress:
   over the initial window complete only if WINDOW grants are routed per stream.
 - `journal_bridge_keepalive_missed_probe_tears_down_carrier`: paused-time test
   proving PING/PONG liveness and dead-slot replacement.
+
+Receive-window flow control:
+
+- Pure builder and `RecvWindow` tests pin WINDOW/RESET encoding, initial credit,
+  the half-window threshold, all-consumed grant amount, and over-credit debit.
+- `one_shot_response_over_initial_window_replenishes_peer_credit` and
+  `carrier_response_over_initial_window_replenishes_credit_on_consumer_drain`
+  reproduce the former 1 MiB stall at both transport seams.
+- `carrier_without_body_drain_depletes_window_then_flow_control_resets` proves a
+  full delivery queue cannot manufacture grants or trigger RESET(CANCEL).
+- Exact-grant and subthreshold tests cover one-shot and carrier responses;
+  `carrier_chunked_window_counts_framing_wire_bytes_on_drain` additionally pins
+  chunk-framing wire-byte attribution.
+- One-shot and carrier over-window tests pin RESET(FLOW_CONTROL_ERROR), prompt
+  local teardown, and carrier sibling isolation.
+- `response_assembler_cap_remains_exactly_four_mib` keeps the one-shot 4 MiB
+  assembled-response ceiling independent of replenished receive credit.
 
 ## Implementation Order
 

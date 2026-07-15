@@ -140,12 +140,26 @@ where
         for credit in out.window_grants {
             upload.grant(credit);
         }
-        if !out.pongs.is_empty() {
-            for pong in out.pongs {
-                write_all_with_timeout(&mut stream, &pong, "PL write timed out sending pong")
-                    .await?;
-            }
-            flush_with_timeout(&mut stream, "PL write timed out flushing pongs").await?;
+        let mut originated = false;
+        for pong in out.pongs {
+            write_all_with_timeout(&mut stream, &pong, "PL write timed out sending pong").await?;
+            originated = true;
+        }
+        for frame in out.emit_frames {
+            write_all_with_timeout(
+                &mut stream,
+                &frame,
+                "PL write timed out sending originated frame",
+            )
+            .await?;
+            originated = true;
+        }
+        if originated {
+            flush_with_timeout(&mut stream, "PL write timed out flushing originated frames")
+                .await?;
+        }
+        if let Some(error) = out.terminal_error {
+            return Err(TransportError::Mux(error));
         }
     }
     // Best-effort clean close.
@@ -181,9 +195,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use observer_pl::frame::{
+        Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, RECOMMENDED_CHUNK,
+    };
+    use observer_pl::mux::INITIAL_WINDOW;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use tokio::io::ReadBuf;
+    use tokio::io::{DuplexStream, ReadBuf};
 
     struct PendingWriteStream;
 
@@ -215,6 +233,37 @@ mod tests {
         }
     }
 
+    async fn next_frame(stream: &mut DuplexStream, decoder: &mut FrameDecoder) -> Frame {
+        loop {
+            if let Some(frame) = decoder.next_frame().unwrap() {
+                return frame;
+            }
+            let mut buf = [0u8; 16 * 1024];
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "client closed before next frame");
+            decoder.feed(&buf[..n]);
+        }
+    }
+
+    async fn send_frame(stream: &mut DuplexStream, stream_id: u32, flags: u8, payload: &[u8]) {
+        let frame = Frame::new(stream_id, flags, payload.to_vec())
+            .encode()
+            .unwrap();
+        stream.write_all(&frame).await.unwrap();
+        stream.flush().await.unwrap();
+    }
+
+    async fn read_request_close(stream: &mut DuplexStream, decoder: &mut FrameDecoder) -> u32 {
+        loop {
+            let frame = next_frame(stream, decoder).await;
+            if frame.flags & FLAG_CLOSE != 0 {
+                assert!(frame.stream_id != 0);
+                return frame.stream_id;
+            }
+            assert!(frame.flags & (FLAG_OPEN | FLAG_DATA) != 0);
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn pending_write_times_out_without_waiting() {
         let err = run_request_over_stream(PendingWriteStream, "POST", "/x", &[], b"body")
@@ -225,5 +274,101 @@ mod tests {
             TransportError::Io(error) => assert_eq!(error.kind(), io::ErrorKind::TimedOut),
             other => panic!("expected timed out io error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn one_shot_response_over_initial_window_replenishes_peer_credit() {
+        const BODY_BYTES: usize = 1_600_000;
+
+        let (client, mut peer) = tokio::io::duplex(INITIAL_WINDOW * 2);
+        let fake_peer = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = read_request_close(&mut peer, &mut decoder).await;
+
+            let body = vec![b'x'; BODY_BYTES];
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {BODY_BYTES}\r\n\r\n"
+            )
+            .into_bytes();
+            response.extend_from_slice(&body);
+            assert!(response.len() > INITIAL_WINDOW);
+
+            let mut offset = 0usize;
+            let mut send_credit = INITIAL_WINDOW;
+            while offset < response.len() {
+                if send_credit == 0 {
+                    loop {
+                        let frame = next_frame(&mut peer, &mut decoder).await;
+                        if frame.stream_id == stream_id {
+                            if let Some(grant) = frame.window_credit() {
+                                send_credit += grant as usize;
+                                break;
+                            }
+                        }
+                    }
+                }
+                let count = (response.len() - offset)
+                    .min(RECOMMENDED_CHUNK)
+                    .min(send_credit);
+                send_frame(
+                    &mut peer,
+                    stream_id,
+                    FLAG_DATA,
+                    &response[offset..offset + count],
+                )
+                .await;
+                offset += count;
+                send_credit -= count;
+            }
+            send_frame(&mut peer, stream_id, FLAG_CLOSE, &[]).await;
+            let mut tail = [0u8; 64];
+            while peer.read(&mut tail).await.unwrap() != 0 {}
+        });
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_request_over_stream(client, "GET", "/large", &[], b""),
+        )
+        .await
+        .expect("one-shot response should complete after granting receive credit")
+        .unwrap();
+
+        assert_eq!(response.body, vec![b'x'; BODY_BYTES]);
+        fake_peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_shot_over_window_writes_one_flow_control_reset_before_error() {
+        let (client, mut peer) = tokio::io::duplex(INITIAL_WINDOW * 2);
+        let fake_peer = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = read_request_close(&mut peer, &mut decoder).await;
+            let overrun = vec![b'x'; INITIAL_WINDOW + 19];
+            send_frame(&mut peer, stream_id, FLAG_DATA, &overrun).await;
+
+            let reset =
+                tokio::time::timeout(Duration::from_secs(1), next_frame(&mut peer, &mut decoder))
+                    .await
+                    .expect("client should reset an over-window response");
+            assert_eq!(reset.stream_id, stream_id);
+            assert_eq!(reset.flags, observer_pl::frame::FLAG_RESET);
+            assert_eq!(
+                reset.payload,
+                vec![observer_pl::frame::RESET_FLOW_CONTROL_ERROR]
+            );
+        });
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_request_over_stream(client, "GET", "/over-window", &[], b""),
+        )
+        .await
+        .expect("one-shot over-window response should fail promptly")
+        .unwrap_err();
+        match error {
+            TransportError::Mux(error) => assert_eq!(format!("{error:?}"), "FlowControl"),
+            other => panic!("expected mux flow-control error, got {other:?}"),
+        }
+        fake_peer.await.unwrap();
     }
 }
