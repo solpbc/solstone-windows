@@ -38,7 +38,8 @@ New types:
 
 - `CarrierDemux`
   - Fields: one `FrameDecoder`; per-stream `HttpStreamAssembler` and
-    receive-window state for active response streams.
+    receive-window state for active response streams; and a latched tunnel-fatal
+    violation.
   - Methods: `new`, `open_stream(stream_id)`, `remove_stream(stream_id)`,
     `consume(stream_id, bytes)`, and
     `feed(bytes) -> Result<DemuxOutput, MuxError>`.
@@ -59,7 +60,7 @@ New types:
   - Fields: `head_buf`, `head_emitted`, `chunked`, `ChunkedDecoder`, deferred
     body wire cost, and `closed`.
   - Methods: `feed_data(payload) -> Result<AssemblerOutput, MuxError>`,
-    `close() -> StreamItem`, `reset() -> StreamItem`, `finish_eof()`.
+    `close() -> StreamItem`, `reset(reason) -> StreamItem`, `finish_eof()`.
 
 Frame helper additions in `crates/observer-pl/src/frame.rs`:
 
@@ -295,6 +296,8 @@ Inbound frame:
   malformed WINDOW frames emit RESET(PROTOCOL_ERROR) for the attributable
   stream without delivering payload bytes.
 - Stream-0 misuse and malformed stream-0 control frames are tunnel-fatal.
+- Tunnel teardown supersedes output accumulated earlier in the same feed; the
+  coordinator fans out EOF and logs only the fatal violation.
 - DATA beyond the available receive credit emits RESET(FLOW_CONTROL_ERROR),
   ends only that local stream, and leaves the carrier and siblings alive.
 - Unknown/closed DATA and WINDOW frames receive RESET(PROTOCOL_ERROR); pure
@@ -496,8 +499,8 @@ Add Tokio `test-util` to `pl-transport-win` dev-dependencies so tests can use
 
 ## Test Map
 
-Because the external scope's section 7 is not in this file, these are the 18
-tests this design expects to carry the requested coverage.
+Because the external scope's section 7 is not in this file, these are the test
+entries this design expects to carry the requested coverage.
 
 Pure `observer-pl`:
 

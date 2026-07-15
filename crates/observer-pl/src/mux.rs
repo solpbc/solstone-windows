@@ -308,7 +308,7 @@ pub struct DemuxOutput {
     /// Per-stream upload credit grants, tagged by mux stream id.
     pub window_grants: Vec<(u32, u32)>,
     /// Encoded originated frames for the transport to write, currently WINDOW
-    /// grants and RESET(FLOW_CONTROL_ERROR).
+    /// grants and RESET(FLOW_CONTROL_ERROR/PROTOCOL_ERROR).
     pub emit_frames: Vec<Vec<u8>>,
     /// Header-only records for attributable peer framing violations.
     pub violations: Vec<FrameViolation>,
@@ -611,6 +611,9 @@ impl CarrierDemux {
                 }
                 let violation = frame_violation(&frame);
                 self.fatal_violation = Some(violation);
+                // Tunnel teardown supersedes this call's accumulated output,
+                // including earlier attributable RESETs and violation records.
+                // The coordinator logs only this fatal violation before EOF fanout.
                 return Err(MuxError::Protocol(violation));
             }
 
