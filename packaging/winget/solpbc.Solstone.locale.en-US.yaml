@@ -9,7 +9,7 @@
 # them per release from the CHANGELOG.md section and the release tag.
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 0.2.10
+PackageVersion: 0.2.11
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
