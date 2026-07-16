@@ -4,6 +4,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.11] - 2026-07-16
+
+### Fixed
+
+- sol no longer re-sends segments your journal has already finished processing. earlier versions kept re-sending them indefinitely, spending bandwidth and CPU on work that was already done. sol removes a local copy only after your journal confirms it holds the segment; without that confirmation, the copy stays on your machine.
+- sol no longer stalls waiting on large replies from your journal. anything over about a megabyte previously hung until a timeout instead of arriving.
+- the private link sol uses to reach your journal now rejects malformed or oversized data cleanly instead of letting it disrupt the connection.
+
 ## [0.2.10] - 2026-07-08
 
 ### Fixed
