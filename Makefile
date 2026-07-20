@@ -73,6 +73,7 @@ test: preflight-toolchain
 # The host-testable shell publish-name contract check on the Linux mill.
 test-scripts:
 	sh scripts/lib/artifact-names.test.sh
+	sh scripts/lib/deterministic-gates.test.sh
 
 # UI unit tests (vitest+jsdom) on the Linux mill. Reinstall first so the new
 # vitest/jsdom devDeps (added after the lode-start `npm install`) are present.
@@ -197,6 +198,7 @@ require-win-remote-host:
 
 # Bundle the exact working tree (incl. uncommitted) and ship it to the box.
 sync-win-host: require-win-remote-host
+	@sh scripts/check-win-sync-tree.sh
 	@mkdir -p $(dir $(WIN_BUNDLE))
 	@SHA=$$(git stash create); [ -n "$$SHA" ] || SHA=$$(git rev-parse HEAD); \
 	  git update-ref refs/heads/__swsync $$SHA; \
