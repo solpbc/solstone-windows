@@ -1938,21 +1938,10 @@ fn leading_unqualified_ident(tokens: &[TokenTree]) -> Option<&Ident> {
     Some(ident)
 }
 
-fn contains_recognizable_macro_metavariable(tokens: &[TokenTree]) -> bool {
-    for (index, token) in tokens.iter().enumerate() {
-        if matches!(token, TokenTree::Punct(punct) if punct.as_char() == '$')
-            && matches!(tokens.get(index + 1), Some(TokenTree::Ident(ident)) if ident != "crate")
-        {
-            return true;
-        }
-        if let TokenTree::Group(group) = token {
-            let nested: Vec<_> = group.stream().into_iter().collect();
-            if contains_recognizable_macro_metavariable(&nested) {
-                return true;
-            }
-        }
-    }
-    false
+#[derive(Clone, Copy)]
+struct MacroBodySummary {
+    valid: bool,
+    contains_non_crate_metavariable: bool,
 }
 
 fn joint_punctuation_matches(tokens: &[TokenTree], expected: &str) -> bool {
@@ -2008,6 +1997,64 @@ fn consume_repetition_separator(tokens: &[TokenTree]) -> Option<usize> {
     }
 }
 
+fn consume_repetition_tail(tokens: &[TokenTree]) -> Option<usize> {
+    if repetition_operator(tokens).is_some() {
+        return Some(1);
+    }
+    let separator = consume_repetition_separator(tokens)?;
+    matches!(repetition_operator(&tokens[separator..]), Some('*' | '+')).then_some(separator + 1)
+}
+
+fn summarize_macro_body(tokens: &[TokenTree]) -> MacroBodySummary {
+    let invalid = MacroBodySummary {
+        valid: false,
+        contains_non_crate_metavariable: false,
+    };
+    let mut contains_non_crate_metavariable = false;
+    let mut index = 0;
+    while index < tokens.len() {
+        match &tokens[index] {
+            TokenTree::Punct(punct) if punct.as_char() == '$' => match tokens.get(index + 1) {
+                Some(TokenTree::Ident(ident)) => {
+                    contains_non_crate_metavariable |= ident != "crate";
+                    index += 2;
+                }
+                Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis => {
+                    let repeated: Vec<_> = group.stream().into_iter().collect();
+                    let summary = summarize_macro_body(&repeated);
+                    if !summary.valid || !summary.contains_non_crate_metavariable {
+                        return invalid;
+                    }
+                    let Some(tail) = consume_repetition_tail(&tokens[index + 2..]) else {
+                        return invalid;
+                    };
+                    contains_non_crate_metavariable = true;
+                    index += 2 + tail;
+                }
+                Some(TokenTree::Group(_) | TokenTree::Punct(_) | TokenTree::Literal(_)) | None => {
+                    return invalid
+                }
+            },
+            TokenTree::Group(group) => {
+                let nested: Vec<_> = group.stream().into_iter().collect();
+                let summary = summarize_macro_body(&nested);
+                if !summary.valid {
+                    return invalid;
+                }
+                contains_non_crate_metavariable |= summary.contains_non_crate_metavariable;
+                index += 1;
+            }
+            TokenTree::Ident(_) | TokenTree::Punct(_) | TokenTree::Literal(_) => {
+                index += 1;
+            }
+        }
+    }
+    MacroBodySummary {
+        valid: true,
+        contains_non_crate_metavariable,
+    }
+}
+
 fn consume_one_macro_substitution(tokens: &[TokenTree]) -> Option<usize> {
     if !matches!(tokens.first(), Some(TokenTree::Punct(punct)) if punct.as_char() == '$') {
         return None;
@@ -2016,18 +2063,11 @@ fn consume_one_macro_substitution(tokens: &[TokenTree]) -> Option<usize> {
         TokenTree::Ident(ident) if ident != "crate" => Some(2),
         TokenTree::Group(group) if group.delimiter() == Delimiter::Parenthesis => {
             let repeated: Vec<_> = group.stream().into_iter().collect();
-            if !contains_recognizable_macro_metavariable(&repeated) {
+            let summary = summarize_macro_body(&repeated);
+            if !summary.valid || !summary.contains_non_crate_metavariable {
                 return None;
             }
-            if repetition_operator(&tokens[2..]).is_some() {
-                return Some(3);
-            }
-            let separator = consume_repetition_separator(&tokens[2..])?;
-            matches!(
-                repetition_operator(&tokens[2 + separator..]),
-                Some('*' | '+')
-            )
-            .then_some(3 + separator)
+            consume_repetition_tail(&tokens[2..]).map(|tail| 2 + tail)
         }
         TokenTree::Ident(_) | TokenTree::Group(_) | TokenTree::Punct(_) | TokenTree::Literal(_) => {
             None
@@ -2986,6 +3026,10 @@ fn macro_leading_substitution_prefix_forms_fail() {
         "macro_rules! attributes { () => { #[$($prefix)'r#item+ no_mangle] } }\n",
         "macro_rules! attributes { () => { #[$first $($second)? $($third);+ no_mangle] } }\n",
         "macro_rules! attributes { () => { #[$(([$prefix]))* no_mangle] } }\n",
+        "macro_rules! attributes { () => { #[$($($prefix)*)* no_mangle] } }\n",
+        "macro_rules! attributes { () => { #[$($($prefix),+)? no_mangle] } }\n",
+        "macro_rules! attributes { () => { #[$({[$crate $prefix]})* no_mangle] } }\n",
+        "macro_rules! attributes { () => { #[$($($crate $prefix),*)? no_mangle] } }\n",
     ] {
         assert_macro_unsafe_attribute_failure(source);
     }
@@ -3198,7 +3242,7 @@ fn macro_contained_deep_parse_failed_attribute_fails() {
 }
 
 #[test]
-fn macro_parse_failed_findings_preserve_exact_line_order() {
+fn macro_parse_failed_findings_preserve_exact_lines_and_kind() {
     let workspace = TempWorkspace::basic(
         "macro_rules! attributes {\n\
          () => {\n\
@@ -3217,14 +3261,33 @@ fn macro_parse_failed_findings_preserve_exact_line_order() {
         "crates/app/src/lib.rs:6: macro token unsafe attribute is outside an approved unsafe boundary",
         "crates/app/src/lib.rs:7: macro token unsafe attribute is outside an approved unsafe boundary",
     ];
-    let positions = diagnostics.map(|diagnostic| {
+    for diagnostic in diagnostics {
+        assert!(
+            error.contains(diagnostic),
+            "missing exact parse-failed attribute diagnostic {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect in [
+        "crates/app/src/lib.rs:4: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:5: macro token unsafe is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:6: macro token unsafe is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:7: macro token unsafe is outside an approved unsafe boundary",
+    ] {
+        assert!(
+            !error.contains(incorrect),
+            "parse-failed attribute received a wrong line or diagnostic kind {incorrect:?}:\n{error}"
+        );
+    }
+    assert_eq!(
         error
-            .find(diagnostic)
-            .unwrap_or_else(|| panic!("missing diagnostic {diagnostic:?}:\n{error}"))
-    });
+            .matches("macro token unsafe attribute is outside an approved unsafe boundary")
+            .count(),
+        3,
+        "each parse-failed emitted attribute should report exactly once:\n{error}"
+    );
     assert!(
-        positions.windows(2).all(|pair| pair[0] < pair[1]),
-        "parse-failed attribute diagnostics are not in source order:\n{error}"
+        !error.contains("macro token unsafe is outside an approved unsafe boundary"),
+        "wrapped unsafe must not fall back to a keyword diagnostic:\n{error}"
     );
 }
 
@@ -3621,6 +3684,15 @@ fn malformed_leading_substitution_prefixes_pass() {
         "macro_rules! input { () => { #[$($prefix)'x' no_mangle] } }\n",
         "macro_rules! input { () => { #[$prefix $crate no_mangle] } }\n",
         "macro_rules! input { () => { #[$($prefix)=>>* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($($prefix))* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($$prefix)* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($prefix $)* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($($prefix),?)* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($(literal)*)* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($($prefix),;* $later)* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($($prefix)=> $later)* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$({ $[$prefix] $later })* no_mangle] } }\n",
+        "macro_rules! input { () => { #[$($$prefix no_mangle $later)* no_mangle] } }\n",
     ] {
         let workspace = TempWorkspace::basic(source);
         run_fixture(&workspace, &[])
