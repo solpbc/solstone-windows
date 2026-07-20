@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Honest update state model + reducer for the in-app updater. Earned from Velopack results only; actionability derives 'no dead buttons' (incl. the staged-blocks-recheck case) so the platform driver and webview can never render an un-actionable control."
+
+[lints]
+workspace = true
 
 [dependencies]
 serde.workspace = true

@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Microphone control model: owner device priority + per-device disable + input gain, the pure device-selection policy (highest-priority enabled present device), and the gain-application DSP. Pure, host-testable; the platform tier enumerates real WASAPI endpoints and opens the selected one."
+
+[lints]
+workspace = true
 
 [dependencies]
 serde.workspace = true

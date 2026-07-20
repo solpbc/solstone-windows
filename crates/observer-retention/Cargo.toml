@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Local-cache retention policy for confirmed-synced segments: keep-days model (don't-keep / N days / forever) + the pure prune decision (whether a confirmed segment is older than the window). Pure, host-testable; the transport tier marks confirmed segments and prunes per this policy."
+
+[lints]
+workspace = true
 
 [dependencies]
 serde.workspace = true

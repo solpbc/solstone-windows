@@ -36,7 +36,10 @@ version = "0.2.11"
 edition = "2021"
 license = "AGPL-3.0-only"
 authors = ["sol pbc"]
-rust-version = "1.85"
+rust-version = "1.96.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
 
 [workspace.dependencies]
 # Pure-tier shared deps (no platform).

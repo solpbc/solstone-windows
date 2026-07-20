@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Windows platform glue: session/power notification pump, named-mutex single-instance gate, %LocalAppData% paths, and the real SegmentFs/RecoveryFs implementations. Platform-tier: windows-rs quarantine."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

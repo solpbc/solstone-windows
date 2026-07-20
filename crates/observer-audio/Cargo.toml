@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Pure seal-time audio transform: decode PCM descriptors, downmix, resample, combine, and encode FLAC."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

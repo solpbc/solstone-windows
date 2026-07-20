@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Pure video sample timestamp derivation from boot-relative frame arrivals."
+
+[lints]
+workspace = true
 
 [dependencies]

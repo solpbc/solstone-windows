@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Windows screen H.264 encoder seam. Part 1 exposes an inert stub; Media Foundation implementation follows in part 2."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

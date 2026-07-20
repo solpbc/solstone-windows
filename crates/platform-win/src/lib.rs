@@ -28,6 +28,7 @@ use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
 pub mod autostart;
+#[allow(unsafe_code)]
 pub mod local_offset;
 
 pub use local_offset::WindowsLocalOffset;
@@ -271,6 +272,7 @@ pub fn acquire_single_instance(_name: &str) -> InstanceLock {
 
 /// Acquire the per-session single-instance lock.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 pub fn acquire_single_instance(name: &str) -> InstanceLock {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -339,6 +341,7 @@ impl NotificationPump {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod notification_pump {
     use std::sync::{Arc, Mutex, OnceLock};
 

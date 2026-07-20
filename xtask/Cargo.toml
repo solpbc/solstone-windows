@@ -8,6 +8,9 @@ rust-version.workspace = true
 description = "Workspace task runner: `contract [--check]` (regenerate/verify automation-contract.json + the ui codegen), `package`, `dev`."
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 observer-contract.workspace = true
 

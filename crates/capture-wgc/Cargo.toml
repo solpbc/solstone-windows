@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Windows.Graphics.Capture screen source (implements ScreenSource). Platform-tier: windows-rs quarantine; unsafe permitted here only; builds for the Windows MSVC target."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

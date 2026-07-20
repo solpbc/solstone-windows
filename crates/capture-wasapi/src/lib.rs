@@ -65,6 +65,7 @@ mod reselect {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod imp {
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

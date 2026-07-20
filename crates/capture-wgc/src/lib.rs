@@ -83,6 +83,7 @@ mod tests {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};

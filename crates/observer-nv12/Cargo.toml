@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Pure RGBA8/BGRA8 to NV12 conversion for the screen encoder. Host-testable and unsafe-free."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

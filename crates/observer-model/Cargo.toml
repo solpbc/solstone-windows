@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Shared, host-testable vocabulary for the solstone Windows observer: app phases, source kinds and states, segment keys, the source traits, and the honest-state health payload."
+
+[lints]
+workspace = true
 
 [dependencies]
 serde.workspace = true

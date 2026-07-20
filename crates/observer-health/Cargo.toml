@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Serialization of the HealthDump payload for --dump-state and the localhost /healthz body. One representation, three transports."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

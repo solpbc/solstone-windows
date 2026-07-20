@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Global pause/resume hotkey model: the owner-configured combo (modifiers + key), its human formatting + validation, and the honest registration outcome (incl. the combo-already-taken case). Pure, host-testable; the platform tier performs the Win32 RegisterHotKey and reports the outcome back."
+
+[lints]
+workspace = true
 
 [dependencies]
 serde.workspace = true

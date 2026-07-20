@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "The solstone Windows observer binary: a tray-resident Tauri v2 shell over the capture engine. Thin — arg dispatch (--dump-state/--healthz), tray, Settings/About windows, and IPC."
 default-run = "solstone-windows-app"
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "solstone-windows-app"

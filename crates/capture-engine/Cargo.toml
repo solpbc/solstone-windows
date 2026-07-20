@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Composition-tier orchestrator: sources -> writer -> rotation -> state -> recovery. Tauri-agnostic and host-testable with fake sources; depends on the pure-tier trait seams, not the platform crates."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

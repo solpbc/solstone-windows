@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Single source of truth for the AutomationId identifiers and the health/state token vocabulary, plus the deterministic automation-contract.json generator. State tokens derive from observer-model enums via strum::EnumIter."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

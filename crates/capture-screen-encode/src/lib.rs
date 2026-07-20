@@ -7,6 +7,7 @@
 //! non-Windows implementation is an inert compile-time stub.
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod imp {
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;

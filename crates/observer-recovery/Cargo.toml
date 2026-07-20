@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Incomplete-segment scan and finalize/quarantine over a RecoveryFs trait. Pure logic; real fs from platform-win, fake fs in tests."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

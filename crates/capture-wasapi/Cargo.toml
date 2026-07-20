@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "WASAPI render-loopback system audio + eCapture microphone (implements SystemAudioSource and MicSource). Owns the SourceState::NoInputDevice determination. Platform-tier: windows-rs quarantine."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true

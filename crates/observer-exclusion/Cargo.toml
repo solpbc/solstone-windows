@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 description = "Capture-exclusion policy: owner-configured rules (apps, window-title patterns, private-browsing), the pure evaluator over enumerated windows, and per-frame redaction. Pure, host-testable; the platform tier supplies window facts and applies the verdict."
+
+[lints]
+workspace = true
 
 [dependencies]
 observer-model.workspace = true
