@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Ident, TokenStream, TokenTree};
 use serde_json::Value;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
@@ -667,6 +667,9 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
                 }
                 MacroUnsafeFinding::UnsafeAttribute(locator) => {
                     self.record_unsafe("macro token unsafe attribute", locator);
+                }
+                MacroUnsafeFinding::IgnoredLocator(locator) => {
+                    self.locator.next(locator);
                 }
             }
         }
@@ -1796,6 +1799,17 @@ fn unsafe_attribute_name(path: &syn::Path) -> Option<&'static str> {
         .find(|name| path.is_ident(name))
 }
 
+fn unsafe_attribute_ident(ident: &Ident) -> Option<&'static str> {
+    UNSAFE_ATTRIBUTE_NAMES
+        .iter()
+        .copied()
+        .find(|name| ident == name)
+}
+
+fn direct_unsafe_attribute_ident(ident: &Ident) -> Option<&'static str> {
+    unsafe_attribute_ident(ident).filter(|name| *name != "naked")
+}
+
 fn unsafe_attribute_form_locators(meta: &Meta) -> Vec<&'static str> {
     match meta {
         Meta::Path(path) => unsafe_attribute_name(path).into_iter().collect(),
@@ -1811,13 +1825,7 @@ fn unsafe_attribute_form_locators(meta: &Meta) -> Vec<&'static str> {
                     .skip(1)
                     .flat_map(unsafe_attribute_form_locators)
                     .collect(),
-                Err(_) if token_stream_contains_ident(&list.tokens, "unsafe") => vec!["unsafe"],
-                Err(_) => UNSAFE_ATTRIBUTE_NAMES
-                    .iter()
-                    .copied()
-                    .find(|name| token_stream_contains_ident(&list.tokens, name))
-                    .into_iter()
-                    .collect(),
+                Err(_) => unparsed_cfg_attr_form_locators(&list.tokens),
             }
         }
         Meta::List(_) => Vec::new(),
@@ -1886,6 +1894,111 @@ fn token_stream_contains_ident(tokens: &TokenStream, expected: &str) -> bool {
 enum MacroUnsafeFinding {
     UnsafeKeyword,
     UnsafeAttribute(&'static str),
+    IgnoredLocator(&'static str),
+}
+
+fn unparsed_cfg_attr_form_locators(tokens: &TokenStream) -> Vec<&'static str> {
+    let mut events = Vec::new();
+    collect_cfg_attr_token_events(tokens, &mut events);
+    events
+        .into_iter()
+        .filter_map(|event| match event {
+            MacroUnsafeFinding::UnsafeAttribute(locator) => Some(locator),
+            MacroUnsafeFinding::UnsafeKeyword | MacroUnsafeFinding::IgnoredLocator(_) => None,
+        })
+        .collect()
+}
+
+fn leading_unqualified_ident(tokens: &[TokenTree]) -> Option<&Ident> {
+    let Some(TokenTree::Ident(ident)) = tokens.first() else {
+        return None;
+    };
+    if matches!(tokens.get(1), Some(TokenTree::Punct(punct)) if punct.as_char() == ':') {
+        return None;
+    }
+    Some(ident)
+}
+
+fn collect_unparsed_attribute_events(tokens: &[TokenTree], events: &mut Vec<MacroUnsafeFinding>) {
+    let Some(ident) = leading_unqualified_ident(tokens) else {
+        collect_ignored_locator_events(tokens, events);
+        return;
+    };
+    if let Some(name) = direct_unsafe_attribute_ident(ident) {
+        events.push(MacroUnsafeFinding::UnsafeAttribute(name));
+        collect_ignored_locator_events(&tokens[1..], events);
+        return;
+    }
+    let Some(TokenTree::Group(arguments)) = tokens.get(1) else {
+        collect_ignored_locator_events(tokens, events);
+        return;
+    };
+    if arguments.delimiter() != Delimiter::Parenthesis {
+        collect_ignored_locator_events(tokens, events);
+        return;
+    }
+    if ident == "unsafe" {
+        let arguments: Vec<_> = arguments.stream().into_iter().collect();
+        if leading_unqualified_ident(&arguments)
+            .and_then(unsafe_attribute_ident)
+            .is_some()
+        {
+            events.push(MacroUnsafeFinding::UnsafeAttribute("unsafe"));
+            collect_ignored_locator_events(&arguments, events);
+            collect_ignored_locator_events(&tokens[2..], events);
+            return;
+        }
+    } else if ident == "cfg_attr" {
+        collect_cfg_attr_token_events(&arguments.stream(), events);
+        collect_ignored_locator_events(&tokens[2..], events);
+        return;
+    }
+    collect_ignored_locator_events(tokens, events);
+}
+
+fn collect_cfg_attr_token_events(tokens: &TokenStream, events: &mut Vec<MacroUnsafeFinding>) {
+    let tokens: Vec<_> = tokens.clone().into_iter().collect();
+    let mut segment_start = 0;
+    let mut condition = true;
+    for (index, token) in tokens.iter().enumerate() {
+        if !matches!(token, TokenTree::Punct(punct) if punct.as_char() == ',') {
+            continue;
+        }
+        let segment = &tokens[segment_start..index];
+        if condition {
+            collect_ignored_locator_events(segment, events);
+            condition = false;
+        } else {
+            collect_unparsed_attribute_events(segment, events);
+        }
+        segment_start = index + 1;
+    }
+    let segment = &tokens[segment_start..];
+    if condition {
+        collect_ignored_locator_events(segment, events);
+    } else {
+        collect_unparsed_attribute_events(segment, events);
+    }
+}
+
+fn collect_ignored_locator_events(tokens: &[TokenTree], events: &mut Vec<MacroUnsafeFinding>) {
+    for token in tokens {
+        match token {
+            TokenTree::Ident(ident) if ident == "unsafe" => {
+                events.push(MacroUnsafeFinding::IgnoredLocator("unsafe"));
+            }
+            TokenTree::Ident(ident) => {
+                if let Some(name) = unsafe_attribute_ident(ident) {
+                    events.push(MacroUnsafeFinding::IgnoredLocator(name));
+                }
+            }
+            TokenTree::Group(group) => {
+                let nested: Vec<_> = group.stream().into_iter().collect();
+                collect_ignored_locator_events(&nested, events);
+            }
+            TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+        }
+    }
 }
 
 fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding>) {
@@ -1909,14 +2022,31 @@ fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding
                             .into_iter()
                             .map(MacroUnsafeFinding::UnsafeAttribute),
                     ),
-                    Err(_) => scan_macro_tokens(&group.stream(), findings),
+                    Err(_) => {
+                        let group_tokens: Vec<_> = group.stream().into_iter().collect();
+                        let mut fallback = Vec::new();
+                        collect_unparsed_attribute_events(&group_tokens, &mut fallback);
+                        if fallback
+                            .iter()
+                            .any(|event| matches!(event, MacroUnsafeFinding::UnsafeAttribute(_)))
+                        {
+                            findings.extend(fallback);
+                        } else {
+                            scan_macro_tokens(&group.stream(), findings);
+                        }
+                    }
                 }
             }
             TokenTree::Ident(ident) if ident == "unsafe" => {
                 findings.push(MacroUnsafeFinding::UnsafeKeyword);
             }
+            TokenTree::Ident(ident) => {
+                if let Some(name) = unsafe_attribute_ident(&ident) {
+                    findings.push(MacroUnsafeFinding::IgnoredLocator(name));
+                }
+            }
             TokenTree::Group(group) => scan_macro_tokens(&group.stream(), findings),
-            TokenTree::Ident(_) | TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+            TokenTree::Punct(_) | TokenTree::Literal(_) => {}
         }
     }
 }
@@ -2610,6 +2740,118 @@ fn macro_contained_unparseable_attribute_keyword_still_fails() {
 }
 
 #[test]
+fn macro_contained_parse_failed_direct_attributes_fail() {
+    for source in [
+        "macro_rules! attributes { () => { #[no_mangle $($tail)*] } }\n",
+        "macro_rules! attributes { () => { #[export_name = \"callback\" $($tail)*] } }\n",
+        "macro_rules! attributes { () => { #[link_section = \".solstone\" $($tail)*] } }\n",
+    ] {
+        assert_macro_unsafe_attribute_failure(source);
+    }
+}
+
+#[test]
+fn macro_contained_parse_failed_wrapped_attributes_fail() {
+    for source in [
+        "macro_rules! attributes { () => { #[unsafe(no_mangle) $($tail)*] } }\n",
+        "macro_rules! attributes { () => { #[unsafe(export_name = \"callback\") $($tail)*] } }\n",
+        "macro_rules! attributes { () => { #[unsafe(link_section = \".solstone\") $($tail)*] } }\n",
+        "macro_rules! attributes { () => { #[unsafe(naked) $($tail)*] } }\n",
+    ] {
+        assert_macro_unsafe_attribute_failure(source);
+    }
+}
+
+#[test]
+fn macro_contained_dynamic_cfg_attr_direct_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[cfg_attr($condition, no_mangle $($tail)*)] } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_dynamic_cfg_attr_wrapped_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[cfg_attr($condition, unsafe(naked) $($tail)*)] } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_full_parse_failed_cfg_attr_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[cfg_attr($condition, no_mangle) $($tail)*] } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_recursive_dynamic_cfg_attr_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[cfg_attr($outer, cfg_attr($inner, unsafe(naked) $($tail)*) $($rest)*)] } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_deep_parse_failed_attribute_fails() {
+    assert_macro_unsafe_attribute_failure("probe!({ ( [ #[no_mangle $($tail)*] ] ) });\n");
+}
+
+#[test]
+fn macro_parse_failed_findings_preserve_exact_line_order() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes {\n\
+         () => {\n\
+         #[cfg_attr(\n\
+         $condition,\n\
+         no_mangle $tail,\n\
+         unsafe(naked) $tail,\n\
+         export_name = \"callback\" $tail\n\
+         )]\n\
+         };\n\
+         }\n",
+    );
+    let error = run_fixture(&workspace, &[]).expect_err("fixture should violate policy");
+    let diagnostics = [
+        "crates/app/src/lib.rs:5: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:6: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:7: macro token unsafe attribute is outside an approved unsafe boundary",
+    ];
+    let positions = diagnostics.map(|diagnostic| {
+        error
+            .find(diagnostic)
+            .unwrap_or_else(|| panic!("missing diagnostic {diagnostic:?}:\n{error}"))
+    });
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "parse-failed attribute diagnostics are not in source order:\n{error}"
+    );
+}
+
+#[test]
+fn excluded_cfg_attr_condition_does_not_steal_emitted_attribute_line() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes {\n\
+         () => {\n\
+         #[cfg_attr(\n\
+         no_mangle $condition,\n\
+         no_mangle\n\
+         ) $tail]\n\
+         };\n\
+         }\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:5: macro token unsafe attribute is outside an approved unsafe boundary",
+    );
+    assert!(
+        !error.contains(
+            "crates/app/src/lib.rs:4: macro token unsafe attribute is outside an approved unsafe boundary"
+        ),
+        "cfg_attr condition was reported or stole the emitted attribute line:\n{error}"
+    );
+}
+
+#[test]
 fn macro_contained_direct_no_mangle_attribute_fails() {
     assert_macro_unsafe_attribute_failure(
         "macro_rules! attributes { () => { #[no_mangle] pub extern \"C\" fn callback() {} } }\n",
@@ -2748,9 +2990,30 @@ fn macro_contained_unsafe_attributes_inside_approved_boundary_passes() {
 }
 
 #[test]
+fn macro_contained_dynamic_attributes_inside_approved_boundary_pass() {
+    let workspace = TempWorkspace::basic(
+        "#[allow(unsafe_code)]\n\
+         mod approved {\n\
+         macro_rules! attributes { () => { #[no_mangle $tail] #[cfg_attr($condition, unsafe(naked) $tail)] } }\n\
+         }\n",
+    );
+    run_fixture(&workspace, FIXTURE_APPROVED_MOD)
+        .expect("dynamic macro attributes inside an approved boundary should pass");
+}
+
+#[test]
 fn macro_attribute_literal_text_passes() {
     let workspace = TempWorkspace::basic("macro_rules! input { () => { \"#[no_mangle]\" } }\n");
     run_fixture(&workspace, &[]).expect("literal unsafe-attribute text must not match");
+}
+
+#[test]
+fn macro_parse_failed_attribute_literal_and_comment_text_passes() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! input { () => { #[doc = \"no_mangle export_name link_section\" $tail] #[doc /* no_mangle export_name link_section */ $tail] } }\n",
+    );
+    run_fixture(&workspace, &[])
+        .expect("literal and comment text in parse-failed safe attributes must not match");
 }
 
 #[test]
@@ -2760,9 +3023,32 @@ fn macro_bare_bracket_attribute_name_passes() {
 }
 
 #[test]
+fn macro_parse_failed_bare_bracket_attribute_name_passes() {
+    let workspace = TempWorkspace::basic("macro_rules! input { () => { [no_mangle $tail] } }\n");
+    run_fixture(&workspace, &[])
+        .expect("a parse-failed bare bracket group must not match an attribute");
+}
+
+#[test]
+fn macro_ordinary_unsafe_attribute_name_identifiers_pass() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! input { () => { no_mangle!(export_name, link_section); } }\n",
+    );
+    run_fixture(&workspace, &[])
+        .expect("ordinary macro identifiers and arguments must not match attributes");
+}
+
+#[test]
 fn macro_qualified_unsafe_attribute_name_passes() {
     let workspace = TempWorkspace::basic("macro_rules! input { () => { #[some::no_mangle] } }\n");
     run_fixture(&workspace, &[]).expect("a qualified macro attribute path must not match");
+}
+
+#[test]
+fn macro_parse_failed_qualified_unsafe_attribute_name_passes() {
+    let workspace =
+        TempWorkspace::basic("macro_rules! input { () => { #[some::no_mangle $tail] } }\n");
+    run_fixture(&workspace, &[]).expect("a parse-failed qualified attribute path must not match");
 }
 
 #[test]
@@ -2770,6 +3056,38 @@ fn macro_similar_unsafe_attribute_name_passes() {
     let workspace =
         TempWorkspace::basic("macro_rules! input { () => { #[export_names = \"x\"] } }\n");
     run_fixture(&workspace, &[]).expect("a similar macro attribute name must not match");
+}
+
+#[test]
+fn macro_parse_failed_similar_unsafe_attribute_name_passes() {
+    let workspace =
+        TempWorkspace::basic("macro_rules! input { () => { #[export_names $tail] } }\n");
+    run_fixture(&workspace, &[]).expect("a similar parse-failed attribute name must not match");
+}
+
+#[test]
+fn macro_dynamic_cfg_attr_condition_name_passes() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! input { () => { #[cfg_attr(no_mangle $condition, doc)] } }\n",
+    );
+    run_fixture(&workspace, &[])
+        .expect("an unsafe name in a cfg_attr condition must not match an emitted attribute");
+}
+
+#[test]
+fn macro_dynamic_cfg_attr_safe_value_name_passes() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! input { () => { #[cfg_attr(any(), doc = \"safe\" no_mangle $value)] } }\n",
+    );
+    run_fixture(&workspace, &[]).expect("an unsafe name in a safe attribute value must not match");
+}
+
+#[test]
+fn macro_dynamic_cfg_attr_safe_list_argument_name_passes() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! input { () => { #[cfg_attr(any(), doc(no_mangle) $tail)] } }\n",
+    );
+    run_fixture(&workspace, &[]).expect("an unsafe name in a safe attribute list must not match");
 }
 
 #[test]
