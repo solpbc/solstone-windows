@@ -4,11 +4,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use proc_macro2::{TokenStream, TokenTree};
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use serde_json::Value;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
@@ -657,10 +658,17 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
         } else if macro_name.as_deref() == Some("global_asm") {
             self.record_unsafe("global_asm macro", "global_asm");
         }
-        let mut nested_count = 0;
-        count_unsafe_identifiers(&node.tokens, &mut nested_count);
-        for _ in 0..nested_count {
-            self.record_unsafe("macro token unsafe", "unsafe");
+        let mut findings = Vec::new();
+        scan_macro_tokens(&node.tokens, &mut findings);
+        for finding in findings {
+            match finding {
+                MacroUnsafeFinding::UnsafeKeyword => {
+                    self.record_unsafe("macro token unsafe", "unsafe");
+                }
+                MacroUnsafeFinding::UnsafeAttribute(locator) => {
+                    self.record_unsafe("macro token unsafe attribute", locator);
+                }
+            }
         }
         visit::visit_macro(self, node);
     }
@@ -719,12 +727,23 @@ impl WorkspaceScanner {
                     display_path(&self.workspace_root, &root)
                 )
             })?;
-            for (kind, path) in symlink_violations {
-                self.policy.violations.push(format!(
-                    "{}: {kind} symlink is forbidden in member source tree: {}",
-                    display_path(&self.workspace_root, &self.members[index].manifest_path),
-                    display_path(&self.workspace_root, &path)
-                ));
+            for finding in symlink_violations {
+                match finding {
+                    SymlinkFinding::Forbidden { kind, path } => {
+                        self.policy.violations.push(format!(
+                            "{}: {kind} symlink is forbidden in member source tree: {}",
+                            display_path(&self.workspace_root, &self.members[index].manifest_path),
+                            display_path(&self.workspace_root, &path)
+                        ));
+                    }
+                    SymlinkFinding::ClassifyFailed { path, error } => {
+                        self.policy.violations.push(format!(
+                            "{}: non-Rust symlink target classification failed: {}: {error}",
+                            display_path(&self.workspace_root, &self.members[index].manifest_path),
+                            display_path(&self.workspace_root, &path)
+                        ));
+                    }
+                }
             }
             if self.inventories[index].is_empty() {
                 self.policy.violations.push(format!(
@@ -1545,11 +1564,68 @@ fn canonicalize_allow_missing(path: &Path) -> Result<PathBuf, String> {
     Ok(normalized)
 }
 
+enum NonRustSymlinkClassification {
+    SourceDirectory,
+    Ignore,
+    Failure(io::Error),
+}
+
+fn classify_non_rust_symlink_target(follow: io::Result<bool>) -> NonRustSymlinkClassification {
+    match follow {
+        Ok(true) => NonRustSymlinkClassification::SourceDirectory,
+        Ok(false) => NonRustSymlinkClassification::Ignore,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            NonRustSymlinkClassification::Ignore
+        }
+        Err(error) => NonRustSymlinkClassification::Failure(error),
+    }
+}
+
+#[test]
+fn non_rust_symlink_classification_marks_directory() {
+    assert!(matches!(
+        classify_non_rust_symlink_target(Ok(true)),
+        NonRustSymlinkClassification::SourceDirectory
+    ));
+}
+
+#[test]
+fn non_rust_symlink_classification_ignores_file() {
+    assert!(matches!(
+        classify_non_rust_symlink_target(Ok(false)),
+        NonRustSymlinkClassification::Ignore
+    ));
+}
+
+#[test]
+fn non_rust_symlink_classification_ignores_not_found() {
+    assert!(matches!(
+        classify_non_rust_symlink_target(Err(io::Error::from(io::ErrorKind::NotFound))),
+        NonRustSymlinkClassification::Ignore
+    ));
+}
+
+#[test]
+fn non_rust_symlink_classification_preserves_hard_failure() {
+    assert!(matches!(
+        classify_non_rust_symlink_target(Err(io::Error::from(
+            io::ErrorKind::PermissionDenied
+        ))),
+        NonRustSymlinkClassification::Failure(error)
+            if error.kind() == io::ErrorKind::PermissionDenied
+    ));
+}
+
+enum SymlinkFinding {
+    Forbidden { kind: &'static str, path: PathBuf },
+    ClassifyFailed { path: PathBuf, error: io::Error },
+}
+
 fn collect_rust_inventory(
     directory: &Path,
     target_directory: &Path,
     output: &mut BTreeSet<PathBuf>,
-    symlink_violations: &mut Vec<(&'static str, PathBuf)>,
+    symlink_violations: &mut Vec<SymlinkFinding>,
 ) -> Result<(), String> {
     let mut entries = fs::read_dir(directory)
         .map_err(|error| format!("read {}: {error}", normalize_path_display(directory)))?
@@ -1562,9 +1638,25 @@ fn collect_rust_inventory(
             .map_err(|error| format!("inspect {}: {error}", normalize_path_display(&path)))?;
         if metadata.file_type().is_symlink() {
             if path.extension().and_then(OsStr::to_str) == Some("rs") {
-                symlink_violations.push(("source-file", path));
-            } else if fs::metadata(&path).is_ok_and(|target| target.is_dir()) {
-                symlink_violations.push(("source-directory", path));
+                symlink_violations.push(SymlinkFinding::Forbidden {
+                    kind: "source-file",
+                    path,
+                });
+            } else {
+                match classify_non_rust_symlink_target(
+                    fs::metadata(&path).map(|target| target.is_dir()),
+                ) {
+                    NonRustSymlinkClassification::SourceDirectory => {
+                        symlink_violations.push(SymlinkFinding::Forbidden {
+                            kind: "source-directory",
+                            path,
+                        });
+                    }
+                    NonRustSymlinkClassification::Ignore => {}
+                    NonRustSymlinkClassification::Failure(error) => {
+                        symlink_violations.push(SymlinkFinding::ClassifyFailed { path, error });
+                    }
+                }
             }
             continue;
         }
@@ -1791,11 +1883,39 @@ fn token_stream_contains_ident(tokens: &TokenStream, expected: &str) -> bool {
     })
 }
 
-fn count_unsafe_identifiers(tokens: &TokenStream, count: &mut usize) {
-    for token in tokens.clone() {
+enum MacroUnsafeFinding {
+    UnsafeKeyword,
+    UnsafeAttribute(&'static str),
+}
+
+fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding>) {
+    let mut tokens = tokens.clone().into_iter().peekable();
+    while let Some(token) = tokens.next() {
         match token {
-            TokenTree::Ident(ident) if ident == "unsafe" => *count += 1,
-            TokenTree::Group(group) => count_unsafe_identifiers(&group.stream(), count),
+            TokenTree::Punct(punct)
+                if punct.as_char() == '#'
+                    && matches!(
+                        tokens.peek(),
+                        Some(TokenTree::Group(group))
+                            if group.delimiter() == Delimiter::Bracket
+                    ) =>
+            {
+                let Some(TokenTree::Group(group)) = tokens.next() else {
+                    unreachable!("peeked token must remain a group");
+                };
+                match syn::parse2::<Meta>(group.stream()) {
+                    Ok(meta) => findings.extend(
+                        unsafe_attribute_form_locators(&meta)
+                            .into_iter()
+                            .map(MacroUnsafeFinding::UnsafeAttribute),
+                    ),
+                    Err(_) => scan_macro_tokens(&group.stream(), findings),
+                }
+            }
+            TokenTree::Ident(ident) if ident == "unsafe" => {
+                findings.push(MacroUnsafeFinding::UnsafeKeyword);
+            }
+            TokenTree::Group(group) => scan_macro_tokens(&group.stream(), findings),
             TokenTree::Ident(_) | TokenTree::Punct(_) | TokenTree::Literal(_) => {}
         }
     }
@@ -2119,6 +2239,15 @@ fn assert_unsafe_attribute_failure(source: &str) {
         &workspace,
         &[],
         "crates/app/src/lib.rs:1: unsafe attribute is outside an approved unsafe boundary",
+    );
+}
+
+fn assert_macro_unsafe_attribute_failure(source: &str) {
+    let workspace = TempWorkspace::basic(source);
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:1: macro token unsafe attribute is outside an approved unsafe boundary",
     );
 }
 
@@ -2466,6 +2595,175 @@ fn macro_contained_unsafe_fails() {
         &[],
         "crates/app/src/lib.rs:1: macro token unsafe is outside an approved unsafe boundary",
     );
+}
+
+#[test]
+fn macro_contained_direct_no_mangle_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[no_mangle] pub extern \"C\" fn callback() {} } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_direct_export_name_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[export_name = \"callback\"] pub extern \"C\" fn exported() {} } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_direct_link_section_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[link_section = \".solstone\"] pub static CALLBACK: u8 = 0; } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_wrapped_no_mangle_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[unsafe(no_mangle)] pub extern \"C\" fn callback() {} } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_wrapped_export_name_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[unsafe(export_name = \"callback\")] pub extern \"C\" fn exported() {} } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_wrapped_link_section_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[unsafe(link_section = \".solstone\")] pub static CALLBACK: u8 = 0; } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_wrapped_naked_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[unsafe(naked)] pub extern \"C\" fn callback() {} } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_nested_cfg_attr_direct_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[cfg_attr(any(), no_mangle)] pub extern \"C\" fn callback() {} } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_nested_cfg_attr_wrapped_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "macro_rules! attributes { () => { #[cfg_attr(any(), unsafe(naked))] pub extern \"C\" fn callback() {} } }\n",
+    );
+}
+
+#[test]
+fn macro_contained_deep_cfg_attr_direct_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "probe!({ ( [ #[cfg_attr(any(), cfg_attr(any(), cfg_attr(any(), no_mangle)))] ] ) });\n",
+    );
+}
+
+#[test]
+fn macro_contained_deep_cfg_attr_wrapped_attribute_fails() {
+    assert_macro_unsafe_attribute_failure(
+        "probe!({ ( [ #[cfg_attr(any(), cfg_attr(any(), cfg_attr(any(), unsafe(naked))))] ] ) });\n",
+    );
+}
+
+#[test]
+fn macro_contained_wrapped_attribute_reports_once() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes { () => { #[unsafe(no_mangle)] pub extern \"C\" fn callback() {} } }\n",
+    );
+    let error = run_fixture(&workspace, &[]).expect_err("fixture should violate policy");
+    assert_eq!(
+        error
+            .matches("macro token unsafe attribute is outside an approved unsafe boundary")
+            .count(),
+        1,
+        "wrapped macro attribute should be reported exactly once:\n{error}"
+    );
+    assert!(
+        !error.contains("macro token unsafe is outside an approved unsafe boundary"),
+        "wrapped macro attribute must not also be reported as an unsafe keyword:\n{error}"
+    );
+}
+
+#[test]
+fn macro_mixed_unsafe_findings_preserve_line_attribution() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes {\n\
+         () => {\n\
+         #[unsafe(no_mangle)]\n\
+         unsafe {}\n\
+         #[unsafe(export_name = \"callback\")]\n\
+         };\n\
+         }\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:3: macro token unsafe attribute is outside an approved unsafe boundary",
+    );
+    assert!(
+        error.contains(
+            "crates/app/src/lib.rs:4: macro token unsafe is outside an approved unsafe boundary"
+        ),
+        "genuine unsafe keyword line was misattributed:\n{error}"
+    );
+    assert!(
+        error.contains(
+            "crates/app/src/lib.rs:5: macro token unsafe attribute is outside an approved unsafe boundary"
+        ),
+        "second wrapped attribute line was misattributed:\n{error}"
+    );
+}
+
+#[test]
+fn macro_contained_unsafe_attributes_inside_approved_boundary_passes() {
+    let workspace = TempWorkspace::basic(
+        "#[allow(unsafe_code)]\n\
+         mod approved {\n\
+         macro_rules! attributes { () => { #[no_mangle] #[unsafe(naked)] pub extern \"C\" fn callback() {} } }\n\
+         }\n",
+    );
+    run_fixture(&workspace, FIXTURE_APPROVED_MOD)
+        .expect("macro-contained unsafe attributes inside an approved boundary should pass");
+}
+
+#[test]
+fn macro_attribute_literal_text_passes() {
+    let workspace = TempWorkspace::basic("macro_rules! input { () => { \"#[no_mangle]\" } }\n");
+    run_fixture(&workspace, &[]).expect("literal unsafe-attribute text must not match");
+}
+
+#[test]
+fn macro_bare_bracket_attribute_name_passes() {
+    let workspace = TempWorkspace::basic("macro_rules! input { () => { [no_mangle] } }\n");
+    run_fixture(&workspace, &[]).expect("a bare bracket group must not match an attribute");
+}
+
+#[test]
+fn macro_qualified_unsafe_attribute_name_passes() {
+    let workspace = TempWorkspace::basic("macro_rules! input { () => { #[some::no_mangle] } }\n");
+    run_fixture(&workspace, &[]).expect("a qualified macro attribute path must not match");
+}
+
+#[test]
+fn macro_similar_unsafe_attribute_name_passes() {
+    let workspace =
+        TempWorkspace::basic("macro_rules! input { () => { #[export_names = \"x\"] } }\n");
+    run_fixture(&workspace, &[]).expect("a similar macro attribute name must not match");
+}
+
+#[test]
+fn safe_macro_input_passes() {
+    let workspace = TempWorkspace::basic("pub fn values() { vec![1, 2, 3]; }\n");
+    run_fixture(&workspace, &[]).expect("ordinary safe macro input should pass");
 }
 
 #[test]
@@ -2831,6 +3129,33 @@ fn broken_non_rust_symlink_passes() {
     )
     .expect("create broken non-Rust symlink fixture");
     run_fixture(&workspace, &[]).expect("a broken non-Rust symlink should pass");
+}
+
+#[cfg(unix)]
+#[test]
+fn non_rust_symlink_follow_error_fails_closed() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempWorkspace::basic("pub fn app() {}\n");
+    let loop_a = workspace.root.join("crates/app/loop-a");
+    let loop_b = workspace.root.join("crates/app/loop-b");
+    symlink(&loop_b, &loop_a).expect("create first symlink-loop fixture");
+    symlink(&loop_a, &loop_b).expect("create second symlink-loop fixture");
+
+    let expected =
+        "crates/app/Cargo.toml: non-Rust symlink target classification failed: crates/app/loop-a:";
+    let error = assert_fixture_failure(&workspace, &[], expected);
+    let diagnostic = error
+        .lines()
+        .find(|line| line.contains(expected))
+        .expect("classification-failure diagnostic should be present");
+    let (_, error_tail) = diagnostic
+        .split_once(expected)
+        .expect("classification-failure diagnostic should carry its stable prefix");
+    assert!(
+        !error_tail.trim().is_empty(),
+        "classification-failure diagnostic should carry the underlying filesystem error:\n{error}"
+    );
 }
 
 #[test]
