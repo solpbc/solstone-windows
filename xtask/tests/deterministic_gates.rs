@@ -109,7 +109,7 @@ fn every_gated_cargo_resolution_is_locked() {
     assert!(purity.contains("std::env::var(\"CARGO\")"));
     assert!(purity.contains("Command::new(cargo)"));
     assert!(purity.contains(
-        "\"tree\",\n                \"--locked\",\n                \"-p\",\n                package_name,\n                \"--target\",\n                \"all\",\n                \"--all-features\",\n                \"-e\",\n                \"normal,build,dev\",\n                \"--prefix\",\n                \"none\","
+        "\"tree\",\n                \"--locked\",\n                \"-p\",\n                package_name,\n                \"--target\",\n                \"all\",\n                \"--all-features\",\n                \"-e\",\n                \"normal,build,dev\",\n                \"--prefix\",\n                \"depth\",\n                \"--no-dedupe\","
     ));
     assert!(
         purity.contains("\"metadata\", \"--locked\", \"--format-version\", \"1\", \"--no-deps\"")

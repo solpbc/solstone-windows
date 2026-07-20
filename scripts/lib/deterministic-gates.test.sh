@@ -235,6 +235,14 @@ printf '%s\n' "modified" >> "$GIT_REPO/tracked.txt"
 guard_output=$(cd "$GIT_REPO" && sh "$REPO_ROOT/scripts/check-win-sync-tree.sh" 2>&1)
 assert_eq "tracked modification passes guard" "" "$guard_output"
 
+default_pull=$(MAKEFLAGS= make -C "$REPO_ROOT" -n pull-releases WIN_REMOTE_HOST=fake@host 2>&1)
+assert_contains "pull-releases default carries scp control options" "$default_pull" \
+  "scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s -r fake@host:swbuild/Releases Releases"
+custom_pull=$(MAKEFLAGS= make -C "$REPO_ROOT" -n pull-releases WIN_REMOTE_HOST=fake@host WIN_SCP=/custom/scp 2>&1)
+assert_contains "pull-releases honors WIN_SCP override" "$custom_pull" \
+  "/custom/scp -r fake@host:swbuild/Releases Releases"
+assert_not_contains "custom WIN_SCP replaces the default scp binary" "$custom_pull" "ControlMaster"
+
 FAKE_GIT="$TMP_ROOT/fake-git"
 cat > "$FAKE_GIT" <<'EOF'
 #!/usr/bin/env sh

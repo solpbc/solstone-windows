@@ -29,6 +29,7 @@ REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-
 # scripts/win-ci.cmd. WIN_REMOTE_HOST is supplied by the build environment, never
 # committed (public hygiene): WIN_REMOTE_HOST=user@host make win-host-ci.
 WIN_REMOTE_HOST ?=
+WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
 .PHONY: install rust-toolchain preflight-toolchain preflight-cargo-deny build test ui-test \
 	        test-scripts ci audit contract purity-check package publish publish-r2 \
@@ -167,7 +168,7 @@ check-channels:
 # The box checks the working tree out under ~/swbuild (sync-win-host's bundle).
 pull-releases: require-win-remote-host
 	rm -rf Releases
-	"$(SCP)" -o ControlMaster=auto -o "ControlPath=/tmp/sw-%r@%h:%p" -o ControlPersist=60s -r "$(WIN_REMOTE_HOST):swbuild/Releases" Releases
+	$(WIN_SCP) -r $(WIN_REMOTE_HOST):swbuild/Releases Releases
 	@echo "pulled Releases/ from $(WIN_REMOTE_HOST)"
 
 # Launch the installed app in Session 1, then run the load-bearing health/render

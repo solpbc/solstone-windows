@@ -19,6 +19,39 @@ pub struct WorkspaceMember {
     pub manifest_path: PathBuf,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyNode {
+    pub depth: usize,
+    pub identity: String,
+    pub parent: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyTree {
+    pub nodes: Vec<DependencyNode>,
+}
+
+impl DependencyTree {
+    pub fn edge_count(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| node.parent.is_some())
+            .count()
+    }
+
+    pub fn ancestry_chain(&self, index: usize) -> String {
+        let mut identities = Vec::new();
+        let mut current = Some(index);
+        while let Some(node_index) = current {
+            let node = &self.nodes[node_index];
+            identities.push(short_identity(&node.identity));
+            current = node.parent;
+        }
+        identities.reverse();
+        identities.join(" -> ")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PurityWitness {
     pub member_count: usize,
@@ -105,22 +138,95 @@ pub fn parse_workspace_members(metadata_json: &str) -> Result<Vec<WorkspaceMembe
     Ok(members)
 }
 
-pub fn windows_leaks(tree_stdout: &str) -> Vec<String> {
-    dependency_lines(tree_stdout)
-        .into_iter()
-        .filter(|line| {
-            line.split_whitespace()
-                .next()
-                .is_some_and(|token| token.starts_with("windows"))
-        })
-        .map(str::to_string)
-        .collect()
+pub fn is_windows_family(identity: &str) -> bool {
+    package_name(identity).starts_with("windows")
+}
+
+fn package_name(identity: &str) -> &str {
+    identity.split_whitespace().next().unwrap_or_default()
+}
+
+fn short_identity(identity: &str) -> &str {
+    identity
+        .find(" (")
+        .map_or(identity, |suffix_start| &identity[..suffix_start])
+}
+
+pub fn parse_member_tree(member_name: &str, tree_stdout: &str) -> Result<DependencyTree, String> {
+    let mut nodes = Vec::new();
+    let mut stack = Vec::new();
+
+    for line in tree_stdout.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() {
+            continue;
+        }
+
+        let depth_end = line
+            .find(|character: char| !character.is_ascii_digit())
+            .unwrap_or(line.len());
+        if depth_end == 0 {
+            return Err(format!(
+                "{member_name}: dependency line has no leading depth digit: {line}"
+            ));
+        }
+        let (depth_str, identity) = line.split_at(depth_end);
+        if identity.is_empty() {
+            return Err(format!(
+                "{member_name}: dependency line has empty package identity"
+            ));
+        }
+        let depth = depth_str
+            .parse::<usize>()
+            .map_err(|error| format!("{member_name}: malformed depth {depth_str}: {error}"))?;
+        let index = nodes.len();
+
+        if index == 0 && depth != 0 {
+            return Err(format!(
+                "{member_name}: first dependency line has depth {depth}, expected 0"
+            ));
+        }
+        if index > 0 && depth == 0 {
+            return Err(format!("{member_name}: unexpected second root {identity}"));
+        }
+        if index > 0 && depth > stack.len() {
+            return Err(format!("{member_name}: depth jump to {depth}"));
+        }
+
+        let parent = if depth == 0 {
+            None
+        } else {
+            Some(stack[depth - 1])
+        };
+        nodes.push(DependencyNode {
+            depth,
+            identity: identity.to_string(),
+            parent,
+        });
+        stack.truncate(depth);
+        stack.push(index);
+    }
+
+    if nodes.is_empty() {
+        return Err(format!(
+            "{member_name}: cargo tree produced no dependency tree output"
+        ));
+    }
+
+    let root_package = package_name(&nodes[0].identity);
+    if root_package != member_name {
+        return Err(format!(
+            "{member_name}: root package {root_package} does not match requested member {member_name}"
+        ));
+    }
+
+    Ok(DependencyTree { nodes })
 }
 
 pub fn classify_members(
     members: &[WorkspaceMember],
     exceptions: &[&str],
-    tree_outputs: &BTreeMap<String, String>,
+    trees: &BTreeMap<String, DependencyTree>,
 ) -> Result<PurityWitness, Vec<String>> {
     let mut diagnostics = duplicate_member_diagnostics(members);
     if members.is_empty() {
@@ -152,7 +258,7 @@ pub fn classify_members(
         }
     }
 
-    for output_name in tree_outputs.keys() {
+    for output_name in trees.keys() {
         if !members_by_name.contains_key(output_name.as_str()) {
             diagnostics.push(format!(
                 "tree output for unknown member {output_name} (<no workspace manifest>)"
@@ -173,18 +279,22 @@ pub fn classify_members(
 
     for member in sorted_members {
         let display = member.manifest_path.display();
-        let Some(tree_stdout) = tree_outputs.get(&member.package_name) else {
+        let Some(tree) = trees.get(&member.package_name) else {
             diagnostics.push(format!(
                 "missing tree output for {} ({display})",
                 member.package_name
             ));
             continue;
         };
-        inspected_edge_count += dependency_lines(tree_stdout).len();
-        let leaks = windows_leaks(tree_stdout);
+        inspected_edge_count += tree.edge_count();
+        let windows_nodes = tree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| is_windows_family(&node.identity).then_some(index));
         if exception_names.contains(member.package_name.as_str()) {
             exception_count += 1;
-            if leaks.is_empty() {
+            if windows_nodes.count() == 0 {
                 diagnostics.push(format!(
                     "stale exception {} ({display}) reaches no windows-family dependency",
                     member.package_name
@@ -192,9 +302,12 @@ pub fn classify_members(
             }
         } else {
             strict_count += 1;
-            for leak in leaks {
+            let chains: BTreeSet<_> = windows_nodes
+                .map(|index| tree.ancestry_chain(index))
+                .collect();
+            for chain in chains {
                 diagnostics.push(format!(
-                    "strict member {} ({display}) reaches {leak}",
+                    "strict member {} ({display}) reaches windows-family dependency via {chain}",
                     member.package_name
                 ));
             }
@@ -252,7 +365,7 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
             )
         })?;
 
-    let mut tree_outputs = BTreeMap::new();
+    let mut trees = BTreeMap::new();
     for member in &members {
         let package_name = member.package_name.as_str();
         let output = Command::new(cargo)
@@ -267,14 +380,15 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
                 "-e",
                 "normal,build,dev",
                 "--prefix",
-                "none",
+                "depth",
+                "--no-dedupe",
             ])
             .current_dir(repo_root)
             .output()
             .map_err(|error| {
                 failure_message(
-                    tree_outputs.len(),
-                    inspected_edge_count(&tree_outputs),
+                    trees.len(),
+                    inspected_edge_count(&trees),
                     &[format!(
                         "{} ({}): failed to run cargo tree: {error}",
                         member.package_name,
@@ -284,8 +398,8 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
             })?;
         if !output.status.success() {
             return Err(failure_message(
-                tree_outputs.len(),
-                inspected_edge_count(&tree_outputs),
+                trees.len(),
+                inspected_edge_count(&trees),
                 &[format!(
                     "{} ({}): cargo tree failed: {}",
                     member.package_name,
@@ -294,43 +408,20 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
                 )],
             ));
         }
-        tree_outputs.insert(
-            member.package_name.clone(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-        );
+        let tree_stdout = String::from_utf8_lossy(&output.stdout);
+        let tree = parse_member_tree(&member.package_name, &tree_stdout).map_err(|error| {
+            failure_message(trees.len(), inspected_edge_count(&trees), &[error])
+        })?;
+        trees.insert(member.package_name.clone(), tree);
     }
 
-    classify_members(&members, WINDOWS_ALLOWED_MEMBERS, &tree_outputs).map_err(|diagnostics| {
-        failure_message(
-            members.len(),
-            inspected_edge_count(&tree_outputs),
-            &diagnostics,
-        )
+    classify_members(&members, WINDOWS_ALLOWED_MEMBERS, &trees).map_err(|diagnostics| {
+        failure_message(members.len(), inspected_edge_count(&trees), &diagnostics)
     })
 }
 
-fn dependency_lines(tree_stdout: &str) -> Vec<&str> {
-    let mut root_seen = false;
-    let mut dependencies = Vec::new();
-    for line in tree_stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('[') {
-            continue;
-        }
-        if !root_seen {
-            root_seen = true;
-            continue;
-        }
-        dependencies.push(line);
-    }
-    dependencies
-}
-
-fn inspected_edge_count(tree_outputs: &BTreeMap<String, String>) -> usize {
-    tree_outputs
-        .values()
-        .map(|tree_stdout| dependency_lines(tree_stdout).len())
-        .sum()
+fn inspected_edge_count(trees: &BTreeMap<String, DependencyTree>) -> usize {
+    trees.values().map(DependencyTree::edge_count).sum()
 }
 
 fn duplicate_member_diagnostics(members: &[WorkspaceMember]) -> Vec<String> {
