@@ -6,7 +6,7 @@
 //! Verbs:
 //! - `contract` — regenerate `automation-contract.json` + the `ui/src/lib/contract.ts` codegen.
 //! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate and the `contract_not_stale` test both invoke it).
-//! - `purity-check` — fail if the `windows` family reaches any pure-tier crate, even target-gated (run by `make ci` and the remote mill gate `scripts/win-ci.cmd`).
+//! - `purity-check` — fail if the `windows` family reaches any strict workspace member (every member except the reviewed Windows-capable exception set), even target-gated; members come from `cargo metadata`, with normal/build/dev traversal under `--target all --all-features`.
 //! - `package` — Velopack packaging (delegates to the Windows script; a stub off the build box).
 //! - `dev` — developer convenience launcher (stub).
 
@@ -116,86 +116,24 @@ fn generate_ts_binding(contract_json: &str) -> String {
     out
 }
 
-/// Pure-tier crates: must never depend on the `windows` family, even
-/// target-gated. Keep in sync with the pure tier (AGENTS.md §Source Layout,
-/// deny.toml). A new pure crate MUST be listed here or it goes unchecked.
-const PURE_CRATES: &[&str] = &[
-    "observer-model",
-    "observer-segment",
-    "observer-state",
-    "observer-health",
-    "observer-recovery",
-    "observer-lifecycle",
-    "observer-contract",
-    "observer-exclusion",
-    "observer-hotkey",
-    "observer-mic",
-    "observer-retention",
-    "observer-update",
-    "observer-log",
-    "observer-pl",
-    "observer-nv12",
-    "observer-audio",
-    "observer-sample-timing",
-];
-
-/// Fail if the `windows` family reaches any pure-tier crate. `--target all` is
-/// essential: the platform tier declares `windows` gated to cfg(windows), so a
-/// leak is invisible to a host-target `cargo tree` on a non-Windows box.
 fn cmd_purity_check() -> ExitCode {
     let root = repo_root();
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let mut violations = Vec::new();
-    for pkg in PURE_CRATES {
-        let out = std::process::Command::new(&cargo)
-            .args([
-                "tree",
-                "--locked",
-                "-p",
-                pkg,
-                "--target",
-                "all",
-                "-e",
-                "normal,build",
-                "--prefix",
-                "none",
-            ])
-            .current_dir(&root)
-            .output();
-        let out = match out {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("purity-check: failed to run cargo tree for {pkg}: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
-        if !out.status.success() {
-            eprintln!(
-                "purity-check: cargo tree failed for {pkg}:\n{}",
-                String::from_utf8_lossy(&out.stderr)
+    let cargo = xtask::purity::configured_cargo();
+    match xtask::purity::run_purity_check(&root, std::ffi::OsStr::new(&cargo)) {
+        Ok(witness) => {
+            println!(
+                "purity-check: inspected {} workspace members and {} dependency edges; {} strict members are windows-free; {} validated exceptions reach the windows family",
+                witness.member_count,
+                witness.inspected_edge_count,
+                witness.strict_count,
+                witness.exception_count
             );
-            return ExitCode::FAILURE;
+            ExitCode::SUCCESS
         }
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            if line.trim_start().starts_with("windows") {
-                violations.push(format!("{pkg} -> {}", line.trim()));
-            }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
         }
-    }
-    if violations.is_empty() {
-        println!(
-            "purity-check: pure tier is windows-free ({} crates)",
-            PURE_CRATES.len()
-        );
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("purity-check: the windows family leaked into the pure tier:");
-        for v in &violations {
-            eprintln!("  {v}");
-        }
-        eprintln!("pure-tier crates must never depend on `windows` (even target-gated).");
-        eprintln!("move the OS-bound code into a platform-tier crate (capture-*/platform-win).");
-        ExitCode::FAILURE
     }
 }
 

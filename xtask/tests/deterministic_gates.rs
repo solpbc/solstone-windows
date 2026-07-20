@@ -105,10 +105,15 @@ fn every_gated_cargo_resolution_is_locked() {
         assert!(invocations > 0, "{path} has no executable cargo invocation");
     }
 
-    let xtask = read(&root, "xtask/src/main.rs");
-    assert!(xtask.contains("std::env::var(\"CARGO\")"));
-    assert!(xtask.contains("Command::new(&cargo)"));
-    assert!(xtask.contains("\"tree\",\n                \"--locked\","));
+    let purity = read(&root, "xtask/src/purity.rs");
+    assert!(purity.contains("std::env::var(\"CARGO\")"));
+    assert!(purity.contains("Command::new(&cargo)"));
+    assert!(purity.contains(
+        "\"tree\",\n                \"--locked\",\n                \"-p\",\n                package_name,\n                \"--target\",\n                \"all\",\n                \"--all-features\",\n                \"-e\",\n                \"normal,build,dev\",\n                \"--prefix\",\n                \"none\","
+    ));
+    assert!(
+        purity.contains("\"metadata\", \"--locked\", \"--format-version\", \"1\", \"--no-deps\"")
+    );
 
     let contract_test = read(&root, "xtask/tests/contract_not_stale.rs");
     assert!(contract_test.contains("\"run\", \"--locked\","));
@@ -144,27 +149,30 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
         "ERROR: RustSec advisory database refresh failed; no current advisory result was produced."
     ));
 
-    let sync_start = makefile
-        .find("sync-win-host:")
-        .expect("sync-win-host target");
-    let sync_recipe = &makefile[sync_start..];
-    let guard = sync_recipe
-        .find("sh scripts/check-win-sync-tree.sh")
-        .expect("tree guard");
-    let bundle = sync_recipe
-        .find("git bundle create")
-        .expect("bundle creation");
-    let scp = sync_recipe.find("$(WIN_SCP)").expect("SCP transfer");
+    assert!(makefile.contains(
+        "sync-win-host: require-win-remote-host\n\t@WIN_REMOTE_HOST=\"$(WIN_REMOTE_HOST)\" GIT=\"$(GIT)\" SCP=\"$(SCP)\" sh scripts/sync-win-host.sh"
+    ));
+    let sync_script = read(&root, "scripts/sync-win-host.sh");
+    let guard = sync_script.find("phase=guard").expect("tree guard phase");
+    let bundle = sync_script
+        .find("phase=create-bundle")
+        .expect("bundle creation phase");
+    let scp = sync_script.find("phase=scp").expect("SCP transfer phase");
     assert!(
-        guard < bundle && guard < scp,
-        "tree guard must run before remote work"
+        guard < bundle && bundle < scp,
+        "tree guard, bundle creation, and SCP phases must stay ordered"
     );
+    assert!(sync_script[guard..bundle].contains("check-win-sync-tree.sh"));
+    assert!(sync_script[bundle..scp].contains("\"$GIT\" bundle create"));
 
     for path in [
         "scripts/preflight-toolchain.sh",
         "scripts/preflight-cargo-deny.sh",
         "scripts/check-win-sync-tree.sh",
+        "scripts/sync-win-host.sh",
+        "scripts/win-host-ci.sh",
         "scripts/preflight-toolchain.cmd",
+        "scripts/lib/preflight-toolchain.test.cmd",
         "scripts/win-ci.cmd",
         "scripts/win-app-build.cmd",
         "scripts/win-package.cmd",

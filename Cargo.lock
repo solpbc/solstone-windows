@@ -2817,7 +2817,6 @@ dependencies = [
  "base64 0.22.1",
  "hkdf",
  "observer-model",
- "rcgen",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -16,6 +16,7 @@ cd /d "%~dp0.." || exit /b 1
 :: rustup installs cargo under the user profile; non-interactive SSH PATH may not
 :: carry it, so add it explicitly (the winget/PATH-refresh gotcha from the spikes).
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+call scripts\lib\preflight-toolchain.test.cmd || exit /b 1
 call scripts\preflight-toolchain.cmd || exit /b 1
 
 :: Locate + activate VS Build Tools (the MSVC linker the platform-tier crates need).
@@ -39,5 +40,10 @@ cargo run --locked -q -p xtask -- contract --check || exit /b 1
 echo === cargo xtask purity-check --locked ===
 cargo run --locked -q -p xtask -- purity-check || exit /b 1
 
+git rev-parse HEAD >nul 2>&1 || ( echo ERROR: git rev-parse HEAD failed & exit /b 1 )
+set "WIN_CI_HEAD="
+for /f "usebackq tokens=*" %%i in (`git rev-parse HEAD`) do set "WIN_CI_HEAD=%%i"
+if not defined WIN_CI_HEAD ( echo ERROR: git rev-parse HEAD returned no commit & exit /b 1 )
+echo WIN_CI_HEAD=%WIN_CI_HEAD%
 echo === WIN_CI_OK: native Windows build and test passed for workspace excluding solstone-windows-app; contract and purity checks passed; app package install sign and smoke not run ===
 exit /b 0

@@ -150,5 +150,14 @@ shipped signed.
 
 ## Remote build host (optional)
 
-`WIN_REMOTE_HOST=<host> make win-host-ci` syncs the tree (dedicated remote tree,
-`rsync --delete`) and runs `make ci` on the build box over SSH.
+`WIN_REMOTE_HOST=<host> make win-host-ci` takes a common-directory flock, refuses
+untracked non-ignored files or an unmerged index, and snapshots the exact
+committed, staged, and unstaged tracked working tree into a uniquely named,
+verified git bundle carrying the CAS-guarded stable
+`refs/heads/__swsync` ref. It ships the bundle by scp to
+`swbuild.bundle` (no rsync); the box bootstrap hard-checks it out under
+`~/swbuild` and runs `scripts/win-ci.cmd` for the build, tests, contract check,
+and purity check. The caller accepts the run only when the box reports a
+`WIN_CI_HEAD` matching the exact transferred snapshot SHA and includes
+`WIN_CI_OK`; a stale or mismatched
+acknowledgement fails even when compilation was green.

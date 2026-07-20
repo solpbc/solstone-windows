@@ -75,8 +75,8 @@ charter and license.
 | Repository entry point | Evidence class | Exact claim |
 |---|---|---|
 | `make test`, `make ui-test`, `make test-scripts`, and the local Rust legs of `make ci` | Host evidence | Linux-host formatting, compilation/tests for the host-testable subset, UI tests, and shell policy; no Windows compilation |
-| `make purity-check` | Cross-target drift evidence | Reads the all-target dependency graph with `cargo tree --target all`; detects Windows-family dependency drift but does not compile or link MSVC code |
-| `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; no app package, install, sign, or smoke |
+| `make purity-check` | Cross-target classification evidence | Enumerates every workspace member from `cargo metadata` and inspects each exactly once with `cargo tree --target all --all-features -e normal,build,dev`; the Windows family is forbidden for every member except the reviewed Windows-capable platform/composition/app set, and unknown or stale exception entries fail. This does not compile or link MSVC code |
+| `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; the caller verifies that the box built the exact transferred snapshot by matching its reported HEAD to the intended snapshot SHA; no app package, install, sign, or smoke |
 | `scripts/win-app-build.cmd` | Native app-build evidence | Builds the UI and Windows app binary; no package, install, sign, or smoke |
 | `make package` / `scripts/win-package.cmd` | Package-construction evidence | Release app build plus Velopack pack; unsigned unless signing is explicitly enabled; no install or smoke |
 | `SOLSTONE_SIGN=1 scripts/win-package.cmd` → install emitted setup → `make smoke` | Shipped-artifact proof | Exercises the installed signed bytes in the interactive Windows session |
@@ -97,11 +97,17 @@ inside the five audited platform crates named above; crate-wide
 **Off-Windows dev host:** the Rust-MSVC / windows-rs / Tauri toolchain only builds
 on Windows, so on a non-Windows dev host run the gate on the Windows build box with
 `WIN_REMOTE_HOST=user@host make win-host-ci`. It refuses untracked non-ignored
-files, bundles the exact committed/staged/tracked working tree, ships it over SSH
-(git bundle + scp — no rsync), and runs build + tests + the contract check on the
-box, streaming results back. `WIN_REMOTE_HOST` is supplied by your environment,
-never committed. The live FlaUI smoke + lifecycle matrix stay operator-direct on
-the box (not part of `win-host-ci`).
+files and an unmerged index, then snapshots the exact committed, staged, and
+unstaged tracked working tree into a uniquely named, verified bundle on the
+CAS-guarded stable `refs/heads/__swsync` ref. A common-directory flock serializes
+overlapping runs; `flock` is required on the Linux driver host, with no unlocked
+fallback. The caller ships the bundle over SSH as `swbuild.bundle` (git bundle +
+scp — no rsync); the box bootstrap hard-checks it out under `~/swbuild` and runs
+`scripts/win-ci.cmd`. The caller accepts the result only when the box's checked-out
+HEAD equals the exact transferred snapshot SHA and `WIN_CI_OK` is present.
+`WIN_REMOTE_HOST` is supplied by your environment, never committed. The live FlaUI
+smoke + lifecycle matrix stay operator-direct on the box (not part of
+`win-host-ci`).
 
 Build-box gotchas: the FlaUI harness targets **net48** and needs
 `Accessibility.dll` in the publish layout; invoke `.cmd` shims via `cmd.exe /c`;

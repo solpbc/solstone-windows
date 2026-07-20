@@ -10,6 +10,9 @@
 SHELL := /bin/sh
 PWSH ?= pwsh
 CARGO ?= cargo
+GIT ?= git
+SCP ?= scp
+SSH ?= ssh
 TAURI_BIN := solstone-windows-app
 
 # Windows-only crates: their real build/test/lint runs on the Windows box
@@ -26,9 +29,6 @@ REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-
 # scripts/win-ci.cmd. WIN_REMOTE_HOST is supplied by the build environment, never
 # committed (public hygiene): WIN_REMOTE_HOST=user@host make win-host-ci.
 WIN_REMOTE_HOST ?=
-WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
-WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
-WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
 .PHONY: install rust-toolchain preflight-toolchain preflight-cargo-deny build test ui-test \
 	        test-scripts ci audit contract purity-check package publish publish-r2 \
@@ -167,7 +167,7 @@ check-channels:
 # The box checks the working tree out under ~/swbuild (sync-win-host's bundle).
 pull-releases: require-win-remote-host
 	rm -rf Releases
-	$(WIN_SCP) -r $(WIN_REMOTE_HOST):swbuild/Releases Releases
+	"$(SCP)" -o ControlMaster=auto -o "ControlPath=/tmp/sw-%r@%h:%p" -o ControlPersist=60s -r "$(WIN_REMOTE_HOST):swbuild/Releases" Releases
 	@echo "pulled Releases/ from $(WIN_REMOTE_HOST)"
 
 # Launch the installed app in Session 1, then run the load-bearing health/render
@@ -198,16 +198,9 @@ require-win-remote-host:
 
 # Bundle the exact working tree (incl. uncommitted) and ship it to the box.
 sync-win-host: require-win-remote-host
-	@sh scripts/check-win-sync-tree.sh
-	@mkdir -p $(dir $(WIN_BUNDLE))
-	@SHA=$$(git stash create); [ -n "$$SHA" ] || SHA=$$(git rev-parse HEAD); \
-	  git update-ref refs/heads/__swsync $$SHA; \
-	  git bundle create $(WIN_BUNDLE) refs/heads/__swsync; \
-	  git update-ref -d refs/heads/__swsync; \
-	  echo "synced working tree @ $$SHA"
-	$(WIN_SCP) $(WIN_BUNDLE) $(WIN_REMOTE_HOST):swbuild.bundle
+	@WIN_REMOTE_HOST="$(WIN_REMOTE_HOST)" GIT="$(GIT)" SCP="$(SCP)" sh scripts/sync-win-host.sh
 
 # Sync, then run the Session-0-safe gate on the box (build + tests + contract).
 # The live FlaUI smoke + lifecycle matrix are operator-direct, not part of this.
-win-host-ci: sync-win-host
-	$(WIN_SSH) $(WIN_REMOTE_HOST) 'cmd /c C:\sol\sw-ci.cmd'
+win-host-ci: require-win-remote-host
+	@WIN_REMOTE_HOST="$(WIN_REMOTE_HOST)" GIT="$(GIT)" SCP="$(SCP)" SSH="$(SSH)" sh scripts/win-host-ci.sh

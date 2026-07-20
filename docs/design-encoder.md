@@ -72,7 +72,7 @@ Add `crates/observer-nv12` as a pure crate:
 
 - `#![forbid(unsafe_code)]`.
 - Workspace member and workspace dependency.
-- Add to `xtask/src/main.rs` `PURE_CRATES` so `cargo xtask purity-check` covers it (`xtask/src/main.rs:119-131`).
+- `cargo xtask purity-check` enumerates every workspace member from `cargo metadata` automatically, so a new pure crate needs no xtask list edit; it is strict (Windows-family-forbidden) by default unless deliberately added to the reviewed Windows-capable exception set.
 - Do not add it to `Makefile` `REMOTE_CRATES`; it must run in local fast CI.
 
 It owns RGBA8/BGRA8 to NV12 conversion. Use BT.601 limited range:
@@ -332,7 +332,6 @@ Update existing files in implementation stage:
 
 - `Cargo.toml` workspace members/dependencies
 - `Makefile` `REMOTE_CRATES`
-- `xtask/src/main.rs` `PURE_CRATES`
 - `src-tauri/Cargo.toml`
 - `src-tauri/src/app.rs`
 - `crates/observer-model/src/lib.rs`
