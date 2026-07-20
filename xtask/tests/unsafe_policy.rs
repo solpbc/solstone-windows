@@ -254,12 +254,12 @@ impl PolicyState {
 
     fn inspect_unsafe_attribute(
         &mut self,
-        attribute: &Attribute,
+        form_count: usize,
         source_path: &str,
         line: usize,
         scope: Option<&NodeIdentity>,
     ) {
-        if attribute.path().is_ident("unsafe") {
+        for _ in 0..form_count {
             self.record_unsafe("unsafe attribute", source_path, line, scope);
         }
     }
@@ -403,13 +403,14 @@ impl<'a> FileVisitor<'a> {
             self.scope.clone()
         };
         for attribute in attributes {
-            let line = if attribute.path().is_ident("unsafe") {
+            let form_count = unsafe_attribute_form_count(attribute);
+            let line = if form_count > 0 {
                 self.locator.next("unsafe")
             } else {
                 node_line
             };
             self.policy.inspect_unsafe_attribute(
-                attribute,
+                form_count,
                 self.source_path,
                 line,
                 effective_scope.as_ref(),
@@ -419,9 +420,10 @@ impl<'a> FileVisitor<'a> {
     }
 
     fn inspect_ordinary_attribute(&mut self, attribute: &Attribute) {
+        let unsafe_attribute_count = unsafe_attribute_form_count(attribute);
         let line = if attribute_mentions_unsafe_code(attribute) {
             self.locator.next("unsafe_code")
-        } else if attribute.path().is_ident("unsafe") {
+        } else if unsafe_attribute_count > 0 {
             self.locator.next("unsafe")
         } else {
             1
@@ -429,7 +431,7 @@ impl<'a> FileVisitor<'a> {
         self.policy
             .inspect_level_attribute(attribute, None, self.source_path, line);
         self.policy.inspect_unsafe_attribute(
-            attribute,
+            unsafe_attribute_count,
             self.source_path,
             line,
             self.scope.as_ref(),
@@ -1026,9 +1028,29 @@ impl WorkspaceScanner {
 #[test]
 fn workspace_members_inherit_the_unsafe_policy() {
     let root = repo_root();
-    if let Err(error) = run_unsafe_policy(&root) {
-        panic!("{error}");
-    }
+    let witness = run_unsafe_policy(&root).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        witness.approved_boundary_count,
+        APPROVED_NODES.len(),
+        "the witness must prove exactly the reviewed boundaries"
+    );
+    assert!(witness.member_count > 0, "the witness must inspect members");
+    assert!(
+        witness.inventory_file_count > 0,
+        "the witness must inventory Rust sources"
+    );
+    assert!(
+        witness.visited_source_count > 0,
+        "the witness must visit Rust sources"
+    );
+    assert_eq!(
+        witness.inventory_file_count, witness.visited_source_count,
+        "every inventoried Rust source must be visited exactly once"
+    );
+    assert!(
+        witness.unsafe_form_count > 0,
+        "the witness must find and quarantine real unsafe forms"
+    );
 }
 
 fn run_unsafe_policy(repo_root: &Path) -> Result<UnsafePolicyWitness, String> {
@@ -1044,7 +1066,7 @@ fn scan_unsafe_policy(
     let requested_root = fs::canonicalize(workspace_root).map_err(|error| {
         format!(
             "unsafe-policy: workspace root {} is unavailable: {error}",
-            workspace_root.display()
+            normalize_path_display(workspace_root)
         )
     })?;
     let output = Command::new(cargo)
@@ -1054,13 +1076,13 @@ fn scan_unsafe_policy(
         .map_err(|error| {
             format!(
                 "unsafe-policy: failed to run cargo metadata in {}: {error}",
-                requested_root.display()
+                normalize_path_display(&requested_root)
             )
         })?;
     if !output.status.success() {
         return Err(format!(
             "unsafe-policy: cargo metadata failed in {}: {}",
-            requested_root.display(),
+            normalize_path_display(&requested_root),
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
@@ -1070,14 +1092,14 @@ fn scan_unsafe_policy(
     let metadata_root = fs::canonicalize(&metadata_root).map_err(|error| {
         format!(
             "unsafe-policy: metadata workspace_root {} is unavailable: {error}",
-            metadata_root.display()
+            normalize_path_display(&metadata_root)
         )
     })?;
     if metadata_root != requested_root {
         return Err(format!(
             "unsafe-policy: requested root {} differs from metadata workspace_root {}",
-            requested_root.display(),
-            metadata_root.display()
+            normalize_path_display(&requested_root),
+            normalize_path_display(&metadata_root)
         ));
     }
     let target_directory =
@@ -1187,29 +1209,32 @@ fn parse_workspace_members(
                 format!("unsafe-policy: workspace member {package_name} omitted manifest_path")
             })?;
         let manifest_path = fs::canonicalize(manifest_path).map_err(|error| {
-            format!("unsafe-policy: manifest_path {manifest_path} is unavailable: {error}")
+            format!(
+                "unsafe-policy: manifest_path {} is unavailable: {error}",
+                normalize_path_display(Path::new(manifest_path))
+            )
         })?;
         let root = manifest_path
             .parent()
             .ok_or_else(|| {
                 format!(
                     "unsafe-policy: manifest {} has no parent",
-                    manifest_path.display()
+                    display_path(workspace_root, &manifest_path)
                 )
             })?
             .to_path_buf();
         if !root.starts_with(workspace_root) {
             return Err(format!(
                 "unsafe-policy: member root {} escapes workspace root {}",
-                root.display(),
-                workspace_root.display()
+                display_path(workspace_root, &root),
+                normalize_path_display(workspace_root)
             ));
         }
         if root.starts_with(target_directory) {
             return Err(format!(
                 "unsafe-policy: target_directory {} equals or contains member root {}",
-                target_directory.display(),
-                root.display()
+                display_path(workspace_root, target_directory),
+                display_path(workspace_root, &root)
             ));
         }
         let targets = package
@@ -1231,13 +1256,13 @@ fn parse_workspace_members(
                 .ok_or_else(|| {
                     format!(
                         "unsafe-policy: target in {} omitted kind",
-                        manifest_path.display()
+                        display_path(workspace_root, &manifest_path)
                     )
                 })?;
             if kinds.is_empty() || kinds.iter().any(|kind| kind.as_str().is_none()) {
                 return Err(format!(
                     "unsafe-policy: target in {} carried an invalid kind",
-                    manifest_path.display()
+                    display_path(workspace_root, &manifest_path)
                 ));
             }
             let src_path = target
@@ -1247,7 +1272,7 @@ fn parse_workspace_members(
                 .ok_or_else(|| {
                     format!(
                         "unsafe-policy: target in {} omitted src_path",
-                        manifest_path.display()
+                        display_path(workspace_root, &manifest_path)
                     )
                 })?;
             let lexical = normalize_lexical(Path::new(src_path));
@@ -1268,13 +1293,13 @@ fn parse_workspace_members(
             let src_path = fs::canonicalize(&lexical).map_err(|error| {
                 format!(
                     "unsafe-policy: target source {} is unavailable: {error}",
-                    lexical.display()
+                    display_path(workspace_root, &lexical)
                 )
             })?;
             if !src_path.starts_with(&root) || !src_path.is_file() {
                 return Err(format!(
                     "unsafe-policy: target source {} is not a regular in-member file",
-                    src_path.display()
+                    display_path(workspace_root, &src_path)
                 ));
             }
             target_sources.push(TargetSource { path: src_path });
@@ -1298,8 +1323,8 @@ fn parse_workspace_members(
             if member.root.starts_with(&other.root) || other.root.starts_with(&member.root) {
                 return Err(format!(
                     "unsafe-policy: overlapping member roots {} and {}",
-                    member.root.display(),
-                    other.root.display()
+                    display_path(workspace_root, &member.root),
+                    display_path(workspace_root, &other.root)
                 ));
             }
         }
@@ -1349,11 +1374,11 @@ fn canonicalize_allow_missing(path: &Path) -> Result<PathBuf, String> {
     while !current.exists() {
         let name = current
             .file_name()
-            .ok_or_else(|| format!("{} has no existing ancestor", path.display()))?;
+            .ok_or_else(|| format!("{} has no existing ancestor", normalize_path_display(path)))?;
         suffix.push(name.to_os_string());
         current = current
             .parent()
-            .ok_or_else(|| format!("{} has no existing ancestor", path.display()))?;
+            .ok_or_else(|| format!("{} has no existing ancestor", normalize_path_display(path)))?;
     }
     let mut normalized = fs::canonicalize(current).map_err(|error| error.to_string())?;
     for component in suffix.iter().rev() {
@@ -1368,27 +1393,29 @@ fn collect_rust_inventory(
     output: &mut BTreeSet<PathBuf>,
 ) -> Result<(), String> {
     let mut entries = fs::read_dir(directory)
-        .map_err(|error| format!("read {}: {error}", directory.display()))?
+        .map_err(|error| format!("read {}: {error}", normalize_path_display(directory)))?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("read {} entry: {error}", directory.display()))?;
+        .map_err(|error| format!("read {} entry: {error}", normalize_path_display(directory)))?;
     entries.sort();
     for path in entries {
         let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("inspect {}: {error}", path.display()))?;
+            .map_err(|error| format!("inspect {}: {error}", normalize_path_display(&path)))?;
         if metadata.file_type().is_symlink() {
             continue;
         }
         if metadata.is_dir() {
-            let canonical = fs::canonicalize(&path)
-                .map_err(|error| format!("canonicalize {}: {error}", path.display()))?;
+            let canonical = fs::canonicalize(&path).map_err(|error| {
+                format!("canonicalize {}: {error}", normalize_path_display(&path))
+            })?;
             if canonical.starts_with(target_directory) {
                 continue;
             }
             collect_rust_inventory(&canonical, target_directory, output)?;
         } else if metadata.is_file() && path.extension().and_then(OsStr::to_str) == Some("rs") {
-            let canonical = fs::canonicalize(&path)
-                .map_err(|error| format!("canonicalize {}: {error}", path.display()))?;
+            let canonical = fs::canonicalize(&path).map_err(|error| {
+                format!("canonicalize {}: {error}", normalize_path_display(&path))
+            })?;
             if !canonical.starts_with(target_directory) {
                 output.insert(canonical);
             }
@@ -1503,6 +1530,37 @@ fn attribute_mentions_unsafe_code(attribute: &Attribute) -> bool {
         Meta::Path(path) => path.is_ident("unsafe_code"),
         Meta::NameValue(_) => false,
         Meta::List(list) => token_stream_contains_ident(&list.tokens, "unsafe_code"),
+    }
+}
+
+fn unsafe_attribute_form_count(attribute: &Attribute) -> usize {
+    if attribute.path().is_ident("unsafe") {
+        return 1;
+    }
+    if !attribute.path().is_ident("cfg_attr") {
+        return 0;
+    }
+    nested_unsafe_attribute_form_count(&attribute.meta)
+}
+
+fn nested_unsafe_attribute_form_count(meta: &Meta) -> usize {
+    let Meta::List(list) = meta else {
+        return 0;
+    };
+    if list.path.is_ident("unsafe") {
+        return 1;
+    }
+    if !list.path.is_ident("cfg_attr") {
+        return 0;
+    }
+    let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
+    match parser.parse2(list.tokens.clone()) {
+        Ok(arguments) => arguments
+            .iter()
+            .skip(1)
+            .map(nested_unsafe_attribute_form_count)
+            .sum(),
+        Err(_) => usize::from(token_stream_contains_ident(&list.tokens, "unsafe")),
     }
 }
 
@@ -1763,7 +1821,11 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 
 fn display_path(workspace_root: &Path, path: &Path) -> String {
     let shown = path.strip_prefix(workspace_root).unwrap_or(path);
-    shown.to_string_lossy().replace('\\', "/")
+    normalize_path_display(shown)
+}
+
+fn normalize_path_display(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn repo_root() -> PathBuf {
@@ -1790,10 +1852,7 @@ impl TempWorkspace {
             "solstone-unsafe-policy-{}-{counter}",
             std::process::id()
         ));
-        if root.exists() {
-            fs::remove_dir_all(&root).expect("remove stale unsafe-policy fixture");
-        }
-        fs::create_dir_all(&root).expect("create unsafe-policy fixture");
+        fs::create_dir(&root).expect("create unsafe-policy fixture");
         Self { root }
     }
 
@@ -1939,6 +1998,22 @@ fn duplicate_approved_allow_fails() {
 }
 
 #[test]
+fn cfg_split_same_identity_without_allow_fails() {
+    let workspace = TempWorkspace::basic(
+        "#[cfg(any())]\n\
+         #[allow(unsafe_code)]\n\
+         mod approved { pub fn first() { unsafe {} } }\n\
+         #[cfg(all())]\n\
+         mod approved { pub fn second() { unsafe {} } }\n",
+    );
+    assert_fixture_failure(
+        &workspace,
+        FIXTURE_APPROVED_MOD,
+        "crates/app/src/lib.rs:5: unsafe block is outside an approved unsafe boundary",
+    );
+}
+
+#[test]
 fn new_member_without_lint_inheritance_fails() {
     let workspace = TempWorkspace::new();
     workspace.write_workspace(&["crates/app", "crates/bad"]);
@@ -2038,6 +2113,18 @@ fn mutable_static_fails() {
 fn unsafe_attribute_fails() {
     let workspace =
         TempWorkspace::basic("#[unsafe(no_mangle)]\npub extern \"C\" fn callback() {}\n");
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:1: unsafe attribute is outside an approved unsafe boundary",
+    );
+}
+
+#[test]
+fn cfg_attr_unsafe_attribute_fails() {
+    let workspace = TempWorkspace::basic(
+        "#[cfg_attr(any(), unsafe(no_mangle))]\npub extern \"C\" fn callback() {}\n",
+    );
     assert_fixture_failure(
         &workspace,
         &[],
