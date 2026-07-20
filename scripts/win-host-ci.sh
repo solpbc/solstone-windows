@@ -52,9 +52,19 @@ else
 fi
 lock_path=$git_common_dir/solstone-win-host-ci.lock
 
-exec 9>"$lock_path"
+if exec 9>"$lock_path"; then
+  :
+else
+  echo "ERROR: win-host-ci: lock file open failed: $lock_path" >&2
+  exit 1
+fi
 echo "win-host-ci: waiting for lock $lock_path"
-flock 9
+if flock 9; then
+  :
+else
+  echo "ERROR: win-host-ci: lock acquisition failed: $lock_path" >&2
+  exit 1
+fi
 echo "win-host-ci: acquired lock $lock_path"
 
 if WIN_REMOTE_HOST="${WIN_REMOTE_HOST:-}" \
@@ -90,7 +100,12 @@ if [ "$sha_line_count" -ne 1 ] || [ "$sha_file_valid" -ne 1 ]; then
   exit 1
 fi
 
-ssh_output_file=$(mktemp "$repo_root/target/win-host-ci.ssh.XXXXXX")
+if ssh_output_file=$(mktemp "$repo_root/target/win-host-ci.ssh.XXXXXX"); then
+  :
+else
+  echo "ERROR: win-host-ci: SSH output file creation failed" >&2
+  exit 1
+fi
 if "$SSH" \
   -o ControlMaster=auto \
   -o "ControlPath=/tmp/sw-%r@%h:%p" \

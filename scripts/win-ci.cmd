@@ -3,9 +3,10 @@
 :: Copyright (c) 2026 sol pbc
 ::
 :: Windows build-box CI runner. Activates the MSVC dev environment, then runs the
-:: Session-0-safe gate: build + workspace tests + contract drift check. This is the
-:: remote-mill ship-gate (the live FlaUI smoke + lifecycle matrix are operator-direct
-:: per the wave plan, not part of this run).
+:: native preflight self-test, toolchain preflight, build, workspace tests, contract
+:: drift check, and purity check, then emits WIN_CI_HEAD for identity verification.
+:: This is the remote-mill ship-gate (the live FlaUI smoke + lifecycle matrix are
+:: operator-direct per the wave plan, not part of this run).
 ::
 :: Invoked on the build box via `cmd.exe /c` (the box default SSH shell is
 :: PowerShell, and vcvars only sets env in a cmd session). Run from the repo root
@@ -28,9 +29,9 @@ if not defined VSINSTALL ( echo ERROR: VS Build Tools with VC.Tools.x86.x64 not 
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul || ( echo ERROR: vcvarsall failed & exit /b 1 )
 
 :: The fast iterate-loop gate: build + test the library/platform crates (incl. the
-:: windows-rs tier) + the contract drift check. The Tauri app crate is excluded here
-:: because its build needs the npm frontend + an icon asset - those build in the
-:: heavier operator-direct `make package` path, not the lode iterate loop.
+:: windows-rs tier), then check contract drift and purity. The Tauri app crate is
+:: excluded here because its build needs the npm frontend + an icon asset - those
+:: build in the heavier operator-direct `make package` path, not this iterate loop.
 echo === cargo build --locked (workspace, minus app) ===
 cargo build --locked --workspace --exclude solstone-windows-app || exit /b 1
 echo === cargo test --locked (workspace, minus app) ===

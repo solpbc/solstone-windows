@@ -10,8 +10,11 @@ set "ORIGINAL_PATH=%PATH%"
 set "TEST_ROOT=%TEMP%\solstone-preflight-%RANDOM%-%RANDOM%"
 set "CASE_OUTPUT=%TEST_ROOT%\case-output.txt"
 set "CASES_PASSED=0"
+set "TEST_ROOT_OWNED="
 
+if exist "%TEST_ROOT%" goto setup_failed
 mkdir "%TEST_ROOT%" >nul 2>&1 || goto setup_failed
+set "TEST_ROOT_OWNED=1"
 mkdir "%TEST_ROOT%\compiler path with spaces" >nul 2>&1 || goto setup_failed
 copy /y "%FIXTURES%\rustc-valid\rustc.cmd" "%TEST_ROOT%\compiler path with spaces\rustc.cmd" >nul || goto setup_failed
 
@@ -107,5 +110,5 @@ endlocal
 exit /b 1
 
 :cleanup
-if exist "%TEST_ROOT%" rmdir /s /q "%TEST_ROOT%"
+if defined TEST_ROOT_OWNED if exist "%TEST_ROOT%" rmdir /s /q "%TEST_ROOT%"
 exit /b 0

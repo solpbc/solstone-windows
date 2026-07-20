@@ -67,9 +67,11 @@ To drive a Windows build box over SSH from a checkout elsewhere:
 WIN_REMOTE_HOST=<host> make win-host-ci
 ```
 
-This refuses untracked non-ignored files, transfers the tracked working tree by
-Git bundle + SCP, and runs the native Windows gate. Set `WIN_REMOTE_HOST` to the
-build box address supplied by your environment.
+This refuses untracked non-ignored files and an unmerged index, serializes
+overlapping runs with a lock, and transfers the tracked working tree by Git
+bundle + SCP. It accepts the native gate only when the box's reported HEAD
+matches the exact transferred snapshot SHA. Set `WIN_REMOTE_HOST` to the build
+box address supplied by your environment.
 
 ## Verifying
 

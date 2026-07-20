@@ -220,7 +220,7 @@ pub fn classify_members(
 }
 
 pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness, String> {
-    let metadata_output = Command::new(&cargo)
+    let metadata_output = Command::new(cargo)
         .args(["metadata", "--locked", "--format-version", "1", "--no-deps"])
         .current_dir(repo_root)
         .output()
@@ -255,7 +255,7 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
     let mut tree_outputs = BTreeMap::new();
     for member in &members {
         let package_name = member.package_name.as_str();
-        let output = Command::new(&cargo)
+        let output = Command::new(cargo)
             .args([
                 "tree",
                 "--locked",
@@ -273,7 +273,7 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
             .output()
             .map_err(|error| {
                 failure_message(
-                    members.len(),
+                    tree_outputs.len(),
                     inspected_edge_count(&tree_outputs),
                     &[format!(
                         "{} ({}): failed to run cargo tree: {error}",
@@ -284,7 +284,7 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
             })?;
         if !output.status.success() {
             return Err(failure_message(
-                members.len(),
+                tree_outputs.len(),
                 inspected_edge_count(&tree_outputs),
                 &[format!(
                     "{} ({}): cargo tree failed: {}",

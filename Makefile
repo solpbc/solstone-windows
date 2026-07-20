@@ -197,10 +197,11 @@ require-win-remote-host:
 	@test -n "$(WIN_REMOTE_HOST)" || (echo "Set WIN_REMOTE_HOST=user@host" >&2; exit 2)
 
 # Bundle the exact working tree (incl. uncommitted) and ship it to the box.
+# Internal transfer step; win-host-ci serializes runs, and its HEAD check rejects out-of-band bundle overwrites.
 sync-win-host: require-win-remote-host
 	@WIN_REMOTE_HOST="$(WIN_REMOTE_HOST)" GIT="$(GIT)" SCP="$(SCP)" sh scripts/sync-win-host.sh
 
-# Sync, then run the Session-0-safe gate on the box (build + tests + contract).
+# Run native preflights, build, tests, contract, and purity; accept only the exact transferred snapshot HEAD.
 # The live FlaUI smoke + lifecycle matrix are operator-direct, not part of this.
 win-host-ci: require-win-remote-host
 	@WIN_REMOTE_HOST="$(WIN_REMOTE_HOST)" GIT="$(GIT)" SCP="$(SCP)" SSH="$(SSH)" sh scripts/win-host-ci.sh
