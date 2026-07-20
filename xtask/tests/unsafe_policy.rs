@@ -676,9 +676,9 @@ struct WorkspaceScanner {
     target_directory: PathBuf,
     members: Vec<WorkspaceMember>,
     inventories: Vec<BTreeSet<PathBuf>>,
-    visited: BTreeMap<PathBuf, VisitRecord>,
+    visited: BTreeMap<Vec<String>, VisitRecord>,
     visited_rs: Vec<BTreeSet<PathBuf>>,
-    active_includes: Vec<PathBuf>,
+    active_includes: Vec<Vec<String>>,
     policy: PolicyState,
 }
 
@@ -761,14 +761,15 @@ impl WorkspaceScanner {
         referring_source: String,
         referring_line: usize,
     ) {
-        if is_include && self.active_includes.contains(&path) {
+        let identity = path_key(&path);
+        if is_include && self.active_includes.contains(&identity) {
             self.policy.violations.push(format!(
                 "{referring_source}:{referring_line}: recursive include! cycle: {}",
                 display_path(&self.workspace_root, &path)
             ));
             return;
         }
-        if let Some(previous) = self.visited.get(&path) {
+        if let Some(previous) = self.visited.get(&identity) {
             if previous.member_index != member_index {
                 self.policy.violations.push(format!(
                     "{referring_source}:{referring_line}: source is owned by multiple workspace members: {}",
@@ -783,7 +784,7 @@ impl WorkspaceScanner {
             return;
         }
         self.visited.insert(
-            path.clone(),
+            identity.clone(),
             VisitRecord {
                 member_index,
                 scope: scope.clone(),
@@ -793,7 +794,7 @@ impl WorkspaceScanner {
             self.visited_rs[member_index].insert(path.clone());
         }
         if is_include {
-            self.active_includes.push(path.clone());
+            self.active_includes.push(identity);
         }
 
         let source_path = display_path(&self.workspace_root, &path);
@@ -945,16 +946,20 @@ impl WorkspaceScanner {
         candidate: &Path,
     ) -> Option<PathBuf> {
         let member_root = &self.members[member_index].root;
-        if !candidate.starts_with(member_root) {
+        let lexical_member_root = normalize_lexical(member_root);
+        let lexical_candidate = normalize_lexical(candidate);
+        if !is_within(&lexical_candidate, &lexical_member_root) {
             self.policy.violations.push(format!(
                 "{source_path}:{line}: resolved source escapes member root: {}",
-                display_path(&self.workspace_root, candidate)
+                display_path(&self.workspace_root, &lexical_candidate)
             ));
             return None;
         }
-        let relative = candidate.strip_prefix(member_root).ok()?;
-        let components: Vec<_> = relative.components().collect();
-        let mut current = member_root.clone();
+        let components: Vec<_> = lexical_candidate
+            .components()
+            .skip(path_key(&lexical_member_root).len())
+            .collect();
+        let mut current = lexical_member_root;
         for (index, component) in components.iter().enumerate() {
             current.push(component.as_os_str());
             let metadata = match fs::symlink_metadata(&current) {
@@ -980,17 +985,17 @@ impl WorkspaceScanner {
                 return None;
             }
         }
-        let canonical = match fs::canonicalize(candidate) {
+        let canonical = match fs::canonicalize(&lexical_candidate) {
             Ok(path) => path,
             Err(error) => {
                 self.policy.violations.push(format!(
                     "{source_path}:{line}: resolved source canonicalization failed: {}: {error}",
-                    display_path(&self.workspace_root, candidate)
+                    display_path(&self.workspace_root, &lexical_candidate)
                 ));
                 return None;
             }
         };
-        if !canonical.starts_with(member_root) {
+        if !is_within(&canonical, member_root) {
             self.policy.violations.push(format!(
                 "{source_path}:{line}: resolved source escapes member root: {}",
                 display_path(&self.workspace_root, &canonical)
@@ -1009,17 +1014,29 @@ impl WorkspaceScanner {
 
     fn reconcile(&mut self) {
         for index in 0..self.members.len() {
-            for orphan in self.inventories[index].difference(&self.visited_rs[index]) {
-                self.policy.violations.push(format!(
-                    "{}: orphan .rs unreachable from any Cargo target",
-                    display_path(&self.workspace_root, orphan)
-                ));
+            let inventory_by_key: BTreeMap<_, _> = self.inventories[index]
+                .iter()
+                .map(|path| (path_key(path), path))
+                .collect();
+            let visited_by_key: BTreeMap<_, _> = self.visited_rs[index]
+                .iter()
+                .map(|path| (path_key(path), path))
+                .collect();
+            for (key, orphan) in &inventory_by_key {
+                if !visited_by_key.contains_key(key) {
+                    self.policy.violations.push(format!(
+                        "{}: orphan .rs unreachable from any Cargo target",
+                        display_path(&self.workspace_root, orphan)
+                    ));
+                }
             }
-            for unexpected in self.visited_rs[index].difference(&self.inventories[index]) {
-                self.policy.violations.push(format!(
-                    "{}: visited Rust source is absent from member inventory",
-                    display_path(&self.workspace_root, unexpected)
-                ));
+            for (key, unexpected) in &visited_by_key {
+                if !inventory_by_key.contains_key(key) {
+                    self.policy.violations.push(format!(
+                        "{}: visited Rust source is absent from member inventory",
+                        display_path(&self.workspace_root, unexpected)
+                    ));
+                }
             }
         }
     }
@@ -1095,7 +1112,7 @@ fn scan_unsafe_policy(
             normalize_path_display(&metadata_root)
         )
     })?;
-    if metadata_root != requested_root {
+    if path_key(&metadata_root) != path_key(&requested_root) {
         return Err(format!(
             "unsafe-policy: requested root {} differs from metadata workspace_root {}",
             normalize_path_display(&requested_root),
@@ -1208,10 +1225,20 @@ fn parse_workspace_members(
             .ok_or_else(|| {
                 format!("unsafe-policy: workspace member {package_name} omitted manifest_path")
             })?;
-        let manifest_path = fs::canonicalize(manifest_path).map_err(|error| {
+        let lexical_manifest_path = normalize_lexical(Path::new(manifest_path));
+        let lexical_root = lexical_manifest_path
+            .parent()
+            .ok_or_else(|| {
+                format!(
+                    "unsafe-policy: manifest {} has no parent",
+                    normalize_path_display(&lexical_manifest_path)
+                )
+            })?
+            .to_path_buf();
+        let manifest_path = fs::canonicalize(&lexical_manifest_path).map_err(|error| {
             format!(
                 "unsafe-policy: manifest_path {} is unavailable: {error}",
-                normalize_path_display(Path::new(manifest_path))
+                normalize_path_display(&lexical_manifest_path)
             )
         })?;
         let root = manifest_path
@@ -1223,14 +1250,14 @@ fn parse_workspace_members(
                 )
             })?
             .to_path_buf();
-        if !root.starts_with(workspace_root) {
+        if !is_within(&root, workspace_root) {
             return Err(format!(
                 "unsafe-policy: member root {} escapes workspace root {}",
                 display_path(workspace_root, &root),
                 normalize_path_display(workspace_root)
             ));
         }
-        if root.starts_with(target_directory) {
+        if is_within(&root, target_directory) {
             return Err(format!(
                 "unsafe-policy: target_directory {} equals or contains member root {}",
                 display_path(workspace_root, target_directory),
@@ -1276,14 +1303,14 @@ fn parse_workspace_members(
                     )
                 })?;
             let lexical = normalize_lexical(Path::new(src_path));
-            if !lexical.starts_with(&root) {
+            if !is_within(&lexical, &lexical_root) {
                 return Err(format!(
                     "unsafe-policy: {}: declared target source escapes member root: {}",
                     display_path(workspace_root, &manifest_path),
                     display_path(workspace_root, &lexical)
                 ));
             }
-            ensure_no_symlink_components(&root, &lexical).map_err(|(kind, path)| {
+            ensure_no_symlink_components(&lexical_root, &lexical).map_err(|(kind, path)| {
                 format!(
                     "unsafe-policy: {}: declared target {kind} symlink is forbidden: {}",
                     display_path(workspace_root, &manifest_path),
@@ -1296,7 +1323,7 @@ fn parse_workspace_members(
                     display_path(workspace_root, &lexical)
                 )
             })?;
-            if !src_path.starts_with(&root) || !src_path.is_file() {
+            if !is_within(&src_path, &root) || !src_path.is_file() {
                 return Err(format!(
                     "unsafe-policy: target source {} is not a regular in-member file",
                     display_path(workspace_root, &src_path)
@@ -1304,8 +1331,8 @@ fn parse_workspace_members(
             }
             target_sources.push(TargetSource { path: src_path });
         }
-        target_sources.sort_by(|left, right| left.path.cmp(&right.path));
-        target_sources.dedup_by(|left, right| left.path == right.path);
+        target_sources.sort_by_cached_key(|target| path_key(&target.path));
+        target_sources.dedup_by(|left, right| path_key(&left.path) == path_key(&right.path));
         members.push(WorkspaceMember {
             package_name,
             manifest_path,
@@ -1320,7 +1347,7 @@ fn parse_workspace_members(
     });
     for (index, member) in members.iter().enumerate() {
         for other in members.iter().skip(index + 1) {
-            if member.root.starts_with(&other.root) || other.root.starts_with(&member.root) {
+            if is_within(&member.root, &other.root) || is_within(&other.root, &member.root) {
                 return Err(format!(
                     "unsafe-policy: overlapping member roots {} and {}",
                     display_path(workspace_root, &member.root),
@@ -1368,6 +1395,105 @@ fn required_path(metadata: &Value, field: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("unsafe-policy: cargo metadata omitted {field}"))
 }
 
+/// Component-wise path identity, with Windows prefix forms and ASCII case normalized.
+fn path_key(path: &Path) -> Vec<String> {
+    use std::path::Prefix;
+
+    let fold = |value: &OsStr| {
+        let value = value.to_string_lossy();
+        if cfg!(windows) {
+            value.to_ascii_lowercase()
+        } else {
+            value.into_owned()
+        }
+    };
+    path.components()
+        .map(|component| match component {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(disk) | Prefix::VerbatimDisk(disk) => {
+                    format!("{}:", (disk as char).to_ascii_lowercase())
+                }
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                    format!(r"\\{}\{}", fold(server), fold(share))
+                }
+                Prefix::DeviceNS(value) | Prefix::Verbatim(value) => fold(value),
+            },
+            Component::RootDir => "\u{0}root".to_string(),
+            Component::CurDir => ".".to_string(),
+            Component::ParentDir => "..".to_string(),
+            Component::Normal(value) => fold(value),
+        })
+        .collect()
+}
+
+fn is_within(child: &Path, ancestor: &Path) -> bool {
+    let child = path_key(child);
+    let ancestor = path_key(ancestor);
+    ancestor.len() <= child.len() && child[..ancestor.len()] == ancestor[..]
+}
+
+fn relative_display(root: &Path, path: &Path) -> String {
+    let root_key = path_key(root);
+    let path_identity = path_key(path);
+    if root_key.len() <= path_identity.len() && path_identity[..root_key.len()] == root_key[..] {
+        path.components()
+            .skip(root_key.len())
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/")
+    } else {
+        normalize_path_display(path)
+    }
+}
+
+#[test]
+fn component_path_containment_is_segment_aware() {
+    assert!(is_within(
+        Path::new("/ws/crates/app/src/lib.rs"),
+        Path::new("/ws/crates/app")
+    ));
+    assert!(is_within(
+        Path::new("/ws/crates/app"),
+        Path::new("/ws/crates/app")
+    ));
+    assert!(!is_within(
+        Path::new("/other/crates/app/src/lib.rs"),
+        Path::new("/ws/crates/app")
+    ));
+    assert!(!is_within(
+        Path::new("/ws/crates/app-evil/x.rs"),
+        Path::new("/ws/crates/app")
+    ));
+    assert_eq!(
+        relative_display(Path::new("/ws"), Path::new("/ws/crates/app/src/lib.rs")),
+        "crates/app/src/lib.rs"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_path_identity_handles_prefixes_case_and_segments() {
+    assert!(is_within(
+        Path::new(r"\\?\C:\WS\crates\app\src\lib.rs"),
+        Path::new(r"c:\ws\crates\app")
+    ));
+    assert_eq!(
+        path_key(Path::new(r"\\?\C:\x")),
+        path_key(Path::new(r"C:\x"))
+    );
+    assert!(!is_within(
+        Path::new(r"C:\ws\app-evil"),
+        Path::new(r"C:\ws\app")
+    ));
+    assert_eq!(
+        relative_display(
+            Path::new(r"c:\ws"),
+            Path::new(r"\\?\C:\WS\crates\app\src\lib.rs")
+        ),
+        "crates/app/src/lib.rs"
+    );
+}
+
 fn canonicalize_allow_missing(path: &Path) -> Result<PathBuf, String> {
     let mut current = path;
     let mut suffix = Vec::new();
@@ -1408,7 +1534,7 @@ fn collect_rust_inventory(
             let canonical = fs::canonicalize(&path).map_err(|error| {
                 format!("canonicalize {}: {error}", normalize_path_display(&path))
             })?;
-            if canonical.starts_with(target_directory) {
+            if is_within(&canonical, target_directory) {
                 continue;
             }
             collect_rust_inventory(&canonical, target_directory, output)?;
@@ -1416,7 +1542,7 @@ fn collect_rust_inventory(
             let canonical = fs::canonicalize(&path).map_err(|error| {
                 format!("canonicalize {}: {error}", normalize_path_display(&path))
             })?;
-            if !canonical.starts_with(target_directory) {
+            if !is_within(&canonical, target_directory) {
                 output.insert(canonical);
             }
         }
@@ -1428,10 +1554,10 @@ fn ensure_no_symlink_components(
     root: &Path,
     candidate: &Path,
 ) -> Result<(), (&'static str, PathBuf)> {
-    let Ok(relative) = candidate.strip_prefix(root) else {
+    if !is_within(candidate, root) {
         return Ok(());
-    };
-    let components: Vec<_> = relative.components().collect();
+    }
+    let components: Vec<_> = candidate.components().skip(path_key(root).len()).collect();
     let mut current = root.to_path_buf();
     for (index, component) in components.iter().enumerate() {
         current.push(component.as_os_str());
@@ -1820,8 +1946,7 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 }
 
 fn display_path(workspace_root: &Path, path: &Path) -> String {
-    let shown = path.strip_prefix(workspace_root).unwrap_or(path);
-    normalize_path_display(shown)
+    relative_display(workspace_root, path)
 }
 
 fn normalize_path_display(path: &Path) -> String {
