@@ -30,13 +30,14 @@ WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
 WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: install build test ui-test test-scripts ci contract purity-check package publish publish-r2 \
+.PHONY: install rust-toolchain preflight-toolchain build test ui-test \
+	        test-scripts ci contract purity-check package publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install build test ci contract purity-check package publish smoke screenshots journal-live run clean"
+	@echo "verbs: install rust-toolchain build test ci contract purity-check package publish smoke screenshots journal-live run clean"
 	@echo "release: package (box) -> publish (box) -> pull-releases -> publish-r2 -> publish-packages"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
@@ -46,16 +47,24 @@ help:
 install:
 	@if [ -f ui/package.json ]; then npm --prefix ui install; else echo "no local tooling to install"; fi
 
+rust-toolchain:
+	@version=$$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$$/\1/p' rust-toolchain.toml | sed -n '1p'); \
+	  test -n "$$version" || { echo "ERROR: unable to read rust-toolchain.toml channel" >&2; exit 1; }; \
+	  rustup toolchain install "$$version" --profile minimal --component rustfmt --component clippy --target x86_64-pc-windows-msvc
+
+preflight-toolchain:
+	@sh scripts/preflight-toolchain.sh
+
 # Build the webview bundle + the binary. The webview is built FIRST: Tauri embeds
 # ui/dist into the exe at cargo-compile time, so building it after would embed a
 # stale bundle.
-build:
+build: preflight-toolchain
 	npm --prefix ui run build
 	$(CARGO) build -p $(TAURI_BIN) --features custom-protocol
 
 # Local cross-platform tests (pure tier + capture-engine), host-testable, no live
 # target. The windows-only crates test remotely via win-host-ci.
-test:
+test: preflight-toolchain
 	$(CARGO) test --workspace $(REMOTE_CRATES)
 
 # The host-testable shell publish-name contract check on the Linux mill.
@@ -85,12 +94,12 @@ ci:
 	$(MAKE) win-host-ci
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.
-contract:
+contract: preflight-toolchain
 	$(CARGO) run -q -p xtask -- contract
 
 # Structural gate: the `windows` family must never reach the pure tier
 # (AGENTS.md §Source Layout). `--target all` makes target-gated leaks visible on any host.
-purity-check:
+purity-check: preflight-toolchain
 	$(CARGO) run -q -p xtask -- purity-check
 
 # Build a RELEASE binary + webview, then pack a Velopack release into Releases/.
@@ -99,7 +108,7 @@ purity-check:
 # first (embedded at cargo-compile time). The .ps1 consumes target/release/ and
 # does not rebuild. Unsigned now; the $SignTemplate seam in scripts/package.ps1 is
 # empty until the cert lands.
-package:
+package: preflight-toolchain
 	npm --prefix ui run build
 	# --features custom-protocol: serve the embedded ui/dist, not the Vite devUrl.
 	# Without it the shipped Settings/About load "localhost refused to connect"

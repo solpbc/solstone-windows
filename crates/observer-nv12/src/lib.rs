@@ -23,6 +23,9 @@ pub enum Nv12Error {
     BufferLengthMismatch { expected: usize, actual: usize },
 }
 
+// Pinned Rust 1.96 flags the explicit `% 2` parity guard as manual_is_multiple_of;
+// keep the direct modulo check (behavior-identical) rather than edit product logic.
+#[allow(clippy::manual_is_multiple_of)]
 pub fn rgba_or_bgra_to_nv12(frame: &ScreenFrame) -> Result<Nv12Frame, Nv12Error> {
     let width = frame.width;
     let height = frame.height;
