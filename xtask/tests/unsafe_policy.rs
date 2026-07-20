@@ -2598,6 +2598,18 @@ fn macro_contained_unsafe_fails() {
 }
 
 #[test]
+fn macro_contained_unparseable_attribute_keyword_still_fails() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes { () => { #[unsafe $x] pub extern \"C\" fn callback() {} } }\n",
+    );
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:1: macro token unsafe is outside an approved unsafe boundary",
+    );
+}
+
+#[test]
 fn macro_contained_direct_no_mangle_attribute_fails() {
     assert_macro_unsafe_attribute_failure(
         "macro_rules! attributes { () => { #[no_mangle] pub extern \"C\" fn callback() {} } }\n",
