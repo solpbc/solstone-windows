@@ -388,6 +388,14 @@ impl<'a> FileVisitor<'a> {
         identity: NodeIdentity,
         attributes: &[Attribute],
     ) -> Option<NodeIdentity> {
+        // Resolve unsafe-attribute form lines first, so an attribute whose name equals the
+        // item name attributes to the attribute's own line rather than the item's line.
+        let mut unsafe_attribute_lines = Vec::new();
+        for attribute in attributes {
+            for locator in unsafe_attribute_form_locators(&attribute.meta) {
+                unsafe_attribute_lines.push(self.locator.next(locator));
+            }
+        }
         let node_line = self.locator.next(&identity.name);
         self.policy.observe_node(&identity, node_line);
         let mut approved = false;
@@ -409,15 +417,9 @@ impl<'a> FileVisitor<'a> {
         } else {
             self.scope.clone()
         };
-        for attribute in attributes {
-            for locator in unsafe_attribute_form_locators(&attribute.meta) {
-                let line = self.locator.next(locator);
-                self.policy.inspect_unsafe_attribute(
-                    self.source_path,
-                    line,
-                    effective_scope.as_ref(),
-                );
-            }
+        for line in unsafe_attribute_lines {
+            self.policy
+                .inspect_unsafe_attribute(self.source_path, line, effective_scope.as_ref());
         }
         effective_scope
     }
@@ -2309,6 +2311,18 @@ fn cfg_attr_unsafe_attribute_fails() {
 #[test]
 fn direct_no_mangle_attribute_fails() {
     assert_unsafe_attribute_failure("#[no_mangle]\npub extern \"C\" fn callback() {}\n");
+}
+
+#[test]
+fn direct_attribute_line_attribution_survives_name_collision() {
+    // A function literally named `no_mangle` must still attribute the unsafe attribute to
+    // the attribute's own line (1), not the function's line (2).
+    let workspace = TempWorkspace::basic("#[no_mangle]\npub extern \"C\" fn no_mangle() {}\n");
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:1: unsafe attribute is outside an approved unsafe boundary",
+    );
 }
 
 #[test]
