@@ -30,14 +30,14 @@ WIN_BUNDLE ?= $(CURDIR)/target/sync.bundle
 WIN_SSH ?= ssh -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: install rust-toolchain preflight-toolchain build test ui-test \
-	        test-scripts ci contract purity-check package publish publish-r2 \
+.PHONY: install rust-toolchain preflight-toolchain preflight-cargo-deny build test ui-test \
+	        test-scripts ci audit contract purity-check package publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install rust-toolchain build test ci contract purity-check package publish smoke screenshots journal-live run clean"
+	@echo "verbs: install rust-toolchain build test ci audit contract purity-check package publish smoke screenshots journal-live run clean"
 	@echo "release: package (box) -> publish (box) -> pull-releases -> publish-r2 -> publish-packages"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
@@ -54,6 +54,9 @@ rust-toolchain:
 
 preflight-toolchain:
 	@sh scripts/preflight-toolchain.sh
+
+preflight-cargo-deny:
+	@CARGO="$(CARGO)" sh scripts/preflight-cargo-deny.sh
 
 # Build the webview bundle + the binary. The webview is built FIRST: Tauri embeds
 # ui/dist into the exe at cargo-compile time, so building it after would embed a
@@ -82,16 +85,22 @@ ui-test:
 # flow. fmt/deny/contract/purity are host-independent; clippy + test cover the
 # cross-platform crates (pure tier + capture-engine). The windows-only crates are
 # built and tested remotely by win-host-ci.
-ci:
+ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) fmt --all --check
 	$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
 	$(CARGO) run --locked -q -p xtask -- contract --check
 	$(CARGO) run --locked -q -p xtask -- purity-check
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
-	$(CARGO) deny check
+	$(CARGO) deny --offline --locked check bans licenses sources
 	$(MAKE) ui-test
 	$(MAKE) test-scripts
 	$(MAKE) win-host-ci
+
+# Refresh the RustSec advisory database, then check it against the locked graph.
+# This networked freshness check is deliberately separate from deterministic CI.
+audit: preflight-toolchain preflight-cargo-deny
+	@$(CARGO) deny fetch db || { echo "ERROR: RustSec advisory database refresh failed; no current advisory result was produced." >&2; exit 1; }
+	$(CARGO) deny --locked check advisories
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.
 contract: preflight-toolchain

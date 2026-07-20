@@ -7,7 +7,8 @@
 #   3. Pure-tier purity — the `windows` family must never reach the pure crates
 #      (gated by `cargo xtask purity-check`; see the note under [bans]).
 #
-# Run via `make ci` (`cargo deny check`).
+# `make ci` checks bans/licenses/sources offline against the locked graph.
+# `make audit` refreshes RustSec data and checks advisories separately.
 
 [graph]
 all-features = true
@@ -34,7 +35,8 @@ confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"
-wildcards = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
 
 # ── Privacy denylist (the data covenant, encoded) ────────────────────────────
 # solstone never ships analytics, telemetry, behavioral tracking, crash
@@ -95,10 +97,12 @@ unmaintained = "workspace"
 # ships a release accepting quick-xml >=0.41. Not silenced globally — the whole graph
 # is still gated; only these two known-transitive ids are waived.
 ignore = [
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml." },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml." },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE." },
 ]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = []
+required-git-spec = "rev"
