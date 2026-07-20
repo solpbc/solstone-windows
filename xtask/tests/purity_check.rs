@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
@@ -340,7 +340,7 @@ fn real_cargo_target_gated_dev_dependency_reports_full_path() {
     let error = run_fixture(&workspace).unwrap_err();
     let manifest = workspace.root.join("strict-dev/Cargo.toml");
     assert!(error.contains("strict member strict-dev"));
-    assert!(error.contains(&manifest.display().to_string()));
+    assert!(error_names_manifest(&error, &manifest));
     assert!(error.contains("strict-dev v0.1.0 -> gated-bridge v0.1.0 -> windows-sys v0.1.0"));
 }
 
@@ -367,8 +367,26 @@ fn real_cargo_optional_dependency_reports_full_path() {
     let error = run_fixture(&workspace).unwrap_err();
     let manifest = workspace.root.join("strict-optional/Cargo.toml");
     assert!(error.contains("strict member strict-optional"));
-    assert!(error.contains(&manifest.display().to_string()));
+    assert!(error_names_manifest(&error, &manifest));
     assert!(error.contains("strict-optional v0.1.0 -> gated-optional v0.1.0 -> windows v0.1.0"));
+}
+
+#[test]
+fn manifest_assertion_matches_across_separator_representations() {
+    // Regression: the real-cargo manifest assertion must equate Cargo metadata's
+    // native-separator path with a fixture PathBuf whose tail keeps a literal `/`
+    // (as `join("dir/Cargo.toml")` displays on Windows). A naive
+    // `error.contains(manifest.display())` misses this and false-fails the native
+    // leg while passing on the host.
+    let native = "strict member strict-dev \
+        (C:\\tmp\\ws\\strict-dev\\Cargo.toml) reaches windows-family dependency";
+    let forward_slash_tail = PathBuf::from("C:\\tmp\\ws\\strict-dev/Cargo.toml");
+    assert!(error_names_manifest(native, &forward_slash_tail));
+
+    // A different member's manifest must still not match: normalization equates
+    // separators, never distinct paths.
+    let other_member = PathBuf::from("C:\\tmp\\ws\\other/Cargo.toml");
+    assert!(!error_names_manifest(native, &other_member));
 }
 
 #[test]
@@ -475,6 +493,19 @@ fn extra_tree_output_is_rejected() {
 fn assert_parse_error(member_name: &str, stdout: &str, reason: &str) {
     let error = parse_member_tree(member_name, stdout).unwrap_err();
     assert!(error.contains(reason), "{error}");
+}
+
+/// Asserts the diagnostic names the exact member manifest, comparing path
+/// identity across separator representations. Cargo metadata reports the
+/// manifest with the platform-native separator, while a fixture `PathBuf` built
+/// from a `dir/Cargo.toml` tail keeps the literal `/` on Windows; the two denote
+/// the same manifest, so the assertion normalizes separators without weakening
+/// the full-path requirement.
+fn error_names_manifest(error: &str, manifest: &Path) -> bool {
+    fn normalize_separators(text: &str) -> String {
+        text.replace('\\', "/")
+    }
+    normalize_separators(error).contains(&normalize_separators(&manifest.display().to_string()))
 }
 
 fn member(package_name: &str, manifest_path: &str) -> WorkspaceMember {
