@@ -136,6 +136,7 @@ const PURE_CRATES: &[&str] = &[
     "observer-pl",
     "observer-nv12",
     "observer-audio",
+    "observer-sample-timing",
 ];
 
 /// Fail if the `windows` family reaches any pure-tier crate. `--target all` is

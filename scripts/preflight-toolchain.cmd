@@ -12,9 +12,12 @@ for /f "tokens=2" %%V in ('rustc -Vv 2^>nul ^| findstr /b /c:"release:"') do if 
 if not defined EXPECTED set "EXPECTED=unavailable"
 if not defined ACTUAL set "ACTUAL=unavailable"
 
-if not "%EXPECTED%"=="%ACTUAL%" (
-  >&2 echo ERROR: Rust toolchain mismatch: expected %EXPECTED%, actual %ACTUAL%. Run 'make rust-toolchain'.
-  exit /b 1
-)
+if "%EXPECTED%"=="unavailable" goto toolchain_mismatch
+if "%ACTUAL%"=="unavailable" goto toolchain_mismatch
+if not "%EXPECTED%"=="%ACTUAL%" goto toolchain_mismatch
 
 exit /b 0
+
+:toolchain_mismatch
+>&2 echo ERROR: Rust toolchain mismatch: expected %EXPECTED%, actual %ACTUAL%. Run 'make rust-toolchain'.
+exit /b 1

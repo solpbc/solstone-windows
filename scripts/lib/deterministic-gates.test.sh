@@ -68,6 +68,19 @@ assert_eq \
 toolchain_output=$(RUSTC="$FAKE_RUSTC" FAKE_RELEASE=1.96.0 sh "$REPO_ROOT/scripts/preflight-toolchain.sh" 2>&1)
 assert_eq "matching toolchain is silent" "" "$toolchain_output"
 
+UNAVAILABLE_REPO="$TMP_ROOT/unavailable-repo"
+mkdir -p "$UNAVAILABLE_REPO/scripts"
+cp "$REPO_ROOT/scripts/preflight-toolchain.sh" "$UNAVAILABLE_REPO/scripts/preflight-toolchain.sh"
+: > "$UNAVAILABLE_REPO/rust-toolchain.toml"
+if toolchain_output=$(RUSTC="$TMP_ROOT/missing-rustc" sh "$UNAVAILABLE_REPO/scripts/preflight-toolchain.sh" 2>&1); then
+  fail "unavailable expected and actual toolchains must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_eq \
+  "unavailable toolchain error" \
+  "ERROR: Rust toolchain mismatch: expected unavailable, actual unavailable. Run 'make rust-toolchain'." \
+  "$toolchain_output"
+
 FAKE_CARGO="$TMP_ROOT/fake-cargo"
 cat > "$FAKE_CARGO" <<'EOF'
 #!/usr/bin/env sh

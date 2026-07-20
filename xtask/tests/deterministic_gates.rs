@@ -39,49 +39,70 @@ fn rust_toolchain_pin_and_repair_verb_are_consistent() {
 fn every_gated_cargo_resolution_is_locked() {
     let root = repo_root();
     let makefile = read(&root, "Makefile");
-    for required in [
-        "$(CARGO) build --locked -p $(TAURI_BIN) --features custom-protocol",
-        "$(CARGO) test --locked --workspace $(REMOTE_CRATES)",
-        "$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings",
-        "$(CARGO) run --locked -q -p xtask -- contract --check",
-        "$(CARGO) run --locked -q -p xtask -- purity-check",
-        "$(CARGO) run --locked -q -p xtask -- contract",
-        "$(CARGO) build --locked -p $(TAURI_BIN) --release --features custom-protocol",
-        "$(CARGO) deny --offline --locked check bans licenses sources",
-        "$(CARGO) deny --locked check advisories",
-    ] {
-        assert!(makefile.contains(required), "Makefile missing {required}");
+    let mut make_resolving = 0;
+    let mut make_nonresolving = 0;
+    for (index, line) in makefile.lines().enumerate() {
+        let Some(command) = makefile_cargo_subcommand(line) else {
+            continue;
+        };
+        match command {
+            "build" | "test" | "clippy" | "run" => {
+                make_resolving += 1;
+                assert!(
+                    line.contains("--locked"),
+                    "Makefile:{} resolving cargo {command} invocation must use --locked: {line}",
+                    index + 1
+                );
+            }
+            // Advisory database refresh does not resolve the project dependency graph.
+            "deny" if line.contains(" deny fetch db") => {}
+            "deny" => {
+                make_resolving += 1;
+                assert!(
+                    line.contains("--locked"),
+                    "Makefile:{} resolving cargo deny invocation must use --locked: {line}",
+                    index + 1
+                );
+            }
+            "fmt" | "clean" => {
+                make_nonresolving += 1;
+                assert!(
+                    !line.contains("--locked"),
+                    "Makefile:{} cargo {command} must not use --locked: {line}",
+                    index + 1
+                );
+            }
+            _ => {}
+        }
     }
-    assert_eq!(
-        recipe_line(&makefile, "$(CARGO) fmt"),
-        "\t$(CARGO) fmt --all --check"
+    assert!(
+        make_resolving > 0,
+        "Makefile has no resolving cargo invocations"
     );
-    assert_eq!(recipe_line(&makefile, "$(CARGO) clean"), "\t$(CARGO) clean");
+    assert_eq!(
+        make_nonresolving, 2,
+        "Makefile must contain exactly the fmt and clean non-resolving cargo invocations"
+    );
 
-    for (path, required) in [
-        (
-            "scripts/win-ci.cmd",
-            &[
-                "cargo build --locked --workspace --exclude solstone-windows-app",
-                "cargo test --locked --workspace --exclude solstone-windows-app",
-                "cargo run --locked -q -p xtask -- contract --check",
-                "cargo run --locked -q -p xtask -- purity-check",
-            ][..],
-        ),
-        (
-            "scripts/win-app-build.cmd",
-            &["cargo build --locked -p solstone-windows-app --features custom-protocol"][..],
-        ),
-        (
-            "scripts/win-package.cmd",
-            &["cargo build --locked -p solstone-windows-app --release --features custom-protocol"]
-                [..],
-        ),
+    for path in [
+        "scripts/win-ci.cmd",
+        "scripts/win-app-build.cmd",
+        "scripts/win-package.cmd",
     ] {
         let text = read(&root, path);
-        for command in required {
-            assert!(text.contains(command), "{path} missing {command}");
+        let mut invocations = 0;
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("cargo ") {
+                invocations += 1;
+                assert!(
+                    trimmed.contains("--locked"),
+                    "{path}:{} executable cargo invocation must use --locked: {trimmed}",
+                    index + 1
+                );
+            }
         }
+        assert!(invocations > 0, "{path} has no executable cargo invocation");
     }
 
     let xtask = read(&root, "xtask/src/main.rs");
@@ -97,11 +118,22 @@ fn every_gated_cargo_resolution_is_locked() {
 fn cargo_deny_and_transfer_preflights_are_mandatory() {
     let root = repo_root();
     let makefile = read(&root, "Makefile");
+    let deny_toml = read(&root, "deny.toml");
     let deny_preflight = read(&root, "scripts/preflight-cargo-deny.sh");
 
     assert!(deny_preflight.contains("required=0.20.2"));
     assert!(deny_preflight.contains("cargo install cargo-deny --version $required --locked"));
     assert!(deny_preflight.contains("exit 1"));
+    for advisory in ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"] {
+        let line = deny_toml
+            .lines()
+            .find(|line| line.contains(advisory))
+            .unwrap_or_else(|| panic!("deny.toml missing {advisory}"));
+        assert!(
+            line.contains("Owner: VPE."),
+            "deny.toml {advisory} ignore must name Owner: VPE"
+        );
+    }
     assert!(makefile
         .lines()
         .any(|line| line == "ci: preflight-toolchain preflight-cargo-deny"));
@@ -138,9 +170,25 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
         "scripts/win-package.cmd",
     ] {
         let text = read(&root, path);
+        let is_cmd = path.ends_with(".cmd");
+        let failure_exit = if is_cmd { "exit /b 1" } else { "exit 1" };
+        let mut has_failure_exit = false;
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || script_comment(trimmed, is_cmd) {
+                continue;
+            }
+            let lower = trimmed.to_ascii_lowercase();
+            assert!(
+                !lower.contains("skipping"),
+                "{path}:{} contains a silent skipping path: {trimmed}",
+                index + 1
+            );
+            has_failure_exit |= lower.contains(failure_exit);
+        }
         assert!(
-            !text.to_ascii_lowercase().contains("skipping"),
-            "{path} contains a silent skipping path"
+            has_failure_exit,
+            "{path} must contain a nonzero failure exit ({failure_exit})"
         );
     }
 }
@@ -154,9 +202,34 @@ fn read(root: &Path, relative: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
-fn recipe_line<'a>(makefile: &'a str, prefix: &str) -> &'a str {
-    makefile
-        .lines()
-        .find(|line| line.trim_start().starts_with(prefix))
-        .unwrap_or_else(|| panic!("Makefile recipe missing {prefix}"))
+fn makefile_cargo_subcommand(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') {
+        return None;
+    }
+    let command_line = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
+    if command_line.starts_with("echo ") {
+        return None;
+    }
+
+    let mut tokens = command_line.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "$(CARGO)" || token == "cargo" {
+            return tokens.next();
+        }
+    }
+    None
+}
+
+fn script_comment(trimmed: &str, is_cmd: bool) -> bool {
+    if is_cmd {
+        let lower = trimmed.to_ascii_lowercase();
+        lower.starts_with("::")
+            || lower == "rem"
+            || lower
+                .strip_prefix("rem")
+                .is_some_and(|rest| rest.starts_with(' ') || rest.starts_with('\t'))
+    } else {
+        trimmed.starts_with('#')
+    }
 }

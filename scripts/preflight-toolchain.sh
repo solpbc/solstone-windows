@@ -17,7 +17,7 @@ actual=$("$RUSTC_BIN" -Vv 2>/dev/null | sed -n 's/^release:[[:space:]]*//p' | se
 [ -n "$expected" ] || expected=unavailable
 [ -n "$actual" ] || actual=unavailable
 
-if [ "$expected" != "$actual" ]; then
+if [ "$expected" = "unavailable" ] || [ "$actual" = "unavailable" ] || [ "$expected" != "$actual" ]; then
   echo "ERROR: Rust toolchain mismatch: expected $expected, actual $actual. Run 'make rust-toolchain'." >&2
   exit 1
 fi
