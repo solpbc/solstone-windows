@@ -1808,15 +1808,9 @@ fn cfg_attr_unsafe_levels(attribute: &Attribute) -> Vec<LintFinding> {
     };
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
     let Ok(arguments) = parser.parse2(list.tokens.clone()) else {
-        if token_stream_contains_ident(&list.tokens, "allow") {
-            if let Some(span) = token_stream_ident_span(&list.tokens, "unsafe_code") {
-                return vec![LintFinding {
-                    level: "allow",
-                    span,
-                }];
-            }
-        }
-        return Vec::new();
+        let mut levels = Vec::new();
+        collect_cfg_attr_lint_findings(&list.tokens, &mut levels);
+        return levels;
     };
     let mut levels = Vec::new();
     for meta in arguments.iter().skip(1) {
@@ -1848,19 +1842,50 @@ fn collect_meta_unsafe_levels(meta: &Meta, levels: &mut Vec<LintFinding>) {
             for nested in arguments.iter().skip(1) {
                 collect_meta_unsafe_levels(nested, levels);
             }
-        } else if token_stream_contains_ident(&list.tokens, "allow") {
-            if let Some(span) = token_stream_ident_span(&list.tokens, "unsafe_code") {
-                levels.push(LintFinding {
-                    level: "allow",
-                    span,
-                });
-            }
+        } else {
+            collect_cfg_attr_lint_findings(&list.tokens, levels);
         }
     }
 }
 
-fn token_stream_contains_ident(tokens: &TokenStream, expected: &str) -> bool {
-    token_stream_ident_span(tokens, expected).is_some()
+fn collect_cfg_attr_lint_findings(tokens: &TokenStream, findings: &mut Vec<LintFinding>) {
+    for segment in cfg_attr_emitted_segments(tokens) {
+        collect_lint_token_findings(&segment, findings);
+    }
+}
+
+fn collect_lint_token_findings(tokens: &[TokenTree], findings: &mut Vec<LintFinding>) {
+    if let Some(ident) = leading_unqualified_ident(tokens) {
+        let level = if ident == "allow" {
+            Some("allow")
+        } else if ident == "warn" {
+            Some("warn")
+        } else if ident == "expect" {
+            Some("expect")
+        } else {
+            None
+        };
+        if let Some(level) = level {
+            let remaining: TokenStream = tokens[1..].iter().cloned().collect();
+            if let Some(span) = token_stream_ident_span(&remaining, "unsafe_code") {
+                findings.push(LintFinding { level, span });
+            }
+            return;
+        }
+        if ident == "cfg_attr" {
+            if let Some(TokenTree::Group(arguments)) = tokens.get(1) {
+                if arguments.delimiter() == Delimiter::Parenthesis {
+                    collect_cfg_attr_lint_findings(&arguments.stream(), findings);
+                    return;
+                }
+            }
+        }
+    }
+
+    let prefix = consume_leading_macro_substitutions(tokens);
+    if prefix > 0 {
+        collect_lint_token_findings(&tokens[prefix..], findings);
+    }
 }
 
 fn token_stream_ident_span(tokens: &TokenStream, expected: &str) -> Option<Span> {
@@ -2065,9 +2090,16 @@ fn collect_attribute_token_findings(tokens: &[TokenTree], findings: &mut Vec<Mac
 }
 
 fn collect_cfg_attr_token_findings(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding>) {
+    for segment in cfg_attr_emitted_segments(tokens) {
+        collect_attribute_token_findings(&segment, findings);
+    }
+}
+
+fn cfg_attr_emitted_segments(tokens: &TokenStream) -> Vec<Vec<TokenTree>> {
     let tokens: Vec<_> = tokens.clone().into_iter().collect();
     let mut segment_start = 0;
     let mut condition = true;
+    let mut segments = Vec::new();
     loop {
         let prefix = consume_leading_macro_substitutions(&tokens[segment_start..]);
         let segment_end = tokens[segment_start + prefix..]
@@ -2079,13 +2111,14 @@ fn collect_cfg_attr_token_findings(tokens: &TokenStream, findings: &mut Vec<Macr
         if condition {
             condition = false;
         } else {
-            collect_attribute_token_findings(segment, findings);
+            segments.push(segment.to_vec());
         }
         if segment_end == tokens.len() {
             break;
         }
         segment_start = segment_end + 1;
     }
+    segments
 }
 
 fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding>) {
@@ -3978,6 +4011,47 @@ fn nested_cfg_attr_lints_report_each_unsafe_code_leaf() {
         error.matches(": conditional ").count(),
         3,
         "each nested lint should report exactly once:\n{error}"
+    );
+}
+
+#[test]
+fn malformed_cfg_attr_lint_uses_the_emitted_unsafe_code_span() {
+    let workspace = TempWorkspace::basic(
+        "#[cfg_attr(\n\
+         unsafe_code $condition,\n\
+         allow(\n\
+         unsafe_code) $tail\n\
+         )]\n\
+         #[cfg_attr(any(),\n\
+         cfg_attr(\n\
+         unsafe_code $nested_condition,\n\
+         warn(\n\
+         unsafe_code) $nested_tail\n\
+         ))]\n\
+         mod approved { pub fn call() { unsafe {} } }\n",
+    );
+    let error =
+        run_fixture(&workspace, FIXTURE_APPROVED_MOD).expect_err("conditional lints should fail");
+    for diagnostic in [
+        "crates/app/src/lib.rs:4: conditional allow(unsafe_code) cannot approve an unsafe boundary",
+        "crates/app/src/lib.rs:10: conditional warn(unsafe_code) cannot approve an unsafe boundary",
+    ] {
+        assert!(
+            error.contains(diagnostic),
+            "the emitted lint leaf should supply the diagnostic line {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect_line in [2, 6, 7, 8, 9, 11, 12, 13] {
+        let prefix = format!("crates/app/src/lib.rs:{incorrect_line}: conditional ");
+        assert!(
+            !error.contains(&prefix),
+            "a cfg_attr condition or wrapper must not supply an emitted lint line:\n{error}"
+        );
+    }
+    assert_eq!(
+        error.matches(": conditional ").count(),
+        2,
+        "each malformed emitted lint should report exactly once:\n{error}"
     );
 }
 
