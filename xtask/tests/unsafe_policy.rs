@@ -1909,6 +1909,13 @@ fn unparsed_cfg_attr_form_locators(tokens: &TokenStream) -> Vec<&'static str> {
         .collect()
 }
 
+fn macro_attribute_events(tokens: &TokenStream) -> Vec<MacroUnsafeFinding> {
+    let tokens: Vec<_> = tokens.clone().into_iter().collect();
+    let mut events = Vec::new();
+    collect_attribute_token_events(&tokens, &mut events);
+    events
+}
+
 fn leading_unqualified_ident(tokens: &[TokenTree]) -> Option<&Ident> {
     let Some(TokenTree::Ident(ident)) = tokens.first() else {
         return None;
@@ -1919,7 +1926,7 @@ fn leading_unqualified_ident(tokens: &[TokenTree]) -> Option<&Ident> {
     Some(ident)
 }
 
-fn collect_unparsed_attribute_events(tokens: &[TokenTree], events: &mut Vec<MacroUnsafeFinding>) {
+fn collect_attribute_token_events(tokens: &[TokenTree], events: &mut Vec<MacroUnsafeFinding>) {
     let Some(ident) = leading_unqualified_ident(tokens) else {
         collect_ignored_locator_events(tokens, events);
         return;
@@ -1969,7 +1976,7 @@ fn collect_cfg_attr_token_events(tokens: &TokenStream, events: &mut Vec<MacroUns
             collect_ignored_locator_events(segment, events);
             condition = false;
         } else {
-            collect_unparsed_attribute_events(segment, events);
+            collect_attribute_token_events(segment, events);
         }
         segment_start = index + 1;
     }
@@ -1977,7 +1984,7 @@ fn collect_cfg_attr_token_events(tokens: &TokenStream, events: &mut Vec<MacroUns
     if condition {
         collect_ignored_locator_events(segment, events);
     } else {
-        collect_unparsed_attribute_events(segment, events);
+        collect_attribute_token_events(segment, events);
     }
 }
 
@@ -2017,15 +2024,9 @@ fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding
                     unreachable!("peeked token must remain a group");
                 };
                 match syn::parse2::<Meta>(group.stream()) {
-                    Ok(meta) => findings.extend(
-                        unsafe_attribute_form_locators(&meta)
-                            .into_iter()
-                            .map(MacroUnsafeFinding::UnsafeAttribute),
-                    ),
+                    Ok(_) => findings.extend(macro_attribute_events(&group.stream())),
                     Err(_) => {
-                        let group_tokens: Vec<_> = group.stream().into_iter().collect();
-                        let mut fallback = Vec::new();
-                        collect_unparsed_attribute_events(&group_tokens, &mut fallback);
+                        let fallback = macro_attribute_events(&group.stream());
                         if fallback
                             .iter()
                             .any(|event| matches!(event, MacroUnsafeFinding::UnsafeAttribute(_)))
@@ -2827,6 +2828,36 @@ fn macro_parse_failed_findings_preserve_exact_line_order() {
 }
 
 #[test]
+fn macro_parse_failed_mixed_findings_preserve_source_order() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes {\n\
+         () => {\n\
+         #[unsafe(no_mangle) $tail]\n\
+         unsafe {}\n\
+         #[cfg_attr($condition, unsafe(naked) $tail)]\n\
+         };\n\
+         }\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:3: macro token unsafe attribute is outside an approved unsafe boundary",
+    );
+    assert!(
+        error.contains(
+            "crates/app/src/lib.rs:4: macro token unsafe is outside an approved unsafe boundary"
+        ),
+        "literal unsafe keyword line was misattributed:\n{error}"
+    );
+    assert!(
+        error.contains(
+            "crates/app/src/lib.rs:5: macro token unsafe attribute is outside an approved unsafe boundary"
+        ),
+        "dynamic wrapped attribute line was misattributed:\n{error}"
+    );
+}
+
+#[test]
 fn excluded_cfg_attr_condition_does_not_steal_emitted_attribute_line() {
     let workspace = TempWorkspace::basic(
         "macro_rules! attributes {\n\
@@ -2834,7 +2865,7 @@ fn excluded_cfg_attr_condition_does_not_steal_emitted_attribute_line() {
          #[cfg_attr(\n\
          no_mangle $condition,\n\
          no_mangle\n\
-         ) $tail]\n\
+         )]\n\
          };\n\
          }\n",
     );
@@ -3049,6 +3080,59 @@ fn macro_parse_failed_qualified_unsafe_attribute_name_passes() {
     let workspace =
         TempWorkspace::basic("macro_rules! input { () => { #[some::no_mangle $tail] } }\n");
     run_fixture(&workspace, &[]).expect("a parse-failed qualified attribute path must not match");
+}
+
+#[test]
+fn parsed_qualified_attribute_does_not_steal_direct_attribute_line() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes {\n\
+         () => {\n\
+         #[some::no_mangle]\n\
+         #[no_mangle]\n\
+         };\n\
+         }\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:4: macro token unsafe attribute is outside an approved unsafe boundary",
+    );
+    assert!(
+        !error.contains(
+            "crates/app/src/lib.rs:3: macro token unsafe attribute is outside an approved unsafe boundary"
+        ),
+        "qualified attribute was reported or stole the direct attribute line:\n{error}"
+    );
+}
+
+#[test]
+fn parsed_wrapped_attribute_inner_name_does_not_steal_direct_attribute_line() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes {\n\
+         () => {\n\
+         #[unsafe(no_mangle)]\n\
+         #[no_mangle]\n\
+         };\n\
+         }\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:3: macro token unsafe attribute is outside an approved unsafe boundary",
+    );
+    assert!(
+        error.contains(
+            "crates/app/src/lib.rs:4: macro token unsafe attribute is outside an approved unsafe boundary"
+        ),
+        "wrapped attribute inner name stole the direct attribute line:\n{error}"
+    );
+    assert_eq!(
+        error
+            .matches("macro token unsafe attribute is outside an approved unsafe boundary")
+            .count(),
+        2,
+        "wrapped and direct attributes should each report once:\n{error}"
+    );
 }
 
 #[test]
