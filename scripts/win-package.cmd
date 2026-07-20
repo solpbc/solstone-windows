@@ -24,6 +24,7 @@ setlocal enableextensions
 cd /d "%~dp0.." || exit /b 1
 
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+call scripts\preflight-toolchain.cmd || exit /b 1
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" ( echo ERROR: vswhere not found at "%VSWHERE%" & exit /b 1 )
@@ -41,12 +42,12 @@ call npm --prefix ui run build || exit /b 1
 :: tauri.conf.json) instead of the embedded ui/dist, so the Settings and About
 :: windows load "localhost refused to connect" in the installed app. cargo tauri
 :: build enables it automatically; a plain cargo build does not. Do not remove.
-echo === cargo build -p solstone-windows-app --release --features custom-protocol ===
-cargo build -p solstone-windows-app --release --features custom-protocol || exit /b 1
+echo === cargo build --locked -p solstone-windows-app --release --features custom-protocol ===
+cargo build --locked -p solstone-windows-app --release --features custom-protocol || exit /b 1
 echo === vpk pack (scripts\package.ps1) ===
 set "SIGN_ARG="
 if defined SOLSTONE_SIGN set "SIGN_ARG=-Sign"
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1 %SIGN_ARG% || exit /b 1
 
-echo === WIN_PACKAGE_OK ===
+echo === WIN_PACKAGE_OK: native Windows release build and vpk pack passed; signing only when SOLSTONE_SIGN is set; install and smoke not run ===
 exit /b 0

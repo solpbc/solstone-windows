@@ -14,7 +14,9 @@ use std::process::Command;
 #[test]
 fn contract_not_stale() {
     let status = Command::new(env!("CARGO"))
-        .args(["run", "--quiet", "-p", "xtask", "--", "contract", "--check"])
+        .args([
+            "run", "--locked", "--quiet", "-p", "xtask", "--", "contract", "--check",
+        ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .status()
         .expect("failed to spawn `cargo run -p xtask -- contract --check`");

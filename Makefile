@@ -60,12 +60,12 @@ preflight-toolchain:
 # stale bundle.
 build: preflight-toolchain
 	npm --prefix ui run build
-	$(CARGO) build -p $(TAURI_BIN) --features custom-protocol
+	$(CARGO) build --locked -p $(TAURI_BIN) --features custom-protocol
 
 # Local cross-platform tests (pure tier + capture-engine), host-testable, no live
 # target. The windows-only crates test remotely via win-host-ci.
 test: preflight-toolchain
-	$(CARGO) test --workspace $(REMOTE_CRATES)
+	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
 
 # The host-testable shell publish-name contract check on the Linux mill.
 test-scripts:
@@ -84,10 +84,10 @@ ui-test:
 # built and tested remotely by win-host-ci.
 ci:
 	$(CARGO) fmt --all --check
-	$(CARGO) clippy --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
-	$(CARGO) run -q -p xtask -- contract --check
-	$(CARGO) run -q -p xtask -- purity-check
-	$(CARGO) test --workspace $(REMOTE_CRATES)
+	$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
+	$(CARGO) run --locked -q -p xtask -- contract --check
+	$(CARGO) run --locked -q -p xtask -- purity-check
+	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
 	$(CARGO) deny check
 	$(MAKE) ui-test
 	$(MAKE) test-scripts
@@ -95,12 +95,12 @@ ci:
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.
 contract: preflight-toolchain
-	$(CARGO) run -q -p xtask -- contract
+	$(CARGO) run --locked -q -p xtask -- contract
 
 # Structural gate: the `windows` family must never reach the pure tier
 # (AGENTS.md §Source Layout). `--target all` makes target-gated leaks visible on any host.
 purity-check: preflight-toolchain
-	$(CARGO) run -q -p xtask -- purity-check
+	$(CARGO) run --locked -q -p xtask -- purity-check
 
 # Build a RELEASE binary + webview, then pack a Velopack release into Releases/.
 # Release (not the debug `build`) so the tray app is windowless — the
@@ -113,7 +113,7 @@ package: preflight-toolchain
 	# --features custom-protocol: serve the embedded ui/dist, not the Vite devUrl.
 	# Without it the shipped Settings/About load "localhost refused to connect"
 	# (cargo tauri build sets it automatically; a plain cargo build does not).
-	$(CARGO) build -p $(TAURI_BIN) --release --features custom-protocol
+	$(CARGO) build --locked -p $(TAURI_BIN) --release --features custom-protocol
 	$(PWSH) -File scripts/package.ps1
 
 # Upload the Releases/ dir to GitHub Releases = the REQUIRED source-hygiene mirror

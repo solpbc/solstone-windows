@@ -143,11 +143,13 @@ const PURE_CRATES: &[&str] = &[
 /// leak is invisible to a host-target `cargo tree` on a non-Windows box.
 fn cmd_purity_check() -> ExitCode {
     let root = repo_root();
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let mut violations = Vec::new();
     for pkg in PURE_CRATES {
-        let out = std::process::Command::new("cargo")
+        let out = std::process::Command::new(&cargo)
             .args([
                 "tree",
+                "--locked",
                 "-p",
                 pkg,
                 "--target",
