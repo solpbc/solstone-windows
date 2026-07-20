@@ -62,6 +62,7 @@ charter and license.
 | `make ci` | host fmt/clippy/contract/tests · offline locked bans/licenses/sources · UI/shell tests · native Windows build/test |
 | `make audit` | refresh the RustSec database, then check advisories against the locked graph |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
+| `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
 | `make package` | `make build` → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
 | `make publish-r2` | upload `Releases/` to the R2 update feed (`updates.solstone.app/solstone-windows/`, feed-last) — the **primary** auto-update channel; run on the release host |
 | `make pull-releases` | pull the box's packed `Releases/` to the release host (before `publish-r2`) |
@@ -142,6 +143,7 @@ crates/
 src-tauri/             the binary: tray + Settings/About + IPC + arg dispatch
 ui/                    WebView2 front-end (vanilla TS + Vite); pure renderer
 xtask/                 cargo xtask: contract [--check], purity-check, package, dev
+contracts/observer-client/ test-only vendored authority bytes + checked consumer adoption metadata
 harness/               net48 FlaUI/UIA smoke driver (not a cargo member)
 packaging/             Velopack config + hooks/ + signing/ seam
 scripts/               PowerShell impls behind the make verbs
@@ -181,6 +183,17 @@ files. Never hand-edit the generated files.
 The FlaUI smoke asserts on the **health dump** (Tier 0) and **native chrome**
 (Tier 1); the webview `data-automation-id` is best-effort (Tier 2) and the green
 path must not depend on Chromium UIA resolving.
+
+### Observer-client authority bundle
+
+The language-neutral Journal observer-client contract is vendored as immutable,
+test-only bytes under `contracts/observer-client/bundle/`. Consumer adoption
+metadata lives beside, not inside, the bundle. The offline verifier and
+authority-derived conformance tests do not enter the production dependency or
+packaging graph. This authority bundle is distinct from the generated
+AutomationId/state-token contract above.
+
+See `docs/observer-contract-adoption.md`.
 
 ## 6. Lifecycle
 

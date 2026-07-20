@@ -2,4 +2,3 @@
 // Copyright (c) 2026 sol pbc
 
 pub mod observer_contract;
-pub mod purity;

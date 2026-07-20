@@ -1,0 +1,87 @@
+{
+  "adoption_schema_version": 1,
+  "consumer_identifier": "solstone-windows",
+  "authority_repository": "https://github.com/solpbc/solstone-journal",
+  "authority_commit": "827d3761e2b515b9bd537ded28b245c8c6d86cc0",
+  "bundle_semver": "1.0.2",
+  "archive_sha256": "3b57fa9fb4736dff1f72ffdd48928834ea33d3925d132874202764cf9f988667",
+  "archive_size_bytes": 16950,
+  "authority_manifest_path": "manifest.json",
+  "authority_manifest_sha256": "9ecf4bbfcd793a8aecc9e2257254e68c74c48cde22282ff07369101b90d97c33",
+  "bundle_files": [
+    {
+      "path": "consumer-audit.json",
+      "sha256": "f3562062aeb971c9dc95ae5d14333566b28431758bcd232c33c093757df7bc18"
+    },
+    {
+      "path": "fixtures/wire-behavior.json",
+      "sha256": "9749a50daba9b4a270da045d350bc5edb7a42c9723fa0bf420c8fb8a4a0415f8"
+    },
+    {
+      "path": "projection.openapi.json",
+      "sha256": "8a2b7037552edf710597f2ffa6fdc5aa715311df4ea8cf168e70abe4231c64ca"
+    },
+    {
+      "path": "vectors.json",
+      "sha256": "7a5132c57b61e2a615a22719abc77e40b708d4a6636c45690cc522dc26c36dec"
+    }
+  ],
+  "adopted_operation_ids": [
+    "callosum.rootEvents",
+    "link.pair",
+    "observer.ingestEvent",
+    "observer.ingestSegments",
+    "observer.ingestUpload",
+    "observer.register"
+  ],
+  "adopted_fixture_ids": [
+    "declared.observer.ingestSegments.custody_unknown_rejected",
+    "declared.observer.ingestSegments.envelope_total_mismatch",
+    "declared.observer.ingestUpload.status_unknown_rejected",
+    "example.callosum.rootEvents.response.200.text-event-stream.default",
+    "example.link.pair.request.body.application-json.default",
+    "example.link.pair.response.200.application-json.default",
+    "example.observer.ingestEvent.request.body.application-json.default",
+    "example.observer.ingestEvent.response.200.application-json.default",
+    "example.observer.ingestSegments.response.200.application-json.legacy",
+    "example.observer.ingestSegments.response.200.application-json.v2",
+    "example.observer.ingestUpload.request.body.multipart-form-data.default",
+    "example.observer.ingestUpload.response.200.application-json.duplicate",
+    "example.observer.ingestUpload.response.200.application-json.normal",
+    "example.observer.register.request.body.application-json.default",
+    "example.observer.register.response.200.application-json.default",
+    "recorded.auth.bearer.segments",
+    "recorded.auth.handle.segments",
+    "recorded.ingestUpload.collision",
+    "recorded.ingestUpload.conflict",
+    "recorded.ingestUpload.duplicate",
+    "recorded.ingestUpload.failed",
+    "recorded.ingestUpload.ok",
+    "recorded.segments.custody_statuses",
+    "recorded.segments.legacy.absent_header",
+    "recorded.segments.legacy.unparseable_header",
+    "recorded.segments.submitted_name_omitted",
+    "recorded.segments.v2.envelope",
+    "recorded.sse.root.data_unknown_event",
+    "recorded.sse.root.heartbeat"
+  ],
+  "adopted_vector_ids": [
+    "callosum.rootEvents.sse.data_unknown_event",
+    "callosum.rootEvents.sse.heartbeat",
+    "observer.auth.bearer",
+    "observer.auth.handle",
+    "observer.ingestSegments.custody_statuses",
+    "observer.ingestSegments.custody_unknown_rejected",
+    "observer.ingestSegments.envelope_total_mismatch",
+    "observer.ingestSegments.legacy_array.absent_header",
+    "observer.ingestSegments.legacy_array.unparseable_header",
+    "observer.ingestSegments.submitted_name_fallback",
+    "observer.ingestSegments.v2_envelope",
+    "observer.ingestUpload.status.collision",
+    "observer.ingestUpload.status.conflict",
+    "observer.ingestUpload.status.duplicate",
+    "observer.ingestUpload.status.failed",
+    "observer.ingestUpload.status.ok",
+    "observer.ingestUpload.status_unknown_rejected"
+  ]
+}

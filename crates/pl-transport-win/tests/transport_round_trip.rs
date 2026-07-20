@@ -10,6 +10,8 @@
 //! replaced by a fixed echo. This is the deterministic, host-runnable proxy for
 //! the live cross-repo gate.
 
+mod support;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,14 +24,19 @@ use observer_model::{
 use observer_pl::frame::{
     Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RESET_CANCEL,
 };
+use observer_pl::multipart::FilePart;
 use observer_pl::mux::INITIAL_WINDOW;
+use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::heartbeat::run_heartbeat;
 use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{journal_bridge, TransportError};
-use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+use rcgen::{
+    BasicConstraints, CertificateParams, CertificateSigningRequestParams, IsCa, KeyPair,
+    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -37,6 +44,8 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
+
+use support::observer_contract::{fixture as authority_fixture, vector as authority_vector};
 
 fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -115,6 +124,60 @@ fn request_body(request: &[u8]) -> serde_json::Value {
     serde_json::from_str(body).unwrap()
 }
 
+fn heartbeat_capture_matches(request: &[u8], fixture: &serde_json::Value) -> bool {
+    let text = String::from_utf8_lossy(request);
+    let body = request_body(request);
+    text.starts_with("POST /app/observer/ingest/event HTTP/1.1\r\n")
+        && text.contains("X-Solstone-Observer: authority-observer\r\n")
+        && text.contains("Authorization: Bearer authority-observer\r\n")
+        && text.contains("X-Solstone-Protocol-Version: 2\r\n")
+        && text.contains("Content-Type: application/json\r\n")
+        && body["tract"] == fixture["payload"]["tract"]
+        && body["event"] == fixture["payload"]["event"]
+        && body["paused"] == false
+        && body.get("state").is_none()
+}
+
+fn pair_capture_matches(request: &[u8], nonce: &str, label: &str) -> bool {
+    let text = String::from_utf8_lossy(request);
+    let body = request_body(request);
+    text.starts_with(&format!(
+        "POST /app/network/pair?token={nonce} HTTP/1.1\r\n"
+    )) && text.contains("Content-Type: application/json\r\n")
+        && !text.contains("X-Solstone-Observer:")
+        && !text.contains("Authorization:")
+        && !text.contains("X-Solstone-Protocol-Version:")
+        && body["device_label"] == label
+        && body["csr"]
+            .as_str()
+            .is_some_and(|csr| csr.contains("BEGIN CERTIFICATE REQUEST"))
+        && body.get("nonce").is_none()
+        && body.get("sender_instance_id").is_none()
+}
+
+fn ingest_capture_matches(request: &[u8], payload: &serde_json::Value, filenames: &[&str]) -> bool {
+    let text = String::from_utf8_lossy(request);
+    text.starts_with("POST /app/observer/ingest HTTP/1.1\r\n")
+        && text.contains("X-Solstone-Observer: authority-observer\r\n")
+        && text.contains("Authorization: Bearer authority-observer\r\n")
+        && text.contains("X-Solstone-Protocol-Version: 2\r\n")
+        && text.contains("Content-Type: multipart/form-data; boundary=")
+        && text.contains("name=\"segment\"")
+        && text.contains("name=\"day\"")
+        && text.contains("name=\"platform\"")
+        && text.contains(&format!("\r\n\r\n{}", payload["segment"].as_str().unwrap()))
+        && text.contains(&format!("\r\n\r\n{}", payload["day"].as_str().unwrap()))
+        && text.contains(&format!(
+            "\r\n\r\n{}",
+            payload["platform"].as_str().unwrap()
+        ))
+        && filenames
+            .iter()
+            .all(|filename| text.contains(&format!("name=\"files\"; filename=\"{filename}\"")))
+        && !text.contains("name=\"host\"")
+        && !text.contains("name=\"meta\"")
+}
+
 async fn read_framed_request(
     tls: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
 ) -> (u32, Vec<u8>) {
@@ -161,14 +224,27 @@ async fn serve_one_response_with_content_length(
     body: &'static [u8],
     content_length: usize,
 ) -> Vec<u8> {
+    serve_one_response_with_header(listener, acceptor, status, body, content_length, None).await
+}
+
+async fn serve_one_response_with_header(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    status: &str,
+    body: &'static [u8],
+    content_length: usize,
+    extra_header: Option<&str>,
+) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
     let mut tls = acceptor.accept(tcp).await.unwrap();
 
     let (stream_id, request) = read_framed_request(&mut tls).await;
 
+    let extra_header = extra_header
+        .map(|header| format!("{header}\r\n"))
+        .unwrap_or_default();
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-        content_length,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\n{extra_header}\r\n{}",
         String::from_utf8_lossy(body)
     );
     let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
@@ -182,6 +258,43 @@ async fn serve_one(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     serve_one_response(listener, acceptor, "200 OK", b"{\"status\":\"ok\"}").await
 }
 
+async fn serve_one_pair_response(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    signing_cert: rcgen::Certificate,
+    signing_key: KeyPair,
+) -> Vec<u8> {
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut tls = acceptor.accept(tcp).await.unwrap();
+    let (stream_id, request) = read_framed_request(&mut tls).await;
+    let pair_request: observer_pl::wire::PairRequest =
+        serde_json::from_value(request_body(&request)).unwrap();
+    let csr = CertificateSigningRequestParams::from_pem(&pair_request.csr).unwrap();
+    let client_cert = csr.signed_by(&signing_cert, &signing_key).unwrap();
+    let fixture = authority_fixture("example.link.pair.response.200.application-json.default");
+    let payload = &fixture["payload"];
+    let response_body = serde_json::to_vec(&serde_json::json!({
+        "client_cert": client_cert.pem(),
+        "ca_chain": [signing_cert.pem()],
+        "instance_id": payload["instance_id"],
+        "home_label": payload["home_label"],
+        "fingerprint": format!("sha256:{}", observer_pl::ca::sha256_hex(client_cert.der())),
+        "home_attestation": payload["home_attestation"],
+        "local_endpoints": payload["local_endpoints"],
+    }))
+    .unwrap();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        response_body.len(),
+        String::from_utf8_lossy(&response_body)
+    );
+    let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
+    tls.write_all(&frame.encode().unwrap()).await.unwrap();
+    tls.flush().await.unwrap();
+    let _ = tls.shutdown().await;
+    request
+}
+
 async fn serve_drop_then_one(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
     drop(tcp);
@@ -192,6 +305,8 @@ async fn serve_drop_then_one(listener: TcpListener, acceptor: TlsAcceptor) -> Ve
 enum SseMode {
     Close,
     EofBeforeHead,
+    EofAfterHeadAndPartialBody,
+    Authority(&'static [u8]),
 }
 
 async fn write_response_frame(
@@ -221,6 +336,16 @@ async fn serve_sse_stream(listener: TcpListener, acceptor: TlsAcceptor, mode: Ss
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
     )
     .await;
+    if matches!(mode, SseMode::EofAfterHeadAndPartialBody) {
+        write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: partial").await;
+        return request;
+    }
+    if let SseMode::Authority(body) = mode {
+        write_response_frame(&mut tls, stream_id, FLAG_DATA, body).await;
+        write_response_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
+        let _ = tls.shutdown().await;
+        return request;
+    }
     write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 1\n\n").await;
     write_response_frame(&mut tls, stream_id, FLAG_DATA, b"data: 2\n\n").await;
     write_response_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
@@ -270,6 +395,61 @@ async fn start_bridge_with_response(
         .await
         .unwrap();
     (handle, server)
+}
+
+fn leaked_authority_payload(fixture_id: &str) -> &'static [u8] {
+    let fixture = authority_fixture(fixture_id);
+    Box::leak(
+        serde_json::to_vec(&fixture["payload"])
+            .expect("serialize authority payload")
+            .into_boxed_slice(),
+    )
+}
+
+async fn start_client_with_response(
+    status: &'static str,
+    body: &'static [u8],
+    observer_key: Option<&str>,
+) -> (ObserverClient, JoinHandle<Vec<u8>>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
+    let client = ObserverClient::new(observer_credential(pin, port))
+        .unwrap()
+        .with_observer_key(observer_key.map(str::to_owned));
+    (client, server)
+}
+
+async fn start_client_with_response_header(
+    body: &'static [u8],
+    extra_header: Option<&'static str>,
+) -> (ObserverClient, JoinHandle<Vec<u8>>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_response_with_header(
+        listener,
+        acceptor,
+        "200 OK",
+        body,
+        body.len(),
+        extra_header,
+    ));
+    let client = ObserverClient::new(observer_credential(pin, port))
+        .unwrap()
+        .with_observer_key(Some("authority-observer".to_owned()));
+    (client, server)
+}
+
+fn assert_authenticated_request(request: &str) {
+    assert!(request.contains("X-Solstone-Observer: authority-observer\r\n"));
+    assert!(request.contains("Authorization: Bearer authority-observer\r\n"));
+    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
 }
 
 async fn start_bridge_with_response_content_length(
@@ -719,6 +899,301 @@ async fn round_trips_request_over_real_tls_and_framing() {
 }
 
 #[tokio::test]
+async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request_path() {
+    let request_fixture =
+        authority_fixture("example.link.pair.request.body.application-json.default");
+    let response_fixture =
+        authority_fixture("example.link.pair.response.200.application-json.default");
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+    ca_params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+    let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let signing_cert = ca_params.self_signed(&signing_key).unwrap();
+
+    let (server_cert, server_key) = self_signed();
+    let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_pair_response(
+        listener,
+        acceptor,
+        signing_cert,
+        signing_key,
+    ));
+    let nonce = request_fixture["payload"]["nonce"].as_str().unwrap();
+    let label = request_fixture["payload"]["device_label"].as_str().unwrap();
+    let endpoints = [observer_pl::pairlink::Endpoint {
+        host: "127.0.0.1".to_owned(),
+        port,
+    }];
+
+    let credential = pl_transport_win::pairing::pair(&endpoints, nonce, &server_pin, label)
+        .await
+        .unwrap();
+    assert_eq!(
+        credential.instance_id,
+        response_fixture["payload"]["instance_id"]
+    );
+    assert_eq!(
+        credential.home_label,
+        response_fixture["payload"]["home_label"]
+    );
+    assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
+    let request = server.await.unwrap();
+    assert!(pair_capture_matches(&request, nonce, label));
+    let mutated = String::from_utf8(request.clone()).unwrap().replacen(
+        &format!("token={nonce}"),
+        "token=wrong",
+        1,
+    );
+    assert!(!pair_capture_matches(mutated.as_bytes(), nonce, label));
+}
+
+#[tokio::test]
+async fn observer_contract_authority_register_captures_real_request_and_response() {
+    let request_fixture =
+        authority_fixture("example.observer.register.request.body.application-json.default");
+    let response_fixture =
+        authority_fixture("example.observer.register.response.200.application-json.default");
+    let body =
+        leaked_authority_payload("example.observer.register.response.200.application-json.default");
+    let (mut client, server) = start_client_with_response("200 OK", body, None).await;
+    let request_payload = &request_fixture["payload"];
+
+    let response = client
+        .register(
+            request_payload["platform"].as_str().unwrap(),
+            request_payload["hostname"].as_str().unwrap(),
+            request_payload["stream_type"].as_str().unwrap(),
+            request_payload["version"].as_str().unwrap(),
+            request_payload["label"].as_str().map(str::to_owned),
+        )
+        .await
+        .unwrap();
+    let request = server.await.unwrap();
+    let text = String::from_utf8_lossy(&request);
+    assert!(text.starts_with("POST /app/observer/register HTTP/1.1\r\n"));
+    assert!(text.contains("Content-Type: application/json\r\n"));
+    assert!(!text.contains("X-Solstone-Observer:"));
+    assert!(!text.contains("Authorization:"));
+    assert!(!text.contains("X-Solstone-Protocol-Version:"));
+    assert_eq!(request_body(&request), request_payload.clone());
+    assert_eq!(response.key, response_fixture["payload"]["key"]);
+    assert_eq!(
+        client.observer_key(),
+        response_fixture["payload"]["key"].as_str()
+    );
+}
+
+#[tokio::test]
+async fn observer_contract_authority_heartbeat_captures_production_subset() {
+    let request_fixture =
+        authority_fixture("example.observer.ingestEvent.request.body.application-json.default");
+    let body = leaked_authority_payload(
+        "example.observer.ingestEvent.response.200.application-json.default",
+    );
+    let (client, server) =
+        start_client_with_response("200 OK", body, Some("authority-observer")).await;
+    let event = HeartbeatEvent::status(false);
+    client.heartbeat(&event).await.unwrap();
+
+    let request = server.await.unwrap();
+    assert!(heartbeat_capture_matches(&request, &request_fixture));
+    for (from, to) in [
+        (
+            "POST /app/observer/ingest/event",
+            "GET /app/observer/ingest/event",
+        ),
+        ("/app/observer/ingest/event", "/app/observer/ingest/wrong"),
+        ("X-Solstone-Observer:", "X-Wrong-Observer:"),
+        ("Bearer authority-observer", "Bearer wrong"),
+        (
+            "X-Solstone-Protocol-Version: 2",
+            "X-Solstone-Protocol-Version: 3",
+        ),
+        ("Content-Type: application/json", "Content-Type: text/plain"),
+        ("\"event\":\"status\"", "\"event\":\"wrong\""),
+    ] {
+        let mutated = String::from_utf8(request.clone())
+            .unwrap()
+            .replacen(from, to, 1);
+        assert_ne!(
+            mutated.as_bytes(),
+            request,
+            "mutation must alter capture: {from}"
+        );
+        assert!(
+            !heartbeat_capture_matches(mutated.as_bytes(), &request_fixture),
+            "capture mutation was not detected: {from}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn observer_contract_authority_list_segments_drives_v2_and_legacy_branches() {
+    let day =
+        authority_fixture("example.observer.ingestUpload.request.body.multipart-form-data.default")
+            ["payload"]["day"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    for (fixture_id, header, legacy) in [
+        (
+            "example.observer.ingestSegments.response.200.application-json.legacy",
+            None,
+            true,
+        ),
+        (
+            "example.observer.ingestSegments.response.200.application-json.v2",
+            Some("X-Solstone-Protocol-Version: 2"),
+            false,
+        ),
+        ("recorded.auth.bearer.segments", None, false),
+        ("recorded.auth.handle.segments", None, false),
+        ("recorded.segments.legacy.absent_header", None, true),
+        (
+            "recorded.segments.legacy.unparseable_header",
+            Some("X-Solstone-Protocol-Version: not-a-version"),
+            true,
+        ),
+        (
+            "recorded.segments.v2.envelope",
+            Some("X-Solstone-Protocol-Version: 2"),
+            false,
+        ),
+    ] {
+        let fixture = authority_fixture(fixture_id);
+        let body = leaked_authority_payload(fixture_id);
+        let (client, server) = start_client_with_response_header(body, header).await;
+        let response = client.list_segments(&day).await.unwrap();
+        let request = server.await.unwrap();
+        let text = String::from_utf8_lossy(&request);
+        assert!(text.starts_with(&format!(
+            "GET /app/observer/ingest/segments/{day} HTTP/1.1\r\n"
+        )));
+        assert_authenticated_request(&text);
+        assert!(text.ends_with("\r\n\r\n"), "GET body must be empty");
+        if matches!(
+            fixture_id,
+            "recorded.segments.legacy.absent_header"
+                | "recorded.segments.legacy.unparseable_header"
+        ) {
+            // Authority pins only the raw legacy body (pointer ""): Windows
+            // accepts it without treating it as v2; its internal total is unpinned.
+            assert!(response.items.is_empty());
+            assert_eq!(response.protocol_version, None, "{fixture_id}");
+        } else if legacy {
+            let items = fixture["payload"].as_array().unwrap();
+            assert_eq!(response.items.len(), items.len());
+            assert_eq!(response.total, Some(items.len() as u64), "{fixture_id}");
+            assert_eq!(response.protocol_version, None, "{fixture_id}");
+        } else {
+            assert_eq!(
+                response.items.len(),
+                fixture["payload"]["items"].as_array().unwrap().len()
+            );
+            assert_eq!(response.total, fixture["payload"]["total"].as_u64());
+            assert_eq!(
+                response.protocol_version.map(u64::from),
+                fixture["payload"]["protocol_version"].as_u64()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn observer_contract_authority_ingest_captures_multipart_and_status_paths() {
+    let request_fixture =
+        authority_fixture("example.observer.ingestUpload.request.body.multipart-form-data.default");
+    let payload = &request_fixture["payload"];
+    let filenames: Vec<&str> = payload["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect();
+    let files: Vec<FilePart> = filenames
+        .iter()
+        .enumerate()
+        .map(|(index, filename)| FilePart {
+            filename: (*filename).to_owned(),
+            content_type: "application/octet-stream".to_owned(),
+            bytes: format!("authority-test-bytes-{index}").into_bytes(),
+        })
+        .collect();
+
+    for fixture_id in [
+        "example.observer.ingestUpload.response.200.application-json.normal",
+        "example.observer.ingestUpload.response.200.application-json.duplicate",
+        "recorded.ingestUpload.collision",
+        "recorded.ingestUpload.duplicate",
+        "recorded.ingestUpload.ok",
+        "declared.observer.ingestUpload.status_unknown_rejected",
+    ] {
+        let response_fixture = authority_fixture(fixture_id);
+        let body = leaked_authority_payload(fixture_id);
+        let (client, server) =
+            start_client_with_response("200 OK", body, Some("authority-observer")).await;
+        let (response, _) = client
+            .ingest(
+                payload["segment"].as_str().unwrap(),
+                payload["day"].as_str().unwrap(),
+                payload["platform"].as_str().unwrap(),
+                &files,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, response_fixture["payload"]["status"]);
+
+        let request = server.await.unwrap();
+        assert!(ingest_capture_matches(&request, payload, &filenames));
+        if fixture_id == "example.observer.ingestUpload.response.200.application-json.normal" {
+            for (from, to) in [
+                ("name=\"segment\"", "name=\"wrong\""),
+                ("name=\"files\"", "name=\"wrong_files\""),
+            ] {
+                let mutated = String::from_utf8(request.clone())
+                    .unwrap()
+                    .replacen(from, to, 1);
+                assert!(
+                    !ingest_capture_matches(mutated.as_bytes(), payload, &filenames),
+                    "multipart mutation was not detected: {from}"
+                );
+            }
+        }
+    }
+
+    for (fixture_id, status) in [
+        ("recorded.ingestUpload.conflict", "409 Conflict"),
+        ("recorded.ingestUpload.failed", "422 Unprocessable Entity"),
+    ] {
+        let body = leaked_authority_payload(fixture_id);
+        let (client, server) =
+            start_client_with_response(status, body, Some("authority-observer")).await;
+        let error = client
+            .ingest(
+                payload["segment"].as_str().unwrap(),
+                payload["day"].as_str().unwrap(),
+                payload["platform"].as_str().unwrap(),
+                &files,
+            )
+            .await
+            .unwrap_err();
+        let expected = status
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        assert!(matches!(error, TransportError::Rejected { status, .. } if status == expected));
+        let request = server.await.unwrap();
+        assert_authenticated_request(&String::from_utf8_lossy(&request));
+    }
+}
+
+#[tokio::test]
 async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
     let (handle, _accepts, upstream) = start_bridge_with_counting_upstream().await;
     let port = handle.port();
@@ -986,6 +1461,95 @@ async fn journal_bridge_sse_fail_before_head_returns_502() {
     assert!(!response_text(&response).starts_with("HTTP/1.1 200"));
     let _ = upstream.await.unwrap();
     handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn journal_bridge_sse_fail_after_head_does_not_emit_502() {
+    let (handle, upstream) = start_bridge_with_sse(SseMode::EofAfterHeadAndPartialBody).await;
+    let port = handle.port();
+    let cap = capability_from(&handle);
+
+    let response = raw_bridge_request(
+        port,
+        "GET",
+        "/sse/events",
+        Some(loopback_host(port)),
+        Some(cap_cookie(&cap)),
+        &[],
+        b"",
+    )
+    .await;
+
+    let text = response_text(&response);
+    assert_eq!(text.matches("HTTP/1.1").count(), 1);
+    assert!(text.starts_with("HTTP/1.1 200"));
+    assert!(response_body(&response).contains("data: partial"));
+    assert!(!text.contains("502"));
+    assert!(!text.contains("journal unreachable"));
+    let _ = upstream.await.unwrap();
+    handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes() {
+    for (fixture_id, vector_id) in [
+        (
+            "example.callosum.rootEvents.response.200.text-event-stream.default",
+            None,
+        ),
+        (
+            "recorded.sse.root.data_unknown_event",
+            Some("callosum.rootEvents.sse.data_unknown_event"),
+        ),
+        (
+            "recorded.sse.root.heartbeat",
+            Some("callosum.rootEvents.sse.heartbeat"),
+        ),
+    ] {
+        let fixture = authority_fixture(fixture_id);
+        let expected = if fixture["payload"].is_string() {
+            fixture["payload"].as_str().unwrap().as_bytes().to_vec()
+        } else {
+            format!(
+                "data: {}\n\n",
+                serde_json::to_string(&fixture["payload"]).unwrap()
+            )
+            .into_bytes()
+        };
+        let expected: &'static [u8] = Box::leak(expected.into_boxed_slice());
+        let (handle, upstream) = start_bridge_with_sse(SseMode::Authority(expected)).await;
+        let port = handle.port();
+        let cap = capability_from(&handle);
+        let response = raw_bridge_request(
+            port,
+            "GET",
+            "/sse/events",
+            Some(loopback_host(port)),
+            Some(cap_cookie(&cap)),
+            &[],
+            b"",
+        )
+        .await;
+
+        assert_eq!(response_status(&response), 200);
+        assert_eq!(response_body(&response).as_bytes(), expected);
+        let head = response_head(&response);
+        assert!(head.contains("content-type: text/event-stream"));
+        assert!(!head.contains("content-length"));
+        assert!(!head.contains("transfer-encoding"));
+        if let Some(vector_id) = vector_id {
+            let decision = authority_vector(vector_id)["decision"].clone();
+            if fixture["payload"].is_string() {
+                assert_eq!(decision["action"], "ignore_keepalive");
+            } else {
+                assert_eq!(decision["action"], "pass_through");
+                assert_eq!(decision["unknown_event_behavior"], "preserve");
+            }
+        }
+        let request = upstream.await.unwrap();
+        assert!(String::from_utf8_lossy(&request).starts_with("GET /sse/events HTTP/1.1\r\n"));
+        handle.shutdown_and_wait().await;
+    }
 }
 
 #[tokio::test]

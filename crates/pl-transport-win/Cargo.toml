@@ -38,3 +38,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 rcgen = { workspace = true, features = ["x509-parser"] }
 observer-segment.workspace = true
 platform-win.workspace = true
+xtask = { path = "../../xtask" }

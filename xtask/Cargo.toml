@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Workspace task runner: `contract [--check]` (regenerate/verify automation-contract.json + the ui codegen), `package`, `dev`."
+description = "Workspace task runner: local contract, purity, package, and development checks."
 publish = false
 
 [lints]
@@ -13,7 +13,9 @@ workspace = true
 
 [dependencies]
 observer-contract.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 syn = { version = "2.0.118", default-features = false, features = ["full", "visit", "parsing"] }

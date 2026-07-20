@@ -32,13 +32,13 @@ WIN_REMOTE_HOST ?=
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
 .PHONY: install rust-toolchain preflight-toolchain preflight-cargo-deny build test ui-test \
-	        test-scripts ci audit contract purity-check package publish publish-r2 \
+	        test-scripts ci audit contract purity-check check-observer-contract package publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install rust-toolchain build test ci audit contract purity-check package publish smoke screenshots journal-live run clean"
+	@echo "verbs: install rust-toolchain build test ci audit contract purity-check check-observer-contract package publish smoke screenshots journal-live run clean"
 	@echo "release: package (box) -> publish (box) -> pull-releases -> publish-r2 -> publish-packages"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
@@ -92,6 +92,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
 	$(CARGO) run --locked -q -p xtask -- contract --check
 	$(CARGO) run --locked -q -p xtask -- purity-check
+	$(MAKE) check-observer-contract
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
 	$(CARGO) deny --offline --locked check bans licenses sources
 	$(MAKE) ui-test
@@ -112,6 +113,15 @@ contract: preflight-toolchain
 # (AGENTS.md §Source Layout). `--target all` makes target-gated leaks visible on any host.
 purity-check: preflight-toolchain
 	$(CARGO) run --locked -q -p xtask -- purity-check
+
+# Local offline observer-client contract structural/behavioral evidence only.
+check-observer-contract: preflight-toolchain
+	@echo "local offline observer-contract structural/behavioral evidence"
+	CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- observer-contract check
+	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p xtask observer_contract
+	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p observer-pl observer_contract_authority
+	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win observer_contract_authority
+	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win --test transport_round_trip
 
 # Build a RELEASE binary + webview, then pack a Velopack release into Releases/.
 # Release (not the debug `build`) so the tray app is windowless — the

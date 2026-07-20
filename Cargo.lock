@@ -2821,6 +2821,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "xtask",
 ]
 
 [[package]]
@@ -3083,6 +3084,7 @@ dependencies = [
  "tracing",
  "webpki-roots",
  "windows 0.58.0",
+ "xtask",
 ]
 
 [[package]]
@@ -6220,7 +6222,9 @@ version = "0.2.11"
 dependencies = [
  "observer-contract",
  "proc-macro2",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "syn 2.0.118",
 ]
 

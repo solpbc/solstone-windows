@@ -1937,4 +1937,146 @@ mod tests {
         assert_eq!(second, 1);
         assert!(*removed.lock().unwrap());
     }
+
+    fn observer_contract_authority_record(
+        document: &str,
+        field: &str,
+        id: &str,
+    ) -> serde_json::Value {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/observer-client/bundle")
+            .join(document);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root).expect("read authority bundle"))
+                .expect("parse authority bundle");
+        value[field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == id)
+            .unwrap_or_else(|| panic!("missing authority record {id}"))
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn observer_contract_authority_coordinator_uses_pinned_stored_key_precedence() {
+        for vector_id in [
+            "observer.ingestUpload.status.collision",
+            "observer.ingestUpload.status.duplicate",
+            "observer.ingestUpload.status.ok",
+        ] {
+            assert!(xtask::observer_contract::ADOPTED_VECTOR_IDS.contains(&vector_id));
+            let vector = observer_contract_authority_record("vectors.json", "vectors", vector_id);
+            let fixture_id = vector["fixture_id"].as_str().unwrap();
+            let fixture = observer_contract_authority_record(
+                "fixtures/wire-behavior.json",
+                "fixtures",
+                fixture_id,
+            );
+            let response: IngestResponse =
+                serde_json::from_value(fixture["payload"].clone()).unwrap();
+            assert!(response.is_accepted());
+            let source = vector["decision"]["stored_key_source"].as_str().unwrap();
+            let selected = match source {
+                "segment" => response.segment.as_deref().unwrap(),
+                "existing_segment" => response.existing_segment.as_deref().unwrap(),
+                other => panic!("unsupported authority source {other}"),
+            }
+            .to_owned();
+            let file_name = "audio.flac";
+            let bytes = b"authority-coordinator".to_vec();
+            let sha = ca::sha256_hex(&bytes);
+            let store = OneSegmentStore::new(1_700_000_100, file_name, bytes.clone());
+            let removed = store.removed_handle();
+            let client = FakeClient::new(
+                vec![Ok((
+                    response,
+                    SendMetadata {
+                        path: TransportPath::Direct,
+                        attempts: 1,
+                    },
+                ))],
+                vec![confirmed_segments(
+                    selected,
+                    file_name,
+                    sha,
+                    bytes.len() as u64,
+                )],
+            );
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            let coordinator = coordinator_with_client(client, Box::new(store), sync);
+
+            assert_eq!(coordinator.tick().await.unwrap(), 1, "{vector_id}");
+            assert!(*removed.lock().unwrap(), "{vector_id}");
+        }
+
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"submitted-key-fallback".to_vec();
+        let local_key = civil::segment_key_string_local(boundary, 0, 300);
+        let sha = ca::sha256_hex(&bytes);
+        let store = OneSegmentStore::new(boundary, file_name, bytes.clone());
+        let removed = store.removed_handle();
+        let client = FakeClient::new(
+            vec![accepted_ingest(1)],
+            vec![confirmed_segments(
+                local_key,
+                file_name,
+                sha,
+                bytes.len() as u64,
+            )],
+        );
+        let coordinator = coordinator_with_client(
+            client,
+            Box::new(store),
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+        );
+        assert_eq!(coordinator.tick().await.unwrap(), 1);
+        assert!(*removed.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn observer_contract_authority_coordinator_preserves_rejected_uploads() {
+        for vector_id in [
+            "observer.ingestUpload.status.conflict",
+            "observer.ingestUpload.status.failed",
+            "observer.ingestUpload.status_unknown_rejected",
+        ] {
+            let vector = observer_contract_authority_record("vectors.json", "vectors", vector_id);
+            let fixture = observer_contract_authority_record(
+                "fixtures/wire-behavior.json",
+                "fixtures",
+                vector["fixture_id"].as_str().unwrap(),
+            );
+            let ingest = if let Some(status) = vector["decision"]["http_status"].as_u64() {
+                if status != 200 {
+                    Err(TransportError::Rejected {
+                        status: status as u16,
+                        body: serde_json::to_string(&fixture["payload"]).unwrap(),
+                    })
+                } else {
+                    unreachable!()
+                }
+            } else {
+                Ok((
+                    serde_json::from_value(fixture["payload"].clone()).unwrap(),
+                    SendMetadata {
+                        path: TransportPath::Direct,
+                        attempts: 1,
+                    },
+                ))
+            };
+            let store = OneSegmentStore::new(1_700_000_100, "audio.flac", b"retained".to_vec());
+            let removed = store.removed_handle();
+            let client = FakeClient::new(vec![ingest], vec![]);
+            let coordinator = coordinator_with_client(
+                client,
+                Box::new(store),
+                Arc::new(Mutex::new(SyncSnapshot::default())),
+            );
+
+            assert_eq!(coordinator.tick().await.unwrap(), 0, "{vector_id}");
+            assert!(!*removed.lock().unwrap(), "{vector_id}");
+        }
+    }
 }

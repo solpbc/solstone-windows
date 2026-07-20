@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use observer_model::TransportPath;
@@ -14,6 +16,8 @@ use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+
+use support::observer_contract::fixture as authority_fixture;
 
 fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -209,4 +213,52 @@ async fn lan_ingest_lifecycle_logs_direct_path_without_secret_material() {
     assert!(!logs.contains("observer-key"));
     assert!(!logs.contains("token"));
     assert!(!logs.contains("relay"));
+}
+
+#[tokio::test]
+async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
+    let fixture =
+        authority_fixture("example.observer.ingestUpload.request.body.multipart-form-data.default");
+    let payload = &fixture["payload"];
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_ingest(listener, acceptor));
+    let client = ObserverClient::new(observer_credential(pin, port))
+        .unwrap()
+        .with_observer_key(Some("authority-observer".into()));
+    let files: Vec<FilePart> = payload["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, filename)| FilePart {
+            filename: filename.as_str().unwrap().to_owned(),
+            content_type: "application/octet-stream".to_owned(),
+            bytes: format!("test-owned-{index}").into_bytes(),
+        })
+        .collect();
+
+    client
+        .ingest(
+            payload["segment"].as_str().unwrap(),
+            payload["day"].as_str().unwrap(),
+            payload["platform"].as_str().unwrap(),
+            &files,
+        )
+        .await
+        .unwrap();
+    let request = String::from_utf8(server.await.unwrap()).unwrap();
+    assert!(request.starts_with("POST /app/observer/ingest HTTP/1.1\r\n"));
+    assert!(request.contains("X-Solstone-Observer: authority-observer\r\n"));
+    assert!(request.contains("Authorization: Bearer authority-observer\r\n"));
+    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
+    for filename in payload["files"].as_array().unwrap() {
+        assert!(request.contains(&format!(
+            "name=\"files\"; filename=\"{}\"",
+            filename.as_str().unwrap()
+        )));
+    }
 }

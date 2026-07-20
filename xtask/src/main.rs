@@ -6,6 +6,7 @@
 //! Verbs:
 //! - `contract` — regenerate `automation-contract.json` + the `ui/src/lib/contract.ts` codegen.
 //! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate and the `contract_not_stale` test both invoke it).
+//! - `observer-contract check` — verify the vendored observer-client authority bundle and adoption record.
 //! - `purity-check` — fail if the `windows` family reaches any strict workspace member (every member except the reviewed Windows-capable exception set), even target-gated; members come from `cargo metadata`, with normal/build/dev traversal under `--target all --all-features`.
 //! - `package` — Velopack packaging (delegates to the Windows script; a stub off the build box).
 //! - `dev` — developer convenience launcher (stub).
@@ -27,12 +28,41 @@ fn main() -> ExitCode {
             let check = args.iter().any(|a| a == "--check");
             cmd_contract(check)
         }
+        Some("observer-contract")
+            if args.get(1).map(String::as_str) == Some("check") && args.len() == 2 =>
+        {
+            cmd_observer_contract_check()
+        }
         Some("purity-check") => cmd_purity_check(),
         Some("package") => cmd_package(),
         Some("dev") => cmd_dev(),
         _ => {
-            eprintln!("usage: cargo xtask <contract [--check] | purity-check | package | dev>");
+            eprintln!("usage: cargo xtask <contract [--check] | observer-contract check | purity-check | package | dev>");
             ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_observer_contract_check() -> ExitCode {
+    let root = repo_root();
+    let consumer_dir = root.join("contracts/observer-client");
+    match xtask::observer_contract::verify(
+        &consumer_dir.join("bundle"),
+        &consumer_dir.join("adoption.json"),
+    ) {
+        Ok(report) => {
+            println!(
+                "observer-contract: local offline structural evidence verified for bundle {} ({} operations, {} fixtures, {} vectors)",
+                report.bundle_semver,
+                report.operation_count,
+                report.fixture_count,
+                report.vector_count
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("observer-contract check failed: {error}");
+            ExitCode::FAILURE
         }
     }
 }

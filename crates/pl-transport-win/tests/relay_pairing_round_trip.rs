@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+mod support;
+
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +27,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, WebSocketStream};
+
+use support::observer_contract::fixture as authority_fixture;
 
 const PAIR_SECRET: [u8; 8] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
 const PAIR_SECRET_HEX: &str = "0123456789abcdef";
@@ -93,6 +97,8 @@ struct MockState {
     enroll_status: Mutex<Option<u16>>,
     refresh_status: Mutex<Option<u16>>,
     refresh_hits: AtomicUsize,
+    expected_pair_token: Mutex<String>,
+    pair_request: Mutex<Option<PairRequest>>,
 }
 
 impl MockState {
@@ -106,6 +112,8 @@ impl MockState {
             enroll_status: Mutex::new(None),
             refresh_status: Mutex::new(None),
             refresh_hits: AtomicUsize::new(0),
+            expected_pair_token: Mutex::new(PAIR_SECRET_HEX.to_owned()),
+            pair_request: Mutex::new(None),
         }
     }
 
@@ -299,13 +307,17 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
     }
 
     let request_text = String::from_utf8_lossy(&request);
-    assert!(request_text.starts_with(&format!("POST /app/network/pair?token={PAIR_SECRET_HEX} ")));
+    let expected_pair_token = state.expected_pair_token.lock().unwrap().clone();
+    assert!(request_text.starts_with(&format!(
+        "POST /app/network/pair?token={expected_pair_token} "
+    )));
     let body = request
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|split| &request[split + 4..])
         .unwrap();
     let pair_request: PairRequest = serde_json::from_slice(body).unwrap();
+    *state.pair_request.lock().unwrap() = Some(pair_request.clone());
     let csr = CertificateSigningRequestParams::from_pem(&pair_request.csr).unwrap();
     let client_cert = csr
         .signed_by(&state.json_ca.cert, &state.json_ca.key)
@@ -396,6 +408,72 @@ async fn relay_pairing_full_ceremony_populates_credential() {
             port: 7657
         }]
     );
+}
+
+#[tokio::test]
+async fn observer_contract_authority_relay_pairing_uses_real_ceremony() {
+    let fixture = authority_fixture("example.link.pair.request.body.application-json.default");
+    let nonce = fixture["payload"]["nonce"].as_str().unwrap();
+    let mut secret = [0u8; 8];
+    for (index, byte) in secret.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&nonce[index * 2..index * 2 + 2], 16).unwrap();
+    }
+    let state = Arc::new(MockState::normal().with_same_tls_ca());
+    *state.expected_pair_token.lock().unwrap() = nonce[..16].to_owned();
+    let origin = spawn_mock_relay(state.clone()).await;
+    let link = RelayPairLink {
+        s: secret,
+        ca_fp_spki: state.json_ca.spki_pin(),
+        relay_origin: origin,
+    };
+    let device_label = fixture["payload"]["device_label"].as_str().unwrap();
+
+    let credential = pair_over_relay(&link, device_label).await.unwrap();
+    let captured = state.pair_request.lock().unwrap().clone().unwrap();
+    assert_eq!(captured.device_label, device_label);
+    assert!(captured.csr.contains("BEGIN CERTIFICATE REQUEST"));
+    assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
+    assert_eq!(credential.home_label, "Home");
+}
+
+#[tokio::test]
+async fn observer_contract_authority_pair_from_link_dispatches_relay_ceremony() {
+    let fixture = authority_fixture("example.link.pair.request.body.application-json.default");
+    let nonce = fixture["payload"]["nonce"].as_str().unwrap();
+    let mut secret = [0u8; 8];
+    for (index, byte) in secret.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&nonce[index * 2..index * 2 + 2], 16).unwrap();
+    }
+    let state = Arc::new(MockState::normal().with_same_tls_ca());
+    *state.expected_pair_token.lock().unwrap() = nonce[..16].to_owned();
+    let origin = spawn_mock_relay(state.clone()).await;
+    let origin_bytes = origin.as_bytes();
+    let mut blob = vec![0x06];
+    blob.extend_from_slice(&secret);
+    blob.push(0x01);
+    blob.extend_from_slice(&state.json_ca.spki_pin());
+    blob.push(u8::try_from(origin_bytes.len()).unwrap());
+    blob.extend_from_slice(origin_bytes);
+    let link = format!(
+        "https://go.solstone.app/p#{}",
+        observer_pl::crockford::encode(&blob)
+    );
+    let device_label = fixture["payload"]["device_label"].as_str().unwrap();
+
+    let credential = pl_transport_win::pairing::pair_from_link(&link, device_label)
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .pair_request
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .device_label,
+        device_label
+    );
+    assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
 }
 
 #[tokio::test]
