@@ -167,30 +167,28 @@ pub fn parse_member_tree(member_name: &str, tree_stdout: &str) -> Result<Depende
             .unwrap_or(line.len());
         if depth_end == 0 {
             return Err(format!(
-                "{member_name}: dependency line has no leading depth digit: {line}"
+                "dependency line has no leading depth digit: {line}"
             ));
         }
         let (depth_str, identity) = line.split_at(depth_end);
         if identity.is_empty() {
-            return Err(format!(
-                "{member_name}: dependency line has empty package identity"
-            ));
+            return Err("dependency line has empty package identity".to_string());
         }
         let depth = depth_str
             .parse::<usize>()
-            .map_err(|error| format!("{member_name}: malformed depth {depth_str}: {error}"))?;
+            .map_err(|error| format!("malformed depth {depth_str}: {error}"))?;
         let index = nodes.len();
 
         if index == 0 && depth != 0 {
             return Err(format!(
-                "{member_name}: first dependency line has depth {depth}, expected 0"
+                "first dependency line has depth {depth}, expected 0"
             ));
         }
         if index > 0 && depth == 0 {
-            return Err(format!("{member_name}: unexpected second root {identity}"));
+            return Err(format!("unexpected second root {identity}"));
         }
         if index > 0 && depth > stack.len() {
-            return Err(format!("{member_name}: depth jump to {depth}"));
+            return Err(format!("depth jump to {depth}"));
         }
 
         let parent = if depth == 0 {
@@ -208,15 +206,13 @@ pub fn parse_member_tree(member_name: &str, tree_stdout: &str) -> Result<Depende
     }
 
     if nodes.is_empty() {
-        return Err(format!(
-            "{member_name}: cargo tree produced no dependency tree output"
-        ));
+        return Err("cargo tree produced no dependency tree output".to_string());
     }
 
     let root_package = package_name(&nodes[0].identity);
     if root_package != member_name {
         return Err(format!(
-            "{member_name}: root package {root_package} does not match requested member {member_name}"
+            "root package {root_package} does not match requested member {member_name}"
         ));
     }
 
@@ -409,8 +405,16 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
             ));
         }
         let tree_stdout = String::from_utf8_lossy(&output.stdout);
-        let tree = parse_member_tree(&member.package_name, &tree_stdout).map_err(|error| {
-            failure_message(trees.len(), inspected_edge_count(&trees), &[error])
+        let tree = parse_member_tree(&member.package_name, &tree_stdout).map_err(|reason| {
+            failure_message(
+                trees.len(),
+                inspected_edge_count(&trees),
+                &[format!(
+                    "{} ({}): {reason}",
+                    member.package_name,
+                    member.manifest_path.display()
+                )],
+            )
         })?;
         trees.insert(member.package_name.clone(), tree);
     }

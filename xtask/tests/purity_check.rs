@@ -474,7 +474,6 @@ fn extra_tree_output_is_rejected() {
 
 fn assert_parse_error(member_name: &str, stdout: &str, reason: &str) {
     let error = parse_member_tree(member_name, stdout).unwrap_err();
-    assert!(error.contains(member_name));
     assert!(error.contains(reason), "{error}");
 }
 
