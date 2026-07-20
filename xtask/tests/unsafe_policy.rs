@@ -18,6 +18,16 @@ use syn::{
     ItemImpl, ItemMod, ItemStatic, ItemTrait, Lit, LitStr, Macro, Meta, Token, TraitItemFn, Type,
 };
 
+const METADATA_ARGV: [&str; 6] = [
+    "metadata",
+    "--locked",
+    "--offline",
+    "--format-version",
+    "1",
+    "--no-deps",
+];
+const UNSAFE_ATTRIBUTE_NAMES: [&str; 4] = ["export_name", "link_section", "naked", "no_mangle"];
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ApprovedKind {
     Mod,
@@ -254,14 +264,11 @@ impl PolicyState {
 
     fn inspect_unsafe_attribute(
         &mut self,
-        form_count: usize,
         source_path: &str,
         line: usize,
         scope: Option<&NodeIdentity>,
     ) {
-        for _ in 0..form_count {
-            self.record_unsafe("unsafe attribute", source_path, line, scope);
-        }
+        self.record_unsafe("unsafe attribute", source_path, line, scope);
     }
 
     fn record_unsafe(
@@ -403,39 +410,31 @@ impl<'a> FileVisitor<'a> {
             self.scope.clone()
         };
         for attribute in attributes {
-            let form_count = unsafe_attribute_form_count(attribute);
-            let line = if form_count > 0 {
-                self.locator.next("unsafe")
-            } else {
-                node_line
-            };
-            self.policy.inspect_unsafe_attribute(
-                form_count,
-                self.source_path,
-                line,
-                effective_scope.as_ref(),
-            );
+            for locator in unsafe_attribute_form_locators(&attribute.meta) {
+                let line = self.locator.next(locator);
+                self.policy.inspect_unsafe_attribute(
+                    self.source_path,
+                    line,
+                    effective_scope.as_ref(),
+                );
+            }
         }
         effective_scope
     }
 
     fn inspect_ordinary_attribute(&mut self, attribute: &Attribute) {
-        let unsafe_attribute_count = unsafe_attribute_form_count(attribute);
         let line = if attribute_mentions_unsafe_code(attribute) {
             self.locator.next("unsafe_code")
-        } else if unsafe_attribute_count > 0 {
-            self.locator.next("unsafe")
         } else {
             1
         };
         self.policy
             .inspect_level_attribute(attribute, None, self.source_path, line);
-        self.policy.inspect_unsafe_attribute(
-            unsafe_attribute_count,
-            self.source_path,
-            line,
-            self.scope.as_ref(),
-        );
+        for locator in unsafe_attribute_form_locators(&attribute.meta) {
+            let line = self.locator.next(locator);
+            self.policy
+                .inspect_unsafe_attribute(self.source_path, line, self.scope.as_ref());
+        }
     }
 
     fn record_unsafe(&mut self, form: &str, ident: &str) {
@@ -678,7 +677,7 @@ struct WorkspaceScanner {
     inventories: Vec<BTreeSet<PathBuf>>,
     visited: BTreeMap<Vec<String>, VisitRecord>,
     visited_rs: Vec<BTreeSet<PathBuf>>,
-    active_includes: Vec<Vec<String>>,
+    active_sources: Vec<Vec<String>>,
     policy: PolicyState,
 }
 
@@ -697,7 +696,7 @@ impl WorkspaceScanner {
             inventories: vec![BTreeSet::new(); member_count],
             visited: BTreeMap::new(),
             visited_rs: vec![BTreeSet::new(); member_count],
-            active_includes: Vec::new(),
+            active_sources: Vec::new(),
             policy: PolicyState::new(approved)?,
         })
     }
@@ -705,13 +704,26 @@ impl WorkspaceScanner {
     fn build_inventory(&mut self) -> Result<(), String> {
         for index in 0..self.members.len() {
             let root = self.members[index].root.clone();
-            collect_rust_inventory(&root, &self.target_directory, &mut self.inventories[index])
-                .map_err(|error| {
-                    format!(
-                        "{}: source inventory failed: {error}",
-                        display_path(&self.workspace_root, &root)
-                    )
-                })?;
+            let mut symlink_violations = Vec::new();
+            collect_rust_inventory(
+                &root,
+                &self.target_directory,
+                &mut self.inventories[index],
+                &mut symlink_violations,
+            )
+            .map_err(|error| {
+                format!(
+                    "{}: source inventory failed: {error}",
+                    display_path(&self.workspace_root, &root)
+                )
+            })?;
+            for (kind, path) in symlink_violations {
+                self.policy.violations.push(format!(
+                    "{}: {kind} symlink is forbidden in member source tree: {}",
+                    display_path(&self.workspace_root, &self.members[index].manifest_path),
+                    display_path(&self.workspace_root, &path)
+                ));
+            }
             if self.inventories[index].is_empty() {
                 self.policy.violations.push(format!(
                     "{}: member has zero Rust source files",
@@ -762,9 +774,14 @@ impl WorkspaceScanner {
         referring_line: usize,
     ) {
         let identity = path_key(&path);
-        if is_include && self.active_includes.contains(&identity) {
+        if self.active_sources.contains(&identity) {
+            let cycle = if is_include {
+                "recursive include! cycle"
+            } else {
+                "recursive source cycle"
+            };
             self.policy.violations.push(format!(
-                "{referring_source}:{referring_line}: recursive include! cycle: {}",
+                "{referring_source}:{referring_line}: {cycle}: {}",
                 display_path(&self.workspace_root, &path)
             ));
             return;
@@ -793,9 +810,7 @@ impl WorkspaceScanner {
         if path.extension().and_then(OsStr::to_str) == Some("rs") {
             self.visited_rs[member_index].insert(path.clone());
         }
-        if is_include {
-            self.active_includes.push(identity);
-        }
+        self.active_sources.push(identity);
 
         let source_path = display_path(&self.workspace_root, &path);
         let source = match fs::read_to_string(&path) {
@@ -804,9 +819,7 @@ impl WorkspaceScanner {
                 self.policy
                     .violations
                     .push(format!("{source_path}: source read/UTF-8 failed: {error}"));
-                if is_include {
-                    self.active_includes.pop();
-                }
+                self.active_sources.pop();
                 return;
             }
         };
@@ -816,9 +829,7 @@ impl WorkspaceScanner {
                 self.policy
                     .violations
                     .push(format!("{source_path}: Rust parse failed: {error}"));
-                if is_include {
-                    self.active_includes.pop();
-                }
+                self.active_sources.pop();
                 return;
             }
         };
@@ -826,9 +837,7 @@ impl WorkspaceScanner {
             self.policy
                 .violations
                 .push(format!("{source_path}: source has no parent directory"));
-            if is_include {
-                self.active_includes.pop();
-            }
+            self.active_sources.pop();
             return;
         };
         let pending = {
@@ -846,9 +855,7 @@ impl WorkspaceScanner {
         for edge in pending {
             self.follow_edge(member_index, edge);
         }
-        if is_include {
-            self.active_includes.pop();
-        }
+        self.active_sources.pop();
     }
 
     fn follow_edge(&mut self, member_index: usize, edge: PendingEdge) {
@@ -1070,6 +1077,29 @@ fn workspace_members_inherit_the_unsafe_policy() {
     );
 }
 
+#[test]
+fn metadata_argv_is_locked_offline_and_stable() {
+    assert_eq!(
+        METADATA_ARGV,
+        [
+            "metadata",
+            "--locked",
+            "--offline",
+            "--format-version",
+            "1",
+            "--no-deps",
+        ]
+    );
+}
+
+#[test]
+fn unsafe_attribute_vocabulary_is_pinned() {
+    assert_eq!(
+        UNSAFE_ATTRIBUTE_NAMES,
+        ["export_name", "link_section", "naked", "no_mangle"]
+    );
+}
+
 fn run_unsafe_policy(repo_root: &Path) -> Result<UnsafePolicyWitness, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     scan_unsafe_policy(repo_root, &cargo, APPROVED_NODES)
@@ -1087,7 +1117,7 @@ fn scan_unsafe_policy(
         )
     })?;
     let output = Command::new(cargo)
-        .args(["metadata", "--locked", "--format-version", "1", "--no-deps"])
+        .args(METADATA_ARGV)
         .current_dir(&requested_root)
         .output()
         .map_err(|error| {
@@ -1517,6 +1547,7 @@ fn collect_rust_inventory(
     directory: &Path,
     target_directory: &Path,
     output: &mut BTreeSet<PathBuf>,
+    symlink_violations: &mut Vec<(&'static str, PathBuf)>,
 ) -> Result<(), String> {
     let mut entries = fs::read_dir(directory)
         .map_err(|error| format!("read {}: {error}", normalize_path_display(directory)))?
@@ -1528,6 +1559,11 @@ fn collect_rust_inventory(
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("inspect {}: {error}", normalize_path_display(&path)))?;
         if metadata.file_type().is_symlink() {
+            if path.extension().and_then(OsStr::to_str) == Some("rs") {
+                symlink_violations.push(("source-file", path));
+            } else if fs::metadata(&path).is_ok_and(|target| target.is_dir()) {
+                symlink_violations.push(("source-directory", path));
+            }
             continue;
         }
         if metadata.is_dir() {
@@ -1537,7 +1573,7 @@ fn collect_rust_inventory(
             if is_within(&canonical, target_directory) {
                 continue;
             }
-            collect_rust_inventory(&canonical, target_directory, output)?;
+            collect_rust_inventory(&canonical, target_directory, output, symlink_violations)?;
         } else if metadata.is_file() && path.extension().and_then(OsStr::to_str) == Some("rs") {
             let canonical = fs::canonicalize(&path).map_err(|error| {
                 format!("canonicalize {}: {error}", normalize_path_display(&path))
@@ -1659,34 +1695,38 @@ fn attribute_mentions_unsafe_code(attribute: &Attribute) -> bool {
     }
 }
 
-fn unsafe_attribute_form_count(attribute: &Attribute) -> usize {
-    if attribute.path().is_ident("unsafe") {
-        return 1;
-    }
-    if !attribute.path().is_ident("cfg_attr") {
-        return 0;
-    }
-    nested_unsafe_attribute_form_count(&attribute.meta)
+fn unsafe_attribute_name(path: &syn::Path) -> Option<&'static str> {
+    UNSAFE_ATTRIBUTE_NAMES
+        .iter()
+        .copied()
+        .find(|name| path.is_ident(name))
 }
 
-fn nested_unsafe_attribute_form_count(meta: &Meta) -> usize {
-    let Meta::List(list) = meta else {
-        return 0;
-    };
-    if list.path.is_ident("unsafe") {
-        return 1;
-    }
-    if !list.path.is_ident("cfg_attr") {
-        return 0;
-    }
-    let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
-    match parser.parse2(list.tokens.clone()) {
-        Ok(arguments) => arguments
-            .iter()
-            .skip(1)
-            .map(nested_unsafe_attribute_form_count)
-            .sum(),
-        Err(_) => usize::from(token_stream_contains_ident(&list.tokens, "unsafe")),
+fn unsafe_attribute_form_locators(meta: &Meta) -> Vec<&'static str> {
+    match meta {
+        Meta::Path(path) => unsafe_attribute_name(path).into_iter().collect(),
+        Meta::NameValue(name_value) => unsafe_attribute_name(&name_value.path)
+            .into_iter()
+            .collect(),
+        Meta::List(list) if list.path.is_ident("unsafe") => vec!["unsafe"],
+        Meta::List(list) if list.path.is_ident("cfg_attr") => {
+            let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
+            match parser.parse2(list.tokens.clone()) {
+                Ok(arguments) => arguments
+                    .iter()
+                    .skip(1)
+                    .flat_map(unsafe_attribute_form_locators)
+                    .collect(),
+                Err(_) if token_stream_contains_ident(&list.tokens, "unsafe") => vec!["unsafe"],
+                Err(_) => UNSAFE_ATTRIBUTE_NAMES
+                    .iter()
+                    .copied()
+                    .find(|name| token_stream_contains_ident(&list.tokens, name))
+                    .into_iter()
+                    .collect(),
+            }
+        }
+        Meta::List(_) => Vec::new(),
     }
 }
 
@@ -2071,6 +2111,15 @@ fn assert_fixture_failure(
     error
 }
 
+fn assert_unsafe_attribute_failure(source: &str) {
+    let workspace = TempWorkspace::basic(source);
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:1: unsafe attribute is outside an approved unsafe boundary",
+    );
+}
+
 #[test]
 fn approved_fixture_node_passes() {
     let workspace = TempWorkspace::basic(
@@ -2255,6 +2304,123 @@ fn cfg_attr_unsafe_attribute_fails() {
         &[],
         "crates/app/src/lib.rs:1: unsafe attribute is outside an approved unsafe boundary",
     );
+}
+
+#[test]
+fn direct_no_mangle_attribute_fails() {
+    assert_unsafe_attribute_failure("#[no_mangle]\npub extern \"C\" fn callback() {}\n");
+}
+
+#[test]
+fn direct_export_name_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[export_name = \"callback\"]\npub extern \"C\" fn exported() {}\n",
+    );
+}
+
+#[test]
+fn direct_link_section_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[link_section = \".solstone\"]\npub static CALLBACK: u8 = 0;\n",
+    );
+}
+
+#[test]
+fn unsafe_export_name_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[unsafe(export_name = \"callback\")]\npub extern \"C\" fn exported() {}\n",
+    );
+}
+
+#[test]
+fn unsafe_link_section_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[unsafe(link_section = \".solstone\")]\npub static CALLBACK: u8 = 0;\n",
+    );
+}
+
+#[test]
+fn unsafe_naked_attribute_fails() {
+    assert_unsafe_attribute_failure("#[unsafe(naked)]\npub extern \"C\" fn callback() {}\n");
+}
+
+#[test]
+fn cfg_attr_direct_no_mangle_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), no_mangle)]\npub extern \"C\" fn callback() {}\n",
+    );
+}
+
+#[test]
+fn cfg_attr_direct_export_name_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), export_name = \"callback\")]\npub extern \"C\" fn exported() {}\n",
+    );
+}
+
+#[test]
+fn cfg_attr_direct_link_section_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), link_section = \".solstone\")]\npub static CALLBACK: u8 = 0;\n",
+    );
+}
+
+#[test]
+fn cfg_attr_unsafe_export_name_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), unsafe(export_name = \"callback\"))]\npub extern \"C\" fn exported() {}\n",
+    );
+}
+
+#[test]
+fn cfg_attr_unsafe_link_section_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), unsafe(link_section = \".solstone\"))]\npub static CALLBACK: u8 = 0;\n",
+    );
+}
+
+#[test]
+fn cfg_attr_unsafe_naked_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), unsafe(naked))]\npub extern \"C\" fn callback() {}\n",
+    );
+}
+
+#[test]
+fn nested_cfg_attr_direct_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), cfg_attr(any(), no_mangle))]\npub extern \"C\" fn callback() {}\n",
+    );
+}
+
+#[test]
+fn nested_cfg_attr_wrapped_attribute_fails() {
+    assert_unsafe_attribute_failure(
+        "#[cfg_attr(any(), cfg_attr(any(), unsafe(naked)))]\npub extern \"C\" fn callback() {}\n",
+    );
+}
+
+#[test]
+fn similar_unsafe_attribute_name_passes() {
+    let workspace =
+        TempWorkspace::basic("#[export_names = \"callback\"]\npub extern \"C\" fn exported() {}\n");
+    run_fixture(&workspace, &[]).expect("a similar attribute name must not match");
+}
+
+#[test]
+fn qualified_unsafe_attribute_name_passes() {
+    let workspace = TempWorkspace::basic("#[some::no_mangle]\npub extern \"C\" fn callback() {}\n");
+    run_fixture(&workspace, &[]).expect("a qualified attribute path must not match");
+}
+
+#[test]
+fn direct_unsafe_attribute_inside_approved_boundary_passes() {
+    let workspace = TempWorkspace::basic(
+        "#[allow(unsafe_code)]\nmod approved {\n\
+         #[no_mangle]\npub extern \"C\" fn callback() {}\n}\n",
+    );
+    run_fixture(&workspace, FIXTURE_APPROVED_MOD)
+        .expect("a direct unsafe attribute inside an approved boundary should pass");
 }
 
 #[test]
@@ -2505,6 +2671,42 @@ fn recursive_include_cycle_fails() {
 }
 
 #[test]
+fn target_root_self_include_cycle_fails() {
+    let workspace = TempWorkspace::basic("include!(\"lib.rs\");\n");
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:1: recursive include! cycle: crates/app/src/lib.rs",
+    );
+}
+
+#[test]
+fn module_cycle_reentering_target_root_fails() {
+    let workspace = TempWorkspace::basic("mod a;\n");
+    workspace.write("crates/app/src/a.rs", "#[path = \"../lib.rs\"] mod back;\n");
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/a.rs:1: recursive source cycle: crates/app/src/lib.rs",
+    );
+}
+
+#[test]
+fn path_module_cycle_reentering_module_root_fails() {
+    let workspace = TempWorkspace::basic("#[path = \"sub/a.rs\"] mod a;\n");
+    workspace.write("crates/app/src/sub/a.rs", "mod b;\n");
+    workspace.write(
+        "crates/app/src/sub/a/b.rs",
+        "#[path = \"../../a.rs\"] mod back;\n",
+    );
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/sub/a/b.rs:1: recursive source cycle: crates/app/src/sub/a.rs",
+    );
+}
+
+#[test]
 fn missing_module_resolution_fails() {
     let workspace = TempWorkspace::basic("mod missing;\n");
     assert_fixture_failure(
@@ -2550,6 +2752,71 @@ fn source_directory_symlink_fails() {
         &[],
         "crates/app/src/lib.rs:1: resolved source-directory symlink is forbidden: crates/app/src/linked",
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn unreferenced_source_file_symlink_fails() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempWorkspace::basic("pub fn app() {}\n");
+    symlink(
+        workspace.root.join("crates/app/src/lib.rs"),
+        workspace.root.join("crates/app/src/unreferenced.rs"),
+    )
+    .expect("create unreferenced source-file symlink fixture");
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/Cargo.toml: source-file symlink is forbidden in member source tree: crates/app/src/unreferenced.rs",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unreferenced_source_directory_symlink_fails() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempWorkspace::basic("pub fn app() {}\n");
+    workspace.write("crates/app/assets/NOTICE", "fixture asset\n");
+    symlink(
+        workspace.root.join("crates/app/assets"),
+        workspace.root.join("crates/app/src/linked-source"),
+    )
+    .expect("create unreferenced source-directory symlink fixture");
+    assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/Cargo.toml: source-directory symlink is forbidden in member source tree: crates/app/src/linked-source",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unrelated_non_rust_file_symlink_passes() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempWorkspace::basic("pub fn app() {}\n");
+    symlink(
+        workspace.root.join("crates/app/src/lib.rs"),
+        workspace.root.join("crates/app/LICENSE"),
+    )
+    .expect("create unrelated non-Rust file symlink fixture");
+    run_fixture(&workspace, &[]).expect("an unrelated non-Rust file symlink should pass");
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_non_rust_symlink_passes() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = TempWorkspace::basic("pub fn app() {}\n");
+    symlink(
+        workspace.root.join("crates/app/missing-license"),
+        workspace.root.join("crates/app/LICENSE"),
+    )
+    .expect("create broken non-Rust symlink fixture");
+    run_fixture(&workspace, &[]).expect("a broken non-Rust symlink should pass");
 }
 
 #[test]
