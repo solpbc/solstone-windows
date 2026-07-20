@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use proc_macro2::{Delimiter, Ident, Spacing, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Ident, Spacing, Span, TokenStream, TokenTree};
 use serde_json::Value;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
@@ -28,6 +28,10 @@ const METADATA_ARGV: [&str; 6] = [
     "--no-deps",
 ];
 const UNSAFE_ATTRIBUTE_NAMES: [&str; 4] = ["export_name", "link_section", "naked", "no_mangle"];
+
+fn span_line(span: Span) -> usize {
+    span.start().line
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ApprovedKind {
@@ -187,11 +191,13 @@ impl PolicyState {
         })
     }
 
-    fn observe_node(&mut self, identity: &NodeIdentity, line: usize) {
+    fn observe_node(&mut self, identity: &NodeIdentity, span: Span) {
         if !self.approved.contains(identity) {
             return;
         }
-        self.observed_nodes.entry(identity.clone()).or_insert(line);
+        self.observed_nodes
+            .entry(identity.clone())
+            .or_insert_with(|| span_line(span));
     }
 
     fn inspect_level_attribute(
@@ -199,22 +205,24 @@ impl PolicyState {
         attribute: &Attribute,
         owner: Option<&NodeIdentity>,
         source_path: &str,
-        line: usize,
     ) -> bool {
         let Some(level) = attribute_level(attribute) else {
             return false;
         };
         if level == "cfg_attr" {
-            for nested_level in cfg_attr_unsafe_levels(attribute) {
+            for finding in cfg_attr_unsafe_levels(attribute) {
+                let line = span_line(finding.span);
+                let nested_level = finding.level;
                 self.violations.push(format!(
                     "{source_path}:{line}: conditional {nested_level}(unsafe_code) cannot approve an unsafe boundary"
                 ));
             }
             return false;
         }
-        if !attribute_mentions_unsafe_code(attribute) {
+        let Some(unsafe_code_span) = attribute_unsafe_code_span(attribute) else {
             return false;
-        }
+        };
+        let line = span_line(unsafe_code_span);
         if level == "warn" || level == "expect" {
             self.violations.push(format!(
                 "{source_path}:{line}: {level}(unsafe_code) cannot approve an unsafe boundary"
@@ -266,21 +274,22 @@ impl PolicyState {
     fn inspect_unsafe_attribute(
         &mut self,
         source_path: &str,
-        line: usize,
+        span: Span,
         scope: Option<&NodeIdentity>,
     ) {
-        self.record_unsafe("unsafe attribute", source_path, line, scope);
+        self.record_unsafe("unsafe attribute", source_path, span, scope);
     }
 
     fn record_unsafe(
         &mut self,
         form: &str,
         source_path: &str,
-        line: usize,
+        span: Span,
         scope: Option<&NodeIdentity>,
     ) {
         self.unsafe_form_count += 1;
         if scope.is_none() {
+            let line = span_line(span);
             self.violations.push(format!(
                 "{source_path}:{line}: {form} is outside an approved unsafe boundary"
             ));
@@ -321,43 +330,11 @@ enum PendingEdge {
     },
 }
 
-#[derive(Debug)]
-struct LineLocator {
-    lines_by_ident: BTreeMap<String, Vec<usize>>,
-    cursors: BTreeMap<String, usize>,
-}
-
-impl LineLocator {
-    fn new(source: &str) -> Self {
-        Self {
-            lines_by_ident: identifier_lines(source),
-            cursors: BTreeMap::new(),
-        }
-    }
-
-    fn next(&mut self, ident: &str) -> usize {
-        let cursor = self.cursors.entry(ident.to_string()).or_default();
-        let line = self
-            .lines_by_ident
-            .get(ident)
-            .and_then(|lines| lines.get(*cursor).copied())
-            .or_else(|| {
-                self.lines_by_ident
-                    .get(ident)
-                    .and_then(|lines| lines.last().copied())
-            })
-            .unwrap_or(1);
-        *cursor += 1;
-        line
-    }
-}
-
 struct FileVisitor<'a> {
     policy: &'a mut PolicyState,
     source_path: &'a str,
     physical_dir: PathBuf,
     module_dir: PathBuf,
-    locator: LineLocator,
     scope: Option<NodeIdentity>,
     impl_owner: Option<String>,
     pending: Vec<PendingEdge>,
@@ -370,14 +347,12 @@ impl<'a> FileVisitor<'a> {
         physical_dir: &'a Path,
         module_dir: &'a Path,
         scope: Option<NodeIdentity>,
-        source: &str,
     ) -> Self {
         Self {
             policy,
             source_path,
             physical_dir: physical_dir.to_path_buf(),
             module_dir: module_dir.to_path_buf(),
-            locator: LineLocator::new(source),
             scope,
             impl_owner: None,
             pending: Vec::new(),
@@ -387,77 +362,44 @@ impl<'a> FileVisitor<'a> {
     fn inspect_candidate(
         &mut self,
         identity: NodeIdentity,
+        node_span: Span,
         attributes: &[Attribute],
     ) -> Option<NodeIdentity> {
-        // Resolve unsafe-attribute form lines first, so an attribute whose name equals the
-        // item name attributes to the attribute's own line rather than the item's line.
-        let mut unsafe_attribute_lines = Vec::new();
+        let mut unsafe_attribute_spans = Vec::new();
         for attribute in attributes {
-            unsafe_attribute_lines.extend(self.unsafe_attribute_lines(&attribute.meta));
+            unsafe_attribute_spans.extend(unsafe_attribute_findings(&attribute.meta));
         }
-        let node_line = self.locator.next(&identity.name);
-        self.policy.observe_node(&identity, node_line);
+        self.policy.observe_node(&identity, node_span);
         let mut approved = false;
         for attribute in attributes {
-            let line = if attribute_mentions_unsafe_code(attribute) {
-                self.locator.next("unsafe_code")
-            } else {
-                node_line
-            };
-            approved |= self.policy.inspect_level_attribute(
-                attribute,
-                Some(&identity),
-                self.source_path,
-                line,
-            );
+            approved |=
+                self.policy
+                    .inspect_level_attribute(attribute, Some(&identity), self.source_path);
         }
         let effective_scope = if approved {
             Some(identity)
         } else {
             self.scope.clone()
         };
-        for line in unsafe_attribute_lines {
+        for span in unsafe_attribute_spans {
             self.policy
-                .inspect_unsafe_attribute(self.source_path, line, effective_scope.as_ref());
+                .inspect_unsafe_attribute(self.source_path, span, effective_scope.as_ref());
         }
         effective_scope
     }
 
     fn inspect_ordinary_attribute(&mut self, attribute: &Attribute) {
-        let line = if attribute_mentions_unsafe_code(attribute) {
-            self.locator.next("unsafe_code")
-        } else {
-            1
-        };
         self.policy
-            .inspect_level_attribute(attribute, None, self.source_path, line);
-        for line in self.unsafe_attribute_lines(&attribute.meta) {
+            .inspect_level_attribute(attribute, None, self.source_path);
+        for span in unsafe_attribute_findings(&attribute.meta) {
             self.policy
-                .inspect_unsafe_attribute(self.source_path, line, self.scope.as_ref());
+                .inspect_unsafe_attribute(self.source_path, span, self.scope.as_ref());
         }
     }
 
-    fn unsafe_attribute_lines(&mut self, meta: &Meta) -> Vec<usize> {
-        unsafe_attribute_form_events(meta)
-            .into_iter()
-            .filter_map(|event| match event {
-                MacroUnsafeFinding::UnsafeAttribute(locator) => Some(self.locator.next(locator)),
-                MacroUnsafeFinding::IgnoredLocator(locator) => {
-                    self.locator.next(locator);
-                    None
-                }
-                MacroUnsafeFinding::UnsafeKeyword => {
-                    self.locator.next("unsafe");
-                    None
-                }
-            })
-            .collect()
-    }
-
-    fn record_unsafe(&mut self, form: &str, ident: &str) {
-        let line = self.locator.next(ident);
+    fn record_unsafe(&mut self, form: &str, span: Span) {
         self.policy
-            .record_unsafe(form, self.source_path, line, self.scope.as_ref());
+            .record_unsafe(form, self.source_path, span, self.scope.as_ref());
     }
 
     fn literal_path_attribute(&mut self, node: &ItemMod) -> Result<Option<String>, ()> {
@@ -469,7 +411,12 @@ impl<'a> FileVisitor<'a> {
         if path_attributes.is_empty() {
             return Ok(None);
         }
-        let line = self.locator.next("path");
+        let path_span = path_attributes[0]
+            .path()
+            .get_ident()
+            .expect("a path attribute matched by is_ident has one identifier")
+            .span();
+        let line = span_line(path_span);
         if path_attributes.len() != 1 {
             self.policy.violations.push(format!(
                 "{}:{line}: multiple #[path] attributes are unsupported",
@@ -519,7 +466,7 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
             name: node.ident.to_string(),
             owner: None,
         };
-        let effective_scope = self.inspect_candidate(identity, &node.attrs);
+        let effective_scope = self.inspect_candidate(identity, node.ident.span(), &node.attrs);
         if let Some((_, items)) = &node.content {
             let previous_scope = self.scope.clone();
             let previous_module_dir = self.module_dir.clone();
@@ -539,7 +486,7 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
         };
         self.pending.push(PendingEdge::Module {
             source_path: self.source_path.to_string(),
-            line: self.locator.next(&node.ident.to_string()),
+            line: span_line(node.ident.span()),
             module_dir: self.module_dir.clone(),
             name: node.ident.to_string(),
             literal_path,
@@ -555,9 +502,9 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
             owner: None,
         };
         let previous_scope = self.scope.clone();
-        self.scope = self.inspect_candidate(identity, &node.attrs);
-        if node.sig.unsafety.is_some() {
-            self.record_unsafe("unsafe function", "unsafe");
+        self.scope = self.inspect_candidate(identity, node.sig.ident.span(), &node.attrs);
+        if let Some(unsafe_token) = &node.sig.unsafety {
+            self.record_unsafe("unsafe function", unsafe_token.span);
         }
         visit::visit_signature(self, &node.sig);
         self.visit_block(&node.block);
@@ -565,8 +512,8 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
     }
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
-        if node.unsafety.is_some() {
-            self.record_unsafe("unsafe impl", "unsafe");
+        if let Some(unsafe_token) = &node.unsafety {
+            self.record_unsafe("unsafe impl", unsafe_token.span);
         }
         let previous_owner = self.impl_owner.clone();
         self.impl_owner = self_type_ident(node.self_ty.as_ref());
@@ -582,9 +529,9 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
             owner: self.impl_owner.clone(),
         };
         let previous_scope = self.scope.clone();
-        self.scope = self.inspect_candidate(identity, &node.attrs);
-        if node.sig.unsafety.is_some() {
-            self.record_unsafe("unsafe impl method", "unsafe");
+        self.scope = self.inspect_candidate(identity, node.sig.ident.span(), &node.attrs);
+        if let Some(unsafe_token) = &node.sig.unsafety {
+            self.record_unsafe("unsafe impl method", unsafe_token.span);
         }
         visit::visit_signature(self, &node.sig);
         self.visit_block(&node.block);
@@ -592,65 +539,62 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast TraitItemFn) {
-        if node.sig.unsafety.is_some() {
-            self.record_unsafe("unsafe trait method", "unsafe");
+        if let Some(unsafe_token) = &node.sig.unsafety {
+            self.record_unsafe("unsafe trait method", unsafe_token.span);
         }
         visit::visit_trait_item_fn(self, node);
     }
 
     fn visit_foreign_item_fn(&mut self, node: &'ast ForeignItemFn) {
-        if node.sig.unsafety.is_some() {
-            self.record_unsafe("unsafe foreign function", "unsafe");
+        if let Some(unsafe_token) = &node.sig.unsafety {
+            self.record_unsafe("unsafe foreign function", unsafe_token.span);
         }
         visit::visit_foreign_item_fn(self, node);
     }
 
     fn visit_item_trait(&mut self, node: &'ast ItemTrait) {
-        if node.unsafety.is_some() {
-            self.record_unsafe("unsafe trait", "unsafe");
+        if let Some(unsafe_token) = &node.unsafety {
+            self.record_unsafe("unsafe trait", unsafe_token.span);
         }
         visit::visit_item_trait(self, node);
     }
 
     fn visit_item_foreign_mod(&mut self, node: &'ast ItemForeignMod) {
-        self.record_unsafe(
-            "extern block",
-            if node.unsafety.is_some() {
-                "unsafe"
-            } else {
-                "extern"
-            },
-        );
+        let span = node
+            .unsafety
+            .as_ref()
+            .map_or(node.abi.extern_token.span, |unsafe_token| unsafe_token.span);
+        self.record_unsafe("extern block", span);
         visit::visit_item_foreign_mod(self, node);
     }
 
     fn visit_item_static(&mut self, node: &'ast ItemStatic) {
-        if matches!(node.mutability, syn::StaticMutability::Mut(_)) {
-            self.record_unsafe("mutable static", "mut");
+        if let syn::StaticMutability::Mut(mut_token) = &node.mutability {
+            self.record_unsafe("mutable static", mut_token.span);
         }
         visit::visit_item_static(self, node);
     }
 
     fn visit_foreign_item_static(&mut self, node: &'ast ForeignItemStatic) {
-        if matches!(node.mutability, syn::StaticMutability::Mut(_)) {
-            self.record_unsafe("mutable foreign static", "mut");
+        if let syn::StaticMutability::Mut(mut_token) = &node.mutability {
+            self.record_unsafe("mutable foreign static", mut_token.span);
         }
         visit::visit_foreign_item_static(self, node);
     }
 
     fn visit_expr_unsafe(&mut self, node: &'ast syn::ExprUnsafe) {
-        self.record_unsafe("unsafe block", "unsafe");
+        self.record_unsafe("unsafe block", node.unsafe_token.span);
         visit::visit_expr_unsafe(self, node);
     }
 
     fn visit_macro(&mut self, node: &'ast Macro) {
-        let macro_name = node
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string());
-        if macro_name.as_deref() == Some("include") {
-            let line = self.locator.next("include");
+        let macro_ident = node.path.segments.last().map(|segment| &segment.ident);
+        if macro_ident.is_some_and(|ident| ident == "include") {
+            let line = span_line(
+                macro_ident
+                    .expect("the include macro name was just matched")
+                    .span(),
+            );
             match syn::parse2::<LitStr>(node.tokens.clone()) {
                 Ok(literal) => self.pending.push(PendingEdge::Include {
                     source_path: self.source_path.to_string(),
@@ -667,23 +611,30 @@ impl<'ast> Visit<'ast> for FileVisitor<'_> {
             }
             return;
         }
-        if macro_name.as_deref() == Some("asm") {
-            self.record_unsafe("asm macro", "asm");
-        } else if macro_name.as_deref() == Some("global_asm") {
-            self.record_unsafe("global_asm macro", "global_asm");
+        if macro_ident.is_some_and(|ident| ident == "asm") {
+            self.record_unsafe(
+                "asm macro",
+                macro_ident
+                    .expect("the asm macro name was just matched")
+                    .span(),
+            );
+        } else if macro_ident.is_some_and(|ident| ident == "global_asm") {
+            self.record_unsafe(
+                "global_asm macro",
+                macro_ident
+                    .expect("the global_asm macro name was just matched")
+                    .span(),
+            );
         }
         let mut findings = Vec::new();
         scan_macro_tokens(&node.tokens, &mut findings);
         for finding in findings {
             match finding {
-                MacroUnsafeFinding::UnsafeKeyword => {
-                    self.record_unsafe("macro token unsafe", "unsafe");
+                MacroUnsafeFinding::UnsafeKeyword(span) => {
+                    self.record_unsafe("macro token unsafe", span);
                 }
-                MacroUnsafeFinding::UnsafeAttribute(locator) => {
-                    self.record_unsafe("macro token unsafe attribute", locator);
-                }
-                MacroUnsafeFinding::IgnoredLocator(locator) => {
-                    self.locator.next(locator);
+                MacroUnsafeFinding::UnsafeAttribute(span) => {
+                    self.record_unsafe("macro token unsafe attribute", span);
                 }
             }
         }
@@ -885,7 +836,6 @@ impl WorkspaceScanner {
                 physical_dir,
                 &module_dir,
                 scope,
-                &source,
             );
             visitor.visit_file(&file);
             visitor.pending
@@ -1798,74 +1748,73 @@ fn is_canonical_allow(attribute: &Attribute) -> bool {
         )
 }
 
-fn attribute_mentions_unsafe_code(attribute: &Attribute) -> bool {
+fn attribute_unsafe_code_span(attribute: &Attribute) -> Option<Span> {
     match &attribute.meta {
-        Meta::Path(path) => path.is_ident("unsafe_code"),
-        Meta::NameValue(_) => false,
-        Meta::List(list) => token_stream_contains_ident(&list.tokens, "unsafe_code"),
+        Meta::Path(path) => path
+            .get_ident()
+            .filter(|ident| *ident == "unsafe_code")
+            .map(Ident::span),
+        Meta::NameValue(_) => None,
+        Meta::List(list) => token_stream_ident_span(&list.tokens, "unsafe_code"),
     }
 }
 
-fn unsafe_attribute_name(path: &syn::Path) -> Option<&'static str> {
-    UNSAFE_ATTRIBUTE_NAMES
-        .iter()
-        .copied()
-        .find(|name| path.is_ident(name))
+fn unsafe_attribute_span(path: &syn::Path) -> Option<Span> {
+    path.get_ident()
+        .filter(|ident| unsafe_attribute_ident(ident))
+        .map(Ident::span)
 }
 
-fn unsafe_attribute_ident(ident: &Ident) -> Option<&'static str> {
-    UNSAFE_ATTRIBUTE_NAMES
-        .iter()
-        .copied()
-        .find(|name| ident == name)
+fn unsafe_attribute_ident(ident: &Ident) -> bool {
+    UNSAFE_ATTRIBUTE_NAMES.iter().any(|name| ident == name)
 }
 
-fn direct_unsafe_attribute_ident(ident: &Ident) -> Option<&'static str> {
-    unsafe_attribute_ident(ident).filter(|name| *name != "naked")
+fn direct_unsafe_attribute_ident(ident: &Ident) -> bool {
+    ident != "naked" && unsafe_attribute_ident(ident)
 }
 
-fn unsafe_attribute_form_events(meta: &Meta) -> Vec<MacroUnsafeFinding> {
+fn unsafe_attribute_findings(meta: &Meta) -> Vec<Span> {
     match meta {
-        Meta::Path(path) => unsafe_attribute_name(path)
-            .map(MacroUnsafeFinding::UnsafeAttribute)
-            .into_iter()
-            .collect(),
-        Meta::NameValue(name_value) => unsafe_attribute_name(&name_value.path)
-            .map(MacroUnsafeFinding::UnsafeAttribute)
+        Meta::Path(path) => unsafe_attribute_span(path).into_iter().collect(),
+        Meta::NameValue(name_value) => unsafe_attribute_span(&name_value.path)
             .into_iter()
             .collect(),
         Meta::List(list) if list.path.is_ident("unsafe") => {
-            vec![MacroUnsafeFinding::UnsafeAttribute("unsafe")]
+            list.path.get_ident().map(Ident::span).into_iter().collect()
         }
         Meta::List(list) if list.path.is_ident("cfg_attr") => {
-            let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
-            match parser.parse2(list.tokens.clone()) {
-                Ok(arguments) => arguments
-                    .iter()
-                    .skip(1)
-                    .flat_map(unsafe_attribute_form_events)
-                    .collect(),
-                Err(_) => {
-                    let mut events = Vec::new();
-                    collect_cfg_attr_token_events(&list.tokens, &mut events);
-                    events
-                }
-            }
+            let mut findings = Vec::new();
+            collect_cfg_attr_token_findings(&list.tokens, &mut findings);
+            findings
+                .into_iter()
+                .filter_map(|finding| match finding {
+                    MacroUnsafeFinding::UnsafeAttribute(span) => Some(span),
+                    MacroUnsafeFinding::UnsafeKeyword(_) => None,
+                })
+                .collect()
         }
         Meta::List(_) => Vec::new(),
     }
 }
 
-fn cfg_attr_unsafe_levels(attribute: &Attribute) -> Vec<&'static str> {
+struct LintFinding {
+    level: &'static str,
+    span: Span,
+}
+
+fn cfg_attr_unsafe_levels(attribute: &Attribute) -> Vec<LintFinding> {
     let Meta::List(list) = &attribute.meta else {
         return Vec::new();
     };
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
     let Ok(arguments) = parser.parse2(list.tokens.clone()) else {
-        if token_stream_contains_ident(&list.tokens, "unsafe_code")
-            && token_stream_contains_ident(&list.tokens, "allow")
-        {
-            return vec!["allow"];
+        if token_stream_contains_ident(&list.tokens, "allow") {
+            if let Some(span) = token_stream_ident_span(&list.tokens, "unsafe_code") {
+                return vec![LintFinding {
+                    level: "allow",
+                    span,
+                }];
+            }
         }
         return Vec::new();
     };
@@ -1876,7 +1825,7 @@ fn cfg_attr_unsafe_levels(attribute: &Attribute) -> Vec<&'static str> {
     levels
 }
 
-fn collect_meta_unsafe_levels(meta: &Meta, levels: &mut Vec<&'static str>) {
+fn collect_meta_unsafe_levels(meta: &Meta, levels: &mut Vec<LintFinding>) {
     let Meta::List(list) = meta else {
         return;
     };
@@ -1890,8 +1839,8 @@ fn collect_meta_unsafe_levels(meta: &Meta, levels: &mut Vec<&'static str>) {
         None
     };
     if let Some(level) = level {
-        if token_stream_contains_ident(&list.tokens, "unsafe_code") {
-            levels.push(level);
+        if let Some(span) = token_stream_ident_span(&list.tokens, "unsafe_code") {
+            levels.push(LintFinding { level, span });
         }
     } else if list.path.is_ident("cfg_attr") {
         let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
@@ -1899,33 +1848,39 @@ fn collect_meta_unsafe_levels(meta: &Meta, levels: &mut Vec<&'static str>) {
             for nested in arguments.iter().skip(1) {
                 collect_meta_unsafe_levels(nested, levels);
             }
-        } else if token_stream_contains_ident(&list.tokens, "unsafe_code")
-            && token_stream_contains_ident(&list.tokens, "allow")
-        {
-            levels.push("allow");
+        } else if token_stream_contains_ident(&list.tokens, "allow") {
+            if let Some(span) = token_stream_ident_span(&list.tokens, "unsafe_code") {
+                levels.push(LintFinding {
+                    level: "allow",
+                    span,
+                });
+            }
         }
     }
 }
 
 fn token_stream_contains_ident(tokens: &TokenStream, expected: &str) -> bool {
-    tokens.clone().into_iter().any(|token| match token {
-        TokenTree::Ident(ident) => ident == expected,
-        TokenTree::Group(group) => token_stream_contains_ident(&group.stream(), expected),
-        TokenTree::Punct(_) | TokenTree::Literal(_) => false,
+    token_stream_ident_span(tokens, expected).is_some()
+}
+
+fn token_stream_ident_span(tokens: &TokenStream, expected: &str) -> Option<Span> {
+    tokens.clone().into_iter().find_map(|token| match token {
+        TokenTree::Ident(ident) if ident == expected => Some(ident.span()),
+        TokenTree::Group(group) => token_stream_ident_span(&group.stream(), expected),
+        TokenTree::Ident(_) | TokenTree::Punct(_) | TokenTree::Literal(_) => None,
     })
 }
 
 enum MacroUnsafeFinding {
-    UnsafeKeyword,
-    UnsafeAttribute(&'static str),
-    IgnoredLocator(&'static str),
+    UnsafeKeyword(Span),
+    UnsafeAttribute(Span),
 }
 
-fn macro_attribute_events(tokens: &TokenStream) -> Vec<MacroUnsafeFinding> {
+fn macro_attribute_findings(tokens: &TokenStream) -> Vec<MacroUnsafeFinding> {
     let tokens: Vec<_> = tokens.clone().into_iter().collect();
-    let mut events = Vec::new();
-    collect_attribute_token_events(&tokens, &mut events);
-    events
+    let mut findings = Vec::new();
+    collect_attribute_token_findings(&tokens, &mut findings);
+    findings
 }
 
 fn leading_unqualified_ident(tokens: &[TokenTree]) -> Option<&Ident> {
@@ -2083,25 +2038,20 @@ fn consume_leading_macro_substitutions(tokens: &[TokenTree]) -> usize {
     consumed
 }
 
-fn collect_attribute_token_events(tokens: &[TokenTree], events: &mut Vec<MacroUnsafeFinding>) {
+fn collect_attribute_token_findings(tokens: &[TokenTree], findings: &mut Vec<MacroUnsafeFinding>) {
     if let Some(ident) = leading_unqualified_ident(tokens) {
-        if let Some(name) = direct_unsafe_attribute_ident(ident) {
-            events.push(MacroUnsafeFinding::UnsafeAttribute(name));
-            collect_ignored_locator_events(&tokens[1..], events);
+        if direct_unsafe_attribute_ident(ident) {
+            findings.push(MacroUnsafeFinding::UnsafeAttribute(ident.span()));
             return;
         }
         if let Some(TokenTree::Group(arguments)) = tokens.get(1) {
             if arguments.delimiter() == Delimiter::Parenthesis {
                 if ident == "unsafe" {
-                    let arguments: Vec<_> = arguments.stream().into_iter().collect();
-                    events.push(MacroUnsafeFinding::UnsafeAttribute("unsafe"));
-                    collect_ignored_locator_events(&arguments, events);
-                    collect_ignored_locator_events(&tokens[2..], events);
+                    findings.push(MacroUnsafeFinding::UnsafeAttribute(ident.span()));
                     return;
                 }
                 if ident == "cfg_attr" {
-                    collect_cfg_attr_token_events(&arguments.stream(), events);
-                    collect_ignored_locator_events(&tokens[2..], events);
+                    collect_cfg_attr_token_findings(&arguments.stream(), findings);
                     return;
                 }
             }
@@ -2110,20 +2060,11 @@ fn collect_attribute_token_events(tokens: &[TokenTree], events: &mut Vec<MacroUn
 
     let prefix = consume_leading_macro_substitutions(tokens);
     if prefix > 0 {
-        let remaining = &tokens[prefix..];
-        if let Some(name) =
-            leading_unqualified_ident(remaining).and_then(direct_unsafe_attribute_ident)
-        {
-            collect_ignored_locator_events(&tokens[..prefix], events);
-            events.push(MacroUnsafeFinding::UnsafeAttribute(name));
-            collect_ignored_locator_events(&remaining[1..], events);
-            return;
-        }
+        collect_attribute_token_findings(&tokens[prefix..], findings);
     }
-    collect_ignored_locator_events(tokens, events);
 }
 
-fn collect_cfg_attr_token_events(tokens: &TokenStream, events: &mut Vec<MacroUnsafeFinding>) {
+fn collect_cfg_attr_token_findings(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding>) {
     let tokens: Vec<_> = tokens.clone().into_iter().collect();
     let mut segment_start = 0;
     let mut condition = true;
@@ -2136,45 +2077,15 @@ fn collect_cfg_attr_token_events(tokens: &TokenStream, events: &mut Vec<MacroUns
             .unwrap_or(tokens.len());
         let segment = &tokens[segment_start..segment_end];
         if condition {
-            collect_ignored_locator_events(segment, events);
             condition = false;
         } else {
-            collect_attribute_token_events(segment, events);
+            collect_attribute_token_findings(segment, findings);
         }
         if segment_end == tokens.len() {
             break;
         }
         segment_start = segment_end + 1;
     }
-}
-
-fn collect_ignored_locator_events(tokens: &[TokenTree], events: &mut Vec<MacroUnsafeFinding>) {
-    for token in tokens {
-        match token {
-            TokenTree::Ident(ident) => {
-                if let Some(name) = ignored_locator_ident(ident) {
-                    events.push(MacroUnsafeFinding::IgnoredLocator(name));
-                }
-            }
-            TokenTree::Group(group) => {
-                let nested: Vec<_> = group.stream().into_iter().collect();
-                collect_ignored_locator_events(&nested, events);
-            }
-            TokenTree::Punct(_) | TokenTree::Literal(_) => {}
-        }
-    }
-}
-
-fn ignored_locator_ident(ident: &Ident) -> Option<&'static str> {
-    let ident = ident.to_string();
-    let ident = ident.strip_prefix("r#").unwrap_or(&ident);
-    if ident == "unsafe" {
-        return Some("unsafe");
-    }
-    UNSAFE_ATTRIBUTE_NAMES
-        .iter()
-        .copied()
-        .find(|name| ident == *name)
 }
 
 fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding>) {
@@ -2193,9 +2104,9 @@ fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding
                     unreachable!("peeked token must remain a group");
                 };
                 match syn::parse2::<Meta>(group.stream()) {
-                    Ok(_) => findings.extend(macro_attribute_events(&group.stream())),
+                    Ok(_) => findings.extend(macro_attribute_findings(&group.stream())),
                     Err(_) => {
-                        let fallback = macro_attribute_events(&group.stream());
+                        let fallback = macro_attribute_findings(&group.stream());
                         if fallback
                             .iter()
                             .any(|event| matches!(event, MacroUnsafeFinding::UnsafeAttribute(_)))
@@ -2208,15 +2119,10 @@ fn scan_macro_tokens(tokens: &TokenStream, findings: &mut Vec<MacroUnsafeFinding
                 }
             }
             TokenTree::Ident(ident) if ident == "unsafe" => {
-                findings.push(MacroUnsafeFinding::UnsafeKeyword);
-            }
-            TokenTree::Ident(ident) => {
-                if let Some(name) = ignored_locator_ident(&ident) {
-                    findings.push(MacroUnsafeFinding::IgnoredLocator(name));
-                }
+                findings.push(MacroUnsafeFinding::UnsafeKeyword(ident.span()));
             }
             TokenTree::Group(group) => scan_macro_tokens(&group.stream(), findings),
-            TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+            TokenTree::Ident(_) | TokenTree::Punct(_) | TokenTree::Literal(_) => {}
         }
     }
 }
@@ -2230,165 +2136,6 @@ fn self_type_ident(self_type: &Type) -> Option<String> {
         .segments
         .last()
         .map(|segment| segment.ident.to_string())
-}
-
-fn identifier_lines(source: &str) -> BTreeMap<String, Vec<usize>> {
-    let bytes = source.as_bytes();
-    let mut output = BTreeMap::<String, Vec<usize>>::new();
-    let mut index = 0;
-    let mut line = 1;
-    while index < bytes.len() {
-        if bytes[index] == b'\n' {
-            line += 1;
-            index += 1;
-            continue;
-        }
-        if bytes[index..].starts_with(b"//") {
-            index += 2;
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if bytes[index..].starts_with(b"/*") {
-            index = skip_block_comment(bytes, index, &mut line);
-            continue;
-        }
-        if let Some(end) = raw_string_end(bytes, index, &mut line) {
-            index = end;
-            continue;
-        }
-        if bytes[index] == b'"' || bytes[index..].starts_with(b"b\"") {
-            index = skip_quoted_string(bytes, index + usize::from(bytes[index] == b'b'), &mut line);
-            continue;
-        }
-        if is_char_literal_start(bytes, index) {
-            index = skip_char_literal(bytes, index);
-            continue;
-        }
-        if is_ident_start(bytes[index]) {
-            let start = index;
-            index += 1;
-            while index < bytes.len() && is_ident_continue(bytes[index]) {
-                index += 1;
-            }
-            let ident = String::from_utf8_lossy(&bytes[start..index]).to_string();
-            output.entry(ident).or_default().push(line);
-            continue;
-        }
-        index += 1;
-    }
-    output
-}
-
-fn skip_block_comment(bytes: &[u8], mut index: usize, line: &mut usize) -> usize {
-    let mut depth = 0;
-    while index < bytes.len() {
-        if bytes[index..].starts_with(b"/*") {
-            depth += 1;
-            index += 2;
-        } else if bytes[index..].starts_with(b"*/") {
-            depth -= 1;
-            index += 2;
-            if depth == 0 {
-                break;
-            }
-        } else {
-            if bytes[index] == b'\n' {
-                *line += 1;
-            }
-            index += 1;
-        }
-    }
-    index
-}
-
-fn raw_string_end(bytes: &[u8], index: usize, line: &mut usize) -> Option<usize> {
-    let mut cursor = index;
-    if bytes.get(cursor) == Some(&b'b') {
-        cursor += 1;
-    }
-    if bytes.get(cursor) != Some(&b'r') {
-        return None;
-    }
-    cursor += 1;
-    let mut hashes = 0;
-    while bytes.get(cursor) == Some(&b'#') {
-        hashes += 1;
-        cursor += 1;
-    }
-    if bytes.get(cursor) != Some(&b'"') {
-        return None;
-    }
-    cursor += 1;
-    while cursor < bytes.len() {
-        if bytes[cursor] == b'\n' {
-            *line += 1;
-        }
-        if bytes[cursor] == b'"'
-            && bytes
-                .get(cursor + 1..cursor + 1 + hashes)
-                .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))
-        {
-            return Some(cursor + 1 + hashes);
-        }
-        cursor += 1;
-    }
-    Some(cursor)
-}
-
-fn skip_quoted_string(bytes: &[u8], quote: usize, line: &mut usize) -> usize {
-    let mut index = quote + 1;
-    while index < bytes.len() {
-        if bytes[index] == b'\n' {
-            *line += 1;
-        }
-        if bytes[index] == b'\\' {
-            index = (index + 2).min(bytes.len());
-        } else if bytes[index] == b'"' {
-            return index + 1;
-        } else {
-            index += 1;
-        }
-    }
-    index
-}
-
-fn is_char_literal_start(bytes: &[u8], index: usize) -> bool {
-    if bytes.get(index) == Some(&b'b') && bytes.get(index + 1) == Some(&b'\'') {
-        return true;
-    }
-    if bytes.get(index) != Some(&b'\'') {
-        return false;
-    }
-    if bytes.get(index + 1) == Some(&b'\\') {
-        return true;
-    }
-    bytes.get(index + 2) == Some(&b'\'')
-}
-
-fn skip_char_literal(bytes: &[u8], mut index: usize) -> usize {
-    if bytes.get(index) == Some(&b'b') {
-        index += 1;
-    }
-    index += 1;
-    if bytes.get(index) == Some(&b'\\') {
-        index += 2;
-    } else {
-        index += 1;
-    }
-    if bytes.get(index) == Some(&b'\'') {
-        index += 1;
-    }
-    index
-}
-
-fn is_ident_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
-}
-
-fn is_ident_continue(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn normalize_lexical(path: &Path) -> PathBuf {
@@ -2552,6 +2299,15 @@ fn assert_macro_unsafe_attribute_failure(source: &str) {
 }
 
 #[test]
+fn proc_macro2_spans_report_stable_source_lines() {
+    let file = syn::parse_file("\n\npub fn marker() {}\n").expect("parse span sentinel");
+    let syn::Item::Fn(function) = &file.items[0] else {
+        panic!("span sentinel should parse as a function");
+    };
+    assert_eq!(span_line(function.sig.ident.span()), 3);
+}
+
+#[test]
 fn approved_fixture_node_passes() {
     let workspace = TempWorkspace::basic(
         "#[allow(unsafe_code)]\nmod approved { pub fn call() { unsafe {} } }\n",
@@ -2600,6 +2356,34 @@ fn duplicate_approved_allow_fails() {
         FIXTURE_APPROVED_MOD,
         "crates/app/src/lib.rs:2: approved node Mod approved has duplicate allow(unsafe_code)",
     );
+}
+
+#[test]
+fn lint_diagnostics_use_the_exact_unsafe_code_span() {
+    let workspace = TempWorkspace::basic(
+        "pub fn unsafe_code() {}\n\
+         #[allow(\n\
+         unsafe_code\n\
+         )]\n\
+         #[allow(\n\
+         unsafe_code\n\
+         )]\n\
+         mod approved { pub fn call() { unsafe {} } }\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        FIXTURE_APPROVED_MOD,
+        "crates/app/src/lib.rs:6: approved node Mod approved has duplicate allow(unsafe_code)",
+    );
+    for incorrect_line in [1, 2, 4, 5, 7, 8] {
+        let incorrect = format!(
+            "crates/app/src/lib.rs:{incorrect_line}: approved node Mod approved has duplicate allow(unsafe_code)"
+        );
+        assert!(
+            !error.contains(&incorrect),
+            "an ordinary identifier or composite attribute span supplied the lint line:\n{error}"
+        );
+    }
 }
 
 #[test]
@@ -2711,6 +2495,92 @@ fn mutable_static_fails() {
         &workspace,
         &[],
         "crates/app/src/lib.rs:1: mutable static is outside an approved unsafe boundary",
+    );
+}
+
+#[test]
+fn every_ast_unsafe_form_uses_its_leaf_token_span() {
+    let workspace = TempWorkspace::basic(
+        "pub fn r#unsafe() {}\n\
+         pub fn r#extern() {}\n\
+         pub fn harmless() { let mut value = 0; value += 1; }\n\
+         pub\n\
+         unsafe\n\
+         fn item_fn() {}\n\
+         pub trait Marker {}\n\
+         pub struct State;\n\
+         unsafe\n\
+         impl Marker for State {}\n\
+         impl State { pub\n\
+         unsafe\n\
+         fn method() {} }\n\
+         pub\n\
+         unsafe\n\
+         trait UnsafeTrait {}\n\
+         pub trait Methods {\n\
+         unsafe\n\
+         fn method();\n\
+         }\n\
+         extern \"C\" {\n\
+         unsafe\n\
+         fn foreign_fn();\n\
+         static\n\
+         mut\n\
+         FOREIGN: u8;\n\
+         }\n\
+         unsafe\n\
+         extern \"C\" {}\n\
+         pub static\n\
+         mut\n\
+         VALUE: u8 = 0;\n\
+         pub fn block() {\n\
+         unsafe\n\
+         {}\n\
+         }\n\
+         core::arch::asm!(\"nop\");\n\
+         core::arch::global_asm!(\"nop\");\n",
+    );
+    let error = run_fixture(&workspace, &[]).expect_err("unsafe forms should violate policy");
+    for diagnostic in [
+        "crates/app/src/lib.rs:5: unsafe function is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:9: unsafe impl is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:12: unsafe impl method is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:15: unsafe trait is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:18: unsafe trait method is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:21: extern block is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:22: unsafe foreign function is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:25: mutable foreign static is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:28: extern block is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:31: mutable static is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:34: unsafe block is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:37: asm macro is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:38: global_asm macro is outside an approved unsafe boundary",
+    ] {
+        assert!(
+            error.contains(diagnostic),
+            "missing leaf-token diagnostic {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect in [
+        "crates/app/src/lib.rs:4: unsafe function is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:10: unsafe impl is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:11: unsafe impl method is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:14: unsafe trait is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:17: unsafe trait method is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:24: mutable foreign static is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:29: extern block is outside an approved unsafe boundary",
+    ] {
+        assert!(
+            !error.contains(incorrect),
+            "a composite or harmless token supplied the diagnostic {incorrect:?}:\n{error}"
+        );
+    }
+    assert_eq!(
+        error
+            .matches("is outside an approved unsafe boundary")
+            .count(),
+        13,
+        "each unsafe AST form should report exactly once:\n{error}"
     );
 }
 
@@ -2844,7 +2714,7 @@ fn nested_cfg_attr_wrapped_attribute_fails() {
 }
 
 #[test]
-fn unparsed_cfg_attr_candidate_locators_advance_before_node_name() {
+fn unparsed_cfg_attr_candidate_uses_emitted_constructor_span() {
     let workspace = TempWorkspace::basic(
         "#[cfg_attr(\n\
          no_mangle $condition,\n\
@@ -2864,7 +2734,7 @@ fn unparsed_cfg_attr_candidate_locators_advance_before_node_name() {
         );
         assert!(
             !error.contains(&incorrect),
-            "cfg_attr locator or node name stole the emitted attribute line:\n{error}"
+            "cfg_attr prefix, condition, or node name was reported:\n{error}"
         );
     }
     assert_eq!(
@@ -2877,7 +2747,7 @@ fn unparsed_cfg_attr_candidate_locators_advance_before_node_name() {
 }
 
 #[test]
-fn unparsed_cfg_attr_ordinary_attribute_locators_advance() {
+fn unparsed_cfg_attr_ordinary_attribute_uses_emitted_constructor_span() {
     let workspace = TempWorkspace::basic(
         "#[cfg_attr(\n\
          no_mangle $condition,\n\
@@ -2897,7 +2767,7 @@ fn unparsed_cfg_attr_ordinary_attribute_locators_advance() {
         );
         assert!(
             !error.contains(&incorrect),
-            "ordinary cfg_attr ignored locator stole the emitted attribute line:\n{error}"
+            "ordinary cfg_attr prefix or condition was reported:\n{error}"
         );
     }
     assert_eq!(
@@ -2906,6 +2776,99 @@ fn unparsed_cfg_attr_ordinary_attribute_locators_advance() {
             .count(),
         1,
         "only the emitted ordinary attribute should report:\n{error}"
+    );
+}
+
+#[test]
+fn parsed_cfg_attr_uses_each_emitted_constructor_span() {
+    for item in ["pub fn no_mangle() {}", "pub struct Marker;"] {
+        let source = format!(
+            "#[cfg_attr(\n\
+             no_mangle,\n\
+             doc = no_mangle,\n\
+             doc(no_mangle),\n\
+             unsafe(\n\
+             no_mangle),\n\
+             no_mangle,\n\
+             no_mangle\n\
+             )]\n\
+             {item}\n"
+        );
+        let workspace = TempWorkspace::basic(&source);
+        let error =
+            run_fixture(&workspace, &[]).expect_err("parsed cfg_attr should violate policy");
+        for diagnostic in [
+            "crates/app/src/lib.rs:5: unsafe attribute is outside an approved unsafe boundary",
+            "crates/app/src/lib.rs:7: unsafe attribute is outside an approved unsafe boundary",
+            "crates/app/src/lib.rs:8: unsafe attribute is outside an approved unsafe boundary",
+        ] {
+            assert!(
+                error.contains(diagnostic),
+                "missing parsed cfg_attr diagnostic {diagnostic:?} for {item}:\n{error}"
+            );
+        }
+        for incorrect_line in [2, 3, 4, 6, 10] {
+            let incorrect = format!(
+                "crates/app/src/lib.rs:{incorrect_line}: unsafe attribute is outside an approved unsafe boundary"
+            );
+            assert!(
+                !error.contains(&incorrect),
+                "condition, safe position, wrapper argument, or item was reported for {item}:\n{error}"
+            );
+        }
+        assert_eq!(
+            error
+                .matches("unsafe attribute is outside an approved unsafe boundary")
+                .count(),
+            3,
+            "each emitted unsafe attribute should report once for {item}:\n{error}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_same_named_rust_syntax_cannot_move_attribute_findings() {
+    let workspace = TempWorkspace::basic(
+        "pub fn no_mangle() {}\n\
+         pub struct Names {\n\
+         no_mangle: u8,\n\
+         }\n\
+         pub fn values() {\n\
+         let no_mangle = Names { no_mangle: 0 };\n\
+         let Names { no_mangle } = no_mangle;\n\
+         let _ = crate::no_mangle;\n\
+         }\n\
+         #[unsafe(\n\
+         no_mangle)]\n\
+         pub struct Marker;\n\
+         #[no_mangle] #[unsafe(naked)]\n\
+         pub extern \"C\" fn no_mangle() {}\n",
+    );
+    let error = run_fixture(&workspace, &[]).expect_err("unsafe attributes should violate policy");
+    for diagnostic in [
+        "crates/app/src/lib.rs:10: unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:13: unsafe attribute is outside an approved unsafe boundary",
+    ] {
+        assert!(
+            error.contains(diagnostic),
+            "missing exact attribute diagnostic {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect_line in [1, 3, 6, 7, 8, 11, 12, 14] {
+        let incorrect = format!(
+            "crates/app/src/lib.rs:{incorrect_line}: unsafe attribute is outside an approved unsafe boundary"
+        );
+        assert!(
+            !error.contains(&incorrect),
+            "ordinary same-named syntax or a wrapper argument was reported:\n{error}"
+        );
+    }
+    assert_eq!(
+        error
+            .matches("unsafe attribute is outside an approved unsafe boundary")
+            .count(),
+        3,
+        "the ordinary and candidate attributes should report exactly once each:\n{error}"
     );
 }
 
@@ -3035,6 +2998,110 @@ fn macro_leading_substitution_prefix_forms_fail() {
     }
 }
 
+const PREFIXED_COMPLETE_CONSTRUCTOR_MATRIX: &str = "macro_rules! attributes {\n\
+     ($no_mangle:meta, $first:meta, $second:meta, $($prefix:meta),*) => {\n\
+     #[$no_mangle\n\
+     unsafe(\n\
+     no_mangle)]\n\
+     #[$first $second\n\
+     cfg_attr(any(),\n\
+     no_mangle,\n\
+     unsafe(\n\
+     no_mangle))]\n\
+     #[$($prefix)*\n\
+     cfg_attr(any(),\n\
+     cfg_attr(any(),\n\
+     no_mangle))]\n\
+     #[cfg_attr(any(),\n\
+     $($prefix)* cfg_attr(any(),\n\
+     no_mangle))]\n\
+     };\n\
+     }\n";
+
+#[test]
+fn prefixed_complete_constructors_preserve_lines_kinds_and_counts() {
+    let workspace = TempWorkspace::basic(PREFIXED_COMPLETE_CONSTRUCTOR_MATRIX);
+    let error =
+        run_fixture(&workspace, &[]).expect_err("prefixed constructors should violate policy");
+    for diagnostic in [
+        "crates/app/src/lib.rs:4: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:8: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:9: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:14: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:17: macro token unsafe attribute is outside an approved unsafe boundary",
+    ] {
+        assert!(
+            error.contains(diagnostic),
+            "missing prefixed-constructor diagnostic {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect_line in [3, 5, 6, 7, 10, 11, 12, 13, 15, 16] {
+        let incorrect = format!(
+            "crates/app/src/lib.rs:{incorrect_line}: macro token unsafe attribute is outside an approved unsafe boundary"
+        );
+        assert!(
+            !error.contains(&incorrect),
+            "prefix, cfg_attr constructor, or wrapper argument was reported:\n{error}"
+        );
+    }
+    assert_eq!(
+        error
+            .matches("macro token unsafe attribute is outside an approved unsafe boundary")
+            .count(),
+        5,
+        "each revealed constructor should report exactly once:\n{error}"
+    );
+    assert!(
+        !error.contains("macro token unsafe is outside an approved unsafe boundary"),
+        "complete unsafe constructors must not also use the keyword diagnostic:\n{error}"
+    );
+}
+
+#[test]
+fn prefixed_complete_constructor_matrix_passes_inside_approved_boundary() {
+    let source = format!(
+        "#[allow(unsafe_code)]\nmod approved {{\n{PREFIXED_COMPLETE_CONSTRUCTOR_MATRIX}}}\n"
+    );
+    let workspace = TempWorkspace::basic(&source);
+    run_fixture(&workspace, FIXTURE_APPROVED_MOD)
+        .expect("the prefixed constructor matrix should pass inside its approved boundary");
+}
+
+#[test]
+fn prefixed_constructor_negative_remainders_pass() {
+    for source in [
+        "macro_rules! input { ($prefix:meta) => { #[$prefix] } }\n",
+        "macro_rules! input { ($prefix:meta) => { #[$prefix doc = \"safe\"] } }\n",
+        "macro_rules! input { ($prefix:meta) => { #[$prefix some::no_mangle] } }\n",
+        "macro_rules! input { ($prefix:meta) => { #[$prefix export_names] } }\n",
+        "macro_rules! input { ($prefix:meta, $tail:tt) => { #[$prefix cfg_attr $tail] } }\n",
+        "macro_rules! input { ($prefix:meta) => { #[cfg_attr($prefix no_mangle, doc)] } }\n",
+        "macro_rules! input { ($prefix:meta) => { #[cfg_attr(any(), $prefix doc = no_mangle)] } }\n",
+        "macro_rules! input { ($prefix:meta) => { #[cfg_attr(any(), $prefix doc(no_mangle))] } }\n",
+    ] {
+        let workspace = TempWorkspace::basic(source);
+        run_fixture(&workspace, &[]).unwrap_or_else(|error| {
+            panic!("negative prefixed constructor must not match:\n{source}\n{error}")
+        });
+    }
+}
+
+#[test]
+fn prefixed_malformed_literal_unsafe_keeps_keyword_diagnostic() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! input { ($prefix:meta, $tail:tt) => { #[$prefix unsafe $tail] } }\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:1: macro token unsafe is outside an approved unsafe boundary",
+    );
+    assert!(
+        !error.contains("macro token unsafe attribute is outside an approved unsafe boundary"),
+        "an incomplete unsafe constructor must not become an unsafe attribute:\n{error}"
+    );
+}
+
 #[test]
 fn prefixed_attributes_fail_beneath_cfg_attr_and_nested_groups() {
     for source in [
@@ -3081,7 +3148,7 @@ fn cfg_attr_repetition_commas_do_not_split_emitted_attributes() {
 }
 
 #[test]
-fn substitution_and_wrapper_locators_preserve_line_kind_and_order() {
+fn substitution_and_wrapper_spans_preserve_line_kind_and_order() {
     let workspace = TempWorkspace::basic(
         "macro_rules! attributes {\n\
          () => {\n\
@@ -3103,7 +3170,7 @@ fn substitution_and_wrapper_locators_preserve_line_kind_and_order() {
     for diagnostic in diagnostics {
         assert!(
             error.contains(diagnostic),
-            "missing locator-order diagnostic {diagnostic:?}:\n{error}"
+            "missing source-span diagnostic {diagnostic:?}:\n{error}"
         );
     }
     for incorrect in [
@@ -3114,7 +3181,7 @@ fn substitution_and_wrapper_locators_preserve_line_kind_and_order() {
     ] {
         assert!(
             !error.contains(incorrect),
-            "ignored locator or diagnostic kind was assigned incorrectly {incorrect:?}:\n{error}"
+            "prefix, wrapper argument, or diagnostic kind was assigned incorrectly {incorrect:?}:\n{error}"
         );
     }
     assert_eq!(
@@ -3134,7 +3201,7 @@ fn substitution_and_wrapper_locators_preserve_line_kind_and_order() {
 }
 
 #[test]
-fn raw_substitution_locators_preserve_literal_line_and_kind() {
+fn raw_substitution_spans_preserve_literal_line_and_kind() {
     let workspace = TempWorkspace::basic(
         "macro_rules! attributes {\n\
          ($r#no_mangle:vis, $r#unsafe:tt) => {\n\
@@ -3166,7 +3233,7 @@ fn raw_substitution_locators_preserve_literal_line_and_kind() {
     ] {
         assert!(
             !error.contains(incorrect),
-            "raw substitution produced a wrong locator or kind {incorrect:?}:\n{error}"
+            "raw substitution produced a wrong source line or kind {incorrect:?}:\n{error}"
         );
     }
     assert_eq!(
@@ -3473,6 +3540,63 @@ fn macro_mixed_unsafe_findings_preserve_line_attribution() {
 }
 
 #[test]
+fn macro_findings_ignore_reserved_names_in_safe_positions() {
+    let workspace = TempWorkspace::basic(
+        "macro_rules! attributes {\n\
+         ($condition:meta, $value:expr) => {\n\
+         #[doc = \"no_mangle unsafe\"]\n\
+         #[cfg_attr(no_mangle $condition, doc)]\n\
+         #[cfg_attr(any(), doc = no_mangle $value)]\n\
+         #[cfg_attr(any(), doc(no_mangle) $value)]\n\
+         no_mangle!(export_name, link_section);\n\
+         #[unsafe(\n\
+         no_mangle)]\n\
+         unsafe {}\n\
+         #[no_mangle]\n\
+         };\n\
+         }\n",
+    );
+    let error =
+        run_fixture(&workspace, &[]).expect_err("unsafe macro tokens should violate policy");
+    for diagnostic in [
+        "crates/app/src/lib.rs:8: macro token unsafe attribute is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:10: macro token unsafe is outside an approved unsafe boundary",
+        "crates/app/src/lib.rs:11: macro token unsafe attribute is outside an approved unsafe boundary",
+    ] {
+        assert!(
+            error.contains(diagnostic),
+            "missing macro source-span diagnostic {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect_line in [3, 4, 5, 6, 7, 9] {
+        let attribute = format!(
+            "crates/app/src/lib.rs:{incorrect_line}: macro token unsafe attribute is outside an approved unsafe boundary"
+        );
+        let keyword = format!(
+            "crates/app/src/lib.rs:{incorrect_line}: macro token unsafe is outside an approved unsafe boundary"
+        );
+        assert!(
+            !error.contains(&attribute) && !error.contains(&keyword),
+            "a safe position or wrapper argument was reported:\n{error}"
+        );
+    }
+    assert_eq!(
+        error
+            .matches("macro token unsafe attribute is outside an approved unsafe boundary")
+            .count(),
+        2,
+        "only the two attribute constructors should report:\n{error}"
+    );
+    assert_eq!(
+        error
+            .matches("macro token unsafe is outside an approved unsafe boundary")
+            .count(),
+        1,
+        "only the literal unsafe keyword should report:\n{error}"
+    );
+}
+
+#[test]
 fn macro_contained_unsafe_attributes_inside_approved_boundary_passes() {
     let workspace = TempWorkspace::basic(
         "#[allow(unsafe_code)]\n\
@@ -3722,8 +3846,7 @@ fn raw_identifiers_are_not_literal_unsafe_attribute_paths() {
     let workspace = TempWorkspace::basic(
         "macro_rules! input { () => { #[r#no_mangle] #[r#export_name = \"callback\"] #[r#link_section = \".solstone\"] #[r#unsafe(no_mangle)] } }\n",
     );
-    run_fixture(&workspace, &[])
-        .expect("raw identifiers must remain locator-only, not unsafe attribute paths");
+    run_fixture(&workspace, &[]).expect("raw identifiers must not become unsafe attribute paths");
 }
 
 #[test]
@@ -3813,6 +3936,48 @@ fn cfg_attr_allow_fails() {
     assert!(
         error.contains("approved node Mod approved is missing its canonical allow(unsafe_code)"),
         "missing approved-node diagnostic:\n{error}"
+    );
+}
+
+#[test]
+fn nested_cfg_attr_lints_report_each_unsafe_code_leaf() {
+    let workspace = TempWorkspace::basic(
+        "#[cfg_attr(\n\
+         any(),\n\
+         allow(\n\
+         unsafe_code),\n\
+         cfg_attr(any(),\n\
+         warn(\n\
+         unsafe_code),\n\
+         cfg_attr(any(),\n\
+         expect(\n\
+         unsafe_code)))\n\
+         )]\n\
+         mod approved { pub fn call() { unsafe {} } }\n",
+    );
+    let error =
+        run_fixture(&workspace, FIXTURE_APPROVED_MOD).expect_err("conditional lints should fail");
+    for diagnostic in [
+        "crates/app/src/lib.rs:4: conditional allow(unsafe_code) cannot approve an unsafe boundary",
+        "crates/app/src/lib.rs:7: conditional warn(unsafe_code) cannot approve an unsafe boundary",
+        "crates/app/src/lib.rs:10: conditional expect(unsafe_code) cannot approve an unsafe boundary",
+    ] {
+        assert!(
+            error.contains(diagnostic),
+            "missing nested lint diagnostic {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect_line in [1, 3, 5, 6, 8, 9, 11, 12] {
+        let prefix = format!("crates/app/src/lib.rs:{incorrect_line}: conditional ");
+        assert!(
+            !error.contains(&prefix),
+            "an outer lint or cfg_attr span supplied a conditional diagnostic:\n{error}"
+        );
+    }
+    assert_eq!(
+        error.matches(": conditional ").count(),
+        3,
+        "each nested lint should report exactly once:\n{error}"
     );
 }
 
@@ -3930,6 +4095,67 @@ fn dynamic_path_attribute_fails() {
         &workspace,
         &[],
         "crates/app/src/lib.rs:1: dynamic #[path] is unsupported",
+    );
+}
+
+#[test]
+fn path_include_and_module_edges_use_their_referring_leaf_spans() {
+    let workspace = TempWorkspace::basic(
+        "pub fn path() {}\n\
+         pub fn include() {}\n\
+         pub fn missing() {}\n\
+         #[\n\
+         path = concat!(\"module\", \".rs\")\n\
+         ]\n\
+         mod dynamic;\n\
+         core::include!(\n\
+         concat!(\"included\", \".rs\")\n\
+         );\n\
+         mod\n\
+         missing;\n",
+    );
+    let error = run_fixture(&workspace, &[])
+        .expect_err("dynamic and unresolved edges should violate policy");
+    for diagnostic in [
+        "crates/app/src/lib.rs:5: dynamic #[path] is unsupported",
+        "crates/app/src/lib.rs:8: dynamic include! is unsupported",
+        "crates/app/src/lib.rs:12: module missing did not resolve",
+    ] {
+        assert!(
+            error.contains(diagnostic),
+            "missing referring leaf diagnostic {diagnostic:?}:\n{error}"
+        );
+    }
+    for incorrect_line in [1, 2, 3, 4, 6, 7, 9, 10, 11] {
+        let prefix = format!("crates/app/src/lib.rs:{incorrect_line}:");
+        assert!(
+            !error.contains(&prefix),
+            "a same-named identifier or composite syntax span supplied an edge line:\n{error}"
+        );
+    }
+}
+
+#[test]
+fn spans_and_source_paths_reset_for_each_parsed_file() {
+    let workspace = TempWorkspace::basic("pub fn no_mangle() {}\nmod child;\n");
+    workspace.write(
+        "crates/app/src/child.rs",
+        "pub fn no_mangle() {}\n\
+         #[no_mangle]\n\
+         pub extern \"C\" fn callback() {}\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/child.rs:2: unsafe attribute is outside an approved unsafe boundary",
+    );
+    assert!(
+        !error.contains(
+            "crates/app/src/child.rs:1: unsafe attribute is outside an approved unsafe boundary"
+        ) && !error.contains(
+            "crates/app/src/lib.rs:1: unsafe attribute is outside an approved unsafe boundary"
+        ),
+        "same-named identifiers in either parsed file supplied the finding line or path:\n{error}"
     );
 }
 
@@ -4159,6 +4385,87 @@ fn comments_and_literals_are_not_policy_syntax() {
          pub fn show() { println!(\"unsafe allow(unsafe_code)\"); }\n",
     );
     run_fixture(&workspace, &[]).expect("comments and string literals are negative controls");
+}
+
+#[test]
+fn comments_and_literals_cannot_move_a_real_finding() {
+    let workspace = TempWorkspace::basic(
+        "// no_mangle unsafe_code\n\
+         /* export_name\n\
+         link_section */\n\
+         pub const TEXT: &str = \"no_mangle unsafe_code\";\n\
+         pub const RAW: &str = r#\"no_mangle\n\
+         unsafe_code\"#;\n\
+         pub const CHARACTER: char = 'x';\n\
+         #[no_mangle]\n\
+         pub extern \"C\" fn callback() {}\n\
+         pub const AFTER: &str = \"no_mangle\";\n",
+    );
+    let error = assert_fixture_failure(
+        &workspace,
+        &[],
+        "crates/app/src/lib.rs:8: unsafe attribute is outside an approved unsafe boundary",
+    );
+    assert_eq!(
+        error
+            .matches("unsafe attribute is outside an approved unsafe boundary")
+            .count(),
+        1,
+        "only the source-backed attribute constructor should report:\n{error}"
+    );
+    for incorrect_line in [1, 2, 3, 4, 5, 6, 7, 9, 10] {
+        let incorrect = format!(
+            "crates/app/src/lib.rs:{incorrect_line}: unsafe attribute is outside an approved unsafe boundary"
+        );
+        assert!(
+            !error.contains(&incorrect),
+            "comment or literal text supplied the finding line:\n{error}"
+        );
+    }
+}
+
+#[test]
+fn span_lines_handle_crlf_bom_shebang_and_unicode() {
+    for (label, source, expected_line) in [
+        (
+            "CRLF",
+            "pub fn no_mangle() {}\r\n\r\n#[no_mangle]\r\npub extern \"C\" fn callback() {}\r\n",
+            3,
+        ),
+        (
+            "BOM",
+            "\u{feff}pub fn no_mangle() {}\n#[no_mangle]\npub extern \"C\" fn callback() {}\n",
+            2,
+        ),
+        (
+            "shebang",
+            "#!/usr/bin/env rustx\npub fn no_mangle() {}\n#[no_mangle]\npub extern \"C\" fn callback() {}\n",
+            3,
+        ),
+        (
+            "Unicode",
+            "pub const CAFÉ: &str = \"no_mangle\";\n\n#[no_mangle]\npub extern \"C\" fn callback() {}\n",
+            3,
+        ),
+    ] {
+        let workspace = TempWorkspace::basic(source);
+        let error =
+            run_fixture(&workspace, &[]).expect_err("source-format fixture should violate policy");
+        let expected = format!(
+            "crates/app/src/lib.rs:{expected_line}: unsafe attribute is outside an approved unsafe boundary"
+        );
+        assert!(
+            error.contains(&expected),
+            "{label} finding used the wrong source line:\n{error}"
+        );
+        assert_eq!(
+            error
+                .matches("unsafe attribute is outside an approved unsafe boundary")
+                .count(),
+            1,
+            "{label} fixture should report only the real attribute:\n{error}"
+        );
+    }
 }
 
 #[test]
