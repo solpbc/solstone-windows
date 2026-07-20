@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Workspace task runner: local contract, purity, package, and development checks."
+description = "Workspace task runner: automation-contract generation, observer-client authority-bundle verification, purity, package, and development checks."
 publish = false
 
 [lints]

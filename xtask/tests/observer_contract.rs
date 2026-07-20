@@ -257,7 +257,7 @@ fn observer_contract_rejects_symlinks_special_types_and_executable_modes() {
     fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(matches!(
         tree.verify(),
-        Err(VerifyError::InvalidFileMode { .. })
+        Err(VerifyError::InvalidFileMode { path, .. }) if path == "consumer-audit.json"
     ));
 }
 
@@ -324,6 +324,27 @@ fn observer_contract_rejects_every_forbidden_adoption_metadata_class() {
 }
 
 #[test]
+fn observer_contract_rejects_unknown_adoption_fields_via_serde_shape_checks() {
+    let tree = TempTree::good();
+    let mut adoption = tree.json("adoption.json");
+    adoption["unexpected_field"] = json!("unexpected");
+    tree.write_json("adoption.json", &adoption);
+    assert!(matches!(
+        tree.verify(),
+        Err(VerifyError::AdoptionShapeMismatch { .. })
+    ));
+
+    let tree = TempTree::good();
+    let mut adoption = tree.json("adoption.json");
+    adoption["bundle_files"][0]["unexpected_field"] = json!("unexpected");
+    tree.write_json("adoption.json", &adoption);
+    assert!(matches!(
+        tree.verify(),
+        Err(VerifyError::AdoptionShapeMismatch { .. })
+    ));
+}
+
+#[test]
 fn observer_contract_rejects_adoption_scalar_shape_and_pin_mismatches() {
     for field in [
         "consumer_identifier",
@@ -338,10 +359,14 @@ fn observer_contract_rejects_adoption_scalar_shape_and_pin_mismatches() {
         let mut adoption = tree.json("adoption.json");
         adoption[field] = json!("wrong");
         tree.write_json("adoption.json", &adoption);
+        let error = tree.verify().expect_err("mutated adoption pin must fail");
         assert!(matches!(
-            tree.verify(),
-            Err(VerifyError::AdoptionFieldMismatch { field: actual }) if actual == field
+            &error,
+            VerifyError::AdoptionFieldMismatch { field: actual, .. } if actual == field
         ));
+        let rendered = error.to_string();
+        assert!(rendered.contains("expected"));
+        assert!(rendered.contains("got \"wrong\""));
     }
 
     let tree = TempTree::good();
@@ -385,10 +410,15 @@ fn observer_contract_rejects_duplicate_unsorted_and_mismatched_coverage() {
         .unwrap()
         .remove(0);
     tree.write_json("adoption.json", &adoption);
+    let error = tree
+        .verify()
+        .expect_err("incomplete adoption coverage must fail");
     assert!(matches!(
-        tree.verify(),
-        Err(VerifyError::AdoptionCoverageMismatch { .. })
+        &error,
+        VerifyError::AdoptionCoverageMismatch { .. }
     ));
+    assert!(error.to_string().contains("expected"));
+    assert!(error.to_string().contains("got"));
 }
 
 #[test]
@@ -397,10 +427,12 @@ fn observer_contract_rejects_manifest_projection_and_adopted_set_mutations() {
     let mut manifest = tree.json("bundle/manifest.json");
     manifest["observer_protocol_version"] = json!(3);
     tree.write_json("bundle/manifest.json", &manifest);
+    let error = tree.verify().expect_err("mutated manifest pin must fail");
     assert!(matches!(
-        tree.verify(),
-        Err(VerifyError::ManifestFieldMismatch { field }) if field == "observer_protocol_version"
+        &error,
+        VerifyError::ManifestFieldMismatch { field, .. } if field == "observer_protocol_version"
     ));
+    assert!(error.to_string().contains("expected 2, got 3"));
 
     let tree = TempTree::good();
     let mut projection = tree.json("bundle/projection.openapi.json");
@@ -431,4 +463,25 @@ fn observer_contract_rejects_manifest_projection_and_adopted_set_mutations() {
         tree.verify(),
         Err(VerifyError::VectorSetMismatch { .. })
     ));
+}
+
+#[test]
+fn observer_contract_io_errors_use_logical_paths() {
+    let tree = TempTree::good();
+    fs::remove_file(tree.adoption()).unwrap();
+    let error = tree.verify().expect_err("missing adoption must fail");
+    assert!(matches!(
+        &error,
+        VerifyError::Io { path, .. } if path == "adoption.json"
+    ));
+    assert!(!error.to_string().contains(&tree.root.display().to_string()));
+
+    let tree = TempTree::good();
+    fs::remove_dir_all(tree.bundle()).unwrap();
+    let error = tree.verify().expect_err("missing bundle must fail");
+    assert!(matches!(
+        &error,
+        VerifyError::Io { path, .. } if path == "bundle"
+    ));
+    assert!(!error.to_string().contains(&tree.root.display().to_string()));
 }

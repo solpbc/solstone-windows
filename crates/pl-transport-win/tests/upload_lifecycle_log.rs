@@ -254,7 +254,11 @@ async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
     assert!(request.starts_with("POST /app/observer/ingest HTTP/1.1\r\n"));
     assert!(request.contains("X-Solstone-Observer: authority-observer\r\n"));
     assert!(request.contains("Authorization: Bearer authority-observer\r\n"));
-    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
+    assert!(request.contains(&format!(
+        "{}: {}\r\n",
+        observer_pl::PROTOCOL_VERSION_HEADER,
+        observer_pl::OBSERVER_PROTOCOL_VERSION
+    )));
     for filename in payload["files"].as_array().unwrap() {
         assert!(request.contains(&format!(
             "name=\"files\"; filename=\"{}\"",

@@ -116,7 +116,7 @@ purity-check: preflight-toolchain
 
 # Local offline observer-client contract structural/behavioral evidence only.
 check-observer-contract: preflight-toolchain
-	@echo "local offline observer-contract structural/behavioral evidence"
+	@echo "local offline observer-client authority bundle structural/behavioral evidence"
 	CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- observer-contract check
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p xtask observer_contract
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p observer-pl observer_contract_authority

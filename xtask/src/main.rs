@@ -37,7 +37,9 @@ fn main() -> ExitCode {
         Some("package") => cmd_package(),
         Some("dev") => cmd_dev(),
         _ => {
-            eprintln!("usage: cargo xtask <contract [--check] | observer-contract check | purity-check | package | dev>");
+            eprintln!(
+                "usage: cargo xtask <contract [--check] | observer-contract check | purity-check | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle"
+            );
             ExitCode::from(2)
         }
     }
@@ -52,7 +54,7 @@ fn cmd_observer_contract_check() -> ExitCode {
     ) {
         Ok(report) => {
             println!(
-                "observer-contract: local offline structural evidence verified for bundle {} ({} operations, {} fixtures, {} vectors)",
+                "observer-client authority bundle: OK; local offline structural evidence verified for version {} ({} operations, {} fixtures, {} vectors)",
                 report.bundle_semver,
                 report.operation_count,
                 report.fixture_count,
@@ -61,7 +63,7 @@ fn cmd_observer_contract_check() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("observer-contract check failed: {error}");
+            eprintln!("observer-client authority bundle check failed: {error}");
             ExitCode::FAILURE
         }
     }

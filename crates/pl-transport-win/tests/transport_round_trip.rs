@@ -27,6 +27,7 @@ use observer_pl::frame::{
 use observer_pl::multipart::FilePart;
 use observer_pl::mux::INITIAL_WINDOW;
 use observer_pl::wire::HeartbeatEvent;
+use observer_pl::{OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER};
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
@@ -46,6 +47,7 @@ use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
 use support::observer_contract::{fixture as authority_fixture, vector as authority_vector};
+use xtask::observer_contract::WINDOWS_OPERATION_MAPPINGS;
 
 fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -130,7 +132,9 @@ fn heartbeat_capture_matches(request: &[u8], fixture: &serde_json::Value) -> boo
     text.starts_with("POST /app/observer/ingest/event HTTP/1.1\r\n")
         && text.contains("X-Solstone-Observer: authority-observer\r\n")
         && text.contains("Authorization: Bearer authority-observer\r\n")
-        && text.contains("X-Solstone-Protocol-Version: 2\r\n")
+        && text.contains(&format!(
+            "{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}\r\n"
+        ))
         && text.contains("Content-Type: application/json\r\n")
         && body["tract"] == fixture["payload"]["tract"]
         && body["event"] == fixture["payload"]["event"]
@@ -160,7 +164,9 @@ fn ingest_capture_matches(request: &[u8], payload: &serde_json::Value, filenames
     text.starts_with("POST /app/observer/ingest HTTP/1.1\r\n")
         && text.contains("X-Solstone-Observer: authority-observer\r\n")
         && text.contains("Authorization: Bearer authority-observer\r\n")
-        && text.contains("X-Solstone-Protocol-Version: 2\r\n")
+        && text.contains(&format!(
+            "{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}\r\n"
+        ))
         && text.contains("Content-Type: multipart/form-data; boundary=")
         && text.contains("name=\"segment\"")
         && text.contains("name=\"day\"")
@@ -449,7 +455,9 @@ async fn start_client_with_response_header(
 fn assert_authenticated_request(request: &str) {
     assert!(request.contains("X-Solstone-Observer: authority-observer\r\n"));
     assert!(request.contains("Authorization: Bearer authority-observer\r\n"));
-    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
+    assert!(request.contains(&format!(
+        "{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}\r\n"
+    )));
 }
 
 async fn start_bridge_with_response_content_length(
@@ -1009,10 +1017,6 @@ async fn observer_contract_authority_heartbeat_captures_production_subset() {
         ("/app/observer/ingest/event", "/app/observer/ingest/wrong"),
         ("X-Solstone-Observer:", "X-Wrong-Observer:"),
         ("Bearer authority-observer", "Bearer wrong"),
-        (
-            "X-Solstone-Protocol-Version: 2",
-            "X-Solstone-Protocol-Version: 3",
-        ),
         ("Content-Type: application/json", "Content-Type: text/plain"),
         ("\"event\":\"status\"", "\"event\":\"wrong\""),
     ] {
@@ -1029,6 +1033,20 @@ async fn observer_contract_authority_heartbeat_captures_production_subset() {
             "capture mutation was not detected: {from}"
         );
     }
+    let protocol_header = format!("{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}");
+    let wrong_protocol_header = format!(
+        "{PROTOCOL_VERSION_HEADER}: {}",
+        OBSERVER_PROTOCOL_VERSION + 1
+    );
+    let mutated = String::from_utf8(request.clone()).unwrap().replacen(
+        &protocol_header,
+        &wrong_protocol_header,
+        1,
+    );
+    assert!(
+        !heartbeat_capture_matches(mutated.as_bytes(), &request_fixture),
+        "capture protocol-version mutation was not detected"
+    );
 }
 
 #[tokio::test]
@@ -1492,6 +1510,11 @@ async fn journal_bridge_sse_fail_after_head_does_not_emit_502() {
 
 #[tokio::test]
 async fn observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes() {
+    let root_events = WINDOWS_OPERATION_MAPPINGS
+        .iter()
+        .find(|mapping| mapping.operation_id == "callosum.rootEvents")
+        .expect("root-events Windows mapping pin");
+    assert_eq!(root_events.method, "GET");
     for (fixture_id, vector_id) in [
         (
             "example.callosum.rootEvents.response.200.text-event-stream.default",
@@ -1522,8 +1545,8 @@ async fn observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes
         let cap = capability_from(&handle);
         let response = raw_bridge_request(
             port,
-            "GET",
-            "/sse/events",
+            root_events.method,
+            root_events.path,
             Some(loopback_host(port)),
             Some(cap_cookie(&cap)),
             &[],
@@ -1547,7 +1570,10 @@ async fn observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes
             }
         }
         let request = upstream.await.unwrap();
-        assert!(String::from_utf8_lossy(&request).starts_with("GET /sse/events HTTP/1.1\r\n"));
+        assert!(String::from_utf8_lossy(&request).starts_with(&format!(
+            "{} {} HTTP/1.1\r\n",
+            root_events.method, root_events.path
+        )));
         handle.shutdown_and_wait().await;
     }
 }

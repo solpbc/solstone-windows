@@ -326,6 +326,8 @@ pub enum VerifyError {
     },
     AdoptionFieldMismatch {
         field: String,
+        expected: String,
+        actual: String,
     },
     AdoptionCoverageDuplicate {
         field: String,
@@ -336,9 +338,13 @@ pub enum VerifyError {
     },
     AdoptionCoverageMismatch {
         field: String,
+        expected: String,
+        actual: String,
     },
     ManifestFieldMismatch {
         field: String,
+        expected: String,
+        actual: String,
     },
     ManifestInventoryMismatch {
         message: String,
@@ -391,17 +397,36 @@ impl fmt::Display for VerifyError {
             Self::AdoptionShapeMismatch { field } => {
                 write!(f, "adoption field has the wrong shape: {field}")
             }
-            Self::AdoptionFieldMismatch { field } => write!(f, "adoption field mismatch: {field}"),
+            Self::AdoptionFieldMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "adoption field mismatch for {field}: expected {expected}, got {actual}"
+            ),
             Self::AdoptionCoverageDuplicate { field, id } => {
                 write!(f, "duplicate adoption coverage ID in {field}: {id}")
             }
             Self::AdoptionCoverageUnsorted { field } => {
                 write!(f, "adoption coverage is not sorted: {field}")
             }
-            Self::AdoptionCoverageMismatch { field } => {
-                write!(f, "adoption coverage mismatch: {field}")
-            }
-            Self::ManifestFieldMismatch { field } => write!(f, "manifest field mismatch: {field}"),
+            Self::AdoptionCoverageMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "adoption coverage mismatch for {field}: expected {expected}, got {actual}"
+            ),
+            Self::ManifestFieldMismatch {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "manifest field mismatch for {field}: expected {expected}, got {actual}"
+            ),
             Self::ManifestInventoryMismatch { message } => {
                 write!(f, "manifest inventory mismatch: {message}")
             }
@@ -467,14 +492,14 @@ pub fn verify(bundle_dir: &Path, adoption_path: &Path) -> Result<VerifyReport, V
     verify_adoption(&adoption)?;
 
     let bundle_meta =
-        fs::symlink_metadata(bundle_dir).map_err(|error| io_error(bundle_dir, error))?;
+        fs::symlink_metadata(bundle_dir).map_err(|error| io_error("bundle", error))?;
     if !bundle_meta.file_type().is_dir() {
         return Err(VerifyError::NonRegularFile {
             path: "bundle".to_owned(),
             kind: file_kind(&bundle_meta),
         });
     }
-    verify_mode(bundle_dir, &bundle_meta, true)?;
+    verify_mode("bundle", &bundle_meta, true)?;
 
     let (actual_files, actual_dirs) = walk_bundle(bundle_dir)?;
     if !actual_files.contains(AUTHORITY_MANIFEST_PATH) {
@@ -541,14 +566,14 @@ pub fn verify(bundle_dir: &Path, adoption_path: &Path) -> Result<VerifyReport, V
 }
 
 fn verify_regular_file(path: &Path, label: &str) -> Result<(), VerifyError> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(label, error))?;
     if !metadata.file_type().is_file() {
         return Err(VerifyError::NonRegularFile {
             path: label.to_owned(),
             kind: file_kind(&metadata),
         });
     }
-    verify_mode(path, &metadata, false)
+    verify_mode(label, &metadata, false)
 }
 
 fn read_file(path: &Path, label: &str) -> Result<Vec<u8>, VerifyError> {
@@ -594,6 +619,8 @@ fn verify_adoption(record: &AdoptionRecord) -> Result<(), VerifyError> {
             if record.$field != $expected {
                 return Err(VerifyError::AdoptionFieldMismatch {
                     field: stringify!($field).to_owned(),
+                    expected: json_text(&$expected),
+                    actual: json_text(&record.$field),
                 });
             }
         };
@@ -620,6 +647,8 @@ fn verify_adoption(record: &AdoptionRecord) -> Result<(), VerifyError> {
     if actual_files != expected_files {
         return Err(VerifyError::AdoptionFieldMismatch {
             field: "bundle_files".to_owned(),
+            expected: json_text(&expected_files),
+            actual: json_text(&actual_files),
         });
     }
 
@@ -662,6 +691,8 @@ fn verify_coverage(field: &str, actual: &[String], expected: &[&str]) -> Result<
     {
         return Err(VerifyError::AdoptionCoverageMismatch {
             field: field.to_owned(),
+            expected: json_text(expected),
+            actual: json_text(actual),
         });
     }
     Ok(())
@@ -687,14 +718,19 @@ fn walk_dir(
     } else {
         root.join(relative)
     };
-    let entries = fs::read_dir(&current).map_err(|error| io_error(&current, error))?;
+    let directory_label = if relative.is_empty() {
+        "bundle"
+    } else {
+        relative
+    };
+    let entries = fs::read_dir(&current).map_err(|error| io_error(directory_label, error))?;
     for entry in entries {
-        let entry = entry.map_err(|error| io_error(&current, error))?;
+        let entry = entry.map_err(|error| io_error(directory_label, error))?;
         let name = entry
             .file_name()
             .into_string()
             .map_err(|_| VerifyError::UnsafePath {
-                path: relative.to_owned(),
+                path: directory_label.to_owned(),
                 reason: UnsafePathReason::NonPortableName,
             })?;
         let child = if relative.is_empty() {
@@ -710,13 +746,13 @@ fn walk_dir(
             });
         }
         let metadata =
-            fs::symlink_metadata(entry.path()).map_err(|error| io_error(&entry.path(), error))?;
+            fs::symlink_metadata(entry.path()).map_err(|error| io_error(&child, error))?;
         if metadata.file_type().is_dir() {
-            verify_mode(&entry.path(), &metadata, true)?;
+            verify_mode(&child, &metadata, true)?;
             dirs.insert(child.clone());
             walk_dir(root, &child, files, dirs, folded)?;
         } else if metadata.file_type().is_file() {
-            verify_mode(&entry.path(), &metadata, false)?;
+            verify_mode(&child, &metadata, false)?;
             files.insert(child);
         } else {
             return Err(VerifyError::NonRegularFile {
@@ -979,14 +1015,22 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
         if object.get(field) != Some(&expected) {
             return Err(VerifyError::ManifestFieldMismatch {
                 field: field.to_owned(),
+                expected: expected.to_string(),
+                actual: optional_json_text(object.get(field)),
             });
         }
     }
+    let target_field = "windows_linux_rollout_targets";
     let targets = object
-        .get("windows_linux_rollout_targets")
+        .get(target_field)
         .and_then(Value::as_array)
         .ok_or_else(|| VerifyError::ManifestFieldMismatch {
-            field: "windows_linux_rollout_targets".to_owned(),
+            field: target_field.to_owned(),
+            expected: format!(
+                "array with consumer identifiers {}",
+                json_text(INITIAL_TARGETS)
+            ),
+            actual: optional_json_text(object.get(target_field)),
         })?;
     let target_ids: Option<Vec<&str>> = targets
         .iter()
@@ -994,14 +1038,19 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
         .collect();
     if target_ids.as_deref() != Some(INITIAL_TARGETS) {
         return Err(VerifyError::ManifestFieldMismatch {
-            field: "windows_linux_rollout_targets".to_owned(),
+            field: target_field.to_owned(),
+            expected: json_text(INITIAL_TARGETS),
+            actual: json_text(&target_ids),
         });
     }
+    let input_field = "generator_inputs";
     let inputs = object
-        .get("generator_inputs")
+        .get(input_field)
         .and_then(Value::as_array)
         .ok_or_else(|| VerifyError::ManifestFieldMismatch {
-            field: "generator_inputs".to_owned(),
+            field: input_field.to_owned(),
+            expected: "non-empty array of {id,path,role,sha256} objects".to_owned(),
+            actual: optional_json_text(object.get(input_field)),
         })?;
     if inputs.is_empty()
         || inputs.iter().any(|entry| {
@@ -1018,13 +1067,17 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
         })
     {
         return Err(VerifyError::ManifestFieldMismatch {
-            field: "generator_inputs".to_owned(),
+            field: input_field.to_owned(),
+            expected: "non-empty array of {id,path,role,sha256} objects".to_owned(),
+            actual: optional_json_text(object.get(input_field)),
         });
     }
     for required in ["audited_consumer_revisions", "vocabularies"] {
         if !object.get(required).is_some_and(Value::is_array) {
             return Err(VerifyError::ManifestFieldMismatch {
                 field: required.to_owned(),
+                expected: "array".to_owned(),
+                actual: optional_json_text(object.get(required)),
             });
         }
     }
@@ -1115,16 +1168,30 @@ fn verify_id_document(
             return Err(id_error(fixture, format!("duplicate ID {id}")));
         }
     }
-    if ids.iter().copied().ne(full.iter().copied()) {
+    let actual_ids: Vec<&str> = ids.iter().copied().collect();
+    if actual_ids.iter().copied().ne(full.iter().copied()) {
         return Err(id_error(
             fixture,
-            "full ID set differs from the authority pin".to_owned(),
+            format!(
+                "full ID set differs from the authority pin: expected {}, got {}",
+                json_text(full),
+                json_text(&actual_ids)
+            ),
         ));
     }
-    if adopted.iter().any(|id| !ids.contains(id)) {
+    let missing_adopted: Vec<&str> = adopted
+        .iter()
+        .copied()
+        .filter(|id| !ids.contains(id))
+        .collect();
+    if !missing_adopted.is_empty() {
         return Err(id_error(
             fixture,
-            "adopted ID is absent from the full set".to_owned(),
+            format!(
+                "adopted IDs absent from the full set: expected {}, missing {}",
+                json_text(adopted),
+                json_text(&missing_adopted)
+            ),
         ));
     }
     Ok(())
@@ -1145,9 +1212,19 @@ fn is_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn io_error(path: &Path, error: std::io::Error) -> VerifyError {
+fn json_text<T: serde::Serialize + ?Sized>(value: &T) -> String {
+    serde_json::to_string(value).expect("public verifier values serialize as JSON")
+}
+
+fn optional_json_text(value: Option<&Value>) -> String {
+    value
+        .map(Value::to_string)
+        .unwrap_or_else(|| "<missing>".to_owned())
+}
+
+fn io_error(path: &str, error: std::io::Error) -> VerifyError {
     VerifyError::Io {
-        path: path.display().to_string(),
+        path: path.to_owned(),
         message: error.to_string(),
     }
 }
@@ -1166,7 +1243,7 @@ fn file_kind(metadata: &fs::Metadata) -> &'static str {
 }
 
 #[cfg(unix)]
-fn verify_mode(path: &Path, metadata: &fs::Metadata, directory: bool) -> Result<(), VerifyError> {
+fn verify_mode(path: &str, metadata: &fs::Metadata, directory: bool) -> Result<(), VerifyError> {
     use std::os::unix::fs::MetadataExt;
     let mode = metadata.mode() & 0o7777;
     let forbidden = if directory {
@@ -1176,7 +1253,7 @@ fn verify_mode(path: &Path, metadata: &fs::Metadata, directory: bool) -> Result<
     };
     if forbidden != 0 {
         return Err(VerifyError::InvalidFileMode {
-            path: path.display().to_string(),
+            path: path.to_owned(),
             mode,
         });
     }
@@ -1184,10 +1261,6 @@ fn verify_mode(path: &Path, metadata: &fs::Metadata, directory: bool) -> Result<
 }
 
 #[cfg(not(unix))]
-fn verify_mode(
-    _path: &Path,
-    _metadata: &fs::Metadata,
-    _directory: bool,
-) -> Result<(), VerifyError> {
+fn verify_mode(_path: &str, _metadata: &fs::Metadata, _directory: bool) -> Result<(), VerifyError> {
     Ok(())
 }

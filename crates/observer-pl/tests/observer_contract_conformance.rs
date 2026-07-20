@@ -413,7 +413,10 @@ fn observer_contract_authority_real_wire_types_parse_applicable_examples() {
             .clone(),
     )
     .expect("real RegisterResponse parses authority example");
-    assert_eq!(register_response.protocol_version, Some(2));
+    assert_eq!(
+        register_response.protocol_version,
+        Some(observer_pl::OBSERVER_PROTOCOL_VERSION)
+    );
     assert_eq!(register_response.key, "x7J7k2observerHandle");
 
     for id in [
@@ -558,8 +561,12 @@ fn observer_contract_authority_dispatches_every_adopted_vector_decision() {
                 assert_eq!(decision["submitted_name_present"], false);
             }
             "observer.ingestSegments.v2_envelope" => {
-                assert_eq!(decision["current_protocol_version"], 2);
-                assert_eq!(decision["parsed_version"], 2);
+                let protocol_version = u64::from(observer_pl::OBSERVER_PROTOCOL_VERSION);
+                assert_eq!(
+                    decision["current_protocol_version"].as_u64(),
+                    Some(protocol_version)
+                );
+                assert_eq!(decision["parsed_version"].as_u64(), Some(protocol_version));
             }
             "observer.ingestUpload.status.collision" => {
                 assert_eq!(decision["accepted"], true);

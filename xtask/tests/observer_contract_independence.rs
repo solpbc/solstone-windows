@@ -112,7 +112,7 @@ fn observer_contract_production_graph_excludes_xtask() {
 fn observer_contract_bundle_is_absent_from_product_and_package_inputs() {
     let root = repo_root();
     for directory in ["src-tauri", "packaging", "scripts", "ui"] {
-        scan_for_contract_reference(&root.join(directory));
+        scan_for_contract_reference(&root.join(directory), Path::new(directory));
     }
     let tauri: Value = serde_json::from_slice(
         &fs::read(root.join("src-tauri/tauri.conf.json")).expect("read Tauri config"),
@@ -122,18 +122,41 @@ fn observer_contract_bundle_is_absent_from_product_and_package_inputs() {
     assert!(tauri["bundle"].get("resources").is_none());
 }
 
-fn scan_for_contract_reference(path: &Path) {
-    for entry in
-        fs::read_dir(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-    {
-        let entry = entry.expect("read directory entry");
-        let metadata = fs::symlink_metadata(entry.path()).expect("entry metadata");
+fn scan_for_contract_reference(path: &Path, logical_path: &Path) {
+    let mut entries: Vec<_> = fs::read_dir(path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", logical_path.display()))
+        .map(|entry| {
+            entry.unwrap_or_else(|error| {
+                panic!("read entry under {}: {error}", logical_path.display())
+            })
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let name = entry.file_name();
+        let entry_logical_path = logical_path.join(&name);
+        let metadata = fs::symlink_metadata(entry.path()).unwrap_or_else(|error| {
+            panic!("metadata for {}: {error}", entry_logical_path.display())
+        });
+        if metadata.is_dir()
+            && matches!(
+                name.to_str(),
+                Some("node_modules" | "dist" | "target" | ".git")
+            )
+        {
+            continue;
+        }
+        assert!(
+            !metadata.file_type().is_symlink(),
+            "refusing to follow build-input symlink {}",
+            entry_logical_path.display()
+        );
         if metadata.is_dir() {
-            scan_for_contract_reference(&entry.path());
+            scan_for_contract_reference(&entry.path(), &entry_logical_path);
         } else if metadata.is_file() {
-            let Ok(bytes) = fs::read(entry.path()) else {
-                continue;
-            };
+            let bytes = fs::read(entry.path())
+                .unwrap_or_else(|error| panic!("read {}: {error}", entry_logical_path.display()));
             let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
             for forbidden in [
                 "contracts/observer-client",
@@ -144,9 +167,14 @@ fn scan_for_contract_reference(path: &Path) {
                 assert!(
                     !text.contains(forbidden),
                     "{} references product-excluded observer contract input {forbidden}",
-                    entry.path().display()
+                    entry_logical_path.display()
                 );
             }
+        } else {
+            panic!(
+                "unsupported build-input file type at {}",
+                entry_logical_path.display()
+            );
         }
     }
 }
