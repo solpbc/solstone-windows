@@ -8,7 +8,8 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Step | Verb |
 |---|---|
 | Build binary + webview | `make build` |
-| Full gate (fmt · clippy · contract drift · tests · cargo-deny) | `make ci` |
+| Deterministic composite gate (host checks · offline dependency policy · native Windows build/test) | `make ci` |
+| Refresh RustSec data + check current advisories | `make audit` |
 | Pack a Velopack release into `Releases/` | `make package` |
 | Pull the box's `Releases/` to the release host | `make pull-releases` |
 | Upload `Releases/` to the R2 update feed (**primary**) | `make publish-r2` |
@@ -54,13 +55,16 @@ release + signed artifacts live; it is never skipped on a real release.
 **Flow** (mirrors the macOS appcast split — keeps Cloudflare creds off the
 signing box; both publishes are mandatory):
 
-1. On the build box: `make package` (`-Sign` / `SOLSTONE_SIGN=1` for a release).
-2. On the release host: `make pull-releases` (scp the box's `Releases/` over),
+1. Run `make audit`; a failed RustSec refresh produces no current advisory result
+   and blocks the release.
+2. On the build box: run `scripts/win-package.cmd` with `SOLSTONE_SIGN=1` in the
+   environment for a signed release.
+3. On the release host: `make pull-releases` (scp the box's `Releases/` over),
    then `make publish-r2` — uploads every artifact, **feed-last**
    (`releases.win.json` after the nupkgs/Setup.exe), then HEAD-checks the feed +
    the `solstone-setup-{version}.exe` artifact. Requires `wrangler` authed to
    the Cloudflare account + `curl`.
-3. **Required GitHub mirror:** on the **release host** (same host as `publish-r2`,
+4. **Required GitHub mirror:** on the **release host** (same host as `publish-r2`,
    not the build box — the box has no `gh`), `make publish` → `scripts/publish-gh.sh`
    creates the tagged `v<version>` GitHub release, attaches every `Releases/`
    artifact (feed JSON last), and sets the release body from the

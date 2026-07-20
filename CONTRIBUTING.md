@@ -11,8 +11,8 @@ make ci
 ```
 
 Run `make ci` before asking for review. On a non-Windows host, run the
-host-testable subset (`cargo test --workspace --exclude solstone-windows-app`,
-`cargo xtask contract --check`).
+host-testable subset (`make test`,
+`cargo run --locked -q -p xtask -- contract --check`).
 
 Use focused commits.
 

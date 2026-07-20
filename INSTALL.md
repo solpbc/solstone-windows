@@ -10,13 +10,15 @@ packaging, and FlaUI smoke** require the Windows build box.
 
 ### Any host (pure tier + contract + tests)
 
-- **Rust** (stable, 1.82+). `cargo --version` should print 1.82 or newer.
+- **Rust 1.96.0**, pinned by `rust-toolchain.toml`. Run `make rust-toolchain`
+  to install the exact toolchain, rustfmt, clippy, and Windows MSVC target.
+- **cargo-deny 0.20.2** for `make ci` / `make audit`
+  (`cargo install cargo-deny --version 0.20.2 --locked`).
 - That's it for `make test` of the pure crates and `make contract`.
 
 ### Windows build box (binary, packaging, smoke)
 
-- The Rust **MSVC** toolchain: `stable-x86_64-pc-windows-msvc` (the
-  `rust-toolchain.toml` pin). `rustup target add x86_64-pc-windows-msvc` if needed.
+- The Rust **MSVC** target installed by `make rust-toolchain`.
 - **Node.js 18+** and npm (for the Vite webview build).
 - The **WebView2** runtime (evergreen; present on current Windows).
 - The **.NET SDK** with net48 targeting support (for the FlaUI harness).
@@ -26,7 +28,7 @@ packaging, and FlaUI smoke** require the Windows build box.
 
 ```bash
 # Resolve and build the host-testable crates (works on Linux/macOS/Windows):
-cargo build --workspace --exclude solstone-windows-app
+cargo build --locked --workspace --exclude solstone-windows-app
 
 # Run the pure-tier tests + the contract drift gate:
 make test
@@ -52,7 +54,7 @@ The automation contract is generated, not written:
 
 ```bash
 make contract        # regenerate automation-contract.json + ui/src/lib/contract.ts
-cargo xtask contract --check   # verify no drift (also runs in `make ci` and tests)
+cargo run --locked -q -p xtask -- contract --check   # verify no drift
 ```
 
 Commit the regenerated files. Never hand-edit them.
@@ -65,8 +67,9 @@ To drive a Windows build box over SSH from a checkout elsewhere:
 WIN_REMOTE_HOST=<host> make win-host-ci
 ```
 
-This syncs the tree to a dedicated remote directory (`rsync --delete`) and runs
-`make ci` there. Set `WIN_REMOTE_HOST` to your build box's hostname.
+This refuses untracked non-ignored files, transfers the tracked working tree by
+Git bundle + SCP, and runs the native Windows gate. Set `WIN_REMOTE_HOST` to the
+build box address supplied by your environment.
 
 ## Verifying
 
@@ -74,7 +77,6 @@ This syncs the tree to a dedicated remote directory (`rsync --delete`) and runs
 make ci    # fmt-check · clippy -D warnings · contract --check · tests · cargo deny
 ```
 
-`make ci` is the gate. On a non-Windows host, run the subset that applies
-(`cargo test --workspace --exclude solstone-windows-app`, `cargo xtask contract
---check`); the full gate including the binary and `cargo deny` runs on the build
-box (and `cargo deny` requires `cargo install cargo-deny`).
+`make ci` is the composite gate. On a non-Windows host, `make test` and
+`cargo run --locked -q -p xtask -- contract --check` are the focused Rust subset;
+the composite gate also runs UI/shell checks and the native Windows box leg.

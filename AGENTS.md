@@ -29,9 +29,10 @@ charter and license.
   in `deny.toml`. The observer writes local, owner-controlled data; nothing
   leaves the machine except the owner's own upload to their own journal.
 - **Quarantine the platform.** `windows` / `windows-rs` may appear **only** in
-  the platform-tier crates (`capture-wgc`, `capture-wasapi`, `platform-win`), and
-  is declared target-gated there. The pure tier carries `#![forbid(unsafe_code)]`
-  and is host-testable. Dependency arrows never point pure → platform.
+  the audited platform-tier crates (`capture-screen-encode`, `capture-wgc`,
+  `capture-wasapi`, `platform-win`, `pl-transport-win`), and is declared
+  target-gated there. The pure tier carries `#![forbid(unsafe_code)]` and is
+  host-testable. Dependency arrows never point pure → platform.
 - **No GitHub Actions release path.** Releases are operator-driven, by hand, from
   a known build box via local `make`. `.github/workflows/` does not exist, by
   policy, permanently.
@@ -55,9 +56,11 @@ charter and license.
 
 | Verb | Does |
 |---|---|
+| `make rust-toolchain` | idempotently install the exact pinned Rust toolchain, rustfmt, clippy, and Windows MSVC target |
 | `make build` | `cargo build` the binary + `npm run build` the webview → `ui/dist` |
 | `make test` | `cargo test --workspace` (the pure tier runs off-Windows too) |
-| `make ci` | fmt-check · clippy `-D warnings` · contract `--check` · tests · `cargo deny check` |
+| `make ci` | host fmt/clippy/contract/tests · offline locked bans/licenses/sources · UI/shell tests · native Windows build/test |
+| `make audit` | refresh the RustSec database, then check advisories against the locked graph |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
 | `make package` | `make build` → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
 | `make publish-r2` | upload `Releases/` to the R2 update feed (`updates.solstone.app/solstone-windows/`, feed-last) — the **primary** auto-update channel; run on the release host |
@@ -67,13 +70,38 @@ charter and license.
 | `make run` | launch from the tree + tail `%LocalAppData%\Solstone\logs\` |
 | `make clean` | `cargo clean` + remove `ui/dist` and `Releases/` |
 
+### Target evidence
+
+| Repository entry point | Evidence class | Exact claim |
+|---|---|---|
+| `make test`, `make ui-test`, `make test-scripts`, and the local Rust legs of `make ci` | Host evidence | Linux-host formatting, compilation/tests for the host-testable subset, UI tests, and shell policy; no Windows compilation |
+| `make purity-check` | Cross-target drift evidence | Reads the all-target dependency graph with `cargo tree --target all`; detects Windows-family dependency drift but does not compile or link MSVC code |
+| `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; no app package, install, sign, or smoke |
+| `scripts/win-app-build.cmd` | Native app-build evidence | Builds the UI and Windows app binary; no package, install, sign, or smoke |
+| `make package` / `scripts/win-package.cmd` | Package-construction evidence | Release app build plus Velopack pack; unsigned unless signing is explicitly enabled; no install or smoke |
+| `SOLSTONE_SIGN=1 scripts/win-package.cmd` → install emitted setup → `make smoke` | Shipped-artifact proof | Exercises the installed signed bytes in the interactive Windows session |
+
+Linux has no compiling cross-target MSVC check because it cannot link the
+Windows MSVC target. `make ci` is a composite gate and still needs npm plus
+`WIN_REMOTE_HOST`; it is not an offline gate. Only its cargo-deny
+bans/licenses/sources sub-gate is offline.
+
+All gated project dependency resolution holds `Cargo.lock` with `--locked`. The
+one deliberate dependency-update path is `cargo update -p <crate>`: review and
+commit the resulting `Cargo.lock`, then rerun `make ci` and `make audit`.
+
+The workspace lint floor denies unsafe code. Item-level exceptions may exist only
+inside the five audited platform crates named above; crate-wide
+`#![allow(unsafe_code)]` is forbidden.
+
 **Off-Windows dev host:** the Rust-MSVC / windows-rs / Tauri toolchain only builds
 on Windows, so on a non-Windows dev host run the gate on the Windows build box with
-`WIN_REMOTE_HOST=user@host make win-host-ci`. It bundles your exact working tree
-(committed or not), ships it over SSH (git bundle + scp — no rsync), and runs build
-+ tests + the contract check on the box, streaming results back. `WIN_REMOTE_HOST`
-is supplied by your environment, never committed. The live FlaUI smoke + lifecycle
-matrix stay operator-direct on the box (not part of `win-host-ci`).
+`WIN_REMOTE_HOST=user@host make win-host-ci`. It refuses untracked non-ignored
+files, bundles the exact committed/staged/tracked working tree, ships it over SSH
+(git bundle + scp — no rsync), and runs build + tests + the contract check on the
+box, streaming results back. `WIN_REMOTE_HOST` is supplied by your environment,
+never committed. The live FlaUI smoke + lifecycle matrix stay operator-direct on
+the box (not part of `win-host-ci`).
 
 Build-box gotchas: the FlaUI harness targets **net48** and needs
 `Accessibility.dll` in the publish layout; invoke `.cmd` shims via `cmd.exe /c`;
