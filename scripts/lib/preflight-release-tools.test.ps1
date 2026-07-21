@@ -118,7 +118,7 @@ set "UCRTVersion=10.0.26100.0"
 set "WindowsSdkDir=C:\fake\sdk\"
 set "WindowsSdkBinPath=C:\fake\sdk\bin\"
 set "WindowsLibPath=C:\fake\sdk\lib"
-set "WindowsSDKVersion=10.0.26100.0\"
+set "WindowsSDKVersion=10.0.26100.0\\"
 exit /b 0
 '
     Write-Ascii (Join-Path $toolset "cl.cmd") '@echo off
