@@ -133,6 +133,9 @@ rail.
 
 ## Build-box gotchas
 
+- The release contract pins Windows PowerShell 5.1. Invoke the make-backed release
+  rail as `PWSH=powershell make preflight-release-tools` / `PWSH=powershell make
+  package`, or use the box-native `scripts/win-package.cmd`.
 - Packaging consumes the exact cargo, npm, PowerShell, vpk, and smctl paths selected
   by `packaging/preflight-release-tools.ps1`; do not substitute ambient tools.
 - Invoke `.cmd` shims via `cmd.exe /c`.

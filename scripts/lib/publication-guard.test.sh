@@ -40,13 +40,21 @@ for tool in gh wrangler curl jq scp; do
   chmod +x "$fake"
 done
 
-for script in publish-gh.sh publish-r2.sh publish-winget.sh publish-scoop.sh; do
-  if output=$(PATH="$FAKE_BIN:$PATH" PUBLICATION_WITNESS="$WITNESS" sh "$REPO_ROOT/scripts/$script" ignored arbitrary arguments 2>&1); then
-    fail "$script must fail closed"
+assert_guard_invocation() {
+  label=$1
+  shift
+  : > "$WITNESS"
+  if output=$(PATH="$FAKE_BIN:$PATH" PUBLICATION_WITNESS="$WITNESS" "$@" ignored arbitrary arguments 2>&1); then
+    fail "$label must fail closed"
   fi
   ASSERTIONS=$((ASSERTIONS + 1))
-  assert_eq "$script exact lockout" "$EXPECTED" "$output"
-  assert_eq "$script no transport" "" "$(cat "$WITNESS")"
+  assert_eq "$label exact lockout" "$EXPECTED" "$output"
+  assert_eq "$label no transport" "" "$(cat "$WITNESS")"
+}
+
+for script in publish-gh.sh publish-r2.sh publish-winget.sh publish-scoop.sh; do
+  assert_guard_invocation "$script direct" "$REPO_ROOT/scripts/$script"
+  assert_guard_invocation "$script via sh" sh "$REPO_ROOT/scripts/$script"
 done
 
 for target in publish publish-r2 publish-winget publish-scoop publish-packages; do

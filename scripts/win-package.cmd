@@ -37,14 +37,17 @@ set "SELECTED_CARGO="
 set "SELECTED_NPM="
 set "SELECTED_POWERSHELL="
 set "SELECTED_VCVARSALL="
+set "SELECTED_VCVARS_VERSION_ARG="
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.cargo.path"`) do set "SELECTED_CARGO=%%i"
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.npm.path"`) do set "SELECTED_NPM=%%i"
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.powershell.path"`) do set "SELECTED_POWERSHELL=%%i"
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.'msvc-cl'.vcvarsallPath"`) do set "SELECTED_VCVARSALL=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.'msvc-cl'.vcvarsVersionArg"`) do set "SELECTED_VCVARS_VERSION_ARG=%%i"
 if not defined SELECTED_CARGO ( echo ERROR: selection record omitted cargo.path & exit /b 1 )
 if not defined SELECTED_NPM ( echo ERROR: selection record omitted npm.path & exit /b 1 )
 if not defined SELECTED_POWERSHELL ( echo ERROR: selection record omitted powershell.path & exit /b 1 )
 if not defined SELECTED_VCVARSALL ( echo ERROR: selection record omitted msvc-cl.vcvarsallPath & exit /b 1 )
+if not defined SELECTED_VCVARS_VERSION_ARG ( echo ERROR: selection record omitted msvc-cl.vcvarsVersionArg & exit /b 1 )
 
 echo === version gate ===
 set "SOLSTONE_VERSION_GATE_CARGO=%SELECTED_CARGO%"
@@ -52,7 +55,7 @@ call "%SELECTED_CARGO%" run --locked -q -p xtask -- version-gate || exit /b 1
 echo === lock guard ===
 "%SELECTED_POWERSHELL%" -NoProfile -File packaging\lock-guard.ps1 || exit /b 1
 
-call "%SELECTED_VCVARSALL%" x64 >nul || ( echo ERROR: selected vcvarsall failed & exit /b 1 )
+call "%SELECTED_VCVARSALL%" x64 %SELECTED_VCVARS_VERSION_ARG% >nul || ( echo ERROR: selected vcvarsall failed & exit /b 1 )
 
 echo === npm ci --offline (ui) ===
 call "%SELECTED_NPM%" --prefix ui ci --offline || exit /b 1

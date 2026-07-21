@@ -86,7 +86,15 @@ try {
     Reset-Repo
     $result = Run-Guard $Temp (Join-Path $Temp "no-tools")
     Assert-True ($result.status -ne 0) "missing git fails closed"
-    Assert-True ($result.stderr.Contains("Cargo.lock is untracked")) "missing git uses lock diagnostic"
+    Assert-True ($result.stderr.Contains("ERROR: lock guard: unable to verify tracked lockfiles: git is unavailable.")) "missing git has distinct diagnostic"
+    Assert-True ($result.stderr.Contains("Install Git, ensure it is runnable, and run from a Git checkout.")) "missing git has actionable repair"
+
+    Reset-Repo
+    Remove-Item -LiteralPath (Join-Path $Temp ".git") -Recurse -Force
+    $result = Run-Guard $Temp
+    Assert-True ($result.status -ne 0) "non-repository fails closed"
+    Assert-True ($result.stderr.Contains("unable to verify tracked lockfiles: git exited")) "non-repository has distinct diagnostic"
+    Assert-True ($result.stderr.Contains("run from a Git checkout")) "non-repository has actionable repair"
 
     Write-Host "lock-guard.test.ps1: $Assertions assertions passed"
 } finally {

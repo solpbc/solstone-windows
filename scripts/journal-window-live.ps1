@@ -204,7 +204,7 @@ try {
     }
     Push-Location $Root
     try {
-        & $Cargo build -p pl-transport-win --example mock_journal
+        & $Cargo build --locked -p pl-transport-win --example mock_journal
         if ($LASTEXITCODE -ne 0) { throw "mock_journal build failed ($LASTEXITCODE)" }
     } finally {
         Pop-Location

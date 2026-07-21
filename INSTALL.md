@@ -54,6 +54,11 @@ make build
 update UI dependencies, run `make ui-deps-update`, review `ui/package-lock.json`,
 and commit it.
 
+The release contract pins Windows PowerShell 5.1. On the build box, run release
+verbs with `PWSH=powershell`, for example `PWSH=powershell make
+preflight-release-tools` or `PWSH=powershell make package`; alternatively use the
+box-native `scripts/win-package.cmd`.
+
 ## The contract
 
 The automation contract is generated, not written:

@@ -56,7 +56,11 @@ if (-not (Test-Path -LiteralPath $ContractPath -PathType Leaf)) {
     Fail-Contract "contract file unavailable at $ContractPath."
 }
 try {
-    $Contract = Get-Content -LiteralPath $ContractPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ContractJson = Get-Content -LiteralPath $ContractPath -Raw -Encoding UTF8
+    if ([regex]::Matches($ContractJson, '"schema"\s*:').Count -ne 1) {
+        Fail-Contract "schema must appear exactly once."
+    }
+    $Contract = $ContractJson | ConvertFrom-Json
 } catch {
     Fail-Contract "invalid JSON at $ContractPath."
 }
@@ -240,7 +244,10 @@ if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
             Add-Mismatch "msvc-cl.vcvarsallPath" $vcvarsall "unavailable" $msvc.repair
         } else {
             $clProbe = Invoke-Observed $clPath @("/Bv")
-            $matches = if ($clProbe.status -eq 0) { @([regex]::Matches($clProbe.text, "Compiler Version\s+([0-9.]+)\s+for\s+x64")) } else { @() }
+            # Bare cl /Bv prints the version banner, then exits nonzero with D8003
+            # because no source file was supplied. A launched process is valid
+            # evidence; only a launch failure makes the banner unavailable.
+            $matches = if ($clProbe.status -ne -1) { @([regex]::Matches($clProbe.text, "Compiler Version\s+([0-9.]+)\s+for\s+x64")) } else { @() }
             $compilerVersion = if ($matches.Count -eq 1) { $matches[0].Groups[1].Value } else { $null }
             if ($compilerVersion -ne $msvc.expected.compilerVersion) {
                 Add-Mismatch "msvc-cl.compilerVersion" $msvc.expected.compilerVersion $compilerVersion $msvc.repair
@@ -252,6 +259,7 @@ if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
                     host = $msvc.expected.host
                     target = $msvc.expected.target
                     vcvarsallPath = [IO.Path]::GetFullPath($vcvarsall)
+                    vcvarsVersionArg = "-vcvars_ver=$($msvc.expected.toolsetVersion)"
                     installationPath = $installation
                 }
             }

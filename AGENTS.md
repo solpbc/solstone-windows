@@ -142,7 +142,7 @@ crates/
   capture-engine/      orchestrator: sources→writer→rotation→state→recovery
 src-tauri/             the binary: tray + Settings/About + IPC + arg dispatch
 ui/                    WebView2 front-end (vanilla TS + Vite); pure renderer
-xtask/                 cargo xtask: contract [--check], purity-check, package, dev
+xtask/                 cargo xtask: contract [--check], purity-check, version-gate, package, dev
 contracts/observer-client/ test-only vendored authority bytes + checked consumer adoption metadata
 harness/               net48 FlaUI/UIA smoke driver (not a cargo member)
 packaging/             Velopack config + hooks/ + signing/ seam

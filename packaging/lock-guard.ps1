@@ -15,6 +15,11 @@ function Fail-Lock([string]$Path, [string]$State, [string]$Repair) {
     exit 1
 }
 
+function Fail-Git([string]$Detail) {
+    [Console]::Error.WriteLine("ERROR: lock guard: unable to verify tracked lockfiles: $Detail. Install Git, ensure it is runnable, and run from a Git checkout.")
+    exit 1
+}
+
 $locks = @(
     [ordered]@{
         path = "Cargo.lock"
@@ -33,15 +38,26 @@ foreach ($lock in $locks) {
     }
 }
 
+try {
+    $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+} catch {
+    Fail-Git "git is unavailable"
+}
+
 foreach ($lock in $locks) {
     try {
-        $output = @(& git -C $Root ls-files --error-unmatch -- $lock.path 2>$null)
+        $output = @(& $gitPath -C $Root ls-files --error-unmatch -- $lock.path 2>$null)
         $status = $LASTEXITCODE
     } catch {
-        $output = @()
-        $status = -1
+        Fail-Git "git could not inspect $($lock.path)"
     }
-    if ($status -ne 0 -or $output.Count -ne 1 -or $output[0] -ne $lock.path) {
+    if ($status -eq 1) {
         Fail-Lock $lock.path "untracked" $lock.repair
+    }
+    if ($status -ne 0) {
+        Fail-Git "git exited $status while inspecting $($lock.path)"
+    }
+    if ($output.Count -ne 1 -or $output[0] -ne $lock.path) {
+        Fail-Git "git returned an invalid result for $($lock.path)"
     }
 }

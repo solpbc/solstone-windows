@@ -90,7 +90,10 @@ $record = [ordered]@{
     vpk = [ordered]@{ path = $env:PACKAGE_TEST_VPK }
     smctl = [ordered]@{ path = $env:PACKAGE_TEST_SMCTL }
     signtool = [ordered]@{ path = $env:PACKAGE_TEST_SIGNTOOL }
-    "msvc-cl" = [ordered]@{ vcvarsallPath = $env:PACKAGE_TEST_VCVARS }
+    "msvc-cl" = [ordered]@{
+      vcvarsallPath = $env:PACKAGE_TEST_VCVARS
+      vcvarsVersionArg = $env:PACKAGE_TEST_VCVARS_ARG
+    }
   }
 }
 [Console]::Out.WriteLine(($record | ConvertTo-Json -Depth 6 -Compress))
@@ -145,7 +148,13 @@ exit /b 0
 '@
     Write-Ascii $smctl "@echo off`r`necho SELECTED-SMCTL>>`"%PACKAGE_TEST_WITNESS%`"`r`nexit /b 0`r`n"
     Write-Ascii $signtool "@echo off`r`necho SELECTED-SIGNTOOL>>`"%PACKAGE_TEST_WITNESS%`"`r`nexit /b 98`r`n"
-    Write-Ascii $vcvars "@echo off`r`necho vcvarsall>>`"%PACKAGE_TEST_WITNESS%`"`r`nexit /b 0`r`n"
+    Write-Ascii $vcvars @'
+@echo off
+echo vcvarsall^|%*>>"%PACKAGE_TEST_WITNESS%"
+if not "%1"=="x64" exit /b 89
+if not "%2"=="%PACKAGE_TEST_VCVARS_ARG%" exit /b 89
+exit /b 0
+'@
     foreach ($tool in @("cargo", "npm", "vpk", "smctl", "signtool")) {
         Write-Ascii (Join-Path $PoisonBin "$tool.cmd") "@echo off`r`necho POISON-$tool>>`"%PACKAGE_TEST_POISON_WITNESS%`"`r`nexit /b 97`r`n"
     }
@@ -159,6 +168,7 @@ exit /b 0
     Set-TestEnvironment "PACKAGE_TEST_SMCTL" $smctl
     Set-TestEnvironment "PACKAGE_TEST_SIGNTOOL" $signtool
     Set-TestEnvironment "PACKAGE_TEST_VCVARS" $vcvars
+    Set-TestEnvironment "PACKAGE_TEST_VCVARS_ARG" "-vcvars_ver=14.44.35207"
     Set-TestEnvironment "PACKAGE_TEST_RELEASES" (Join-Path $Temp "Releases")
     Set-TestEnvironment "SM_HOST" "https://example.invalid"
     Set-TestEnvironment "SM_CLIENT_CERT_FILE" (Join-Path $Temp "client-cert.pem")
@@ -189,27 +199,44 @@ exit /b 0
 
     Reset-Case
     Set-TestEnvironment "PACKAGE_TEST_FAIL" ""
+    $beforeCargo = (Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash
+    $beforeUi = (Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash
     $result = Run-Direct
     Assert-True ($result.status -eq 0) "direct unsigned succeeds"
     $directWitness = Get-Content $Witness -Raw
     Assert-True ($directWitness.Contains("preflight`r`nversion-gate`r`nlock-guard`r`nvpk|")) "direct gate and vpk order"
     Assert-True (-not $directWitness.Contains("auth|")) "direct unsigned omits auth"
-    Assert-True (-not $directWitness.Contains("SIGNTOOL")) "direct unsigned omits SignTool"
+    Assert-True (-not $directWitness.ToLowerInvariant().Contains("signtool")) "direct unsigned omits SignTool"
+    Assert-True ((Get-Content $PoisonWitness -Raw) -eq "") "direct unsigned selected paths beat poisoned PATH"
+    Assert-True ((Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash -eq $beforeCargo) "direct unsigned Cargo.lock stable"
+    Assert-True ((Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash -eq $beforeUi) "direct unsigned UI lock stable"
 
     Reset-Case
+    $beforeCargo = (Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash
+    $beforeUi = (Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash
     $result = Run-Direct -Sign
     Assert-True ($result.status -eq 0) "direct signed succeeds"
     $signedWitness = Get-Content $Witness -Raw
     Assert-True ($signedWitness.Contains("auth|$smctl")) "direct signed auth uses selected smctl"
-    Assert-True ($signedWitness.Contains($smctl)) "signTemplate carries selected smctl absolute path"
-    Assert-True (-not $signedWitness.Contains("SIGNTOOL")) "direct signed never invokes SignTool"
+    $signedVpkLine = @($signedWitness -split "`r?`n" | Where-Object { $_.StartsWith("vpk|") })[0]
+    Assert-True ($signedVpkLine.Contains("--signTemplate") -and $signedVpkLine.Contains($smctl)) "direct signTemplate carries selected smctl absolute path"
+    Assert-True (-not $signedWitness.ToLowerInvariant().Contains("signtool")) "direct signed never invokes SignTool"
+    Assert-True ((Get-Content $PoisonWitness -Raw) -eq "") "direct signed never invokes ambient SignTool"
+    Assert-True ((Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash -eq $beforeCargo) "direct signed Cargo.lock stable"
+    Assert-True ((Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash -eq $beforeUi) "direct signed UI lock stable"
 
-    foreach ($failure in @("preflight", "version", "lock")) {
+    foreach ($case in @(
+        ,@("preflight", "preflight"),
+        ,@("version", "preflight`r`nversion-gate"),
+        ,@("lock", "preflight`r`nversion-gate`r`nlock-guard")
+    )) {
+        $failure = $case[0]
         Reset-Case
         Set-TestEnvironment "PACKAGE_TEST_FAIL" $failure
         $result = Run-Wrapper
         Assert-True ($result.status -ne 0) "wrapper $failure failure exits nonzero"
         $wrapperWitness = Get-Content $Witness -Raw
+        Assert-True ($wrapperWitness.Trim() -eq $case[1]) "wrapper $failure exact stop order"
         Assert-True (-not $wrapperWitness.Contains("npm-ci")) "wrapper $failure stops npm"
         Assert-True (-not $wrapperWitness.Contains("cargo-build")) "wrapper $failure stops build"
         Assert-True (-not $wrapperWitness.Contains("vpk|")) "wrapper $failure stops pack"
@@ -218,11 +245,36 @@ exit /b 0
 
     Reset-Case
     Set-TestEnvironment "PACKAGE_TEST_FAIL" ""
+    Set-TestEnvironment "SOLSTONE_SIGN" $null
+    $beforeCargo = (Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash
+    $beforeUi = (Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash
     $result = Run-Wrapper
-    Assert-True ($result.status -eq 0) "wrapper success"
+    Assert-True ($result.status -eq 0) "wrapper unsigned success"
     $wrapperWitness = Get-Content $Witness -Raw
-    Assert-True ($wrapperWitness.Contains("preflight`r`nversion-gate`r`nlock-guard`r`nvcvarsall`r`nnpm-ci`r`nnpm-build`r`ncargo-build`r`npreflight`r`nversion-gate`r`nlock-guard")) "wrapper and direct defense-in-depth order"
-    Assert-True ((Get-Content $PoisonWitness -Raw) -eq "") "selected paths beat poisoned PATH"
+    Assert-True ($wrapperWitness.Contains("preflight`r`nversion-gate`r`nlock-guard`r`nvcvarsall|x64 -vcvars_ver=14.44.35207`r`nnpm-ci`r`nnpm-build`r`ncargo-build`r`npreflight`r`nversion-gate`r`nlock-guard")) "wrapper unsigned defense-in-depth and pinned vcvars order"
+    Assert-True (-not $wrapperWitness.Contains("auth|")) "wrapper unsigned omits auth"
+    Assert-True (-not $wrapperWitness.Contains("--signTemplate")) "wrapper unsigned omits signTemplate"
+    Assert-True (-not $wrapperWitness.ToLowerInvariant().Contains("signtool")) "wrapper unsigned omits SignTool"
+    Assert-True ((Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash -eq $beforeCargo) "wrapper unsigned Cargo.lock stable"
+    Assert-True ((Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash -eq $beforeUi) "wrapper unsigned UI lock stable"
+    Assert-True ((Get-Content $PoisonWitness -Raw) -eq "") "wrapper unsigned selected paths beat poisoned PATH"
+
+    Reset-Case
+    Set-TestEnvironment "SOLSTONE_SIGN" "1"
+    $beforeCargo = (Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash
+    $beforeUi = (Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash
+    $result = Run-Wrapper
+    Assert-True ($result.status -eq 0) "wrapper signed success"
+    $wrapperSignedWitness = Get-Content $Witness -Raw
+    Assert-True ($wrapperSignedWitness.Contains("vcvarsall|x64 -vcvars_ver=14.44.35207")) "wrapper signed activates pinned vcvars toolset"
+    Assert-True ($wrapperSignedWitness.Contains("auth|$smctl")) "wrapper signed auth uses selected smctl"
+    $wrapperSignedVpkLine = @($wrapperSignedWitness -split "`r?`n" | Where-Object { $_.StartsWith("vpk|") })[0]
+    Assert-True ($wrapperSignedVpkLine.Contains("--signTemplate") -and $wrapperSignedVpkLine.Contains($smctl)) "wrapper signed signTemplate carries selected smctl absolute path"
+    Assert-True (-not $wrapperSignedWitness.ToLowerInvariant().Contains("signtool")) "wrapper signed never invokes SignTool"
+    Assert-True ((Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash -eq $beforeCargo) "wrapper signed Cargo.lock stable"
+    Assert-True ((Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash -eq $beforeUi) "wrapper signed UI lock stable"
+    Assert-True ((Get-Content $PoisonWitness -Raw) -eq "") "wrapper signed selected paths beat poisoned PATH"
+    Set-TestEnvironment "SOLSTONE_SIGN" $null
 
     Write-Host "package-entrypoints.test.ps1: $Assertions assertions passed"
 } finally {

@@ -107,6 +107,21 @@ fn every_gated_cargo_resolution_is_locked() {
         assert!(invocations > 0, "{path} has no executable cargo invocation");
     }
 
+    for path in rail_source_paths(&root) {
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        for (index, line) in text.lines().enumerate() {
+            if cargo_graph_invocation(line, &path) {
+                assert!(
+                    line.contains("--locked"),
+                    "{}:{} graph-resolving cargo invocation must use --locked: {line}",
+                    path.display(),
+                    index + 1
+                );
+            }
+        }
+    }
+
     let purity = read(&root, "xtask/src/purity.rs");
     assert!(purity.contains("std::env::var(\"CARGO\")"));
     assert!(purity.contains("Command::new(cargo)"));
@@ -223,18 +238,13 @@ fn dependency_and_release_lockdown_topology_is_static() {
         assert!(read(&root, path).contains("--prefix ui ci --offline"));
     }
 
-    let executable_files = [
-        "Makefile",
-        "scripts/win-app-build.cmd",
-        "scripts/win-package.cmd",
-        "src-tauri/tauri.conf.json",
-    ];
     let mut npm_installs = Vec::new();
-    for path in executable_files {
-        for (index, line) in read(&root, path).lines().enumerate() {
-            let trimmed = line.trim_start();
-            if !trimmed.starts_with('#') && trimmed.contains("npm --prefix ui install") {
-                npm_installs.push(format!("{path}:{}:{trimmed}", index + 1));
+    for path in rail_source_paths(&root) {
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        for (index, line) in text.lines().enumerate() {
+            if npm_install_invocation(line, &path) {
+                npm_installs.push(format!("{}:{}:{}", path.display(), index + 1, line.trim()));
             }
         }
     }
@@ -243,7 +253,8 @@ fn dependency_and_release_lockdown_topology_is_static() {
         1,
         "only ui-deps-update may execute npm install: {npm_installs:?}"
     );
-    assert!(npm_installs[0].contains("Makefile"));
+    assert!(npm_installs[0].contains("Makefile:"));
+    assert!(npm_installs[0].ends_with(":npm --prefix ui install"));
 
     assert!(makefile
         .contains("provision-cargo-deny:\n\tcargo install cargo-deny --version 0.20.2 --locked"));
@@ -310,6 +321,10 @@ fn publication_and_parallel_version_sources_are_locked_out() {
     assert!(package.contains("$Selection.tools.vpk.path"));
     assert!(package.contains("$Selection.tools.smctl.path"));
     assert!(package.contains("-SmctlPath $SmctlPath"));
+    let version_gate = read(&root, "xtask/src/version_gate.rs");
+    assert!(version_gate.contains("format!(\"solstone-setup-{version}.exe\")"));
+    assert!(package.contains("$VersionedSetupName = \"solstone-setup-$Version.exe\""));
+    assert!(package.contains("$VersionedSetup = Join-Path $Releases $VersionedSetupName"));
 
     let win_ci = read(&root, "scripts/win-ci.cmd");
     for test in [
@@ -359,5 +374,144 @@ fn script_comment(trimmed: &str, is_cmd: bool) -> bool {
                 .is_some_and(|rest| rest.starts_with(' ') || rest.starts_with('\t'))
     } else {
         trimmed.starts_with('#')
+    }
+}
+
+fn rail_source_paths(root: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![root.join("Makefile")];
+    collect_script_sources(&root.join("scripts"), &mut paths);
+    paths.sort();
+    paths
+}
+
+fn collect_script_sources(directory: &Path, paths: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("read directory {}: {error}", directory.display()));
+    for entry in entries {
+        let path = entry.expect("script directory entry").path();
+        if path.is_dir() {
+            collect_script_sources(&path, paths);
+        } else if matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("sh" | "cmd" | "ps1")
+        ) {
+            paths.push(path);
+        }
+    }
+}
+
+fn npm_install_invocation(line: &str, path: &Path) -> bool {
+    let trimmed = line.trim_start();
+    if rail_comment(trimmed, path) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let commandish = lower.starts_with("npm ")
+        || lower.starts_with("npm.cmd ")
+        || lower.starts_with("call npm ")
+        || lower.starts_with("& $npm ")
+        || lower.starts_with("& \"$npm")
+        || lower.contains("then npm ")
+        || lower.contains("%selected_npm%")
+        || lower.contains("%npm%")
+        || lower.contains("npm_path")
+        || lower.contains("npmpath")
+        || lower.contains(".tools.npm.path");
+    commandish
+        && command_segment_after_marker(
+            &lower,
+            &[
+                "npm.cmd ",
+                "npm ",
+                "%selected_npm%",
+                "%npm%",
+                "npm_path",
+                "npmpath",
+                ".tools.npm.path",
+            ],
+        )
+        .is_some_and(|segment| {
+            segment.split_whitespace().any(|token| {
+                matches!(
+                    token.trim_matches(|character: char| {
+                        matches!(character, '\'' | '"' | ';' | '(' | ')' | '\\')
+                    }),
+                    "install" | "i"
+                )
+            })
+        })
+}
+
+fn cargo_graph_invocation(line: &str, path: &Path) -> bool {
+    let trimmed = line.trim_start();
+    if rail_comment(trimmed, path) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("echo ")
+        || lower.contains(" deny --version")
+        || lower.contains(" deny fetch db")
+    {
+        return false;
+    }
+    let cargoish = lower.contains("cargo ")
+        || lower.contains("$(cargo)")
+        || lower.contains("%selected_cargo%")
+        || lower.contains("cargo_path")
+        || lower.contains("cargopath")
+        || lower.contains(".tools.cargo.path")
+        || lower.contains("cargo_bin");
+    if !cargoish {
+        return false;
+    }
+    command_segment_after_marker(
+        &lower,
+        &[
+            "%selected_cargo%",
+            ".tools.cargo.path",
+            "$(cargo)",
+            "cargo_path",
+            "cargopath",
+            "cargo_bin",
+            "cargo ",
+        ],
+    )
+    .is_some_and(|segment| {
+        let padded = format!(" {segment} ");
+        [
+            " build ",
+            " test ",
+            " run ",
+            " clippy ",
+            " deny ",
+            " metadata ",
+            " tree ",
+        ]
+        .iter()
+        .any(|command| padded.contains(command))
+    })
+}
+
+fn command_segment_after_marker<'a>(line: &'a str, markers: &[&str]) -> Option<&'a str> {
+    let (position, marker) = markers
+        .iter()
+        .filter_map(|marker| line.find(marker).map(|position| (position, *marker)))
+        .min_by_key(|(position, _)| *position)?;
+    let remainder = &line[position + marker.len()..];
+    let end = remainder
+        .char_indices()
+        .find_map(|(index, character)| matches!(character, ';' | '&' | '|').then_some(index))
+        .unwrap_or(remainder.len());
+    Some(&remainder[..end])
+}
+
+fn rail_comment(trimmed: &str, path: &Path) -> bool {
+    if path.file_name().and_then(|value| value.to_str()) == Some("Makefile") {
+        return trimmed.starts_with('#');
+    }
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("cmd") => script_comment(trimmed, true),
+        Some("sh" | "ps1") => trimmed.starts_with('#'),
+        _ => false,
     }
 }

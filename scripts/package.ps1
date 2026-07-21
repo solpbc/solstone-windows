@@ -162,8 +162,9 @@ if ($LASTEXITCODE -ne 0) { throw "vpk pack failed (exit $LASTEXITCODE)." }
 $DefaultSetupName = "Solstone-win-Setup.exe"
 $DefaultSetup = Join-Path $Releases $DefaultSetupName
 if (-not (Test-Path $DefaultSetup)) { throw "package.ps1: expected vpk output '$DefaultSetupName' not found in $Releases after pack - vpk Setup.exe naming may have changed." }
-$VersionedSetup = Join-Path $Releases "solstone-setup-$Version.exe"
+$VersionedSetupName = "solstone-setup-$Version.exe"
+$VersionedSetup = Join-Path $Releases $VersionedSetupName
 Move-Item -Force $DefaultSetup $VersionedSetup
-Write-Host "package.ps1: renamed $DefaultSetupName -> solstone-setup-$Version.exe"
+Write-Host "package.ps1: renamed $DefaultSetupName -> $VersionedSetupName"
 
-Write-Host "package.ps1: done. Releases/ carries solstone-setup-$Version.exe + full nupkg (+ delta when a prior release was present) + releases.win.json$(if ($NotesFile) { ' (with release notes)' })."
+Write-Host "package.ps1: done. Releases/ carries $VersionedSetupName + full nupkg (+ delta when a prior release was present) + releases.win.json$(if ($NotesFile) { ' (with release notes)' })."
