@@ -72,7 +72,9 @@ function Run-Wrapper {
 }
 
 function Witness-Text {
-    return (Get-Content -LiteralPath $Witness -Raw).Trim()
+    $raw = Get-Content -LiteralPath $Witness -Raw
+    if ($null -eq $raw) { return "" }
+    return $raw.Trim()
 }
 
 function Assert-OneFinalizer([string]$Label, [switch]$Signed) {
