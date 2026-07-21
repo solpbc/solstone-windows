@@ -209,11 +209,38 @@ assert_contains \
 deny_output=$(CARGO="$FAKE_CARGO" FAKE_DENY_VERSION=0.20.2 sh "$REPO_ROOT/scripts/preflight-cargo-deny.sh" 2>&1)
 assert_eq "matching cargo-deny is silent" "" "$deny_output"
 
+DENY_PREFLIGHT=$(cat "$REPO_ROOT/scripts/preflight-cargo-deny.sh")
+assert_contains \
+  "cargo-deny preflight names isolated advisory root" \
+  "$DENY_PREFLIGHT" \
+  "isolated_db_relative=target/release-advisory-db"
+
 provision_dry_run=$(MAKEFLAGS= make -C "$REPO_ROOT" -n provision-cargo-deny 2>&1)
 assert_contains \
   "named cargo-deny provisioning verb" \
   "$provision_dry_run" \
   "cargo install cargo-deny --version 0.20.2 --locked"
+advisory_config_dry_run=$(MAKEFLAGS= make -C "$REPO_ROOT" -n check-release-advisory-config 2>&1)
+assert_contains \
+  "advisory config check maps isolated database" \
+  "$advisory_config_dry_run" \
+  "target/release-advisory-db"
+assert_contains \
+  "advisory config check uses xtask materializer" \
+  "$advisory_config_dry_run" \
+  "rust-release-manifest advisory-config"
+assert_contains \
+  "advisory config check invokes real pin offline" \
+  "$advisory_config_dry_run" \
+  'deny --locked --offline --config'
+assert_contains \
+  "advisory config check missing-cache remediation" \
+  "$advisory_config_dry_run" \
+  "run 'make audit' or refresh the RustSec cache, then retry"
+assert_contains \
+  "advisory config check removes its transient lock" \
+  "$advisory_config_dry_run" \
+  'db_lock="$isolated/db.lock"'
 ui_update_dry_run=$(MAKEFLAGS= make -C "$REPO_ROOT" -n ui-deps-update 2>&1)
 assert_contains "named UI dependency update verb" "$ui_update_dry_run" "npm --prefix ui install"
 for target in build test ui-test package ci audit; do
@@ -257,6 +284,19 @@ custom_pull=$(MAKEFLAGS= make -C "$REPO_ROOT" -n pull-releases WIN_REMOTE_HOST=f
 assert_contains "pull-releases honors WIN_SCP override" "$custom_pull" \
   "/custom/scp -r fake@host:swbuild/Releases Releases"
 assert_not_contains "custom WIN_SCP replaces the default scp binary" "$custom_pull" "ControlMaster"
+
+WIN_CI_SOURCE=$(cat "$REPO_ROOT/scripts/win-ci.cmd")
+assert_contains "box gate requires expected commit" "$WIN_CI_SOURCE" "if not defined EXPECTED_RELEASE_COMMIT"
+assert_contains "box gate emits Cargo.lock digest" "$WIN_CI_SOURCE" "echo WIN_CI_CARGO_LOCK_SHA256="
+assert_contains "box gate emits UI lock digest" "$WIN_CI_SOURCE" "echo WIN_CI_UI_LOCK_SHA256="
+assert_line_order \
+  "box source binding precedes byte-changing work" \
+  "$REPO_ROOT/scripts/win-ci.cmd" \
+  "git rev-parse HEAD" \
+  "git status --porcelain=v1 --untracked-files=all" \
+  "Get-FileHash -LiteralPath 'Cargo.lock'" \
+  "Get-FileHash -LiteralPath 'ui/package-lock.json'" \
+  "echo === cargo build --locked"
 
 FAKE_GIT="$TMP_ROOT/fake-git"
 cat > "$FAKE_GIT" <<'EOF'
@@ -306,6 +346,20 @@ case "$command_name" in
     if [ "${FAKE_GIT_STASH_EMPTY:-0}" != "1" ]; then
       printf '%s\n' "$FAKE_GIT_SHA"
     fi
+    ;;
+  status)
+    fail_for release-status
+    if [ "${FAKE_GIT_RELEASE_DIRTY:-0}" = "1" ]; then
+      printf ' M Cargo.lock\0'
+    fi
+    ;;
+  show)
+    fail_for resolve-binding
+    case "${1:-}" in
+      "$FAKE_GIT_SHA:Cargo.lock") printf '%s\n' "$FAKE_CARGO_LOCK_CONTENT" ;;
+      "$FAKE_GIT_SHA:ui/package-lock.json") printf '%s\n' "$FAKE_UI_LOCK_CONTENT" ;;
+      *) exit 90 ;;
+    esac
     ;;
   rev-parse)
     case "${1:-}" in
@@ -392,18 +446,24 @@ for arg in "$@"; do
   source_path=$destination
   destination=$arg
 done
-if [ -n "${FAKE_SCP_SOURCE_FILE:-}" ]; then
-  printf '%s\n' "$source_path" > "$FAKE_SCP_SOURCE_FILE"
-fi
 if [ "${FAKE_SCP_FAIL:-0}" = "1" ]; then
   exit "${FAKE_SCP_STATUS:-41}"
 fi
-if [ -n "${FAKE_SCP_COPY_TO:-}" ]; then
-  cp "$source_path" "$FAKE_SCP_COPY_TO"
-fi
-if [ -n "${FAKE_SCP_REMOVE_SHA_DIR:-}" ]; then
-  rm -rf "$FAKE_SCP_REMOVE_SHA_DIR"
-fi
+case "$destination" in
+  *:swbuild.bundle)
+    if [ -n "${FAKE_SCP_SOURCE_FILE:-}" ]; then
+      printf '%s\n' "$source_path" > "$FAKE_SCP_SOURCE_FILE"
+    fi
+    if [ -n "${FAKE_SCP_COPY_TO:-}" ]; then
+      cp "$source_path" "$FAKE_SCP_COPY_TO"
+    fi
+    ;;
+  *:win-host-ci-source-binding.json)
+    if [ "${FAKE_SCP_BINDING_FAIL:-0}" = "1" ]; then
+      exit "${FAKE_SCP_STATUS:-42}"
+    fi
+    ;;
+esac
 EOF
 chmod +x "$FAKE_SCP"
 
@@ -434,30 +494,80 @@ fi
 case "${FAKE_SSH_MODE:-success}" in
   success)
     printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
     printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
     ;;
   nonzero-success)
     printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
     printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
     exit "${FAKE_SSH_STATUS:-52}"
     ;;
   zero-head)
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
     printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
     ;;
   two-head)
     printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
     printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
     printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
     ;;
-  mismatch)
+  mismatch-head)
     printf 'WIN_CI_HEAD=%s\n' "$FAKE_OTHER_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
+    printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
+    ;;
+  zero-cargo)
+    printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
+    printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
+    ;;
+  two-cargo)
+    printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
+    printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
+    ;;
+  mismatch-cargo)
+    printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_OTHER_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
+    printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
+    ;;
+  zero-ui)
+    printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
+    ;;
+  two-ui)
+    printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
+    printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
+    ;;
+  mismatch-ui)
+    printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_OTHER_UI_LOCK_SHA256"
     printf '%s\n' '=== WIN_CI_OK: fake native gate passed ==='
     ;;
   missing-ok)
     printf 'WIN_CI_HEAD=%s\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\n' "$FAKE_UI_LOCK_SHA256"
     ;;
   crlf)
     printf 'WIN_CI_HEAD=%s\r\n' "$FAKE_GIT_SHA"
+    printf 'WIN_CI_CARGO_LOCK_SHA256=%s\r\n' "$FAKE_CARGO_LOCK_SHA256"
+    printf 'WIN_CI_UI_LOCK_SHA256=%s\r\n' "$FAKE_UI_LOCK_SHA256"
     printf '%s\r\n' '=== WIN_CI_OK: fake native gate passed ==='
     ;;
   *) exit 90 ;;
@@ -467,7 +577,15 @@ chmod +x "$FAKE_SSH"
 
 FAKE_GIT_SHA=1111111111111111111111111111111111111111
 FAKE_OTHER_SHA=2222222222222222222222222222222222222222
-export FAKE_GIT_SHA FAKE_OTHER_SHA
+FAKE_CARGO_LOCK_CONTENT="fake Cargo.lock snapshot"
+FAKE_UI_LOCK_CONTENT="fake ui/package-lock.json snapshot"
+FAKE_CARGO_LOCK_SHA256=$(printf '%s\n' "$FAKE_CARGO_LOCK_CONTENT" | sha256sum | awk '{ print $1 }')
+FAKE_UI_LOCK_SHA256=$(printf '%s\n' "$FAKE_UI_LOCK_CONTENT" | sha256sum | awk '{ print $1 }')
+FAKE_OTHER_CARGO_LOCK_SHA256=3333333333333333333333333333333333333333333333333333333333333333
+FAKE_OTHER_UI_LOCK_SHA256=4444444444444444444444444444444444444444444444444444444444444444
+export FAKE_GIT_SHA FAKE_OTHER_SHA FAKE_CARGO_LOCK_CONTENT FAKE_UI_LOCK_CONTENT
+export FAKE_CARGO_LOCK_SHA256 FAKE_UI_LOCK_SHA256
+export FAKE_OTHER_CARGO_LOCK_SHA256 FAKE_OTHER_UI_LOCK_SHA256
 
 reset_fake_transfer() {
   fake_case=$1
@@ -477,21 +595,23 @@ reset_fake_transfer() {
   FAKE_WITNESS="$FAKE_CASE_DIR/witness"
   FAKE_GIT_STATE_DIR="$FAKE_CASE_DIR/state"
   FAKE_GIT_COMMON_DIR="$FAKE_CASE_DIR/state/common"
-  FAKE_SHA_FILE="$FAKE_CASE_DIR/sha/win-host-ci.sha"
+  FAKE_BINDING_FILE="$FAKE_CASE_DIR/sha/win-host-ci-source-binding.json"
   : > "$FAKE_WITNESS"
   export FAKE_WITNESS FAKE_GIT_STATE_DIR FAKE_GIT_COMMON_DIR
   unset FAKE_GIT_FAIL_PHASE FAKE_GIT_FAIL_STATUS FAKE_GIT_STASH_EMPTY
   unset FAKE_GIT_UNMERGED FAKE_GIT_UNTRACKED FAKE_GIT_FAIL_CLEANUP
   unset FAKE_GIT_CLEANUP_STATUS FAKE_GIT_HEAD_MISMATCH FAKE_SCP_FAIL
   unset FAKE_SCP_STATUS FAKE_SCP_COPY_TO FAKE_SCP_SOURCE_FILE
-  unset FAKE_SCP_REMOVE_SHA_DIR FAKE_SSH_MODE FAKE_SSH_STATUS
-  unset FAKE_LOCK_WITNESS FAKE_RUN_ID
+  unset FAKE_SCP_BINDING_FAIL
+  unset FAKE_SSH_MODE FAKE_SSH_STATUS FAKE_GIT_RELEASE_DIRTY
+  unset FAKE_EXPECTED_RELEASE_COMMIT FAKE_LOCK_WITNESS FAKE_RUN_ID
 }
 
 run_fake_sync() {
   if SYNC_OUTPUT=$(
     WIN_REMOTE_HOST=fake@example.invalid \
-      WIN_CI_SHA_FILE="$FAKE_SHA_FILE" \
+      WIN_CI_BINDING_FILE="$FAKE_BINDING_FILE" \
+      EXPECTED_RELEASE_COMMIT="${FAKE_EXPECTED_RELEASE_COMMIT:-}" \
       GIT="$FAKE_GIT" \
       SCP="$FAKE_SCP" \
       sh "$REPO_ROOT/scripts/sync-win-host.sh" 2>&1
@@ -505,7 +625,8 @@ run_fake_sync() {
 run_fake_orchestrator() {
   if ORCHESTRATOR_OUTPUT=$(
     WIN_REMOTE_HOST=fake@example.invalid \
-      WIN_CI_SHA_FILE="$FAKE_SHA_FILE" \
+      WIN_CI_BINDING_FILE="$FAKE_BINDING_FILE" \
+      EXPECTED_RELEASE_COMMIT="${FAKE_EXPECTED_RELEASE_COMMIT:-}" \
       GIT="$FAKE_GIT" \
       SCP="$FAKE_SCP" \
       SSH="$FAKE_SSH" \
@@ -517,26 +638,37 @@ run_fake_orchestrator() {
   fi
 }
 
+binding_field() {
+  binding_path=$1
+  binding_name=$2
+  sed -n "s/^  \"$binding_name\": \"\([0-9a-f]*\)\"[,]\{0,1\}$/\\1/p" "$binding_path"
+}
+
 reset_fake_transfer "dirty-success"
 run_fake_sync
 assert_eq "dirty transfer succeeds" "0" "$SYNC_STATUS"
 assert_contains \
   "dirty transfer reports exact snapshot" \
   "$SYNC_OUTPUT" \
-  "SYNC_WIN_HOST_OK sha=$FAKE_GIT_SHA remote=swbuild.bundle"
-assert_eq "dirty transfer writes exact SHA" "$FAKE_GIT_SHA" "$(cat "$FAKE_SHA_FILE")"
+  "SYNC_WIN_HOST_OK commit=$FAKE_GIT_SHA cargo_lock_sha256=$FAKE_CARGO_LOCK_SHA256 ui_package_lock_sha256=$FAKE_UI_LOCK_SHA256"
+assert_eq "dirty transfer binds exact commit" "$FAKE_GIT_SHA" "$(binding_field "$FAKE_BINDING_FILE" commit)"
+assert_eq "dirty transfer binds exact Cargo.lock" "$FAKE_CARGO_LOCK_SHA256" "$(binding_field "$FAKE_BINDING_FILE" cargo_lock_sha256)"
+assert_eq "dirty transfer binds exact UI lock" "$FAKE_UI_LOCK_SHA256" "$(binding_field "$FAKE_BINDING_FILE" ui_package_lock_sha256)"
 assert_line_order \
   "dirty transfer phase order" \
   "$FAKE_WITNESS" \
   "git|ls-files|--unmerged" \
   "git|ls-files|--others|--exclude-standard" \
   "git|stash|create" \
+  "git|show|$FAKE_GIT_SHA:Cargo.lock" \
+  "git|show|$FAKE_GIT_SHA:ui/package-lock.json" \
   "git|update-ref|refs/heads/__swsync|$FAKE_GIT_SHA|" \
   "git|bundle|create|" \
   "git|bundle|verify|" \
   "git|bundle|list-heads|" \
   "git|update-ref|-d|refs/heads/__swsync|$FAKE_GIT_SHA" \
-  "scp|-o|ControlMaster=auto"
+  "fake@example.invalid:swbuild.bundle" \
+  "fake@example.invalid:win-host-ci-source-binding.json"
 
 reset_fake_transfer "clean-success"
 FAKE_GIT_STASH_EMPTY=1
@@ -550,10 +682,41 @@ assert_line_order \
   "git|rev-parse|HEAD" \
   "git|update-ref|refs/heads/__swsync|$FAKE_GIT_SHA|"
 
+reset_fake_transfer "release-clean-success"
+FAKE_EXPECTED_RELEASE_COMMIT=$FAKE_GIT_SHA
+export FAKE_EXPECTED_RELEASE_COMMIT
+run_fake_sync
+assert_eq "clean release transfer succeeds" "0" "$SYNC_STATUS"
+assert_not_contains "release transfer never creates a synthetic snapshot" "$(cat "$FAKE_WITNESS")" "git|stash|create"
+assert_line_order \
+  "release binding precedes transfer" \
+  "$FAKE_WITNESS" \
+  "git|status|--porcelain=v1|-z|--untracked-files=all" \
+  "git|rev-parse|HEAD" \
+  "git|show|$FAKE_GIT_SHA:Cargo.lock" \
+  "fake@example.invalid:swbuild.bundle"
+
+reset_fake_transfer "release-dirty-refusal"
+FAKE_EXPECTED_RELEASE_COMMIT=$FAKE_GIT_SHA
+FAKE_GIT_RELEASE_DIRTY=1
+export FAKE_EXPECTED_RELEASE_COMMIT FAKE_GIT_RELEASE_DIRTY
+run_fake_sync
+if [ "$SYNC_STATUS" -eq 0 ]; then
+  fail "release mode must refuse a dirty synthetic snapshot"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "release dirty refusal is actionable" \
+  "$SYNC_OUTPUT" \
+  "release mode refuses a synthetic or dirty snapshot"
+assert_not_contains "release dirty refusal never creates a stash" "$(cat "$FAKE_WITNESS")" "git|stash|create"
+assert_not_contains "release dirty refusal makes no SCP call" "$(cat "$FAKE_WITNESS")" "scp|"
+assert_not_contains "release dirty refusal makes no SSH call" "$(cat "$FAKE_WITNESS")" "ssh|"
+
 reset_fake_transfer "initialize-failure"
 if SYNC_OUTPUT=$(
   WIN_REMOTE_HOST= \
-    WIN_CI_SHA_FILE="$FAKE_SHA_FILE" \
+    WIN_CI_BINDING_FILE="$FAKE_BINDING_FILE" \
     GIT="$FAKE_GIT" \
     SCP="$FAKE_SCP" \
     sh "$REPO_ROOT/scripts/sync-win-host.sh" 2>&1
@@ -572,6 +735,7 @@ assert_not_contains "initialize failure never invokes SCP" "$(cat "$FAKE_WITNESS
 for failure_spec in \
   "guard:guard" \
   "resolve-sha:resolve-sha" \
+  "resolve-binding:resolve-binding" \
   "create-temp-ref:create-temp-ref" \
   "create-bundle:create-bundle" \
   "verify-bundle:verify-bundle" \
@@ -642,25 +806,22 @@ assert_eq \
   "SCP failure witnesses exactly one attempt" \
   "1" \
   "$(grep -c '^scp|' "$FAKE_WITNESS")"
-assert_file_absent "SCP failure leaves no SHA file" "$FAKE_SHA_FILE"
+assert_file_exists "SCP failure preserves atomic local binding" "$FAKE_BINDING_FILE"
 
-reset_fake_transfer "write-sha-failure"
-FAKE_SCP_REMOVE_SHA_DIR=$FAKE_CASE_DIR/sha
-export FAKE_SCP_REMOVE_SHA_DIR
+reset_fake_transfer "binding-scp-failure"
+FAKE_SCP_BINDING_FAIL=1
+export FAKE_SCP_BINDING_FAIL
 run_fake_sync
-if [ "$SYNC_STATUS" -eq 0 ]; then
-  fail "write SHA failure must fail"
-fi
-ASSERTIONS=$((ASSERTIONS + 1))
+assert_eq "binding SCP failure preserves command status" "42" "$SYNC_STATUS"
 assert_contains \
-  "write SHA failure names phase" \
+  "binding SCP failure names phase" \
   "$SYNC_OUTPUT" \
-  "ERROR: sync-win-host: write-sha failed"
+  "ERROR: sync-win-host: scp-binding failed"
 assert_eq \
-  "write SHA failure happens after one SCP" \
-  "1" \
+  "binding SCP failure happens on the second SCP" \
+  "2" \
   "$(grep -c '^scp|' "$FAKE_WITNESS")"
-assert_file_absent "write SHA failure leaves no SHA file" "$FAKE_SHA_FILE"
+assert_file_exists "binding SCP failure preserves atomic local binding" "$FAKE_BINDING_FILE"
 
 reset_fake_transfer "cleanup-failure"
 FAKE_GIT_FAIL_PHASE=create-bundle
@@ -745,14 +906,16 @@ new_real_transfer_repo() {
   REAL_CASE_DIR="$TMP_ROOT/real-$real_name"
   REAL_REPO="$REAL_CASE_DIR/repo"
   REAL_BUNDLE="$REAL_CASE_DIR/custody.bundle"
-  REAL_SHA_FILE="$REAL_CASE_DIR/sha/win-host-ci.sha"
+  REAL_BINDING_FILE="$REAL_CASE_DIR/sha/win-host-ci-source-binding.json"
   REAL_WITNESS="$REAL_CASE_DIR/witness"
-  mkdir -p "$REAL_REPO/scripts" "$REAL_CASE_DIR/sha"
+  mkdir -p "$REAL_REPO/scripts" "$REAL_REPO/ui" "$REAL_CASE_DIR/sha"
   cp "$REPO_ROOT/scripts/sync-win-host.sh" "$REAL_REPO/scripts/sync-win-host.sh"
   cp "$REPO_ROOT/scripts/check-win-sync-tree.sh" "$REAL_REPO/scripts/check-win-sync-tree.sh"
   printf '%s\n' "target/" > "$REAL_REPO/.gitignore"
   printf '%s\n' "baseline" > "$REAL_REPO/tracked.txt"
   printf '%s\n' "delete me" > "$REAL_REPO/delete-me.txt"
+  printf '%s\n' "real Cargo.lock bytes" > "$REAL_REPO/Cargo.lock"
+  printf '%s\n' "real ui/package-lock.json bytes" > "$REAL_REPO/ui/package-lock.json"
   git -C "$REAL_REPO" init -q
   git -C "$REAL_REPO" config user.name "solstone gate test"
   git -C "$REAL_REPO" config user.email "gate-test@example.invalid"
@@ -760,16 +923,18 @@ new_real_transfer_repo() {
   git -C "$REAL_REPO" commit -qm "baseline"
   REAL_BASE_BRANCH=$(git -C "$REAL_REPO" branch --show-current)
   : > "$REAL_WITNESS"
+  REAL_EXPECTED_RELEASE_COMMIT=
 }
 
 run_real_sync() {
   FAKE_WITNESS=$REAL_WITNESS
   FAKE_SCP_COPY_TO=$REAL_BUNDLE
   export FAKE_WITNESS FAKE_SCP_COPY_TO
-  unset FAKE_SCP_FAIL FAKE_SCP_SOURCE_FILE FAKE_SCP_REMOVE_SHA_DIR FAKE_RUN_ID
+  unset FAKE_SCP_FAIL FAKE_SCP_SOURCE_FILE FAKE_RUN_ID
   if REAL_SYNC_OUTPUT=$(
     WIN_REMOTE_HOST=fake@example.invalid \
-      WIN_CI_SHA_FILE="$REAL_SHA_FILE" \
+      WIN_CI_BINDING_FILE="$REAL_BINDING_FILE" \
+      EXPECTED_RELEASE_COMMIT="$REAL_EXPECTED_RELEASE_COMMIT" \
       GIT=git \
       SCP="$FAKE_SCP" \
       sh "$REAL_REPO/scripts/sync-win-host.sh" 2>&1
@@ -814,12 +979,20 @@ assert_real_transfer_snapshot() {
   label=$1
   assert_eq "$label transfer succeeds" "0" "$REAL_SYNC_STATUS"
   assert_file_exists "$label bundle reaches test custody" "$REAL_BUNDLE"
-  assert_file_exists "$label SHA file exists" "$REAL_SHA_FILE"
+  assert_file_exists "$label binding exists" "$REAL_BINDING_FILE"
   checkout_real_bundle
   assert_eq \
     "$label checked-out HEAD equals intended SHA" \
-    "$(cat "$REAL_SHA_FILE")" \
+    "$(binding_field "$REAL_BINDING_FILE" commit)" \
     "$(git -C "$REAL_CHECKOUT" rev-parse HEAD)"
+  assert_eq \
+    "$label Cargo.lock digest binds exact snapshot bytes" \
+    "$(binding_field "$REAL_BINDING_FILE" cargo_lock_sha256)" \
+    "$(sha256sum "$REAL_CHECKOUT/Cargo.lock" | awk '{ print $1 }')"
+  assert_eq \
+    "$label UI lock digest binds exact snapshot bytes" \
+    "$(binding_field "$REAL_BINDING_FILE" ui_package_lock_sha256)" \
+    "$(sha256sum "$REAL_CHECKOUT/ui/package-lock.json" | awk '{ print $1 }')"
   assert_real_tree_matches_checkout "$label"
 }
 
@@ -831,6 +1004,21 @@ new_real_transfer_repo "unstaged-mod"
 printf '%s\n' "unstaged final bytes" > "$REAL_REPO/tracked.txt"
 run_real_sync
 assert_real_transfer_snapshot "unstaged modification exact-tree"
+
+new_real_transfer_repo "release-dirty"
+REAL_EXPECTED_RELEASE_COMMIT=$(git -C "$REAL_REPO" rev-parse HEAD)
+printf '%s\n' "release dirty bytes" > "$REAL_REPO/tracked.txt"
+run_real_sync
+if [ "$REAL_SYNC_STATUS" -eq 0 ]; then
+  fail "real release mode must refuse a synthetic dirty snapshot"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "real release dirty refusal is actionable" \
+  "$REAL_SYNC_OUTPUT" \
+  "release mode refuses a synthetic or dirty snapshot"
+assert_not_contains "real release dirty refusal never calls SCP" "$(cat "$REAL_WITNESS")" "scp|"
+assert_file_absent "real release dirty refusal writes no binding" "$REAL_BINDING_FILE"
 
 new_real_transfer_repo "staged-add"
 printf '%s\n' "staged addition bytes" > "$REAL_REPO/added.txt"
@@ -931,7 +1119,7 @@ assert_eq "ignored file permits transfer" "0" "$REAL_SYNC_STATUS"
 checkout_real_bundle
 assert_eq \
   "ignored transfer checked-out HEAD equals intended SHA" \
-  "$(cat "$REAL_SHA_FILE")" \
+  "$(binding_field "$REAL_BINDING_FILE" commit)" \
   "$(git -C "$REAL_CHECKOUT" rev-parse HEAD)"
 assert_file_absent "ignored file is absent from bundle" "$REAL_CHECKOUT/ignored.tmp"
 
@@ -962,13 +1150,21 @@ export FAKE_SSH_MODE
 run_fake_orchestrator
 assert_eq "orchestrator success exits zero" "0" "$ORCHESTRATOR_STATUS"
 assert_contains \
-  "orchestrator reports verified SHA" \
+  "orchestrator reports verified three-field binding" \
   "$ORCHESTRATOR_OUTPUT" \
-  "WIN_HOST_CI_VERIFIED sha=$FAKE_GIT_SHA"
+  "WIN_HOST_CI_VERIFIED commit=$FAKE_GIT_SHA cargo_lock_sha256=$FAKE_CARGO_LOCK_SHA256 ui_package_lock_sha256=$FAKE_UI_LOCK_SHA256"
 assert_contains \
   "orchestrator invokes exact box command" \
   "$(cat "$FAKE_WITNESS")" \
-  'cmd /c C:\sol\sw-ci.cmd'
+  'cmd /d /c "set EXPECTED_RELEASE_COMMIT='
+assert_contains \
+  "orchestrator passes Cargo.lock binding" \
+  "$(cat "$FAKE_WITNESS")" \
+  "EXPECTED_CARGO_LOCK_SHA256=$FAKE_CARGO_LOCK_SHA256"
+assert_contains \
+  "orchestrator passes UI lock binding" \
+  "$(cat "$FAKE_WITNESS")" \
+  "EXPECTED_UI_PACKAGE_LOCK_SHA256=$FAKE_UI_LOCK_SHA256"
 
 reset_fake_transfer "orchestrator-ssh-nonzero"
 FAKE_SSH_MODE=nonzero-success
@@ -1011,7 +1207,7 @@ assert_contains \
   "ERROR: win-host-ci: expected exactly one WIN_CI_HEAD line, found 2"
 
 reset_fake_transfer "orchestrator-head-mismatch"
-FAKE_SSH_MODE=mismatch
+FAKE_SSH_MODE=mismatch-head
 export FAKE_SSH_MODE
 run_fake_orchestrator
 if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
@@ -1022,6 +1218,84 @@ assert_contains \
   "remote HEAD mismatch reports both SHAs" \
   "$ORCHESTRATOR_OUTPUT" \
   "ERROR: win-host-ci: remote HEAD mismatch: expected $FAKE_GIT_SHA, actual $FAKE_OTHER_SHA"
+
+reset_fake_transfer "orchestrator-zero-cargo-lock"
+FAKE_SSH_MODE=zero-cargo
+export FAKE_SSH_MODE
+run_fake_orchestrator
+if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
+  fail "zero WIN_CI_CARGO_LOCK_SHA256 lines must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "zero Cargo.lock acknowledgement is diagnostic" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "ERROR: win-host-ci: expected exactly one WIN_CI_CARGO_LOCK_SHA256 line, found 0"
+
+reset_fake_transfer "orchestrator-two-cargo-locks"
+FAKE_SSH_MODE=two-cargo
+export FAKE_SSH_MODE
+run_fake_orchestrator
+if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
+  fail "two WIN_CI_CARGO_LOCK_SHA256 lines must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "duplicate Cargo.lock acknowledgement is diagnostic" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "ERROR: win-host-ci: expected exactly one WIN_CI_CARGO_LOCK_SHA256 line, found 2"
+
+reset_fake_transfer "orchestrator-cargo-lock-mismatch"
+FAKE_SSH_MODE=mismatch-cargo
+export FAKE_SSH_MODE
+run_fake_orchestrator
+if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
+  fail "remote Cargo.lock mismatch must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "remote Cargo.lock mismatch reports both digests" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "ERROR: win-host-ci: remote Cargo.lock SHA-256 mismatch: expected $FAKE_CARGO_LOCK_SHA256, actual $FAKE_OTHER_CARGO_LOCK_SHA256"
+
+reset_fake_transfer "orchestrator-zero-ui-lock"
+FAKE_SSH_MODE=zero-ui
+export FAKE_SSH_MODE
+run_fake_orchestrator
+if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
+  fail "zero WIN_CI_UI_LOCK_SHA256 lines must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "zero UI-lock acknowledgement is diagnostic" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "ERROR: win-host-ci: expected exactly one WIN_CI_UI_LOCK_SHA256 line, found 0"
+
+reset_fake_transfer "orchestrator-two-ui-locks"
+FAKE_SSH_MODE=two-ui
+export FAKE_SSH_MODE
+run_fake_orchestrator
+if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
+  fail "two WIN_CI_UI_LOCK_SHA256 lines must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "duplicate UI-lock acknowledgement is diagnostic" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "ERROR: win-host-ci: expected exactly one WIN_CI_UI_LOCK_SHA256 line, found 2"
+
+reset_fake_transfer "orchestrator-ui-lock-mismatch"
+FAKE_SSH_MODE=mismatch-ui
+export FAKE_SSH_MODE
+run_fake_orchestrator
+if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
+  fail "remote UI lock mismatch must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains \
+  "remote UI lock mismatch reports both digests" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "ERROR: win-host-ci: remote ui/package-lock.json SHA-256 mismatch: expected $FAKE_UI_LOCK_SHA256, actual $FAKE_OTHER_UI_LOCK_SHA256"
 
 reset_fake_transfer "orchestrator-missing-ok"
 FAKE_SSH_MODE=missing-ok
@@ -1034,7 +1308,7 @@ ASSERTIONS=$((ASSERTIONS + 1))
 assert_contains \
   "missing WIN_CI_OK is diagnostic" \
   "$ORCHESTRATOR_OUTPUT" \
-  "ERROR: win-host-ci: WIN_CI_OK acknowledgement missing"
+  "ERROR: win-host-ci: expected exactly one WIN_CI_OK acknowledgement, found 0"
 
 reset_fake_transfer "orchestrator-crlf"
 FAKE_SSH_MODE=crlf
@@ -1042,9 +1316,9 @@ export FAKE_SSH_MODE
 run_fake_orchestrator
 assert_eq "CRLF native output succeeds" "0" "$ORCHESTRATOR_STATUS"
 assert_contains \
-  "CRLF native output verifies SHA" \
+  "CRLF native output verifies binding" \
   "$ORCHESTRATOR_OUTPUT" \
-  "WIN_HOST_CI_VERIFIED sha=$FAKE_GIT_SHA"
+  "WIN_HOST_CI_VERIFIED commit=$FAKE_GIT_SHA cargo_lock_sha256=$FAKE_CARGO_LOCK_SHA256 ui_package_lock_sha256=$FAKE_UI_LOCK_SHA256"
 
 reset_fake_transfer "orchestrator-sync-failure"
 FAKE_GIT_FAIL_PHASE=create-bundle
@@ -1063,20 +1337,39 @@ assert_not_contains \
   "$(cat "$FAKE_WITNESS")" \
   "ssh|"
 
-reset_fake_transfer "orchestrator-write-sha-failure"
-FAKE_SCP_REMOVE_SHA_DIR=$FAKE_CASE_DIR/sha
-export FAKE_SCP_REMOVE_SHA_DIR
+reset_fake_transfer "orchestrator-local-binding-failure"
+FAKE_GIT_FAIL_PHASE=resolve-binding
+export FAKE_GIT_FAIL_PHASE
 run_fake_orchestrator
 if [ "$ORCHESTRATOR_STATUS" -eq 0 ]; then
-  fail "write SHA failure must fail orchestrator"
+  fail "local source-binding failure must fail orchestrator"
 fi
 ASSERTIONS=$((ASSERTIONS + 1))
 assert_contains \
-  "orchestrator surfaces write SHA sync failure" \
+  "local source-binding failure is diagnostic" \
   "$ORCHESTRATOR_OUTPUT" \
-  "ERROR: sync-win-host: write-sha failed"
+  "ERROR: sync-win-host: resolve-binding failed"
 assert_not_contains \
-  "write SHA failure prevents SSH" \
+  "local source-binding failure makes no SCP call" \
+  "$(cat "$FAKE_WITNESS")" \
+  "scp|"
+assert_not_contains \
+  "local source-binding failure makes no SSH call" \
+  "$(cat "$FAKE_WITNESS")" \
+  "ssh|"
+assert_file_absent "local source-binding failure writes no binding" "$FAKE_BINDING_FILE"
+
+reset_fake_transfer "orchestrator-binding-scp-failure"
+FAKE_SCP_BINDING_FAIL=1
+export FAKE_SCP_BINDING_FAIL
+run_fake_orchestrator
+assert_eq "orchestrator preserves binding SCP status" "42" "$ORCHESTRATOR_STATUS"
+assert_contains \
+  "orchestrator surfaces binding SCP failure" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "ERROR: sync-win-host: scp-binding failed"
+assert_not_contains \
+  "binding SCP failure prevents SSH" \
   "$(cat "$FAKE_WITNESS")" \
   "ssh|"
 
@@ -1087,7 +1380,7 @@ export FAKE_LOCK_WITNESS
 lock_output_one=$FAKE_CASE_DIR/output-1
 lock_output_two=$FAKE_CASE_DIR/output-2
 WIN_REMOTE_HOST=fake@example.invalid \
-  WIN_CI_SHA_FILE="$FAKE_SHA_FILE" \
+  WIN_CI_BINDING_FILE="$FAKE_BINDING_FILE" \
   GIT="$FAKE_GIT" \
   SCP="$FAKE_SCP" \
   SSH="$FAKE_SSH" \
@@ -1106,7 +1399,7 @@ while [ "$lock_poll" -lt 100 ]; do
 done
 assert_eq "first orchestrator reaches locked SSH phase" "1" "$lock_started"
 WIN_REMOTE_HOST=fake@example.invalid \
-  WIN_CI_SHA_FILE="$FAKE_SHA_FILE" \
+  WIN_CI_BINDING_FILE="$FAKE_BINDING_FILE" \
   GIT="$FAKE_GIT" \
   SCP="$FAKE_SCP" \
   SSH="$FAKE_SSH" \

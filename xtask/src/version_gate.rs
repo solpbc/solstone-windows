@@ -11,6 +11,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::release_exec::{CommandRunner, CommandRunnerError};
+
 const APP_PACKAGE: &str = "solstone-windows-app";
 const TAURI_CONFIG: &str = "src-tauri/tauri.conf.json";
 const WINGET_VERSION: &str = "packaging/winget/solpbc.Solstone.yaml";
@@ -77,6 +79,38 @@ pub enum VersionGateError {
     Surface(Vec<SurfaceMismatch>),
 }
 
+pub fn authoritative_version_with_runner<R: CommandRunner + ?Sized>(
+    root: &Path,
+    cargo: &Path,
+    runner: &R,
+) -> Result<String, VersionGateError> {
+    let manifest = root.join("Cargo.toml");
+    let manifest = manifest
+        .to_str()
+        .ok_or_else(|| VersionGateError::Authority("checkout path is not UTF-8".to_owned()))?;
+    let args = vec![
+        "metadata".to_owned(),
+        "--no-deps".to_owned(),
+        "--format-version".to_owned(),
+        "1".to_owned(),
+        "--locked".to_owned(),
+        "--manifest-path".to_owned(),
+        manifest.to_owned(),
+    ];
+    let env =
+        std::collections::BTreeMap::from([("CARGO_NET_OFFLINE".to_owned(), "true".to_owned())]);
+    let output = runner
+        .run(cargo, &args, None, Some(&env))
+        .map_err(|error| VersionGateError::Authority(runner_error(error)))?;
+    if output.status != 0 {
+        return Err(VersionGateError::Authority(format!(
+            "cargo metadata exited {}",
+            output.status
+        )));
+    }
+    parse_authoritative_metadata(&output.stdout).map_err(VersionGateError::Authority)
+}
+
 pub fn configured_cargo() -> OsString {
     nonempty_env_os("SOLSTONE_VERSION_GATE_CARGO")
         .or_else(|| nonempty_env_os("CARGO"))
@@ -139,7 +173,11 @@ pub(crate) fn authoritative_version(root: &Path, cargo: &OsStr) -> Result<String
         return Err(format!("cargo metadata exited {status}{detail}"));
     }
 
-    let metadata: Value = serde_json::from_slice(&output.stdout)
+    parse_authoritative_metadata(&output.stdout)
+}
+
+fn parse_authoritative_metadata(bytes: &[u8]) -> Result<String, String> {
+    let metadata: Value = serde_json::from_slice(bytes)
         .map_err(|error| format!("invalid cargo metadata JSON: {error}"))?;
     let packages = metadata
         .get("packages")
@@ -163,6 +201,10 @@ pub(crate) fn authoritative_version(root: &Path, cargo: &OsStr) -> Result<String
         .filter(|version| !version.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| format!("cargo metadata package {APP_PACKAGE} omitted a non-empty version"))
+}
+
+fn runner_error(error: CommandRunnerError) -> String {
+    format!("selected cargo metadata invocation failed: {error}")
 }
 
 fn check_json_version(

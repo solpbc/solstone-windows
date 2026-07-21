@@ -33,14 +33,15 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny preflight-release-tools build test ui-test \
-	        test-scripts ci audit contract purity-check check-observer-contract check-rust-release-manifest package publish publish-r2 \
+	        test-scripts ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest package smoke screenshots journal-live run clean"
-	@echo "release: package constructs Releases/; direct publish targets are locked pending the aggregate provenance publisher"
+	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native smoke screenshots journal-live run clean"
+	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT)"
+	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
@@ -89,6 +90,7 @@ test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
 	sh scripts/lib/make-package-ordering.test.sh
+	sh scripts/lib/doc-stale-scan.test.sh
 
 # UI unit tests (vitest+jsdom) on the Linux host. Materialize only the committed
 # graph from the warmed cache; fail if the cache is incomplete.
@@ -110,6 +112,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	MANIFEST= RELEASE_DIR= $(MAKE) check-rust-release-manifest
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
 	$(CARGO) deny --offline --locked check bans licenses sources
+	$(MAKE) check-release-advisory-config
 	$(MAKE) ui-test
 	$(MAKE) test-scripts
 	$(MAKE) win-host-ci
@@ -144,32 +147,107 @@ check-rust-release-manifest: preflight-toolchain
 	MANIFEST="$(MANIFEST)" RELEASE_DIR="$(RELEASE_DIR)" CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- rust-release-manifest check
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p xtask rust_release_manifest
 
-# Gate, build a RELEASE binary + webview, then pack into Releases/.
-# Release (not the debug `build`) so the tray app is windowless — the
-# `windows_subsystem="windows"` attribute is release-only. The webview is built
-# first (embedded at cargo-compile time). The .ps1 consumes target/release/ and
-# does not rebuild. The explicit ordering is duplicated inside package.ps1 for
-# direct-invocation defense in depth.
+# Offline real-pin acceptance for the deterministic release advisory config.
+# The default cargo-deny cache is only the source snapshot; the check itself
+# always uses the isolated target/release-advisory-db path written into config.
+check-release-advisory-config: preflight-toolchain preflight-cargo-deny
+	@set -eu; \
+	  cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
+	  host_db_root="$$cargo_home/advisory-dbs"; \
+	  host_repo=; \
+	  for candidate in "$$host_db_root"/advisory-db-*; do \
+	    [ -d "$$candidate/.git" ] || continue; \
+	    if [ -n "$$host_repo" ]; then \
+	      echo "ERROR: multiple RustSec advisory repositories found under $$host_db_root; retain exactly the cargo-deny RustSec cache, then retry." >&2; \
+	      exit 1; \
+	    fi; \
+	    host_repo=$$candidate; \
+	  done; \
+	  if [ -z "$$host_repo" ]; then \
+	    echo "ERROR: RustSec advisory database is absent under $$host_db_root; run 'make audit' or refresh the RustSec cache, then retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  repo_root=$$(pwd -P); \
+	  if [ -L "$$repo_root/target" ]; then \
+	    echo "ERROR: target is a symlink; restore a real checkout-local target directory, then retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  mkdir -p "$$repo_root/target"; \
+	  isolated="$$repo_root/target/release-advisory-db"; \
+	  if [ -L "$$isolated" ] || { [ -e "$$isolated" ] && [ ! -d "$$isolated" ]; }; then \
+	    echo "ERROR: target/release-advisory-db is not a real directory; remove the unsafe entry and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  stage=$$(mktemp -d "$$repo_root/target/.release-advisory-db-map.XXXXXX"); \
+	  db_lock=; \
+	  cleanup() { \
+	    if [ -n "$$db_lock" ] && [ -f "$$db_lock" ] && [ ! -L "$$db_lock" ]; then rm -f "$$db_lock"; fi; \
+	    rm -rf "$$stage"; \
+	  }; \
+	  trap cleanup EXIT HUP INT TERM; \
+	  mkdir "$$stage/new"; \
+	  cp -a "$$host_repo" "$$stage/new/"; \
+	  repo_name=$${host_repo##*/}; \
+	  [ -d "$$stage/new/$$repo_name/.git" ] || { echo "ERROR: mapped RustSec cache lacks its Git repository; run 'make audit' or refresh the RustSec cache, then retry." >&2; exit 1; }; \
+	  previous=; \
+	  if [ -d "$$isolated" ]; then \
+	    previous="$$stage/previous"; \
+	    mv "$$isolated" "$$previous"; \
+	  fi; \
+	  if ! mv "$$stage/new" "$$isolated"; then \
+	    [ -z "$$previous" ] || mv "$$previous" "$$isolated"; \
+	    echo "ERROR: isolated RustSec cache mapping failed; restore target permissions and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  [ -z "$$previous" ] || rm -rf "$$previous"; \
+	  check_dir="$$repo_root/target/release-advisory-config-check"; \
+	  if [ -L "$$check_dir" ] || { [ -e "$$check_dir" ] && [ ! -d "$$check_dir" ]; }; then \
+	    echo "ERROR: advisory config check output is not a real directory; remove the unsafe entry and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  mkdir -p "$$check_dir"; \
+	  config="$$check_dir/deny.toml"; \
+	  if [ -L "$$config" ] || { [ -e "$$config" ] && [ ! -f "$$config" ]; }; then \
+	    echo "ERROR: advisory config check output is not a regular file; remove the unsafe entry and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  rm -f "$$config"; \
+	  CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- rust-release-manifest advisory-config --db-root "$$isolated" --out "$$config"; \
+	  $(CARGO) deny --locked --version; \
+	  db_lock="$$isolated/db.lock"; \
+	  CARGO_NET_OFFLINE=true $(CARGO) deny --locked --offline --config "$$config" check advisories; \
+	  if [ -L "$$db_lock" ] || { [ -e "$$db_lock" ] && [ ! -f "$$db_lock" ]; }; then \
+	    echo "ERROR: cargo-deny advisory lock is not a regular file; remove the unsafe target/release-advisory-db/db.lock entry and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  rm -f "$$db_lock"
+
+# Thin bootstrap into the one source-bound build-to-finalize transaction.
+# package.ps1 performs defense-in-depth preflight/version/lock gates; xtask owns
+# the authoritative source binding and every native build/package action.
 package:
 	@set -eu; \
+	  if [ -z "$${EXPECTED_RELEASE_COMMIT:-}" ]; then \
+	    echo "ERROR: EXPECTED_RELEASE_COMMIT is required; set it to the full lowercase 40-hex release commit and retry." >&2; \
+	    exit 1; \
+	  fi; \
 	  sign_arg=; \
 	  if [ -n "$${SOLSTONE_SIGN:-}" ]; then sign_arg=-Sign; fi; \
-	  selection_json=$$($(PWSH) -NoProfile -File packaging/preflight-release-tools.ps1 $$sign_arg); \
-	  test -n "$$selection_json"; \
-	  cargo_path=$$(SOLSTONE_RELEASE_SELECTION_JSON="$$selection_json" $(PWSH) -NoProfile -Command '($$env:SOLSTONE_RELEASE_SELECTION_JSON | ConvertFrom-Json).tools.cargo.path'); \
-	  npm_path=$$(SOLSTONE_RELEASE_SELECTION_JSON="$$selection_json" $(PWSH) -NoProfile -Command '($$env:SOLSTONE_RELEASE_SELECTION_JSON | ConvertFrom-Json).tools.npm.path'); \
-	  powershell_path=$$(SOLSTONE_RELEASE_SELECTION_JSON="$$selection_json" $(PWSH) -NoProfile -Command '($$env:SOLSTONE_RELEASE_SELECTION_JSON | ConvertFrom-Json).tools.powershell.path'); \
-	  test -n "$$cargo_path"; test -n "$$npm_path"; test -n "$$powershell_path"; \
-	  SOLSTONE_VERSION_GATE_CARGO="$$cargo_path" "$$cargo_path" run --locked -q -p xtask -- version-gate; \
-	  "$$powershell_path" -NoProfile -File packaging/lock-guard.ps1; \
-	  "$$npm_path" --prefix ui ci --offline; \
-	  "$$npm_path" --prefix ui run build; \
-	  "$$cargo_path" build --locked -p $(TAURI_BIN) --release --features custom-protocol; \
 	  if [ -n "$$sign_arg" ]; then \
-	    "$$powershell_path" -NoProfile -File scripts/package.ps1 -Sign; \
+	    $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign; \
 	  else \
-	    "$$powershell_path" -NoProfile -File scripts/package.ps1; \
+	    $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1; \
 	  fi
+
+# Strict native install/smoke proof for one already-finalized signed candidate.
+# Candidate classification occurs inside xtask before signed tool resolution.
+prove-rust-release-native:
+	@set -eu; \
+	  if [ -z "$(RELEASE_DIR)" ]; then \
+	    echo "ERROR: RELEASE_DIR is required; pass target/release-candidate/<VERSION> and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  SOLSTONE_PROOF_POWERSHELL="$(PWSH)" CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- rust-release-manifest prove-native --release-dir "$(RELEASE_DIR)"
 
 # Direct publication is fail-closed. These entry points remain visible while
 # publication ownership moves to the aggregate provenance publisher.

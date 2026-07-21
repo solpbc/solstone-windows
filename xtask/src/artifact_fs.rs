@@ -86,6 +86,13 @@ pub struct ResolvedFile {
     canonical: PathBuf,
 }
 
+/// An existing path whose complete ancestry and strict containment were verified.
+#[derive(Clone, Debug)]
+pub struct VerifiedContainedPath {
+    canonical: PathBuf,
+    metadata: fs::Metadata,
+}
+
 impl ContainedRoot {
     pub fn new(
         path: &Path,
@@ -122,24 +129,17 @@ impl ContainedRoot {
         &self.path
     }
 
+    pub fn canonical_path(&self) -> &Path {
+        &self.canonical
+    }
+
     pub fn resolve(&self, relative: &str, label: &str) -> Result<ResolvedFile, ArtifactFsError> {
-        verify_root_components(&self.path, &self.label)?;
-        let canonical_root =
-            fs::canonicalize(&self.path).map_err(|_| ArtifactFsError::UnsafeResolution {
-                path: label.to_owned(),
-            })?;
-        if canonical_root != self.canonical {
-            return Err(ArtifactFsError::UnsafeResolution {
-                path: label.to_owned(),
-            });
-        }
         validate_relative_path(relative).map_err(|_| ArtifactFsError::UnsafeResolution {
             path: label.to_owned(),
         })?;
-        let leaf = self.path.join(relative);
-        verify_leaf_components(&self.path, relative, label)?;
-        let metadata = fs::symlink_metadata(&leaf).map_err(|error| io_error(label, error))?;
-        reject_reparse_point(label, &metadata)?;
+        let verified =
+            verify_contained_path(&self.path, &self.canonical, relative, &self.label, label)?;
+        let metadata = verified.metadata;
         if !metadata.file_type().is_file() {
             return Err(ArtifactFsError::NonRegularFile {
                 path: label.to_owned(),
@@ -147,25 +147,108 @@ impl ContainedRoot {
             });
         }
         verify_mode(label, &metadata, false, self.mode_policy)?;
-        let canonical = fs::canonicalize(&leaf).map_err(|_| ArtifactFsError::UnsafeResolution {
-            path: label.to_owned(),
-        })?;
-        if canonical == self.canonical || !canonical.starts_with(&self.canonical) {
-            return Err(ArtifactFsError::UnsafeResolution {
-                path: label.to_owned(),
-            });
-        }
         Ok(ResolvedFile {
             root: self.clone(),
             relative: relative.to_owned(),
             label: label.to_owned(),
-            canonical,
+            canonical: verified.canonical,
         })
     }
 
     pub fn read(&self, relative: &str, label: &str) -> Result<Vec<u8>, ArtifactFsError> {
         self.resolve(relative, label)?.read()
     }
+}
+
+impl VerifiedContainedPath {
+    pub fn canonical_path(&self) -> &Path {
+        &self.canonical
+    }
+
+    pub fn metadata(&self) -> &fs::Metadata {
+        &self.metadata
+    }
+}
+
+/// Verify one existing path beneath an already established canonical authority.
+///
+/// Every component is inspected without following its leaf metadata. Parent
+/// components must be real directories, and the leaf must be a real file or
+/// directory. Symlinks and Windows reparse points are rejected at every level.
+pub fn verify_contained_path(
+    root: &Path,
+    canonical_root: &Path,
+    relative: &str,
+    root_label: &str,
+    label: &str,
+) -> Result<VerifiedContainedPath, ArtifactFsError> {
+    validate_relative_path(relative)?;
+    verify_root_components(root, root_label)?;
+    let observed_root = fs::canonicalize(root).map_err(|_| ArtifactFsError::UnsafeResolution {
+        path: label.to_owned(),
+    })?;
+    if observed_root != canonical_root {
+        return Err(ArtifactFsError::UnsafeResolution {
+            path: label.to_owned(),
+        });
+    }
+
+    let components: Vec<&str> = relative.split('/').collect();
+    let mut current = root.to_path_buf();
+    let mut leaf_metadata = None;
+    for (index, component) in components.iter().enumerate() {
+        current.push(component);
+        let metadata = fs::symlink_metadata(&current).map_err(|error| io_error(label, error))?;
+        let is_leaf = index + 1 == components.len();
+        if let Err(error) = reject_reparse_point(label, &metadata) {
+            return if is_leaf {
+                Err(error)
+            } else {
+                Err(ArtifactFsError::UnsafeResolution {
+                    path: label.to_owned(),
+                })
+            };
+        }
+        if metadata.file_type().is_symlink() {
+            return if is_leaf {
+                Err(ArtifactFsError::NonRegularFile {
+                    path: label.to_owned(),
+                    kind: "symlink",
+                })
+            } else {
+                Err(ArtifactFsError::UnsafeResolution {
+                    path: label.to_owned(),
+                })
+            };
+        }
+        if !is_leaf && !metadata.file_type().is_dir() {
+            return Err(ArtifactFsError::UnsafeResolution {
+                path: label.to_owned(),
+            });
+        }
+        if is_leaf {
+            if !metadata.file_type().is_file() && !metadata.file_type().is_dir() {
+                return Err(ArtifactFsError::NonRegularFile {
+                    path: label.to_owned(),
+                    kind: file_kind(&metadata),
+                });
+            }
+            leaf_metadata = Some(metadata);
+        }
+    }
+
+    let canonical = fs::canonicalize(&current).map_err(|_| ArtifactFsError::UnsafeResolution {
+        path: label.to_owned(),
+    })?;
+    if canonical == canonical_root || !canonical.starts_with(canonical_root) {
+        return Err(ArtifactFsError::UnsafeResolution {
+            path: label.to_owned(),
+        });
+    }
+    Ok(VerifiedContainedPath {
+        canonical,
+        metadata: leaf_metadata.expect("validated relative path has one component"),
+    })
 }
 
 impl ResolvedFile {
@@ -482,27 +565,6 @@ fn verify_root_components(path: &Path, label: &str) -> Result<(), ArtifactFsErro
         }
         let metadata = fs::symlink_metadata(&current).map_err(|error| io_error(label, error))?;
         reject_parent_metadata(label, &metadata, false)?;
-    }
-    Ok(())
-}
-
-fn verify_leaf_components(root: &Path, relative: &str, label: &str) -> Result<(), ArtifactFsError> {
-    let components: Vec<&str> = relative.split('/').collect();
-    let mut current = root.to_path_buf();
-    for (index, component) in components.iter().enumerate() {
-        current.push(component);
-        let metadata = fs::symlink_metadata(&current).map_err(|error| io_error(label, error))?;
-        let is_leaf = index + 1 == components.len();
-        if is_leaf {
-            reject_reparse_point(label, &metadata)?;
-        } else {
-            reject_parent_metadata(label, &metadata, false)?;
-            if !metadata.file_type().is_dir() {
-                return Err(ArtifactFsError::UnsafeResolution {
-                    path: label.to_owned(),
-                });
-            }
-        }
     }
     Ok(())
 }

@@ -25,125 +25,61 @@ assert_eq() {
   ASSERTIONS=$((ASSERTIONS + 1))
 }
 
-FAKE_BIN="$TMP_ROOT/selected"
-POISON_BIN="$TMP_ROOT/poison"
+assert_true() {
+  if ! eval "$2"; then
+    fail "$1"
+  fi
+  ASSERTIONS=$((ASSERTIONS + 1))
+}
+
 WITNESS="$TMP_ROOT/witness"
-POISON_WITNESS="$TMP_ROOT/poison-witness"
-mkdir "$FAKE_BIN" "$POISON_BIN"
-
-FAKE_CARGO="$FAKE_BIN/cargo"
-FAKE_NPM="$FAKE_BIN/npm"
-FAKE_PWSH="$FAKE_BIN/powershell"
-
-cat > "$FAKE_CARGO" <<'EOF'
-#!/usr/bin/env sh
-set -eu
-case "${1:-}" in
-  run)
-    echo version-gate >> "$PACKAGE_WITNESS"
-    [ "${PACKAGE_FAIL_AT:-}" != version ] || exit 31
-    echo 0.2.11
-    ;;
-  build)
-    echo cargo-build >> "$PACKAGE_WITNESS"
-    ;;
-  *) exit 90 ;;
-esac
-EOF
-
-cat > "$FAKE_NPM" <<'EOF'
-#!/usr/bin/env sh
-set -eu
-case "$*" in
-  *" ci --offline") echo npm-ci >> "$PACKAGE_WITNESS" ;;
-  *" run build") echo npm-build >> "$PACKAGE_WITNESS" ;;
-  *) exit 90 ;;
-esac
-EOF
-
+FAKE_PWSH="$TMP_ROOT/fake-powershell"
 cat > "$FAKE_PWSH" <<'EOF'
 #!/usr/bin/env sh
 set -eu
-case "$*" in
-  *"packaging/preflight-release-tools.ps1"*)
-    echo preflight >> "$PACKAGE_WITNESS"
-    [ "${PACKAGE_FAIL_AT:-}" != preflight ] || exit 30
-    printf '{"schema":"solstone.release-tool-selection.v1","mode":"unsigned","tools":{"cargo":{"path":"%s"},"npm":{"path":"%s"},"powershell":{"path":"%s"}}}\n' "$FAKE_SELECTED_CARGO" "$FAKE_SELECTED_NPM" "$FAKE_SELECTED_POWERSHELL"
-    ;;
-  *"tools.cargo.path"*) printf '%s\n' "$FAKE_SELECTED_CARGO" ;;
-  *"tools.npm.path"*) printf '%s\n' "$FAKE_SELECTED_NPM" ;;
-  *"tools.powershell.path"*) printf '%s\n' "$FAKE_SELECTED_POWERSHELL" ;;
-  *"packaging/lock-guard.ps1"*)
-    echo lock-guard >> "$PACKAGE_WITNESS"
-    [ "${PACKAGE_FAIL_AT:-}" != lock ] || exit 32
-    ;;
-  *"scripts/package.ps1"*) echo direct-package >> "$PACKAGE_WITNESS" ;;
-  *) exit 90 ;;
-esac
+printf 'delegate|commit=%s|args=%s\n' "${EXPECTED_RELEASE_COMMIT:-}" "$*" >> "$PACKAGE_WITNESS"
 EOF
-chmod +x "$FAKE_CARGO" "$FAKE_NPM" "$FAKE_PWSH"
-
-for tool in cargo npm pwsh powershell; do
-  cat > "$POISON_BIN/$tool" <<'EOF'
-#!/usr/bin/env sh
-echo poison >> "$POISON_WITNESS"
-exit 97
-EOF
-  chmod +x "$POISON_BIN/$tool"
-done
-
+chmod +x "$FAKE_PWSH"
 export PACKAGE_WITNESS="$WITNESS"
-export POISON_WITNESS
-export FAKE_SELECTED_CARGO="$FAKE_CARGO"
-export FAKE_SELECTED_NPM="$FAKE_NPM"
-export FAKE_SELECTED_POWERSHELL="$FAKE_PWSH"
 
-hash_locks() {
-  sha256sum "$REPO_ROOT/Cargo.lock" "$REPO_ROOT/ui/package-lock.json"
-}
+EXPECTED=0123456789abcdef0123456789abcdef01234567
 
-run_case() {
-  PACKAGE_FAIL_AT=$1
-  export PACKAGE_FAIL_AT
-  : > "$WITNESS"
-  : > "$POISON_WITNESS"
-  before=$(hash_locks)
-  if PATH="$POISON_BIN:$PATH" MAKEFLAGS= make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" CARGO="$POISON_BIN/cargo" >/dev/null 2>&1; then
-    CASE_STATUS=0
-  else
-    CASE_STATUS=$?
-  fi
-  after=$(hash_locks)
-  assert_eq "$PACKAGE_FAIL_AT lock bytes stable" "$before" "$after"
-  assert_eq "$PACKAGE_FAIL_AT poisoned PATH unused" "" "$(cat "$POISON_WITNESS")"
-}
-
-run_case none
-assert_eq "success status" "0" "$CASE_STATUS"
-assert_eq "success order" "preflight
-version-gate
-lock-guard
-npm-ci
-npm-build
-cargo-build
-direct-package" "$(cat "$WITNESS")"
-
-run_case preflight
-[ "$CASE_STATUS" -ne 0 ] || fail "preflight failure must fail"
+: > "$WITNESS"
+if env -u EXPECTED_RELEASE_COMMIT -u SOLSTONE_SIGN \
+    make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null 2>&1; then
+  fail "missing EXPECTED_RELEASE_COMMIT must fail"
+fi
 ASSERTIONS=$((ASSERTIONS + 1))
-assert_eq "preflight failure stops later work" "preflight" "$(cat "$WITNESS")"
+assert_eq "missing commit invokes nothing" "" "$(cat "$WITNESS")"
 
-run_case version
-[ "$CASE_STATUS" -ne 0 ] || fail "version failure must fail"
-ASSERTIONS=$((ASSERTIONS + 1))
-assert_eq "version failure stops lock and work" "preflight
-version-gate" "$(cat "$WITNESS")"
+: > "$WITNESS"
+EXPECTED_RELEASE_COMMIT="$EXPECTED" \
+  make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
+assert_eq "unsigned make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
+assert_eq "unsigned delegation" \
+  "delegate|commit=$EXPECTED|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1" \
+  "$(cat "$WITNESS")"
 
-run_case lock
-[ "$CASE_STATUS" -ne 0 ] || fail "lock failure must fail"
-ASSERTIONS=$((ASSERTIONS + 1))
-assert_eq "lock failure stops dependency/build/package work" "preflight
-version-gate
-lock-guard" "$(cat "$WITNESS")"
+: > "$WITNESS"
+EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_SIGN=1 \
+  make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
+assert_eq "signed make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
+assert_eq "signed delegation translates flag" \
+  "delegate|commit=$EXPECTED|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign" \
+  "$(cat "$WITNESS")"
 
-echo "make-package-ordering.test.sh: $ASSERTIONS assertions passed"
+PACKAGE_SOURCE="$REPO_ROOT/scripts/package.ps1"
+preflight_line=$(grep -n '\$SelectionLines = @(' "$PACKAGE_SOURCE" | cut -d: -f1)
+version_line=$(grep -n '\$VersionOutput = @(' "$PACKAGE_SOURCE" | cut -d: -f1)
+lock_line=$(grep -n 'packaging\\lock-guard.ps1' "$PACKAGE_SOURCE" | cut -d: -f1)
+finalize_line=$(grep -n '\$SelectionJson | & \$CargoPath @FinalizeArgs' "$PACKAGE_SOURCE" | cut -d: -f1)
+assert_true "package.ps1 keeps preflight-version-lock-finalize order" \
+  "[ '$preflight_line' -lt '$version_line' ] && [ '$version_line' -lt '$lock_line' ] && [ '$lock_line' -lt '$finalize_line' ]"
+assert_eq "package.ps1 has one finalizer invocation" "1" \
+  "$(grep -c '\$SelectionJson | & \$CargoPath @FinalizeArgs' "$PACKAGE_SOURCE")"
+assert_true "package.ps1 never attests a pre-existing app exe" \
+  "! grep -q 'solstone-windows-app.exe' '$PACKAGE_SOURCE'"
+assert_true "package.ps1 retains no legacy Velopack invocation" \
+  "! grep -qi 'vpk pack' '$PACKAGE_SOURCE'"
+
+echo "make-package-ordering.test.sh: $ASSERTIONS assertions passed (PowerShell internals are source-witnessed here; executable .ps1/.cmd coverage is box-only without pwsh)"

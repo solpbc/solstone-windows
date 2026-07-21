@@ -6439,6 +6439,7 @@ dependencies = [
  "sha2 0.10.9",
  "syn 2.0.118",
  "toml 0.8.2",
+ "zip",
 ]
 
 [[package]]

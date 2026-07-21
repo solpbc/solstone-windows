@@ -48,6 +48,8 @@ impl TempTree {
     fn good() -> Self {
         let root = TempDir::new("rust-release-manifest");
         copy_tree(&fixture_root().join("release-dir"), &root.0);
+        // The fixture baseline is a fixed valid placeholder: these read-only
+        // classifier tests verify artifact files, not container executable bytes.
         let manifest = read_manifest(&root.0.join(companion_basename()));
         let facts = facts_for(&manifest);
         Self { root, facts }
@@ -230,7 +232,11 @@ where
 #[test]
 fn rust_release_manifest_schema_is_exact_and_compiles_unchanged() {
     let bytes = fs::read(repo_root().join("schemas/rust-release-manifest/v1.json")).unwrap();
-    assert_eq!(bytes.len(), 4_416);
+    assert_eq!(bytes.len(), 4_780);
+    assert_eq!(
+        SCHEMA_SHA256,
+        "82b5233a26131d9f35beb8a94a02f686556cde2a977614a75d5a7866ace75080"
+    );
     assert_eq!(lower_hex(&Sha256::digest(&bytes)), SCHEMA_SHA256);
     rust_release_manifest::verify_vendored_schema(&repo_root()).unwrap();
     rust_release_manifest::validate_manifest_bytes(
@@ -258,6 +264,17 @@ fn rust_release_manifest_schema_asserts_lookaheads_and_date_time() {
         }),
         ManifestError::SchemaViolation
     );
+    for mutation in 0..3 {
+        assert_eq!(
+            schema_mutation(|manifest| match mutation {
+                0 => manifest["packaged_executable"]["sha256"] = json!("A".repeat(64)),
+                1 => manifest["packaged_executable"]["sha256"] = json!("3".repeat(63)),
+                _ => manifest["packaged_executable"]["bytes"] = json!(0),
+            }),
+            ManifestError::SchemaViolation,
+            "packaged executable mutation {mutation}"
+        );
+    }
     let mut valid: Value = serde_json::from_slice(
         &fs::read(
             fixture_root()
@@ -285,6 +302,7 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
         "native_tools",
         "dependency_policy",
         "active_exceptions",
+        "packaged_executable",
         "artifacts",
     ] {
         assert_eq!(
@@ -295,7 +313,7 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
             "{field}"
         );
     }
-    for mutation in 0..17 {
+    for mutation in 0..20 {
         assert_eq!(
             schema_mutation(|manifest| match mutation {
                 0 => {
@@ -368,7 +386,20 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
                 13 => manifest["rust"]["unknown"] = json!(true),
                 14 => manifest["target"]["unknown"] = json!(true),
                 15 => manifest["dependency_policy"]["unknown"] = json!(true),
-                _ => manifest["artifacts"][0]["unknown"] = json!(true),
+                16 => manifest["artifacts"][0]["unknown"] = json!(true),
+                17 => {
+                    manifest["packaged_executable"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("sha256");
+                }
+                18 => {
+                    manifest["packaged_executable"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("bytes");
+                }
+                _ => manifest["packaged_executable"]["unknown"] = json!(true),
             }),
             ManifestError::SchemaViolation,
             "mutation {mutation}"
@@ -462,6 +493,19 @@ fn rust_release_manifest_rejects_checkout_binding_drift() {
     assert_eq!(
         rust_release_manifest::validate_release_dir_with_facts(&tree.root.0, &facts),
         Err(ManifestError::SourceDirty)
+    );
+
+    let mut manifest = read_manifest(&tree.manifest_path());
+    manifest.packaged_executable.bytes = 0;
+    assert_eq!(
+        rust_release_manifest::validate_semantic_binding(&manifest, &tree.facts),
+        Err(ManifestError::PackagedExecutableInvalid)
+    );
+    let mut manifest = read_manifest(&tree.manifest_path());
+    manifest.packaged_executable.sha256 = "A".repeat(64);
+    assert_eq!(
+        rust_release_manifest::validate_semantic_binding(&manifest, &tree.facts),
+        Err(ManifestError::PackagedExecutableInvalid)
     );
 }
 
@@ -956,6 +1000,20 @@ fn rust_release_manifest_renderer_rejects_noncanonical_public_evidence() {
             Box::new(|e| e.cargo_lock_sha256 = "A".repeat(64)),
         ),
         (
+            "packaged executable bytes",
+            ManifestError::EvidenceInvalid {
+                field: "packaged_executable.bytes",
+            },
+            Box::new(|e| e.packaged_executable.bytes = 0),
+        ),
+        (
+            "packaged executable hash",
+            ManifestError::EvidenceInvalid {
+                field: "packaged_executable.sha256",
+            },
+            Box::new(|e| e.packaged_executable.sha256 = "A".repeat(64)),
+        ),
+        (
             "wrong feature",
             ManifestError::EvidenceInvalid {
                 field: "target.features",
@@ -1141,6 +1199,8 @@ fn rust_release_manifest_renderer_is_cross_root_deterministic() {
     fs::write(first_root.0.join("manifest.json"), &first).unwrap();
     fs::write(second_root.0.join("manifest.json"), &second).unwrap();
     assert_eq!(first, second);
+    let round_trip = rust_release_manifest::validate_manifest_bytes(&first).unwrap();
+    assert_eq!(ReleaseEvidence::from(round_trip), evidence);
     assert!(first.ends_with(b"\n"));
     assert!(!first.ends_with(b"\n\n"));
 }

@@ -2,7 +2,9 @@
 
 solstone for Windows has three distribution channels, all intended to point at the
 **same finalized signed artifacts**. Direct publication is currently locked;
-release publication belongs to the aggregate provenance publisher.
+release publication belongs to the aggregate provenance publisher. R2 at
+`updates.solstone.app/solstone-windows/` is the authoritative update feed; any
+GitHub Releases mirror is optional and non-authoritative.
 
 | Channel | Artifact | Who owns updates |
 |---------|----------|------------------|
@@ -48,9 +50,16 @@ manifest from this repo, never patch selected fields of the live one.**
 
 ## Release boundary
 
-`make package` constructs `Releases/` only after the pinned release-tool preflight,
-metadata version gate, and tracked-lock guard. `make pull-releases` remains an
-artifact transport for a controlled aggregate workflow; it does not publish.
+`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit> make package` runs the complete
+source-bound build-to-finalize transaction. `Releases/` is its accumulated
+Velopack workspace, not its distributable result. The promoted result is the
+current-only `target/release-candidate/<VERSION>/` six/seven-artifact bundle plus
+its companion manifest (seven/eight files total); the matching finalization
+receipt is outside the candidate at
+`target/release-evidence/<VERSION>/rust-release-finalization.json`. A successful
+native proof adds `windows-native-proof.json` beside that receipt. `make
+pull-releases` remains an artifact transport for a controlled aggregate workflow;
+it does not publish or replace candidate validation.
 
 `make publish`, `make publish-r2`, `make publish-winget`, `make publish-scoop`, and
 their `publish-packages` aggregate are deliberate fail-closed guards. They accept no
@@ -69,7 +78,7 @@ account / MSIX). Our source of truth is [`winget/`](winget/).
 
 The direct winget script is locked. Winget still requires a PR to the community
 repository; the aggregate provenance publisher will own that submission after
-finalized GitHub assets and provenance exist. Winget's pipeline validates schema,
+the finalized candidate assets and provenance exist. Winget's pipeline validates schema,
 hash, and an interactive Windows-Sandbox install before a moderator/bot merges.
 
 - **Keep Actions disabled on the fork.** The fork inherits winget-pkgs' workflows, and

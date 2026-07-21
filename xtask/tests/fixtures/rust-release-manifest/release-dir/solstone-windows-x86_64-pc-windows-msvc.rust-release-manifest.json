@@ -36,6 +36,10 @@
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195"
   ],
+  "packaged_executable": {
+    "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "bytes": 1
+  },
   "artifacts": [
     {
       "path": "RELEASES",

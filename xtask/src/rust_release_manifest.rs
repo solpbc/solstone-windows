@@ -19,9 +19,10 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{self, ArtifactFsError, UnixModePolicy};
+use crate::release_source_binding::SourceBinding;
 use crate::version_gate;
 
-pub const SCHEMA_SHA256: &str = "d4eabf52bcc68b56945912d351f818e5444fe8c6461cb5c48b096f87b17a875c";
+pub const SCHEMA_SHA256: &str = "82b5233a26131d9f35beb8a94a02f686556cde2a977614a75d5a7866ace75080";
 pub const SCHEMA_ID: &str = "https://solpbc.org/schemas/rust-release-manifest/v1.json";
 pub const SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 pub const PRODUCT: &str = "solstone-windows";
@@ -62,7 +63,7 @@ const UNSIGNED_NATIVE_KEYS: &[&str] = &[
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct BundleNames {
+pub(crate) struct BundleNames {
     companion: String,
     assets: &'static str,
     releases: &'static str,
@@ -74,7 +75,7 @@ struct BundleNames {
 }
 
 impl BundleNames {
-    fn for_version(version: &str) -> Self {
+    pub(crate) fn for_version(version: &str) -> Self {
         Self {
             companion: companion_basename(),
             assets: "assets.win.json",
@@ -87,7 +88,7 @@ impl BundleNames {
         }
     }
 
-    fn artifact_names(&self, has_delta: bool) -> BTreeSet<String> {
+    pub(crate) fn artifact_names(&self, has_delta: bool) -> BTreeSet<String> {
         let mut names = BTreeSet::from([
             self.assets.to_owned(),
             self.releases.to_owned(),
@@ -100,6 +101,30 @@ impl BundleNames {
             names.insert(self.delta.clone());
         }
         names
+    }
+
+    pub(crate) fn full_package(&self) -> &str {
+        &self.full
+    }
+
+    pub(crate) fn delta_package(&self) -> &str {
+        &self.delta
+    }
+
+    pub(crate) fn assets(&self) -> &'static str {
+        self.assets
+    }
+
+    pub(crate) fn setup(&self) -> &str {
+        &self.setup
+    }
+
+    pub(crate) fn portable(&self) -> &'static str {
+        self.portable
+    }
+
+    pub(crate) fn velopack_setup_exe() -> &'static str {
+        "Solstone-win-Setup.exe"
     }
 }
 
@@ -121,6 +146,7 @@ pub struct Manifest {
     pub native_tools: BTreeMap<String, String>,
     pub dependency_policy: DependencyPolicy,
     pub active_exceptions: Vec<String>,
+    pub packaged_executable: PackagedExecutableEvidence,
     pub artifacts: Vec<ArtifactEvidence>,
 }
 
@@ -156,6 +182,13 @@ pub struct DependencyPolicy {
 #[serde(deny_unknown_fields)]
 pub struct ArtifactEvidence {
     pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PackagedExecutableEvidence {
     pub sha256: String,
     pub bytes: u64,
 }
@@ -202,6 +235,7 @@ pub struct ReleaseEvidence {
     pub native_tools: BTreeMap<String, String>,
     pub dependency_policy: DependencyPolicy,
     pub active_exceptions: Vec<String>,
+    pub packaged_executable: PackagedExecutableEvidence,
     pub artifacts: Vec<ArtifactEvidence>,
 }
 
@@ -219,6 +253,7 @@ impl From<Manifest> for ReleaseEvidence {
             native_tools: manifest.native_tools,
             dependency_policy: manifest.dependency_policy,
             active_exceptions: manifest.active_exceptions,
+            packaged_executable: manifest.packaged_executable,
             artifacts: manifest.artifacts,
         }
     }
@@ -252,6 +287,7 @@ pub enum ManifestError {
     SourceCommitMismatch,
     SourceDirty,
     CargoLockMismatch,
+    PackagedExecutableInvalid,
     RustcEvidenceMismatch,
     CargoVersionMismatch,
     TargetKindMismatch,
@@ -352,6 +388,7 @@ impl fmt::Display for ManifestError {
             }
             Self::SourceDirty => "checkout has uncommitted source changes",
             Self::CargoLockMismatch => "manifest lock digest does not match checkout authority",
+            Self::PackagedExecutableInvalid => "manifest packaged executable baseline is invalid",
             Self::RustcEvidenceMismatch => {
                 "manifest rustc evidence does not match the canonical projection"
             }
@@ -519,7 +556,7 @@ pub fn project_release_toolchain(root: &Path) -> Result<ReleaseToolProjection, M
     let top = contract
         .as_object()
         .ok_or(ManifestError::ToolchainContractMalformed)?;
-    exact_object_keys(top, &["schema", "groups", "tools"])?;
+    exact_object_keys(top, &["schema", "groups", "selection", "tools"])?;
     if top.get("schema").and_then(Value::as_str) != Some("solstone.release-toolchain.v1") {
         return Err(ManifestError::ToolchainContractMismatch);
     }
@@ -780,6 +817,45 @@ pub fn gather_checkout_facts(
     })
 }
 
+pub fn gather_checkout_facts_from_binding(
+    root: &Path,
+    version: &str,
+    binding: &SourceBinding,
+) -> Result<CheckoutFacts, ManifestError> {
+    let parsed = Version::parse(version).map_err(|_| ManifestError::LedgerVersionMalformed)?;
+    if parsed.to_string() != version
+        || binding.commit.len() != 40
+        || !is_lower_hex(&binding.commit)
+        || binding.cargo_lock_sha256.len() != 64
+        || !is_lower_hex(&binding.cargo_lock_sha256)
+        || binding.ui_package_lock_sha256.len() != 64
+        || !is_lower_hex(&binding.ui_package_lock_sha256)
+    {
+        return Err(ManifestError::CheckoutFactUnavailable);
+    }
+    let projection = project_release_toolchain(root)?;
+    let active_exceptions = read_active_exceptions(root)?;
+    Ok(CheckoutFacts {
+        product: PRODUCT.to_owned(),
+        version: version.to_owned(),
+        source_commit: binding.commit.clone(),
+        source_dirty: false,
+        cargo_lock_sha256: binding.cargo_lock_sha256.clone(),
+        rustc_verbose: projection.rustc_verbose,
+        cargo_version: projection.cargo_version,
+        target_triple: TARGET_TRIPLE.to_owned(),
+        target_profile: TARGET_PROFILE.to_owned(),
+        target_features: TARGET_FEATURES
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+        cargo_deny_version: projection.cargo_deny_version,
+        active_exceptions,
+        unsigned_native_tools: projection.unsigned_native_tools,
+        signed_native_tools: projection.signed_native_tools,
+    })
+}
+
 pub fn validate_semantic_binding(
     manifest: &Manifest,
     facts: &CheckoutFacts,
@@ -799,6 +875,12 @@ pub fn validate_semantic_binding(
     }
     if manifest.cargo_lock_sha256 != facts.cargo_lock_sha256 {
         return Err(ManifestError::CargoLockMismatch);
+    }
+    if manifest.packaged_executable.bytes == 0
+        || manifest.packaged_executable.sha256.len() != 64
+        || !is_lower_hex(&manifest.packaged_executable.sha256)
+    {
+        return Err(ManifestError::PackagedExecutableInvalid);
     }
     if manifest.rust.rustc_verbose.as_bytes() != facts.rustc_verbose.as_bytes() {
         return Err(ManifestError::RustcEvidenceMismatch);
@@ -903,6 +985,18 @@ pub fn render_release_evidence(evidence: &ReleaseEvidence) -> Result<Vec<u8>, Ma
             field: "cargo_lock_sha256",
         });
     }
+    if evidence.packaged_executable.bytes == 0 {
+        return Err(ManifestError::EvidenceInvalid {
+            field: "packaged_executable.bytes",
+        });
+    }
+    if evidence.packaged_executable.sha256.len() != 64
+        || !is_lower_hex(&evidence.packaged_executable.sha256)
+    {
+        return Err(ManifestError::EvidenceInvalid {
+            field: "packaged_executable.sha256",
+        });
+    }
     if !features
         .iter()
         .map(String::as_str)
@@ -977,12 +1071,16 @@ pub fn render_release_evidence(evidence: &ReleaseEvidence) -> Result<Vec<u8>, Ma
     compiled_schema()?
         .validate(&value)
         .map_err(|_| ManifestError::EvidenceInvalid { field: "schema" })?;
+    render_canonical_json(evidence).map_err(|_| ManifestError::RendererSerialization)
+}
+
+pub(crate) fn render_canonical_json<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<Vec<u8>, serde_json::Error> {
     let mut bytes = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b"  ");
     let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, formatter);
-    evidence
-        .serialize(&mut serializer)
-        .map_err(|_| ManifestError::RendererSerialization)?;
+    value.serialize(&mut serializer)?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -1245,6 +1343,19 @@ fn validate_ledgers(
         return Err(ManifestError::DeltaMismatch);
     }
     Ok(())
+}
+
+pub(crate) fn validate_release_ledgers(
+    release_dir: &Path,
+    version: &str,
+    has_delta: bool,
+) -> Result<(), ManifestError> {
+    let resolver = artifact_fs::ContainedRoot::new(
+        release_dir,
+        "Velopack output directory",
+        UnixModePolicy::AllowExecute,
+    )?;
+    validate_ledgers(&resolver, version, has_delta)
 }
 
 fn validate_release_feed(

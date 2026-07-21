@@ -73,9 +73,47 @@ if ($Contract.schema -ne "solstone.release-toolchain.v1") {
 $UnsignedNames = @("rustc", "cargo", "cargo-deny", "dotnet", "vpk", "node", "npm", "msvc-cl", "windows-sdk", "powershell")
 $SignedNames = @("smctl", "signtool")
 $AllNames = @($UnsignedNames + $SignedNames)
+Assert-ExactNames $Contract.PSObject.Properties.Name @("schema", "groups", "selection", "tools") "contract"
 Assert-ExactNames $Contract.groups.unsigned $UnsignedNames "groups.unsigned"
 Assert-ExactNames $Contract.groups.signedAdditional $SignedNames "groups.signedAdditional"
 Assert-ExactNames $Contract.tools.PSObject.Properties.Name $AllNames "tools"
+
+$ActionNames = @(
+    "npm_ci",
+    "npm_build",
+    "cargo_release_build",
+    "signing_auth_preflight",
+    "vpk_pack",
+    "smctl_sign",
+    "signtool_verify",
+    "cargo_deny_advisories",
+    "native_smoke"
+)
+$MsvcEnvironmentNames = @(
+    "PATH",
+    "INCLUDE",
+    "LIB",
+    "LIBPATH",
+    "VCINSTALLDIR",
+    "VCToolsInstallDir",
+    "VCToolsVersion",
+    "UniversalCRTSdkDir",
+    "UCRTVersion",
+    "WindowsSdkDir",
+    "WindowsSdkBinPath",
+    "WindowsLibPath",
+    "WindowsSDKVersion"
+)
+Assert-ExactNames $Contract.selection.PSObject.Properties.Name @("actions", "msvcEnvironment") "selection"
+Assert-ExactNames $Contract.selection.actions.PSObject.Properties.Name $ActionNames "selection.actions"
+Assert-ExactNames $Contract.selection.msvcEnvironment $MsvcEnvironmentNames "selection.msvcEnvironment"
+foreach ($name in $ActionNames) {
+    $action = $Contract.selection.actions.PSObject.Properties[$name].Value
+    Assert-ExactNames $action.PSObject.Properties.Name @("tool", "argv") "selection.actions.$name"
+    Require-String $action.tool "selection.actions.$name.tool"
+    if (@($action.argv).Count -eq 0) { Fail-Contract "selection.actions.$name.argv must not be empty." }
+    foreach ($argument in @($action.argv)) { Require-String $argument "selection.actions.$name.argv" }
+}
 
 foreach ($name in $AllNames) {
     $tool = $Contract.tools.PSObject.Properties[$name].Value
@@ -106,6 +144,7 @@ Require-String $Contract.tools.signtool.expected.originalFilename "tools.signtoo
 $SignEnabled = $Sign -or -not [string]::IsNullOrWhiteSpace($env:SOLSTONE_SIGN)
 $Errors = New-Object System.Collections.Generic.List[string]
 $Selections = [ordered]@{}
+$MsvcEnvironment = $null
 
 function Add-Mismatch([string]$Field, [string]$Expected, [string]$Actual, [string]$Repair) {
     if ([string]::IsNullOrWhiteSpace($Actual)) { $Actual = "unavailable" }
@@ -234,6 +273,19 @@ function Invoke-ActivatedMsvcProbe([string]$VcvarsallPath, [string]$VcvarsVersio
             '& echo __SOLSTONE_RELEASE_PROBE_V1_HOST__=!VSCMD_ARG_HOST_ARCH!' +
             '& echo __SOLSTONE_RELEASE_PROBE_V1_TARGET__=!VSCMD_ARG_TGT_ARCH!' +
             '& echo __SOLSTONE_RELEASE_PROBE_V1_TOOLSET__=!VCToolsVersion!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_PATH__=!PATH!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_INCLUDE__=!INCLUDE!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_LIB__=!LIB!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_LIBPATH__=!LIBPATH!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_VCINSTALLDIR__=!VCINSTALLDIR!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_VCToolsInstallDir__=!VCToolsInstallDir!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_VCToolsVersion__=!VCToolsVersion!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_UniversalCRTSdkDir__=!UniversalCRTSdkDir!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_UCRTVersion__=!UCRTVersion!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_WindowsSdkDir__=!WindowsSdkDir!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_WindowsSdkBinPath__=!WindowsSdkBinPath!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_WindowsLibPath__=!WindowsLibPath!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_ENV_WindowsSDKVersion__=!WindowsSDKVersion!' +
             '& if "!VCX!"=="0" (' +
             'echo __SOLSTONE_RELEASE_PROBE_V1_COMPILER_BEGIN__' +
             '& call "' + $ClPath + '" /Bv 2>&1' +
@@ -421,6 +473,25 @@ if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
                             }
                         }
 
+                        $environment = [ordered]@{}
+                        foreach ($name in $MsvcEnvironmentNames) {
+                            $prefix = "__SOLSTONE_RELEASE_PROBE_V1_ENV_${name}__="
+                            $evidence = Read-Sentinel $lines $prefix
+                            $actual = if ($evidence.valid -and -not [string]::IsNullOrWhiteSpace($evidence.actual) -and $evidence.actual -ne "!$name!") {
+                                $evidence.actual
+                            } elseif ($evidence.valid) {
+                                $null
+                            } else {
+                                $evidence.actual
+                            }
+                            if ([string]::IsNullOrWhiteSpace($actual)) {
+                                Add-Mismatch "msvc-cl.environment.$name" "one non-empty value from the activated child" $actual $msvc.repair
+                                $valid = $false
+                            } else {
+                                $environment[$name] = $actual
+                            }
+                        }
+
                         $beginMarker = "__SOLSTONE_RELEASE_PROBE_V1_COMPILER_BEGIN__"
                         $endMarker = "__SOLSTONE_RELEASE_PROBE_V1_COMPILER_END__"
                         $beginEvidence = Read-Sentinel $lines $beginMarker -Exact
@@ -498,6 +569,7 @@ if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
                 }
 
                 if ($valid) {
+                    $MsvcEnvironment = $environment
                     $Selections["msvc-cl"] = [ordered]@{
                         path = [IO.Path]::GetFullPath($clPath)
                         compilerVersion = $compilerVersion
@@ -566,10 +638,42 @@ if ($Errors.Count -ne 0) {
     exit 1
 }
 
+if ($null -eq $MsvcEnvironment) {
+    Fail-Contract "validated MSVC environment was not captured; rerun the pinned vcvars preflight."
+}
+
+function Selected-Action([string]$Name) {
+    $template = $Contract.selection.actions.PSObject.Properties[$Name].Value
+    $toolName = $template.tool
+    if (-not $Selections.Contains($toolName)) {
+        Fail-Contract "selection.actions.$Name references unavailable selected tool '$toolName'."
+    }
+    return [ordered]@{
+        program = $Selections[$toolName].path
+        argv = @($template.argv)
+    }
+}
+
+$Actions = [ordered]@{
+    npm_ci = (Selected-Action "npm_ci")
+    npm_build = (Selected-Action "npm_build")
+    cargo_release_build = (Selected-Action "cargo_release_build")
+}
+if ($SignEnabled) { $Actions["signing_auth_preflight"] = (Selected-Action "signing_auth_preflight") }
+$Actions["vpk_pack"] = (Selected-Action "vpk_pack")
+if ($SignEnabled) {
+    $Actions["smctl_sign"] = (Selected-Action "smctl_sign")
+    $Actions["signtool_verify"] = (Selected-Action "signtool_verify")
+}
+$Actions["cargo_deny_advisories"] = (Selected-Action "cargo_deny_advisories")
+$Actions["native_smoke"] = (Selected-Action "native_smoke")
+
 $mode = if ($SignEnabled) { "signed" } else { "unsigned" }
 $record = [ordered]@{
     schema = "solstone.release-tool-selection.v1"
     mode = $mode
     tools = $Selections
+    actions = $Actions
+    msvc_environment = $MsvcEnvironment
 }
-[Console]::Out.WriteLine(($record | ConvertTo-Json -Depth 8 -Compress))
+[Console]::Out.WriteLine(($record | ConvertTo-Json -Depth 12 -Compress))

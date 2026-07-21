@@ -86,11 +86,7 @@ fn every_gated_cargo_resolution_is_locked() {
         "Makefile must contain exactly the fmt and clean non-resolving cargo invocations"
     );
 
-    for path in [
-        "scripts/win-ci.cmd",
-        "scripts/win-app-build.cmd",
-        "scripts/win-package.cmd",
-    ] {
+    for path in ["scripts/win-ci.cmd", "scripts/win-app-build.cmd"] {
         let text = read(&root, path);
         let mut invocations = 0;
         for (index, line) in text.lines().enumerate() {
@@ -106,6 +102,9 @@ fn every_gated_cargo_resolution_is_locked() {
         }
         assert!(invocations > 0, "{path} has no executable cargo invocation");
     }
+    let win_package = read(&root, "scripts/win-package.cmd");
+    assert!(!win_package.contains("%SELECTED_CARGO%"));
+    assert!(!win_package.to_ascii_lowercase().contains("cargo build"));
 
     for path in rail_source_paths(&root) {
         let text = fs::read_to_string(&path)
@@ -233,10 +232,11 @@ fn dependency_and_release_lockdown_topology_is_static() {
     assert!(makefile.contains("ui-deps-update:\n\tnpm --prefix ui install"));
     assert!(makefile.contains("build: preflight-toolchain\n\tnpm --prefix ui ci --offline"));
     assert!(makefile.contains("ui-test:\n\tnpm --prefix ui ci --offline"));
-    assert!(makefile.contains("\"$$npm_path\" --prefix ui ci --offline"));
-    for path in ["scripts/win-app-build.cmd", "scripts/win-package.cmd"] {
-        assert!(read(&root, path).contains("--prefix ui ci --offline"));
-    }
+    assert!(read(&root, "scripts/win-app-build.cmd").contains("--prefix ui ci --offline"));
+    assert!(!read(&root, "scripts/win-package.cmd").contains("--prefix ui ci --offline"));
+    assert!(makefile.contains("EXPECTED_RELEASE_COMMIT is required"));
+    assert!(makefile.contains("-File scripts/package.ps1"));
+    assert!(!makefile.contains("\"$$npm_path\" --prefix ui ci --offline"));
 
     let mut npm_installs = Vec::new();
     for path in rail_source_paths(&root) {
@@ -282,6 +282,21 @@ fn dependency_and_release_lockdown_topology_is_static() {
         contract["tools"]["msvc-cl"]["expected"]["toolsetVersion"],
         "14.44.35207"
     );
+    assert_eq!(
+        contract["selection"]["actions"]["npm_ci"]["argv"],
+        serde_json::json!(["--prefix", "ui", "ci", "--offline"])
+    );
+    assert_eq!(
+        contract["selection"]["actions"]["cargo_deny_advisories"]["tool"],
+        "cargo"
+    );
+    assert_eq!(
+        contract["selection"]["msvcEnvironment"]
+            .as_array()
+            .unwrap()
+            .len(),
+        13
+    );
 }
 
 #[test]
@@ -318,13 +333,14 @@ fn publication_and_parallel_version_sources_are_locked_out() {
     assert!(!package.contains("--dump-state"));
     assert!(!package.contains("[string]$Version"));
     assert!(!package.to_ascii_lowercase().contains("signtool verify"));
-    assert!(package.contains("$Selection.tools.vpk.path"));
-    assert!(package.contains("$Selection.tools.smctl.path"));
-    assert!(package.contains("-SmctlPath $SmctlPath"));
+    assert!(package.contains("$SelectionJson | & $CargoPath @FinalizeArgs"));
+    assert!(package.contains("EXPECTED_RELEASE_COMMIT is required"));
+    assert!(package.contains("\"rust-release-manifest\","));
+    assert!(package.contains("\"finalize\","));
+    assert!(!package.contains("solstone-windows-app.exe"));
+    assert!(!package.to_ascii_lowercase().contains("vpk pack"));
     let version_gate = read(&root, "xtask/src/version_gate.rs");
     assert!(version_gate.contains("format!(\"solstone-setup-{version}.exe\")"));
-    assert!(package.contains("$VersionedSetupName = \"solstone-setup-$Version.exe\""));
-    assert!(package.contains("$VersionedSetup = Join-Path $Releases $VersionedSetupName"));
 
     let win_ci = read(&root, "scripts/win-ci.cmd");
     for test in [

@@ -20,6 +20,7 @@ serde_json.workspace = true
 sha1 = "=0.10.6"
 sha2.workspace = true
 toml = "=0.8.2"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 syn = { version = "2.0.118", default-features = false, features = ["full", "visit", "parsing"] }

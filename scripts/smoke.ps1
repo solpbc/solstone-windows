@@ -26,10 +26,28 @@ param(
     [switch]$FailInject,
     [int]$TimeoutSecs = 90,
     [int]$Tier1TimeoutSecs = 15,
-    [switch]$SelftestOnly
+    [switch]$SelftestOnly,
+    [string]$AppExe,
+    [string]$ExpectedVersion,
+    [string]$ExpectedSha256,
+    [switch]$DisableInstalledFallback,
+    [string]$DotnetPath
 )
 
 $ErrorActionPreference = "Stop"
+
+$ProofArgumentNames = @("AppExe", "ExpectedVersion", "ExpectedSha256", "DisableInstalledFallback")
+$ProofArgumentCount = @($ProofArgumentNames | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count
+if ($ProofArgumentCount -ne 0 -and $ProofArgumentCount -ne $ProofArgumentNames.Count) {
+    throw "native-proof smoke requires -AppExe, -ExpectedVersion, -ExpectedSha256, and -DisableInstalledFallback together"
+}
+$NativeProofMode = ($ProofArgumentCount -eq $ProofArgumentNames.Count)
+if ($NativeProofMode -and [string]::IsNullOrWhiteSpace($DotnetPath)) {
+    throw "native-proof smoke requires the resolver-selected -DotnetPath"
+}
+if ($NativeProofMode -and $SelftestOnly) {
+    throw "native-proof smoke cannot use -SelftestOnly"
+}
 
 $Root = Split-Path -Parent $PSScriptRoot
 $Driver = Join-Path $Root "harness\driver\Driver.csproj"
@@ -37,12 +55,19 @@ $Contract = Join-Path $Root "automation-contract.json"
 $Publish = Join-Path $Root "harness\driver\bin\publish"
 $HealthUrl = "http://127.0.0.1:49247/healthz"
 
-# Resolve the dotnet SDK host (PATH first, then the default install location;
-# a non-interactive SSH PATH may not carry it).
-$Dotnet = "dotnet"
-if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    $cand = "C:\Program Files\dotnet\dotnet.exe"
-    if (Test-Path $cand) { $Dotnet = $cand } else { throw "dotnet SDK not found on PATH or at $cand" }
+# Native proof uses only the resolver-selected dotnet. Default operator smoke
+# retains its PATH/default-location discovery when no explicit path is supplied.
+if (-not [string]::IsNullOrWhiteSpace($DotnetPath)) {
+    if (-not [IO.Path]::IsPathRooted($DotnetPath) -or -not (Test-Path -LiteralPath $DotnetPath -PathType Leaf)) {
+        throw "selected dotnet path is not one absolute file"
+    }
+    $Dotnet = $DotnetPath
+} else {
+    $Dotnet = "dotnet"
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        $cand = "C:\Program Files\dotnet\dotnet.exe"
+        if (Test-Path $cand) { $Dotnet = $cand } else { throw "dotnet SDK not found on PATH or at $cand" }
+    }
 }
 
 Write-Host "=== build + publish the net48 driver ==="
@@ -58,11 +83,40 @@ Write-Host "=== driver --selftest (pure logic) ==="
 if ($LASTEXITCODE -ne 0) { throw "driver --selftest failed ($LASTEXITCODE)" }
 if ($SelftestOnly) { Write-Host "SMOKE_SELFTEST_OK"; exit 0 }
 
-# Locate the installed app (Velopack per-user layout).
-$AppExe = Join-Path $env:LOCALAPPDATA "Solstone\current\solstone-windows-app.exe"
-if (-not (Test-Path $AppExe)) {
-    $found = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Solstone") -Recurse -Filter "solstone-windows-app.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) { $AppExe = $found.FullName } else { throw "installed app not found under $env:LOCALAPPDATA\Solstone - run make package + install Setup.exe first" }
+# Native proof accepts exactly one explicit app and verifies its identity before
+# launch. It cannot enter the recursive installed-app fallback.
+if ($NativeProofMode) {
+    if (-not [IO.Path]::IsPathRooted($AppExe) -or -not (Test-Path -LiteralPath $AppExe -PathType Leaf)) {
+        throw "native-proof AppExe is not one absolute file"
+    }
+    if ($ExpectedVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') {
+        throw "native-proof ExpectedVersion is not canonical SemVer"
+    }
+    if ($ExpectedSha256 -notmatch '^[0-9a-f]{64}$') {
+        throw "native-proof ExpectedSha256 must be 64 lowercase hex"
+    }
+    $ObservedSha256 = (Get-FileHash -LiteralPath $AppExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ObservedSha256 -ne $ExpectedSha256) {
+        throw "native-proof explicit app SHA-256 does not match the finalized baseline"
+    }
+    $DumpStateLines = @(& $AppExe --dump-state)
+    if ($LASTEXITCODE -ne 0) { throw "native-proof explicit app --dump-state failed ($LASTEXITCODE)" }
+    try {
+        $DumpState = ($DumpStateLines -join "`n") | ConvertFrom-Json
+    } catch {
+        throw "native-proof explicit app --dump-state returned malformed JSON"
+    }
+    if ($null -eq $DumpState.version -or [string]$DumpState.version -ne $ExpectedVersion) {
+        throw "native-proof explicit app version does not match ExpectedVersion"
+    }
+} else {
+    # Locate the installed app (Velopack per-user layout). This legacy discovery
+    # remains available only to the default operator smoke.
+    $AppExe = Join-Path $env:LOCALAPPDATA "Solstone\current\solstone-windows-app.exe"
+    if (-not (Test-Path $AppExe)) {
+        $found = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Solstone") -Recurse -Filter "solstone-windows-app.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { $AppExe = $found.FullName } else { throw "installed app not found under $env:LOCALAPPDATA\Solstone - run make package + install Setup.exe first" }
+    }
 }
 Write-Host "app: $AppExe"
 

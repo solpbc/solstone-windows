@@ -18,6 +18,61 @@
       "signtool"
     ]
   },
+  "selection": {
+    "actions": {
+      "npm_ci": {
+        "tool": "npm",
+        "argv": ["--prefix", "ui", "ci", "--offline"]
+      },
+      "npm_build": {
+        "tool": "npm",
+        "argv": ["--prefix", "ui", "run", "build"]
+      },
+      "cargo_release_build": {
+        "tool": "cargo",
+        "argv": ["build", "--locked", "-p", "solstone-windows-app", "--release", "--features", "custom-protocol"]
+      },
+      "signing_auth_preflight": {
+        "tool": "powershell",
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "packaging/signing/preflight-auth.ps1", "-SmctlPath", "{smctl_path}"]
+      },
+      "vpk_pack": {
+        "tool": "vpk",
+        "argv": ["pack", "--packId", "Solstone", "--packVersion", "{version}", "--packDir", "{stage_dir}", "--mainExe", "solstone-windows-app.exe", "--outputDir", "{output_dir}", "--packTitle", "sol", "--packAuthors", "sol pbc", "--icon", "src-tauri/icons/icon.ico", "--channel", "win", "--framework", "webview2", "--releaseNotes", "{release_notes}"]
+      },
+      "smctl_sign": {
+        "tool": "smctl",
+        "argv": ["sign", "--keypair-alias", "{keypair_alias}", "--input", "{file}"]
+      },
+      "signtool_verify": {
+        "tool": "signtool",
+        "argv": ["verify", "/pa", "/all", "/v", "{file}"]
+      },
+      "cargo_deny_advisories": {
+        "tool": "cargo",
+        "argv": ["deny", "--locked", "--offline", "--config", "{advisory_config}", "check", "advisories"]
+      },
+      "native_smoke": {
+        "tool": "powershell",
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/smoke.ps1", "-AppExe", "{installed_exe}", "-ExpectedVersion", "{expected_version}", "-ExpectedSha256", "{expected_sha256}", "-DisableInstalledFallback", "-DotnetPath", "{dotnet_path}"]
+      }
+    },
+    "msvcEnvironment": [
+      "PATH",
+      "INCLUDE",
+      "LIB",
+      "LIBPATH",
+      "VCINSTALLDIR",
+      "VCToolsInstallDir",
+      "VCToolsVersion",
+      "UniversalCRTSdkDir",
+      "UCRTVersion",
+      "WindowsSdkDir",
+      "WindowsSdkBinPath",
+      "WindowsLibPath",
+      "WindowsSDKVersion"
+    ]
+  },
   "tools": {
     "rustc": {
       "expected": {

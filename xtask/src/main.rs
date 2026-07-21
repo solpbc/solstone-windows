@@ -8,11 +8,14 @@
 //! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate and the `contract_not_stale` test both invoke it).
 //! - `observer-contract check` — verify the vendored observer-client authority bundle and adoption record.
 //! - `rust-release-manifest check` — offline schema, semantic, ledger, and bundle verification.
+//! - `rust-release-manifest advisory-config` — materialize the deterministic isolated advisory policy.
+//! - `rust-release-manifest prove-native` — install and smoke one exact signed finalized candidate.
 //! - `purity-check` — fail if the `windows` family reaches any strict workspace member's shipped graph (every member except the reviewed Windows-capable exception set), even target-gated; members come from `cargo metadata`, with normal/build traversal under `--target all --all-features`.
 //! - `version-gate [--root <path>]` — resolve the product version from cargo metadata and verify every committed release version surface.
 //! - `package` — Velopack packaging (delegates to the Windows script; a stub off the build box).
 //! - `dev` — developer convenience launcher (stub).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -40,17 +43,251 @@ fn main() -> ExitCode {
         {
             cmd_rust_release_manifest_check()
         }
+        Some("rust-release-manifest")
+            if args.get(1).map(String::as_str) == Some("advisory-config") =>
+        {
+            cmd_rust_release_manifest_advisory_config(&args)
+        }
+        Some("rust-release-manifest") if args.get(1).map(String::as_str) == Some("finalize") => {
+            cmd_rust_release_manifest_finalize(&args)
+        }
+        Some("rust-release-manifest")
+            if args.get(1).map(String::as_str) == Some("prove-native") =>
+        {
+            cmd_rust_release_manifest_prove_native(&args)
+        }
         Some("purity-check") => cmd_purity_check(),
         Some("version-gate") => cmd_version_gate(&args),
         Some("package") => cmd_package(),
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest check | purity-check | version-gate [--root <path>] | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  version-gate [--root <path>]: verify every committed release version surface"
+                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | purity-check | version-gate [--root <path>] | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
         }
     }
+}
+
+fn cmd_rust_release_manifest_advisory_config(args: &[String]) -> ExitCode {
+    let mut database_root = None;
+    let mut output = None;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--db-root" if database_root.is_none() => {
+                let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) else {
+                    return advisory_config_usage();
+                };
+                database_root = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--out" if output.is_none() => {
+                let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) else {
+                    return advisory_config_usage();
+                };
+                output = Some(PathBuf::from(value));
+                index += 2;
+            }
+            _ => return advisory_config_usage(),
+        }
+    }
+    let (Some(database_root), Some(mut output)) = (database_root, output) else {
+        return advisory_config_usage();
+    };
+    if !database_root.is_absolute() {
+        eprintln!(
+            "rust release advisory config failed: --db-root is not absolute; pass the mapped target/release-advisory-db path and retry"
+        );
+        return ExitCode::FAILURE;
+    }
+    let root = repo_root();
+    if !output.is_absolute() {
+        output = root.join(output);
+    }
+    match xtask::release_advisory::materialize_advisory_config_at(&root, &database_root, &output) {
+        Ok(_) => {
+            println!("rust release advisory config: deterministic offline policy materialized");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("rust release advisory config failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn advisory_config_usage() -> ExitCode {
+    eprintln!(
+        "usage: cargo xtask rust-release-manifest advisory-config --db-root <isolated-absolute-path> --out <path>"
+    );
+    ExitCode::from(2)
+}
+
+fn cmd_rust_release_manifest_finalize(args: &[String]) -> ExitCode {
+    let mut expected_commit = None;
+    let mut sign = false;
+    let mut delta_base_fulls = Vec::new();
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--expected-release-commit" if expected_commit.is_none() => {
+                let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) else {
+                    return finalize_usage();
+                };
+                expected_commit = Some(value.clone());
+                index += 2;
+            }
+            "--sign" if !sign => {
+                sign = true;
+                index += 1;
+            }
+            "--delta-base-full" => {
+                let Some(value) = args.get(index + 1).filter(|value| !value.is_empty()) else {
+                    return finalize_usage();
+                };
+                delta_base_fulls.push(value.clone());
+                index += 2;
+            }
+            _ => return finalize_usage(),
+        }
+    }
+    let Some(expected_release_commit) = expected_commit else {
+        return finalize_usage();
+    };
+
+    let mut selection_record = Vec::new();
+    if std::io::stdin().read_to_end(&mut selection_record).is_err() || selection_record.is_empty() {
+        eprintln!(
+            "rust release finalizer failed: selection stdin is empty or unreadable; pipe the exact preflight selection JSON into finalize"
+        );
+        return ExitCode::FAILURE;
+    }
+    let Some(git_program) = std::env::var_os("GIT").map(PathBuf::from) else {
+        eprintln!(
+            "rust release finalizer failed: GIT is not an absolute selected executable path; set GIT to the local Git executable and retry"
+        );
+        return ExitCode::FAILURE;
+    };
+    if !git_program.is_absolute() {
+        eprintln!(
+            "rust release finalizer failed: GIT is not absolute; set it to the exact local Git executable and retry"
+        );
+        return ExitCode::FAILURE;
+    }
+    let Some(advisory_tree_sha256) = std::env::var("SOLSTONE_ADVISORY_TREE_SHA256")
+        .ok()
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!(
+            "rust release finalizer failed: SOLSTONE_ADVISORY_TREE_SHA256 is missing; supply the reviewed isolated RustSec archive digest and retry"
+        );
+        return ExitCode::FAILURE;
+    };
+    let signing_keypair_alias = if sign {
+        std::env::var("SM_KEYPAIR_ALIAS")
+            .ok()
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let request = xtask::release_finalizer::FinalizeRequest {
+        expected_release_commit,
+        sign_mode: if sign {
+            xtask::release_selection::SelectionMode::Signed
+        } else {
+            xtask::release_selection::SelectionMode::Unsigned
+        },
+        selection_record,
+        delta_base_fulls,
+    };
+    let root = repo_root();
+    let runner = xtask::release_exec::ProcessCommandRunner;
+    let clock = xtask::release_clock::SystemClock;
+    let runtime = xtask::release_finalizer::FinalizeRuntime {
+        checkout_root: &root,
+        git_program: &git_program,
+        advisory_tree_sha256: &advisory_tree_sha256,
+        signing_keypair_alias: signing_keypair_alias.as_deref(),
+    };
+    match xtask::release_finalizer::finalize(runtime, &request, &runner, &clock) {
+        Ok(result) => {
+            println!(
+                "rust release finalizer: promoted {} and {} ({})",
+                result.candidate_relative_path, result.receipt_relative_path, result.signing_mode
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("rust release finalizer failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn finalize_usage() -> ExitCode {
+    eprintln!(
+        "usage: cargo xtask rust-release-manifest finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <Solstone-SEMVER-full.nupkg> ...] < selection.json"
+    );
+    ExitCode::from(2)
+}
+
+fn cmd_rust_release_manifest_prove_native(args: &[String]) -> ExitCode {
+    let release_dir = match args {
+        [_, command, flag, value]
+            if command == "prove-native" && flag == "--release-dir" && !value.is_empty() =>
+        {
+            PathBuf::from(value)
+        }
+        _ => return prove_native_usage(),
+    };
+    let root = repo_root();
+    let release_dir = if release_dir.is_absolute() {
+        release_dir
+    } else {
+        root.join(release_dir)
+    };
+    let cargo = xtask::version_gate::configured_cargo();
+    let git = std::env::var_os("GIT").unwrap_or_else(|| "git".into());
+    let facts = match xtask::rust_release_manifest::gather_checkout_facts(&root, &cargo, &git) {
+        Ok(facts) => facts,
+        Err(error) => {
+            eprintln!(
+                "rust release native proof failed: checkout facts could not be established ({error}); restore the clean candidate source checkout and retry"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let powershell = std::env::var_os("SOLSTONE_PROOF_POWERSHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "powershell".into());
+    let runner = xtask::release_exec::ProcessCommandRunner;
+    let clock = xtask::release_clock::SystemClock;
+    let runtime = xtask::native_release_proof::NativeProofRuntime {
+        checkout_root: &root,
+        facts: &facts,
+        powershell_bootstrap: &powershell,
+    };
+    match xtask::native_release_proof::prove_native(runtime, &release_dir, &runner, &clock) {
+        Ok(result) => {
+            println!(
+                "rust release native proof: verified candidate {} and wrote {}",
+                result.version, result.receipt_relative_path
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("rust release native proof failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn prove_native_usage() -> ExitCode {
+    eprintln!(
+        "usage: cargo xtask rust-release-manifest prove-native --release-dir <target/release-candidate/VERSION>"
+    );
+    ExitCode::from(2)
 }
 
 fn cmd_rust_release_manifest_check() -> ExitCode {

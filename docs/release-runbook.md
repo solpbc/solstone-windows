@@ -10,8 +10,10 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Build binary + webview | `make build` |
 | Deterministic composite gate (host checks · offline dependency policy · native Windows build/test) | `make ci` |
 | Refresh RustSec data + check current advisories | `make audit` |
+| Prove the materialized release advisory config with cargo-deny 0.20.2 offline | `make check-release-advisory-config` |
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
-| Gate and pack a Velopack release into `Releases/` | `make package` |
+| Source-bound build and atomic finalization | `EXPECTED_RELEASE_COMMIT=<commit> make package` |
+| Prove one exact signed candidate by isolated install and explicit smoke | `make prove-rust-release-native RELEASE_DIR=target/release-candidate/<VERSION>` |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
 | R2 direct-publication guard (**primary channel remains R2**) | `make publish-r2` (always fails closed) |
 | GitHub direct-publication guard (optional, non-authoritative mirror) | `make publish` (always fails closed) |
@@ -21,13 +23,52 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 
 - Velopack, per-user `%LocalAppData%`, **no UAC**.
 - Evergreen WebView2 runtime (no fixed-version bundle).
-- `Releases/` carries the full (+ delta) `nupkg`, `solstone-setup-{version}.exe`,
-  `Solstone-win-Portable.zip`, and the feed (`releases.win.json`).
-- Before any package work, the box checks the complete pinned contract in
-  `packaging/release-toolchain.json`, derives the product version from Cargo
-  metadata, and requires tracked `Cargo.lock` and `ui/package-lock.json` inputs.
+- `Releases/` is the accumulated internal Velopack workspace. It is not a
+  finalized candidate and must not be used as publication evidence.
+- The finalizer promotes one current-only six/seven-artifact bundle plus its
+  companion manifest (seven/eight files total) at
+  `target/release-candidate/<VERSION>/`.
+- Before cleanup or build, the transaction checks the closed resolver selection,
+  Cargo metadata version, full lowercase `EXPECTED_RELEASE_COMMIT`, local
+  lineage, allowed `main`/`__swsync` ref, clean source state, and SHA-256 of both
+  `Cargo.lock` and `ui/package-lock.json`.
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
   registers the per-user autostart login item.
+
+## Source-bound finalization
+
+Set `EXPECTED_RELEASE_COMMIT` to the exact full lowercase release commit. Run
+`make audit` to refresh the RustSec cache, then
+`make check-release-advisory-config` to map it to the isolated
+`target/release-advisory-db/` shape and prove that the real pinned cargo-deny
+accepts the generated config offline. The release transaction itself requires a
+clean, full, non-shallow RustSec snapshot no older than 24 hours and earns
+`advisory_checked_at` only after the offline advisory check succeeds.
+
+`EXPECTED_RELEASE_COMMIT=<commit> make package` delegates through
+`scripts/package.ps1` to the single xtask finalizer. That transaction owns npm
+materialization/build, the locked release build, Velopack packing, optional
+KeyLocker signing, selected SignTool verification, executable cross-container
+identity, manifest rendering, strict classification, the final source/lock
+recheck, and atomic promotion. Direct `scripts/package.ps1` and
+`scripts/win-package.cmd` reach the same transaction; neither attests a
+pre-existing executable.
+
+The finalizer assembles the candidate in a newly empty sibling temporary and
+atomically renames the whole directory to
+`target/release-candidate/<VERSION>/`. It never writes candidate members
+piecemeal into the final path. The six canonical artifact files are
+`assets.win.json`, `RELEASES`, `releases.win.json`, the current full nupkg, the
+versioned setup executable, and the portable zip. A current delta is the seventh
+artifact only when all current ledgers advertise it. The companion manifest is
+written last, making seven or eight files total.
+
+After candidate promotion, the finalizer promotes
+`target/release-evidence/<VERSION>/rust-release-finalization.json`. This receipt
+is outside the candidate and cross-binds its manifest filename and SHA-256,
+source commit, both lock digests, candidate path/count, selection-record hash,
+signing mode, and isolated RustSec source/commit/archive digest/acquisition and
+check times. Receipt bytes are never candidate members.
 
 ## Offline Rust release-manifest verification
 
@@ -62,7 +103,7 @@ full-package ledger; `releases.win.json` uses the raw `NotesHTML` key. This gate
 does not construct, sign, authenticate, or publish a release. Direct publication
 commands remain fail-closed.
 
-## Release notes — cut the CHANGELOG section before a signed pack
+## Release notes — cut the CHANGELOG section before finalization
 
 Per-release notes ship **inside the update feed**: `make package` extracts the
 `CHANGELOG.md` `## [<version>]` section and threads it into `vpk pack` via
@@ -72,9 +113,8 @@ Windows analog of the macOS appcast `<description>`.
 
 **Before a signed release pack, cut the CHANGELOG:** rename `## [Unreleased]` to
 `## [<version>] - <YYYY-MM-DD>` (Keep a Changelog format) so a matching section
-exists. A signed pack (`-Sign` / `SOLSTONE_SIGN=1`) **fails loud** if the section
-is missing — same discipline the macOS `publish-appcast.py` enforces. Unsigned
-dev/local packs warn and pack note-less, so iteration stays frictionless.
+exists. Every finalization, signed or unsigned, fails closed when the section is
+missing; cut and review it before starting the transaction.
 
 ## Update feed — R2 authoritative, optional GitHub mirror
 
@@ -93,14 +133,20 @@ a release.
 
 **Flow** (keeps publication credentials out of package construction):
 
-1. Run `make audit`; a failed RustSec refresh produces no current advisory result
-   and blocks the release.
-2. On the build box: run `scripts/win-package.cmd` with `SOLSTONE_SIGN=1` in the
-   environment for a signed release.
-3. `make pull-releases` may pull the box's `Releases/` into a controlled aggregate
-   workflow. It does not authorize or perform publication. The direct R2 target is
-   a fail-closed guard.
-4. Publication of finalized bytes and provenance to R2 and secondary channels
+1. Run `make audit`, then `make check-release-advisory-config`; a failed refresh,
+   materialization, or real-pin offline advisory check blocks finalization.
+2. On the clean build box, set the full lowercase `EXPECTED_RELEASE_COMMIT` and
+   run `SOLSTONE_SIGN=1 make package` (or the thin `.cmd` wrapper) for a signed
+   candidate.
+3. Run `make prove-rust-release-native
+   RELEASE_DIR=target/release-candidate/<VERSION>`. A green proof atomically adds
+   `target/release-evidence/<VERSION>/windows-native-proof.json` outside the
+   candidate.
+4. `make pull-releases` may pull the box's accumulated `Releases/` into a
+   controlled aggregate workflow. It does not authorize publication and is not a
+   substitute for the finalized candidate and receipts. The direct R2 target is a
+   fail-closed guard.
+5. Publication of finalized bytes and provenance to R2 and secondary channels
    belongs to the aggregate provenance publisher. It must upload immutable artifacts
    before mutable feed metadata. Any GitHub mirror is optional, non-authoritative,
    and never a release gate. It is a future component, not a runnable command
@@ -147,23 +193,49 @@ they do not burn the certificate's finite signature quota or churn the binary's
 SmartScreen reputation hashes.
 
 **Turn signing on for a release:** set `SOLSTONE_SIGN=1` in the build environment
-before packaging — the box packaging wrapper forwards it as `-Sign` to
-`scripts/package.ps1` (you can also pass `-Sign` directly). Without it the pack is
-unsigned.
+before finalization. The thin wrappers select the signed resolver record and the
+xtask transaction; without it the candidate is unsigned and is categorically
+ineligible for native proof.
 
-**Signing environment.** The non-credential release-tool preflight first pins and
-selects `smctl` and the exact x64 SignTool metadata without using either for signing
-or verification. `scripts/package.ps1` passes the selected absolute `smctl` path to
-`packaging/signing/preflight-auth.ps1`; those scripts then read signing configuration and
-credentials from the environment, never from committed source: `SM_HOST`,
+**Signing environment.** The non-credential release-tool preflight pins and
+selects `smctl`, the exact x64 SignTool, and their closed action templates. The
+finalizer runs the selected authentication/signing actions, which read signing
+configuration and credentials from the environment, never from committed source: `SM_HOST`,
 `SM_API_KEY`, `SM_CLIENT_CERT_FILE`, `SM_CLIENT_CERT_PASSWORD`, and
 `SM_KEYPAIR_ALIAS`. The operator supplies these on the build box at sign time;
 they are never committed. The preflight fails fast (with a secret-free message) if
 the environment is not provisioned or the credentials cannot sign.
 
-`package.ps1` never invokes SignTool directly. Emitted-artifact signature and
-content verification belongs to the later validator/finalizer, not this packaging
-rail.
+After Velopack emits the final setup bytes, the finalizer invokes the actual
+resolver-selected SignTool with `/pa /all /v`. It requires one Authenticode
+signature, the public policy leaf thumbprint, trusted chain-policy success, and
+one valid RFC 3161 timestamp chain. Parsed success earns manifest
+`native_tools.signing_mode = "signed-verified"`; process exit or success prose
+alone is insufficient.
+
+## Native proof
+
+`make prove-rust-release-native RELEASE_DIR=<candidate>` first runs strict
+whole-directory classification and hashes the companion manifest as candidate
+identity. Only then does it resolve signed tools. It accepts only
+`signed-verified` candidates with a matching finalization receipt and matching
+nupkg/portable executable baseline.
+
+The command installs only the candidate's canonical versioned setup into a newly
+empty proof-owned `LOCALAPPDATA` root outside `RELEASE_DIR`. The canonical app
+must be absent before setup and created afterward; no existing-install no-op or
+setup fallback is accepted. The installed app, both containers, and manifest
+baseline must agree by SHA-256 and byte count. The explicit installed binary must
+report the candidate version through `--dump-state`, then the selected smoke must
+run with fallback disabled and emit the load-bearing `SMOKE_OK` health/render
+evidence. Post-smoke strict validation and companion bytes must be unchanged.
+
+Success atomically writes
+`target/release-evidence/<VERSION>/windows-native-proof.json`. The receipt records
+only normalized identity, hashes, explicit install/smoke success, isolated-clean
+mode, and UTC proof time; it carries no host, account, credential, certificate, or
+absolute install path. This host-tested orchestration uses fakes; real install,
+certificate, and Session-1 evidence is earned only by running it on the box.
 
 ## Build-box gotchas
 
@@ -191,9 +263,16 @@ untracked non-ignored files or an unmerged index, and snapshots the exact
 committed, staged, and unstaged tracked working tree into a uniquely named,
 verified git bundle carrying the CAS-guarded stable
 `refs/heads/__swsync` ref. It ships the bundle by scp to
-`swbuild.bundle` (no rsync); the box bootstrap hard-checks it out under
-`~/swbuild` and runs `scripts/win-ci.cmd` for the build, tests, contract check,
-and purity check. The caller accepts the run only when the box reports a
-`WIN_CI_HEAD` matching the exact transferred snapshot SHA and includes
-`WIN_CI_OK`; a stale or mismatched
+`swbuild.bundle` with an atomic `target/win-host-ci-source-binding.json` carrying
+the exact snapshot commit and SHA-256 of both `Cargo.lock` and
+`ui/package-lock.json`. The box bootstrap hard-checks it out under `~/swbuild`.
+Before its first build, `scripts/win-ci.cmd` requires a clean checkout and all
+three transferred values. The caller accepts only exactly one matching
+`WIN_CI_HEAD`, `WIN_CI_CARGO_LOCK_SHA256`, and `WIN_CI_UI_LOCK_SHA256`, followed
+by exactly one `WIN_CI_OK`; a missing, duplicate, stale, or mismatched
 acknowledgement fails even when compilation was green.
+
+When `EXPECTED_RELEASE_COMMIT` is set, synchronization enters release mode: it
+refuses synthetic or dirty snapshots and transfers only the clean real commit
+equal to that value. Candidate construction performs no fetch, `ls-remote`,
+provider-CLI, or remote-ref lookup.

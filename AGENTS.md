@@ -69,7 +69,9 @@ charter and license.
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
 | `make check-rust-release-manifest` | offline schema, checkout binding, ledger, current-bundle, and deterministic-render verification; mode selected by `MANIFEST` or `RELEASE_DIR` |
-| `make package` | pinned release-tool preflight → metadata version gate → tracked-lock guard → offline UI install/build → locked release build → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
+| `make check-release-advisory-config` | materialize the isolated release advisory config and prove the real pinned cargo-deny accepts it offline |
+| `make package` | source-bound build-to-finalize transaction → `target/release-candidate/<VERSION>/`; requires full lowercase `EXPECTED_RELEASE_COMMIT` (unsigned unless `SOLSTONE_SIGN=1`) |
+| `make prove-rust-release-native RELEASE_DIR=<candidate>` | strict signed-candidate install and explicit-binary smoke → `target/release-evidence/<VERSION>/windows-native-proof.json` |
 | `make publish-r2` | fail-closed direct-publication guard; R2 publication belongs to the aggregate provenance publisher |
 | `make pull-releases` | pull the box's packed `Releases/` for a controlled aggregate workflow; does not publish |
 | `make publish` | fail-closed direct-publication guard; GitHub publication belongs to the aggregate provenance publisher |
@@ -84,10 +86,10 @@ charter and license.
 | `make test`, `make ui-test`, `make test-scripts`, and the local Rust legs of `make ci` | Host evidence | Linux-host formatting, compilation/tests for the host-testable subset, UI tests, and shell policy; no Windows compilation |
 | `make purity-check` | Cross-target classification evidence | Enumerates every workspace member from `cargo metadata` and inspects each exactly once with `cargo tree --target all --all-features -e normal,build`; the Windows family is forbidden in each strict member's shipped (normal+build) graph. Dev-only reachability is out of scope because dev-dependencies never ship; the reviewed Windows-capable set includes platform/composition/app members and `xtask` build tooling. Unknown or stale exceptions fail. This does not compile or link MSVC code |
 | `make check-rust-release-manifest` | Host evidence | Offline exact-schema and semantic self-check with no environment selector; `MANIFEST=<path>` verifies one manifest and its named sibling bytes without claiming completeness; `RELEASE_DIR=<path>` classifies one exact flat current-only bundle |
-| `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; the caller verifies that the box built the exact transferred snapshot by matching its reported HEAD to the intended snapshot SHA; no app package, install, sign, or smoke |
+| `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; the caller matches the box's reported HEAD, `Cargo.lock` SHA-256, and `ui/package-lock.json` SHA-256 to the transferred binding; no app package, install, sign, or smoke |
 | `scripts/win-app-build.cmd` | Native app-build evidence | Builds the UI and Windows app binary; no package, install, sign, or smoke |
-| `make package` / `scripts/win-package.cmd` | Package-construction evidence | Release app build plus Velopack pack; unsigned unless signing is explicitly enabled; no install or smoke |
-| `SOLSTONE_SIGN=1 scripts/win-package.cmd` → install emitted setup → `make smoke` | Shipped-artifact proof | Exercises the installed signed bytes in the interactive Windows session |
+| `make package` / `scripts/win-package.cmd` | Package-finalization evidence | One source-bound transaction builds, packs, optionally signs and verifies, renders evidence, and atomically promotes the exact current-only candidate; it does not install, smoke, or publish |
+| `make prove-rust-release-native RELEASE_DIR=<candidate>` | Native-proof orchestration | Strictly classifies one signed candidate before selected-tool resolution, then installs and explicitly smokes its bytes; fake seams are host-tested, while a green real receipt is box evidence |
 
 Linux has no compiling cross-target MSVC check because it cannot link the
 Windows MSVC target. `make ci` is a composite gate and still needs npm plus
@@ -111,8 +113,12 @@ CAS-guarded stable `refs/heads/__swsync` ref. A common-directory flock serialize
 overlapping runs; `flock` is required on the Linux driver host, with no unlocked
 fallback. The caller ships the bundle over SSH as `swbuild.bundle` (git bundle +
 scp — no rsync); the box bootstrap hard-checks it out under `~/swbuild` and runs
-`scripts/win-ci.cmd`. The caller accepts the result only when the box's checked-out
-HEAD equals the exact transferred snapshot SHA and `WIN_CI_OK` is present.
+`scripts/win-ci.cmd`. The transferred
+`target/win-host-ci-source-binding.json` carries the exact snapshot commit plus
+the SHA-256 of `Cargo.lock` and `ui/package-lock.json`. Before byte-changing work,
+the box requires a clean checkout and all three values; the caller accepts the
+result only when exactly one matching `WIN_CI_HEAD`,
+`WIN_CI_CARGO_LOCK_SHA256`, and `WIN_CI_UI_LOCK_SHA256` precede `WIN_CI_OK`.
 `WIN_REMOTE_HOST` is supplied by your environment, never committed. The live FlaUI
 smoke + lifecycle matrix stay operator-direct on the box (not part of
 `win-host-ci`).
@@ -249,6 +255,27 @@ KeyLocker via Velopack's `--signTemplate`); signing is opt-in and release-only
 credentials are env-supplied, never committed. Signing covers release artifacts
 only. Package construction performs no publication auth or transport; release
 publication belongs to the aggregate provenance publisher. See `docs/release-runbook.md`.
+
+`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit> make package` is the canonical
+source-bound build-to-finalize transaction. It validates the selected tool/action
+record, local commit lineage and allowed ref, clean source state, and both lock
+digests before cleanup or build. It then runs the advisory gate, UI/app build,
+Velopack pack, optional signing and selected SignTool verification, executable
+cross-container comparison, evidence rendering, strict whole-directory
+classification, and a final source/lock recheck before atomic promotion.
+`Releases/` is an accumulated internal Velopack workspace; it is not the promoted
+release candidate.
+
+The promoted `target/release-candidate/<VERSION>/` contains the six canonical
+current artifacts, a seventh artifact only when the current feeds advertise a
+delta, and the companion manifest: seven or eight files total. The matching
+machine-readable receipt is outside the candidate at
+`target/release-evidence/<VERSION>/rust-release-finalization.json`. For signed
+candidates, `make prove-rust-release-native RELEASE_DIR=<candidate>` performs the
+clean isolated install and explicit-binary smoke and writes
+`target/release-evidence/<VERSION>/windows-native-proof.json`. Neither receipt is
+a candidate member. Direct R2, GitHub, winget, and scoop publication remains
+fail-closed; only the aggregate provenance publisher may publish finalized bytes.
 
 The offline Rust release-manifest verifier has three modes. With no selector it
 runs only committed fixtures and deterministic rendering. `MANIFEST=<path>`

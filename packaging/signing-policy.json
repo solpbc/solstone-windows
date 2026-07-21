@@ -1,0 +1,1 @@
+{"schema":"solstone.signing-policy.v1","authenticode":{"leaf_sha1":"ac5472d41d5f63e339468e41f7b4438126e84860","require_trusted_chain":true,"timestamp_protocol":"rfc3161","require_timestamp":true}}

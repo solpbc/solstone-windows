@@ -17,6 +17,7 @@
     "native_tools",
     "dependency_policy",
     "active_exceptions",
+    "packaged_executable",
     "artifacts"
   ],
   "properties": {
@@ -144,6 +145,23 @@
         "minLength": 1
       },
       "uniqueItems": true
+    },
+    "packaged_executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     },
     "artifacts": {
       "description": "Final distributed bytes after signing, notarization, or repacking.",

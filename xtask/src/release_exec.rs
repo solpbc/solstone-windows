@@ -1,0 +1,294 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+//! Typed, injectable process execution for release tooling.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandOutput {
+    pub status: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandRunnerError {
+    ProgramNotAbsolute,
+    LaunchFailed,
+    StdinWriteFailed,
+    WaitFailed,
+    UnexpectedInvocation,
+    FakeStatePoisoned,
+}
+
+impl fmt::Display for CommandRunnerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProgramNotAbsolute => write!(
+                formatter,
+                "selected command program is not absolute; rerun release-tool preflight and pass its selected executable path"
+            ),
+            Self::LaunchFailed => write!(
+                formatter,
+                "selected command could not be launched; restore the preflight-selected executable and retry"
+            ),
+            Self::StdinWriteFailed => write!(
+                formatter,
+                "selected command did not accept its complete stdin payload; retry from a new transaction"
+            ),
+            Self::WaitFailed => write!(
+                formatter,
+                "selected command could not be observed through completion; retry from a new transaction"
+            ),
+            Self::UnexpectedInvocation => write!(
+                formatter,
+                "command invocation did not match the injected action contract; fix the action order or argv and retry"
+            ),
+            Self::FakeStatePoisoned => write!(
+                formatter,
+                "command witness state is unavailable; recreate the test runner and retry"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommandRunnerError {}
+
+pub trait CommandRunner {
+    fn record_phase(&self, _phase: &'static str) -> Result<(), CommandRunnerError> {
+        Ok(())
+    }
+
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProcessCommandRunner;
+
+impl CommandRunner for ProcessCommandRunner {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        if !program.is_absolute() {
+            return Err(CommandRunnerError::ProgramNotAbsolute);
+        }
+
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(env) = env {
+            command.envs(env);
+        }
+
+        let mut child = command
+            .spawn()
+            .map_err(|_| CommandRunnerError::LaunchFailed)?;
+        if let Some(bytes) = stdin {
+            child
+                .stdin
+                .take()
+                .ok_or(CommandRunnerError::StdinWriteFailed)?
+                .write_all(bytes)
+                .map_err(|_| CommandRunnerError::StdinWriteFailed)?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|_| CommandRunnerError::WaitFailed)?;
+        Ok(CommandOutput {
+            status: output.status.code().unwrap_or(-1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+}
+
+pub mod test_support {
+    use std::collections::{BTreeMap, VecDeque};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use super::{CommandOutput, CommandRunner, CommandRunnerError};
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct CommandInvocation {
+        pub program: PathBuf,
+        pub args: Vec<String>,
+        pub stdin: Option<Vec<u8>>,
+        pub env: Option<BTreeMap<String, String>>,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct FakeCommand {
+        pub invocation: CommandInvocation,
+        pub result: Result<CommandOutput, CommandRunnerError>,
+    }
+
+    impl FakeCommand {
+        pub fn output(program: PathBuf, args: Vec<String>, output: CommandOutput) -> Self {
+            Self {
+                invocation: CommandInvocation {
+                    program,
+                    args,
+                    stdin: None,
+                    env: None,
+                },
+                result: Ok(output),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct FakeCommandRunner {
+        expected: Mutex<VecDeque<FakeCommand>>,
+        witness: Mutex<Vec<CommandInvocation>>,
+    }
+
+    impl FakeCommandRunner {
+        pub fn new(expected: Vec<FakeCommand>) -> Self {
+            Self {
+                expected: Mutex::new(expected.into()),
+                witness: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn witness(&self) -> Result<Vec<CommandInvocation>, CommandRunnerError> {
+            self.witness
+                .lock()
+                .map(|witness| witness.clone())
+                .map_err(|_| CommandRunnerError::FakeStatePoisoned)
+        }
+
+        pub fn remaining(&self) -> Result<usize, CommandRunnerError> {
+            self.expected
+                .lock()
+                .map(|expected| expected.len())
+                .map_err(|_| CommandRunnerError::FakeStatePoisoned)
+        }
+    }
+
+    impl CommandRunner for FakeCommandRunner {
+        fn run(
+            &self,
+            program: &Path,
+            args: &[String],
+            stdin: Option<&[u8]>,
+            env: Option<&BTreeMap<String, String>>,
+        ) -> Result<CommandOutput, CommandRunnerError> {
+            if !program.is_absolute() {
+                return Err(CommandRunnerError::ProgramNotAbsolute);
+            }
+            let invocation = CommandInvocation {
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+                stdin: stdin.map(<[u8]>::to_vec),
+                env: env.cloned(),
+            };
+            self.witness
+                .lock()
+                .map_err(|_| CommandRunnerError::FakeStatePoisoned)?
+                .push(invocation.clone());
+            let expected = self
+                .expected
+                .lock()
+                .map_err(|_| CommandRunnerError::FakeStatePoisoned)?
+                .pop_front()
+                .ok_or(CommandRunnerError::UnexpectedInvocation)?;
+            if expected.invocation != invocation {
+                return Err(CommandRunnerError::UnexpectedInvocation);
+            }
+            expected.result
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::release_exec::test_support::{CommandInvocation, FakeCommand, FakeCommandRunner};
+    use std::path::PathBuf;
+
+    #[test]
+    fn fake_matches_full_typed_invocation_and_records_order() {
+        let program = PathBuf::from("/selected/tool");
+        let args = vec!["first".to_owned(), "second".to_owned()];
+        let env = BTreeMap::from([("PATH".to_owned(), "isolated".to_owned())]);
+        let invocation = CommandInvocation {
+            program: program.clone(),
+            args: args.clone(),
+            stdin: Some(b"request".to_vec()),
+            env: Some(env.clone()),
+        };
+        let output = CommandOutput {
+            status: 7,
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        };
+        let runner = FakeCommandRunner::new(vec![FakeCommand {
+            invocation: invocation.clone(),
+            result: Ok(output.clone()),
+        }]);
+
+        assert_eq!(
+            runner
+                .run(&program, &args, Some(b"request"), Some(&env))
+                .expect("run expected fake command"),
+            output
+        );
+        assert_eq!(runner.witness().expect("read witness"), vec![invocation]);
+        assert_eq!(runner.remaining().expect("read remaining count"), 0);
+    }
+
+    #[test]
+    fn fake_refuses_relative_programs_and_unexpected_argv() {
+        let runner = FakeCommandRunner::new(Vec::new());
+        assert_eq!(
+            runner
+                .run(Path::new("tool"), &[], None, None)
+                .expect_err("relative program must fail"),
+            CommandRunnerError::ProgramNotAbsolute
+        );
+
+        let runner = FakeCommandRunner::new(vec![FakeCommand::output(
+            PathBuf::from("/selected/tool"),
+            vec!["expected".to_owned()],
+            CommandOutput {
+                status: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        )]);
+        assert_eq!(
+            runner
+                .run(
+                    Path::new("/selected/tool"),
+                    &["unexpected".to_owned()],
+                    None,
+                    None
+                )
+                .expect_err("argv drift must fail"),
+            CommandRunnerError::UnexpectedInvocation
+        );
+    }
+}
