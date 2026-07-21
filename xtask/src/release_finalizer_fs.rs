@@ -87,16 +87,17 @@ struct MetadataIdentity {
     inode: u64,
     #[cfg(unix)]
     mode: u32,
+    // Windows file identity is limited to the stable `MetadataExt` surface.
+    // `volume_serial_number`/`file_index` require the unstable `windows_by_handle`
+    // feature (nightly-only), so they are intentionally omitted on the pinned
+    // stable toolchain; the attributes/timestamps/len below remain a strong
+    // change-detection signature and confinement is enforced separately.
     #[cfg(windows)]
     attributes: u32,
     #[cfg(windows)]
     creation_time: u64,
     #[cfg(windows)]
     last_write_time: u64,
-    #[cfg(windows)]
-    volume_serial_number: Option<u32>,
-    #[cfg(windows)]
-    file_index: Option<u64>,
 }
 
 /// A newly-created candidate directory which can only promote beside itself.
@@ -768,10 +769,6 @@ impl MetadataIdentity {
             creation_time: metadata.creation_time(),
             #[cfg(windows)]
             last_write_time: metadata.last_write_time(),
-            #[cfg(windows)]
-            volume_serial_number: metadata.volume_serial_number(),
-            #[cfg(windows)]
-            file_index: metadata.file_index(),
         }
     }
 }
