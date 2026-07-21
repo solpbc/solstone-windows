@@ -21,7 +21,7 @@ use crate::release_finalizer_fs::{
     create_candidate_temp, create_contained_directory, DeletionPlan, ReleaseCleanupCatalog,
 };
 use crate::release_receipt::{
-    stage_finalization_receipt, AdvisoryDatabaseReceipt, CandidateReceipt,
+    candidate_relative_path, stage_finalization_receipt, AdvisoryDatabaseReceipt, CandidateReceipt,
     CompanionManifestReceipt, FinalizationReceipt, FINALIZATION_RECEIPT_SCHEMA,
 };
 use crate::release_selection::{
@@ -35,7 +35,6 @@ use crate::rust_release_manifest::{
 };
 use crate::version_gate;
 
-const RELEASE_VERSION: &str = "0.2.11";
 const STAGED_EXECUTABLE: &str = "solstone-windows-app.exe";
 const SIGNING_POLICY: &str = "packaging/signing-policy.json";
 
@@ -80,7 +79,6 @@ pub enum FinalizeError {
     SelectionInvalid,
     SelectionModeMismatch,
     VersionAuthority,
-    VersionMismatch,
     SourceBinding,
     Cleanup,
     TransactionDirectory,
@@ -129,10 +127,6 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "selected Cargo could not establish the metadata version authority; restore the locked checkout and selected Cargo"
             ),
-            Self::VersionMismatch => write!(
-                formatter,
-                "cargo metadata version is not 0.2.11 for this release transaction; check out the reviewed 0.2.11 source"
-            ),
             Self::SourceBinding => write!(
                 formatter,
                 "release source binding failed; restore the exact clean expected commit, allowed branch, and both tracked locks"
@@ -151,7 +145,7 @@ impl fmt::Display for FinalizeError {
             ),
             Self::ReleaseNotes => write!(
                 formatter,
-                "CHANGELOG lacks one nonempty 0.2.11 release section; cut the reviewed release notes and restart"
+                "CHANGELOG lacks one nonempty section for the cargo-metadata release version; cut the reviewed release notes and restart"
             ),
             Self::SigningRuntime => write!(
                 formatter,
@@ -279,9 +273,6 @@ pub fn finalize<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         runner,
     )
     .map_err(|_| FinalizeError::VersionAuthority)?;
-    if version != RELEASE_VERSION {
-        return Err(FinalizeError::VersionMismatch);
-    }
     let source_verifier =
         SourceBindingVerifier::new(checkout.canonical_path(), runtime.git_program, runner)
             .map_err(|_| FinalizeError::SourceBinding)?;
@@ -566,7 +557,8 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     rust_release_manifest::validate_release_dir_with_facts(&candidate.path(), &facts)
         .map_err(|_| FinalizeError::ManifestValidation)?;
     let manifest_sha256 = sha256_hex(&manifest_bytes);
-    let candidate_relative = format!("target/release-candidate/{version}");
+    let candidate_relative =
+        candidate_relative_path(version).map_err(|_| FinalizeError::EvidenceConstruction)?;
     let receipt = finalization_receipt(
         version,
         source,
@@ -990,7 +982,8 @@ fn finalization_receipt(
             sha256: manifest_sha256.to_owned(),
         },
         candidate: CandidateReceipt {
-            relative_path: format!("target/release-candidate/{version}"),
+            relative_path: candidate_relative_path(version)
+                .expect("finalizer version was already validated by cargo metadata"),
             file_count,
         },
         selection_record_sha256: sha256_hex(selection_record),

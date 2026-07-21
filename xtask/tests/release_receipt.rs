@@ -168,7 +168,7 @@ fn native_proof_render_is_byte_exact_and_time_is_injected() {
 }
 
 #[test]
-fn staged_receipt_renames_atomically_and_refuses_existing_final_target() {
+fn finalization_receipt_stages_then_atomically_replaces_existing_final_target() {
     let checkout = TestCheckout::new("atomic");
     let receipt = finalization_receipt();
     let expected = render_finalization_receipt(&receipt).expect("render receipt");
@@ -190,9 +190,27 @@ fn staged_receipt_renames_atomically_and_refuses_existing_final_target() {
         fs::read(checkout.path().join(&final_relative)).expect("read final receipt"),
         expected
     );
+    let mut replacement = receipt;
+    replacement.advisory_checked_at = "2026-07-21T11:30:00Z".to_owned();
+    let replacement_bytes =
+        render_finalization_receipt(&replacement).expect("render replacement receipt");
+    let replacement_stage =
+        stage_finalization_receipt(checkout.path(), &replacement).expect("stage replacement");
     assert_eq!(
-        stage_finalization_receipt(checkout.path(), &receipt).expect_err("refuse final target"),
-        ReceiptError::FinalTargetExists
+        fs::read(
+            checkout
+                .path()
+                .join(replacement_stage.final_relative_path())
+        )
+        .expect("read prior final receipt before replacement"),
+        expected
+    );
+    let replacement_relative = replacement_stage
+        .promote()
+        .expect("atomically replace finalization receipt");
+    assert_eq!(
+        fs::read(checkout.path().join(replacement_relative)).expect("read replacement receipt"),
+        replacement_bytes
     );
 }
 

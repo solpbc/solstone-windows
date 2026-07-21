@@ -49,6 +49,18 @@ ASSERTIONS=$((ASSERTIONS + 1))
 assert_contains "github authority rule" "$authority_output" "authority.md:1:github-authority:"
 assert_contains "github authority remediation" "$authority_output" "name R2 as authoritative"
 
+AUTHORITY_ADJACENT=$TMP_ROOT/authority-adjacent
+mkdir "$AUTHORITY_ADJACENT"
+printf '%s\n' \
+  '- GitHub Releases hosts the update feed for Windows.' \
+  '- A separate developer preview mirror is optional and non-authoritative.' \
+  > "$AUTHORITY_ADJACENT/authority-adjacent.md"
+if authority_adjacent_output=$(sh "$SCANNER" --root "$AUTHORITY_ADJACENT" authority-adjacent.md 2>&1); then
+  fail "adjacent authority qualifier must not mask a violating list item"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains "adjacent github authority rule" "$authority_adjacent_output" "authority-adjacent.md:1:github-authority:"
+
 MIRROR=$TMP_ROOT/mirror
 mkdir "$MIRROR"
 printf '%s\n' 'The GitHub mirror must succeed and gates every release.' > "$MIRROR/mirror.md"
@@ -59,6 +71,20 @@ ASSERTIONS=$((ASSERTIONS + 1))
 assert_contains "required mirror rule" "$mirror_output" "mirror.md:1:required-mirror:"
 assert_contains "required mirror remediation" "$mirror_output" "cannot gate release"
 
+MIRROR_ADJACENT=$TMP_ROOT/mirror-adjacent
+mkdir "$MIRROR_ADJACENT"
+printf '%s\n' \
+  '| Surface | Policy |' \
+  '| --- | --- |' \
+  '| GitHub mirror | Must succeed and gates release |' \
+  '| Documentation mirror | Optional and cannot gate release |' \
+  > "$MIRROR_ADJACENT/mirror-adjacent.md"
+if mirror_adjacent_output=$(sh "$SCANNER" --root "$MIRROR_ADJACENT" mirror-adjacent.md 2>&1); then
+  fail "adjacent mirror qualifier must not mask a violating table row"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains "adjacent required mirror rule" "$mirror_adjacent_output" "mirror-adjacent.md:3:required-mirror:"
+
 CHAIN=$TMP_ROOT/chain
 mkdir "$CHAIN"
 printf '%s\n' '```sh' 'cargo build --locked --release' 'vpk pack --packId Solstone' '```' > "$CHAIN/chain.md"
@@ -68,6 +94,21 @@ fi
 ASSERTIONS=$((ASSERTIONS + 1))
 assert_contains "build-to-pack hand-chain rule" "$chain_output" "chain.md:1:hand-chain:"
 assert_contains "build-to-pack remediation" "$chain_output" "make package/finalizer"
+
+CHAIN_ADJACENT=$TMP_ROOT/chain-adjacent
+mkdir "$CHAIN_ADJACENT"
+printf '%s\n' \
+  '```sh' \
+  'cargo build --locked --release' \
+  'vpk pack --packId Solstone' \
+  '```' \
+  '- Never hand-chain a separate diagnostic build with publication.' \
+  > "$CHAIN_ADJACENT/chain-adjacent.md"
+if chain_adjacent_output=$(sh "$SCANNER" --root "$CHAIN_ADJACENT" chain-adjacent.md 2>&1); then
+  fail "adjacent prohibition must not mask a violating fenced command block"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains "adjacent hand-chain rule" "$chain_adjacent_output" "chain-adjacent.md:1:hand-chain:"
 
 UPLOAD=$TMP_ROOT/upload
 mkdir "$UPLOAD"

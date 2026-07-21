@@ -293,7 +293,7 @@ assert_line_order \
   "box source binding precedes byte-changing work" \
   "$REPO_ROOT/scripts/win-ci.cmd" \
   "git rev-parse HEAD" \
-  "git status --porcelain=v1 --untracked-files=all" \
+  "git status --porcelain=v1 --untracked-files=all --ignore-submodules=none" \
   "Get-FileHash -LiteralPath 'Cargo.lock'" \
   "Get-FileHash -LiteralPath 'ui/package-lock.json'" \
   "echo === cargo build --locked"
@@ -691,7 +691,7 @@ assert_not_contains "release transfer never creates a synthetic snapshot" "$(cat
 assert_line_order \
   "release binding precedes transfer" \
   "$FAKE_WITNESS" \
-  "git|status|--porcelain=v1|-z|--untracked-files=all" \
+  "git|status|--porcelain=v1|-z|--untracked-files=all|--ignore-submodules=none" \
   "git|rev-parse|HEAD" \
   "git|show|$FAKE_GIT_SHA:Cargo.lock" \
   "fake@example.invalid:swbuild.bundle"

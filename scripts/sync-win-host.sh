@@ -101,7 +101,7 @@ if [ -n "${EXPECTED_RELEASE_COMMIT:-}" ]; then
     fail_phase "$phase" 1
   fi
   if status_temp_file=$(mktemp "$repo_root/target/win-host-ci.status.XXXXXX") &&
-    "$GIT" status --porcelain=v1 -z --untracked-files=all >"$status_temp_file"; then
+    "$GIT" status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none >"$status_temp_file"; then
     :
   else
     fail_phase "$phase" "$?"

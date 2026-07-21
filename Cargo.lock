@@ -6438,6 +6438,7 @@ dependencies = [
  "sha1 0.10.6",
  "sha2 0.10.9",
  "syn 2.0.118",
+ "tempfile",
  "toml 0.8.2",
  "zip",
 ]

@@ -5,11 +5,12 @@ Velopack's `--signTemplate` (DigiCert KeyLocker / `smctl`), covering **release
 artifacts only** — never source, never intermediate build files (the
 certificate's finite signature quota).
 
-- `scripts/package.ps1` builds the `--signTemplate` and signs only when packaged
-  with `-Sign` (the release path — set `SOLSTONE_SIGN=1` on the build box and the
-  packaging wrapper forwards it). Without it the pack is unsigned, the dev/local
-  default, so iterate and delta-update-validation packs don't burn signature quota
-  or churn SmartScreen reputation hashes.
+- `scripts/package.ps1` is the thin preflight/version/lock wrapper that delegates
+  once to the xtask finalizer. With `-Sign` (or exactly `SOLSTONE_SIGN=1`) the
+  xtask transaction supplies the resolver-selected `--signTemplate` and verifies
+  the final setup with selected SignTool. Without it the pack is unsigned, the
+  dev/local default, so iteration packs do not burn signature quota or churn
+  SmartScreen reputation hashes.
 - `../preflight-release-tools.ps1` is the non-credential, network-free tool check.
   In signed mode it selects exact smctl and SignTool identities without signing or
   verification.

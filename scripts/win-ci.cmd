@@ -32,9 +32,9 @@ for /f "usebackq tokens=*" %%i in (`git rev-parse HEAD`) do set "WIN_CI_HEAD=%%i
 if not defined WIN_CI_HEAD ( echo ERROR: git rev-parse HEAD returned no commit; restore the transferred checkout and retry & exit /b 1 )
 if not "%WIN_CI_HEAD%"=="%EXPECTED_RELEASE_COMMIT%" ( echo ERROR: transferred HEAD does not match EXPECTED_RELEASE_COMMIT; restore the transferred bundle and retry & exit /b 1 )
 
-git status --porcelain=v1 --untracked-files=all >nul 2>&1 || ( echo ERROR: git status failed; restore the transferred checkout and retry & exit /b 1 )
+git status --porcelain=v1 --untracked-files=all --ignore-submodules=none >nul 2>&1 || ( echo ERROR: git status failed; restore the transferred checkout and retry & exit /b 1 )
 set "WIN_CI_DIRTY="
-for /f "usebackq delims=" %%i in (`git status --porcelain=v1 --untracked-files=all`) do set "WIN_CI_DIRTY=1"
+for /f "usebackq delims=" %%i in (`git status --porcelain=v1 --untracked-files=all --ignore-submodules=none`) do set "WIN_CI_DIRTY=1"
 if defined WIN_CI_DIRTY ( echo ERROR: transferred checkout is dirty; restore the exact clean bundle and retry & exit /b 1 )
 
 set "WIN_CI_CARGO_LOCK_SHA256="

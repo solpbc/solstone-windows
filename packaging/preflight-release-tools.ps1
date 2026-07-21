@@ -141,7 +141,12 @@ Require-String $Contract.tools.signtool.expected.path "tools.signtool.expected.p
 Require-String $Contract.tools.signtool.expected.productVersion "tools.signtool.expected.productVersion"
 Require-String $Contract.tools.signtool.expected.originalFilename "tools.signtool.expected.originalFilename"
 
-$SignEnabled = $Sign -or -not [string]::IsNullOrWhiteSpace($env:SOLSTONE_SIGN)
+$SignEnvironment = [string]$env:SOLSTONE_SIGN
+if ($SignEnvironment.Length -ne 0 -and $SignEnvironment -ne "1") {
+    [Console]::Error.WriteLine("ERROR: SOLSTONE_SIGN must be exactly 1 when signing is requested; unset it for unsigned preflight and retry.")
+    exit 1
+}
+$SignEnabled = $Sign -or $SignEnvironment -eq "1"
 $Errors = New-Object System.Collections.Generic.List[string]
 $Selections = [ordered]@{}
 $MsvcEnvironment = $null

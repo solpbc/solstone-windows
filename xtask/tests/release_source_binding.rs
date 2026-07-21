@@ -3,10 +3,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use xtask::release_exec::test_support::{FakeCommand, FakeCommandRunner};
-use xtask::release_exec::CommandOutput;
+use xtask::release_exec::{CommandOutput, ProcessCommandRunner};
 use xtask::release_source_binding::{LockFile, SourceBindingError, SourceBindingVerifier};
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -98,7 +99,13 @@ fn initial_commands(root: &TestCheckout, checkout_ref: &str) -> Vec<FakeCommand>
         ),
         git_command(
             root,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
             0,
             b"",
         ),
@@ -133,7 +140,13 @@ fn reverify_commands(root: &TestCheckout, checkout_ref: &str) -> Vec<FakeCommand
         ),
         git_command(
             root,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
             0,
             b"",
         ),
@@ -306,7 +319,13 @@ fn tracked_untracked_and_unmerged_statuses_are_all_dirty() {
         commands.truncate(5);
         commands[4] = git_command(
             &root,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
             0,
             status,
         );
@@ -318,6 +337,104 @@ fn tracked_untracked_and_unmerged_statuses_are_all_dirty() {
             SourceBindingError::DirtyCheckout
         );
     }
+}
+
+#[test]
+fn configured_ignored_dirty_submodule_is_still_rejected_by_real_git() {
+    let git = absolute_git();
+    let parent = TestCheckout::new("real-submodule-parent");
+    let child = TestCheckout::new("real-submodule-child");
+    init_repository(&git, &child.root);
+    child.write("member.txt", b"clean submodule bytes\n");
+    git_ok(&git, &child.root, &["add", "."]);
+    git_ok(&git, &child.root, &["commit", "-m", "submodule fixture"]);
+
+    init_repository(&git, &parent.root);
+    git_ok(&git, &parent.root, &["add", "."]);
+    git_ok(&git, &parent.root, &["commit", "-m", "parent fixture"]);
+    git_ok(
+        &git,
+        &parent.root,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            child.root.to_str().expect("UTF-8 submodule path"),
+            "vendor/sub",
+        ],
+    );
+    git_ok(&git, &parent.root, &["commit", "-am", "add submodule"]);
+    git_ok(
+        &git,
+        &parent.root,
+        &["config", "submodule.vendor/sub.ignore", "all"],
+    );
+    fs::write(
+        parent.root.join("vendor/sub/member.txt"),
+        b"dirty submodule\n",
+    )
+    .expect("dirty submodule worktree");
+
+    let default_status = git_output(
+        &git,
+        &parent.root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    );
+    assert!(
+        default_status.is_empty(),
+        "fixture must mask default submodule dirt"
+    );
+    let expected = String::from_utf8(git_output(&git, &parent.root, &["rev-parse", "HEAD"]))
+        .expect("HEAD is UTF-8")
+        .trim()
+        .to_owned();
+    let runner = ProcessCommandRunner;
+    let verifier = SourceBindingVerifier::new(&parent.root, &git, &runner)
+        .expect("create real-Git source verifier");
+    assert_eq!(
+        verifier
+            .verify(&expected)
+            .expect_err("explicit submodule status must reject dirt"),
+        SourceBindingError::DirtyCheckout
+    );
+}
+
+fn absolute_git() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("PATH must be available"))
+        .flat_map(|directory| [directory.join("git"), directory.join("git.exe")].into_iter())
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| fs::canonicalize(candidate).ok())
+        .expect("real Git executable must be available for source-binding test")
+}
+
+fn init_repository(git: &Path, root: &Path) {
+    git_ok(git, root, &["init", "-b", "main"]);
+    git_ok(git, root, &["config", "user.email", "tests@solstone.app"]);
+    git_ok(git, root, &["config", "user.name", "solstone tests"]);
+}
+
+fn git_ok(git: &Path, root: &Path, args: &[&str]) {
+    let output = Command::new(git)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("run fixture Git");
+    assert!(
+        output.status.success(),
+        "fixture Git failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn git_output(git: &Path, root: &Path, args: &[&str]) -> Vec<u8> {
+    let output = Command::new(git)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("run fixture Git");
+    assert!(output.status.success(), "fixture Git command must succeed");
+    output.stdout
 }
 
 #[test]
@@ -400,7 +517,13 @@ fn reverify_rejects_head_ref_and_status_drift() {
         (
             git_command(
                 &root,
-                &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignore-submodules=none",
+                ],
                 0,
                 b"?? drift\0",
             ),

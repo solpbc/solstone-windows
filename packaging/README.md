@@ -32,8 +32,9 @@ coexistence model. winget manifest reference: [`winget/`](winget/).
 
 ## Build
 
-`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit> make package` runs the one
-source-bound build-to-finalize transaction. `Releases/` is an internal,
+`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit>
+SOLSTONE_ADVISORY_TREE_SHA256=<reviewed-lowercase-digest> make package` runs the
+one source-bound build-to-finalize transaction. `Releases/` is an internal,
 accumulated Velopack workspace and is distinct from the promoted
 `target/release-candidate/<VERSION>/` current-only six/seven-artifact bundle plus
 its companion manifest (seven/eight files total). Finalization receipts live

@@ -63,7 +63,7 @@ const UNSIGNED_NATIVE_KEYS: &[&str] = &[
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BundleNames {
+pub struct BundleNames {
     companion: String,
     assets: &'static str,
     releases: &'static str,
@@ -75,7 +75,7 @@ pub(crate) struct BundleNames {
 }
 
 impl BundleNames {
-    pub(crate) fn for_version(version: &str) -> Self {
+    pub fn for_version(version: &str) -> Self {
         Self {
             companion: companion_basename(),
             assets: "assets.win.json",
@@ -88,7 +88,7 @@ impl BundleNames {
         }
     }
 
-    pub(crate) fn artifact_names(&self, has_delta: bool) -> BTreeSet<String> {
+    pub fn artifact_names(&self, has_delta: bool) -> BTreeSet<String> {
         let mut names = BTreeSet::from([
             self.assets.to_owned(),
             self.releases.to_owned(),
@@ -103,27 +103,35 @@ impl BundleNames {
         names
     }
 
-    pub(crate) fn full_package(&self) -> &str {
+    pub fn full_package(&self) -> &str {
         &self.full
     }
 
-    pub(crate) fn delta_package(&self) -> &str {
+    pub fn delta_package(&self) -> &str {
         &self.delta
     }
 
-    pub(crate) fn assets(&self) -> &'static str {
+    pub fn assets(&self) -> &'static str {
         self.assets
     }
 
-    pub(crate) fn setup(&self) -> &str {
+    pub fn releases(&self) -> &'static str {
+        self.releases
+    }
+
+    pub fn release_feed(&self) -> &'static str {
+        self.release_feed
+    }
+
+    pub fn setup(&self) -> &str {
         &self.setup
     }
 
-    pub(crate) fn portable(&self) -> &'static str {
+    pub fn portable(&self) -> &'static str {
         self.portable
     }
 
-    pub(crate) fn velopack_setup_exe() -> &'static str {
+    pub fn velopack_setup_exe() -> &'static str {
         "Solstone-win-Setup.exe"
     }
 }
@@ -388,7 +396,9 @@ impl fmt::Display for ManifestError {
             }
             Self::SourceDirty => "checkout has uncommitted source changes",
             Self::CargoLockMismatch => "manifest lock digest does not match checkout authority",
-            Self::PackagedExecutableInvalid => "manifest packaged executable baseline is invalid",
+            Self::PackagedExecutableInvalid => {
+                "manifest packaged executable baseline is invalid; rebuild both containers and render evidence from the verified executable digest and positive byte count"
+            }
             Self::RustcEvidenceMismatch => {
                 "manifest rustc evidence does not match the canonical projection"
             }
@@ -1115,6 +1125,10 @@ fn lower_hex(bytes: &[u8]) -> String {
 
 pub fn expected_artifact_names(version: &str, has_delta: bool) -> BTreeSet<String> {
     BundleNames::for_version(version).artifact_names(has_delta)
+}
+
+pub fn default_velopack_setup_basename() -> &'static str {
+    BundleNames::velopack_setup_exe()
 }
 
 pub fn validate_manifest_with_facts(

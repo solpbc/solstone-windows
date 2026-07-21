@@ -12,7 +12,7 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Refresh RustSec data + check current advisories | `make audit` |
 | Prove the materialized release advisory config with cargo-deny 0.20.2 offline | `make check-release-advisory-config` |
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
-| Source-bound build and atomic finalization | `EXPECTED_RELEASE_COMMIT=<commit> make package` |
+| Source-bound build and atomic finalization | `EXPECTED_RELEASE_COMMIT=<commit> SOLSTONE_ADVISORY_TREE_SHA256=<digest> make package` |
 | Prove one exact signed candidate by isolated install and explicit smoke | `make prove-rust-release-native RELEASE_DIR=target/release-candidate/<VERSION>` |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
 | R2 direct-publication guard (**primary channel remains R2**) | `make publish-r2` (always fails closed) |
@@ -45,7 +45,16 @@ accepts the generated config offline. The release transaction itself requires a
 clean, full, non-shallow RustSec snapshot no older than 24 hours and earns
 `advisory_checked_at` only after the offline advisory check succeeds.
 
-`EXPECTED_RELEASE_COMMIT=<commit> make package` delegates through
+Review the isolated RustSec repository at the intended full commit before
+finalization. From that reviewed repository, compute the archive-tree digest
+with `git -C <isolated-advisory-db-repo> archive --format=tar HEAD | sha256sum`
+and set its 64-lowercase-hex result as `SOLSTONE_ADVISORY_TREE_SHA256`. This is an
+independent operator input: do not auto-derive it inside finalization from the
+same database being checked, because that would make swapped-database detection
+circular.
+
+`EXPECTED_RELEASE_COMMIT=<commit> SOLSTONE_ADVISORY_TREE_SHA256=<digest> make
+package` delegates through
 `scripts/package.ps1` to the single xtask finalizer. That transaction owns npm
 materialization/build, the locked release build, Velopack packing, optional
 KeyLocker signing, selected SignTool verification, executable cross-container
@@ -135,9 +144,9 @@ a release.
 
 1. Run `make audit`, then `make check-release-advisory-config`; a failed refresh,
    materialization, or real-pin offline advisory check blocks finalization.
-2. On the clean build box, set the full lowercase `EXPECTED_RELEASE_COMMIT` and
-   run `SOLSTONE_SIGN=1 make package` (or the thin `.cmd` wrapper) for a signed
-   candidate.
+2. On the clean build box, set the full lowercase `EXPECTED_RELEASE_COMMIT`, set
+   the independently reviewed `SOLSTONE_ADVISORY_TREE_SHA256`, and run
+   `SOLSTONE_SIGN=1 make package` (or the thin `.cmd` wrapper) for a signed candidate.
 3. Run `make prove-rust-release-native
    RELEASE_DIR=target/release-candidate/<VERSION>`. A green proof atomically adds
    `target/release-evidence/<VERSION>/windows-native-proof.json` outside the
@@ -215,9 +224,10 @@ alone is insufficient.
 
 ## Native proof
 
-`make prove-rust-release-native RELEASE_DIR=<candidate>` first runs strict
-whole-directory classification and hashes the companion manifest as candidate
-identity. Only then does it resolve signed tools. It accepts only
+`make prove-rust-release-native RELEASE_DIR=<candidate>` first acquires read-only
+checkout facts, then runs strict whole-directory classification and hashes the
+companion manifest as candidate identity. Only then does it resolve native
+action tools for signed preflight, install, and smoke. It accepts only
 `signed-verified` candidates with a matching finalization receipt and matching
 nupkg/portable executable baseline.
 

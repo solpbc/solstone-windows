@@ -9,8 +9,20 @@ setlocal enableextensions
 cd /d "%~dp0.." || exit /b 1
 
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+if not defined EXPECTED_RELEASE_COMMIT (
+  echo ERROR: EXPECTED_RELEASE_COMMIT is required; set the full lowercase 40-hex release commit and retry. 1>&2
+  exit /b 1
+)
+if not defined SOLSTONE_ADVISORY_TREE_SHA256 (
+  echo ERROR: SOLSTONE_ADVISORY_TREE_SHA256 is required; supply the reviewed isolated RustSec archive digest and retry. 1>&2
+  exit /b 1
+)
 set "SIGN_ARG="
-if defined SOLSTONE_SIGN set "SIGN_ARG=-Sign"
+if defined SOLSTONE_SIGN if not "%SOLSTONE_SIGN%"=="1" (
+  echo ERROR: SOLSTONE_SIGN must be exactly 1 when signing is requested; unset it for unsigned finalization and retry. 1>&2
+  exit /b 1
+)
+if "%SOLSTONE_SIGN%"=="1" set "SIGN_ARG=-Sign"
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 %SIGN_ARG%
 if errorlevel 1 exit /b 1

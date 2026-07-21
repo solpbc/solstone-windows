@@ -40,7 +40,7 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 
 help:
 	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native smoke screenshots journal-live run clean"
-	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT)"
+	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT and SOLSTONE_ADVISORY_TREE_SHA256)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
@@ -231,12 +231,22 @@ package:
 	    echo "ERROR: EXPECTED_RELEASE_COMMIT is required; set it to the full lowercase 40-hex release commit and retry." >&2; \
 	    exit 1; \
 	  fi; \
+	  advisory_digest="$${SOLSTONE_ADVISORY_TREE_SHA256:-}"; \
+	  if [ "$${#advisory_digest}" -ne 64 ]; then \
+	    echo "ERROR: SOLSTONE_ADVISORY_TREE_SHA256 is required as 64 lowercase hex; supply the reviewed isolated RustSec archive digest and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  case "$$advisory_digest" in *[!0-9a-f]*) echo "ERROR: SOLSTONE_ADVISORY_TREE_SHA256 is required as 64 lowercase hex; supply the reviewed isolated RustSec archive digest and retry." >&2; exit 1 ;; esac; \
 	  sign_arg=; \
-	  if [ -n "$${SOLSTONE_SIGN:-}" ]; then sign_arg=-Sign; fi; \
+	  case "$${SOLSTONE_SIGN:-}" in \
+	    "") ;; \
+	    1) sign_arg=-Sign ;; \
+	    *) echo "ERROR: SOLSTONE_SIGN must be exactly 1 when signing is requested; unset it for unsigned finalization and retry." >&2; exit 1 ;; \
+	  esac; \
 	  if [ -n "$$sign_arg" ]; then \
-	    $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign; \
+	    GIT="$(GIT)" $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign; \
 	  else \
-	    $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1; \
+	    GIT="$(GIT)" $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1; \
 	  fi
 
 # Strict native install/smoke proof for one already-finalized signed candidate.

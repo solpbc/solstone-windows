@@ -12,7 +12,6 @@
 //! - `rust-release-manifest prove-native` — install and smoke one exact signed finalized candidate.
 //! - `purity-check` — fail if the `windows` family reaches any strict workspace member's shipped graph (every member except the reviewed Windows-capable exception set), even target-gated; members come from `cargo metadata`, with normal/build traversal under `--target all --all-features`.
 //! - `version-gate [--root <path>]` — resolve the product version from cargo metadata and verify every committed release version surface.
-//! - `package` — Velopack packaging (delegates to the Windows script; a stub off the build box).
 //! - `dev` — developer convenience launcher (stub).
 
 use std::io::Read;
@@ -58,11 +57,10 @@ fn main() -> ExitCode {
         }
         Some("purity-check") => cmd_purity_check(),
         Some("version-gate") => cmd_version_gate(&args),
-        Some("package") => cmd_package(),
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | purity-check | version-gate [--root <path>] | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  version-gate [--root <path>]: verify every committed release version surface"
+                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | purity-check | version-gate [--root <path>] | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
         }
@@ -175,12 +173,18 @@ fn cmd_rust_release_manifest_finalize(args: &[String]) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let Some(advisory_tree_sha256) = std::env::var("SOLSTONE_ADVISORY_TREE_SHA256")
-        .ok()
-        .filter(|value| !value.is_empty())
+    let Some(advisory_tree_sha256) =
+        std::env::var("SOLSTONE_ADVISORY_TREE_SHA256")
+            .ok()
+            .filter(|value| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
     else {
         eprintln!(
-            "rust release finalizer failed: SOLSTONE_ADVISORY_TREE_SHA256 is missing; supply the reviewed isolated RustSec archive digest and retry"
+            "rust release finalizer failed: SOLSTONE_ADVISORY_TREE_SHA256 is missing or is not 64 lowercase hex; supply the reviewed isolated RustSec archive digest and retry"
         );
         return ExitCode::FAILURE;
     };
@@ -483,11 +487,6 @@ fn cmd_purity_check() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn cmd_package() -> ExitCode {
-    eprintln!("xtask package: delegate to scripts/package.ps1 on the Windows build box (not yet implemented here)");
-    ExitCode::SUCCESS
 }
 
 fn cmd_dev() -> ExitCode {

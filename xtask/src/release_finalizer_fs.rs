@@ -18,13 +18,13 @@ use crate::artifact_fs::{
     self, check_case_collision, validate_relative_path, verify_contained_path, ContainedRoot,
     UnixModePolicy,
 };
+use crate::release_receipt::{
+    candidate_relative_path, evidence_relative_path, CANDIDATE_ROOT, FINALIZATION_RECEIPT_FILENAME,
+    FINALIZATION_RECEIPT_TEMP, WINDOWS_NATIVE_PROOF_FILENAME,
+};
 use crate::rust_release_manifest::{companion_basename, BundleNames};
 
 const RELEASES_DIR: &str = "Releases";
-const CANDIDATE_DIR: &str = "target/release-candidate";
-pub(crate) const FINALIZATION_RECEIPT: &str = "rust-release-finalization.json";
-pub(crate) const FINALIZATION_RECEIPT_TEMP: &str = ".rust-release-finalization.json.tmp";
-pub(crate) const WINDOWS_NATIVE_PROOF: &str = "windows-native-proof.json";
 const TEMP_NONCE_ATTEMPTS: usize = 16;
 
 static NEXT_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
@@ -245,14 +245,23 @@ impl ReleaseCleanupCatalog {
             ),
             CatalogTarget::directory("target/vpk-stage", "target"),
             CatalogTarget::file(format!("target/release-notes-{version_text}.md"), "target"),
-            CatalogTarget::directory(format!("{CANDIDATE_DIR}/{version_text}"), CANDIDATE_DIR),
+            CatalogTarget::directory(
+                candidate_relative_path(&version_text)
+                    .map_err(|_| ReleaseFinalizerFsError::InvalidVersion)?,
+                CANDIDATE_ROOT,
+            ),
             CatalogTarget::file(
-                format!("target/release-evidence/{version_text}/{FINALIZATION_RECEIPT_TEMP}"),
-                format!("target/release-evidence/{version_text}"),
+                format!(
+                    "{}/{FINALIZATION_RECEIPT_TEMP}",
+                    evidence_relative_path(&version_text)
+                        .map_err(|_| ReleaseFinalizerFsError::InvalidVersion)?
+                ),
+                evidence_relative_path(&version_text)
+                    .map_err(|_| ReleaseFinalizerFsError::InvalidVersion)?,
             ),
         ]);
 
-        let candidate_parent = CANDIDATE_DIR.to_owned();
+        let candidate_parent = CANDIDATE_ROOT.to_owned();
         if existing_relative(&checkout_root, &canonical_checkout, &candidate_parent)? {
             let parent = verify_existing(&checkout_root, &canonical_checkout, &candidate_parent)?;
             if !parent.metadata().file_type().is_dir() {
@@ -263,37 +272,38 @@ impl ReleaseCleanupCatalog {
             let prefix = format!(".{version_text}.finalize-");
             let suffix = ".tmp";
             let mut folded_temps = BTreeMap::new();
-            let entries = fs::read_dir(checkout_root.join(CANDIDATE_DIR))
-                .map_err(|_| confinement(CANDIDATE_DIR))?;
+            let entries = fs::read_dir(checkout_root.join(CANDIDATE_ROOT))
+                .map_err(|_| confinement(CANDIDATE_ROOT))?;
             for entry in entries {
-                let entry = entry.map_err(|_| confinement(CANDIDATE_DIR))?;
+                let entry = entry.map_err(|_| confinement(CANDIDATE_ROOT))?;
                 let name = entry
                     .file_name()
                     .into_string()
-                    .map_err(|_| confinement(CANDIDATE_DIR))?;
+                    .map_err(|_| confinement(CANDIDATE_ROOT))?;
                 if is_candidate_temp_name(
                     &name.to_ascii_lowercase(),
                     &prefix.to_ascii_lowercase(),
                     suffix,
                 ) {
                     check_case_collision(&mut folded_temps, &name)
-                        .map_err(|_| confinement(CANDIDATE_DIR))?;
+                        .map_err(|_| confinement(CANDIDATE_ROOT))?;
                 }
                 if is_candidate_temp_name(&name, &prefix, suffix) {
                     targets.push(CatalogTarget::directory(
-                        format!("{CANDIDATE_DIR}/{name}"),
-                        CANDIDATE_DIR,
+                        format!("{CANDIDATE_ROOT}/{name}"),
+                        CANDIDATE_ROOT,
                     ));
                 }
             }
         }
 
-        let evidence_authority = format!("target/release-evidence/{version_text}");
-        let native_proof = format!("{evidence_authority}/{WINDOWS_NATIVE_PROOF}");
+        let evidence_authority = evidence_relative_path(&version_text)
+            .map_err(|_| ReleaseFinalizerFsError::InvalidVersion)?;
+        let native_proof = format!("{evidence_authority}/{WINDOWS_NATIVE_PROOF_FILENAME}");
         if existing_relative(&checkout_root, &canonical_checkout, &native_proof)? {
             return Err(ReleaseFinalizerFsError::NativeProofExists);
         }
-        let finalization_receipt = format!("{evidence_authority}/{FINALIZATION_RECEIPT}");
+        let finalization_receipt = format!("{evidence_authority}/{FINALIZATION_RECEIPT_FILENAME}");
         let finalization_receipt_identity =
             if existing_relative(&checkout_root, &canonical_checkout, &finalization_receipt)? {
                 let verified =
@@ -532,7 +542,7 @@ impl CandidateTempDir {
         if !verified.metadata().file_type().is_dir() {
             return Err(ReleaseFinalizerFsError::CandidateTempInvalid);
         }
-        let parent = CANDIDATE_DIR.to_owned();
+        let parent = CANDIDATE_ROOT.to_owned();
         let parent_verified =
             verify_under_checkout(&self.checkout_root, &self.canonical_checkout, &parent)
                 .map_err(|_| ReleaseFinalizerFsError::CandidateParentInvalid)?;
@@ -544,7 +554,8 @@ impl CandidateTempDir {
             return Err(ReleaseFinalizerFsError::CandidateTempInvalid);
         }
 
-        let final_relative = format!("{CANDIDATE_DIR}/{}", self.version);
+        let final_relative = candidate_relative_path(&self.version.to_string())
+            .map_err(|_| ReleaseFinalizerFsError::InvalidVersion)?;
         match fs::symlink_metadata(self.checkout_root.join(&final_relative)) {
             Ok(_) => return Err(ReleaseFinalizerFsError::PromotionTargetExists),
             Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -568,12 +579,12 @@ pub fn create_candidate_temp(
     let checkout_root = checkout.path().to_path_buf();
     let canonical_checkout = checkout.canonical_path().to_path_buf();
     create_contained_directory(&checkout_root, &canonical_checkout, "target")?;
-    create_contained_directory(&checkout_root, &canonical_checkout, CANDIDATE_DIR)?;
+    create_contained_directory(&checkout_root, &canonical_checkout, CANDIDATE_ROOT)?;
 
     let version_text = version.to_string();
     for _ in 0..TEMP_NONCE_ATTEMPTS {
         let suffix = random_suffix();
-        let relative = format!("{CANDIDATE_DIR}/.{version_text}.finalize-{suffix}.tmp");
+        let relative = format!("{CANDIDATE_ROOT}/.{version_text}.finalize-{suffix}.tmp");
         match fs::create_dir(checkout_root.join(&relative)) {
             Ok(()) => {
                 let verified =

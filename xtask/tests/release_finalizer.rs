@@ -3,8 +3,11 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::fs::{self, FileTimes};
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -20,12 +23,47 @@ use xtask::release_finalizer::{
     PHASE_3_ADVISORY_PREFLIGHT, PHASE_4_BUILD, PHASE_5_VELOPACK, PHASE_6_BASELINE_CANDIDATE,
     PHASE_7_EVIDENCE, PHASE_8_PROMOTION,
 };
-use xtask::release_receipt::FinalizationReceipt;
+use xtask::release_receipt::{
+    render_windows_native_proof_receipt, FinalizationReceipt, WindowsNativeProofReceipt,
+    WINDOWS_NATIVE_PROOF_SCHEMA,
+};
 use xtask::release_selection::SelectionMode;
 use xtask::rust_release_manifest::{
     companion_basename, expected_artifact_names, validate_manifest_bytes,
-    validate_release_dir_with_facts,
+    validate_release_dir_with_facts, TARGET_TRIPLE,
 };
+
+#[test]
+fn finalize_cli_accepts_the_entrypoint_selected_absolute_git_path() {
+    let checkout = FakeReleaseCheckout::new("cli-git", false);
+    let git = checkout.root().join("fake-git");
+    fs::write(&git, b"inert absolute Git selection").expect("write fake Git selection");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args([
+            "rust-release-manifest",
+            "finalize",
+            "--expected-release-commit",
+            COMMIT,
+        ])
+        .env("GIT", &git)
+        .env("SOLSTONE_ADVISORY_TREE_SHA256", "a".repeat(64))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn real finalize CLI");
+    child
+        .stdin
+        .take()
+        .expect("open finalize stdin")
+        .write_all(b"{}")
+        .expect("write synthetic selection");
+    let output = child.wait_with_output().expect("wait for finalize CLI");
+    let stderr = String::from_utf8(output.stderr).expect("CLI stderr is UTF-8");
+    assert!(!output.status.success());
+    assert!(stderr.contains("release-tool selection record is invalid"));
+    assert!(!stderr.contains("GIT is not"));
+}
 
 #[test]
 fn unsigned_happy_path_promotes_exact_bundle_without_signer() {
@@ -132,6 +170,111 @@ fn fixed_inputs_are_deterministic_across_roots_temp_names_and_iteration_order() 
         fs::read(second.root().join(&relative)).expect("read second manifest")
     );
     assert_eq!(clock.calls(), 4);
+}
+
+#[test]
+fn same_version_refinalization_replaces_receipt_only_after_candidate_promotion() {
+    let checkout = FakeReleaseCheckout::new("same-version-replacement", false);
+    let request = request(SelectionMode::Unsigned, false);
+    let first_runner = FakeReleaseRunner::new(&checkout, false);
+    finalize(
+        checkout.runtime(None),
+        &request,
+        &first_runner,
+        &FixedClock::new(CHECKED_AT).expect("create first clock"),
+    )
+    .expect("create valid prior candidate and receipt");
+    let receipt_path = checkout.root().join(format!(
+        "target/release-evidence/{VERSION}/rust-release-finalization.json"
+    ));
+    let prior_receipt = fs::read(&receipt_path).expect("read prior receipt");
+
+    let second_runner = FakeReleaseRunner::new(&checkout, true);
+    finalize(
+        checkout.runtime(None),
+        &request,
+        &second_runner,
+        &FixedClock::new("2026-07-21T12:30:00Z").expect("create second clock"),
+    )
+    .expect("replace same-version candidate and receipt");
+
+    assert_promoted_bundle(&checkout, false, "unsigned");
+    let replacement_receipt = fs::read(&receipt_path).expect("read replacement receipt");
+    assert_ne!(replacement_receipt, prior_receipt);
+    let parsed: FinalizationReceipt =
+        serde_json::from_slice(&replacement_receipt).expect("parse replacement receipt");
+    assert_eq!(parsed.advisory_checked_at, "2026-07-21T12:30:00Z");
+}
+
+#[test]
+fn existing_native_proof_refuses_refinalization_before_deleting_prior_evidence() {
+    let checkout = FakeReleaseCheckout::new("proof-preserves-prior", false);
+    let request = request(SelectionMode::Signed, false);
+    let runner = FakeReleaseRunner::new(&checkout, false);
+    finalize(
+        checkout.runtime(Some("test-keypair")),
+        &request,
+        &runner,
+        &FixedClock::new(CHECKED_AT).expect("create first clock"),
+    )
+    .expect("create valid prior signed candidate and receipt");
+    let candidate = checkout
+        .root()
+        .join(format!("target/release-candidate/{VERSION}"));
+    let manifest_bytes = fs::read(candidate.join(companion_basename())).expect("read manifest");
+    let manifest = validate_manifest_bytes(&manifest_bytes).expect("parse manifest");
+    let setup_sha256 = hex_sha256(
+        &fs::read(candidate.join(format!("solstone-setup-{VERSION}.exe"))).expect("read setup"),
+    );
+    let proof = WindowsNativeProofReceipt {
+        schema: WINDOWS_NATIVE_PROOF_SCHEMA.to_owned(),
+        product: manifest.product.clone(),
+        version: manifest.version.clone(),
+        target: TARGET_TRIPLE.to_owned(),
+        source_commit: manifest.source_commit.clone(),
+        companion_manifest: xtask::release_receipt::CompanionManifestReceipt {
+            filename: companion_basename(),
+            sha256: hex_sha256(&manifest_bytes),
+        },
+        setup_sha256,
+        packaged_executable_sha256: manifest.packaged_executable.sha256.clone(),
+        installed_executable_sha256: manifest.packaged_executable.sha256,
+        install_mode: "isolated-clean".to_owned(),
+        installer_success: true,
+        smoke_success: true,
+        proved_at: "2026-07-21T13:00:00Z".to_owned(),
+    };
+    let proof_path = checkout.root().join(format!(
+        "target/release-evidence/{VERSION}/windows-native-proof.json"
+    ));
+    fs::write(
+        &proof_path,
+        render_windows_native_proof_receipt(&proof).expect("render proof"),
+    )
+    .expect("write prior proof");
+    let before = snapshot_regular_files(checkout.root());
+
+    let second_runner = FakeReleaseRunner::new(&checkout, false);
+    let error = finalize(
+        checkout.runtime(Some("test-keypair")),
+        &request,
+        &second_runner,
+        &FixedClock::new(CHECKED_AT).expect("create second clock"),
+    )
+    .expect_err("native proof must refuse same-version refinalization");
+    assert_eq!(error, FinalizeError::Cleanup);
+    assert_eq!(
+        second_runner
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                WitnessEvent::Phase(phase) => Some(phase.as_str()),
+                WitnessEvent::Invocation { .. } => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![PHASE_1_REQUEST_SOURCE, PHASE_2_CLEANUP]
+    );
+    assert_eq!(snapshot_regular_files(checkout.root()), before);
 }
 
 // Pure source diagnostics are exhaustively typed in release_source_binding.rs;
@@ -293,14 +436,14 @@ fn selection_mutations_abort_before_any_selected_action() {
 
 #[test]
 fn phase_one_through_three_gates_precede_all_byte_changing_actions() {
-    let checkout = FakeReleaseCheckout::new("version-mismatch", false);
+    let checkout = FakeReleaseCheckout::new("version-authority", false);
     let runner =
-        FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::VersionMismatch);
+        FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::VersionAuthorityFailure);
     assert_engine_failure(
         &checkout,
         &runner,
         request(SelectionMode::Unsigned, false),
-        FinalizeError::VersionMismatch,
+        FinalizeError::VersionAuthority,
         PHASE_1_REQUEST_SOURCE,
         true,
         false,
@@ -1274,6 +1417,34 @@ fn tree_contains_filename(root: &Path, filename: &str) -> bool {
         }
     }
     false
+}
+
+fn snapshot_regular_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+        let mut entries: Vec<_> = fs::read_dir(directory)
+            .expect("read snapshot directory")
+            .map(|entry| entry.expect("read snapshot entry"))
+            .collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let kind = entry.file_type().expect("read snapshot file type");
+            if kind.is_dir() {
+                visit(root, &path, files);
+            } else if kind.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("snapshot path beneath root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                files.insert(relative, fs::read(path).expect("read snapshot file"));
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
 }
 
 fn seed_precleanup_canary(checkout: &FakeReleaseCheckout) {

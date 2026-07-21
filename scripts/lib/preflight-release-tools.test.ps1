@@ -319,6 +319,12 @@ exit /b 98
     Assert-True (-not ((Get-Content $Witness | Out-String).Contains("NETWORK-"))) "signed preflight performs no network command"
     Assert-True ((Snapshot-OwnedFiles) -eq $beforeOwnedFiles) "signed preflight mutates no owned files"
 
+    foreach ($invalidSign in @("0", "false", " ")) {
+        $env:SOLSTONE_SIGN = $invalidSign
+        $result = Run-Preflight
+        Assert-True ($result.status -ne 0) "SOLSTONE_SIGN '$invalidSign' is rejected"
+        Assert-True ($result.stderr.Contains("SOLSTONE_SIGN must be exactly 1")) "invalid SOLSTONE_SIGN has remediation"
+    }
     $env:SOLSTONE_SIGN = "1"
     $result = Run-Preflight
     Assert-True (($result.stdout | ConvertFrom-Json).mode -eq "signed") "SOLSTONE_SIGN selects signed mode"

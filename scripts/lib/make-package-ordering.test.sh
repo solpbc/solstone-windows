@@ -37,15 +37,17 @@ FAKE_PWSH="$TMP_ROOT/fake-powershell"
 cat > "$FAKE_PWSH" <<'EOF'
 #!/usr/bin/env sh
 set -eu
-printf 'delegate|commit=%s|args=%s\n' "${EXPECTED_RELEASE_COMMIT:-}" "$*" >> "$PACKAGE_WITNESS"
+printf 'delegate|commit=%s|advisory=%s|git=%s|args=%s\n' \
+  "${EXPECTED_RELEASE_COMMIT:-}" "${SOLSTONE_ADVISORY_TREE_SHA256:-}" "${GIT:-}" "$*" >> "$PACKAGE_WITNESS"
 EOF
 chmod +x "$FAKE_PWSH"
 export PACKAGE_WITNESS="$WITNESS"
 
 EXPECTED=0123456789abcdef0123456789abcdef01234567
+ADVISORY=$(printf 'a%.0s' $(seq 1 64))
 
 : > "$WITNESS"
-if env -u EXPECTED_RELEASE_COMMIT -u SOLSTONE_SIGN \
+if env -u EXPECTED_RELEASE_COMMIT -u SOLSTONE_ADVISORY_TREE_SHA256 -u SOLSTONE_SIGN \
     make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null 2>&1; then
   fail "missing EXPECTED_RELEASE_COMMIT must fail"
 fi
@@ -54,19 +56,39 @@ assert_eq "missing commit invokes nothing" "" "$(cat "$WITNESS")"
 
 : > "$WITNESS"
 EXPECTED_RELEASE_COMMIT="$EXPECTED" \
+  SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
   make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
 assert_eq "unsigned make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
 assert_eq "unsigned delegation" \
-  "delegate|commit=$EXPECTED|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1" \
+  "delegate|commit=$EXPECTED|advisory=$ADVISORY|git=git|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1" \
   "$(cat "$WITNESS")"
 
 : > "$WITNESS"
-EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_SIGN=1 \
+EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" SOLSTONE_SIGN=1 \
   make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
 assert_eq "signed make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
 assert_eq "signed delegation translates flag" \
-  "delegate|commit=$EXPECTED|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign" \
+  "delegate|commit=$EXPECTED|advisory=$ADVISORY|git=git|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign" \
   "$(cat "$WITNESS")"
+
+: > "$WITNESS"
+if EXPECTED_RELEASE_COMMIT="$EXPECTED" \
+    make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null 2>&1; then
+  fail "missing SOLSTONE_ADVISORY_TREE_SHA256 must fail"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_eq "missing advisory digest invokes nothing" "" "$(cat "$WITNESS")"
+
+for invalid_sign in 0 false ' '; do
+  : > "$WITNESS"
+  if EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
+      SOLSTONE_SIGN="$invalid_sign" \
+      make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null 2>&1; then
+    fail "invalid SOLSTONE_SIGN value must fail"
+  fi
+  ASSERTIONS=$((ASSERTIONS + 1))
+  assert_eq "invalid SOLSTONE_SIGN invokes nothing" "" "$(cat "$WITNESS")"
+done
 
 PACKAGE_SOURCE="$REPO_ROOT/scripts/package.ps1"
 preflight_line=$(grep -n '\$SelectionLines = @(' "$PACKAGE_SOURCE" | cut -d: -f1)

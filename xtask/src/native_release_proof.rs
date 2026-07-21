@@ -22,8 +22,9 @@ use crate::release_container::ExecutableContainerReader;
 use crate::release_exec::CommandRunner;
 use crate::release_finalizer_fs::create_contained_directory;
 use crate::release_receipt::{
-    render_finalization_receipt, stage_windows_native_proof_receipt, CompanionManifestReceipt,
-    FinalizationReceipt, WindowsNativeProofReceipt, WINDOWS_NATIVE_PROOF_SCHEMA,
+    candidate_relative_path, finalization_receipt_relative_path, render_finalization_receipt,
+    stage_windows_native_proof_receipt, CompanionManifestReceipt, FinalizationReceipt,
+    WindowsNativeProofReceipt, WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use crate::release_selection::{ReleaseToolSelection, SelectedAction, SelectionMode};
 use crate::rust_release_manifest::{
@@ -31,7 +32,6 @@ use crate::rust_release_manifest::{
     PRODUCT, TARGET_TRIPLE,
 };
 
-const FINALIZATION_RECEIPT: &str = "rust-release-finalization.json";
 const INSTALLED_EXECUTABLE: &str = "current/solstone-windows-app.exe";
 const PROOF_ROOT: &str = "target/release-native-proof";
 const PROOF_TEMP_ATTEMPTS: usize = 16;
@@ -252,7 +252,8 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         UnixModePolicy::AllowExecute,
     )
     .map_err(|_| NativeProofError::CandidateIdentity)?;
-    let expected_candidate_relative = format!("target/release-candidate/{}", runtime.facts.version);
+    let expected_candidate_relative = candidate_relative_path(&runtime.facts.version)
+        .map_err(|_| NativeProofError::CandidateIdentity)?;
     let expected_candidate = checkout.canonical_path().join(&expected_candidate_relative);
     if candidate.canonical_path() != expected_candidate {
         return Err(NativeProofError::CandidateIdentity);
@@ -487,10 +488,8 @@ fn read_matching_finalization_receipt(
     candidate_file_count: u64,
     candidate_relative: &str,
 ) -> Result<FinalizationReceipt, NativeProofError> {
-    let relative = format!(
-        "target/release-evidence/{}/{FINALIZATION_RECEIPT}",
-        manifest.version
-    );
+    let relative = finalization_receipt_relative_path(&manifest.version)
+        .map_err(|_| NativeProofError::FinalizationReceipt)?;
     let bytes = checkout
         .read(&relative, "native proof finalization receipt")
         .map_err(|_| NativeProofError::FinalizationReceipt)?;

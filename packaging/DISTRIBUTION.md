@@ -50,8 +50,9 @@ manifest from this repo, never patch selected fields of the live one.**
 
 ## Release boundary
 
-`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit> make package` runs the complete
-source-bound build-to-finalize transaction. `Releases/` is its accumulated
+`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit>
+SOLSTONE_ADVISORY_TREE_SHA256=<reviewed-lowercase-digest> make package` runs the
+complete source-bound build-to-finalize transaction. `Releases/` is its accumulated
 Velopack workspace, not its distributable result. The promoted result is the
 current-only `target/release-candidate/<VERSION>/` six/seven-artifact bundle plus
 its companion manifest (seven/eight files total); the matching finalization

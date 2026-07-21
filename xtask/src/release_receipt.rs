@@ -15,18 +15,19 @@ use sha2::{Digest, Sha256};
 use crate::artifact_fs::{verify_contained_path, ContainedRoot, UnixModePolicy};
 use crate::release_advisory::RUSTSEC_SOURCE_ID;
 use crate::release_clock::UtcTimestamp;
-use crate::release_finalizer_fs::{
-    create_contained_directory, FINALIZATION_RECEIPT, FINALIZATION_RECEIPT_TEMP,
-    WINDOWS_NATIVE_PROOF,
-};
+use crate::release_finalizer_fs::create_contained_directory;
 use crate::rust_release_manifest::{
     companion_basename, render_canonical_json, PRODUCT, TARGET_TRIPLE,
 };
 
 pub const FINALIZATION_RECEIPT_SCHEMA: &str = "solstone.rust-release-finalization.v1";
 pub const WINDOWS_NATIVE_PROOF_SCHEMA: &str = "solstone.windows-native-proof.v1";
+pub const FINALIZATION_RECEIPT_FILENAME: &str = "rust-release-finalization.json";
+pub const WINDOWS_NATIVE_PROOF_FILENAME: &str = "windows-native-proof.json";
 
-const EVIDENCE_ROOT: &str = "target/release-evidence";
+pub const EVIDENCE_ROOT: &str = "target/release-evidence";
+pub const CANDIDATE_ROOT: &str = "target/release-candidate";
+pub(crate) const FINALIZATION_RECEIPT_TEMP: &str = ".rust-release-finalization.json.tmp";
 const WINDOWS_NATIVE_PROOF_TEMP: &str = ".windows-native-proof.json.tmp";
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -97,7 +98,15 @@ pub struct StagedReceipt {
     final_filename: &'static str,
     expected_sha256: [u8; 32],
     expected_len: u64,
+    existing_final: Option<ReceiptIdentity>,
+    replace_final: bool,
     remove_temp_on_drop: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ReceiptIdentity {
+    sha256: [u8; 32],
+    len: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,6 +116,8 @@ pub enum ReceiptError {
     CheckoutContainment,
     EvidenceDirectoryInvalid,
     FinalTargetExists,
+    FinalTargetInvalid,
+    FinalTargetChanged,
     StagedTargetExists,
     StageWriteFailed,
     StagedBytesChanged,
@@ -135,6 +146,14 @@ impl fmt::Display for ReceiptError {
             Self::FinalTargetExists => write!(
                 formatter,
                 "the final release receipt already exists; use a new version or complete the approved same-version cleanup before retrying"
+            ),
+            Self::FinalTargetInvalid => write!(
+                formatter,
+                "the prior finalization receipt is malformed or non-canonical; restore the valid same-version receipt before re-finalizing"
+            ),
+            Self::FinalTargetChanged => write!(
+                formatter,
+                "the existing finalization receipt changed during same-version replacement; restore the prior evidence bytes and restart finalization"
             ),
             Self::StagedTargetExists => write!(
                 formatter,
@@ -179,8 +198,9 @@ pub fn stage_finalization_receipt(
         checkout_root,
         &receipt.version,
         FINALIZATION_RECEIPT_TEMP,
-        FINALIZATION_RECEIPT,
+        FINALIZATION_RECEIPT_FILENAME,
         &bytes,
+        true,
     )
 }
 
@@ -193,8 +213,9 @@ pub fn stage_windows_native_proof_receipt(
         checkout_root,
         &receipt.version,
         WINDOWS_NATIVE_PROOF_TEMP,
-        WINDOWS_NATIVE_PROOF,
+        WINDOWS_NATIVE_PROOF_FILENAME,
         &bytes,
+        false,
     )
 }
 
@@ -226,15 +247,32 @@ impl StagedReceipt {
         {
             return Err(ReceiptError::StagedBytesChanged);
         }
-        require_absent(
-            &evidence.canonical_path().join(self.final_filename),
-            ReceiptError::FinalTargetExists,
-        )?;
-        fs::rename(
-            evidence.canonical_path().join(self.temp_filename),
-            evidence.canonical_path().join(self.final_filename),
-        )
-        .map_err(|_| ReceiptError::PromotionFailed)?;
+        let final_path = evidence.canonical_path().join(self.final_filename);
+        match &self.existing_final {
+            Some(expected) => {
+                let final_bytes = evidence
+                    .read(self.final_filename, "existing release receipt")
+                    .map_err(|_| ReceiptError::FinalTargetChanged)?;
+                if u64::try_from(final_bytes.len()).ok() != Some(expected.len)
+                    || Sha256::digest(&final_bytes).as_slice() != expected.sha256
+                {
+                    return Err(ReceiptError::FinalTargetChanged);
+                }
+            }
+            None => require_absent(&final_path, ReceiptError::FinalTargetExists)?,
+        }
+        let temp_path =
+            tempfile::TempPath::try_from_path(evidence.canonical_path().join(self.temp_filename))
+                .map_err(|_| ReceiptError::PromotionFailed)?;
+        if self.replace_final {
+            temp_path
+                .persist(&final_path)
+                .map_err(|_| ReceiptError::PromotionFailed)?;
+        } else {
+            temp_path
+                .persist_noclobber(&final_path)
+                .map_err(|_| ReceiptError::PromotionFailed)?;
+        }
         self.remove_temp_on_drop = false;
         Ok(self.final_relative_path())
     }
@@ -368,9 +406,30 @@ fn canonical_version(version: &str) -> Result<Version, ReceiptError> {
     Ok(parsed)
 }
 
-fn candidate_relative_path(version: &str) -> Result<String, ReceiptError> {
+pub fn candidate_relative_path(version: &str) -> Result<String, ReceiptError> {
     canonical_version(version)?;
-    Ok(format!("target/release-candidate/{version}"))
+    Ok(format!("{CANDIDATE_ROOT}/{version}"))
+}
+
+pub fn evidence_relative_path(version: &str) -> Result<String, ReceiptError> {
+    canonical_version(version)?;
+    Ok(format!("{EVIDENCE_ROOT}/{version}"))
+}
+
+pub fn finalization_receipt_relative_path(version: &str) -> Result<String, ReceiptError> {
+    Ok(format!(
+        "{}/{}",
+        evidence_relative_path(version)?,
+        FINALIZATION_RECEIPT_FILENAME
+    ))
+}
+
+pub fn windows_native_proof_relative_path(version: &str) -> Result<String, ReceiptError> {
+    Ok(format!(
+        "{}/{}",
+        evidence_relative_path(version)?,
+        WINDOWS_NATIVE_PROOF_FILENAME
+    ))
 }
 
 fn validate_commit(value: &str, field: &'static str) -> Result<(), ReceiptError> {
@@ -412,6 +471,7 @@ fn stage_receipt(
     temp_filename: &'static str,
     final_filename: &'static str,
     bytes: &[u8],
+    replace_final: bool,
 ) -> Result<StagedReceipt, ReceiptError> {
     canonical_version(version)?;
     let checkout = ContainedRoot::new(
@@ -420,7 +480,7 @@ fn stage_receipt(
         UnixModePolicy::AllowExecute,
     )
     .map_err(|_| ReceiptError::CheckoutContainment)?;
-    let evidence_relative = format!("{EVIDENCE_ROOT}/{version}");
+    let evidence_relative = evidence_relative_path(version)?;
     create_contained_directory(
         checkout.path(),
         checkout.canonical_path(),
@@ -428,10 +488,33 @@ fn stage_receipt(
     )
     .map_err(|_| ReceiptError::EvidenceDirectoryInvalid)?;
     let evidence = contained_evidence_root(&checkout, &evidence_relative)?;
-    require_absent(
-        &evidence.canonical_path().join(final_filename),
-        ReceiptError::FinalTargetExists,
-    )?;
+    let existing_final = if replace_final {
+        match fs::symlink_metadata(evidence.canonical_path().join(final_filename)) {
+            Ok(_) => {
+                let bytes = evidence
+                    .read(final_filename, "existing release receipt")
+                    .map_err(|_| ReceiptError::FinalTargetChanged)?;
+                let receipt: FinalizationReceipt =
+                    serde_json::from_slice(&bytes).map_err(|_| ReceiptError::FinalTargetInvalid)?;
+                if render_finalization_receipt(&receipt)? != bytes {
+                    return Err(ReceiptError::FinalTargetInvalid);
+                }
+                Some(ReceiptIdentity {
+                    sha256: Sha256::digest(&bytes).into(),
+                    len: u64::try_from(bytes.len())
+                        .map_err(|_| ReceiptError::FinalTargetChanged)?,
+                })
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(_) => return Err(ReceiptError::EvidenceDirectoryInvalid),
+        }
+    } else {
+        require_absent(
+            &evidence.canonical_path().join(final_filename),
+            ReceiptError::FinalTargetExists,
+        )?;
+        None
+    };
     require_absent(
         &evidence.canonical_path().join(temp_filename),
         ReceiptError::StagedTargetExists,
@@ -449,6 +532,8 @@ fn stage_receipt(
         final_filename,
         expected_sha256,
         expected_len,
+        existing_final,
+        replace_final,
         remove_temp_on_drop: true,
     };
     let observed = evidence

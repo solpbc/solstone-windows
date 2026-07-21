@@ -16,6 +16,7 @@ $EmittedSelection = Join-Path $Temp "selection-emitted.txt"
 $Assertions = 0
 $SavedEnvironment = @{}
 $ExpectedCommit = "0123456789abcdef0123456789abcdef01234567"
+$AdvisoryTreeSha256 = "a" * 64
 
 function Assert-True([bool]$Condition, [string]$Label) {
     if (-not $Condition) { throw "package-entrypoints.test.ps1: assertion failed: $Label" }
@@ -43,6 +44,7 @@ function Reset-Case {
     Set-TestEnvironment "PACKAGE_TEST_FAIL" ""
     Set-TestEnvironment "SOLSTONE_SIGN" $null
     Set-TestEnvironment "EXPECTED_RELEASE_COMMIT" $ExpectedCommit
+    Set-TestEnvironment "SOLSTONE_ADVISORY_TREE_SHA256" $AdvisoryTreeSha256
 }
 
 function Run-Process([string]$FileName, [string]$Arguments) {
@@ -77,6 +79,8 @@ function Assert-OneFinalizer([string]$Label, [switch]$Signed) {
     $lines = @(Get-Content -LiteralPath $Witness | Where-Object { $_.StartsWith("finalize|") })
     Assert-True ($lines.Count -eq 1) "$Label invokes exactly one xtask finalizer"
     Assert-True ($lines[0].Contains("rust-release-manifest finalize --expected-release-commit $ExpectedCommit")) "$Label passes expected commit"
+    Assert-True ($lines[0].Contains("git=$env:PACKAGE_TEST_GIT")) "$Label passes one absolute Git executable"
+    Assert-True ($lines[0].Contains("advisory=$AdvisoryTreeSha256")) "$Label passes reviewed advisory digest"
     Assert-True ($lines[0].Contains("--sign") -eq [bool]$Signed) "$Label translates signed mode"
     Assert-True ((Get-Content -LiteralPath $SelectionStdin -Raw).Trim() -eq (Get-Content -LiteralPath $EmittedSelection -Raw).Trim()) "$Label passes exact selection JSON on stdin"
 }
@@ -96,7 +100,7 @@ param([switch]$Sign)
 if ($env:PACKAGE_TEST_FAIL -eq "preflight") { exit 30 }
 $record = [ordered]@{
     schema = "solstone.release-tool-selection.v1"
-    mode = $(if ($Sign -or $env:SOLSTONE_SIGN) { "signed" } else { "unsigned" })
+    mode = $(if ($Sign -or $env:SOLSTONE_SIGN -eq "1") { "signed" } else { "unsigned" })
     tools = [ordered]@{ cargo = [ordered]@{ path = $env:PACKAGE_TEST_CARGO } }
 }
 $json = $record | ConvertTo-Json -Depth 6 -Compress
@@ -125,7 +129,7 @@ if not errorlevel 1 (
 echo %*| findstr /c:"-- rust-release-manifest finalize" >nul
 if not errorlevel 1 (
   set /p "SELECTION="
-  echo finalize^|%*>>"%PACKAGE_TEST_WITNESS%"
+  echo finalize^|git=%GIT%^|advisory=%SOLSTONE_ADVISORY_TREE_SHA256%^|%*>>"%PACKAGE_TEST_WITNESS%"
   >"%PACKAGE_TEST_SELECTION_STDIN%" echo !SELECTION!
   if "%PACKAGE_TEST_FAIL%"=="finalize" exit /b 33
   exit /b 0
@@ -137,6 +141,10 @@ exit /b 90
     Set-TestEnvironment "PACKAGE_TEST_SELECTION_STDIN" $SelectionStdin
     Set-TestEnvironment "PACKAGE_TEST_EMITTED_SELECTION" $EmittedSelection
     Set-TestEnvironment "PACKAGE_TEST_CARGO" $cargo
+    $git = Join-Path $Temp "fake-git.cmd"
+    Write-Ascii $git "@echo off`r`nexit /b 0`r`n"
+    Set-TestEnvironment "PACKAGE_TEST_GIT" $git
+    Set-TestEnvironment "GIT" $git
 
     $packageSource = Get-Content (Join-Path $RepoRoot "scripts\package.ps1") -Raw
     $wrapperSource = Get-Content (Join-Path $RepoRoot "scripts\win-package.cmd") -Raw
@@ -166,6 +174,20 @@ exit /b 90
     Assert-True ((Witness-Text) -eq "preflight`r`nversion-gate`r`nlock-guard") "direct missing commit stops before finalizer"
 
     Reset-Case
+    Set-TestEnvironment "SOLSTONE_ADVISORY_TREE_SHA256" $null
+    $result = Run-Direct
+    Assert-True ($result.status -ne 0) "direct invocation requires SOLSTONE_ADVISORY_TREE_SHA256"
+    Assert-True (-not (Witness-Text).Contains("finalize|")) "direct missing advisory digest invokes no finalizer"
+
+    foreach ($invalidSign in @("0", "false", " ")) {
+        Reset-Case
+        Set-TestEnvironment "SOLSTONE_SIGN" $invalidSign
+        $result = Run-Direct
+        Assert-True ($result.status -ne 0) "direct rejects SOLSTONE_SIGN '$invalidSign'"
+        Assert-True ((Witness-Text) -eq "") "invalid SOLSTONE_SIGN fails before preflight"
+    }
+
+    Reset-Case
     $result = Run-Direct
     Assert-True ($result.status -eq 0) "direct unsigned delegation succeeds"
     Assert-True ((Witness-Text).StartsWith("preflight`r`nversion-gate`r`nlock-guard`r`nfinalize|")) "direct unsigned gate order"
@@ -181,6 +203,20 @@ exit /b 90
     $result = Run-Wrapper
     Assert-True ($result.status -ne 0) "cmd wrapper requires EXPECTED_RELEASE_COMMIT"
     Assert-True (-not (Witness-Text).Contains("finalize|")) "cmd wrapper missing commit invokes no finalizer"
+
+    Reset-Case
+    Set-TestEnvironment "SOLSTONE_ADVISORY_TREE_SHA256" $null
+    $result = Run-Wrapper
+    Assert-True ($result.status -ne 0) "cmd wrapper requires advisory digest"
+    Assert-True (-not (Witness-Text).Contains("finalize|")) "cmd wrapper missing advisory digest invokes no finalizer"
+
+    foreach ($invalidSign in @("0", "false", " ")) {
+        Reset-Case
+        Set-TestEnvironment "SOLSTONE_SIGN" $invalidSign
+        $result = Run-Wrapper
+        Assert-True ($result.status -ne 0) "cmd wrapper rejects SOLSTONE_SIGN '$invalidSign'"
+        Assert-True (-not (Witness-Text).Contains("finalize|")) "cmd invalid SOLSTONE_SIGN invokes no finalizer"
+    }
 
     Reset-Case
     $result = Run-Wrapper

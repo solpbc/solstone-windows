@@ -18,9 +18,10 @@ use xtask::release_finalizer::{FinalizeRequest, FinalizeRuntime};
 use xtask::release_selection::SelectionMode;
 use xtask::release_source_binding::SourceBinding;
 use xtask::rust_release_manifest::{
-    companion_basename, gather_checkout_facts_from_binding, render_release_evidence,
-    validate_manifest_bytes, CheckoutFacts, ReleaseEvidence,
+    companion_basename, default_velopack_setup_basename, gather_checkout_facts_from_binding,
+    render_release_evidence, validate_manifest_bytes, BundleNames, CheckoutFacts, ReleaseEvidence,
 };
+use xtask::version_gate::setup_exe_name;
 use zip::write::{SimpleFileOptions, ZipWriter};
 use zip::CompressionMethod;
 
@@ -75,7 +76,7 @@ pub enum RunnerMutation {
     LateStatus,
     LateCargoLock,
     LateUiLock,
-    VersionMismatch,
+    VersionAuthorityFailure,
     AdvisoryDirty,
     AdvisorySourceMismatch,
     AdvisoryShallow,
@@ -459,7 +460,8 @@ impl FakeReleaseRunner {
                         Ok(Self::output(b"refs/heads/main\n".to_vec()))
                     }
                 }
-                ["status", "--porcelain=v1", "-z", "--untracked-files=all"] => {
+                ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"] =>
+                {
                     let read = self.source_status_reads.fetch_add(1, Ordering::Relaxed);
                     let dirty = match self.mutation {
                         RunnerMutation::SourceDirty => Some(b" M Cargo.toml\0".as_slice()),
@@ -537,19 +539,21 @@ impl FakeReleaseRunner {
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
         match args.first().map(String::as_str) {
-            Some("metadata") => Ok(Self::output(
-                serde_json::to_vec(&json!({
-                    "packages": [{
-                        "name": "solstone-windows-app",
-                        "version": if self.mutation == RunnerMutation::VersionMismatch {
-                            "0.2.12"
-                        } else {
-                            VERSION
-                        }
-                    }]
-                }))
-                .expect("render metadata"),
-            )),
+            Some("metadata") => Ok(
+                if self.mutation == RunnerMutation::VersionAuthorityFailure {
+                    Self::failure(b"metadata authority unavailable")
+                } else {
+                    Self::output(
+                        serde_json::to_vec(&json!({
+                            "packages": [{
+                                "name": "solstone-windows-app",
+                                "version": VERSION
+                            }]
+                        }))
+                        .expect("render metadata"),
+                    )
+                },
+            ),
             Some("deny") => Ok(if self.mutation == RunnerMutation::AdvisoryCommandFailure {
                 Self::failure(b"offline advisory rejection")
             } else {
@@ -1121,8 +1125,14 @@ fn emit_velopack_output(
         })
         .collect::<Result<_, _>>()?;
     let has_delta = !historical.is_empty();
-    let full_name = format!("Solstone-{VERSION}-full.nupkg");
-    let delta_name = format!("Solstone-{VERSION}-delta.nupkg");
+    let canonical_names = BundleNames::for_version(VERSION);
+    let full_name = canonical_names.full_package().to_owned();
+    let delta_name = canonical_names.delta_package().to_owned();
+    let portable_name = canonical_names.portable().to_owned();
+    let assets_name = canonical_names.assets().to_owned();
+    let releases_name = canonical_names.releases().to_owned();
+    let feed_name = canonical_names.release_feed().to_owned();
+    let default_setup_name = default_velopack_setup_basename();
     let full = match mutation {
         RunnerMutation::NupkgExecutableDiverges => build_zip(
             "lib/app/solstone-windows-app.exe",
@@ -1149,7 +1159,13 @@ fn emit_velopack_output(
     } else {
         b"inert unsigned setup executable".as_slice()
     };
-    let mut assets = assets_bytes(&full_name, has_delta, &delta_name);
+    let mut assets = assets_bytes(
+        &full_name,
+        has_delta,
+        &delta_name,
+        default_setup_name,
+        &portable_name,
+    );
     if matches!(
         mutation,
         RunnerMutation::AssetsMissingInstaller
@@ -1168,15 +1184,14 @@ fn emit_velopack_output(
                 records.retain(|record| record["Type"] != "Installer");
             }
             RunnerMutation::AssetsDuplicateInstaller => records.push(json!({
-                "RelativeFileName": "Solstone-win-Setup.exe", "Type": "Installer"
+                "RelativeFileName": default_setup_name, "Type": "Installer"
             })),
             RunnerMutation::AssetsChangedInstaller => {
                 if let Some(record) = records
                     .iter_mut()
                     .find(|record| record["Type"] == "Installer")
                 {
-                    record["RelativeFileName"] =
-                        Value::String(format!("solstone-setup-{VERSION}.exe"));
+                    record["RelativeFileName"] = Value::String(setup_exe_name(VERSION));
                 }
             }
             RunnerMutation::DeltaAssetsMissing => {
@@ -1209,25 +1224,25 @@ fn emit_velopack_output(
     } else {
         releases_bytes(&full_name, &full, &historical, output)?
     };
-    let mut files: Vec<(&str, &[u8])> = vec![
-        ("assets.win.json", &assets),
-        ("RELEASES", &releases),
-        ("releases.win.json", &feed),
-        (&full_name, &full),
-        ("Solstone-win-Portable.zip", &portable),
-        ("Solstone-win-Setup.exe", setup),
+    let mut files: Vec<(String, &[u8])> = vec![
+        (assets_name, &assets),
+        (releases_name, &releases),
+        (feed_name, &feed),
+        (full_name.clone(), &full),
+        (portable_name.clone(), &portable),
+        (default_setup_name.to_owned(), setup),
     ];
     if has_delta && mutation != RunnerMutation::DeltaPackageMissing {
-        files.push((&delta_name, &delta));
+        files.push((delta_name.clone(), &delta));
     }
     if reverse_order {
         files.reverse();
     }
     for (name, bytes) in files {
-        if mutation == RunnerMutation::VpkMissingOutput && name == "Solstone-win-Portable.zip" {
+        if mutation == RunnerMutation::VpkMissingOutput && name == portable_name {
             continue;
         }
-        fs::write(output.join(name), bytes)
+        fs::write(output.join(&name), bytes)
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
     }
     if mutation == RunnerMutation::VpkExtraOutput {
@@ -1236,7 +1251,7 @@ fn emit_velopack_output(
     }
     if mutation == RunnerMutation::VpkDefaultSetupConflict {
         fs::write(
-            output.join(format!("solstone-setup-{VERSION}.exe")),
+            output.join(setup_exe_name(VERSION)),
             b"conflicting versioned setup",
         )
         .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
@@ -1262,11 +1277,11 @@ fn build_zip_members(members: &[(&str, &[u8])]) -> Vec<u8> {
     writer.finish().expect("finish inert archive").into_inner()
 }
 
-fn assets_bytes(full: &str, has_delta: bool, delta: &str) -> Vec<u8> {
+fn assets_bytes(full: &str, has_delta: bool, delta: &str, setup: &str, portable: &str) -> Vec<u8> {
     let mut records = vec![
         json!({"RelativeFileName": full, "Type": "Full"}),
-        json!({"RelativeFileName": "Solstone-win-Setup.exe", "Type": "Installer"}),
-        json!({"RelativeFileName": "Solstone-win-Portable.zip", "Type": "Portable"}),
+        json!({"RelativeFileName": setup, "Type": "Installer"}),
+        json!({"RelativeFileName": portable, "Type": "Portable"}),
     ];
     if has_delta {
         records.insert(1, json!({"RelativeFileName": delta, "Type": "Delta"}));

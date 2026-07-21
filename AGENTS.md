@@ -70,7 +70,7 @@ charter and license.
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
 | `make check-rust-release-manifest` | offline schema, checkout binding, ledger, current-bundle, and deterministic-render verification; mode selected by `MANIFEST` or `RELEASE_DIR` |
 | `make check-release-advisory-config` | materialize the isolated release advisory config and prove the real pinned cargo-deny accepts it offline |
-| `make package` | source-bound build-to-finalize transaction → `target/release-candidate/<VERSION>/`; requires full lowercase `EXPECTED_RELEASE_COMMIT` (unsigned unless `SOLSTONE_SIGN=1`) |
+| `make package` | source-bound build-to-finalize transaction → `target/release-candidate/<VERSION>/`; requires full lowercase `EXPECTED_RELEASE_COMMIT` and reviewed `SOLSTONE_ADVISORY_TREE_SHA256` (unsigned unless `SOLSTONE_SIGN=1`) |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | strict signed-candidate install and explicit-binary smoke → `target/release-evidence/<VERSION>/windows-native-proof.json` |
 | `make publish-r2` | fail-closed direct-publication guard; R2 publication belongs to the aggregate provenance publisher |
 | `make pull-releases` | pull the box's packed `Releases/` for a controlled aggregate workflow; does not publish |
@@ -89,7 +89,7 @@ charter and license.
 | `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; the caller matches the box's reported HEAD, `Cargo.lock` SHA-256, and `ui/package-lock.json` SHA-256 to the transferred binding; no app package, install, sign, or smoke |
 | `scripts/win-app-build.cmd` | Native app-build evidence | Builds the UI and Windows app binary; no package, install, sign, or smoke |
 | `make package` / `scripts/win-package.cmd` | Package-finalization evidence | One source-bound transaction builds, packs, optionally signs and verifies, renders evidence, and atomically promotes the exact current-only candidate; it does not install, smoke, or publish |
-| `make prove-rust-release-native RELEASE_DIR=<candidate>` | Native-proof orchestration | Strictly classifies one signed candidate before selected-tool resolution, then installs and explicitly smokes its bytes; fake seams are host-tested, while a green real receipt is box evidence |
+| `make prove-rust-release-native RELEASE_DIR=<candidate>` | Native-proof orchestration | Strictly classifies one signed candidate before resolving native action tools, then installs and explicitly smokes its bytes; read-only checkout-fact acquisition precedes classification, fake action seams are host-tested, and a green real receipt is box evidence |
 
 Linux has no compiling cross-target MSVC check because it cannot link the
 Windows MSVC target. `make ci` is a composite gate and still needs npm plus
@@ -256,8 +256,11 @@ credentials are env-supplied, never committed. Signing covers release artifacts
 only. Package construction performs no publication auth or transport; release
 publication belongs to the aggregate provenance publisher. See `docs/release-runbook.md`.
 
-`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit> make package` is the canonical
-source-bound build-to-finalize transaction. It validates the selected tool/action
+`EXPECTED_RELEASE_COMMIT=<full-lowercase-commit>
+SOLSTONE_ADVISORY_TREE_SHA256=<reviewed-lowercase-digest> make package` is the
+canonical source-bound build-to-finalize transaction. The advisory digest is an
+operator-reviewed input computed from the intended isolated RustSec commit, not
+derived by the finalizer from the database it is checking. The transaction validates the selected tool/action
 record, local commit lineage and allowed ref, clean source state, and both lock
 digests before cleanup or build. It then runs the advisory gate, UI/app build,
 Velopack pack, optional signing and selected SignTool verification, executable

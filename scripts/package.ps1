@@ -12,7 +12,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$SignEnabled = $Sign -or -not [string]::IsNullOrWhiteSpace($env:SOLSTONE_SIGN)
+$SignEnvironment = [string]$env:SOLSTONE_SIGN
+if ($SignEnvironment.Length -ne 0 -and $SignEnvironment -ne "1") {
+    throw "SOLSTONE_SIGN must be exactly 1 when signing is requested; unset it for unsigned finalization and retry."
+}
+$SignEnabled = $Sign -or $SignEnvironment -eq "1"
 
 $Preflight = Join-Path $Root "packaging\preflight-release-tools.ps1"
 $PowerShellPath = (Get-Process -Id $PID).Path
@@ -69,6 +73,22 @@ if ([string]::IsNullOrWhiteSpace($ExpectedCommit)) {
 if ($ExpectedCommit -notmatch "^[0-9a-f]{40}$") {
     throw "EXPECTED_RELEASE_COMMIT is not a full lowercase 40-hex commit; correct it and retry."
 }
+$AdvisoryTreeSha256 = [string]$env:SOLSTONE_ADVISORY_TREE_SHA256
+if ($AdvisoryTreeSha256 -notmatch "^[0-9a-f]{64}$") {
+    throw "SOLSTONE_ADVISORY_TREE_SHA256 is required as 64 lowercase hex; supply the reviewed isolated RustSec archive digest and retry."
+}
+
+$GitCommand = if ([string]::IsNullOrWhiteSpace($env:GIT)) { "git" } else { [string]$env:GIT }
+$GitSelection = Get-Command -Name $GitCommand -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($null -eq $GitSelection -or [string]::IsNullOrWhiteSpace($GitSelection.Source)) {
+    throw "Git executable selection failed; install Git or set GIT to its executable path and retry."
+}
+$GitPath = [System.IO.Path]::GetFullPath([string]$GitSelection.Source)
+if (-not [System.IO.Path]::IsPathRooted($GitPath) -or -not (Test-Path -LiteralPath $GitPath -PathType Leaf)) {
+    throw "Git executable selection is not one absolute regular file; set GIT to the exact executable and retry."
+}
+$env:GIT = $GitPath
 
 $FinalizeArgs = @(
     "run",

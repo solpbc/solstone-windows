@@ -247,7 +247,13 @@ impl<'a, R: CommandRunner + ?Sized> SourceBindingVerifier<'a, R> {
         }
 
         let status = self.git(
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
             "status recheck",
         )?;
         if status.status != 0 || !status.stdout.is_empty() {
@@ -304,7 +310,13 @@ impl<'a, R: CommandRunner + ?Sized> SourceBindingVerifier<'a, R> {
 
     fn require_clean_status(&self) -> Result<(), SourceBindingError> {
         let output = self.git(
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
             "status",
         )?;
         if output.status != 0 {
