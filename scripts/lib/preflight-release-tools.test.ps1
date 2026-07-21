@@ -67,7 +67,6 @@ function Reset-Witness { [IO.File]::WriteAllText($Witness, "", [Text.Encoding]::
 
 function Assert-AcceptedVsPath([string]$Root, [string]$Label) {
     Set-FakeVsLayout $Root | Out-Null
-    $env:FAKE_VS_INSTALL = $Root
     Reset-Witness
     $result = Run-Preflight
     Assert-True ($result.status -eq 0) "$Label MSVC path succeeds"
@@ -228,7 +227,6 @@ exit /b 98
     $env:FAKE_NODE_VERSION = "24.16.0"
     $env:FAKE_NPM_VERSION = "11.13.0"
     $env:FAKE_NPM_EXIT = "0"
-    $env:FAKE_VS_INSTALL = $FakeVs
     $env:FAKE_CL_VERSION = "19.44.35228"
     $env:FAKE_CL_MODE = "normal"
     $env:FAKE_CL_EXIT = "2"
@@ -427,7 +425,6 @@ exit /b 98
     foreach ($unsafeCharacter in @("^", "%", "!")) {
         $unsafeVs = Join-Path $Temp "vs $unsafeCharacter path-injection"
         Set-FakeVsLayout $unsafeVs | Out-Null
-        $env:FAKE_VS_INSTALL = $unsafeVs
         Reset-Witness
         $result = Run-Preflight
         Assert-True ($result.status -ne 0) "MSVC $unsafeCharacter path rejected"
@@ -444,7 +441,6 @@ exit /b 98
         Assert-True (-not $unsafeWitness.Contains("PATH-INJECTION")) "MSVC $unsafeCharacter rejection performs no injected action"
     }
     $toolset = Set-FakeVsLayout $FakeVs
-    $env:FAKE_VS_INSTALL = $FakeVs
 
     $env:FAKE_CARGO_VERSION = "malformed"
     $result = Run-Preflight
@@ -638,7 +634,7 @@ exit /b 98
         "SOLSTONE_RELEASE_TOOLS_FAKE_NPM_PATH", "SOLSTONE_RELEASE_TOOLS_FAKE_USERPROFILE", "SOLSTONE_RELEASE_TOOLS_FAKE_WINDOWS_KITS",
         "FAKE_RELEASE_WITNESS", "FAKE_RUST_RELEASE", "FAKE_RUST_HOST", "FAKE_CARGO_VERSION", "FAKE_DENY_VERSION",
         "FAKE_DOTNET_VERSION", "FAKE_VPK_ID", "FAKE_VPK_VERSION", "FAKE_VPK_COMMAND", "FAKE_VPK_ROW_MODE",
-        "FAKE_NODE_VERSION", "FAKE_NPM_VERSION", "FAKE_NPM_EXIT", "FAKE_VS_INSTALL", "FAKE_CL_VERSION", "FAKE_CL_MODE", "FAKE_CL_EXIT",
+        "FAKE_NODE_VERSION", "FAKE_NPM_VERSION", "FAKE_NPM_EXIT", "FAKE_CL_VERSION", "FAKE_CL_MODE", "FAKE_CL_EXIT",
         "FAKE_VCVARS_EXIT", "FAKE_VCVARS_HOST", "FAKE_VCVARS_TARGET", "FAKE_VCVARS_TOOLSET", "FAKE_VCVARS_OUTPUT_MODE",
         "FAKE_SMCTL_VERSION"
     )) { [Environment]::SetEnvironmentVariable($name, $null) }
