@@ -227,7 +227,7 @@ if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
     Add-Mismatch "msvc-cl.vswhere" "exact executable" "unavailable" $msvc.repair
 } else {
     $vsProbe = Invoke-Observed $vswherePath @("-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath")
-    $installations = if ($vsProbe.status -eq 0) { @($vsProbe.text -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } else { @() }
+    $installations = @(if ($vsProbe.status -eq 0) { @($vsProbe.text -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) } else { @() })
     if ($installations.Count -ne 1) {
         Add-Mismatch "msvc-cl.installationPath" "one installation" $(if ($installations.Count -eq 0) { "unavailable" } else { "$($installations.Count) installations" }) $msvc.repair
     } else {

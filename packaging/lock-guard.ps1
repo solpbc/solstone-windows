@@ -45,11 +45,19 @@ try {
 }
 
 foreach ($lock in $locks) {
+    # Native git writes to stderr and exits nonzero for an untracked pathspec or a
+    # non-repository. Under $ErrorActionPreference = "Stop" that stderr write is a
+    # terminating error, which would collapse every case into "could not inspect".
+    # Scope the preference to "Continue" so control flows on the observed exit code.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
         $output = @(& $gitPath -C $Root ls-files --error-unmatch -- $lock.path 2>$null)
         $status = $LASTEXITCODE
     } catch {
         Fail-Git "git could not inspect $($lock.path)"
+    } finally {
+        $ErrorActionPreference = $previousPreference
     }
     if ($status -eq 1) {
         Fail-Lock $lock.path "untracked" $lock.repair

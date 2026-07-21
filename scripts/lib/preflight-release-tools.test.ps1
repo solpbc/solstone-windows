@@ -217,14 +217,14 @@ exit /b 98
     $env:SOLSTONE_SIGN = $null
 
     foreach ($case in @(
-        ,@("FAKE_RUST_RELEASE", "9.9.9", "ERROR: release tool mismatch: rustc.release expected 1.96.0, actual 9.9.9. Run 'make rust-toolchain' on the Windows build box."),
-        ,@("FAKE_RUST_HOST", "wrong-host", "ERROR: release tool mismatch: rustc.host expected x86_64-pc-windows-msvc, actual wrong-host. Run 'make rust-toolchain' on the Windows build box."),
-        ,@("FAKE_CARGO_VERSION", "9.9.9", "ERROR: release tool mismatch: cargo.version expected 1.96.0, actual 9.9.9. Run 'make rust-toolchain' on the Windows build box."),
-        ,@("FAKE_DENY_VERSION", "9.9.9", "ERROR: release tool mismatch: cargo-deny.version expected 0.20.2, actual 9.9.9. Run 'make provision-cargo-deny'."),
-        ,@("FAKE_DOTNET_VERSION", "9.9.9", "ERROR: release tool mismatch: dotnet.version expected 8.0.422, actual 9.9.9. Install the pinned .NET SDK on the Windows build box."),
-        ,@("FAKE_VPK_VERSION", "9.9.9", "ERROR: release tool mismatch: vpk.version expected 1.2.0, actual 9.9.9. Install the pinned Velopack global tool on the Windows build box."),
-        ,@("FAKE_NODE_VERSION", "9.9.9", "ERROR: release tool mismatch: node.version expected 24.16.0, actual 9.9.9. Install Node.js 24.16.0 on the Windows build box."),
-        ,@("FAKE_NPM_VERSION", "9.9.9", "ERROR: release tool mismatch: npm.version expected 11.13.0, actual 9.9.9. Install npm 11.13.0 with the pinned Node.js toolchain."),
+        ,@("FAKE_RUST_RELEASE", "9.9.9", "ERROR: release tool mismatch: rustc.release expected 1.96.0, actual 9.9.9. Run 'make rust-toolchain' on the Windows build box.")
+        ,@("FAKE_RUST_HOST", "wrong-host", "ERROR: release tool mismatch: rustc.host expected x86_64-pc-windows-msvc, actual wrong-host. Run 'make rust-toolchain' on the Windows build box.")
+        ,@("FAKE_CARGO_VERSION", "9.9.9", "ERROR: release tool mismatch: cargo.version expected 1.96.0, actual 9.9.9. Run 'make rust-toolchain' on the Windows build box.")
+        ,@("FAKE_DENY_VERSION", "9.9.9", "ERROR: release tool mismatch: cargo-deny.version expected 0.20.2, actual 9.9.9. Run 'make provision-cargo-deny'.")
+        ,@("FAKE_DOTNET_VERSION", "9.9.9", "ERROR: release tool mismatch: dotnet.version expected 8.0.422, actual 9.9.9. Install the pinned .NET SDK on the Windows build box.")
+        ,@("FAKE_VPK_VERSION", "9.9.9", "ERROR: release tool mismatch: vpk.version expected 1.2.0, actual 9.9.9. Install the pinned Velopack global tool on the Windows build box.")
+        ,@("FAKE_NODE_VERSION", "9.9.9", "ERROR: release tool mismatch: node.version expected 24.16.0, actual 9.9.9. Install Node.js 24.16.0 on the Windows build box.")
+        ,@("FAKE_NPM_VERSION", "9.9.9", "ERROR: release tool mismatch: npm.version expected 11.13.0, actual 9.9.9. Install npm 11.13.0 with the pinned Node.js toolchain.")
         ,@("FAKE_CL_VERSION", "9.9.9", "ERROR: release tool mismatch: msvc-cl.compilerVersion expected 19.44.35228, actual 9.9.9. Install the pinned Visual Studio Build Tools MSVC x64 toolset.")
     )) {
         $old = [Environment]::GetEnvironmentVariable($case[0])
@@ -248,7 +248,7 @@ exit /b 98
     $env:FAKE_SMCTL_VERSION = "1.64.2"
 
     foreach ($case in @(
-        ,@("FAKE_VPK_ID", "wrong", "ERROR: release tool mismatch: vpk.globalToolRow expected one vpk row, actual unavailable. Install the pinned Velopack global tool on the Windows build box."),
+        ,@("FAKE_VPK_ID", "wrong", "ERROR: release tool mismatch: vpk.globalToolRow expected one vpk row, actual unavailable. Install the pinned Velopack global tool on the Windows build box.")
         ,@("FAKE_VPK_COMMAND", "wrong", "ERROR: release tool mismatch: vpk.command expected vpk, actual wrong. Install the pinned Velopack global tool on the Windows build box.")
     )) {
         $old = [Environment]::GetEnvironmentVariable($case[0])
@@ -260,7 +260,7 @@ exit /b 98
     }
 
     foreach ($case in @(
-        ,@("duplicate", "ERROR: release tool mismatch: vpk.globalToolRow expected one vpk row, actual 2 rows. Install the pinned Velopack global tool on the Windows build box."),
+        ,@("duplicate", "ERROR: release tool mismatch: vpk.globalToolRow expected one vpk row, actual 2 rows. Install the pinned Velopack global tool on the Windows build box.")
         ,@("malformed", "ERROR: release tool mismatch: vpk.version expected 1.2.0, actual malformed. Install the pinned Velopack global tool on the Windows build box.")
     )) {
         $env:FAKE_VPK_ROW_MODE = $case[0]
@@ -271,11 +271,11 @@ exit /b 98
     $env:FAKE_VPK_ROW_MODE = "normal"
 
     foreach ($case in @(
-        ,@("rustc", "Run 'make rust-toolchain' on the Windows build box."),
-        ,@("cargo", "Run 'make rust-toolchain' on the Windows build box."),
-        ,@("cargo-deny", "Run 'make provision-cargo-deny'."),
-        ,@("dotnet", "Install the pinned .NET SDK on the Windows build box."),
-        ,@("node", "Install Node.js 24.16.0 on the Windows build box."),
+        ,@("rustc", "Run 'make rust-toolchain' on the Windows build box.")
+        ,@("cargo", "Run 'make rust-toolchain' on the Windows build box.")
+        ,@("cargo-deny", "Run 'make provision-cargo-deny'.")
+        ,@("dotnet", "Install the pinned .NET SDK on the Windows build box.")
+        ,@("node", "Install Node.js 24.16.0 on the Windows build box.")
         ,@("npm", "Install npm 11.13.0 with the pinned Node.js toolchain.")
     )) {
         $tool = $case[0]
@@ -379,7 +379,7 @@ exit /b 98
         $result = Run-Preflight
         Assert-True ($result.status -ne 0) "$($case.name) contract fails"
         Assert-True ($result.stderr -eq $case.error) "$($case.name) exact contract diagnostic"
-        Assert-True ((Get-Content $Witness -Raw) -eq "") "$($case.name) invokes no tools"
+        Assert-True ([string]::IsNullOrEmpty((Get-Content $Witness -Raw))) "$($case.name) invokes no tools"
     }
 
     $contract = Fresh-Contract
@@ -388,7 +388,7 @@ exit /b 98
     Reset-Witness
     $result = Run-Preflight
     Assert-True ($result.status -ne 0) "duplicate group entry fails"
-    Assert-True ((Get-Content $Witness -Raw) -eq "") "duplicate contract invokes no tools"
+    Assert-True ([string]::IsNullOrEmpty((Get-Content $Witness -Raw))) "duplicate contract invokes no tools"
 
     $contract = Fresh-Contract
     $contract.tools | Add-Member -NotePropertyName unexpected -NotePropertyValue $contract.tools.cargo
@@ -396,7 +396,7 @@ exit /b 98
     Reset-Witness
     $result = Run-Preflight
     Assert-True ($result.status -ne 0) "unknown tool fails"
-    Assert-True ((Get-Content $Witness -Raw) -eq "") "unknown tool invokes no tools"
+    Assert-True ([string]::IsNullOrEmpty((Get-Content $Witness -Raw))) "unknown tool invokes no tools"
 
     Fresh-Contract | Out-Null
     Remove-Item -LiteralPath (Join-Path $FakeProfile ".dotnet\tools\vpk.exe")

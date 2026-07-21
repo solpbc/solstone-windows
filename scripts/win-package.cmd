@@ -38,11 +38,11 @@ set "SELECTED_NPM="
 set "SELECTED_POWERSHELL="
 set "SELECTED_VCVARSALL="
 set "SELECTED_VCVARS_VERSION_ARG="
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.cargo.path"`) do set "SELECTED_CARGO=%%i"
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.npm.path"`) do set "SELECTED_NPM=%%i"
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.powershell.path"`) do set "SELECTED_POWERSHELL=%%i"
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.'msvc-cl'.vcvarsallPath"`) do set "SELECTED_VCVARSALL=%%i"
-for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.'msvc-cl'.vcvarsVersionArg"`) do set "SELECTED_VCVARS_VERSION_ARG=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION | ConvertFrom-Json).tools.cargo.path"`) do set "SELECTED_CARGO=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION | ConvertFrom-Json).tools.npm.path"`) do set "SELECTED_NPM=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION | ConvertFrom-Json).tools.powershell.path"`) do set "SELECTED_POWERSHELL=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION | ConvertFrom-Json).tools.'msvc-cl'.vcvarsallPath"`) do set "SELECTED_VCVARSALL=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION | ConvertFrom-Json).tools.'msvc-cl'.vcvarsVersionArg"`) do set "SELECTED_VCVARS_VERSION_ARG=%%i"
 if not defined SELECTED_CARGO ( echo ERROR: selection record omitted cargo.path & exit /b 1 )
 if not defined SELECTED_NPM ( echo ERROR: selection record omitted npm.path & exit /b 1 )
 if not defined SELECTED_POWERSHELL ( echo ERROR: selection record omitted powershell.path & exit /b 1 )

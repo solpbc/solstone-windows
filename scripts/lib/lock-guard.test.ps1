@@ -28,7 +28,7 @@ function Run-Guard([string]$Repo, [string]$PathOverride = "") {
     return [pscustomobject]@{ status = $process.ExitCode; stdout = $stdout.Trim(); stderr = $stderr.Trim() }
 }
 
-function Git([string[]]$Arguments) {
+function Invoke-Git([string[]]$Arguments) {
     & git -C $Temp @Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "git failed: $($Arguments -join ' ')" }
 }
@@ -41,8 +41,8 @@ function Reset-Repo {
     & git -C $Temp init -q
     & git -C $Temp config user.name "solstone lock test"
     & git -C $Temp config user.email "lock-test@example.invalid"
-    Git @("add", "Cargo.lock", "ui/package-lock.json")
-    Git @("commit", "-qm", "locks")
+    Invoke-Git @("add", "Cargo.lock", "ui/package-lock.json")
+    Invoke-Git @("commit", "-qm", "locks")
 }
 
 try {
@@ -57,8 +57,8 @@ try {
     Assert-True ((Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash -eq $beforeUi) "UI lock bytes stable"
     Assert-True ((& git -C $Temp status --short | Out-String) -eq $beforeStatus) "git status stable"
 
-    foreach ($case in @(,
-        @("Cargo.lock", "Run 'cargo update -p <crate>', "Cargo.lock"),
+    foreach ($case in @(
+        ,@("Cargo.lock", "Run 'cargo update -p <crate>'", "Cargo.lock")
         ,@("ui/package-lock.json", "Run 'make ui-deps-update'", "ui\package-lock.json")
     )) {
         Reset-Repo
@@ -69,7 +69,7 @@ try {
         Assert-True ($result.stderr.Contains($case[1])) "$($case[0]) missing repair"
 
         Reset-Repo
-        Git @("rm", "--cached", "--", $case[0])
+        Invoke-Git @("rm", "--cached", "--", $case[0])
         $result = Run-Guard $Temp
         Assert-True ($result.status -ne 0) "$($case[0]) untracked fails"
         Assert-True ($result.stderr.Contains("ERROR: lock guard: $($case[0]) is untracked.")) "$($case[0]) untracked diagnostic"
@@ -77,7 +77,7 @@ try {
     }
 
     Reset-Repo
-    Git @("rm", "--cached", "--", "ui/package-lock.json")
+    Invoke-Git @("rm", "--cached", "--", "ui/package-lock.json")
     Add-Content -LiteralPath (Join-Path $Temp ".gitignore") -Value "ui/package-lock.json" -Encoding ASCII
     $result = Run-Guard $Temp
     Assert-True ($result.status -ne 0) "ignored present lock fails"

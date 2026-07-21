@@ -37,7 +37,23 @@ $SignEnabled = $Sign -or -not [string]::IsNullOrWhiteSpace($env:SOLSTONE_SIGN)
 # creation, or any other byte-changing work. Redundant wrapper execution is
 # intentional: this protects direct package.ps1 invocation and the pack boundary.
 $Preflight = Join-Path $Root "packaging\preflight-release-tools.ps1"
-$SelectionJson = if ($SignEnabled) { & $Preflight -Sign } else { & $Preflight }
+# Run the preflight as a child process and capture its stdout selection record. It
+# emits the JSON via [Console]::Out.WriteLine, which an in-process `& $Preflight`
+# call does not capture; win-package.cmd and the preflight self-test consume it the
+# same child-process way. The preference is scoped so a nonzero preflight exit
+# surfaces as a clean gate failure instead of a native-command exception.
+$PowerShellPath = (Get-Process -Id $PID).Path
+$PreflightArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Preflight)
+if ($SignEnabled) { $PreflightArgs += "-Sign" }
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $SelectionJson = & $PowerShellPath @PreflightArgs
+    $preflightStatus = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousPreference
+}
+if ($preflightStatus -ne 0) { throw "release-tool preflight failed (exit $preflightStatus)." }
 $Selection = $SelectionJson | ConvertFrom-Json
 
 $OldCargoOverride = $env:SOLSTONE_VERSION_GATE_CARGO
@@ -55,6 +71,10 @@ try {
 }
 
 & (Join-Path $Root "packaging\lock-guard.ps1") -Root $Root
+# lock-guard.ps1 signals a lock fault with `exit 1`; an in-process `&` call only
+# sets $LASTEXITCODE (it does not propagate), so the fault must be checked here or
+# packaging would proceed over an untracked/missing lockfile.
+if ($LASTEXITCODE -ne 0) { throw "lock guard failed (exit $LASTEXITCODE)." }
 
 # Signing seam. Empty = unsigned. -Sign populates it (release-only) after the
 # credential preflight passes. The keypair alias is env-supplied so no DigiCert
