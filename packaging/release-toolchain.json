@@ -58,7 +58,7 @@
     },
     "npm": {
       "expected": { "version": "11.13.0" },
-      "observation": "npm --version",
+      "observation": "one reachable callable npm.cmd co-located with the selected pinned node executable, then npm.cmd --version",
       "repair": "Install npm 11.13.0 with the pinned Node.js toolchain."
     },
     "msvc-cl": {
@@ -68,7 +68,7 @@
         "host": "x64",
         "target": "x64"
       },
-      "observation": "vswhere installation plus VC\\Tools\\MSVC\\<toolset>\\bin\\Hostx64\\x64\\cl.exe /Bv Compiler Version",
+      "observation": "exact vcvarsall.bat x64 -vcvars_ver=<toolsetVersion> activation plus exact VC\\Tools\\MSVC\\<toolsetVersion>\\bin\\Hostx64\\x64\\cl.exe /Bv in one isolated cmd.exe child, with separately attributed activation exit/host/target/toolset and compiler banner/D8003/exit evidence",
       "repair": "Install the pinned Visual Studio Build Tools MSVC x64 toolset."
     },
     "windows-sdk": {

@@ -150,6 +150,125 @@ function First-Version([string]$Text) {
     return $null
 }
 
+function Find-NpmCompanions([string[]]$SearchDirectories) {
+    $companions = @()
+    foreach ($rawDirectory in $SearchDirectories) {
+        if ([string]::IsNullOrWhiteSpace($rawDirectory)) { continue }
+        try {
+            $directory = [IO.Path]::GetFullPath($rawDirectory.Trim().Trim([char]34))
+        } catch {
+            continue
+        }
+        foreach ($name in @("npm.cmd", "npm")) {
+            try {
+                $candidate = Join-Path $directory $name
+                if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+                $fullPath = [IO.Path]::GetFullPath($candidate)
+                if (@($companions | Where-Object { $_.path -eq $fullPath }).Count -eq 0) {
+                    $companions += [pscustomobject]@{ name = $name; path = $fullPath }
+                }
+            } catch {
+                continue
+            }
+        }
+    }
+    return @($companions)
+}
+
+function Resolve-NpmTool {
+    $entry = $Contract.tools.npm
+    $expectedPathDescription = "one reachable npm.cmd co-located with selected node"
+    if (-not $Selections.Contains("node")) {
+        Add-Mismatch "npm.path" $expectedPathDescription "selected node unavailable" $entry.repair
+        return
+    }
+
+    $nodeDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Selections["node"].path))
+    $searchPath = if ([string]::IsNullOrWhiteSpace($env:SOLSTONE_RELEASE_TOOLS_FAKE_BIN)) {
+        $env:PATH
+    } elseif ([string]::IsNullOrWhiteSpace($env:SOLSTONE_RELEASE_TOOLS_FAKE_NPM_PATH)) {
+        $env:SOLSTONE_RELEASE_TOOLS_FAKE_BIN
+    } else {
+        $env:SOLSTONE_RELEASE_TOOLS_FAKE_NPM_PATH
+    }
+    $companions = @(Find-NpmCompanions @($searchPath -split ";"))
+    $cmdPaths = @($companions | Where-Object { $_.name -eq "npm.cmd" } | ForEach-Object { $_.path } | Sort-Object)
+    if ($cmdPaths.Count -eq 0) {
+        Add-Mismatch "npm.path" $expectedPathDescription "unavailable" $entry.repair
+        return
+    }
+    if ($cmdPaths.Count -ne 1) {
+        Add-Mismatch "npm.path" $expectedPathDescription "multiple: $($cmdPaths -join ', ')" $entry.repair
+        return
+    }
+
+    $npmPath = $cmdPaths[0]
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path $nodeDirectory "npm.cmd"))
+    if ($npmPath -ne $expectedPath) {
+        Add-Mismatch "npm.path" $expectedPath $npmPath $entry.repair
+        return
+    }
+
+    $probe = Invoke-Observed $npmPath @("--version")
+    if ($probe.status -eq -1) {
+        Add-Mismatch "npm.invocation" "exit 0" "launch failed" $entry.repair
+        return
+    }
+    if ($probe.status -ne 0) {
+        Add-Mismatch "npm.invocation" "exit 0" "exit $($probe.status)" $entry.repair
+        return
+    }
+    $actual = First-Version $probe.text
+    if ($actual -ne $entry.expected.version) {
+        Add-Mismatch "npm.version" $entry.expected.version $actual $entry.repair
+        return
+    }
+    $Selections["npm"] = [ordered]@{ path = $npmPath; version = $actual }
+}
+
+function Invoke-ActivatedMsvcProbe([string]$VcvarsallPath, [string]$VcvarsVersionArg, [string]$ClPath) {
+    try {
+        $command = 'call "' + $VcvarsallPath + '" x64 ' + $VcvarsVersionArg +
+            ' 2>&1 & set "VCX=!ERRORLEVEL!"' +
+            ' & echo __SOLSTONE_RELEASE_PROBE_V1_VCVARS_EXIT__=!VCX!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_HOST__=!VSCMD_ARG_HOST_ARCH!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_TARGET__=!VSCMD_ARG_TGT_ARCH!' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_TOOLSET__=!VCToolsVersion!' +
+            '& if "!VCX!"=="0" (' +
+            'echo __SOLSTONE_RELEASE_PROBE_V1_COMPILER_BEGIN__' +
+            '& call "' + $ClPath + '" /Bv 2>&1' +
+            ' & set "CLX=!ERRORLEVEL!"' +
+            ' & echo __SOLSTONE_RELEASE_PROBE_V1_COMPILER_END__' +
+            '& echo __SOLSTONE_RELEASE_PROBE_V1_COMPILER_EXIT__=!CLX!' +
+            ') & exit /b 0'
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = [IO.Path]::GetFullPath($env:ComSpec)
+        $info.Arguments = "/d /v:on /c $command"
+        $info.UseShellExecute = $false
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        $info.CreateNoWindow = $true
+        $process = [Diagnostics.Process]::Start($info)
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        return [pscustomobject]@{ launched = $true; status = $process.ExitCode; stdout = $stdout; stderr = $stderr }
+    } catch {
+        return [pscustomobject]@{ launched = $false; status = -1; stdout = ""; stderr = $_.Exception.Message }
+    }
+}
+
+function Read-Sentinel([string[]]$Lines, [string]$Prefix, [switch]$Exact) {
+    $hits = @()
+    for ($index = 0; $index -lt $Lines.Count; $index++) {
+        $matched = if ($Exact) { $Lines[$index] -eq $Prefix } else { $Lines[$index].StartsWith($Prefix, [StringComparison]::Ordinal) }
+        if ($matched) { $hits += [pscustomobject]@{ index = $index; value = $Lines[$index].Substring($Prefix.Length) } }
+    }
+    if ($hits.Count -eq 0) { return [pscustomobject]@{ valid = $false; actual = "unavailable" } }
+    if ($hits.Count -ne 1) { return [pscustomobject]@{ valid = $false; actual = "multiple: $($hits.Count)" } }
+    return [pscustomobject]@{ valid = $true; actual = $hits[0].value; index = $hits[0].index }
+}
+
 function Observe-VersionTool([string]$ToolName, [string]$CommandName, [string[]]$Arguments, [string]$Expected) {
     $entry = $Contract.tools.PSObject.Properties[$ToolName].Value
     $path = Resolve-NamedTool $ToolName $CommandName $entry.repair
@@ -213,7 +332,7 @@ if ($Selections.Contains("dotnet")) {
 }
 
 Observe-VersionTool "node" "node" @("--version") $Contract.tools.node.expected.version
-Observe-VersionTool "npm" "npm" @("--version") $Contract.tools.npm.expected.version
+Resolve-NpmTool
 
 $msvc = $Contract.tools.'msvc-cl'
 if ($msvc.expected.host -ne "x64") { Add-Mismatch "msvc-cl.host" $msvc.expected.host "x64" $msvc.repair }
@@ -243,24 +362,152 @@ if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
         } elseif (-not (Test-Path -LiteralPath $vcvarsall -PathType Leaf)) {
             Add-Mismatch "msvc-cl.vcvarsallPath" $vcvarsall "unavailable" $msvc.repair
         } else {
-            $clProbe = Invoke-Observed $clPath @("/Bv")
-            # Bare cl /Bv prints the version banner, then exits nonzero with D8003
-            # because no source file was supplied. A launched process is valid
-            # evidence; only a launch failure makes the banner unavailable.
-            $matches = if ($clProbe.status -ne -1) { @([regex]::Matches($clProbe.text, "Compiler Version\s+([0-9.]+)\s+for\s+x64")) } else { @() }
-            $compilerVersion = if ($matches.Count -eq 1) { $matches[0].Groups[1].Value } else { $null }
-            if ($compilerVersion -ne $msvc.expected.compilerVersion) {
-                Add-Mismatch "msvc-cl.compilerVersion" $msvc.expected.compilerVersion $compilerVersion $msvc.repair
-            } else {
-                $Selections["msvc-cl"] = [ordered]@{
-                    path = [IO.Path]::GetFullPath($clPath)
-                    compilerVersion = $compilerVersion
-                    toolsetVersion = $msvc.expected.toolsetVersion
-                    host = $msvc.expected.host
-                    target = $msvc.expected.target
-                    vcvarsallPath = [IO.Path]::GetFullPath($vcvarsall)
-                    vcvarsVersionArg = "-vcvars_ver=$($msvc.expected.toolsetVersion)"
-                    installationPath = $installation
+            $unsafePath = $false
+            if ($vcvarsall -match '[!%^]') {
+                Add-Mismatch "msvc-cl.vcvarsallPath" "absolute path free of cmd metacharacters (^ % !)" $vcvarsall $msvc.repair
+                $unsafePath = $true
+            }
+            if ($clPath -match '[!%^]') {
+                Add-Mismatch "msvc-cl.path" "absolute path free of cmd metacharacters (^ % !)" $clPath $msvc.repair
+                $unsafePath = $true
+            }
+            if (-not $unsafePath) {
+                $vcvarsVersionArg = "-vcvars_ver=$($msvc.expected.toolsetVersion)"
+                $probe = Invoke-ActivatedMsvcProbe $vcvarsall $vcvarsVersionArg $clPath
+                $valid = $true
+                $compilerVersion = $null
+                if (-not $probe.launched) {
+                    Add-Mismatch "msvc-cl.probeLaunch" "complete activated cmd.exe child evidence" "launch failed" $msvc.repair
+                    $valid = $false
+                } elseif ($probe.status -ne 0) {
+                    Add-Mismatch "msvc-cl.probeLaunch" "complete activated cmd.exe child evidence" "child exit $($probe.status)" $msvc.repair
+                    $valid = $false
+                } else {
+                    $lines = @($probe.stdout -split "`r?`n")
+                    $exitPrefix = "__SOLSTONE_RELEASE_PROBE_V1_VCVARS_EXIT__="
+                    $hostPrefix = "__SOLSTONE_RELEASE_PROBE_V1_HOST__="
+                    $targetPrefix = "__SOLSTONE_RELEASE_PROBE_V1_TARGET__="
+                    $toolsetPrefix = "__SOLSTONE_RELEASE_PROBE_V1_TOOLSET__="
+                    $compilerExitPrefix = "__SOLSTONE_RELEASE_PROBE_V1_COMPILER_EXIT__="
+                    $vcvarsExitEvidence = Read-Sentinel $lines $exitPrefix
+                    $vcvarsExit = $null
+                    if (-not $vcvarsExitEvidence.valid) {
+                        Add-Mismatch "msvc-cl.activationExit" "0" $vcvarsExitEvidence.actual $msvc.repair
+                        $valid = $false
+                    } elseif ($vcvarsExitEvidence.actual -notmatch "^[0-9]+$") {
+                        Add-Mismatch "msvc-cl.activationExit" "0" "malformed: $($vcvarsExitEvidence.actual)" $msvc.repair
+                        $valid = $false
+                    } else {
+                        $vcvarsExit = [int]$vcvarsExitEvidence.actual
+                        if ($vcvarsExit -ne 0) {
+                            Add-Mismatch "msvc-cl.activationExit" "0" "$vcvarsExit" $msvc.repair
+                            $valid = $false
+                        }
+                    }
+
+                    if ($null -ne $vcvarsExit -and $vcvarsExit -eq 0) {
+                        $sentinelIndexes = @($vcvarsExitEvidence.index)
+                        foreach ($identity in @(
+                            [pscustomobject]@{ field = "msvc-cl.activatedHost"; prefix = $hostPrefix; expected = $msvc.expected.host; unresolved = "!VSCMD_ARG_HOST_ARCH!" },
+                            [pscustomobject]@{ field = "msvc-cl.activatedTarget"; prefix = $targetPrefix; expected = $msvc.expected.target; unresolved = "!VSCMD_ARG_TGT_ARCH!" },
+                            [pscustomobject]@{ field = "msvc-cl.activatedToolsetVersion"; prefix = $toolsetPrefix; expected = $msvc.expected.toolsetVersion; unresolved = "!VCToolsVersion!" }
+                        )) {
+                            $evidence = Read-Sentinel $lines $identity.prefix
+                            if ($evidence.valid) { $sentinelIndexes += $evidence.index }
+                            $actual = if ($evidence.valid -and -not [string]::IsNullOrWhiteSpace($evidence.actual) -and $evidence.actual -ne $identity.unresolved) { $evidence.actual } elseif ($evidence.valid) { $null } else { $evidence.actual }
+                            if ($actual -ne $identity.expected) {
+                                Add-Mismatch $identity.field $identity.expected $actual $msvc.repair
+                                $valid = $false
+                            }
+                        }
+
+                        $beginMarker = "__SOLSTONE_RELEASE_PROBE_V1_COMPILER_BEGIN__"
+                        $endMarker = "__SOLSTONE_RELEASE_PROBE_V1_COMPILER_END__"
+                        $beginEvidence = Read-Sentinel $lines $beginMarker -Exact
+                        $endEvidence = Read-Sentinel $lines $endMarker -Exact
+                        $compilerExitEvidence = Read-Sentinel $lines $compilerExitPrefix
+                        foreach ($evidence in @($beginEvidence, $endEvidence, $compilerExitEvidence)) {
+                            if ($evidence.valid) { $sentinelIndexes += $evidence.index }
+                        }
+                        $channelValid = $beginEvidence.valid -and $endEvidence.valid -and $endEvidence.index -gt $beginEvidence.index
+                        if (-not $channelValid) {
+                            $channelActual = if (-not $beginEvidence.valid) { "begin $($beginEvidence.actual)" } elseif (-not $endEvidence.valid) { "end $($endEvidence.actual)" } else { "out of order" }
+                            Add-Mismatch "msvc-cl.compilerChannel" "one ordered sentinel-delimited compiler channel" $channelActual $msvc.repair
+                            $valid = $false
+                        } else {
+                            $channelLines = if ($endEvidence.index -gt ($beginEvidence.index + 1)) {
+                                @($lines[($beginEvidence.index + 1)..($endEvidence.index - 1)])
+                            } else {
+                                @()
+                            }
+                            $channelText = $channelLines -join "`n"
+                            $compilerExit = $null
+                            if (-not $compilerExitEvidence.valid) {
+                                Add-Mismatch "msvc-cl.compilerExit" "2" $compilerExitEvidence.actual $msvc.repair
+                                $valid = $false
+                            } elseif ($compilerExitEvidence.actual -notmatch "^[0-9]+$") {
+                                Add-Mismatch "msvc-cl.compilerExit" "2" "malformed: $($compilerExitEvidence.actual)" $msvc.repair
+                                $valid = $false
+                            } else {
+                                $compilerExit = [int]$compilerExitEvidence.actual
+                            }
+                            if ($sentinelIndexes.Count -eq 7) {
+                                $orderedIndexes = @($sentinelIndexes | Sort-Object)
+                                if (($sentinelIndexes -join ",") -ne ($orderedIndexes -join ",")) {
+                                    Add-Mismatch "msvc-cl.compilerChannel" "sentinels exactly once and in order" "out of order" $msvc.repair
+                                    $valid = $false
+                                }
+                            }
+
+                            $bannerLines = @($channelLines | Where-Object { $_ -match "Compiler Version" })
+                            $launchFailed = $bannerLines.Count -eq 0 -and ($compilerExit -eq 9009 -or $compilerExit -eq 193)
+                            if ($launchFailed) {
+                                Add-Mismatch "msvc-cl.compilerLaunch" "exact pinned compiler launched" "exit $compilerExit without compiler banner" $msvc.repair
+                                $valid = $false
+                            } else {
+                                if ($bannerLines.Count -eq 0) {
+                                    Add-Mismatch "msvc-cl.compilerVersion" $msvc.expected.compilerVersion "unavailable" $msvc.repair
+                                    $valid = $false
+                                } elseif ($bannerLines.Count -ne 1) {
+                                    Add-Mismatch "msvc-cl.compilerVersion" $msvc.expected.compilerVersion "multiple: $($bannerLines.Count) banners" $msvc.repair
+                                    $valid = $false
+                                } else {
+                                    $bannerMatch = [regex]::Match($bannerLines[0], "Compiler Version\s+([0-9]+(?:\.[0-9]+)+)\s+for\s+x64\s*$")
+                                    if (-not $bannerMatch.Success) {
+                                        Add-Mismatch "msvc-cl.compilerVersion" $msvc.expected.compilerVersion "malformed" $msvc.repair
+                                        $valid = $false
+                                    } else {
+                                        $compilerVersion = $bannerMatch.Groups[1].Value
+                                        if ($compilerVersion -ne $msvc.expected.compilerVersion) {
+                                            Add-Mismatch "msvc-cl.compilerVersion" $msvc.expected.compilerVersion $compilerVersion $msvc.repair
+                                            $valid = $false
+                                        }
+                                    }
+                                }
+                                if ($channelText -notmatch "\bD8003\b") {
+                                    Add-Mismatch "msvc-cl.compilerDiagnostic" "D8003" "unavailable" $msvc.repair
+                                    $valid = $false
+                                }
+                                if ($null -ne $compilerExit -and $compilerExit -ne 2) {
+                                    Add-Mismatch "msvc-cl.compilerExit" "2" "$compilerExit" $msvc.repair
+                                    $valid = $false
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if ($valid) {
+                    $Selections["msvc-cl"] = [ordered]@{
+                        path = [IO.Path]::GetFullPath($clPath)
+                        compilerVersion = $compilerVersion
+                        toolsetVersion = $msvc.expected.toolsetVersion
+                        host = $msvc.expected.host
+                        target = $msvc.expected.target
+                        vcvarsallPath = [IO.Path]::GetFullPath($vcvarsall)
+                        vcvarsVersionArg = $vcvarsVersionArg
+                        installationPath = $installation
+                    }
                 }
             }
         }
