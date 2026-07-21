@@ -321,7 +321,21 @@ fn legitimate_exception_reaching_windows_via_chain_is_accepted() {
 }
 
 #[test]
-fn real_cargo_target_gated_dev_dependency_reports_full_path() {
+fn xtask_exception_reaching_windows_via_normal_jsonschema_dependency_is_accepted() {
+    let members = vec![member("xtask", "/workspace/xtask/Cargo.toml")];
+    let trees = trees([(
+        "xtask",
+        "0xtask v0.1.0\n\
+         1jsonschema v0.48.2\n\
+         2windows-sys v0.60.2\n",
+    )]);
+
+    let witness = classify_members(&members, &["xtask"], &trees).unwrap();
+    assert_eq!(witness.exception_count, 1);
+}
+
+#[test]
+fn real_cargo_target_gated_dev_windows_dependency_is_accepted() {
     let workspace = TempWorkspace::new();
     workspace.write_workspace("strict-dev", &["gated-bridge", "windows-sys"]);
     workspace.write_crate(
@@ -337,15 +351,13 @@ fn real_cargo_target_gated_dev_dependency_reports_full_path() {
     );
     workspace.write_crate("windows-sys", "windows-sys", "");
 
-    let error = run_fixture(&workspace).unwrap_err();
-    let manifest = workspace.root.join("strict-dev/Cargo.toml");
-    assert!(error.contains("strict member strict-dev"));
-    assert!(error_names_manifest(&error, &manifest));
-    assert!(error.contains("strict-dev v0.1.0 -> gated-bridge v0.1.0 -> windows-sys v0.1.0"));
+    let witness = run_fixture(&workspace).unwrap();
+    assert_eq!(witness.strict_count, 1);
+    assert_eq!(witness.exception_count, WINDOWS_ALLOWED_MEMBERS.len());
 }
 
 #[test]
-fn real_cargo_optional_dependency_reports_full_path() {
+fn real_cargo_normal_optional_dependency_reports_full_path() {
     let workspace = TempWorkspace::new();
     workspace.write_workspace("strict-optional", &["gated-optional", "windows"]);
     workspace.write_crate(
@@ -467,6 +479,7 @@ fn production_exception_set_is_exact() {
             "pl-transport-win",
             "platform-win",
             "solstone-windows-app",
+            "xtask",
         ]
     );
 }

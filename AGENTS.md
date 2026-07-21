@@ -63,6 +63,7 @@ charter and license.
 | `make audit` | refresh the RustSec database, then check advisories against the locked graph |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
+| `make check-rust-release-manifest` | offline schema, checkout binding, ledger, current-bundle, and deterministic-render verification; mode selected by `MANIFEST` or `RELEASE_DIR` |
 | `make package` | pinned release-tool preflight → metadata version gate → tracked-lock guard → offline UI install/build → locked release build → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
 | `make publish-r2` | fail-closed direct-publication guard; R2 publication belongs to the aggregate provenance publisher |
 | `make pull-releases` | pull the box's packed `Releases/` for a controlled aggregate workflow; does not publish |
@@ -76,7 +77,8 @@ charter and license.
 | Repository entry point | Evidence class | Exact claim |
 |---|---|---|
 | `make test`, `make ui-test`, `make test-scripts`, and the local Rust legs of `make ci` | Host evidence | Linux-host formatting, compilation/tests for the host-testable subset, UI tests, and shell policy; no Windows compilation |
-| `make purity-check` | Cross-target classification evidence | Enumerates every workspace member from `cargo metadata` and inspects each exactly once with `cargo tree --target all --all-features -e normal,build,dev`; the Windows family is forbidden for every member except the reviewed Windows-capable platform/composition/app set, and unknown or stale exception entries fail. This does not compile or link MSVC code |
+| `make purity-check` | Cross-target classification evidence | Enumerates every workspace member from `cargo metadata` and inspects each exactly once with `cargo tree --target all --all-features -e normal,build`; the Windows family is forbidden in each strict member's shipped (normal+build) graph. Dev-only reachability is out of scope because dev-dependencies never ship; the reviewed Windows-capable set includes platform/composition/app members and `xtask` build tooling. Unknown or stale exceptions fail. This does not compile or link MSVC code |
+| `make check-rust-release-manifest` | Host evidence | Offline exact-schema and semantic self-check with no environment selector; `MANIFEST=<path>` verifies one manifest and its named sibling bytes without claiming completeness; `RELEASE_DIR=<path>` classifies one exact flat current-only bundle |
 | `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; the caller verifies that the box built the exact transferred snapshot by matching its reported HEAD to the intended snapshot SHA; no app package, install, sign, or smoke |
 | `scripts/win-app-build.cmd` | Native app-build evidence | Builds the UI and Windows app binary; no package, install, sign, or smoke |
 | `make package` / `scripts/win-package.cmd` | Package-construction evidence | Release app build plus Velopack pack; unsigned unless signing is explicitly enabled; no install or smoke |
@@ -242,6 +244,20 @@ KeyLocker via Velopack's `--signTemplate`); signing is opt-in and release-only
 credentials are env-supplied, never committed. Signing covers release artifacts
 only. Package construction performs no publication auth or transport; release
 publication belongs to the aggregate provenance publisher. See `docs/release-runbook.md`.
+
+The offline Rust release-manifest verifier has three modes. With no selector it
+runs only committed fixtures and deterministic rendering. `MANIFEST=<path>`
+checks that manifest plus every exact named sibling but is not a complete or
+publishable-directory classification. `RELEASE_DIR=<path>` requires a flat
+current-only directory containing the companion
+`solstone-windows-x86_64-pc-windows-msvc.rust-release-manifest.json` and exactly
+these six manifest-listed files: `assets.win.json`, `RELEASES`,
+`releases.win.json`, `Solstone-<VERSION>-full.nupkg`,
+`solstone-setup-<VERSION>.exe`, and `Solstone-win-Portable.zip`; when the current
+feeds advertise a delta, `Solstone-<VERSION>-delta.nupkg` is required too. The
+companion is never self-listed, so a complete bundle has seven files, or eight
+with the current delta. This verifier does not package, sign, authenticate, or
+publish, and all direct publication entry points remain fail-closed.
 
 ## 8. Safety Rails
 

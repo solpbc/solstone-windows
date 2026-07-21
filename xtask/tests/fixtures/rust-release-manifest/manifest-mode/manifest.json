@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "product": "solstone-windows",
+  "version": "0.2.11",
+  "source_commit": "1111111111111111111111111111111111111111",
+  "source_dirty": false,
+  "cargo_lock_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "rust": {
+    "rustc_verbose": "release: 1.96.0\nhost: x86_64-pc-windows-msvc",
+    "cargo_version": "1.96.0"
+  },
+  "target": {
+    "kind": "compiled",
+    "triple": "x86_64-pc-windows-msvc",
+    "profile": "release",
+    "features": [
+      "custom-protocol"
+    ]
+  },
+  "native_tools": {
+    "dotnet": "8.0.422",
+    "msvc-cl": "19.44.35228 toolset 14.44.35207 x64->x64",
+    "node": "24.16.0",
+    "npm": "11.13.0",
+    "powershell": "5.1",
+    "signing_mode": "unsigned",
+    "vpk": "1.2.0",
+    "windows-sdk": "10.0.26100.0"
+  },
+  "dependency_policy": {
+    "cargo_deny_version": "0.20.2",
+    "deterministic_gate": "pass",
+    "advisory_checked_at": "2026-07-01T00:00:00Z"
+  },
+  "active_exceptions": [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195"
+  ],
+  "artifacts": [
+    {
+      "path": "RELEASES",
+      "sha256": "012ece1209420eb98da57ac6654fdc188659929323c0e1094c78cdee817151d8",
+      "bytes": 74
+    },
+    {
+      "path": "Solstone-0.2.11-full.nupkg",
+      "sha256": "dcfa0de0dcf1702dcc41da58dc2256e7e1c3390a072ac7fbeef15ec667a48d13",
+      "bytes": 25
+    },
+    {
+      "path": "Solstone-win-Portable.zip",
+      "sha256": "5ad589d052c1c285c994825eef704c6cdf7b28a350d9a21d59cc2be754354889",
+      "bytes": 21
+    },
+    {
+      "path": "assets.win.json",
+      "sha256": "acd63c3d5eb3aad6c514cd946789876fa448fc4d9187cd639c8ef3b26fe80234",
+      "bytes": 201
+    },
+    {
+      "path": "releases.win.json",
+      "sha256": "a609aea46aea83f9f957f86c6164b21f383de1c0b793d9c997720288ac49fa9a",
+      "bytes": 281
+    },
+    {
+      "path": "solstone-setup-0.2.11.exe",
+      "sha256": "2fda423710913979fddc860fa9f14e863393bdf6bee7eac3aac03477d878d093",
+      "bytes": 18
+    }
+  ]
+}

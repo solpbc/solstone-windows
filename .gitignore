@@ -10,6 +10,8 @@ node_modules/
 # Packaging output (Velopack feed + installers)
 /Releases/
 *.nupkg
+!xtask/tests/fixtures/rust-release-manifest/manifest-mode/Solstone-0.2.11-full.nupkg
+!xtask/tests/fixtures/rust-release-manifest/release-dir/Solstone-0.2.11-full.nupkg
 *.Setup.exe
 
 # Captured media and segments (never committed)

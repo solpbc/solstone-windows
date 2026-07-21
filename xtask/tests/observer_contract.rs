@@ -232,7 +232,8 @@ fn observer_contract_rejects_symlinks_special_types_and_executable_modes() {
     symlink("manifest.json", &file).unwrap();
     assert!(matches!(
         tree.verify(),
-        Err(VerifyError::NonRegularFile { .. })
+        Err(VerifyError::NonRegularFile { path, kind })
+            if path == "consumer-audit.json" && kind == "symlink"
     ));
 
     let tree = TempTree::good();

@@ -11,6 +11,10 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::artifact_fs::{self, ArtifactFsError, UnixModePolicy};
+
+pub use crate::artifact_fs::{validate_relative_path, UnsafePathReason};
+
 pub const ADOPTION_SCHEMA_VERSION: u64 = 1;
 pub const CONSUMER_IDENTIFIER: &str = "solstone-windows";
 pub const AUTHORITY_REPOSITORY: &str = "https://github.com/solpbc/solstone-journal";
@@ -253,16 +257,6 @@ pub const ADOPTED_VECTOR_IDS: &[&str] = &[
     "observer.ingestUpload.status_unknown_rejected",
 ];
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UnsafePathReason {
-    Absolute,
-    Empty,
-    EmptyComponent,
-    ReservedName,
-    TrailingDotOrSpace,
-    NonPortableName,
-}
-
 #[derive(Debug)]
 pub enum VerifyError {
     Io {
@@ -439,6 +433,31 @@ impl fmt::Display for VerifyError {
 
 impl std::error::Error for VerifyError {}
 
+impl From<ArtifactFsError> for VerifyError {
+    fn from(error: ArtifactFsError) -> Self {
+        match error {
+            ArtifactFsError::Io { path, message } => Self::Io { path, message },
+            ArtifactFsError::UnsafePath { path, reason } => Self::UnsafePath { path, reason },
+            ArtifactFsError::Traversal { path } => Self::Traversal { path },
+            ArtifactFsError::Backslash { path } => Self::Backslash { path },
+            ArtifactFsError::ControlChar { path } => Self::ControlChar { path },
+            ArtifactFsError::CaseCollision { first, second } => {
+                Self::CaseCollision { first, second }
+            }
+            ArtifactFsError::NonRegularFile { path, kind } => Self::NonRegularFile { path, kind },
+            ArtifactFsError::ReparsePoint { path } => Self::NonRegularFile {
+                path,
+                kind: "reparse point",
+            },
+            ArtifactFsError::UnsafeResolution { path } => Self::NonRegularFile {
+                path,
+                kind: "unsafe resolution",
+            },
+            ArtifactFsError::InvalidFileMode { path, mode } => Self::InvalidFileMode { path, mode },
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct VerifyReport {
     pub bundle_semver: &'static str,
@@ -490,16 +509,6 @@ pub fn verify(bundle_dir: &Path, adoption_path: &Path) -> Result<VerifyReport, V
         }
     })?;
     verify_adoption(&adoption)?;
-
-    let bundle_meta =
-        fs::symlink_metadata(bundle_dir).map_err(|error| io_error("bundle", error))?;
-    if !bundle_meta.file_type().is_dir() {
-        return Err(VerifyError::NonRegularFile {
-            path: "bundle".to_owned(),
-            kind: file_kind(&bundle_meta),
-        });
-    }
-    verify_mode("bundle", &bundle_meta, true)?;
 
     let (actual_files, actual_dirs) = walk_bundle(bundle_dir)?;
     if !actual_files.contains(AUTHORITY_MANIFEST_PATH) {
@@ -566,14 +575,8 @@ pub fn verify(bundle_dir: &Path, adoption_path: &Path) -> Result<VerifyReport, V
 }
 
 fn verify_regular_file(path: &Path, label: &str) -> Result<(), VerifyError> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(label, error))?;
-    if !metadata.file_type().is_file() {
-        return Err(VerifyError::NonRegularFile {
-            path: label.to_owned(),
-            kind: file_kind(&metadata),
-        });
-    }
-    verify_mode(label, &metadata, false)
+    artifact_fs::verify_regular_file(path, label, UnixModePolicy::StrictNoExecute)?;
+    Ok(())
 }
 
 fn read_file(path: &Path, label: &str) -> Result<Vec<u8>, VerifyError> {
@@ -699,141 +702,9 @@ fn verify_coverage(field: &str, actual: &[String], expected: &[&str]) -> Result<
 }
 
 fn walk_bundle(bundle_dir: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>), VerifyError> {
-    let mut files = BTreeSet::new();
-    let mut dirs = BTreeSet::new();
-    let mut folded = BTreeMap::<String, String>::new();
-    walk_dir(bundle_dir, "", &mut files, &mut dirs, &mut folded)?;
-    Ok((files, dirs))
-}
-
-fn walk_dir(
-    root: &Path,
-    relative: &str,
-    files: &mut BTreeSet<String>,
-    dirs: &mut BTreeSet<String>,
-    folded: &mut BTreeMap<String, String>,
-) -> Result<(), VerifyError> {
-    let current = if relative.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(relative)
-    };
-    let directory_label = if relative.is_empty() {
-        "bundle"
-    } else {
-        relative
-    };
-    let entries = fs::read_dir(&current).map_err(|error| io_error(directory_label, error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| io_error(directory_label, error))?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| VerifyError::UnsafePath {
-                path: directory_label.to_owned(),
-                reason: UnsafePathReason::NonPortableName,
-            })?;
-        let child = if relative.is_empty() {
-            name
-        } else {
-            format!("{relative}/{name}")
-        };
-        validate_relative_path(&child)?;
-        if let Some(first) = folded.insert(child.to_ascii_lowercase(), child.clone()) {
-            return Err(VerifyError::CaseCollision {
-                first,
-                second: child,
-            });
-        }
-        let metadata =
-            fs::symlink_metadata(entry.path()).map_err(|error| io_error(&child, error))?;
-        if metadata.file_type().is_dir() {
-            verify_mode(&child, &metadata, true)?;
-            dirs.insert(child.clone());
-            walk_dir(root, &child, files, dirs, folded)?;
-        } else if metadata.file_type().is_file() {
-            verify_mode(&child, &metadata, false)?;
-            files.insert(child);
-        } else {
-            return Err(VerifyError::NonRegularFile {
-                path: child,
-                kind: file_kind(&metadata),
-            });
-        }
-    }
-    Ok(())
-}
-
-pub fn validate_relative_path(path: &str) -> Result<(), VerifyError> {
-    if path.is_empty() {
-        return Err(VerifyError::UnsafePath {
-            path: path.to_owned(),
-            reason: UnsafePathReason::Empty,
-        });
-    }
-    if path.starts_with('/') || Path::new(path).is_absolute() {
-        return Err(VerifyError::UnsafePath {
-            path: path.to_owned(),
-            reason: UnsafePathReason::Absolute,
-        });
-    }
-    if path.contains('\\') {
-        return Err(VerifyError::Backslash {
-            path: path.to_owned(),
-        });
-    }
-    if path.chars().any(char::is_control) {
-        return Err(VerifyError::ControlChar {
-            path: path.to_owned(),
-        });
-    }
-    for component in path.split('/') {
-        if component.is_empty() {
-            return Err(VerifyError::UnsafePath {
-                path: path.to_owned(),
-                reason: UnsafePathReason::EmptyComponent,
-            });
-        }
-        if component == "." || component == ".." {
-            return Err(VerifyError::Traversal {
-                path: path.to_owned(),
-            });
-        }
-        if component.ends_with('.') || component.ends_with(' ') {
-            return Err(VerifyError::UnsafePath {
-                path: path.to_owned(),
-                reason: UnsafePathReason::TrailingDotOrSpace,
-            });
-        }
-        let stem = component
-            .split('.')
-            .next()
-            .unwrap_or(component)
-            .to_ascii_uppercase();
-        let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || stem
-                .strip_prefix("COM")
-                .or_else(|| stem.strip_prefix("LPT"))
-                .is_some_and(|suffix| {
-                    matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-                });
-        if reserved {
-            return Err(VerifyError::UnsafePath {
-                path: path.to_owned(),
-                reason: UnsafePathReason::ReservedName,
-            });
-        }
-        if !component
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '{' | '}'))
-        {
-            return Err(VerifyError::UnsafePath {
-                path: path.to_owned(),
-                reason: UnsafePathReason::NonPortableName,
-            });
-        }
-    }
-    Ok(())
+    let inventory =
+        artifact_fs::walk_directory(bundle_dir, "bundle", UnixModePolicy::StrictNoExecute)?;
+    Ok((inventory.files, inventory.directories))
 }
 
 fn parse_manifest_files(manifest: &Value) -> Result<Vec<ManifestFile>, VerifyError> {
@@ -1222,45 +1093,19 @@ fn optional_json_text(value: Option<&Value>) -> String {
         .unwrap_or_else(|| "<missing>".to_owned())
 }
 
-fn io_error(path: &str, error: std::io::Error) -> VerifyError {
-    VerifyError::Io {
-        path: path.to_owned(),
-        message: error.to_string(),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn file_kind(metadata: &fs::Metadata) -> &'static str {
-    let kind = metadata.file_type();
-    if kind.is_symlink() {
-        "symlink"
-    } else if kind.is_dir() {
-        "directory"
-    } else if kind.is_file() {
-        "regular file"
-    } else {
-        "special file"
-    }
-}
-
-#[cfg(unix)]
-fn verify_mode(path: &str, metadata: &fs::Metadata, directory: bool) -> Result<(), VerifyError> {
-    use std::os::unix::fs::MetadataExt;
-    let mode = metadata.mode() & 0o7777;
-    let forbidden = if directory {
-        mode & 0o7000
-    } else {
-        mode & 0o7111
-    };
-    if forbidden != 0 {
-        return Err(VerifyError::InvalidFileMode {
-            path: path.to_owned(),
-            mode,
+    #[test]
+    fn windows_reparse_identity_maps_to_the_existing_observer_variant() {
+        let error = VerifyError::from(ArtifactFsError::ReparsePoint {
+            path: "consumer-audit.json".to_owned(),
         });
+        assert!(matches!(
+            error,
+            VerifyError::NonRegularFile { path, kind }
+                if path == "consumer-audit.json" && kind == "reparse point"
+        ));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn verify_mode(_path: &str, _metadata: &fs::Metadata, _directory: bool) -> Result<(), VerifyError> {
-    Ok(())
 }

@@ -7,7 +7,8 @@
 //! - `contract` — regenerate `automation-contract.json` + the `ui/src/lib/contract.ts` codegen.
 //! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate and the `contract_not_stale` test both invoke it).
 //! - `observer-contract check` — verify the vendored observer-client authority bundle and adoption record.
-//! - `purity-check` — fail if the `windows` family reaches any strict workspace member (every member except the reviewed Windows-capable exception set), even target-gated; members come from `cargo metadata`, with normal/build/dev traversal under `--target all --all-features`.
+//! - `rust-release-manifest check` — offline schema, semantic, ledger, and bundle verification.
+//! - `purity-check` — fail if the `windows` family reaches any strict workspace member's shipped graph (every member except the reviewed Windows-capable exception set), even target-gated; members come from `cargo metadata`, with normal/build traversal under `--target all --all-features`.
 //! - `version-gate [--root <path>]` — resolve the product version from cargo metadata and verify every committed release version surface.
 //! - `package` — Velopack packaging (delegates to the Windows script; a stub off the build box).
 //! - `dev` — developer convenience launcher (stub).
@@ -34,15 +35,63 @@ fn main() -> ExitCode {
         {
             cmd_observer_contract_check()
         }
+        Some("rust-release-manifest")
+            if args.get(1).map(String::as_str) == Some("check") && args.len() == 2 =>
+        {
+            cmd_rust_release_manifest_check()
+        }
         Some("purity-check") => cmd_purity_check(),
         Some("version-gate") => cmd_version_gate(&args),
         Some("package") => cmd_package(),
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <contract [--check] | observer-contract check | purity-check | version-gate [--root <path>] | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  version-gate [--root <path>]: verify every committed release version surface"
+                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest check | purity-check | version-gate [--root <path>] | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_rust_release_manifest_check() -> ExitCode {
+    let root = repo_root();
+    let cargo = xtask::version_gate::configured_cargo();
+    let git = std::env::var_os("GIT").unwrap_or_else(|| "git".into());
+    let manifest = std::env::var_os("MANIFEST").filter(|value| !value.is_empty());
+    let release_dir = std::env::var_os("RELEASE_DIR").filter(|value| !value.is_empty());
+    match xtask::rust_release_manifest::run_check(
+        &root,
+        &cargo,
+        &git,
+        manifest.as_deref(),
+        release_dir.as_deref(),
+    ) {
+        Ok(report) => {
+            match report.mode {
+                xtask::rust_release_manifest::ClassificationMode::FixtureSelfCheck => println!(
+                    "rust release manifest: offline fixtures and deterministic rendering verified"
+                ),
+                xtask::rust_release_manifest::ClassificationMode::SiblingBytesOnly => {
+                    println!("rust release manifest: named sibling bytes verified");
+                }
+                xtask::rust_release_manifest::ClassificationMode::CompleteCurrentBundle => {
+                    println!("rust release manifest: complete current bundle verified");
+                }
+            }
+            if let Some(disclaimer) = report.disclaimer {
+                println!("{disclaimer}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(xtask::rust_release_manifest::ManifestError::Usage) => {
+            eprintln!(
+                "usage: set at most one of MANIFEST=<path> or RELEASE_DIR=<path> for rust-release-manifest check"
+            );
+            ExitCode::from(2)
+        }
+        Err(error) => {
+            eprintln!("rust release manifest check failed: {error}");
+            ExitCode::FAILURE
         }
     }
 }

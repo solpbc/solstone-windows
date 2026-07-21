@@ -117,7 +117,7 @@ fn nonempty_env_os(name: &str) -> Option<OsString> {
     std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
-fn authoritative_version(root: &Path, cargo: &OsStr) -> Result<String, String> {
+pub(crate) fn authoritative_version(root: &Path, cargo: &OsStr) -> Result<String, String> {
     let output = Command::new(cargo)
         .args(["metadata", "--no-deps", "--format-version", "1", "--locked"])
         .current_dir(root)

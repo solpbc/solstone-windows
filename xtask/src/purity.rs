@@ -68,6 +68,9 @@ pub const WINDOWS_ALLOWED_MEMBERS: &[&str] = &[
     "pl-transport-win",
     "platform-win",
     "solstone-windows-app",
+    // Build tooling: uses std::os::windows, pulls the pinned offline jsonschema
+    // validator, and never ships; reviewed as Windows-capable.
+    "xtask",
 ];
 
 pub fn configured_cargo() -> String {
@@ -374,7 +377,7 @@ pub fn run_purity_check(repo_root: &Path, cargo: &OsStr) -> Result<PurityWitness
                 "all",
                 "--all-features",
                 "-e",
-                "normal,build,dev",
+                "normal,build",
                 "--prefix",
                 "depth",
                 "--no-dedupe",

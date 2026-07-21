@@ -10,6 +10,7 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Build binary + webview | `make build` |
 | Deterministic composite gate (host checks · offline dependency policy · native Windows build/test) | `make ci` |
 | Refresh RustSec data + check current advisories | `make audit` |
+| Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
 | Gate and pack a Velopack release into `Releases/` | `make package` |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
 | R2 direct-publication guard (**primary channel remains R2**) | `make publish-r2` (always fails closed) |
@@ -28,11 +29,44 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
   registers the per-user autostart login item.
 
+## Offline Rust release-manifest verification
+
+`make check-rust-release-manifest` has three explicit modes:
+
+- With neither selector set, it verifies the exact embedded schema, committed
+  semantic/classifier fixtures, ledger grammar, and deterministic rendering.
+- `MANIFEST=<path> make check-rust-release-manifest` validates one manifest
+  against the current checkout and verifies every exact named sibling byte. A
+  success explicitly does not classify the directory as complete or publishable.
+- `RELEASE_DIR=<path> make check-rust-release-manifest` validates a flat,
+  current-only complete bundle. `MANIFEST` and `RELEASE_DIR` cannot be set
+  together.
+
+The complete directory contains the companion
+`solstone-windows-x86_64-pc-windows-msvc.rust-release-manifest.json` plus exactly
+the following manifest-listed files:
+
+1. `assets.win.json`
+2. `RELEASES`
+3. `releases.win.json`
+4. `Solstone-<VERSION>-full.nupkg`
+5. `solstone-setup-<VERSION>.exe`
+6. `Solstone-win-Portable.zip`
+7. `Solstone-<VERSION>-delta.nupkg`, only when the current feeds advertise it
+
+The companion is not self-listed, so the complete directory has seven files,
+or eight with a current delta. Historical records may remain inside the two
+cumulative ledgers, but historical package bytes, subdirectories, and unknown
+files are rejected. `RELEASES` remains its BOM-prefixed `SHA1 filename size`
+full-package ledger; `releases.win.json` uses the raw `NotesHTML` key. This gate
+does not construct, sign, authenticate, or publish a release. Direct publication
+commands remain fail-closed.
+
 ## Release notes — cut the CHANGELOG section before a signed pack
 
 Per-release notes ship **inside the update feed**: `make package` extracts the
 `CHANGELOG.md` `## [<version>]` section and threads it into `vpk pack` via
-`--releaseNotes`, so `releases.win.json` carries `NotesMarkdown`/`NotesHtml`. The
+`--releaseNotes`, so `releases.win.json` carries `NotesMarkdown`/`NotesHTML`. The
 in-app Updates pane and `solstone.app/releases/windows` render those notes — the
 Windows analog of the macOS appcast `<description>`.
 

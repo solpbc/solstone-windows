@@ -33,13 +33,13 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny preflight-release-tools build test ui-test \
-	        test-scripts ci audit contract purity-check check-observer-contract package publish publish-r2 \
+	        test-scripts ci audit contract purity-check check-observer-contract check-rust-release-manifest package publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract package smoke screenshots journal-live run clean"
+	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest package smoke screenshots journal-live run clean"
 	@echo "release: package constructs Releases/; direct publish targets are locked pending the aggregate provenance publisher"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
@@ -108,6 +108,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) run --locked -q -p xtask -- contract --check
 	$(CARGO) run --locked -q -p xtask -- purity-check
 	$(MAKE) check-observer-contract
+	MANIFEST= RELEASE_DIR= $(MAKE) check-rust-release-manifest
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
 	$(CARGO) deny --offline --locked check bans licenses sources
 	$(MAKE) ui-test
@@ -137,6 +138,12 @@ check-observer-contract: preflight-toolchain
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p observer-pl observer_contract_authority
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win observer_contract_authority
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win --test transport_round_trip
+
+# Offline schema, semantic, ledger, current-bundle, and deterministic-render gate.
+check-rust-release-manifest: preflight-toolchain
+	@echo "offline Rust release-manifest evidence"
+	MANIFEST="$(MANIFEST)" RELEASE_DIR="$(RELEASE_DIR)" CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- rust-release-manifest check
+	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p xtask rust_release_manifest
 
 # Gate, build a RELEASE binary + webview, then pack into Releases/.
 # Release (not the debug `build`) so the tray app is windowless — the
