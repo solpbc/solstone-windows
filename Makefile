@@ -31,22 +31,28 @@ REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-
 WIN_REMOTE_HOST ?=
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
 
-.PHONY: install rust-toolchain preflight-toolchain preflight-cargo-deny build test ui-test \
+.PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
+	        provision-cargo-deny preflight-release-tools build test ui-test \
 	        test-scripts ci audit contract purity-check check-observer-contract package publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install rust-toolchain build test ci audit contract purity-check check-observer-contract package publish smoke screenshots journal-live run clean"
-	@echo "release: package (box) -> publish (box) -> pull-releases -> publish-r2 -> publish-packages"
+	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract package smoke screenshots journal-live run clean"
+	@echo "release: package constructs Releases/; direct publish targets are locked pending the aggregate provenance publisher"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
 # locally we only set up the UI's JS deps when present. Run by the hopper mill at
 # lode start.
 install:
-	@if [ -f ui/package.json ]; then npm --prefix ui install; else echo "no local tooling to install"; fi
+	@if [ -f ui/package.json ]; then npm --prefix ui ci; else echo "no local tooling to install"; fi
+
+# The only dependency-update path. Network is permitted; review and commit the
+# resulting ui/package-lock.json diff before using deterministic consumers.
+ui-deps-update:
+	npm --prefix ui install
 
 rust-toolchain:
 	@version=$$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$$/\1/p' rust-toolchain.toml | sed -n '1p'); \
@@ -59,10 +65,18 @@ preflight-toolchain:
 preflight-cargo-deny:
 	@CARGO="$(CARGO)" sh scripts/preflight-cargo-deny.sh
 
+provision-cargo-deny:
+	cargo install cargo-deny --version 0.20.2 --locked
+
+# Windows build-box release-tool observation only: no credentials or network.
+preflight-release-tools:
+	$(PWSH) -NoProfile -File packaging/preflight-release-tools.ps1
+
 # Build the webview bundle + the binary. The webview is built FIRST: Tauri embeds
 # ui/dist into the exe at cargo-compile time, so building it after would embed a
 # stale bundle.
 build: preflight-toolchain
+	npm --prefix ui ci --offline
 	npm --prefix ui run build
 	$(CARGO) build --locked -p $(TAURI_BIN) --features custom-protocol
 
@@ -71,15 +85,16 @@ build: preflight-toolchain
 test: preflight-toolchain
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
 
-# The host-testable shell publish-name contract check on the Linux mill.
+# Host-testable deterministic/package/publication policy checks on the Linux mill.
 test-scripts:
-	sh scripts/lib/artifact-names.test.sh
 	sh scripts/lib/deterministic-gates.test.sh
+	sh scripts/lib/publication-guard.test.sh
+	sh scripts/lib/make-package-ordering.test.sh
 
-# UI unit tests (vitest+jsdom) on the Linux mill. Reinstall first so the new
-# vitest/jsdom devDeps (added after the lode-start `npm install`) are present.
+# UI unit tests (vitest+jsdom) on the Linux mill. Materialize only the committed
+# graph from the warmed cache; fail if the cache is incomplete.
 ui-test:
-	npm --prefix ui install
+	npm --prefix ui ci --offline
 	npm --prefix ui run test
 
 # The one CI surface for the engineer: cheap, host-independent checks run locally
@@ -123,58 +138,55 @@ check-observer-contract: preflight-toolchain
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win observer_contract_authority
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win --test transport_round_trip
 
-# Build a RELEASE binary + webview, then pack a Velopack release into Releases/.
+# Gate, build a RELEASE binary + webview, then pack into Releases/.
 # Release (not the debug `build`) so the tray app is windowless — the
 # `windows_subsystem="windows"` attribute is release-only. The webview is built
 # first (embedded at cargo-compile time). The .ps1 consumes target/release/ and
-# does not rebuild. Unsigned now; the $SignTemplate seam in scripts/package.ps1 is
-# empty until the cert lands.
-package: preflight-toolchain
-	npm --prefix ui run build
-	# --features custom-protocol: serve the embedded ui/dist, not the Vite devUrl.
-	# Without it the shipped Settings/About load "localhost refused to connect"
-	# (cargo tauri build sets it automatically; a plain cargo build does not).
-	$(CARGO) build --locked -p $(TAURI_BIN) --release --features custom-protocol
-	$(PWSH) -File scripts/package.ps1
+# does not rebuild. The explicit ordering is duplicated inside package.ps1 for
+# direct-invocation defense in depth.
+package:
+	@set -eu; \
+	  sign_arg=; \
+	  if [ -n "$${SOLSTONE_SIGN:-}" ]; then sign_arg=-Sign; fi; \
+	  selection_json=$$($(PWSH) -NoProfile -File packaging/preflight-release-tools.ps1 $$sign_arg); \
+	  test -n "$$selection_json"; \
+	  cargo_path=$$(SOLSTONE_RELEASE_SELECTION_JSON="$$selection_json" $(PWSH) -NoProfile -Command '($$env:SOLSTONE_RELEASE_SELECTION_JSON | ConvertFrom-Json).tools.cargo.path'); \
+	  npm_path=$$(SOLSTONE_RELEASE_SELECTION_JSON="$$selection_json" $(PWSH) -NoProfile -Command '($$env:SOLSTONE_RELEASE_SELECTION_JSON | ConvertFrom-Json).tools.npm.path'); \
+	  powershell_path=$$(SOLSTONE_RELEASE_SELECTION_JSON="$$selection_json" $(PWSH) -NoProfile -Command '($$env:SOLSTONE_RELEASE_SELECTION_JSON | ConvertFrom-Json).tools.powershell.path'); \
+	  test -n "$$cargo_path"; test -n "$$npm_path"; test -n "$$powershell_path"; \
+	  SOLSTONE_VERSION_GATE_CARGO="$$cargo_path" "$$cargo_path" run --locked -q -p xtask -- version-gate; \
+	  "$$powershell_path" -NoProfile -File packaging/lock-guard.ps1; \
+	  "$$npm_path" --prefix ui ci --offline; \
+	  "$$npm_path" --prefix ui run build; \
+	  "$$cargo_path" build --locked -p $(TAURI_BIN) --release --features custom-protocol; \
+	  if [ -n "$$sign_arg" ]; then \
+	    "$$powershell_path" -NoProfile -File scripts/package.ps1 -Sign; \
+	  else \
+	    "$$powershell_path" -NoProfile -File scripts/package.ps1; \
+	  fi
 
-# Upload the Releases/ dir to GitHub Releases = the REQUIRED source-hygiene mirror
-# (tagged v<version> release + artifacts + the CHANGELOG ## [<version>] notes, same
-# notes as the R2 feed). Every signed release publishes to BOTH R2 (publish-r2) and
-# GitHub (this) -- never skipped. Runs on the RELEASE HOST (where `gh` is authed +
-# Releases/ was pulled), same posture as publish-r2 -- the build box has no `gh`.
+# Direct publication is fail-closed. These entry points remain visible while
+# publication ownership moves to the aggregate provenance publisher.
 publish:
-	sh scripts/publish-gh.sh Releases
+	sh scripts/publish-gh.sh
 
-# Upload the Releases/ dir to the R2 update feed at
-# updates.solstone.app/solstone-windows/ -- the PRIMARY auto-update channel the
-# in-app updater fetches, feed-last. Runs on the RELEASE HOST (where wrangler
-# holds the Cloudflare R2 auth), not the build box -- keeps Cloudflare creds off
-# the signing box. Pack on the box, `make pull-releases`, then this.
 publish-r2:
-	sh scripts/publish-r2.sh Releases
+	sh scripts/publish-r2.sh
 
-# Refresh the package-manager channels for a PUBLISHED release. Run on the RELEASE
-# HOST after `make publish` (the GitHub release + assets must exist; the manifests
-# point at and are hashed over those assets). Both ride the existing signed
-# artifacts -- no rebuild. VERSION defaults to the workspace version; override with
-# `make publish-packages VERSION=x.y.z`. See packaging/DISTRIBUTION.md.
-#   winget -> a version-update PR to microsoft/winget-pkgs (needs komac).
-#   scoop  -> bump version+hash in solpbc/scoop-solstone.
 publish-winget:
-	sh scripts/publish-winget.sh $(VERSION)
+	sh scripts/publish-winget.sh
 
 publish-scoop:
-	sh scripts/publish-scoop.sh $(VERSION)
+	sh scripts/publish-scoop.sh
 
 publish-packages: publish-winget publish-scoop
 
-# Assert the package-manager channels actually carry the current release. Read-only.
-# `publish-packages` is an operator step that fails quietly -- winget silently drifted
-# ten releases behind before anyone noticed. Run this after a release.
+# Assert the package-manager channels carry the metadata-derived current release.
+# Read-only; it never publishes or repairs channel drift.
 check-channels:
-	sh scripts/check-channels.sh $(VERSION)
+	sh scripts/check-channels.sh
 
-# Pull the box's packed Releases/ to the release host so publish-r2 can upload it.
+# Pull the box's packed Releases/ for a controlled aggregate workflow.
 # The box checks the working tree out under ~/swbuild (sync-win-host's bundle).
 pull-releases: require-win-remote-host
 	rm -rf Releases

@@ -12,17 +12,19 @@ packaging, and FlaUI smoke** require the Windows build box.
 
 - **Rust 1.96.0**, pinned by `rust-toolchain.toml`. Run `make rust-toolchain`
   to install the exact toolchain, rustfmt, clippy, and Windows MSVC target.
-- **cargo-deny 0.20.2** for `make ci` / `make audit`
-  (`cargo install cargo-deny --version 0.20.2 --locked`).
+- **cargo-deny 0.20.2** for `make ci` / `make audit`; provision it explicitly with
+  `make provision-cargo-deny`.
 - That's it for `make test` of the pure crates and `make contract`.
 
 ### Windows build box (binary, packaging, smoke)
 
 - The Rust **MSVC** target installed by `make rust-toolchain`.
-- **Node.js 18+** and npm (for the Vite webview build).
+- **Node.js 24.16.0** and **npm 11.13.0** (for the locked Vite webview build).
 - The **WebView2** runtime (evergreen; present on current Windows).
-- The **.NET SDK** with net48 targeting support (for the FlaUI harness).
-- **Velopack** (`vpk`) and the **GitHub CLI** (`gh`) for packaging/publishing.
+- The **.NET SDK 8.0.422** with net48 targeting support (for the FlaUI harness).
+- The Velopack global tool **vpk 1.2.0** for packaging. The full box release-tool
+  contract, including MSVC/SDK/PowerShell and signed-mode tools, is pinned in
+  `packaging/release-toolchain.json` and observed by `make preflight-release-tools`.
 
 ## First build
 
@@ -41,12 +43,16 @@ make test
 ## The full build (Windows build box)
 
 ```bash
-# Install the webview deps once:
-npm --prefix ui install
+# Provision the exact committed webview graph (network permitted):
+make install
 
 # Build the binary + the webview bundle:
 make build
 ```
+
+`make build` rematerializes the same graph with `npm ci --offline`. To deliberately
+update UI dependencies, run `make ui-deps-update`, review `ui/package-lock.json`,
+and commit it.
 
 ## The contract
 

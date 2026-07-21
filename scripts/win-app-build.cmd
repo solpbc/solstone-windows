@@ -21,8 +21,8 @@ for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Mi
 if not defined VSINSTALL ( echo ERROR: VS Build Tools with VC.Tools.x86.x64 not found & exit /b 1 )
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul || ( echo ERROR: vcvarsall failed & exit /b 1 )
 
-echo === npm install (ui) ===
-call npm --prefix ui install || exit /b 1
+echo === npm ci --offline (ui) ===
+call npm --prefix ui ci --offline || exit /b 1
 echo === npm run build (ui -^> ui/dist) ===
 call npm --prefix ui run build || exit /b 1
 :: --features custom-protocol so this verify build serves the embedded ui/dist

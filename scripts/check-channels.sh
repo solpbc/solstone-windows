@@ -4,8 +4,8 @@
 #
 # Assert that the package-manager channels actually carry the current release.
 #
-# `make publish-packages` is an operator step on the release host -- nothing forces
-# it, and when it fails it fails quietly. winget drifted TEN releases behind (0.2.0
+# Channel publication is owned outside these direct scripts. winget once drifted
+# TEN releases behind (0.2.0
 # while we shipped 0.2.10) and nobody noticed, because a channel that is simply never
 # updated emits no error: it just keeps serving the old version. Silence is not health.
 # This turns that silence into a red check.
@@ -13,15 +13,15 @@
 # Compares the live published version on each channel against the workspace version.
 # Exit 1 on drift. Read-only -- it publishes nothing.
 #
-#   make check-channels              # against the workspace version
-#   sh scripts/check-channels.sh 0.2.10
+#   make check-channels
 set -eu
 
 UPSTREAM="microsoft/winget-pkgs"
 BUCKET="solpbc/scoop-solstone"
 
-VERSION="${1:-$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')}"
-[ -n "$VERSION" ] || { echo "check-channels: could not determine VERSION" >&2; exit 1; }
+[ "$#" -eq 0 ] || { echo "check-channels: no arguments accepted" >&2; exit 2; }
+VERSION="$(cargo run --locked -q -p xtask -- version-gate)"
+[ -n "$VERSION" ] || { echo "check-channels: version gate returned no version" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "check-channels: gh required (and authed)" >&2; exit 1; }
 
 echo "check-channels: workspace version $VERSION"
@@ -45,7 +45,7 @@ else
     echo "  winget  PENDING  published $WINGET, $VERSION awaiting merge: $PENDING"
     pending=1
   else
-    echo "  winget  DRIFT    published $WINGET, expected $VERSION -- run: make publish-winget"
+    echo "  winget  DRIFT    published $WINGET, expected $VERSION -- release publication belongs to the aggregate provenance publisher"
     rc=1
   fi
 fi
@@ -59,7 +59,7 @@ if [ -z "$SCOOP" ]; then
 elif [ "$SCOOP" = "$VERSION" ]; then
   echo "  scoop   OK       $SCOOP"
 else
-  echo "  scoop   DRIFT    published $SCOOP, expected $VERSION -- run: make publish-scoop"
+  echo "  scoop   DRIFT    published $SCOOP, expected $VERSION -- release publication belongs to the aggregate provenance publisher"
   rc=1
 fi
 

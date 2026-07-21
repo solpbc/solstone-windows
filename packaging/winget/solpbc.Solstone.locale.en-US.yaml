@@ -1,12 +1,10 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 #
-# THIS IS THE PUBLISHED COPY. Editing it here is what ships it -- publish-winget.sh
-# renders this file into the winget-pkgs PR. (It did not used to: `komac update`
-# carried the last PUBLISHED version's copy forward and never read this directory,
-# so brand fixes made here sat unpublished for ten releases.)
+# This is the authoritative locale-manifest input for the aggregate provenance
+# publisher. Direct publication scripts are locked.
 #
-# ReleaseNotes/ReleaseNotesUrl are NOT authored here -- publish-winget.sh derives
-# them per release from the CHANGELOG.md section and the release tag.
+# ReleaseNotes/ReleaseNotesUrl are finalized from the release changelog/provenance,
+# not authored in this static input.
 
 PackageIdentifier: solpbc.Solstone
 PackageVersion: 0.2.11

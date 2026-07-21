@@ -10,9 +10,12 @@ certificate's finite signature quota).
   packaging wrapper forwards it). Without it the pack is unsigned, the dev/local
   default, so iterate and delta-update-validation packs don't burn signature quota
   or churn SmartScreen reputation hashes.
-- `preflight-auth.ps1` is the credential pre-check that runs before `vpk pack`: it
-  fails fast (secret-free) when the signing environment is not provisioned, rather
-  than letting the signer fail opaquely mid-pack.
+- `../preflight-release-tools.ps1` is the non-credential, network-free tool check.
+  In signed mode it selects exact smctl and SignTool identities without signing or
+  verification.
+- `preflight-auth.ps1 -SmctlPath <selected-absolute-path>` is the credential
+  pre-check that runs before `vpk pack`: it fails fast (secret-free) when the
+  signing environment is not provisioned and never resolves ambient smctl.
 - The signing credentials and the keypair alias are env-supplied — `SM_HOST`,
   `SM_API_KEY`, `SM_CLIENT_CERT_FILE`, `SM_CLIENT_CERT_PASSWORD`,
   `SM_KEYPAIR_ALIAS` — supplied by the build box, never committed.

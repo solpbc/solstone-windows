@@ -24,30 +24,49 @@ setlocal enableextensions
 cd /d "%~dp0.." || exit /b 1
 
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
-call scripts\preflight-toolchain.cmd || exit /b 1
+set "SIGN_ARG="
+if defined SOLSTONE_SIGN set "SIGN_ARG=-Sign"
 
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-if not exist "%VSWHERE%" ( echo ERROR: vswhere not found at "%VSWHERE%" & exit /b 1 )
-set "VSINSTALL="
-for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALL=%%i"
-if not defined VSINSTALL ( echo ERROR: VS Build Tools with VC.Tools.x86.x64 not found & exit /b 1 )
-call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul || ( echo ERROR: vcvarsall failed & exit /b 1 )
+echo === release-tool preflight ===
+set "RELEASE_SELECTION="
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -File packaging\preflight-release-tools.ps1 %SIGN_ARG%`) do set "RELEASE_SELECTION=%%i"
+if errorlevel 1 exit /b 1
+if not defined RELEASE_SELECTION ( echo ERROR: release-tool preflight returned no selection record & exit /b 1 )
 
-echo === npm install (ui) ===
-call npm --prefix ui install || exit /b 1
+set "SELECTED_CARGO="
+set "SELECTED_NPM="
+set "SELECTED_POWERSHELL="
+set "SELECTED_VCVARSALL="
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.cargo.path"`) do set "SELECTED_CARGO=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.npm.path"`) do set "SELECTED_NPM=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.powershell.path"`) do set "SELECTED_POWERSHELL=%%i"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "($env:RELEASE_SELECTION ^| ConvertFrom-Json).tools.'msvc-cl'.vcvarsallPath"`) do set "SELECTED_VCVARSALL=%%i"
+if not defined SELECTED_CARGO ( echo ERROR: selection record omitted cargo.path & exit /b 1 )
+if not defined SELECTED_NPM ( echo ERROR: selection record omitted npm.path & exit /b 1 )
+if not defined SELECTED_POWERSHELL ( echo ERROR: selection record omitted powershell.path & exit /b 1 )
+if not defined SELECTED_VCVARSALL ( echo ERROR: selection record omitted msvc-cl.vcvarsallPath & exit /b 1 )
+
+echo === version gate ===
+set "SOLSTONE_VERSION_GATE_CARGO=%SELECTED_CARGO%"
+call "%SELECTED_CARGO%" run --locked -q -p xtask -- version-gate || exit /b 1
+echo === lock guard ===
+"%SELECTED_POWERSHELL%" -NoProfile -File packaging\lock-guard.ps1 || exit /b 1
+
+call "%SELECTED_VCVARSALL%" x64 >nul || ( echo ERROR: selected vcvarsall failed & exit /b 1 )
+
+echo === npm ci --offline (ui) ===
+call "%SELECTED_NPM%" --prefix ui ci --offline || exit /b 1
 echo === npm run build (ui -^> ui/dist) ===
-call npm --prefix ui run build || exit /b 1
+call "%SELECTED_NPM%" --prefix ui run build || exit /b 1
 :: --features custom-protocol is REQUIRED for a shipping build. Without it Tauri
 :: serves the webview from devUrl (the Vite dev server, build.devUrl in
 :: tauri.conf.json) instead of the embedded ui/dist, so the Settings and About
 :: windows load "localhost refused to connect" in the installed app. cargo tauri
 :: build enables it automatically; a plain cargo build does not. Do not remove.
 echo === cargo build --locked -p solstone-windows-app --release --features custom-protocol ===
-cargo build --locked -p solstone-windows-app --release --features custom-protocol || exit /b 1
+call "%SELECTED_CARGO%" build --locked -p solstone-windows-app --release --features custom-protocol || exit /b 1
 echo === vpk pack (scripts\package.ps1) ===
-set "SIGN_ARG="
-if defined SOLSTONE_SIGN set "SIGN_ARG=-Sign"
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 %SIGN_ARG% || exit /b 1
+"%SELECTED_POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 %SIGN_ARG% || exit /b 1
 
 echo === WIN_PACKAGE_OK: native Windows release build and vpk pack passed; signing only when SOLSTONE_SIGN is set; install and smoke not run ===
 exit /b 0

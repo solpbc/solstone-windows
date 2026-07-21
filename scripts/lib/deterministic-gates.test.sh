@@ -194,7 +194,7 @@ assert_contains "missing cargo-deny version" "$deny_output" "actual unavailable"
 assert_contains \
   "missing cargo-deny repair" \
   "$deny_output" \
-  "cargo install cargo-deny --version 0.20.2 --locked"
+  "Run 'make provision-cargo-deny'."
 
 if deny_output=$(CARGO="$FAKE_CARGO" FAKE_DENY_VERSION=9.9.9 sh "$REPO_ROOT/scripts/preflight-cargo-deny.sh" 2>&1); then
   fail "skewed cargo-deny must fail"
@@ -204,10 +204,25 @@ assert_contains "skewed cargo-deny version" "$deny_output" "expected 0.20.2, act
 assert_contains \
   "skewed cargo-deny repair" \
   "$deny_output" \
-  "cargo install cargo-deny --version 0.20.2 --locked"
+  "Run 'make provision-cargo-deny'."
 
 deny_output=$(CARGO="$FAKE_CARGO" FAKE_DENY_VERSION=0.20.2 sh "$REPO_ROOT/scripts/preflight-cargo-deny.sh" 2>&1)
 assert_eq "matching cargo-deny is silent" "" "$deny_output"
+
+provision_dry_run=$(MAKEFLAGS= make -C "$REPO_ROOT" -n provision-cargo-deny 2>&1)
+assert_contains \
+  "named cargo-deny provisioning verb" \
+  "$provision_dry_run" \
+  "cargo install cargo-deny --version 0.20.2 --locked"
+ui_update_dry_run=$(MAKEFLAGS= make -C "$REPO_ROOT" -n ui-deps-update 2>&1)
+assert_contains "named UI dependency update verb" "$ui_update_dry_run" "npm --prefix ui install"
+for target in build test ui-test package ci audit; do
+  dry_run=$(MAKEFLAGS= make -C "$REPO_ROOT" -n "$target" WIN_REMOTE_HOST=fake@example.invalid 2>&1 || true)
+  assert_not_contains \
+    "$target never provisions cargo-deny" \
+    "$dry_run" \
+    "cargo install cargo-deny"
+done
 
 GIT_REPO="$TMP_ROOT/git-repo"
 mkdir "$GIT_REPO"

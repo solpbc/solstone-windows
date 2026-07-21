@@ -3,3 +3,4 @@
 
 pub mod observer_contract;
 pub mod purity;
+pub mod version_gate;

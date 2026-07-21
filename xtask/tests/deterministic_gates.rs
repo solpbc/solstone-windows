@@ -4,6 +4,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde_json::Value;
+
 #[test]
 fn rust_toolchain_pin_and_repair_verb_are_consistent() {
     let root = repo_root();
@@ -93,7 +95,7 @@ fn every_gated_cargo_resolution_is_locked() {
         let mut invocations = 0;
         for (index, line) in text.lines().enumerate() {
             let trimmed = line.trim_start();
-            if trimmed.starts_with("cargo ") {
+            if trimmed.starts_with("cargo ") || trimmed.starts_with("call \"%SELECTED_CARGO%\"") {
                 invocations += 1;
                 assert!(
                     trimmed.contains("--locked"),
@@ -127,7 +129,7 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
     let deny_preflight = read(&root, "scripts/preflight-cargo-deny.sh");
 
     assert!(deny_preflight.contains("required=0.20.2"));
-    assert!(deny_preflight.contains("cargo install cargo-deny --version $required --locked"));
+    assert!(deny_preflight.contains("Run 'make provision-cargo-deny'."));
     assert!(deny_preflight.contains("exit 1"));
     for advisory in ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"] {
         let line = deny_toml
@@ -198,6 +200,124 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
             has_failure_exit,
             "{path} must contain a nonzero failure exit ({failure_exit})"
         );
+    }
+}
+
+#[test]
+fn dependency_and_release_lockdown_topology_is_static() {
+    let root = repo_root();
+    let makefile = read(&root, "Makefile");
+    let gitignore = read(&root, ".gitignore");
+
+    assert!(root.join("ui/package-lock.json").is_file());
+    assert!(!gitignore
+        .lines()
+        .any(|line| line == "/ui/package-lock.json"));
+
+    assert!(makefile.contains("install:\n\t@if [ -f ui/package.json ]; then npm --prefix ui ci;"));
+    assert!(makefile.contains("ui-deps-update:\n\tnpm --prefix ui install"));
+    assert!(makefile.contains("build: preflight-toolchain\n\tnpm --prefix ui ci --offline"));
+    assert!(makefile.contains("ui-test:\n\tnpm --prefix ui ci --offline"));
+    assert!(makefile.contains("\"$$npm_path\" --prefix ui ci --offline"));
+    for path in ["scripts/win-app-build.cmd", "scripts/win-package.cmd"] {
+        assert!(read(&root, path).contains("--prefix ui ci --offline"));
+    }
+
+    let executable_files = [
+        "Makefile",
+        "scripts/win-app-build.cmd",
+        "scripts/win-package.cmd",
+        "src-tauri/tauri.conf.json",
+    ];
+    let mut npm_installs = Vec::new();
+    for path in executable_files {
+        for (index, line) in read(&root, path).lines().enumerate() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with('#') && trimmed.contains("npm --prefix ui install") {
+                npm_installs.push(format!("{path}:{}:{trimmed}", index + 1));
+            }
+        }
+    }
+    assert_eq!(
+        npm_installs.len(),
+        1,
+        "only ui-deps-update may execute npm install: {npm_installs:?}"
+    );
+    assert!(npm_installs[0].contains("Makefile"));
+
+    assert!(makefile
+        .contains("provision-cargo-deny:\n\tcargo install cargo-deny --version 0.20.2 --locked"));
+    for target in ["build:", "test:", "package:", "ci:", "audit:"] {
+        let line = makefile
+            .lines()
+            .find(|line| line.starts_with(target))
+            .expect("required make target");
+        assert!(!line.contains("provision-cargo-deny"));
+    }
+
+    let contract: Value = serde_json::from_str(&read(&root, "packaging/release-toolchain.json"))
+        .expect("release toolchain JSON");
+    assert_eq!(
+        contract["tools"]["dotnet"]["expected"]["version"],
+        "8.0.422"
+    );
+    assert_eq!(contract["tools"]["vpk"]["expected"]["packageId"], "vpk");
+    assert_eq!(contract["tools"]["vpk"]["expected"]["version"], "1.2.0");
+    assert_eq!(
+        contract["tools"]["msvc-cl"]["expected"]["compilerVersion"],
+        "19.44.35228"
+    );
+    assert_eq!(
+        contract["tools"]["msvc-cl"]["expected"]["toolsetVersion"],
+        "14.44.35207"
+    );
+}
+
+#[test]
+fn publication_and_parallel_version_sources_are_locked_out() {
+    let root = repo_root();
+    let exact_message = "ERROR: publication locked: direct publication is disabled; release publication belongs to the aggregate provenance publisher.";
+    let guard = read(&root, "scripts/lib/publication-guard.sh");
+    assert!(guard.contains(exact_message));
+
+    for path in [
+        "scripts/publish-gh.sh",
+        "scripts/publish-r2.sh",
+        "scripts/publish-winget.sh",
+        "scripts/publish-scoop.sh",
+    ] {
+        let script = read(&root, path);
+        assert!(script.contains("lib/publication-guard.sh"));
+        assert!(script.contains("publication_guard"));
+        for forbidden in [" gh ", "wrangler", "curl", "jq", "scp", "VERSION="] {
+            assert!(!script.contains(forbidden), "{path} retains {forbidden}");
+        }
+    }
+    assert!(!root.join("scripts/lib/artifact-names.sh").exists());
+    assert!(!root.join("scripts/lib/artifact-names.test.sh").exists());
+
+    let channels = read(&root, "scripts/check-channels.sh");
+    assert!(channels.contains("[ \"$#\" -eq 0 ]"));
+    assert!(channels.contains("cargo run --locked -q -p xtask -- version-gate"));
+    assert!(!channels.contains("grep -m1 '^version = ' Cargo.toml"));
+    assert!(!channels.contains("make publish-winget"));
+    assert!(!channels.contains("make publish-scoop"));
+
+    let package = read(&root, "scripts/package.ps1");
+    assert!(!package.contains("--dump-state"));
+    assert!(!package.contains("[string]$Version"));
+    assert!(!package.to_ascii_lowercase().contains("signtool verify"));
+    assert!(package.contains("$Selection.tools.vpk.path"));
+    assert!(package.contains("$Selection.tools.smctl.path"));
+    assert!(package.contains("-SmctlPath $SmctlPath"));
+
+    let win_ci = read(&root, "scripts/win-ci.cmd");
+    for test in [
+        "preflight-release-tools.test.ps1",
+        "lock-guard.test.ps1",
+        "package-entrypoints.test.ps1",
+    ] {
+        assert!(win_ci.contains(test));
     }
 }
 

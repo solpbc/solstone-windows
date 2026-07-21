@@ -1,8 +1,8 @@
 # Distribution channels
 
-solstone for Windows ships through three channels, all pointing at the **same
-OV-signed artifacts** published per release to the GitHub release (`vX.Y.Z`) and
-the R2 update feed:
+solstone for Windows has three distribution channels, all intended to point at the
+**same finalized signed artifacts**. Direct publication is currently locked;
+release publication belongs to the aggregate provenance publisher.
 
 | Channel | Artifact | Who owns updates |
 |---------|----------|------------------|
@@ -19,9 +19,9 @@ upgrade` cannot tell the package is installed.
 
 ## The manifests live in this repo
 
-**`packaging/winget/` and `packaging/scoop/` are the source of truth.** Edit the
-copy there and the next release publishes it. Both publish scripts render *from*
-those files and push the whole manifest.
+**`packaging/winget/` and `packaging/scoop/` are authoritative manifest inputs.**
+Edit and review the copies here. Whole-manifest consumption belongs to the aggregate provenance publisher
+rather than scripts that patch selected fields of live copies.
 
 This is worth stating loudly because it was not true until 2026-07-13, and the
 silence cost us. Both publish scripts used to be *version bumpers*: they took the
@@ -43,37 +43,23 @@ defects came out of that single shape:
   longer exists. `publish-scoop.sh` only ever touched version/url/hash, so it never
   noticed.
 
-**The rule that prevents a fourth: a publish script must push the whole manifest
-from this repo, never patch selected fields of the live one.**
+**The rule that prevents a fourth: aggregate publication must push the whole
+manifest from this repo, never patch selected fields of the live one.**
 
-## Release step
+## Release boundary
 
-The package-manager channels are refreshed **as the last step of a release**, on
-the release host, after the GitHub release + assets exist — they ride the same
-artifacts, so there is no rebuild. The full sequence:
+`make package` constructs `Releases/` only after the pinned release-tool preflight,
+metadata version gate, and tracked-lock guard. `make pull-releases` remains an
+artifact transport for a controlled aggregate workflow; it does not publish.
 
-```
-make package        # build box: build + Velopack pack -> Releases/
-make publish        # build box: GitHub release (vX.Y.Z) + assets
-make pull-releases   # release host: pull Releases/ from the box
-make publish-r2      # release host: R2 update feed (in-app updater channel)
-make publish-packages # release host: winget PR + scoop bump  <-- this file
-```
+`make publish`, `make publish-r2`, `make publish-winget`, `make publish-scoop`, and
+their `publish-packages` aggregate are deliberate fail-closed guards. They accept no
+version override and perform no authentication or transport. Release publication
+belongs to the aggregate provenance publisher.
 
-`make publish-packages` runs `publish-winget` + `publish-scoop` (below). `VERSION`
-defaults to the workspace version; override with `make publish-packages VERSION=x.y.z`.
-There is no GitHub Actions / webhook path for this — it is an operator-run release
-step, same posture as `publish` / `publish-r2`.
-
-Both scripts re-render their manifest source in place at publish time, so
-**`git status` will show `packaging/` dirty after a release — commit it.** That is
-what keeps the repo a faithful mirror of what is actually published.
-
-Then **`make check-channels`** (read-only) asserts that each channel actually carries
-the release, and exits non-zero on drift. Run it after every release. Nothing forces
-`publish-packages`, and a channel that is simply never updated raises no error — it
-just keeps serving the old version. That is precisely how winget went ten releases
-stale unnoticed. Silence is not health; make the check say so.
+After aggregate publication, **`make check-channels`** remains read-only. It derives
+the expected version from Cargo metadata, reports live winget/scoop state, and exits
+non-zero on drift; it never repairs or publishes.
 
 ## winget
 
@@ -81,16 +67,11 @@ Manifests live in the community repo `microsoft/winget-pkgs` under
 `manifests/s/solpbc/Solstone/<version>/` — **not** the Microsoft Store (no Store
 account / MSIX). Our source of truth is [`winget/`](winget/).
 
-**Per release: `make publish-winget`** (`scripts/publish-winget.sh`). winget has no
-push API — every version is a PR to the community repo — so the script renders
-[`winget/`](winget/) at the release version (installer URL, SHA256 over the
-*published* asset, release date, and `ReleaseNotes` derived from the `CHANGELOG.md`
-section), builds the branch through the GitHub API (winget-pkgs is far too large to
-clone), and opens the PR. winget's pipeline then validates (schema, hash, an
-interactive Windows-Sandbox install) before a moderator/bot merges — so the PR is
-itself the install-validation gate.
+The direct winget script is locked. Winget still requires a PR to the community
+repository; the aggregate provenance publisher will own that submission after
+finalized GitHub assets and provenance exist. Winget's pipeline validates schema,
+hash, and an interactive Windows-Sandbox install before a moderator/bot merges.
 
-- Needs `gh` (authed, with a fork of `microsoft/winget-pkgs`), `curl`, `jq`. **No komac.**
 - **Keep Actions disabled on the fork.** The fork inherits winget-pkgs' workflows, and
   every branch push triggers its Spell Checking run — which fails on package jargon and
   emails the fork owner a "build error" that looks like the PR failed. It is fork-local
@@ -100,9 +81,6 @@ itself the install-validation gate.
   re-disable if the fork is ever recreated.
 - Version-update PRs are the fast path — frequently auto-merged with no human,
   unlike the multi-day first-package gate.
-- Dry run: `WINGET_DRY_RUN=1 sh scripts/publish-winget.sh <version>` renders to
-  `target/winget/` and stops — no repo write, no branch, no PR. On Windows,
-  `winget validate --manifest target/winget/`.
 
 **Two things a tool will try to "fix" wrongly — don't let it:**
 
@@ -122,10 +100,8 @@ Our source of truth is [`scoop/solstone.json`](scoop/solstone.json). It points a
 `Solstone-win-Portable.zip` and carries `checkver`/`autoupdate` blocks (the latter
 let a maintainer auto-refresh from a scoop checkout — `bin/checkver.ps1 solstone -u`).
 
-**Per release: `make publish-scoop`** (`scripts/publish-scoop.sh`) — hashes the
-published `Portable.zip`, renders the repo manifest at that version, and pushes the
-whole file to `solpbc/scoop-solstone` via the GitHub API. No external CI/bot: it is
-an operator-run release step.
+The direct scoop script is locked. Hashing the finalized `Portable.zip` and
+publishing the complete reviewed manifest to `solpbc/scoop-solstone` belongs to the aggregate provenance publisher.
 
 **`bin` / `shortcuts` must name a file that exists in the portable zip.** Velopack
 names the top-level launcher after `--packTitle` — today `sol.exe`. If `--packTitle`

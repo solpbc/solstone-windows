@@ -1,0 +1,99 @@
+{
+  "schema": "solstone.release-toolchain.v1",
+  "groups": {
+    "unsigned": [
+      "rustc",
+      "cargo",
+      "cargo-deny",
+      "dotnet",
+      "vpk",
+      "node",
+      "npm",
+      "msvc-cl",
+      "windows-sdk",
+      "powershell"
+    ],
+    "signedAdditional": [
+      "smctl",
+      "signtool"
+    ]
+  },
+  "tools": {
+    "rustc": {
+      "expected": {
+        "release": "1.96.0",
+        "host": "x86_64-pc-windows-msvc"
+      },
+      "observation": "rustc -Vv release: and host:",
+      "repair": "Run 'make rust-toolchain' on the Windows build box."
+    },
+    "cargo": {
+      "expected": { "version": "1.96.0" },
+      "observation": "cargo --version",
+      "repair": "Run 'make rust-toolchain' on the Windows build box."
+    },
+    "cargo-deny": {
+      "expected": { "version": "0.20.2" },
+      "observation": "cargo-deny --version",
+      "repair": "Run 'make provision-cargo-deny'."
+    },
+    "dotnet": {
+      "expected": { "version": "8.0.422" },
+      "observation": "dotnet --version",
+      "repair": "Install the pinned .NET SDK on the Windows build box."
+    },
+    "vpk": {
+      "expected": {
+        "packageId": "vpk",
+        "version": "1.2.0",
+        "command": "vpk"
+      },
+      "observation": "dotnet tool list -g Package Id/Version/Commands plus %USERPROFILE%\\.dotnet\\tools\\vpk.exe",
+      "repair": "Install the pinned Velopack global tool on the Windows build box."
+    },
+    "node": {
+      "expected": { "version": "24.16.0" },
+      "observation": "node --version with one leading v removed",
+      "repair": "Install Node.js 24.16.0 on the Windows build box."
+    },
+    "npm": {
+      "expected": { "version": "11.13.0" },
+      "observation": "npm --version",
+      "repair": "Install npm 11.13.0 with the pinned Node.js toolchain."
+    },
+    "msvc-cl": {
+      "expected": {
+        "compilerVersion": "19.44.35228",
+        "toolsetVersion": "14.44.35207",
+        "host": "x64",
+        "target": "x64"
+      },
+      "observation": "vswhere installation plus VC\\Tools\\MSVC\\<toolset>\\bin\\Hostx64\\x64\\cl.exe /Bv Compiler Version",
+      "repair": "Install the pinned Visual Studio Build Tools MSVC x64 toolset."
+    },
+    "windows-sdk": {
+      "expected": { "version": "10.0.26100.0" },
+      "observation": "%ProgramFiles(x86)%\\Windows Kits\\10\\Lib directory version",
+      "repair": "Install Windows SDK 10.0.26100.0."
+    },
+    "powershell": {
+      "expected": { "majorMinor": "5.1" },
+      "observation": "$PSVersionTable.PSVersion normalized to Major.Minor",
+      "repair": "Run the release rail under Windows PowerShell 5.1."
+    },
+    "smctl": {
+      "expected": { "version": "1.64.2" },
+      "observation": "smctl --version",
+      "repair": "Install DigiCert smctl 1.64.2 on the Windows build box."
+    },
+    "signtool": {
+      "expected": {
+        "path": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\signtool.exe",
+        "productVersion": "10.0.26100.7705",
+        "originalFilename": "SIGNTOOL.EXE"
+      },
+      "observation": "exact-path FileVersionInfo ProductVersion and OriginalFilename",
+      "repair": "Install the pinned x64 Windows SDK SignTool; ambient PATH copies are not accepted."
+    }
+  }
+}

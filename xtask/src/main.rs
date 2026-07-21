@@ -8,6 +8,7 @@
 //! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate and the `contract_not_stale` test both invoke it).
 //! - `observer-contract check` — verify the vendored observer-client authority bundle and adoption record.
 //! - `purity-check` — fail if the `windows` family reaches any strict workspace member (every member except the reviewed Windows-capable exception set), even target-gated; members come from `cargo metadata`, with normal/build/dev traversal under `--target all --all-features`.
+//! - `version-gate [--root <path>]` — resolve the product version from cargo metadata and verify every committed release version surface.
 //! - `package` — Velopack packaging (delegates to the Windows script; a stub off the build box).
 //! - `dev` — developer convenience launcher (stub).
 
@@ -34,13 +35,42 @@ fn main() -> ExitCode {
             cmd_observer_contract_check()
         }
         Some("purity-check") => cmd_purity_check(),
+        Some("version-gate") => cmd_version_gate(&args),
         Some("package") => cmd_package(),
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <contract [--check] | observer-contract check | purity-check | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle"
+                "usage: cargo xtask <contract [--check] | observer-contract check | purity-check | version-gate [--root <path>] | package | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_version_gate(args: &[String]) -> ExitCode {
+    let root = match args {
+        [_] => repo_root(),
+        [_, flag, path] if flag == "--root" && !path.is_empty() => PathBuf::from(path),
+        _ => {
+            eprintln!("usage: cargo xtask version-gate [--root <path>]");
+            return ExitCode::from(2);
+        }
+    };
+    let cargo = xtask::version_gate::configured_cargo();
+    match xtask::version_gate::run(&root, &cargo) {
+        Ok(version) => {
+            println!("{version}");
+            ExitCode::SUCCESS
+        }
+        Err(xtask::version_gate::VersionGateError::Authority(error)) => {
+            eprintln!("ERROR: version-gate: {error}");
+            ExitCode::FAILURE
+        }
+        Err(xtask::version_gate::VersionGateError::Surface(mismatches)) => {
+            for mismatch in mismatches {
+                eprintln!("{}", mismatch.diagnostic());
+            }
+            ExitCode::FAILURE
         }
     }
 }

@@ -27,48 +27,55 @@
 # this consumes it. Tauri embeds the webview (ui/dist) into the exe at compile
 # time, so the pack input is the self-contained exe, not loose webview files.
 
-param(
-    # Override the packed version. Default: read it from the built exe's own
-    # --dump-state so the feed version equals the binary's reported version by
-    # construction (the monotonic feed + Wave-3 delta gate depend on this identity).
-    [string]$Version = "",
-
-    # Sign the packed artifacts (release-only). Default off = unsigned dev/local
-    # pack. When set, the credential preflight must pass and the signing
-    # environment must be provisioned on the build box.
-    [switch]$Sign
-)
+param([switch]$Sign)
 
 $ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent $PSScriptRoot
+$SignEnabled = $Sign -or -not [string]::IsNullOrWhiteSpace($env:SOLSTONE_SIGN)
+
+# Deterministic gates run before credentials, dependency resolution, output
+# creation, or any other byte-changing work. Redundant wrapper execution is
+# intentional: this protects direct package.ps1 invocation and the pack boundary.
+$Preflight = Join-Path $Root "packaging\preflight-release-tools.ps1"
+$SelectionJson = if ($SignEnabled) { & $Preflight -Sign } else { & $Preflight }
+$Selection = $SelectionJson | ConvertFrom-Json
+
+$OldCargoOverride = $env:SOLSTONE_VERSION_GATE_CARGO
+$env:SOLSTONE_VERSION_GATE_CARGO = $Selection.tools.cargo.path
+Push-Location $Root
+try {
+    $VersionOutput = @(& $Selection.tools.cargo.path run --locked -q -p xtask -- version-gate)
+    if ($LASTEXITCODE -ne 0 -or $VersionOutput.Count -ne 1 -or [string]::IsNullOrWhiteSpace($VersionOutput[0])) {
+        throw "version gate failed"
+    }
+    $Version = $VersionOutput[0].Trim()
+} finally {
+    Pop-Location
+    $env:SOLSTONE_VERSION_GATE_CARGO = $OldCargoOverride
+}
+
+& (Join-Path $Root "packaging\lock-guard.ps1") -Root $Root
 
 # Signing seam. Empty = unsigned. -Sign populates it (release-only) after the
 # credential preflight passes. The keypair alias is env-supplied so no DigiCert
 # account identifier lands in this public source; the smctl form is the KeyLocker
 # signing path validated on the build box (signtool + KSP, RFC3161 timestamp).
 $SignTemplate = ""
-if ($Sign) {
-    & (Join-Path $PSScriptRoot "..\packaging\signing\preflight-auth.ps1")
-    $SignTemplate = "smctl sign --keypair-alias $($env:SM_KEYPAIR_ALIAS) --input {{file}}"
-    Write-Host "package.ps1: signing ENABLED - release artifacts will be signed via smctl/KeyLocker."
-} else {
-    Write-Host "package.ps1: signing disabled (unsigned pack). Pass -Sign for a release."
-}
-
-$Root = Split-Path -Parent $PSScriptRoot
-
-# Explicit tool path first (box PATH may not carry freshly-installed dotnet tools).
-$Vpk = "$env:USERPROFILE\.dotnet\tools\vpk.exe"
-if (-not (Test-Path $Vpk)) { $Vpk = "vpk" }
+$Vpk = $Selection.tools.vpk.path
 
 $Exe = Join-Path $Root "target\release\solstone-windows-app.exe"
 if (-not (Test-Path $Exe)) {
     throw "release binary not found at $Exe - run ``make package`` (it builds --release first)."
 }
 
-if (-not $Version) {
-    $Version = (& $Exe --dump-state | ConvertFrom-Json).version
+if ($SignEnabled) {
+    $SmctlPath = $Selection.tools.smctl.path
+    & (Join-Path $Root "packaging\signing\preflight-auth.ps1") -SmctlPath $SmctlPath
+    $SignTemplate = "`"$SmctlPath`" sign --keypair-alias $($env:SM_KEYPAIR_ALIAS) --input {{file}}"
+    Write-Host "package.ps1: signing ENABLED - release artifacts will be signed via selected smctl/KeyLocker."
+} else {
+    Write-Host "package.ps1: signing disabled (unsigned pack). Pass -Sign or set SOLSTONE_SIGN for a release."
 }
-if (-not $Version) { throw "could not resolve a version (from -Version or $Exe --dump-state)." }
 
 $Releases = Join-Path $Root "Releases"
 New-Item -ItemType Directory -Force -Path $Releases | Out-Null
@@ -91,7 +98,7 @@ $Icon = Join-Path $Root "src-tauri\icons\icon.ico"
 
 # Release notes: extract the CHANGELOG.md "## [<version>]" section (mirrors the
 # macOS publish-appcast.py extract_release_notes) and write it to a notes file
-# under target/ (NOT Releases/, which publish-r2 uploads wholesale). Velopack
+# under target/ (NOT Releases/, which is retained as aggregate publisher input). Velopack
 # renders it to NotesMarkdown + NotesHtml inside releases.win.json.
 $NotesFile = $null
 $ChangelogPath = Join-Path $Root "CHANGELOG.md"
@@ -112,7 +119,7 @@ if (Test-Path $ChangelogPath) {
     }
 }
 if (-not $NotesFile) {
-    if ($Sign) {
+    if ($SignEnabled) {
         throw "package.ps1: no CHANGELOG.md '## [$Version]' section with notes - a signed release pack must carry release notes. Cut [Unreleased] -> [$Version] in CHANGELOG.md before signing."
     }
     Write-Host "package.ps1: no CHANGELOG.md '## [$Version]' section - packing without release notes (unsigned dev/local pack)."

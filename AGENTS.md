@@ -40,8 +40,8 @@ charter and license.
   state; `--check-update` readies an update headlessly (check + download + stage)
   and `--apply-update` installs the staged one (the CLI analogs of the in-app
   check / relaunch-to-install); atomic `make` verbs wrap every multi-step
-  operation. Never hand-chain `cargo build` → `vpk pack` → `gh release` — invoke
-  the verb.
+  operation. Never hand-chain `cargo build` → `vpk pack` or any publication
+  transport — invoke the packaging verb; release publication belongs to the aggregate provenance publisher.
 - **Shared protocols are code.** The AutomationId identifiers and the
   health/state token vocabulary are a generated, committed,
   drift-gated `automation-contract.json` — not prose. The source of truth is the
@@ -63,10 +63,10 @@ charter and license.
 | `make audit` | refresh the RustSec database, then check advisories against the locked graph |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
-| `make package` | `make build` → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
-| `make publish-r2` | upload `Releases/` to the R2 update feed (`updates.solstone.app/solstone-windows/`, feed-last) — the **primary** auto-update channel; run on the release host |
-| `make pull-releases` | pull the box's packed `Releases/` to the release host (before `publish-r2`) |
-| `make publish` | upload `Releases/` to GitHub Releases — the demoted source-hygiene mirror |
+| `make package` | pinned release-tool preflight → metadata version gate → tracked-lock guard → offline UI install/build → locked release build → Velopack pack → `Releases/` (unsigned; `-Sign` / `SOLSTONE_SIGN=1` signs a release) |
+| `make publish-r2` | fail-closed direct-publication guard; R2 publication belongs to the aggregate provenance publisher |
+| `make pull-releases` | pull the box's packed `Releases/` for a controlled aggregate workflow; does not publish |
+| `make publish` | fail-closed direct-publication guard; GitHub publication belongs to the aggregate provenance publisher |
 | `make smoke` | Session-1 scheduled-task FlaUI smoke vs the installed app |
 | `make run` | launch from the tree + tail `%LocalAppData%\Solstone\logs\` |
 | `make clean` | `cargo clean` + remove `ui/dist` and `Releases/` |
@@ -219,16 +219,20 @@ See `docs/lifecycle-matrix.md` for the full table.
 ## 7. Packaging & release
 
 Velopack, per-user `%LocalAppData%`, no UAC. The **primary update feed is R2** at
-`updates.solstone.app/solstone-windows/` (`make publish-r2`) — a privacy-clean,
+`updates.solstone.app/solstone-windows/` — a privacy-clean,
 no-analytics static surface, so each user's scheduled update check stays a
 bare first-party manifest GET on our own surface with **no query string** (no app
 version, no app id, no per-user identifier) rather than hitting a third party.
 (The updater neutralizes Velopack's per-install staging id — see
-`src-tauri/src/update.rs`.) GitHub Releases is a **required source-hygiene
-mirror** (`make publish`, a tagged `v<version>` release with the artifacts +
-the `CHANGELOG.md ## [<version>]` notes attached): every signed release publishes
-to **both** R2 (primary) and GitHub, both carrying the same per-release notes —
-the GitHub mirror is never skipped.
+`src-tauri/src/update.rs`.) R2 is the authoritative update feed. A GitHub
+Releases mirror (a tagged `v<version>` release with the artifacts + the
+`CHANGELOG.md ## [<version>]` notes attached) is optional and non-authoritative;
+its success cannot gate authoritative publication, update delivery, or release
+evidence. Direct R2, GitHub, winget, and scoop publication entry points are
+fail-closed: release publication belongs to the aggregate provenance publisher.
+That future component publishes each finalized signed release to R2 as the
+authoritative feed and may optionally mirror it to GitHub. No GitHub mirror is
+required, and a missing or failed mirror never blocks a release.
 The in-app updater fetches `releases.win.json` via a query-free first-party
 manifest GET (a small custom Velopack `UpdateSource`); package downloads still
 request the package files by filename from the same first-party feed host.
@@ -236,8 +240,8 @@ Release artifacts are signed (DigiCert
 KeyLocker via Velopack's `--signTemplate`); signing is opt-in and release-only
 (`-Sign` / `SOLSTONE_SIGN=1`) so dev/local packs stay unsigned, and the
 credentials are env-supplied, never committed. Signing covers release artifacts
-only. The R2 upload runs on the release host (where the cloud auth lives), not the
-signing box. See `docs/release-runbook.md`.
+only. Package construction performs no publication auth or transport; release
+publication belongs to the aggregate provenance publisher. See `docs/release-runbook.md`.
 
 ## 8. Safety Rails
 

@@ -10,6 +10,6 @@ actual=$("$cargo_bin" deny --version 2>/dev/null | awk 'NR == 1 { print $2 }') |
 [ -n "$actual" ] || actual=unavailable
 
 if [ "$actual" != "$required" ]; then
-  echo "ERROR: cargo-deny version mismatch: expected $required, actual $actual. Run 'cargo install cargo-deny --version $required --locked'." >&2
+  echo "ERROR: cargo-deny version mismatch: expected $required, actual $actual. Run 'make provision-cargo-deny'." >&2
   exit 1
 fi

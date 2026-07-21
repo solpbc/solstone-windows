@@ -15,11 +15,13 @@
 #   1. The non-secret signing env vars are present and non-empty:
 #      SM_HOST, SM_CLIENT_CERT_FILE, SM_KEYPAIR_ALIAS.
 #   2. SM_CLIENT_CERT_FILE points at a file that exists.
-#   3. `smctl` resolves on PATH (Velopack's --signTemplate invokes it).
+#   3. The selected `smctl` path is an existing file.
 #   4. `smctl healthcheck` reports a signing-ready connection. This is the
 #      authoritative gate: it authenticates end-to-end, so it validates the API
 #      key and client-cert password wherever they live (process environment or the
 #      OS credential store) without this script ever reading them.
+
+param([Parameter(Mandatory=$true)][string]$SmctlPath)
 
 $ErrorActionPreference = "Stop"
 
@@ -38,16 +40,16 @@ if (-not (Test-Path -LiteralPath $certFile)) {
           "Deploy the KeyLocker client-auth certificate on the build box."
 }
 
-if (-not (Get-Command smctl -ErrorAction SilentlyContinue)) {
-    throw "signing preflight: 'smctl' not found on PATH. " +
-          "Install the DigiCert KeyLocker Tools (smctl + KSP) on the build box."
+if (-not (Test-Path -LiteralPath $SmctlPath -PathType Leaf)) {
+    throw "signing preflight: selected smctl executable not found at $SmctlPath. " +
+          "Run 'make preflight-release-tools' and repair the pinned release toolchain."
 }
 
-Write-Host "preflight-auth: SM_HOST / SM_CLIENT_CERT_FILE / SM_KEYPAIR_ALIAS present, cert file present, smctl on PATH."
+Write-Host "preflight-auth: SM_HOST / SM_CLIENT_CERT_FILE / SM_KEYPAIR_ALIAS present, cert file present, selected smctl present."
 
 # End-to-end credential gate. smctl self-masks the API key and password in its
 # output, so this is safe to echo.
-$health = (& smctl healthcheck 2>&1 | Out-String)
+$health = (& $SmctlPath healthcheck 2>&1 | Out-String)
 Write-Host $health
 $connected = $health -match "(?im)^\s*Status\s*:\s*Connected" `
              -and $health -match "(?im)^\s*Can sign\s*:\s*Yes"

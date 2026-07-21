@@ -17,6 +17,9 @@ cd /d "%~dp0.." || exit /b 1
 :: rustup installs cargo under the user profile; non-interactive SSH PATH may not
 :: carry it, so add it explicitly (the winget/PATH-refresh gotcha from the spikes).
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\preflight-release-tools.test.ps1 || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\lock-guard.test.ps1 || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\package-entrypoints.test.ps1 || exit /b 1
 call scripts\lib\preflight-toolchain.test.cmd || exit /b 1
 call scripts\preflight-toolchain.cmd || exit /b 1
 
