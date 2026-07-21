@@ -73,17 +73,19 @@ deny = [
 ]
 
 # ── Pure-tier purity ─────────────────────────────────────────────────────────
-# The `windows` family is a quarantine, allowed ONLY in the platform-tier crates
-# (capture-screen-encode, capture-wgc, capture-wasapi, platform-win,
-# pl-transport-win) where it is declared target-gated.
+# Direct `windows` use in shipped code is quarantined to the target-gated
+# platform-tier crates. The Windows family is forbidden in each strict member's
+# shipped (normal+build) graph; dev-only reachability is out of scope because it
+# never ships. `xtask` is reviewed Windows-capable build tooling: its reparse
+# support and pinned offline jsonschema validator may reach `windows-link`, but
+# it never ships.
 # Pure-tier crates additionally carry `#![forbid(unsafe_code)]`, and the
 # dependency arrows never point pure -> platform (the DAG rule in AGENTS.md
 # §Source Layout). cargo-deny cannot scope a ban to a subset of workspace
 # members, so purity is gated by `cargo xtask purity-check` instead: it runs
-# `cargo tree --target all` over each pure crate and fails if the `windows`
-# family appears (`--target all` is essential — the platform tier declares
-# `windows` target-gated, so a leak is invisible to a host-target tree off
-# Windows). Wired into both `make ci` and the remote mill gate (scripts/win-ci.cmd).
+# `cargo tree --target all --all-features -e normal,build` over every member and
+# fails on strict-member leaks (`--target all` makes target-gated leaks visible
+# off Windows). Wired into both `make ci` and scripts/win-ci.cmd.
 
 [advisories]
 yanked = "warn"

@@ -44,8 +44,7 @@ help:
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
-# locally we only set up the UI's JS deps when present. Run by the hopper mill at
-# lode start.
+# locally we only set up the UI's JS deps when present. Run during local workspace setup.
 install:
 	@if [ -f ui/package.json ]; then npm --prefix ui ci; else echo "no local tooling to install"; fi
 
@@ -85,13 +84,13 @@ build: preflight-toolchain
 test: preflight-toolchain
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
 
-# Host-testable deterministic/package/publication policy checks on the Linux mill.
+# Host-testable deterministic/package/publication policy checks on the Linux host.
 test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
 	sh scripts/lib/make-package-ordering.test.sh
 
-# UI unit tests (vitest+jsdom) on the Linux mill. Materialize only the committed
+# UI unit tests (vitest+jsdom) on the Linux host. Materialize only the committed
 # graph from the warmed cache; fail if the cache is incomplete.
 ui-test:
 	npm --prefix ui ci --offline
@@ -125,8 +124,8 @@ audit: preflight-toolchain preflight-cargo-deny
 contract: preflight-toolchain
 	$(CARGO) run --locked -q -p xtask -- contract
 
-# Structural gate: the `windows` family must never reach the pure tier
-# (AGENTS.md §Source Layout). `--target all` makes target-gated leaks visible on any host.
+# Structural gate: the `windows` family must not reach a strict member's shipped
+# normal+build graph. Dev-only reachability never ships; `xtask` is reviewed tooling.
 purity-check: preflight-toolchain
 	$(CARGO) run --locked -q -p xtask -- purity-check
 

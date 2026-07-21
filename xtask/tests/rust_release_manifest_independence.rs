@@ -89,30 +89,23 @@ fn rust_release_manifest_public_surface_has_no_private_data_canaries() {
         ["pri", "vate-workflow-marker"].concat(),
         ["off", "ice-name-marker"].concat(),
         ["lo", "de-id-marker"].concat(),
+        ["hop", "per"].concat(),
+        ["lo", "de"].concat(),
+        ["mi", "ll"].concat(),
         ["/ho", "me/private-marker"].concat(),
         ["c:\\us", "ers\\private-marker"].concat(),
         ["acc", "ount-secret-private-host-path-value"].concat(),
     ];
     let files = [
         ".gitignore",
-        "deny.toml",
         "AGENTS.md",
+        "Cargo.toml",
         "Cargo.lock",
         "Makefile",
+        "deny.toml",
         "docs/release-runbook.md",
         "schemas/rust-release-manifest/v1.json",
         "xtask/Cargo.toml",
-        "xtask/src/lib.rs",
-        "xtask/src/main.rs",
-        "xtask/src/artifact_fs.rs",
-        "xtask/src/observer_contract.rs",
-        "xtask/src/rust_release_manifest.rs",
-        "xtask/src/version_gate.rs",
-        "xtask/tests/artifact_fs.rs",
-        "xtask/tests/observer_contract.rs",
-        "xtask/tests/rust_release_manifest.rs",
-        "xtask/tests/rust_release_manifest_bare.rs",
-        "xtask/tests/rust_release_manifest_independence.rs",
     ];
     for relative in files {
         let source = fs::read_to_string(repo_root().join(relative))
@@ -122,10 +115,8 @@ fn rust_release_manifest_public_surface_has_no_private_data_canaries() {
             assert!(!source.contains(token), "public-data canary in {relative}");
         }
     }
-    scan_fixture_tree(
-        &repo_root().join("xtask/tests/fixtures/rust-release-manifest"),
-        &forbidden,
-    );
+    scan_tree(&repo_root().join("xtask/src"), &forbidden);
+    scan_tree(&repo_root().join("xtask/tests"), &forbidden);
 }
 
 #[test]
@@ -138,11 +129,11 @@ fn rust_release_manifest_package_fixtures_exist_in_the_source_tree() {
     }
 }
 
-fn scan_fixture_tree(root: &Path, forbidden: &[String]) {
+fn scan_tree(root: &Path, forbidden: &[String]) {
     for entry in fs::read_dir(root).unwrap() {
         let entry = entry.unwrap();
         if entry.file_type().unwrap().is_dir() {
-            scan_fixture_tree(&entry.path(), forbidden);
+            scan_tree(&entry.path(), forbidden);
         } else {
             let bytes = fs::read(entry.path()).unwrap();
             let source = String::from_utf8_lossy(&bytes).to_ascii_lowercase();

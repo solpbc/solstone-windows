@@ -761,12 +761,7 @@ fn verify_declared_paths(files: &[ManifestFile]) -> Result<(), VerifyError> {
                 path: file.path.clone(),
             });
         }
-        if let Some(first) = folded.insert(file.path.to_ascii_lowercase(), file.path.clone()) {
-            return Err(VerifyError::CaseCollision {
-                first,
-                second: file.path.clone(),
-            });
-        }
+        artifact_fs::check_case_collision(&mut folded, &file.path)?;
     }
     Ok(())
 }

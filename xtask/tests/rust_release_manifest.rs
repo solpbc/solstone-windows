@@ -9,9 +9,9 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use xtask::rust_release_manifest::{
-    self, CheckoutFacts, ClassificationMode, Manifest, ManifestError, ReleaseEvidence,
-    TargetEvidence, COMPANION_BASENAME, MANIFEST_DISCLAIMER, PRODUCT, SCHEMA_SHA256,
-    TARGET_FEATURES, TARGET_PROFILE, TARGET_TRIPLE,
+    self, companion_basename, CheckoutFacts, ClassificationMode, Manifest, ManifestError,
+    ReleaseEvidence, TargetEvidence, MANIFEST_DISCLAIMER, PRODUCT, SCHEMA_SHA256, TARGET_FEATURES,
+    TARGET_PROFILE, TARGET_TRIPLE,
 };
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -48,7 +48,7 @@ impl TempTree {
     fn good() -> Self {
         let root = TempDir::new("rust-release-manifest");
         copy_tree(&fixture_root().join("release-dir"), &root.0);
-        let manifest = read_manifest(&root.0.join(COMPANION_BASENAME));
+        let manifest = read_manifest(&root.0.join(companion_basename()));
         let facts = facts_for(&manifest);
         Self { root, facts }
     }
@@ -58,7 +58,7 @@ impl TempTree {
     }
 
     fn manifest_path(&self) -> PathBuf {
-        self.path(COMPANION_BASENAME)
+        self.path(&companion_basename())
     }
 
     fn manifest_value(&self) -> Value {
@@ -214,7 +214,12 @@ where
     F: FnOnce(&mut Value),
 {
     let mut manifest: Value = serde_json::from_slice(
-        &fs::read(fixture_root().join("release-dir").join(COMPANION_BASENAME)).unwrap(),
+        &fs::read(
+            fixture_root()
+                .join("release-dir")
+                .join(companion_basename()),
+        )
+        .unwrap(),
     )
     .unwrap();
     mutate(&mut manifest);
@@ -229,7 +234,12 @@ fn rust_release_manifest_schema_is_exact_and_compiles_unchanged() {
     assert_eq!(lower_hex(&Sha256::digest(&bytes)), SCHEMA_SHA256);
     rust_release_manifest::verify_vendored_schema(&repo_root()).unwrap();
     rust_release_manifest::validate_manifest_bytes(
-        &fs::read(fixture_root().join("release-dir").join(COMPANION_BASENAME)).unwrap(),
+        &fs::read(
+            fixture_root()
+                .join("release-dir")
+                .join(companion_basename()),
+        )
+        .unwrap(),
     )
     .unwrap();
 }
@@ -249,7 +259,12 @@ fn rust_release_manifest_schema_asserts_lookaheads_and_date_time() {
         ManifestError::SchemaViolation
     );
     let mut valid: Value = serde_json::from_slice(
-        &fs::read(fixture_root().join("release-dir").join(COMPANION_BASENAME)).unwrap(),
+        &fs::read(
+            fixture_root()
+                .join("release-dir")
+                .join(companion_basename()),
+        )
+        .unwrap(),
     )
     .unwrap();
     valid["dependency_policy"]["advisory_checked_at"] = json!("2026-07-20T12:34:56Z");
@@ -516,6 +531,20 @@ fn rust_release_manifest_diagnostics_do_not_echo_rejected_values() {
     assert_eq!(error, ManifestError::NativeToolsMismatch);
     let diagnostic = error.to_string();
     assert!(!diagnostic.contains(&rejected));
+    assert_eq!(
+        ManifestError::EvidenceInvalid {
+            field: "source_commit"
+        }
+        .to_string(),
+        "release evidence is invalid: field `source_commit`"
+    );
+    assert_eq!(
+        ManifestError::EvidenceNotCanonical {
+            field: "active_exceptions"
+        }
+        .to_string(),
+        "release evidence is not canonical: field `active_exceptions`"
+    );
 }
 
 #[test]
@@ -675,7 +704,7 @@ fn rust_release_manifest_modes_reject_symlinked_roots_and_traversal_roots() {
     ));
     assert!(matches!(
         rust_release_manifest::validate_manifest_with_facts(
-            &linked.join(COMPANION_BASENAME),
+            &linked.join(companion_basename()),
             &tree.facts
         ),
         Err(ManifestError::UnsafeResolution { .. })
@@ -699,7 +728,7 @@ fn rust_release_manifest_modes_reject_symlinked_roots_and_traversal_roots() {
     ));
     assert!(matches!(
         rust_release_manifest::validate_manifest_with_facts(
-            &candidate_through_link.join(COMPANION_BASENAME),
+            &candidate_through_link.join(companion_basename()),
             &tree.facts
         ),
         Err(ManifestError::UnsafeResolution { .. })
@@ -714,7 +743,7 @@ fn rust_release_manifest_modes_reject_symlinked_roots_and_traversal_roots() {
     ));
     assert!(matches!(
         rust_release_manifest::validate_manifest_with_facts(
-            &traversal_root.join(COMPANION_BASENAME),
+            &traversal_root.join(companion_basename()),
             &tree.facts
         ),
         Err(ManifestError::UnsafeResolution { .. })
@@ -875,7 +904,9 @@ where
 fn rust_release_manifest_renderer_rejects_noncanonical_public_evidence() {
     fn evidence() -> ReleaseEvidence {
         ReleaseEvidence::from(read_manifest(
-            &fixture_root().join("release-dir").join(COMPANION_BASENAME),
+            &fixture_root()
+                .join("release-dir")
+                .join(companion_basename()),
         ))
     }
     let cases: Vec<(&str, ManifestError, EvidenceMutation)> = vec![
@@ -1060,6 +1091,20 @@ fn rust_release_manifest_renderer_rejects_noncanonical_public_evidence() {
         })
     );
 
+    let mut case_collision = evidence();
+    case_collision.artifacts[0].path = "Foo.exe".to_owned();
+    case_collision.artifacts[1].path = "foo.exe".to_owned();
+    case_collision
+        .artifacts
+        .sort_by(|first, second| first.path.cmp(&second.path));
+    assert_eq!(
+        rust_release_manifest::render_release_evidence(&case_collision),
+        Err(ManifestError::CaseCollision {
+            first: "Foo.exe".to_owned(),
+            second: "foo.exe".to_owned()
+        })
+    );
+
     let mut unsigned_with_signed_key = evidence();
     unsigned_with_signed_key
         .native_tools
@@ -1085,7 +1130,9 @@ fn rust_release_manifest_renderer_rejects_noncanonical_public_evidence() {
 #[test]
 fn rust_release_manifest_renderer_is_cross_root_deterministic() {
     let evidence = ReleaseEvidence::from(read_manifest(
-        &fixture_root().join("release-dir").join(COMPANION_BASENAME),
+        &fixture_root()
+            .join("release-dir")
+            .join(companion_basename()),
     ));
     let first_root = TempDir::new("render-one");
     let second_root = TempDir::new("render-two");
@@ -1124,7 +1171,7 @@ fn rust_release_manifest_self_check_binds_exceptions_to_deny_toml() {
     let manifest_path = root
         .0
         .join("xtask/tests/fixtures/rust-release-manifest/release-dir")
-        .join(COMPANION_BASENAME);
+        .join(companion_basename());
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     manifest["active_exceptions"].as_array_mut().unwrap().pop();
     fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();

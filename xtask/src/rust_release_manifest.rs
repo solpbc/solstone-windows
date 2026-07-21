@@ -28,8 +28,6 @@ pub const PRODUCT: &str = "solstone-windows";
 pub const TARGET_TRIPLE: &str = "x86_64-pc-windows-msvc";
 pub const TARGET_PROFILE: &str = "release";
 pub const TARGET_FEATURES: &[&str] = &["custom-protocol"];
-pub const COMPANION_BASENAME: &str =
-    "solstone-windows-x86_64-pc-windows-msvc.rust-release-manifest.json";
 pub const MANIFEST_DISCLAIMER: &str =
     "MANIFEST mode verifies named sibling bytes; this is not a complete/publishable-directory classification.";
 
@@ -62,6 +60,52 @@ const UNSIGNED_NATIVE_KEYS: &[&str] = &[
     "vpk",
     "windows-sdk",
 ];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BundleNames {
+    companion: String,
+    assets: &'static str,
+    releases: &'static str,
+    release_feed: &'static str,
+    full: String,
+    delta: String,
+    setup: String,
+    portable: &'static str,
+}
+
+impl BundleNames {
+    fn for_version(version: &str) -> Self {
+        Self {
+            companion: companion_basename(),
+            assets: "assets.win.json",
+            releases: "RELEASES",
+            release_feed: "releases.win.json",
+            full: format!("Solstone-{version}-full.nupkg"),
+            delta: format!("Solstone-{version}-delta.nupkg"),
+            setup: version_gate::setup_exe_name(version),
+            portable: "Solstone-win-Portable.zip",
+        }
+    }
+
+    fn artifact_names(&self, has_delta: bool) -> BTreeSet<String> {
+        let mut names = BTreeSet::from([
+            self.assets.to_owned(),
+            self.releases.to_owned(),
+            self.release_feed.to_owned(),
+            self.full.clone(),
+            self.setup.clone(),
+            self.portable.to_owned(),
+        ]);
+        if has_delta {
+            names.insert(self.delta.clone());
+        }
+        names
+    }
+}
+
+pub fn companion_basename() -> String {
+    format!("solstone-windows-{TARGET_TRIPLE}.rust-release-manifest.json")
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -382,8 +426,12 @@ impl fmt::Display for ManifestError {
             Self::DeltaMismatch => {
                 "current delta presence is inconsistent across manifest and ledgers"
             }
-            Self::EvidenceNotCanonical { .. } => "release evidence is not canonical",
-            Self::EvidenceInvalid { .. } => "release evidence is invalid",
+            Self::EvidenceNotCanonical { field } => {
+                return write!(f, "release evidence is not canonical: field `{field}`");
+            }
+            Self::EvidenceInvalid { field } => {
+                return write!(f, "release evidence is invalid: field `{field}`");
+            }
             Self::RendererSerialization => "release evidence could not be serialized",
         };
         f.write_str(message)
@@ -870,6 +918,7 @@ pub fn render_release_evidence(evidence: &ReleaseEvidence) -> Result<Vec<u8>, Ma
         });
     }
     let mut artifact_names = BTreeSet::new();
+    let mut folded_artifact_names = BTreeMap::new();
     for artifact in &evidence.artifacts {
         if artifact_fs::validate_relative_path(&artifact.path).is_err()
             || artifact.path.contains('/')
@@ -883,6 +932,7 @@ pub fn render_release_evidence(evidence: &ReleaseEvidence) -> Result<Vec<u8>, Ma
                 field: "artifacts.path",
             });
         }
+        artifact_fs::check_case_collision(&mut folded_artifact_names, &artifact.path)?;
         if artifact.bytes == 0 {
             return Err(ManifestError::EvidenceInvalid {
                 field: "artifacts.bytes",
@@ -966,18 +1016,7 @@ fn lower_hex(bytes: &[u8]) -> String {
 }
 
 pub fn expected_artifact_names(version: &str, has_delta: bool) -> BTreeSet<String> {
-    let mut names = BTreeSet::from([
-        "RELEASES".to_owned(),
-        format!("Solstone-{version}-full.nupkg"),
-        "Solstone-win-Portable.zip".to_owned(),
-        "assets.win.json".to_owned(),
-        "releases.win.json".to_owned(),
-        version_gate::setup_exe_name(version),
-    ]);
-    if has_delta {
-        names.insert(format!("Solstone-{version}-delta.nupkg"));
-    }
-    names
+    BundleNames::for_version(version).artifact_names(has_delta)
 }
 
 pub fn validate_manifest_with_facts(
@@ -1011,6 +1050,7 @@ pub fn validate_release_dir_with_facts(
     release_dir: &Path,
     facts: &CheckoutFacts,
 ) -> Result<ClassifierReport, ManifestError> {
+    let names = BundleNames::for_version(&facts.version);
     let resolver = artifact_fs::ContainedRoot::new(
         release_dir,
         "release directory",
@@ -1029,7 +1069,7 @@ pub fn validate_release_dir_with_facts(
         .iter()
         .filter(|name| name.ends_with(".rust-release-manifest.json"))
         .collect();
-    if !inventory.files.contains(COMPANION_BASENAME) {
+    if !inventory.files.contains(&names.companion) {
         if manifest_names.is_empty() {
             return Err(ManifestError::MissingBundleEntry);
         }
@@ -1039,12 +1079,12 @@ pub fn validate_release_dir_with_facts(
         return Err(ManifestError::ExtraManifest);
     }
 
-    let manifest = read_manifest(&resolver, COMPANION_BASENAME)?;
+    let manifest = read_manifest(&resolver, &names.companion)?;
     validate_semantic_binding(&manifest, facts)?;
     let has_delta = validate_manifest_inventory(&manifest, &facts.version)?;
 
-    let mut expected = expected_artifact_names(&facts.version, has_delta);
-    expected.insert(COMPANION_BASENAME.to_owned());
+    let mut expected = names.artifact_names(has_delta);
+    expected.insert(names.companion);
     if let Some(extra) = inventory.files.difference(&expected).next() {
         if extra.ends_with(".rust-release-manifest.json") {
             return Err(ManifestError::ExtraManifest);
@@ -1079,12 +1119,12 @@ fn read_manifest(
 }
 
 fn validate_manifest_inventory(manifest: &Manifest, version: &str) -> Result<bool, ManifestError> {
-    let delta_name = format!("Solstone-{version}-delta.nupkg");
+    let names = BundleNames::for_version(version);
     let has_delta = manifest
         .artifacts
         .iter()
-        .any(|artifact| artifact.path == delta_name);
-    let expected = expected_artifact_names(version, has_delta);
+        .any(|artifact| artifact.path == names.delta);
+    let expected = names.artifact_names(has_delta);
     let mut actual = BTreeSet::new();
     let mut folded = BTreeMap::new();
     for artifact in &manifest.artifacts {
@@ -1179,25 +1219,24 @@ fn validate_ledgers(
 ) -> Result<(), ManifestError> {
     let candidate =
         Version::parse(candidate_text).map_err(|_| ManifestError::LedgerVersionMalformed)?;
-    let full_name = format!("Solstone-{candidate_text}-full.nupkg");
-    let delta_name = format!("Solstone-{candidate_text}-delta.nupkg");
-    let full = digest_file(resolver, &full_name)?;
+    let names = BundleNames::for_version(candidate_text);
+    let full = digest_file(resolver, &names.full)?;
     let delta = if manifest_has_delta {
-        Some(digest_file(resolver, &delta_name)?)
+        Some(digest_file(resolver, &names.delta)?)
     } else {
         None
     };
 
-    let feed_bytes = read_ledger(resolver, "releases.win.json")?;
+    let feed_bytes = read_ledger(resolver, names.release_feed)?;
     let feed: ReleaseFeed =
         serde_json::from_slice(&feed_bytes).map_err(|_| ManifestError::LedgerJsonMalformed)?;
     let feed_has_delta =
         validate_release_feed(&feed, &candidate, candidate_text, &full, delta.as_ref())?;
 
-    let releases = read_ledger(resolver, "RELEASES")?;
+    let releases = read_ledger(resolver, names.releases)?;
     validate_releases(&releases, &candidate, candidate_text, &full, &feed)?;
 
-    let assets_bytes = read_ledger(resolver, "assets.win.json")?;
+    let assets_bytes = read_ledger(resolver, names.assets)?;
     let assets: Vec<AssetRecord> =
         serde_json::from_slice(&assets_bytes).map_err(|_| ManifestError::LedgerJsonMalformed)?;
     let assets_has_delta = validate_assets(&assets, candidate_text)?;
@@ -1206,16 +1245,6 @@ fn validate_ledgers(
         return Err(ManifestError::DeltaMismatch);
     }
     Ok(())
-}
-
-pub fn validate_release_ledgers(
-    base: &Path,
-    candidate: &str,
-    has_delta: bool,
-) -> Result<(), ManifestError> {
-    let resolver =
-        artifact_fs::ContainedRoot::new(base, "release directory", UnixModePolicy::AllowExecute)?;
-    validate_ledgers(&resolver, candidate, has_delta)
 }
 
 fn validate_release_feed(
@@ -1235,12 +1264,12 @@ fn validate_release_feed(
         if &version > candidate {
             return Err(ManifestError::LedgerVersionNewerThanCandidate);
         }
-        let suffix = match asset.asset_type.as_str() {
-            "Full" => "full",
-            "Delta" => "delta",
+        let names = BundleNames::for_version(&asset.version);
+        let expected_name = match asset.asset_type.as_str() {
+            "Full" => names.full.as_str(),
+            "Delta" => names.delta.as_str(),
             _ => return Err(ManifestError::LedgerRecordMalformed),
         };
-        let expected_name = format!("Solstone-{}-{suffix}.nupkg", asset.version);
         validate_ledger_basename(&asset.file_name)?;
         if asset.file_name != expected_name
             || !is_hex(&asset.sha1, 40)
@@ -1260,11 +1289,12 @@ fn validate_release_feed(
         records.insert(key, asset.clone());
     }
 
+    let candidate_names = BundleNames::for_version(candidate_text);
     let full_record = records
         .get(&(candidate.clone(), "Full".to_owned()))
         .ok_or(ManifestError::LedgerCurrentMismatch)?;
     if full_record.version != candidate_text
-        || full_record.file_name != format!("Solstone-{candidate_text}-full.nupkg")
+        || full_record.file_name != candidate_names.full.as_str()
         || full_record.size != full.bytes
         || !full_record.sha1.eq_ignore_ascii_case(&full.sha1)
         || !full_record.sha256.eq_ignore_ascii_case(&full.sha256)
@@ -1275,7 +1305,7 @@ fn validate_release_feed(
     match (delta_record, delta) {
         (Some(record), Some(actual))
             if record.version == candidate_text
-                && record.file_name == format!("Solstone-{candidate_text}-delta.nupkg")
+                && record.file_name == candidate_names.delta.as_str()
                 && record.size == actual.bytes
                 && record.sha1.eq_ignore_ascii_case(&actual.sha1)
                 && record.sha256.eq_ignore_ascii_case(&actual.sha256) =>
@@ -1295,6 +1325,7 @@ fn validate_releases(
     full: &ActualFile,
     feed: &ReleaseFeed,
 ) -> Result<(), ManifestError> {
+    let names = BundleNames::for_version(candidate_text);
     const BOM: &[u8] = &[0xef, 0xbb, 0xbf];
     let payload = bytes
         .strip_prefix(BOM)
@@ -1350,7 +1381,7 @@ fn validate_releases(
         .iter()
         .find(|asset| asset.version == candidate_text && asset.asset_type == "Full")
         .ok_or(ManifestError::LedgerCurrentMismatch)?;
-    if current.filename != format!("Solstone-{candidate_text}-full.nupkg")
+    if current.filename != names.full.as_str()
         || current.size != full.bytes
         || !current.sha1.eq_ignore_ascii_case(&full.sha1)
         || !current.sha1.eq_ignore_ascii_case(&feed_full.sha1)
@@ -1361,6 +1392,7 @@ fn validate_releases(
 }
 
 fn validate_assets(assets: &[AssetRecord], candidate: &str) -> Result<bool, ManifestError> {
+    let names = BundleNames::for_version(candidate);
     let mut by_type = BTreeMap::<String, String>::new();
     for asset in assets {
         if asset.relative_file_name == "Solstone-win-Setup.exe" {
@@ -1368,10 +1400,10 @@ fn validate_assets(assets: &[AssetRecord], candidate: &str) -> Result<bool, Mani
         }
         validate_ledger_basename(&asset.relative_file_name)?;
         let expected = match asset.asset_type.as_str() {
-            "Full" => format!("Solstone-{candidate}-full.nupkg"),
-            "Delta" => format!("Solstone-{candidate}-delta.nupkg"),
-            "Installer" => version_gate::setup_exe_name(candidate),
-            "Portable" => "Solstone-win-Portable.zip".to_owned(),
+            "Full" => names.full.as_str(),
+            "Delta" => names.delta.as_str(),
+            "Installer" => names.setup.as_str(),
+            "Portable" => names.portable,
             _ => return Err(ManifestError::LedgerRecordMalformed),
         };
         if asset.relative_file_name != expected {
@@ -1455,7 +1487,11 @@ fn artifact_version(path: &str) -> Option<String> {
                 .and_then(|value| value.strip_suffix(".exe"))
         })
     {
-        return Version::parse(value).ok().map(|_| value.to_owned());
+        Version::parse(value).ok()?;
+        let names = BundleNames::for_version(value);
+        if path == names.full || path == names.delta || path == names.setup {
+            return Some(value.to_owned());
+        }
     }
     None
 }
@@ -1490,15 +1526,15 @@ pub fn run_self_check(root: &Path) -> Result<ClassifierReport, ManifestError> {
         "release directory",
         UnixModePolicy::AllowExecute,
     )?;
-    let manifest = read_manifest(&resolver, COMPANION_BASENAME)?;
-    let full_package = format!("Solstone-{}-full.nupkg", manifest.version);
-    resolver.resolve(&full_package, "release fixture full package")?;
+    let manifest = read_manifest(&resolver, &companion_basename())?;
+    let names = BundleNames::for_version(&manifest.version);
+    resolver.resolve(&names.full, "release fixture full package")?;
     let manifest_fixture = artifact_fs::ContainedRoot::new(
         &fixture.join("manifest-mode"),
         "manifest fixture directory",
         UnixModePolicy::AllowExecute,
     )?;
-    manifest_fixture.resolve(&full_package, "manifest fixture full package")?;
+    manifest_fixture.resolve(&names.full, "manifest fixture full package")?;
     let facts = fixture_facts(root, &manifest)?;
     let release_report = validate_release_dir_with_facts(&release_dir, &facts)?;
     validate_manifest_with_facts(&fixture.join("manifest-mode/manifest.json"), &facts)?;

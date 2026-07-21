@@ -28,11 +28,16 @@ charter and license.
   SDKs, crash reporters, or phone-home — ever. Enforced by the privacy denylist
   in `deny.toml`. The observer writes local, owner-controlled data; nothing
   leaves the machine except the owner's own upload to their own journal.
-- **Quarantine the platform.** `windows` / `windows-rs` may appear **only** in
-  the audited platform-tier crates (`capture-screen-encode`, `capture-wgc`,
-  `capture-wasapi`, `platform-win`, `pl-transport-win`), and is declared
-  target-gated there. The pure tier carries `#![forbid(unsafe_code)]` and is
-  host-testable. Dependency arrows never point pure → platform.
+- **Quarantine the platform.** Direct `windows` / `windows-rs` use in shipped
+  code stays in the audited, target-gated platform-tier crates
+  (`capture-screen-encode`, `capture-wgc`, `capture-wasapi`, `platform-win`,
+  `pl-transport-win`). The Windows family is forbidden in each strict member's
+  shipped (normal+build) graph; dev-only reachability is out of scope because
+  dev-dependencies never ship. `xtask` is reviewed Windows-capable build tooling:
+  its reparse support and pinned offline jsonschema validator may reach
+  `windows-link`, but it never ships. The pure tier carries
+  `#![forbid(unsafe_code)]` and is host-testable. Dependency arrows never point
+  pure → platform.
 - **No GitHub Actions release path.** Releases are operator-driven, by hand, from
   a known build box via local `make`. `.github/workflows/` does not exist, by
   policy, permanently.
@@ -125,7 +130,7 @@ and `'`/`"` in scripts that run on the box.
 
 ```text
 crates/
-  ── pure tier ── (no `windows` dep; #![forbid(unsafe_code)]; host-testable)
+  ── pure tier ── (no `windows` in the shipped normal+build graph; #![forbid(unsafe_code)]; host-testable)
   observer-model/      shared vocabulary + the three source traits + HealthDump
   observer-segment/    5-min clock-boundary rotation + segment-key math
   observer-state/      honest reducer — Observing is computed, never settable
