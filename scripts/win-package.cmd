@@ -5,6 +5,8 @@
 :: Thin build-box bootstrap for the source-bound release transaction. All
 :: preflight, build, pack, signing, evidence, and promotion work is owned by
 :: scripts\package.ps1 and its single xtask finalizer invocation.
+:: In signed mode the finalizer constructs child environments from the pinned
+:: selection record; MSVC/vcvars activation is not what supplies SignTool.
 setlocal enableextensions
 cd /d "%~dp0.." || exit /b 1
 

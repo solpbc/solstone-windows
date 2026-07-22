@@ -2,7 +2,7 @@
 // Copyright (c) 2026 sol pbc
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use xtask::release_selection::{ReleaseToolSelection, SelectionError, SelectionMode};
@@ -366,6 +366,100 @@ fn msvc_environment_rejects_every_non_allowlisted_key() {
     assert_eq!(
         parse(&selection).expect_err("credential-like environment key must fail"),
         SelectionError::MalformedRecord
+    );
+}
+
+#[test]
+fn signing_child_environment_prepends_selected_signtool_directory() {
+    let selection = parse(&valid_selection(SelectionMode::Signed)).expect("parse signed record");
+    let environment = selection
+        .signing_child_env_overlay()
+        .expect("construct signing child environment");
+    let expected = format!("{PRIVATE_ROOT};{PRIVATE_ROOT}/VC/bin;{PRIVATE_ROOT}/WindowsKits/bin");
+
+    assert_eq!(environment.len(), 1);
+    assert_eq!(
+        environment.get("PATH").map(String::as_str),
+        Some(expected.as_str())
+    );
+}
+
+#[test]
+fn signing_child_environment_requires_selected_signtool_and_usable_parent() {
+    let mut absent =
+        parse(&valid_selection(SelectionMode::Signed)).expect("parse signed record for mutation");
+    absent.tools.signtool = None;
+    assert_eq!(
+        absent
+            .signing_child_env_overlay()
+            .expect_err("missing SignTool must fail"),
+        SelectionError::SigningChildEnvironmentInvalid
+    );
+
+    let mut parentless =
+        parse(&valid_selection(SelectionMode::Signed)).expect("parse signed record for mutation");
+    parentless
+        .tools
+        .signtool
+        .as_mut()
+        .expect("signed SignTool")
+        .path = PathBuf::from("/");
+    assert_eq!(
+        parentless
+            .signing_child_env_overlay()
+            .expect_err("parentless SignTool path must fail"),
+        SelectionError::SigningChildEnvironmentInvalid
+    );
+    assert!(!SelectionError::SigningChildEnvironmentInvalid
+        .to_string()
+        .contains(PRIVATE_ROOT));
+}
+
+#[cfg(unix)]
+#[test]
+fn signing_child_environment_rejects_non_utf8_signtool_parent() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut selection =
+        parse(&valid_selection(SelectionMode::Signed)).expect("parse signed record for mutation");
+    let parent = PathBuf::from(OsString::from_vec(vec![b'/', b'p', 0x80]));
+    selection
+        .tools
+        .signtool
+        .as_mut()
+        .expect("signed SignTool")
+        .path = parent.join("signtool.exe");
+    assert_eq!(
+        selection
+            .signing_child_env_overlay()
+            .expect_err("non-UTF-8 SignTool parent must fail"),
+        SelectionError::SigningChildEnvironmentInvalid
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn signing_child_environment_rejects_non_utf16_signtool_parent() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut selection =
+        parse(&valid_selection(SelectionMode::Signed)).expect("parse signed record for mutation");
+    let mut path: Vec<u16> = r"C:\private\".encode_utf16().collect();
+    path.push(0xd800);
+    path.extend(r"\signtool.exe".encode_utf16());
+    selection
+        .tools
+        .signtool
+        .as_mut()
+        .expect("signed SignTool")
+        .path = PathBuf::from(OsString::from_wide(&path));
+    assert_eq!(
+        selection
+            .signing_child_env_overlay()
+            .expect_err("non-Unicode SignTool parent must fail"),
+        SelectionError::SigningChildEnvironmentInvalid
     );
 }
 

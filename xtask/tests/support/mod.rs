@@ -156,6 +156,7 @@ pub enum RunnerMutation {
     NupkgMemberCaseCollision,
     Phase6ContainerReadFailure,
     SignToolFailure,
+    SignToolGrammarDrift,
     HistoricalCandidateLeak,
     PostHashArtifactMutation,
     PostHashManifestMutation,
@@ -645,10 +646,40 @@ impl FakeReleaseRunner {
         }
     }
 
-    fn run_vpk(&self, args: &[String]) -> Result<CommandOutput, CommandRunnerError> {
+    fn require_signing_child_env(
+        &self,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<(), CommandRunnerError> {
+        let environment = env.ok_or(CommandRunnerError::UnexpectedInvocation)?;
+        if environment.len() != 1 {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        let path = environment
+            .get("PATH")
+            .ok_or(CommandRunnerError::UnexpectedInvocation)?;
+        let signtool_parent = Path::new(SIGNTOOL)
+            .parent()
+            .and_then(child_process_path_text)
+            .ok_or(CommandRunnerError::UnexpectedInvocation)?;
+        if path.split(';').next() != Some(signtool_parent.as_str()) {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        Ok(())
+    }
+
+    fn run_vpk(
+        &self,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
         let stage = argument_after(args, "--packDir")?;
         let output = argument_after(args, "--outputDir")?;
         let signed = args.iter().any(|arg| arg == "--signTemplate");
+        if signed {
+            self.require_signing_child_env(env)?;
+        } else if env.is_some() {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
         let staged_bytes = fs::read(Path::new(stage).join("solstone-windows-app.exe"))
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
         let app_bytes = if signed {
@@ -803,7 +834,7 @@ impl CommandRunner for FakeReleaseRunner {
                     Self::output(Vec::new())
                 },
             ),
-            Some(VPK) => self.run_vpk(args),
+            Some(VPK) => self.run_vpk(args, env),
             Some(POWERSHELL)
                 if action_uses_script(args, Path::new("packaging/preflight-release-tools.ps1")) =>
             {
@@ -819,16 +850,27 @@ impl CommandRunner for FakeReleaseRunner {
                     .iter()
                     .any(|arg| arg == "packaging/signing/preflight-auth.ps1") =>
             {
+                self.require_signing_child_env(env)?;
                 Ok(if self.mutation == RunnerMutation::SigningAuthFailure {
                     Self::failure(b"signing authentication unavailable")
                 } else {
                     Self::output(Vec::new())
                 })
             }
-            Some(SIGNTOOL) => Ok(if self.mutation == RunnerMutation::SignToolFailure {
-                Self::failure(b"signature verification failed")
-            } else {
-                Self::output(accepted_signtool_grammar().into_bytes())
+            Some(SIGNTOOL) => Ok(match self.mutation {
+                RunnerMutation::SignToolFailure => Self::failure(b"signature verification failed"),
+                RunnerMutation::SignToolGrammarDrift => Self::output(
+                    concat!(
+                        "Verifying: synthetic-setup.exe\n",
+                        "Signature Index: 0 (Primary Signature)\n",
+                        "SYNTHETIC-SIGNTOOL-GRAMMAR-DRIFT\n",
+                        "The signature is timestamped: synthetic-time\n",
+                        "Timestamp Verified by:\n",
+                    )
+                    .as_bytes()
+                    .to_vec(),
+                ),
+                _ => Self::output(accepted_signtool_grammar().into_bytes()),
             }),
             Some(POWERSHELL) if args.iter().any(|arg| arg == "scripts/smoke.ps1") => {
                 self.run_native_smoke(args, env)

@@ -9,10 +9,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use xtask::artifact_fs::child_process_path_text;
 use xtask::release_exec::test_support::{FakeCommand, FakeCommandRunner};
 use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
+use xtask::release_finalizer::FinalizeError;
 use xtask::release_selection::SelectedAction;
 use xtask::release_signing::{
-    verify_release_signing, SigningError, SigningPolicy, SigningVerificationRequest,
-    SIGNED_VERIFIED_MODE, UNSIGNED_MODE,
+    verify_release_signing, SigningError, SigningGrammarStage, SigningPolicy,
+    SigningVerificationRequest, SIGNED_VERIFIED_MODE, UNSIGNED_MODE,
 };
 
 const SETUP: &str = "solstone-setup-0.2.11.exe";
@@ -295,7 +296,9 @@ fn chain_timestamp_exit_and_grammar_failures_are_distinct() {
                     "Timestamp protocol: RFC3161\n"
                 ),
             ),
-            SigningError::GrammarDrift,
+            SigningError::GrammarDrift {
+                stage: SigningGrammarStage::TimestampChainHeader,
+            },
         ),
         (
             "timestamp-chain-mangled",
@@ -304,13 +307,17 @@ fn chain_timestamp_exit_and_grammar_failures_are_distinct() {
                 "                SHA1 hash: DD6230AC860A2D306BDA38B16879523007FB417E\n",
                 "",
             ),
-            SigningError::GrammarDrift,
+            SigningError::GrammarDrift {
+                stage: SigningGrammarStage::TimestampCertificateThumbprint,
+            },
         ),
         (
             "grammar-drift",
             0,
             format!("{}Unexpected trailing success prose\n", accepted_grammar()),
-            SigningError::GrammarDrift,
+            SigningError::GrammarDrift {
+                stage: SigningGrammarStage::TrailingOutput,
+            },
         ),
     ];
     for (label, status, grammar, expected) in cases {
@@ -365,16 +372,77 @@ fn setup_mutation_during_verify_is_rejected_before_grammar_success() {
 fn errors_and_results_do_not_leak_private_paths_credentials_or_certificates() {
     let candidate = Candidate::new("private-canary");
     let private_leaf = "5555555555555555555555555555555555555555";
+    let private_subject = "private account credential";
     let grammar = accepted_grammar()
         .replace(PUBLIC_LEAF_UPPER, private_leaf)
-        .replace("sol pbc", "private account credential");
+        .replace("sol pbc", private_subject);
     let runner = FakeCommandRunner::new(vec![command(&candidate, 0, grammar.as_bytes(), b"")]);
-    let message = verify_with(&candidate, &runner, Path::new(SIGNTOOL), &action(SIGNTOOL))
-        .expect_err("wrong private leaf must fail")
-        .to_string();
-    assert!(!message.contains(candidate.root.to_str().expect("utf8 root")));
-    assert!(!message.contains("credential"));
-    assert!(!message.contains(private_leaf));
+    let wrong_leaf = verify_with(&candidate, &runner, Path::new(SIGNTOOL), &action(SIGNTOOL))
+        .expect_err("wrong private leaf must fail");
+
+    let grammar_canary = "SYNTHETIC-PRIVATE-CERTIFICATE-CANARY";
+    let drifted = format!("{}\n{grammar_canary}\n", accepted_grammar().trim_end());
+    let drift_candidate = Candidate::new("grammar-private-canary");
+    let runner =
+        FakeCommandRunner::new(vec![command(&drift_candidate, 0, drifted.as_bytes(), b"")]);
+    let grammar_drift = verify_with(
+        &drift_candidate,
+        &runner,
+        Path::new(SIGNTOOL),
+        &action(SIGNTOOL),
+    )
+    .expect_err("unconsumed private output must fail");
+    assert_eq!(
+        grammar_drift,
+        SigningError::GrammarDrift {
+            stage: SigningGrammarStage::TrailingOutput,
+        }
+    );
+
+    let all_errors = [
+        SigningError::PolicyUnavailable,
+        SigningError::PolicyMalformed,
+        SigningError::PolicyMismatch,
+        SigningError::WrongSelectedSignTool,
+        SigningError::SignToolActionInvalid,
+        SigningError::SetupContainment,
+        SigningError::SetupReadFailed,
+        SigningError::SetupMutated,
+        SigningError::SignToolInvocationFailed,
+        SigningError::MissingOutput,
+        SigningError::Unsigned,
+        SigningError::DuplicateSignature,
+        SigningError::MissingSignature,
+        wrong_leaf,
+        SigningError::UntrustedChain,
+        SigningError::NonzeroExit,
+        SigningError::MissingTimestamp,
+        grammar_drift,
+    ];
+    let forbidden = [
+        candidate.root.to_str().expect("utf8 private root"),
+        drift_candidate
+            .root
+            .to_str()
+            .expect("utf8 drift private root"),
+        private_subject,
+        private_leaf,
+        grammar_canary,
+        "Issued to:",
+        "Issued by:",
+        "SHA1 hash:",
+    ];
+    for error in all_errors {
+        let direct = error.to_string();
+        let promoted = FinalizeError::SigningVerification(error).to_string();
+        for secret in &forbidden {
+            assert!(!direct.contains(secret), "direct error leaked {secret:?}");
+            assert!(
+                !promoted.contains(secret),
+                "promoted error leaked {secret:?}"
+            );
+        }
+    }
 
     let candidate = Candidate::new("safe-result");
     let grammar = accepted_grammar();

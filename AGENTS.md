@@ -269,7 +269,10 @@ members, evidence rendering, strict whole-directory classification, and a final
 source/lock recheck before atomic promotion. The pre-pack executable is
 transaction-bound by the newly empty stage, transaction-local build target,
 single copy, and stage-only vpk input; its hash is divergence diagnostics, not a
-signed-container equality term.
+signed-container equality term. In signed mode the finalizer constructs the
+authentication-preflight and Velopack child environments from the pinned
+selection record, prepending the selected SignTool directory to the record's
+full `PATH`; MSVC/vcvars activation is not what supplies SignTool.
 `Releases/` is an accumulated internal Velopack workspace; it is not the promoted
 release candidate.
 

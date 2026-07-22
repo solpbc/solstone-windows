@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::artifact_fs::child_process_path_text;
 use crate::rust_release_manifest::{self, ReleaseToolProjection};
 
 pub const SELECTION_SCHEMA: &str = "solstone.release-tool-selection.v1";
@@ -176,6 +177,7 @@ pub enum SelectionError {
     ActionArgvMismatch { action: &'static str },
     UndocumentedPlaceholder { action: &'static str },
     MsvcEnvironmentInvalid,
+    SigningChildEnvironmentInvalid,
     ToolchainAuthorityInvalid,
     SelectedIdentityMismatch { tool: &'static str },
 }
@@ -226,6 +228,10 @@ impl fmt::Display for SelectionError {
             Self::MsvcEnvironmentInvalid => write!(
                 formatter,
                 "selected MSVC environment delta is incomplete or contains an invalid value; rerun the pinned vcvars preflight"
+            ),
+            Self::SigningChildEnvironmentInvalid => write!(
+                formatter,
+                "selected signing tools cannot form the required child environment; rerun signed preflight and pass its record unchanged"
             ),
             Self::ToolchainAuthorityInvalid => write!(
                 formatter,
@@ -314,6 +320,24 @@ impl ReleaseToolSelection {
                 self.msvc_environment.windows_sdk_dir.clone(),
             ),
         ])
+    }
+
+    pub fn signing_child_env_overlay(&self) -> Result<BTreeMap<String, String>, SelectionError> {
+        let signtool = self
+            .tools
+            .signtool
+            .as_ref()
+            .ok_or(SelectionError::SigningChildEnvironmentInvalid)?;
+        let parent = signtool
+            .path
+            .parent()
+            .ok_or(SelectionError::SigningChildEnvironmentInvalid)?;
+        let parent = child_process_path_text(parent)
+            .ok_or(SelectionError::SigningChildEnvironmentInvalid)?;
+        Ok(BTreeMap::from([(
+            "PATH".to_owned(),
+            format!("{parent};{}", self.msvc_environment.path),
+        )]))
     }
 
     fn validate(&self) -> Result<(), SelectionError> {

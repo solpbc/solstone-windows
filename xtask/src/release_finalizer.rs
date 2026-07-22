@@ -29,7 +29,9 @@ use crate::release_receipt::{
 use crate::release_selection::{
     ManifestSafeToolProjection, ReleaseToolSelection, SelectedAction, SelectionMode,
 };
-use crate::release_signing::{verify_release_signing, SigningPolicy, SigningVerificationRequest};
+use crate::release_signing::{
+    verify_release_signing, SigningError, SigningPolicy, SigningVerificationRequest,
+};
 use crate::release_source_binding::{SourceBinding, SourceBindingError, SourceBindingVerifier};
 use crate::rust_release_manifest::{
     self, companion_basename, ArtifactEvidence, BundleNames, DependencyPolicy,
@@ -107,7 +109,7 @@ pub enum FinalizeError {
     DeltaSeedChanged,
     AssetsReconciliation,
     LedgerReconciliation,
-    SigningVerification,
+    SigningVerification(SigningError),
     ExecutableDivergence {
         nupkg: PackagedExecutableEvidence,
         portable: PackagedExecutableEvidence,
@@ -217,10 +219,9 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "Velopack ledgers disagree about the current full or delta artifacts; rebuild the complete output in one transaction"
             ),
-            Self::SigningVerification => write!(
-                formatter,
-                "final setup signing verification failed; restore the approved signing identity, trust, and RFC 3161 timestamp"
-            ),
+            Self::SigningVerification(cause) => {
+                write!(formatter, "final setup signing verification failed: {cause}")
+            }
             Self::ExecutableDivergence {
                 nupkg,
                 portable,
@@ -413,6 +414,15 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     )
     .map_err(|_| FinalizeError::Advisory)?;
     materialize_release_notes(checkout, version, &paths.notes)?;
+    let signing_child_env = if selection.mode == SelectionMode::Signed {
+        Some(
+            selection
+                .signing_child_env_overlay()
+                .map_err(|_| FinalizeError::SelectionInvalid)?,
+        )
+    } else {
+        None
+    };
     if selection.mode == SelectionMode::Signed {
         let smctl = selection
             .tools
@@ -429,7 +439,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
                 "{smctl_path}",
                 child_process_path_text(&smctl.path).ok_or(FinalizeError::SigningRuntime)?,
             )]),
-            None,
+            signing_child_env.as_ref(),
             "signing_auth_preflight",
             runner,
         )?;
@@ -511,7 +521,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     run_program(
         &selection.actions.vpk_pack,
         &vpk_args,
-        None,
+        signing_child_env.as_ref(),
         "vpk_pack",
         runner,
     )?;
@@ -524,15 +534,15 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     let signing_mode = match selection.mode {
         SelectionMode::Unsigned => {
             verify_release_signing(SigningVerificationRequest::Unsigned, runner)
-                .map_err(|_| FinalizeError::SigningVerification)?
+                .map_err(FinalizeError::SigningVerification)?
                 .signing_mode
         }
         SelectionMode::Signed => {
             let policy_bytes = checkout
                 .read(SIGNING_POLICY, "signing policy")
-                .map_err(|_| FinalizeError::SigningVerification)?;
-            let policy = SigningPolicy::parse(&policy_bytes)
-                .map_err(|_| FinalizeError::SigningVerification)?;
+                .map_err(|_| FinalizeError::SigningVerification(SigningError::PolicyUnavailable))?;
+            let policy =
+                SigningPolicy::parse(&policy_bytes).map_err(FinalizeError::SigningVerification)?;
             verify_release_signing(
                 SigningVerificationRequest::Signed {
                     policy: &policy,
@@ -552,7 +562,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
                 },
                 runner,
             )
-            .map_err(|_| FinalizeError::SigningVerification)?
+            .map_err(FinalizeError::SigningVerification)?
             .signing_mode
         }
     };

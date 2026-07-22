@@ -51,7 +51,80 @@ pub enum SigningVerificationRequest<'a> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SigningGrammarStage {
+    StdoutEncoding,
+    StderrEncoding,
+    VerifyingLine,
+    VerifyingValue,
+    PrimarySignatureLine,
+    FileHashLine,
+    FileHashValue,
+    SigningChainHeader,
+    SigningCertificateIssuedTo,
+    SigningCertificateIssuedBy,
+    SigningCertificateExpiration,
+    SigningCertificateThumbprint,
+    SigningCertificateFields,
+    SigningCertificateChain,
+    TimestampLine,
+    TimestampValue,
+    TimestampChainHeader,
+    TimestampCertificateIssuedTo,
+    TimestampCertificateIssuedBy,
+    TimestampCertificateExpiration,
+    TimestampCertificateThumbprint,
+    TimestampCertificateFields,
+    TimestampCertificateChain,
+    SuccessfullyVerifiedLine,
+    SuccessfullyVerifiedValue,
+    SuccessCountLine,
+    SuccessCountValue,
+    WarningCountLine,
+    ErrorCountLine,
+    TrailingOutput,
+}
+
+impl fmt::Display for SigningGrammarStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::StdoutEncoding => "stdout encoding",
+            Self::StderrEncoding => "stderr encoding",
+            Self::VerifyingLine => "verifying line",
+            Self::VerifyingValue => "verifying value",
+            Self::PrimarySignatureLine => "primary-signature line",
+            Self::FileHashLine => "file-hash line",
+            Self::FileHashValue => "file-hash value",
+            Self::SigningChainHeader => "signing-chain header",
+            Self::SigningCertificateIssuedTo => "signing-certificate subject line",
+            Self::SigningCertificateIssuedBy => "signing-certificate issuer line",
+            Self::SigningCertificateExpiration => "signing-certificate expiration line",
+            Self::SigningCertificateThumbprint => "signing-certificate thumbprint line",
+            Self::SigningCertificateFields => "signing-certificate field values",
+            Self::SigningCertificateChain => "signing-certificate chain",
+            Self::TimestampLine => "timestamp line",
+            Self::TimestampValue => "timestamp value",
+            Self::TimestampChainHeader => "timestamp-chain header",
+            Self::TimestampCertificateIssuedTo => "timestamp-certificate subject line",
+            Self::TimestampCertificateIssuedBy => "timestamp-certificate issuer line",
+            Self::TimestampCertificateExpiration => "timestamp-certificate expiration line",
+            Self::TimestampCertificateThumbprint => "timestamp-certificate thumbprint line",
+            Self::TimestampCertificateFields => "timestamp-certificate field values",
+            Self::TimestampCertificateChain => "timestamp-certificate chain",
+            Self::SuccessfullyVerifiedLine => "successfully-verified line",
+            Self::SuccessfullyVerifiedValue => "successfully-verified value",
+            Self::SuccessCountLine => "success-count line",
+            Self::SuccessCountValue => "success-count value",
+            Self::WarningCountLine => "warning-count line",
+            Self::ErrorCountLine => "error-count line",
+            Self::TrailingOutput => "trailing output",
+        };
+        formatter.write_str(label)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SigningError {
+    PolicyUnavailable,
     PolicyMalformed,
     PolicyMismatch,
     WrongSelectedSignTool,
@@ -68,12 +141,17 @@ pub enum SigningError {
     UntrustedChain,
     NonzeroExit,
     MissingTimestamp,
-    GrammarDrift,
+    // SignTool verification errors retain only typed determinations and parser stages; raw stdout/stderr is never retained because even grammar-drift output can contain certificate material.
+    GrammarDrift { stage: SigningGrammarStage },
 }
 
 impl fmt::Display for SigningError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PolicyUnavailable => write!(
+                formatter,
+                "signing policy could not be read from the contained checkout; restore packaging/signing-policy.json and retry"
+            ),
             Self::PolicyMalformed => write!(
                 formatter,
                 "signing policy JSON is malformed or has an unknown field; restore packaging/signing-policy.json and retry"
@@ -138,11 +216,17 @@ impl fmt::Display for SigningError {
                 formatter,
                 "Authenticode signature has no single verified timestamp chain; rebuild with the required RFC 3161 timestamp"
             ),
-            Self::GrammarDrift => write!(
+            Self::GrammarDrift { stage } => write!(
                 formatter,
-                "SignTool verbose output grammar is malformed, ambiguous, or unconsumed; inspect the selected pinned SignTool output before retrying"
+                "SignTool verbose output grammar drifted at the {stage}; inspect the selected pinned SignTool behavior and retry"
             ),
         }
+    }
+}
+
+impl From<SigningGrammarStage> for SigningError {
+    fn from(stage: SigningGrammarStage) -> Self {
+        Self::GrammarDrift { stage }
     }
 }
 
@@ -261,8 +345,8 @@ fn parse_signtool_output(
     if stdout.is_empty() && stderr.is_empty() {
         return Err(SigningError::MissingOutput);
     }
-    let stdout = std::str::from_utf8(stdout).map_err(|_| SigningError::GrammarDrift)?;
-    let stderr = std::str::from_utf8(stderr).map_err(|_| SigningError::GrammarDrift)?;
+    let stdout = std::str::from_utf8(stdout).map_err(|_| SigningGrammarStage::StdoutEncoding)?;
+    let stderr = std::str::from_utf8(stderr).map_err(|_| SigningGrammarStage::StderrEncoding)?;
     let complete = if stderr.is_empty() {
         stdout.to_owned()
     } else if stdout.is_empty() {
@@ -317,41 +401,93 @@ fn parse_signtool_output(
     }
 
     let mut cursor = 0usize;
-    expect_prefix(&lines, &mut cursor, "Verifying: ")?;
+    expect_prefix(
+        &lines,
+        &mut cursor,
+        "Verifying: ",
+        SigningGrammarStage::VerifyingLine,
+        SigningGrammarStage::VerifyingValue,
+    )?;
     expect_exact(
         &lines,
         &mut cursor,
         "Signature Index: 0 (Primary Signature)",
+        SigningGrammarStage::PrimarySignatureLine,
     )?;
-    let file_hash = take_prefix(&lines, &mut cursor, "Hash of file (sha256): ")?;
+    let file_hash = take_prefix(
+        &lines,
+        &mut cursor,
+        "Hash of file (sha256): ",
+        SigningGrammarStage::FileHashLine,
+    )?;
     if !is_upper_or_lower_hex(file_hash, 64) {
-        return Err(SigningError::GrammarDrift);
+        return Err(SigningGrammarStage::FileHashValue.into());
     }
-    expect_exact(&lines, &mut cursor, "Signing Certificate Chain:")?;
-    let signing_thumbprints =
-        parse_certificate_chain(&lines, &mut cursor, "The signature is timestamped: ")?;
-    let timestamp = take_prefix(&lines, &mut cursor, "The signature is timestamped: ")?;
+    expect_exact(
+        &lines,
+        &mut cursor,
+        "Signing Certificate Chain:",
+        SigningGrammarStage::SigningChainHeader,
+    )?;
+    let signing_thumbprints = parse_certificate_chain(
+        &lines,
+        &mut cursor,
+        "The signature is timestamped: ",
+        CertificateChainKind::Signing,
+    )?;
+    let timestamp = take_prefix(
+        &lines,
+        &mut cursor,
+        "The signature is timestamped: ",
+        SigningGrammarStage::TimestampLine,
+    )?;
     if timestamp.trim().is_empty() {
-        return Err(SigningError::GrammarDrift);
+        return Err(SigningGrammarStage::TimestampValue.into());
     }
-    expect_exact(&lines, &mut cursor, "Timestamp Verified by:")?;
-    let timestamp_thumbprints =
-        parse_certificate_chain(&lines, &mut cursor, "Successfully verified: ")?;
-    let verified = take_prefix(&lines, &mut cursor, "Successfully verified: ")?;
+    expect_exact(
+        &lines,
+        &mut cursor,
+        "Timestamp Verified by:",
+        SigningGrammarStage::TimestampChainHeader,
+    )?;
+    parse_certificate_chain(
+        &lines,
+        &mut cursor,
+        "Successfully verified: ",
+        CertificateChainKind::Timestamp,
+    )?;
+    let verified = take_prefix(
+        &lines,
+        &mut cursor,
+        "Successfully verified: ",
+        SigningGrammarStage::SuccessfullyVerifiedLine,
+    )?;
     if verified.trim().is_empty() {
-        return Err(SigningError::GrammarDrift);
+        return Err(SigningGrammarStage::SuccessfullyVerifiedValue.into());
     }
-    let count = lines.get(cursor).ok_or(SigningError::GrammarDrift)?;
+    let count = lines
+        .get(cursor)
+        .ok_or(SigningGrammarStage::SuccessCountLine)?;
     if *count != "Number of signatures successfully Verified: 1"
         && *count != "Number of files successfully Verified: 1"
     {
-        return Err(SigningError::GrammarDrift);
+        return Err(SigningGrammarStage::SuccessCountValue.into());
     }
     cursor += 1;
-    expect_exact(&lines, &mut cursor, "Number of warnings: 0")?;
-    expect_exact(&lines, &mut cursor, "Number of errors: 0")?;
-    if cursor != lines.len() || timestamp_thumbprints.is_empty() {
-        return Err(SigningError::GrammarDrift);
+    expect_exact(
+        &lines,
+        &mut cursor,
+        "Number of warnings: 0",
+        SigningGrammarStage::WarningCountLine,
+    )?;
+    expect_exact(
+        &lines,
+        &mut cursor,
+        "Number of errors: 0",
+        SigningGrammarStage::ErrorCountLine,
+    )?;
+    if cursor != lines.len() {
+        return Err(SigningGrammarStage::TrailingOutput.into());
     }
 
     let expected_leaf = &policy.leaf_sha1;
@@ -367,47 +503,109 @@ fn parse_signtool_output(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum CertificateChainKind {
+    Signing,
+    Timestamp,
+}
+
+impl CertificateChainKind {
+    fn issued_to(self) -> SigningGrammarStage {
+        match self {
+            Self::Signing => SigningGrammarStage::SigningCertificateIssuedTo,
+            Self::Timestamp => SigningGrammarStage::TimestampCertificateIssuedTo,
+        }
+    }
+
+    fn issued_by(self) -> SigningGrammarStage {
+        match self {
+            Self::Signing => SigningGrammarStage::SigningCertificateIssuedBy,
+            Self::Timestamp => SigningGrammarStage::TimestampCertificateIssuedBy,
+        }
+    }
+
+    fn expiration(self) -> SigningGrammarStage {
+        match self {
+            Self::Signing => SigningGrammarStage::SigningCertificateExpiration,
+            Self::Timestamp => SigningGrammarStage::TimestampCertificateExpiration,
+        }
+    }
+
+    fn thumbprint(self) -> SigningGrammarStage {
+        match self {
+            Self::Signing => SigningGrammarStage::SigningCertificateThumbprint,
+            Self::Timestamp => SigningGrammarStage::TimestampCertificateThumbprint,
+        }
+    }
+
+    fn fields(self) -> SigningGrammarStage {
+        match self {
+            Self::Signing => SigningGrammarStage::SigningCertificateFields,
+            Self::Timestamp => SigningGrammarStage::TimestampCertificateFields,
+        }
+    }
+
+    fn chain(self) -> SigningGrammarStage {
+        match self {
+            Self::Signing => SigningGrammarStage::SigningCertificateChain,
+            Self::Timestamp => SigningGrammarStage::TimestampCertificateChain,
+        }
+    }
+}
+
 fn parse_certificate_chain(
     lines: &[&str],
     cursor: &mut usize,
     terminator: &str,
-) -> Result<Vec<String>, SigningError> {
+    kind: CertificateChainKind,
+) -> Result<Vec<String>, SigningGrammarStage> {
     let mut thumbprints = Vec::new();
     while lines
         .get(*cursor)
         .is_some_and(|line| !line.starts_with(terminator))
     {
-        let issued_to = take_prefix(lines, cursor, "Issued to: ")?;
-        let issued_by = take_prefix(lines, cursor, "Issued by: ")?;
-        let expires = take_prefix(lines, cursor, "Expires: ")?;
-        let thumbprint = take_prefix(lines, cursor, "SHA1 hash: ")?;
+        let issued_to = take_prefix(lines, cursor, "Issued to: ", kind.issued_to())?;
+        let issued_by = take_prefix(lines, cursor, "Issued by: ", kind.issued_by())?;
+        let expires = take_prefix(lines, cursor, "Expires: ", kind.expiration())?;
+        let thumbprint = take_prefix(lines, cursor, "SHA1 hash: ", kind.thumbprint())?;
         if issued_to.trim().is_empty()
             || issued_by.trim().is_empty()
             || expires.trim().is_empty()
             || !is_upper_or_lower_hex(thumbprint, 40)
         {
-            return Err(SigningError::GrammarDrift);
+            return Err(kind.fields());
         }
         thumbprints.push(thumbprint.to_ascii_lowercase());
     }
     if thumbprints.is_empty() {
-        return Err(SigningError::GrammarDrift);
+        return Err(kind.chain());
     }
     Ok(thumbprints)
 }
 
-fn expect_exact(lines: &[&str], cursor: &mut usize, expected: &str) -> Result<(), SigningError> {
+fn expect_exact(
+    lines: &[&str],
+    cursor: &mut usize,
+    expected: &str,
+    stage: SigningGrammarStage,
+) -> Result<(), SigningGrammarStage> {
     if lines.get(*cursor) != Some(&expected) {
-        return Err(SigningError::GrammarDrift);
+        return Err(stage);
     }
     *cursor += 1;
     Ok(())
 }
 
-fn expect_prefix(lines: &[&str], cursor: &mut usize, prefix: &str) -> Result<(), SigningError> {
-    let value = take_prefix(lines, cursor, prefix)?;
+fn expect_prefix(
+    lines: &[&str],
+    cursor: &mut usize,
+    prefix: &str,
+    line_stage: SigningGrammarStage,
+    value_stage: SigningGrammarStage,
+) -> Result<(), SigningGrammarStage> {
+    let value = take_prefix(lines, cursor, prefix, line_stage)?;
     if value.trim().is_empty() {
-        return Err(SigningError::GrammarDrift);
+        return Err(value_stage);
     }
     Ok(())
 }
@@ -416,11 +614,12 @@ fn take_prefix<'a>(
     lines: &'a [&str],
     cursor: &mut usize,
     prefix: &str,
-) -> Result<&'a str, SigningError> {
+    stage: SigningGrammarStage,
+) -> Result<&'a str, SigningGrammarStage> {
     let value = lines
         .get(*cursor)
         .and_then(|line| line.strip_prefix(prefix))
-        .ok_or(SigningError::GrammarDrift)?;
+        .ok_or(stage)?;
     *cursor += 1;
     Ok(value)
 }

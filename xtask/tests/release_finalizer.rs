@@ -28,7 +28,8 @@ use xtask::release_receipt::{
     render_windows_native_proof_receipt, FinalizationReceipt, WindowsNativeProofReceipt,
     WINDOWS_NATIVE_PROOF_SCHEMA,
 };
-use xtask::release_selection::SelectionMode;
+use xtask::release_selection::{ReleaseToolSelection, SelectionMode};
+use xtask::release_signing::{SigningError, SigningGrammarStage};
 use xtask::release_source_binding::{LockFile, SourceBindingError};
 use xtask::rust_release_manifest::{
     companion_basename, expected_artifact_names, validate_manifest_bytes,
@@ -126,6 +127,28 @@ fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
     );
     let events = runner.events();
     assert_witness_order(&events);
+    let signing_environment = ReleaseToolSelection::parse(&selection_record(SelectionMode::Signed))
+        .expect("parse selected signing tools")
+        .signing_child_env_overlay()
+        .expect("construct signing child environment");
+    let signing_environment_witnesses: Vec<&BTreeMap<String, String>> = events
+        .iter()
+        .filter_map(|event| match event {
+            WitnessEvent::Invocation { program, args, env }
+                if program == Path::new(VPK)
+                    || args
+                        .iter()
+                        .any(|arg| arg == "packaging/signing/preflight-auth.ps1") =>
+            {
+                env.as_ref()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        signing_environment_witnesses,
+        vec![&signing_environment, &signing_environment]
+    );
     assert!(events.iter().any(|event| matches!(
         event,
         WitnessEvent::Invocation { program, .. } if program == Path::new(SIGNTOOL)
@@ -1200,7 +1223,7 @@ fn signing_failures_are_fail_closed_and_unsigned_cannot_select_a_signer() {
         &checkout,
         &runner,
         request(SelectionMode::Signed, false),
-        FinalizeError::SigningVerification,
+        FinalizeError::SigningVerification(SigningError::NonzeroExit),
         PHASE_6_BASELINE_CANDIDATE,
         false,
         false,
@@ -1228,6 +1251,34 @@ fn signing_failures_are_fail_closed_and_unsigned_cannot_select_a_signer() {
         event,
         WitnessEvent::Invocation { program, .. } if program == Path::new(SIGNTOOL)
     )));
+}
+
+#[test]
+fn signing_grammar_drift_promotes_only_the_typed_certificate_free_stage() {
+    let checkout = FakeReleaseCheckout::new("signtool-grammar-drift", false);
+    let runner =
+        FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::SignToolGrammarDrift);
+    let error = run_engine_failure(&checkout, &runner, request(SelectionMode::Signed, false));
+    assert_eq!(
+        error,
+        FinalizeError::SigningVerification(SigningError::GrammarDrift {
+            stage: SigningGrammarStage::FileHashLine,
+        })
+    );
+    let message = error.to_string();
+    assert!(message.contains("final setup signing verification failed"));
+    assert!(message.contains("file-hash line"));
+    assert!(!message.contains("SYNTHETIC-SIGNTOOL-GRAMMAR-DRIFT"));
+    assert!(!message.contains("Issued to:"));
+    assert!(!message.contains("SHA1 hash:"));
+    assert_failure_contract(
+        &checkout,
+        &runner,
+        &error,
+        PHASE_6_BASELINE_CANDIDATE,
+        false,
+        false,
+    );
 }
 
 #[test]

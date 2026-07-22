@@ -228,12 +228,19 @@ ineligible for native proof.
 
 **Signing environment.** The non-credential release-tool preflight pins and
 selects `smctl`, the exact x64 SignTool, and their closed action templates. The
-finalizer runs the selected authentication/signing actions, which read signing
-configuration and credentials from the environment, never from committed source: `SM_HOST`,
-`SM_API_KEY`, `SM_CLIENT_CERT_FILE`, `SM_CLIENT_CERT_PASSWORD`, and
+finalizer constructs the signing-mode child environment from the pinned
+selection record and gives the same one-key overlay to authentication preflight
+and Velopack: `PATH` is the selected SignTool directory prepended with a literal
+`;` to the record's full activated `PATH`. It does not read ambient `PATH`, add
+compiler variables, or retry with another environment. MSVC/vcvars activation
+is not what supplies SignTool. Other environment values remain inherited, so
+the selected authentication/signing actions read signing configuration and
+credentials from the operator's environment, never from committed source:
+`SM_HOST`, `SM_API_KEY`, `SM_CLIENT_CERT_FILE`, `SM_CLIENT_CERT_PASSWORD`, and
 `SM_KEYPAIR_ALIAS`. The operator supplies these on the build box at sign time;
-they are never committed. The preflight fails fast (with a secret-free message) if
-the environment is not provisioned or the credentials cannot sign.
+they are never committed. The preflight uses the real signing-child environment
+and fails fast (with a secret-free message) if it is not provisioned or the
+credentials cannot sign.
 
 After Velopack emits the final setup bytes, the finalizer invokes the actual
 resolver-selected SignTool with `/pa /all /v`. It requires one Authenticode
@@ -272,6 +279,9 @@ certificate, and Session-1 evidence is earned only by running it on the box.
 
 ## Build-box gotchas
 
+- In signed mode the finalizer, not MSVC/vcvars activation, supplies SignTool to
+  authentication preflight and Velopack from the pinned selection record. Do not
+  repair or override that child `PATH` with the shell's ambient `PATH`.
 - The release contract pins Windows PowerShell 5.1. Invoke the make-backed release
   rail as `PWSH=powershell make preflight-release-tools` / `PWSH=powershell make
   package`, or use the box-native `scripts/win-package.cmd`.
