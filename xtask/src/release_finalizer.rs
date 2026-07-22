@@ -573,11 +573,12 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     let portable = ExecutableContainerReader::read_portable(&portable_bytes)
         .map_err(FinalizeError::ExecutableContainer)?;
 
-    // The packaged equality authority is deliberately container-only. Cleanup creates a new,
-    // empty stage, the build uses a transaction-local CARGO_TARGET_DIR, exactly one executable is
-    // copied into that stage, and the selected vpk action packs only that directory. Those
-    // structural bindings make the pre-pack executable transaction-bound without requiring signed
-    // container bytes to equal it; vpk signs private copies and leaves the stage unsigned.
+    // The packaged equality authority is deliberately container-only. create_transaction_paths
+    // creates and verifies a new, empty stage, the build uses a transaction-local CARGO_TARGET_DIR,
+    // exactly one executable is copied into that stage, and the selected vpk action packs only that
+    // directory. Those structural bindings make the pre-pack executable transaction-bound without
+    // requiring signed container bytes to equal it; vpk signs private copies and leaves the stage
+    // unsigned.
     let pre_pack = ContainedRoot::new(&paths.stage, "Velopack stage", UnixModePolicy::AllowExecute)
         .ok()
         .and_then(|stage| stage.read(STAGED_EXECUTABLE, "staged app executable").ok())

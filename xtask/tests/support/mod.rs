@@ -154,7 +154,7 @@ pub enum RunnerMutation {
     NupkgExecutableDiverges,
     PortableExecutableDiverges,
     NupkgMemberMissing,
-    NupkgMemberDuplicate,
+    NupkgMemberCaseCollision,
     Phase6ContainerReadFailure,
     SignToolFailure,
     HistoricalCandidateLeak,
@@ -171,6 +171,8 @@ pub enum RunnerMutation {
 pub enum NativeProofMutation {
     #[default]
     None,
+    NupkgContainerReadFailure,
+    PortableContainerReadFailure,
     NonemptyProofRoot,
     PreexistingInstalledApp,
     PreexistingMatchingInstalledApp,
@@ -717,6 +719,21 @@ impl CommandRunner for FakeReleaseRunner {
                 _ => {}
             }
         }
+        if phase == xtask::native_release_proof::STEP_4_CONTAINERS {
+            let names = BundleNames::for_version(VERSION);
+            let container = match self.native_proof_mutation {
+                NativeProofMutation::NupkgContainerReadFailure => Some(names.full_package()),
+                NativeProofMutation::PortableContainerReadFailure => Some(names.portable()),
+                _ => None,
+            };
+            if let Some(container) = container {
+                fs::remove_file(
+                    self.checkout
+                        .join(format!("target/release-candidate/{VERSION}/{container}")),
+                )
+                .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+            }
+        }
         if phase == xtask::native_release_proof::STEP_5_ROOT_READY {
             let proof_root = self.native_proof_root()?;
             match self.native_proof_mutation {
@@ -1206,7 +1223,7 @@ fn emit_velopack_output(
         RunnerMutation::NupkgMemberMissing => {
             build_velopack_nupkg("lib/app/not-the-app.exe", app_bytes, false)
         }
-        RunnerMutation::NupkgMemberDuplicate => {
+        RunnerMutation::NupkgMemberCaseCollision => {
             build_velopack_nupkg("lib/app/solstone-windows-app.exe", app_bytes, true)
         }
         _ => build_velopack_nupkg("lib/app/solstone-windows-app.exe", app_bytes, false),

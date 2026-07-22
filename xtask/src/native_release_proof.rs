@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{child_process_path_text, ContainedRoot, UnixModePolicy};
 use crate::release_clock::Clock;
-use crate::release_container::ExecutableContainerReader;
+use crate::release_container::{ContainerKind, ExecutableContainerReader, ReleaseContainerError};
 use crate::release_exec::CommandRunner;
 use crate::release_finalizer_fs::create_contained_directory;
 use crate::release_receipt::{
@@ -79,6 +79,8 @@ pub enum NativeProofError {
     ToolResolver,
     ToolSelection,
     ToolProjectionMismatch,
+    ExecutableContainer(ReleaseContainerError),
+    ExecutableRead(ContainerKind),
     ContainerBaseline,
     ProofRoot,
     PreexistingInstalledApp,
@@ -147,6 +149,17 @@ impl fmt::Display for NativeProofError {
                 formatter,
                 "native proof selected tools do not match the candidate's signed tool map; restore the pinned build-box tools used to finalize the candidate"
             ),
+            Self::ExecutableContainer(cause) => cause.fmt(formatter),
+            Self::ExecutableRead(container) => match container {
+                ContainerKind::Nupkg => write!(
+                    formatter,
+                    "full nupkg could not be stable-read for native proof executable comparison; restore one regular contained current full package and retry the proof"
+                ),
+                ContainerKind::Portable => write!(
+                    formatter,
+                    "portable ZIP could not be stable-read for native proof executable comparison; restore one regular contained portable package and retry the proof"
+                ),
+            },
             Self::ContainerBaseline => write!(
                 formatter,
                 "native proof nupkg or portable executable disagrees with the manifest baseline; restore both finalized containers and retry"
@@ -309,15 +322,15 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     let nupkg = ExecutableContainerReader::read_nupkg(
         &candidate
             .read(names.full_package(), "native proof full nupkg")
-            .map_err(|_| NativeProofError::ContainerBaseline)?,
+            .map_err(|_| NativeProofError::ExecutableRead(ContainerKind::Nupkg))?,
     )
-    .map_err(|_| NativeProofError::ContainerBaseline)?;
+    .map_err(NativeProofError::ExecutableContainer)?;
     let portable = ExecutableContainerReader::read_portable(
         &candidate
             .read(names.portable(), "native proof portable ZIP")
-            .map_err(|_| NativeProofError::ContainerBaseline)?,
+            .map_err(|_| NativeProofError::ExecutableRead(ContainerKind::Portable))?,
     )
-    .map_err(|_| NativeProofError::ContainerBaseline)?;
+    .map_err(NativeProofError::ExecutableContainer)?;
     if nupkg != manifest.packaged_executable || portable != manifest.packaged_executable {
         return Err(NativeProofError::ContainerBaseline);
     }

@@ -23,6 +23,7 @@ use xtask::native_release_proof::{
     STEP_5_ROOT_READY, STEP_6_INSTALL, STEP_7_INSTALLED_IDENTITY, STEP_8_DUMP_STATE, STEP_9_SMOKE,
 };
 use xtask::release_clock::{Clock, ClockError, FixedClock, UtcTimestamp};
+use xtask::release_container::{ContainerKind, ReleaseContainerError};
 use xtask::release_finalizer::finalize;
 use xtask::release_receipt::{
     render_finalization_receipt, render_windows_native_proof_receipt, FinalizationReceipt,
@@ -30,7 +31,8 @@ use xtask::release_receipt::{
 };
 use xtask::release_selection::SelectionMode;
 use xtask::rust_release_manifest::{
-    companion_basename, render_release_evidence, validate_manifest_bytes, ReleaseEvidence,
+    companion_basename, render_release_evidence, validate_manifest_bytes, BundleNames,
+    ReleaseEvidence,
 };
 
 const PROVED_AT: &str = "2026-07-21T13:00:00Z";
@@ -222,7 +224,7 @@ fn isolated_install_root_and_installer_fail_closed() {
 
 #[test]
 fn every_executable_identity_source_is_bound_to_the_manifest() {
-    // Pure ZIP-name, duplicate, and member-kind rejection lives in
+    // Pure ZIP-name, exact-duplicate, and member-kind rejection lives in
     // release_container_baseline.rs. These cases prove engine integration.
     run_case(
         "installed-app-diverges",
@@ -245,14 +247,6 @@ fn every_executable_identity_source_is_bound_to_the_manifest() {
             "manifest-baseline-diverges",
             ContainerMutation::ManifestBaselineDiverges,
         ),
-        (
-            "nupkg-member-missing",
-            ContainerMutation::NupkgMemberMissing,
-        ),
-        (
-            "nupkg-member-duplicate",
-            ContainerMutation::NupkgMemberDuplicate,
-        ),
     ] {
         run_case(
             label,
@@ -260,7 +254,69 @@ fn every_executable_identity_source_is_bound_to_the_manifest() {
             NativeProofMutation::None,
             |prepared| mutate_container_identity(prepared, mutation),
             NativeProofError::ContainerBaseline,
-            "container",
+            "manifest baseline",
+            STEP_4_CONTAINERS,
+            SeamExpectation {
+                resolver: true,
+                installer: false,
+                smoke: false,
+            },
+        );
+    }
+    for (label, mutation, error, subject) in [
+        (
+            "nupkg-member-missing",
+            ContainerMutation::NupkgMemberMissing,
+            NativeProofError::ExecutableContainer(ReleaseContainerError::MissingCanonicalMember {
+                container: ContainerKind::Nupkg,
+            }),
+            "missing the exact canonical app member",
+        ),
+        (
+            "nupkg-member-case-collision",
+            ContainerMutation::NupkgMemberCaseCollision,
+            NativeProofError::ExecutableContainer(ReleaseContainerError::EntryCaseCollision {
+                container: ContainerKind::Nupkg,
+            }),
+            "ASCII case-folding entry collisions",
+        ),
+    ] {
+        run_case(
+            label,
+            SelectionMode::Signed,
+            NativeProofMutation::None,
+            |prepared| mutate_container_identity(prepared, mutation),
+            error,
+            subject,
+            STEP_4_CONTAINERS,
+            SeamExpectation {
+                resolver: true,
+                installer: false,
+                smoke: false,
+            },
+        );
+    }
+    for (label, mutation, error, subject) in [
+        (
+            "nupkg-container-read-failure",
+            NativeProofMutation::NupkgContainerReadFailure,
+            NativeProofError::ExecutableRead(ContainerKind::Nupkg),
+            "full nupkg could not be stable-read",
+        ),
+        (
+            "portable-container-read-failure",
+            NativeProofMutation::PortableContainerReadFailure,
+            NativeProofError::ExecutableRead(ContainerKind::Portable),
+            "portable ZIP could not be stable-read",
+        ),
+    ] {
+        run_case(
+            label,
+            SelectionMode::Signed,
+            mutation,
+            |_| {},
+            error,
+            subject,
             STEP_4_CONTAINERS,
             SeamExpectation {
                 resolver: true,
@@ -584,7 +640,10 @@ fn assert_candidate_effect(
 ) {
     let expected = before.clone();
     let mut after = flat_file_snapshot(candidate);
+    let names = BundleNames::for_version(VERSION);
     let intentionally_mutated = match mutation {
+        NativeProofMutation::NupkgContainerReadFailure => Some(names.full_package().to_owned()),
+        NativeProofMutation::PortableContainerReadFailure => Some(names.portable().to_owned()),
         NativeProofMutation::SmokeMutatesArtifact => Some("assets.win.json".to_owned()),
         NativeProofMutation::SmokeMutatesManifest => Some(companion_basename()),
         _ => None,
@@ -596,8 +655,8 @@ fn assert_candidate_effect(
             after.remove(&name),
             "{label} did not inject its candidate mutation"
         );
-        // The fake smoke is the adversary in these two cases. Restore only its
-        // injected byte after the proof has detected it, then enforce the same
+        // The fake runner is the adversary in these cases. Restore only its
+        // injected mutation after the proof has detected it, then enforce the same
         // byte-identical postcondition used by every other mutation case.
         fs::write(candidate.join(&name), original).expect("restore injected candidate mutation");
     }
@@ -747,7 +806,7 @@ enum ContainerMutation {
     BothContainersDiffer,
     ManifestBaselineDiverges,
     NupkgMemberMissing,
-    NupkgMemberDuplicate,
+    NupkgMemberCaseCollision,
 }
 
 fn mutate_container_identity(prepared: &PreparedProof, mutation: ContainerMutation) {
@@ -779,7 +838,7 @@ fn mutate_container_identity(prepared: &PreparedProof, mutation: ContainerMutati
             prepared,
             build_velopack_nupkg("lib/app/other.exe", b"other", false),
         ),
-        ContainerMutation::NupkgMemberDuplicate => replace_nupkg(
+        ContainerMutation::NupkgMemberCaseCollision => replace_nupkg(
             prepared,
             build_velopack_nupkg("lib/app/solstone-windows-app.exe", b"first", true),
         ),

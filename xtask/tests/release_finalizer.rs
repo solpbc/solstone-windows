@@ -913,8 +913,8 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
         ),
         ("nupkg-member-missing", RunnerMutation::NupkgMemberMissing),
         (
-            "nupkg-member-duplicate",
-            RunnerMutation::NupkgMemberDuplicate,
+            "nupkg-member-case-collision",
+            RunnerMutation::NupkgMemberCaseCollision,
         ),
         (
             "nupkg-stable-read",
@@ -954,7 +954,7 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
                 }),
             ) => {}
             (
-                RunnerMutation::NupkgMemberDuplicate,
+                RunnerMutation::NupkgMemberCaseCollision,
                 FinalizeError::ExecutableContainer(ReleaseContainerError::EntryCaseCollision {
                     container: ContainerKind::Nupkg,
                 }),

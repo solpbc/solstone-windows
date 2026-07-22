@@ -77,10 +77,11 @@ The manifest executable authority is equality between the canonical full-nupkg
 and portable members. The pre-pack executable hash is diagnostic only on a
 container divergence: signed vpk operates on private copies, so signed container
 bytes legitimately differ from the unsigned stage. The stage remains
-transaction-bound structurally: cleanup creates it new and empty, the build uses
-a transaction-local `CARGO_TARGET_DIR`, exactly one executable is copied into the
-stage, and vpk packs only that directory. A missing pre-pack diagnostic does not
-weaken or fail the two-container equality gate.
+transaction-bound structurally: `create_transaction_paths` creates and verifies
+it new and empty after cleanup, the build uses a transaction-local
+`CARGO_TARGET_DIR`, exactly one executable is copied into the stage, and vpk
+packs only that directory. A missing pre-pack diagnostic does not weaken or fail
+the two-container equality gate.
 
 The finalizer assembles the candidate in a newly empty sibling temporary and
 atomically renames the whole directory to
