@@ -12,7 +12,7 @@ use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::release_finalizer::FinalizeError;
 use xtask::release_selection::SelectedAction;
 use xtask::release_signing::{
-    verify_release_signing, SigningError, SigningGrammarStage, SigningPolicy,
+    verify_release_signing, AuthenticodePolicy, SigningError, SigningGrammarStage, SigningPolicy,
     SigningVerificationRequest, SIGNED_VERIFIED_MODE, UNSIGNED_MODE,
 };
 
@@ -27,6 +27,8 @@ const OTHER_SIGNTOOL: &str = "/other/signtool.exe";
 const OTHER_SIGNTOOL: &str = r"C:\other\signtool.exe";
 const PUBLIC_LEAF: &str = "ac5472d41d5f63e339468e41f7b4438126e84860";
 const PUBLIC_LEAF_UPPER: &str = "AC5472D41D5F63E339468E41F7B4438126E84860";
+const SYNTHETIC_SIGNING_LEAF: &str = "1111111111111111111111111111111111111111";
+const SYNTHETIC_TIMESTAMP_LEAF: &str = "2222222222222222222222222222222222222222";
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -81,6 +83,46 @@ fn accepted_grammar() -> String {
     include_str!("fixtures/signtool/verify-signed-setup.txt").to_owned()
 }
 
+fn synthetic_policy() -> SigningPolicy {
+    SigningPolicy {
+        schema: "synthetic-policy".to_owned(),
+        authenticode: AuthenticodePolicy {
+            leaf_sha1: SYNTHETIC_SIGNING_LEAF.to_owned(),
+            require_trusted_chain: true,
+            timestamp_protocol: "synthetic-protocol".to_owned(),
+            require_timestamp: true,
+        },
+    }
+}
+
+fn synthetic_accepted_grammar() -> String {
+    format!(
+        concat!(
+            "Verifying: synthetic-setup.exe\n",
+            "Signature Index: 0 (Primary Signature)\n",
+            "Hash of file (sha256): {}\n",
+            "Signing Certificate Chain:\n",
+            "Issued to: synthetic-signing\n",
+            "Issued by: synthetic-signing\n",
+            "Expires: synthetic-signing-expiration\n",
+            "SHA1 hash: {}\n",
+            "The signature is timestamped: synthetic-time\n",
+            "Timestamp Verified by:\n",
+            "Issued to: synthetic-timestamp\n",
+            "Issued by: synthetic-timestamp\n",
+            "Expires: synthetic-timestamp-expiration\n",
+            "SHA1 hash: {}\n",
+            "Successfully verified: synthetic-setup.exe\n",
+            "Number of signatures successfully Verified: 1\n",
+            "Number of warnings: 0\n",
+            "Number of errors: 0\n",
+        ),
+        "A".repeat(64),
+        SYNTHETIC_SIGNING_LEAF,
+        SYNTHETIC_TIMESTAMP_LEAF,
+    )
+}
+
 fn command(candidate: &Candidate, status: i32, stdout: &[u8], stderr: &[u8]) -> FakeCommand {
     FakeCommand {
         invocation: xtask::release_exec::test_support::CommandInvocation {
@@ -124,6 +166,215 @@ fn verify_with(
         },
         runner,
     )
+}
+
+fn verify_with_policy(
+    candidate: &Candidate,
+    runner: &impl CommandRunner,
+    signing_policy: &SigningPolicy,
+) -> Result<xtask::release_signing::SigningVerification, SigningError> {
+    verify_release_signing(
+        SigningVerificationRequest::Signed {
+            policy: signing_policy,
+            candidate_root: &candidate.root,
+            setup_relative: SETUP,
+            selected_signtool: Path::new(SIGNTOOL),
+            action: &action(SIGNTOOL),
+        },
+        runner,
+    )
+}
+
+fn replace_synthetic_once(baseline: &str, from: &str, to: &str) -> String {
+    assert!(
+        baseline.contains(from),
+        "synthetic mutation source must exist"
+    );
+    baseline.replacen(from, to, 1)
+}
+
+fn synthetic_grammar_mutation(stage: SigningGrammarStage) -> (Vec<u8>, Vec<u8>) {
+    let baseline = synthetic_accepted_grammar();
+    let stdout = match stage {
+        SigningGrammarStage::StdoutEncoding => return (vec![0xff], Vec::new()),
+        SigningGrammarStage::StderrEncoding => {
+            return (baseline.into_bytes(), vec![0xff]);
+        }
+        SigningGrammarStage::VerifyingLine => replace_synthetic_once(
+            &baseline,
+            "Verifying: synthetic-setup.exe\n",
+            "Verifier: synthetic-setup.exe\n",
+        ),
+        SigningGrammarStage::PrimarySignatureLine => replace_synthetic_once(
+            &baseline,
+            "Signature Index: 0 (Primary Signature)\n",
+            concat!(
+                "unexpected primary-signature position\n",
+                "Signature Index: 0 (Primary Signature)\n",
+            ),
+        ),
+        SigningGrammarStage::FileHashLine => replace_synthetic_once(
+            &baseline,
+            "Hash of file (sha256): ",
+            "Unexpected file hash: ",
+        ),
+        SigningGrammarStage::FileHashValue => {
+            replace_synthetic_once(&baseline, &"A".repeat(64), "synthetic-non-hex-file-hash")
+        }
+        SigningGrammarStage::SigningChainHeader => replace_synthetic_once(
+            &baseline,
+            "Signing Certificate Chain:\n",
+            "Unexpected Signing Chain:\n",
+        ),
+        SigningGrammarStage::SigningCertificateIssuedTo => replace_synthetic_once(
+            &baseline,
+            "Issued to: synthetic-signing\n",
+            "Unexpected signing subject\n",
+        ),
+        SigningGrammarStage::SigningCertificateIssuedBy => replace_synthetic_once(
+            &baseline,
+            "Issued by: synthetic-signing\n",
+            "Unexpected signing issuer\n",
+        ),
+        SigningGrammarStage::SigningCertificateExpiration => replace_synthetic_once(
+            &baseline,
+            "Expires: synthetic-signing-expiration\n",
+            "Unexpected signing expiration\n",
+        ),
+        SigningGrammarStage::SigningCertificateThumbprint => replace_synthetic_once(
+            &baseline,
+            "SHA1 hash: 1111111111111111111111111111111111111111\n",
+            "Unexpected signing thumbprint\n",
+        ),
+        SigningGrammarStage::SigningCertificateFields => replace_synthetic_once(
+            &baseline,
+            SYNTHETIC_SIGNING_LEAF,
+            "synthetic-non-hex-signing-thumbprint",
+        ),
+        SigningGrammarStage::SigningCertificateChain => replace_synthetic_once(
+            &baseline,
+            concat!(
+                "Issued to: synthetic-signing\n",
+                "Issued by: synthetic-signing\n",
+                "Expires: synthetic-signing-expiration\n",
+                "SHA1 hash: 1111111111111111111111111111111111111111\n",
+            ),
+            "",
+        ),
+        SigningGrammarStage::TimestampChainHeader => replace_synthetic_once(
+            &baseline,
+            "Timestamp Verified by:\n",
+            concat!("Unexpected Timestamp Chain:\n", "Timestamp Verified by:\n",),
+        ),
+        SigningGrammarStage::TimestampCertificateIssuedTo => replace_synthetic_once(
+            &baseline,
+            "Issued to: synthetic-timestamp\n",
+            "Unexpected timestamp subject\n",
+        ),
+        SigningGrammarStage::TimestampCertificateIssuedBy => replace_synthetic_once(
+            &baseline,
+            "Issued by: synthetic-timestamp\n",
+            "Unexpected timestamp issuer\n",
+        ),
+        SigningGrammarStage::TimestampCertificateExpiration => replace_synthetic_once(
+            &baseline,
+            "Expires: synthetic-timestamp-expiration\n",
+            "Unexpected timestamp expiration\n",
+        ),
+        SigningGrammarStage::TimestampCertificateThumbprint => replace_synthetic_once(
+            &baseline,
+            "SHA1 hash: 2222222222222222222222222222222222222222\n",
+            "Unexpected timestamp thumbprint\n",
+        ),
+        SigningGrammarStage::TimestampCertificateFields => replace_synthetic_once(
+            &baseline,
+            SYNTHETIC_TIMESTAMP_LEAF,
+            "synthetic-non-hex-timestamp-thumbprint",
+        ),
+        SigningGrammarStage::TimestampCertificateChain => replace_synthetic_once(
+            &baseline,
+            concat!(
+                "Issued to: synthetic-timestamp\n",
+                "Issued by: synthetic-timestamp\n",
+                "Expires: synthetic-timestamp-expiration\n",
+                "SHA1 hash: 2222222222222222222222222222222222222222\n",
+            ),
+            "",
+        ),
+        SigningGrammarStage::SuccessfullyVerifiedLine => baseline
+            .split_once("Successfully verified: synthetic-setup.exe\n")
+            .expect("synthetic success line")
+            .0
+            .to_owned(),
+        SigningGrammarStage::SuccessCountLine => baseline
+            .split_once("Number of signatures successfully Verified: 1\n")
+            .expect("synthetic success count")
+            .0
+            .to_owned(),
+        SigningGrammarStage::SuccessCountValue => replace_synthetic_once(
+            &baseline,
+            "Number of signatures successfully Verified: 1\n",
+            "Number of signatures successfully Verified: 2\n",
+        ),
+        SigningGrammarStage::WarningCountLine => baseline
+            .split_once("Number of warnings: 0\n")
+            .expect("synthetic warning count")
+            .0
+            .to_owned(),
+        SigningGrammarStage::ErrorCountLine => baseline
+            .split_once("Number of errors: 0\n")
+            .expect("synthetic error count")
+            .0
+            .to_owned(),
+        SigningGrammarStage::TrailingOutput => {
+            format!("{baseline}synthetic trailing output\n")
+        }
+    };
+    (stdout.into_bytes(), Vec::new())
+}
+
+#[test]
+fn every_signing_grammar_stage_is_reachable_through_real_parser() {
+    let stages = [
+        SigningGrammarStage::StdoutEncoding,
+        SigningGrammarStage::StderrEncoding,
+        SigningGrammarStage::VerifyingLine,
+        SigningGrammarStage::PrimarySignatureLine,
+        SigningGrammarStage::FileHashLine,
+        SigningGrammarStage::FileHashValue,
+        SigningGrammarStage::SigningChainHeader,
+        SigningGrammarStage::SigningCertificateIssuedTo,
+        SigningGrammarStage::SigningCertificateIssuedBy,
+        SigningGrammarStage::SigningCertificateExpiration,
+        SigningGrammarStage::SigningCertificateThumbprint,
+        SigningGrammarStage::SigningCertificateFields,
+        SigningGrammarStage::SigningCertificateChain,
+        SigningGrammarStage::TimestampChainHeader,
+        SigningGrammarStage::TimestampCertificateIssuedTo,
+        SigningGrammarStage::TimestampCertificateIssuedBy,
+        SigningGrammarStage::TimestampCertificateExpiration,
+        SigningGrammarStage::TimestampCertificateThumbprint,
+        SigningGrammarStage::TimestampCertificateFields,
+        SigningGrammarStage::TimestampCertificateChain,
+        SigningGrammarStage::SuccessfullyVerifiedLine,
+        SigningGrammarStage::SuccessCountLine,
+        SigningGrammarStage::SuccessCountValue,
+        SigningGrammarStage::WarningCountLine,
+        SigningGrammarStage::ErrorCountLine,
+        SigningGrammarStage::TrailingOutput,
+    ];
+    let signing_policy = synthetic_policy();
+    for stage in stages {
+        let candidate = Candidate::new(&format!("grammar-stage-{stage:?}"));
+        let (stdout, stderr) = synthetic_grammar_mutation(stage);
+        let runner = FakeCommandRunner::new(vec![command(&candidate, 0, &stdout, &stderr)]);
+        assert_eq!(
+            verify_with_policy(&candidate, &runner, &signing_policy)
+                .expect_err("synthetic mutation must reach its grammar stage"),
+            SigningError::GrammarDrift { stage },
+            "synthetic mutation did not reach {stage:?}",
+        );
+    }
 }
 
 #[test]
@@ -425,7 +676,7 @@ fn errors_and_results_do_not_leak_private_paths_credentials_or_certificates() {
             .root
             .to_str()
             .expect("utf8 drift private root"),
-        private_subject,
+        "credential",
         private_leaf,
         grammar_canary,
         "Issued to:",

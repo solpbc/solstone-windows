@@ -1214,8 +1214,8 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
 
 #[test]
 fn signing_failures_are_fail_closed_and_unsigned_cannot_select_a_signer() {
-    // SignTool grammar mutations are exhaustively parsed in release_signing.rs;
-    // this verifies their engine boundary after Velopack but before evidence.
+    // release_signing::every_signing_grammar_stage_is_reachable_through_real_parser covers every
+    // grammar stage; this verifies one typed stage's engine boundary before evidence.
     let checkout = FakeReleaseCheckout::new("signtool-failure", false);
     let runner =
         FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::SignToolFailure);

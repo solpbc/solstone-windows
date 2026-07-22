@@ -415,15 +415,9 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     .map_err(|_| FinalizeError::Advisory)?;
     materialize_release_notes(checkout, version, &paths.notes)?;
     let signing_child_env = if selection.mode == SelectionMode::Signed {
-        Some(
-            selection
-                .signing_child_env_overlay()
-                .map_err(|_| FinalizeError::SelectionInvalid)?,
-        )
-    } else {
-        None
-    };
-    if selection.mode == SelectionMode::Signed {
+        let signing_child_env = selection
+            .signing_child_env_overlay()
+            .map_err(|_| FinalizeError::SelectionInvalid)?;
         let smctl = selection
             .tools
             .smctl
@@ -439,11 +433,14 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
                 "{smctl_path}",
                 child_process_path_text(&smctl.path).ok_or(FinalizeError::SigningRuntime)?,
             )]),
-            signing_child_env.as_ref(),
+            Some(&signing_child_env),
             "signing_auth_preflight",
             runner,
         )?;
-    }
+        Some(signing_child_env)
+    } else {
+        None
+    };
 
     record_phase(runner, PHASE_4_BUILD)?;
     run_action(

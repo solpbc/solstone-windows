@@ -50,12 +50,11 @@ pub enum SigningVerificationRequest<'a> {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SigningGrammarStage {
     StdoutEncoding,
     StderrEncoding,
     VerifyingLine,
-    VerifyingValue,
     PrimarySignatureLine,
     FileHashLine,
     FileHashValue,
@@ -66,8 +65,6 @@ pub enum SigningGrammarStage {
     SigningCertificateThumbprint,
     SigningCertificateFields,
     SigningCertificateChain,
-    TimestampLine,
-    TimestampValue,
     TimestampChainHeader,
     TimestampCertificateIssuedTo,
     TimestampCertificateIssuedBy,
@@ -76,7 +73,6 @@ pub enum SigningGrammarStage {
     TimestampCertificateFields,
     TimestampCertificateChain,
     SuccessfullyVerifiedLine,
-    SuccessfullyVerifiedValue,
     SuccessCountLine,
     SuccessCountValue,
     WarningCountLine,
@@ -90,7 +86,6 @@ impl fmt::Display for SigningGrammarStage {
             Self::StdoutEncoding => "stdout encoding",
             Self::StderrEncoding => "stderr encoding",
             Self::VerifyingLine => "verifying line",
-            Self::VerifyingValue => "verifying value",
             Self::PrimarySignatureLine => "primary-signature line",
             Self::FileHashLine => "file-hash line",
             Self::FileHashValue => "file-hash value",
@@ -101,8 +96,6 @@ impl fmt::Display for SigningGrammarStage {
             Self::SigningCertificateThumbprint => "signing-certificate thumbprint line",
             Self::SigningCertificateFields => "signing-certificate field values",
             Self::SigningCertificateChain => "signing-certificate chain",
-            Self::TimestampLine => "timestamp line",
-            Self::TimestampValue => "timestamp value",
             Self::TimestampChainHeader => "timestamp-chain header",
             Self::TimestampCertificateIssuedTo => "timestamp-certificate subject line",
             Self::TimestampCertificateIssuedBy => "timestamp-certificate issuer line",
@@ -111,7 +104,6 @@ impl fmt::Display for SigningGrammarStage {
             Self::TimestampCertificateFields => "timestamp-certificate field values",
             Self::TimestampCertificateChain => "timestamp-certificate chain",
             Self::SuccessfullyVerifiedLine => "successfully-verified line",
-            Self::SuccessfullyVerifiedValue => "successfully-verified value",
             Self::SuccessCountLine => "success-count line",
             Self::SuccessCountValue => "success-count value",
             Self::WarningCountLine => "warning-count line",
@@ -406,7 +398,6 @@ fn parse_signtool_output(
         &mut cursor,
         "Verifying: ",
         SigningGrammarStage::VerifyingLine,
-        SigningGrammarStage::VerifyingValue,
     )?;
     expect_exact(
         &lines,
@@ -433,17 +424,13 @@ fn parse_signtool_output(
         &lines,
         &mut cursor,
         "The signature is timestamped: ",
-        CertificateChainKind::Signing,
+        SIGNING_CERTIFICATE_STAGES,
     )?;
-    let timestamp = take_prefix(
-        &lines,
-        &mut cursor,
-        "The signature is timestamped: ",
-        SigningGrammarStage::TimestampLine,
-    )?;
-    if timestamp.trim().is_empty() {
-        return Err(SigningGrammarStage::TimestampValue.into());
-    }
+    lines
+        .get(cursor)
+        .and_then(|line| line.strip_prefix("The signature is timestamped: "))
+        .ok_or(SigningError::MissingTimestamp)?;
+    cursor += 1;
     expect_exact(
         &lines,
         &mut cursor,
@@ -454,17 +441,14 @@ fn parse_signtool_output(
         &lines,
         &mut cursor,
         "Successfully verified: ",
-        CertificateChainKind::Timestamp,
+        TIMESTAMP_CERTIFICATE_STAGES,
     )?;
-    let verified = take_prefix(
+    take_prefix(
         &lines,
         &mut cursor,
         "Successfully verified: ",
         SigningGrammarStage::SuccessfullyVerifiedLine,
     )?;
-    if verified.trim().is_empty() {
-        return Err(SigningGrammarStage::SuccessfullyVerifiedValue.into());
-    }
     let count = lines
         .get(cursor)
         .ok_or(SigningGrammarStage::SuccessCountLine)?;
@@ -504,81 +488,55 @@ fn parse_signtool_output(
 }
 
 #[derive(Clone, Copy)]
-enum CertificateChainKind {
-    Signing,
-    Timestamp,
+struct CertificateGrammarStages {
+    issued_to: SigningGrammarStage,
+    issued_by: SigningGrammarStage,
+    expiration: SigningGrammarStage,
+    thumbprint: SigningGrammarStage,
+    fields: SigningGrammarStage,
+    chain: SigningGrammarStage,
 }
 
-impl CertificateChainKind {
-    fn issued_to(self) -> SigningGrammarStage {
-        match self {
-            Self::Signing => SigningGrammarStage::SigningCertificateIssuedTo,
-            Self::Timestamp => SigningGrammarStage::TimestampCertificateIssuedTo,
-        }
-    }
+const SIGNING_CERTIFICATE_STAGES: CertificateGrammarStages = CertificateGrammarStages {
+    issued_to: SigningGrammarStage::SigningCertificateIssuedTo,
+    issued_by: SigningGrammarStage::SigningCertificateIssuedBy,
+    expiration: SigningGrammarStage::SigningCertificateExpiration,
+    thumbprint: SigningGrammarStage::SigningCertificateThumbprint,
+    fields: SigningGrammarStage::SigningCertificateFields,
+    chain: SigningGrammarStage::SigningCertificateChain,
+};
 
-    fn issued_by(self) -> SigningGrammarStage {
-        match self {
-            Self::Signing => SigningGrammarStage::SigningCertificateIssuedBy,
-            Self::Timestamp => SigningGrammarStage::TimestampCertificateIssuedBy,
-        }
-    }
-
-    fn expiration(self) -> SigningGrammarStage {
-        match self {
-            Self::Signing => SigningGrammarStage::SigningCertificateExpiration,
-            Self::Timestamp => SigningGrammarStage::TimestampCertificateExpiration,
-        }
-    }
-
-    fn thumbprint(self) -> SigningGrammarStage {
-        match self {
-            Self::Signing => SigningGrammarStage::SigningCertificateThumbprint,
-            Self::Timestamp => SigningGrammarStage::TimestampCertificateThumbprint,
-        }
-    }
-
-    fn fields(self) -> SigningGrammarStage {
-        match self {
-            Self::Signing => SigningGrammarStage::SigningCertificateFields,
-            Self::Timestamp => SigningGrammarStage::TimestampCertificateFields,
-        }
-    }
-
-    fn chain(self) -> SigningGrammarStage {
-        match self {
-            Self::Signing => SigningGrammarStage::SigningCertificateChain,
-            Self::Timestamp => SigningGrammarStage::TimestampCertificateChain,
-        }
-    }
-}
+const TIMESTAMP_CERTIFICATE_STAGES: CertificateGrammarStages = CertificateGrammarStages {
+    issued_to: SigningGrammarStage::TimestampCertificateIssuedTo,
+    issued_by: SigningGrammarStage::TimestampCertificateIssuedBy,
+    expiration: SigningGrammarStage::TimestampCertificateExpiration,
+    thumbprint: SigningGrammarStage::TimestampCertificateThumbprint,
+    fields: SigningGrammarStage::TimestampCertificateFields,
+    chain: SigningGrammarStage::TimestampCertificateChain,
+};
 
 fn parse_certificate_chain(
     lines: &[&str],
     cursor: &mut usize,
     terminator: &str,
-    kind: CertificateChainKind,
+    stages: CertificateGrammarStages,
 ) -> Result<Vec<String>, SigningGrammarStage> {
     let mut thumbprints = Vec::new();
     while lines
         .get(*cursor)
         .is_some_and(|line| !line.starts_with(terminator))
     {
-        let issued_to = take_prefix(lines, cursor, "Issued to: ", kind.issued_to())?;
-        let issued_by = take_prefix(lines, cursor, "Issued by: ", kind.issued_by())?;
-        let expires = take_prefix(lines, cursor, "Expires: ", kind.expiration())?;
-        let thumbprint = take_prefix(lines, cursor, "SHA1 hash: ", kind.thumbprint())?;
-        if issued_to.trim().is_empty()
-            || issued_by.trim().is_empty()
-            || expires.trim().is_empty()
-            || !is_upper_or_lower_hex(thumbprint, 40)
-        {
-            return Err(kind.fields());
+        take_prefix(lines, cursor, "Issued to: ", stages.issued_to)?;
+        take_prefix(lines, cursor, "Issued by: ", stages.issued_by)?;
+        take_prefix(lines, cursor, "Expires: ", stages.expiration)?;
+        let thumbprint = take_prefix(lines, cursor, "SHA1 hash: ", stages.thumbprint)?;
+        if !is_upper_or_lower_hex(thumbprint, 40) {
+            return Err(stages.fields);
         }
         thumbprints.push(thumbprint.to_ascii_lowercase());
     }
     if thumbprints.is_empty() {
-        return Err(kind.chain());
+        return Err(stages.chain);
     }
     Ok(thumbprints)
 }
@@ -601,12 +559,8 @@ fn expect_prefix(
     cursor: &mut usize,
     prefix: &str,
     line_stage: SigningGrammarStage,
-    value_stage: SigningGrammarStage,
 ) -> Result<(), SigningGrammarStage> {
-    let value = take_prefix(lines, cursor, prefix, line_stage)?;
-    if value.trim().is_empty() {
-        return Err(value_stage);
-    }
+    take_prefix(lines, cursor, prefix, line_stage)?;
     Ok(())
 }
 
