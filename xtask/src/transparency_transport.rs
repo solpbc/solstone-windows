@@ -35,7 +35,6 @@ pub enum TransparencyCachePolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransparencyFetchPolicy {
-    Default,
     Bypass,
 }
 
@@ -197,58 +196,73 @@ impl<'a, R: CommandRunner + ?Sized> CurlTransparencyTransport<'a, R> {
         body: Option<&[u8]>,
         request_headers: &[String],
     ) -> Result<ObservedHttpResponse, TransparencyTransportError> {
-        let exchange = self.next_exchange.fetch_add(1, Ordering::Relaxed);
-        let request_path = self.scratch.join(format!("request-{exchange}"));
-        let response_path = self.scratch.join(format!("response-{exchange}"));
-        let headers_path = self.scratch.join(format!("headers-{exchange}"));
-        if let Some(body) = body {
-            fs::write(&request_path, body)
-                .map_err(|_| TransparencyTransportError::ScratchUnavailable)?;
-        }
-        let mut args = Vec::new();
-        let stdin = if plane == TransparencyPlane::S3 {
-            args.extend(["-K".to_owned(), "-".to_owned()]);
-            Some(self.curl_config()?)
-        } else {
-            None
+        let mut exchange = self.next_exchange.fetch_add(1, Ordering::Relaxed);
+        let exchange_root = loop {
+            let candidate = self
+                .scratch
+                .join(format!("exchange-{}-{exchange}", std::process::id()));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    exchange = self.next_exchange.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                Err(_) => return Err(TransparencyTransportError::ScratchUnavailable),
+            }
         };
-        args.extend([
-            "--silent".to_owned(),
-            "--show-error".to_owned(),
-            "--request".to_owned(),
-            method.to_owned(),
-            "--url".to_owned(),
-            url,
-        ]);
-        for header in request_headers {
-            args.extend(["--header".to_owned(), header.clone()]);
-        }
-        if body.is_some() {
-            args.extend(["--upload-file".to_owned(), path_text(&request_path)?]);
-        }
-        args.extend([
-            "--dump-header".to_owned(),
-            path_text(&headers_path)?,
-            "--output".to_owned(),
-            path_text(&response_path)?,
-        ]);
-        let output = self
-            .runner
-            .run(&self.curl_program, &args, stdin.as_deref(), None)
-            .map_err(|_| TransparencyTransportError::InvocationFailed)?;
-        let headers =
-            fs::read(&headers_path).map_err(|_| TransparencyTransportError::ResponseUnavailable)?;
-        let response_body = fs::read(&response_path).unwrap_or_default();
-        let (status, etag) = parse_response_headers(&headers)?;
-        let _ = fs::remove_file(&request_path);
-        let _ = fs::remove_file(&response_path);
-        let _ = fs::remove_file(&headers_path);
-        let _observed_process_status = output.status;
-        Ok(ObservedHttpResponse {
-            status,
-            body: response_body,
-            etag,
-        })
+        let result = (|| {
+            let request_path = exchange_root.join("request");
+            let response_path = exchange_root.join("response");
+            let headers_path = exchange_root.join("headers");
+            if let Some(body) = body {
+                fs::write(&request_path, body)
+                    .map_err(|_| TransparencyTransportError::ScratchUnavailable)?;
+            }
+            let mut args = Vec::new();
+            let stdin = if plane == TransparencyPlane::S3 {
+                args.extend(["-K".to_owned(), "-".to_owned()]);
+                Some(self.curl_config()?)
+            } else {
+                None
+            };
+            args.extend([
+                "--silent".to_owned(),
+                "--show-error".to_owned(),
+                "--request".to_owned(),
+                method.to_owned(),
+                "--url".to_owned(),
+                url,
+            ]);
+            for header in request_headers {
+                args.extend(["--header".to_owned(), header.clone()]);
+            }
+            if body.is_some() {
+                args.extend(["--upload-file".to_owned(), path_text(&request_path)?]);
+            }
+            args.extend([
+                "--dump-header".to_owned(),
+                path_text(&headers_path)?,
+                "--output".to_owned(),
+                path_text(&response_path)?,
+            ]);
+            let output = self
+                .runner
+                .run(&self.curl_program, &args, stdin.as_deref(), None)
+                .map_err(|_| TransparencyTransportError::InvocationFailed)?;
+            let headers = fs::read(&headers_path)
+                .map_err(|_| TransparencyTransportError::ResponseUnavailable)?;
+            let response_body = fs::read(&response_path)
+                .map_err(|_| TransparencyTransportError::ResponseUnavailable)?;
+            let (status, etag) = parse_response_headers(&headers)?;
+            let _observed_process_status = output.status;
+            Ok(ObservedHttpResponse {
+                status,
+                body: response_body,
+                etag,
+            })
+        })();
+        let _ = fs::remove_dir_all(exchange_root);
+        result
     }
 
     fn curl_config(&self) -> Result<Vec<u8>, TransparencyTransportError> {
@@ -312,7 +326,6 @@ impl<R: CommandRunner + ?Sized> TransparencyObjectTransport for CurlTransparency
         cache: TransparencyFetchPolicy,
     ) -> Result<ObservedHttpResponse, TransparencyTransportError> {
         let headers = match cache {
-            TransparencyFetchPolicy::Default => Vec::new(),
             TransparencyFetchPolicy::Bypass => vec!["Cache-Control: no-cache".to_owned()],
         };
         self.execute(

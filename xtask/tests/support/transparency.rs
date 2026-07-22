@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,6 +51,7 @@ impl DirectoryTransparencyTransport {
         self.calls.lock().expect("read fake call log").clone()
     }
 
+    #[allow(dead_code)]
     pub fn destinations(&self) -> Vec<TransparencyObjectDestination> {
         self.calls()
             .into_iter()
@@ -65,6 +64,7 @@ impl DirectoryTransparencyTransport {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub fn inject(&self, response: Result<ObservedHttpResponse, TransparencyTransportError>) {
         self.injected
             .lock()
@@ -72,8 +72,29 @@ impl DirectoryTransparencyTransport {
             .push_back(response);
     }
 
+    #[allow(dead_code)]
     pub fn object_bytes(&self, destination: &TransparencyObjectDestination) -> Option<Vec<u8>> {
         fs::read(self.object_path(destination)).ok()
+    }
+
+    #[allow(dead_code)]
+    pub fn remove_object(&self, destination: &TransparencyObjectDestination) {
+        match fs::remove_file(self.object_path(destination)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove fake object: {error}"),
+        }
+        if destination.plane == TransparencyPlane::S3 {
+            let public = TransparencyObjectDestination {
+                plane: TransparencyPlane::Public,
+                key: destination.key.clone(),
+            };
+            match fs::remove_file(self.object_path(&public)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("remove mirrored fake object: {error}"),
+            }
+        }
     }
 
     fn object_path(&self, destination: &TransparencyObjectDestination) -> PathBuf {

@@ -59,9 +59,51 @@ impl CommandRunner for CurlShapeRunner {
         .expect("write curl response headers");
         fs::write(output_path, b"existing bytes").expect("write curl response body");
         Ok(CommandOutput {
-            status: 22,
+            status: 0,
             stdout: Vec::new(),
             stderr: b"child detail stays private".to_vec(),
+        })
+    }
+}
+
+struct CurlDeniedRunner;
+
+impl CommandRunner for CurlDeniedRunner {
+    fn run(
+        &self,
+        _program: &Path,
+        args: &[String],
+        _stdin: Option<&[u8]>,
+        _env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        fs::write(
+            argument_value(args, "--dump-header"),
+            b"HTTP/1.1 403 Forbidden\r\n\r\n",
+        )
+        .expect("write denied response headers");
+        fs::write(argument_value(args, "--output"), b"denied").expect("write denied response body");
+        Ok(CommandOutput {
+            status: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+    }
+}
+
+struct CurlLeavesNoResponseRunner;
+
+impl CommandRunner for CurlLeavesNoResponseRunner {
+    fn run(
+        &self,
+        _program: &Path,
+        _args: &[String],
+        _stdin: Option<&[u8]>,
+        _env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        Ok(CommandOutput {
+            status: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
         })
     }
 }
@@ -114,6 +156,61 @@ fn transparency_curl_credentials_reach_only_the_stdin_config() {
     assert_eq!(
         stdin,
         "aws-sigv4 = \"aws:amz:auto:s3\"\nuser = \"shape-access-value:shape-secret-value\"\n"
+    );
+}
+
+#[test]
+fn transparency_curl_observes_http_denial_on_process_success() {
+    let root = temporary_root("curl-denied");
+    let transport = CurlTransparencyTransport::new(
+        &CurlDeniedRunner,
+        absolute_program("curl"),
+        root.join("scratch"),
+        "https://objects.example.invalid".to_owned(),
+        "https://public.example.invalid".to_owned(),
+        "release-bucket".to_owned(),
+        TransparencyS3Credentials::new("access".to_owned(), "secret".to_owned()),
+    )
+    .expect("construct curl transport");
+    let response = transport
+        .get(
+            &TransparencyObjectDestination {
+                plane: TransparencyPlane::S3,
+                key: "releases/solstone-windows/latest.json".to_owned(),
+            },
+            TransparencyFetchPolicy::Bypass,
+        )
+        .expect("observe HTTP denial");
+    assert_eq!(response.status, 403);
+    assert_eq!(response.body, b"denied");
+}
+
+#[test]
+fn transparency_curl_never_reuses_preexisting_response_files() {
+    let root = temporary_root("curl-stale");
+    let scratch = root.join("scratch");
+    fs::create_dir_all(&scratch).expect("create scratch");
+    fs::write(scratch.join("headers-0"), b"HTTP/1.1 200 OK\r\n\r\n").expect("seed stale headers");
+    fs::write(scratch.join("response-0"), b"stale body").expect("seed stale body");
+    let transport = CurlTransparencyTransport::new(
+        &CurlLeavesNoResponseRunner,
+        absolute_program("curl"),
+        scratch,
+        "https://objects.example.invalid".to_owned(),
+        "https://public.example.invalid".to_owned(),
+        "release-bucket".to_owned(),
+        TransparencyS3Credentials::new("access".to_owned(), "secret".to_owned()),
+    )
+    .expect("construct curl transport");
+    assert_eq!(
+        transport.get(
+            &TransparencyObjectDestination {
+                plane: TransparencyPlane::S3,
+                key: "releases/solstone-windows/latest.json".to_owned(),
+            },
+            TransparencyFetchPolicy::Bypass,
+        ),
+        Err(TransparencyTransportError::ResponseUnavailable)
     );
 }
 

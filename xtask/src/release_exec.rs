@@ -71,6 +71,15 @@ pub trait CommandRunner {
         stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError>;
+
+    fn run_interactive(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        self.run(program, args, None, env)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -80,6 +89,18 @@ pub struct ProcessCommandRunner;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClearedEnvironmentProcessCommandRunner;
 
+/// Process runner that inherits the ambient environment except for named values.
+#[derive(Clone, Copy, Debug)]
+pub struct RemovedEnvironmentProcessCommandRunner<'a> {
+    removed: &'a [&'a str],
+}
+
+impl<'a> RemovedEnvironmentProcessCommandRunner<'a> {
+    pub fn new(removed: &'a [&'a str]) -> Self {
+        Self { removed }
+    }
+}
+
 impl CommandRunner for ProcessCommandRunner {
     fn run(
         &self,
@@ -88,7 +109,16 @@ impl CommandRunner for ProcessCommandRunner {
         stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, stdin, env, false)
+        run_process(program, args, stdin, env, false, &[], false)
+    }
+
+    fn run_interactive(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        run_process(program, args, None, env, false, &[], true)
     }
 }
 
@@ -100,7 +130,37 @@ impl CommandRunner for ClearedEnvironmentProcessCommandRunner {
         stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, stdin, env, true)
+        run_process(program, args, stdin, env, true, &[], false)
+    }
+
+    fn run_interactive(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        run_process(program, args, None, env, true, &[], true)
+    }
+}
+
+impl CommandRunner for RemovedEnvironmentProcessCommandRunner<'_> {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        run_process(program, args, stdin, env, false, self.removed, false)
+    }
+
+    fn run_interactive(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        run_process(program, args, None, env, false, self.removed, true)
     }
 }
 
@@ -110,6 +170,8 @@ fn run_process(
     stdin: Option<&[u8]>,
     env: Option<&BTreeMap<String, String>>,
     clear_environment: bool,
+    removed_environment: &[&str],
+    inherit_stdin: bool,
 ) -> Result<CommandOutput, CommandRunnerError> {
     if !program.is_absolute() {
         return Err(CommandRunnerError::ProgramNotAbsolute);
@@ -118,7 +180,9 @@ fn run_process(
     let mut command = Command::new(program);
     command
         .args(args)
-        .stdin(if stdin.is_some() {
+        .stdin(if inherit_stdin {
+            Stdio::inherit()
+        } else if stdin.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -127,6 +191,10 @@ fn run_process(
         .stderr(Stdio::piped());
     if clear_environment {
         command.env_clear();
+    } else {
+        for name in removed_environment {
+            command.env_remove(name);
+        }
     }
     if let Some(env) = env {
         command.envs(env);
@@ -328,15 +396,71 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn transparency_cleared_process_runner_exposes_no_ambient_environment() {
+    fn transparency_redacted_process_runner_removes_publisher_credentials() {
+        const CHILD_MARKER: &str = "SOLSTONE_REDACTED_RUNNER_CHILD";
+        const SECRET_NAME: &str = "TRANSPARENCY_S3_SECRET_ACCESS_KEY";
+        const SECRET_VALUE: &str = "credential-must-not-reach-child";
+        const ACCESS_NAME: &str = "TRANSPARENCY_S3_ACCESS_KEY_ID";
+        const ACCESS_VALUE: &str = "access-id-must-not-reach-child";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "release_exec::tests::transparency_redacted_process_runner_removes_publisher_credentials",
+                ])
+                .env(CHILD_MARKER, "1")
+                .env(SECRET_NAME, SECRET_VALUE)
+                .env(ACCESS_NAME, ACCESS_VALUE)
+                .output()
+                .expect("run credential-bearing test child");
+            assert!(output.status.success());
+            assert!(!output
+                .stdout
+                .windows(SECRET_VALUE.len())
+                .any(|window| window == SECRET_VALUE.as_bytes()));
+            assert!(!output
+                .stderr
+                .windows(SECRET_VALUE.len())
+                .any(|window| window == SECRET_VALUE.as_bytes()));
+            assert!(!output
+                .stdout
+                .windows(ACCESS_VALUE.len())
+                .any(|window| window == ACCESS_VALUE.as_bytes()));
+            assert!(!output
+                .stderr
+                .windows(ACCESS_VALUE.len())
+                .any(|window| window == ACCESS_VALUE.as_bytes()));
+            return;
+        }
         let program = [Path::new("/usr/bin/env"), Path::new("/bin/env")]
             .into_iter()
             .find(|candidate| candidate.is_file())
             .expect("env executable");
-        let output = ClearedEnvironmentProcessCommandRunner
+        let runner = RemovedEnvironmentProcessCommandRunner::new(&[ACCESS_NAME, SECRET_NAME]);
+        let output = runner
             .run(program, &[], None, None)
-            .expect("run with cleared environment");
+            .expect("run with publisher credentials removed");
         assert_eq!(output.status, 0);
-        assert_eq!(output.stdout, b"");
+        assert!(!output
+            .stdout
+            .windows(SECRET_VALUE.len())
+            .any(|window| window == SECRET_VALUE.as_bytes()));
+        assert!(!output
+            .stdout
+            .windows(ACCESS_VALUE.len())
+            .any(|window| window == ACCESS_VALUE.as_bytes()));
+        assert!(String::from_utf8_lossy(&output.stdout).contains(CHILD_MARKER));
+        let interactive = runner
+            .run_interactive(program, &[], None)
+            .expect("run interactive command with publisher credentials removed");
+        assert_eq!(interactive.status, 0);
+        assert!(!interactive
+            .stdout
+            .windows(SECRET_VALUE.len())
+            .any(|window| window == SECRET_VALUE.as_bytes()));
+        assert!(!interactive
+            .stdout
+            .windows(ACCESS_VALUE.len())
+            .any(|window| window == ACCESS_VALUE.as_bytes()));
     }
 }

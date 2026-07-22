@@ -19,6 +19,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{self, ArtifactFsError, UnixModePolicy};
+use crate::release_exec::CommandRunner;
 use crate::release_source_binding::SourceBinding;
 use crate::version_gate;
 
@@ -776,18 +777,6 @@ pub fn gather_checkout_facts(
     if !commit_output.status.success() {
         return Err(ManifestError::CheckoutFactUnavailable);
     }
-    let source_commit = std::str::from_utf8(&commit_output.stdout)
-        .map_err(|_| ManifestError::CheckoutFactUnavailable)?
-        .trim_end_matches(['\r', '\n'])
-        .to_owned();
-    if source_commit.len() != 40
-        || !source_commit
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(ManifestError::CheckoutFactUnavailable);
-    }
-
     let status = Command::new(git)
         .args([
             "status",
@@ -799,10 +788,96 @@ pub fn gather_checkout_facts(
         .current_dir(root)
         .output()
         .map_err(|_| ManifestError::CheckoutFactUnavailable)?;
-    if !status.status.success() {
+    finish_checkout_facts(
+        root,
+        version,
+        &commit_output.stdout,
+        status.status.success(),
+        &status.stdout,
+    )
+}
+
+pub fn gather_checkout_facts_with_runner<R: CommandRunner + ?Sized>(
+    root: &Path,
+    cargo: &Path,
+    git: &Path,
+    runner: &R,
+) -> Result<CheckoutFacts, ManifestError> {
+    if !cargo.is_absolute() || !git.is_absolute() {
         return Err(ManifestError::CheckoutFactUnavailable);
     }
-    if !status.stdout.is_empty() {
+    let version = version_gate::authoritative_version_with_runner(root, cargo, runner)
+        .map_err(|_| ManifestError::CheckoutFactUnavailable)?;
+    Version::parse(&version).map_err(|_| ManifestError::LedgerVersionMalformed)?;
+    let root_text = root
+        .to_str()
+        .ok_or(ManifestError::CheckoutFactUnavailable)?
+        .to_owned();
+    let commit_output = runner
+        .run(
+            git,
+            &[
+                "-C".to_owned(),
+                root_text.clone(),
+                "rev-parse".to_owned(),
+                "--verify".to_owned(),
+                "HEAD^{commit}".to_owned(),
+            ],
+            None,
+            None,
+        )
+        .map_err(|_| ManifestError::CheckoutFactUnavailable)?;
+    if commit_output.status != 0 {
+        return Err(ManifestError::CheckoutFactUnavailable);
+    }
+    let status = runner
+        .run(
+            git,
+            &[
+                "-C".to_owned(),
+                root_text,
+                "status".to_owned(),
+                "--porcelain=v1".to_owned(),
+                "-z".to_owned(),
+                "--untracked-files=all".to_owned(),
+                "--ignore-submodules=none".to_owned(),
+            ],
+            None,
+            None,
+        )
+        .map_err(|_| ManifestError::CheckoutFactUnavailable)?;
+    finish_checkout_facts(
+        root,
+        version,
+        &commit_output.stdout,
+        status.status == 0,
+        &status.stdout,
+    )
+}
+
+fn finish_checkout_facts(
+    root: &Path,
+    version: String,
+    commit_stdout: &[u8],
+    status_succeeded: bool,
+    status_stdout: &[u8],
+) -> Result<CheckoutFacts, ManifestError> {
+    let source_commit = std::str::from_utf8(commit_stdout)
+        .map_err(|_| ManifestError::CheckoutFactUnavailable)?
+        .trim_end_matches(['\r', '\n'])
+        .to_owned();
+    if source_commit.len() != 40
+        || !source_commit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ManifestError::CheckoutFactUnavailable);
+    }
+
+    if !status_succeeded {
+        return Err(ManifestError::CheckoutFactUnavailable);
+    }
+    if !status_stdout.is_empty() {
         return Err(ManifestError::SourceDirty);
     }
 

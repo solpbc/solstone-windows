@@ -322,12 +322,21 @@ not upload the key; the operator provisions the served location. Do not give a
 local key a `.key` suffix because the repository ignore policy silently hides
 that suffix. No production public key is committed to this repository.
 
+Minisign reads the secret-key passphrase directly from the interactive terminal
+with its own no-echo prompt; xtask does not read, store, pipe, or log the
+passphrase. A publication uses the sanctioned two-prompt fallback, once for the
+entry and once for the pointer. `make resign-transparency-pointer` prompts once.
+
 Publication is idempotent and retryable, including when immutable evidence was
 created but the mutable pointer was not committed. A staged retry reuses the
 same entry and signature bytes and archives them before resuming public writes.
 Each version key is one-shot and permanent. If a create-only race records a
 different but valid own attempt, the next invocation first archives the adopted
 bytes and then resumes.
+
+Only a successful `ARCHIVED <digest>` channel result creates the durable local
+acknowledgment `archive-ack.v1` beside `archive/` and `stage-manifest.v1`.
+`stage-manifest.v1` is a byte-reuse record, not an archive acknowledgment.
 
 The pointer signature is written before its body, and the body is the commit
 boundary. Consumers retry on a pointer/signature mismatch because that
@@ -339,10 +348,10 @@ days. Complete that retry with the persisted bytes, then run
 `make resign-transparency-pointer` to refresh only `signed_at`, `valid_until`,
 and the pointer signature without changing the chain length or tip digest.
 
-If the remote version prefix is empty and no archive receipt exists, a local
+If the remote version prefix is empty and no `archive-ack.v1` acknowledgment exists, a local
 attempt never reached publication and the operator may discard only that
 version's directory below `target/release-transparency-stage/`. If either a
-remote version object or an archive receipt exists, the version is permanent;
+remote version object or an `archive-ack.v1` acknowledgment exists, the version is permanent;
 cut the next version instead of deleting, replacing, or weakening retention.
 
 The surface attests what was released, that it is immutable, and that history

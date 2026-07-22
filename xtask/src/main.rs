@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use observer_contract::generate_contract;
+use xtask::release_exec::CommandRunner;
 
 /// The committed contract artifact's filename at the repo root.
 const CONTRACT_FILE: &str = "automation-contract.json";
@@ -87,7 +88,10 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
     let Some(context) = transparency_command_context() else {
         return ExitCode::FAILURE;
     };
-    if transparency_head_log_dirty(&context.root, &context.git_program) == Some(true) {
+    let runner = xtask::release_exec::RemovedEnvironmentProcessCommandRunner::new(
+        &xtask::transparency_publisher::TRANSPARENCY_ENV_NAMES,
+    );
+    if transparency_head_log_dirty(&context.root, &context.git_program, &runner) == Some(true) {
         let row = transparency_last_head_row(&context.root);
         eprintln!(
             "terminal transparency witness: observed prior uncommitted {row}, expected the previous row committed before another publication; commit transparency-head-log.jsonl and retry"
@@ -100,10 +104,17 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
         context.root.join(release_dir)
     };
     let cargo = xtask::version_gate::configured_cargo();
-    let facts = match xtask::rust_release_manifest::gather_checkout_facts(
+    let Some(cargo_program) = resolve_configured_program(&cargo) else {
+        eprintln!(
+            "terminal transparency candidate: observed unavailable Cargo program, expected an absolute or path-resolved executable; restore Cargo and retry"
+        );
+        return ExitCode::FAILURE;
+    };
+    let facts = match xtask::rust_release_manifest::gather_checkout_facts_with_runner(
         &context.root,
-        &cargo,
-        context.git_program.as_os_str(),
+        &cargo_program,
+        &context.git_program,
+        &runner,
     ) {
         Ok(facts) => facts,
         Err(_) => {
@@ -117,14 +128,8 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
         .root
         .join(xtask::release_receipt::EVIDENCE_ROOT)
         .join(&facts.version);
-    let passphrase = match read_transparency_passphrase() {
-        Some(passphrase) => passphrase,
-        None => return ExitCode::FAILURE,
-    };
-    let runner = xtask::release_exec::ProcessCommandRunner;
-    let transport_runner = xtask::release_exec::ClearedEnvironmentProcessCommandRunner;
     let transport = match xtask::transparency_transport::CurlTransparencyTransport::new(
-        &transport_runner,
+        &runner,
         context.curl_program.clone(),
         context
             .root
@@ -153,7 +158,6 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
         environment: &context.environment,
         minisign_program: &context.minisign_program,
         curl_program: &context.curl_program,
-        signing_passphrase: &passphrase,
     };
     match xtask::transparency_publisher::publish_transparency(
         &request,
@@ -168,7 +172,7 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
                 result.version,
                 result.seq,
                 result.entry_sha256,
-                result.archive_sha256,
+                result.archive_sha256.as_deref().unwrap_or("unavailable"),
                 result.elapsed_ms,
                 if result.already_published { " already-published" } else { "" }
             );
@@ -188,7 +192,7 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
                 context.environment.base_url.trim_end_matches('/'),
                 result.product
             );
-            match transparency_head_log_dirty(&context.root, &context.git_program) {
+            match transparency_head_log_dirty(&context.root, &context.git_program, &runner) {
                 Some(false) => println!("transparency witness: row present and committed"),
                 Some(true) => println!(
                     "transparency witness: row written uncommitted; run git add transparency-head-log.jsonl && git commit"
@@ -222,14 +226,11 @@ fn cmd_transparency_resign_pointer() -> ExitCode {
     let Some(context) = transparency_command_context() else {
         return ExitCode::FAILURE;
     };
-    let passphrase = match read_transparency_passphrase() {
-        Some(passphrase) => passphrase,
-        None => return ExitCode::FAILURE,
-    };
-    let runner = xtask::release_exec::ProcessCommandRunner;
-    let transport_runner = xtask::release_exec::ClearedEnvironmentProcessCommandRunner;
+    let runner = xtask::release_exec::RemovedEnvironmentProcessCommandRunner::new(
+        &xtask::transparency_publisher::TRANSPARENCY_ENV_NAMES,
+    );
     let transport = match xtask::transparency_transport::CurlTransparencyTransport::new(
-        &transport_runner,
+        &runner,
         context.curl_program.clone(),
         context
             .root
@@ -255,7 +256,6 @@ fn cmd_transparency_resign_pointer() -> ExitCode {
         environment: &context.environment,
         minisign_program: &context.minisign_program,
         curl_program: &context.curl_program,
-        signing_passphrase: &passphrase,
     };
     match xtask::transparency_publisher::resign_transparency_pointer(
         &request,
@@ -349,32 +349,43 @@ fn resolve_path_program(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn read_transparency_passphrase() -> Option<Vec<u8>> {
-    eprintln!("transparency minisign passphrase:");
-    let mut passphrase = String::new();
-    if std::io::stdin().read_line(&mut passphrase).is_err()
-        || passphrase.trim_end_matches(['\r', '\n']).is_empty()
-    {
-        eprintln!(
-            "terminal transparency signing: observed empty passphrase input, expected one stdin prompt response; retry with the operator-held passphrase"
-        );
+fn resolve_configured_program(program: &std::ffi::OsStr) -> Option<PathBuf> {
+    let path = Path::new(program);
+    if path.is_absolute() {
+        if !path.is_file() {
+            return None;
+        }
+        return std::fs::canonicalize(path).ok();
+    }
+    if path.components().count() != 1 {
         return None;
     }
-    Some(passphrase.into_bytes())
+    resolve_path_program(program.to_str()?)
 }
 
-fn transparency_head_log_dirty(root: &Path, git_program: &Path) -> Option<bool> {
-    std::process::Command::new(git_program)
-        .arg("-C")
-        .arg(root)
-        .args(["diff", "--quiet", "--", "transparency-head-log.jsonl"])
-        .status()
-        .ok()
-        .and_then(|status| match status.code() {
-            Some(0) => Some(false),
-            Some(1) => Some(true),
-            _ => None,
-        })
+fn transparency_head_log_dirty<R: CommandRunner + ?Sized>(
+    root: &Path,
+    git_program: &Path,
+    runner: &R,
+) -> Option<bool> {
+    let root = root.to_str()?.to_owned();
+    for cached in [false, true] {
+        let mut args = vec!["-C".to_owned(), root.clone(), "diff".to_owned()];
+        if cached {
+            args.push("--cached".to_owned());
+        }
+        args.extend([
+            "--quiet".to_owned(),
+            "--".to_owned(),
+            "transparency-head-log.jsonl".to_owned(),
+        ]);
+        match runner.run(git_program, &args, None, None).ok()?.status {
+            0 => {}
+            1 => return Some(true),
+            _ => return None,
+        }
+    }
+    Some(false)
 }
 
 fn transparency_last_head_row(root: &Path) -> String {
@@ -825,4 +836,69 @@ fn cmd_purity_check() -> ExitCode {
 fn cmd_dev() -> ExitCode {
     eprintln!("xtask dev: developer launcher (not yet implemented)");
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod transparency_cli_tests {
+    use super::*;
+    use xtask::release_exec::test_support::{FakeCommand, FakeCommandRunner};
+    use xtask::release_exec::CommandOutput;
+
+    #[cfg(not(windows))]
+    const GIT: &str = "/selected/git";
+    #[cfg(windows)]
+    const GIT: &str = r"C:\selected\git.exe";
+    #[cfg(not(windows))]
+    const ROOT: &str = "/checkout";
+    #[cfg(windows)]
+    const ROOT: &str = r"C:\checkout";
+
+    #[test]
+    fn staged_transparency_head_row_is_uncommitted() {
+        let base = vec!["-C".to_owned(), ROOT.to_owned(), "diff".to_owned()];
+        let unstaged = [
+            base.clone(),
+            vec![
+                "--quiet".to_owned(),
+                "--".to_owned(),
+                "transparency-head-log.jsonl".to_owned(),
+            ],
+        ]
+        .concat();
+        let staged = [
+            base,
+            vec![
+                "--cached".to_owned(),
+                "--quiet".to_owned(),
+                "--".to_owned(),
+                "transparency-head-log.jsonl".to_owned(),
+            ],
+        ]
+        .concat();
+        let runner = FakeCommandRunner::new(vec![
+            FakeCommand::output(
+                PathBuf::from(GIT),
+                unstaged,
+                CommandOutput {
+                    status: 0,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+            ),
+            FakeCommand::output(
+                PathBuf::from(GIT),
+                staged,
+                CommandOutput {
+                    status: 1,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+            ),
+        ]);
+        assert_eq!(
+            transparency_head_log_dirty(Path::new(ROOT), Path::new(GIT), &runner),
+            Some(true)
+        );
+        assert_eq!(runner.remaining(), Ok(0));
+    }
 }
