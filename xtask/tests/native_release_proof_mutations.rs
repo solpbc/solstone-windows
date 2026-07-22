@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use support::{
-    checkout_facts, request, FakeReleaseCheckout, FakeReleaseRunner, NativeProofMutation,
-    WitnessEvent, CHECKED_AT, POWERSHELL, VERSION,
+    action_uses_script, checkout_facts, request, FakeReleaseCheckout, FakeReleaseRunner,
+    NativeProofMutation, WitnessEvent, CHECKED_AT, POWERSHELL, VERSION,
 };
 use xtask::native_release_proof::{
     prove_native, NativeProofError, NativeProofRuntime, STEP_10_REVALIDATE, STEP_11_RECEIPT,
@@ -656,9 +656,7 @@ fn has_resolver(events: &[WitnessEvent]) -> bool {
     events.iter().any(|event| match event {
         WitnessEvent::Invocation { program, args } => {
             program == Path::new(POWERSHELL)
-                && args
-                    .iter()
-                    .any(|arg| arg.ends_with("packaging/preflight-release-tools.ps1"))
+                && action_uses_script(args, Path::new("packaging/preflight-release-tools.ps1"))
         }
         WitnessEvent::Phase(_) => false,
     })

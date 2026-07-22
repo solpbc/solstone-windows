@@ -12,7 +12,10 @@ use xtask::release_source_binding::{LockFile, SourceBindingError, SourceBindingV
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const OTHER_COMMIT: &str = "89abcdef0123456789abcdef0123456789abcdef";
+#[cfg(not(windows))]
 const GIT: &str = "/selected/git";
+#[cfg(windows)]
+const GIT: &str = r"C:\selected\git.exe";
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 

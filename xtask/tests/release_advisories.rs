@@ -20,8 +20,18 @@ const NOW: &str = "2026-07-21T12:00:00Z";
 const FRESH: &str = "2026-07-21T00:00:00Z";
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const REPOSITORY: &str = "advisory-db-3157b0e258782691";
+#[cfg(not(windows))]
 const GIT: &str = "/selected/git";
+#[cfg(windows)]
+const GIT: &str = r"C:\selected\git.exe";
+#[cfg(not(windows))]
 const CARGO: &str = "/selected/cargo.exe";
+#[cfg(windows)]
+const CARGO: &str = r"C:\selected\cargo.exe";
+#[cfg(not(windows))]
+const ISOLATED_ADVISORY_DB: &str = "/isolated/advisory-db";
+#[cfg(windows)]
+const ISOLATED_ADVISORY_DB: &str = r"C:\isolated\advisory-db";
 const ARCHIVE: &[u8] = b"deterministic git archive bytes";
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -82,9 +92,11 @@ impl TestCheckout {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.root.join(format!(
-            "target/release-finalizer/{VERSION}/advisory/deny.toml"
-        ))
+        fs::canonicalize(&self.root)
+            .expect("canonicalize fake checkout")
+            .join(format!(
+                "target/release-finalizer/{VERSION}/advisory/deny.toml"
+            ))
     }
 }
 
@@ -205,10 +217,10 @@ fn cargo_command(checkout: &TestCheckout, status: i32) -> FakeCommand {
 #[test]
 fn deterministic_advisory_config_is_byte_exact() {
     let deny = fs::read(workspace_root().join("deny.toml")).expect("read deny.toml");
-    let database = Path::new("/isolated/advisory-db");
+    let database = Path::new(ISOLATED_ADVISORY_DB);
     let expected = concat!(
         "[advisories]\n",
-        "db-path = \"/isolated/advisory-db\"\n",
+        "db-path = \"__ISOLATED_ADVISORY_DB__\"\n",
         "db-urls = [\"https://github.com/RustSec/advisory-db\"]\n",
         "yanked = \"warn\"\n",
         "unmaintained = \"workspace\"\n",
@@ -217,7 +229,11 @@ fn deterministic_advisory_config_is_byte_exact() {
         "  { id = \"RUSTSEC-2026-0195\", reason = \"quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE.\" },\n",
         "]\n"
     )
-    .as_bytes();
+    .replace(
+        "__ISOLATED_ADVISORY_DB__",
+        &ISOLATED_ADVISORY_DB.replace('\\', "\\\\"),
+    )
+    .into_bytes();
 
     let first = render_advisory_config(&deny, database).expect("render config");
     let second = render_advisory_config(&deny, database).expect("render config again");
@@ -228,9 +244,11 @@ fn deterministic_advisory_config_is_byte_exact() {
 #[test]
 fn ci_materializer_uses_the_canonical_bytes_and_refuses_overwrite() {
     let checkout = TestCheckout::new("ci-materializer");
-    let output_dir = checkout.root.join("target/release-advisory-config-check");
+    let output_dir = checkout.root.join("release-advisory-config-check");
     fs::create_dir(&output_dir).expect("create config-check directory");
-    let output = output_dir.join("deny.toml");
+    let output = fs::canonicalize(output_dir)
+        .expect("canonicalize config-check directory")
+        .join("deny.toml");
     let database = fs::canonicalize(checkout.root.join(ADVISORY_DB_RELATIVE))
         .expect("canonicalize isolated database root");
     let expected = render_advisory_config(

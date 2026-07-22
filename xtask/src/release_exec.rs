@@ -229,9 +229,14 @@ mod tests {
     use crate::release_exec::test_support::{CommandInvocation, FakeCommand, FakeCommandRunner};
     use std::path::PathBuf;
 
+    #[cfg(not(windows))]
+    const SELECTED_TOOL: &str = "/selected/tool";
+    #[cfg(windows)]
+    const SELECTED_TOOL: &str = r"C:\selected\tool";
+
     #[test]
     fn fake_matches_full_typed_invocation_and_records_order() {
-        let program = PathBuf::from("/selected/tool");
+        let program = PathBuf::from(SELECTED_TOOL);
         let args = vec!["first".to_owned(), "second".to_owned()];
         let env = BTreeMap::from([("PATH".to_owned(), "isolated".to_owned())]);
         let invocation = CommandInvocation {
@@ -271,7 +276,7 @@ mod tests {
         );
 
         let runner = FakeCommandRunner::new(vec![FakeCommand::output(
-            PathBuf::from("/selected/tool"),
+            PathBuf::from(SELECTED_TOOL),
             vec!["expected".to_owned()],
             CommandOutput {
                 status: 0,
@@ -282,7 +287,7 @@ mod tests {
         assert_eq!(
             runner
                 .run(
-                    Path::new("/selected/tool"),
+                    Path::new(SELECTED_TOOL),
                     &["unexpected".to_owned()],
                     None,
                     None

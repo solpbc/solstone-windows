@@ -10,8 +10,8 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use support::{
-    checkout_facts, request, FakeReleaseCheckout, FakeReleaseRunner, WitnessEvent, CHECKED_AT,
-    COMMIT, POWERSHELL, SIGNED_APP_BYTES, VERSION,
+    action_uses_script, checkout_facts, request, FakeReleaseCheckout, FakeReleaseRunner,
+    WitnessEvent, CHECKED_AT, COMMIT, FAKE_TOOLS_ROOT, POWERSHELL, SIGNED_APP_BYTES, VERSION,
 };
 use xtask::native_release_proof::{
     prove_native, NativeProofRuntime, STEP_10_REVALIDATE, STEP_11_RECEIPT, STEP_11_RECEIPT_STAGED,
@@ -117,7 +117,7 @@ fn signed_candidate_installs_smokes_and_writes_atomic_private_clean_proof() {
         checkout.root().to_string_lossy().as_ref(),
         "private-host-account-credential",
         "test-keypair",
-        "/fake-tools",
+        FAKE_TOOLS_ROOT,
     ] {
         assert!(!rendered.contains(private), "receipt leaked private data");
     }
@@ -146,9 +146,7 @@ fn assert_witness_order(events: &[WitnessEvent]) {
     let step_3 = phase_index(events, STEP_3_TOOLS);
     let resolver = invocation_index(events, |program, args| {
         program == Path::new(POWERSHELL)
-            && args
-                .iter()
-                .any(|arg| arg.ends_with("packaging/preflight-release-tools.ps1"))
+            && action_uses_script(args, Path::new("packaging/preflight-release-tools.ps1"))
     });
     let step_4 = phase_index(events, STEP_4_CONTAINERS);
     let step_5 = phase_index(events, STEP_5_INSTALL_ROOT);

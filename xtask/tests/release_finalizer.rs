@@ -28,6 +28,7 @@ use xtask::release_receipt::{
     WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use xtask::release_selection::SelectionMode;
+use xtask::release_source_binding::{LockFile, SourceBindingError};
 use xtask::rust_release_manifest::{
     companion_basename, expected_artifact_names, validate_manifest_bytes,
     validate_release_dir_with_facts, TARGET_TRIPLE,
@@ -297,7 +298,7 @@ fn source_binding_mutations_abort_phase_one_without_mutation_or_build() {
             &checkout,
             &runner,
             request,
-            FinalizeError::SourceBinding,
+            FinalizeError::SourceBinding(SourceBindingError::InvalidExpectedCommit),
             PHASE_1_REQUEST_SOURCE,
             true,
             false,
@@ -306,20 +307,72 @@ fn source_binding_mutations_abort_phase_one_without_mutation_or_build() {
     }
 
     let cases = [
-        ("object-absent", RunnerMutation::SourceObjectAbsent),
-        ("wrong-lineage", RunnerMutation::SourceWrongLineage),
-        ("wrong-head", RunnerMutation::SourceWrongHead),
-        ("wrong-ref", RunnerMutation::SourceWrongRef),
-        ("detached", RunnerMutation::SourceDetached),
-        ("detached-box-mismatch", RunnerMutation::DetachedBoxMismatch),
-        ("dirty-tracked", RunnerMutation::SourceDirty),
-        ("dirty-untracked", RunnerMutation::SourceUntracked),
-        ("dirty-unmerged", RunnerMutation::SourceUnmerged),
-        ("dirty-submodule", RunnerMutation::SourceSubmodule),
-        ("cargo-lock-untracked", RunnerMutation::CargoLockUntracked),
-        ("ui-lock-untracked", RunnerMutation::UiLockUntracked),
+        (
+            "object-absent",
+            RunnerMutation::SourceObjectAbsent,
+            SourceBindingError::LocalCommitMissing,
+        ),
+        (
+            "wrong-lineage",
+            RunnerMutation::SourceWrongLineage,
+            SourceBindingError::WrongLineage,
+        ),
+        (
+            "wrong-head",
+            RunnerMutation::SourceWrongHead,
+            SourceBindingError::HeadMismatch,
+        ),
+        (
+            "wrong-ref",
+            RunnerMutation::SourceWrongRef,
+            SourceBindingError::CheckoutRefRejected,
+        ),
+        (
+            "detached",
+            RunnerMutation::SourceDetached,
+            SourceBindingError::DetachedHead,
+        ),
+        (
+            "detached-box-mismatch",
+            RunnerMutation::DetachedBoxMismatch,
+            SourceBindingError::HeadMismatch,
+        ),
+        (
+            "dirty-tracked",
+            RunnerMutation::SourceDirty,
+            SourceBindingError::DirtyCheckout,
+        ),
+        (
+            "dirty-untracked",
+            RunnerMutation::SourceUntracked,
+            SourceBindingError::DirtyCheckout,
+        ),
+        (
+            "dirty-unmerged",
+            RunnerMutation::SourceUnmerged,
+            SourceBindingError::DirtyCheckout,
+        ),
+        (
+            "dirty-submodule",
+            RunnerMutation::SourceSubmodule,
+            SourceBindingError::DirtyCheckout,
+        ),
+        (
+            "cargo-lock-untracked",
+            RunnerMutation::CargoLockUntracked,
+            SourceBindingError::LockNotTracked {
+                lock: LockFile::Cargo,
+            },
+        ),
+        (
+            "ui-lock-untracked",
+            RunnerMutation::UiLockUntracked,
+            SourceBindingError::LockNotTracked {
+                lock: LockFile::UiPackage,
+            },
+        ),
     ];
-    for (label, mutation) in cases {
+    for (label, mutation, cause) in cases {
         let checkout = FakeReleaseCheckout::new(label, false);
         seed_precleanup_canary(&checkout);
         let runner = FakeReleaseRunner::with_mutation(&checkout, false, mutation);
@@ -327,13 +380,21 @@ fn source_binding_mutations_abort_phase_one_without_mutation_or_build() {
             &checkout,
             &runner,
             request(SelectionMode::Unsigned, false),
-            FinalizeError::SourceBinding,
+            FinalizeError::SourceBinding(cause),
             PHASE_1_REQUEST_SOURCE,
             true,
             false,
         );
         assert_precleanup_canary(&checkout);
     }
+}
+
+#[test]
+fn source_binding_error_preserves_the_exact_cause_in_its_diagnostic() {
+    assert_eq!(
+        FinalizeError::SourceBinding(SourceBindingError::CheckoutContainment).to_string(),
+        "release source binding failed: release checkout containment could not be established; use one real checkout directory without links or reparse points"
+    );
 }
 
 // Pure record validation lives in release_selection.rs. Here the malformed
@@ -345,8 +406,7 @@ fn selection_mutations_abort_before_any_selected_action() {
         (
             "extra-tool",
             mutate_selection(SelectionMode::Unsigned, |value| {
-                value["tools"]["unexpected"] =
-                    serde_json::json!({"path":"/fake-tools/extra","version":"1"});
+                value["tools"]["unexpected"] = serde_json::json!({"path":format!("{}/extra", support::FAKE_TOOLS_ROOT),"version":"1"});
             }),
         ),
         (
@@ -361,8 +421,7 @@ fn selection_mutations_abort_before_any_selected_action() {
         (
             "extra-action",
             mutate_selection(SelectionMode::Unsigned, |value| {
-                value["actions"]["unexpected"] =
-                    serde_json::json!({"program":"/fake-tools/extra","argv":[]});
+                value["actions"]["unexpected"] = serde_json::json!({"program":format!("{}/extra", support::FAKE_TOOLS_ROOT),"argv":[]});
             }),
         ),
         (
@@ -378,7 +437,7 @@ fn selection_mutations_abort_before_any_selected_action() {
             "action-tool-disagreement",
             mutate_selection(SelectionMode::Unsigned, |value| {
                 value["actions"]["npm_ci"]["program"] =
-                    serde_json::Value::String("/fake-tools/not-npm".to_owned());
+                    serde_json::Value::String(format!("{}/not-npm", support::FAKE_TOOLS_ROOT));
             }),
         ),
         (
@@ -1084,27 +1143,31 @@ fn late_source_lock_and_post_hash_mutations_block_promotion() {
         (
             "late-head",
             RunnerMutation::LateHead,
-            FinalizeError::SourceReverification,
+            FinalizeError::SourceReverification(SourceBindingError::ReverifyHeadDrift),
         ),
         (
             "late-ref",
             RunnerMutation::LateRef,
-            FinalizeError::SourceReverification,
+            FinalizeError::SourceReverification(SourceBindingError::ReverifyRefDrift),
         ),
         (
             "late-status",
             RunnerMutation::LateStatus,
-            FinalizeError::SourceReverification,
+            FinalizeError::SourceReverification(SourceBindingError::ReverifyStatusDrift),
         ),
         (
             "late-cargo-lock",
             RunnerMutation::LateCargoLock,
-            FinalizeError::SourceReverification,
+            FinalizeError::SourceReverification(SourceBindingError::ReverifyLockDrift {
+                lock: LockFile::Cargo,
+            }),
         ),
         (
             "late-ui-lock",
             RunnerMutation::LateUiLock,
-            FinalizeError::SourceReverification,
+            FinalizeError::SourceReverification(SourceBindingError::ReverifyLockDrift {
+                lock: LockFile::UiPackage,
+            }),
         ),
         (
             "post-hash-artifact",
@@ -1296,6 +1359,7 @@ fn assert_failure_contract(
             "discard",
             "clear",
             "provide",
+            "pass",
             "refresh",
             "remediate",
             "use ",

@@ -370,6 +370,7 @@ fn changed_member_is_rejected_by_the_immediate_premutation_recheck() {
     );
 }
 
+#[cfg(not(windows))]
 #[test]
 fn case_fold_collision_in_a_catalog_tree_refuses_cleanup() {
     let tree = TempTree::new("case-collision");

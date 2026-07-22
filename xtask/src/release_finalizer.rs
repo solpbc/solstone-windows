@@ -28,7 +28,7 @@ use crate::release_selection::{
     ManifestSafeToolProjection, ReleaseToolSelection, SelectedAction, SelectionMode,
 };
 use crate::release_signing::{verify_release_signing, SigningPolicy, SigningVerificationRequest};
-use crate::release_source_binding::{SourceBinding, SourceBindingVerifier};
+use crate::release_source_binding::{SourceBinding, SourceBindingError, SourceBindingVerifier};
 use crate::rust_release_manifest::{
     self, companion_basename, ArtifactEvidence, BundleNames, DependencyPolicy, ReleaseEvidence,
     RustEvidence, TargetEvidence, PRODUCT, TARGET_FEATURES, TARGET_PROFILE, TARGET_TRIPLE,
@@ -79,7 +79,7 @@ pub enum FinalizeError {
     SelectionInvalid,
     SelectionModeMismatch,
     VersionAuthority,
-    SourceBinding,
+    SourceBinding(SourceBindingError),
     Cleanup,
     TransactionDirectory,
     Advisory,
@@ -98,7 +98,7 @@ pub enum FinalizeError {
     EvidenceConstruction,
     ManifestValidation,
     ReceiptStaging,
-    SourceReverification,
+    SourceReverification(SourceBindingError),
     CandidatePromotion,
     ReceiptPromotion,
     FailureCleanup,
@@ -127,10 +127,9 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "selected Cargo could not establish the metadata version authority; restore the locked checkout and selected Cargo"
             ),
-            Self::SourceBinding => write!(
-                formatter,
-                "release source binding failed; restore the exact clean expected commit, allowed branch, and both tracked locks"
-            ),
+            Self::SourceBinding(cause) => {
+                write!(formatter, "release source binding failed: {cause}")
+            }
             Self::Cleanup => write!(
                 formatter,
                 "release cleanup confinement or execution failed; remediate the reported catalog path and restart before building"
@@ -203,10 +202,9 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "the finalization receipt could not be staged atomically; restore the contained evidence directory and restart"
             ),
-            Self::SourceReverification => write!(
-                formatter,
-                "release source or either lock changed before promotion; restore the initial binding and restart"
-            ),
+            Self::SourceReverification(cause) => {
+                write!(formatter, "release source reverification failed: {cause}")
+            }
             Self::CandidatePromotion => write!(
                 formatter,
                 "the complete candidate could not be atomically promoted; clear the confined same-version target and restart"
@@ -275,10 +273,10 @@ pub fn finalize<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     .map_err(|_| FinalizeError::VersionAuthority)?;
     let source_verifier =
         SourceBindingVerifier::new(checkout.canonical_path(), runtime.git_program, runner)
-            .map_err(|_| FinalizeError::SourceBinding)?;
+            .map_err(FinalizeError::SourceBinding)?;
     let source = source_verifier
         .verify(&request.expected_release_commit)
-        .map_err(|_| FinalizeError::SourceBinding)?;
+        .map_err(FinalizeError::SourceBinding)?;
 
     record_phase(runner, PHASE_2_CLEANUP)?;
     let catalog = ReleaseCleanupCatalog::for_version(checkout.canonical_path(), &version)
@@ -572,7 +570,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .map_err(|_| FinalizeError::ReceiptStaging)?;
     source_verifier
         .reverify(source)
-        .map_err(|_| FinalizeError::SourceReverification)?;
+        .map_err(FinalizeError::SourceReverification)?;
     validate_candidate_unchanged(&candidate.path(), &facts, &manifest_bytes, &manifest_sha256)?;
 
     record_phase(runner, PHASE_8_PROMOTION)?;

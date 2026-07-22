@@ -7,7 +7,14 @@ use std::path::Path;
 use serde_json::{json, Value};
 use xtask::release_selection::{ReleaseToolSelection, SelectionError, SelectionMode};
 
+#[cfg(not(windows))]
 const PRIVATE_ROOT: &str = "/private/operator/release-tools";
+#[cfg(windows)]
+const PRIVATE_ROOT: &str = r"C:\private\operator\release-tools";
+#[cfg(not(windows))]
+const OTHER_ROOT: &str = "/other";
+#[cfg(windows)]
+const OTHER_ROOT: &str = r"C:\other";
 
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -281,7 +288,7 @@ fn unknown_fields_and_missing_or_extra_actions_are_rejected() {
     );
 
     let mut extra = valid_selection(SelectionMode::Unsigned);
-    extra["actions"]["legacy_publish"] = action("/private/tool", &["publish"]);
+    extra["actions"]["legacy_publish"] = action(&format!("{PRIVATE_ROOT}/tool"), &["publish"]);
     assert_eq!(
         parse(&extra).expect_err("extra action must fail"),
         SelectionError::MalformedRecord
@@ -291,7 +298,7 @@ fn unknown_fields_and_missing_or_extra_actions_are_rejected() {
 #[test]
 fn action_path_argv_and_placeholder_drift_are_distinct() {
     let mut disagreement = valid_selection(SelectionMode::Unsigned);
-    disagreement["actions"]["npm_ci"]["program"] = json!("/other/npm.cmd");
+    disagreement["actions"]["npm_ci"]["program"] = json!(format!("{OTHER_ROOT}/npm.cmd"));
     assert_eq!(
         parse(&disagreement).expect_err("tool/action disagreement must fail"),
         SelectionError::ActionToolPathMismatch { action: "npm_ci" }
@@ -318,7 +325,7 @@ fn action_path_argv_and_placeholder_drift_are_distinct() {
 fn signed_only_actions_are_absent_in_unsigned_and_required_in_signed() {
     let mut unsigned = valid_selection(SelectionMode::Unsigned);
     unsigned["actions"]["signing_auth_preflight"] = action(
-        "/private/operator/release-tools/powershell.exe",
+        &format!("{PRIVATE_ROOT}/powershell.exe"),
         &[
             "-NoProfile",
             "-ExecutionPolicy",

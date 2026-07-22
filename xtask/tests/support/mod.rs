@@ -30,14 +30,42 @@ pub const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 pub const ADVISORY_COMMIT: &str = "89abcdef0123456789abcdef0123456789abcdef";
 pub const ACQUIRED_AT: &str = "2026-07-21T10:00:00Z";
 pub const CHECKED_AT: &str = "2026-07-21T12:00:00Z";
+#[cfg(not(windows))]
+pub const FAKE_TOOLS_ROOT: &str = "/fake-tools";
+#[cfg(windows)]
+pub const FAKE_TOOLS_ROOT: &str = r"C:\fake-tools";
+#[cfg(not(windows))]
 pub const GIT: &str = "/fake-tools/git";
+#[cfg(windows)]
+pub const GIT: &str = r"C:\fake-tools\git.exe";
+#[cfg(not(windows))]
 pub const CARGO: &str = "/fake-tools/cargo";
+#[cfg(windows)]
+pub const CARGO: &str = r"C:\fake-tools\cargo.exe";
+#[cfg(not(windows))]
 pub const NPM: &str = "/fake-tools/npm";
+#[cfg(windows)]
+pub const NPM: &str = r"C:\fake-tools\npm.cmd";
+#[cfg(not(windows))]
 pub const VPK: &str = "/fake-tools/vpk";
+#[cfg(windows)]
+pub const VPK: &str = r"C:\fake-tools\vpk.exe";
+#[cfg(not(windows))]
 pub const POWERSHELL: &str = "/fake-tools/powershell";
+#[cfg(windows)]
+pub const POWERSHELL: &str = r"C:\fake-tools\powershell.exe";
+#[cfg(not(windows))]
 pub const DOTNET: &str = "/fake-tools/dotnet";
+#[cfg(windows)]
+pub const DOTNET: &str = r"C:\fake-tools\dotnet.exe";
+#[cfg(not(windows))]
 pub const SMCTL: &str = "/fake-tools/smctl";
+#[cfg(windows)]
+pub const SMCTL: &str = r"C:\fake-tools\smctl.exe";
+#[cfg(not(windows))]
 pub const SIGNTOOL: &str = "/fake-tools/signtool";
+#[cfg(windows)]
+pub const SIGNTOOL: &str = r"C:\fake-tools\signtool.exe";
 pub const UNSIGNED_APP_BYTES: &[u8] = b"inert unsigned release executable";
 pub const SIGNED_APP_BYTES: &[u8] = b"inert signed release executable";
 
@@ -46,6 +74,11 @@ const ADVISORY_ARCHIVE: &[u8] = b"deterministic RustSec git archive bytes";
 const PUBLIC_LEAF_UPPER: &str = "AC5472D41D5F63E339468E41F7B4438126E84860";
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+pub fn action_uses_script(args: &[String], expected: &Path) -> bool {
+    args.windows(2)
+        .any(|pair| pair[0] == "-File" && Path::new(&pair[1]).ends_with(expected))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WitnessEvent {
@@ -730,9 +763,7 @@ impl CommandRunner for FakeReleaseRunner {
             ),
             Some(VPK) => self.run_vpk(args),
             Some(POWERSHELL)
-                if args
-                    .iter()
-                    .any(|arg| arg.ends_with("packaging/preflight-release-tools.ps1")) =>
+                if action_uses_script(args, Path::new("packaging/preflight-release-tools.ps1")) =>
             {
                 if !args.iter().any(|arg| arg == "-Sign") || env.is_some() {
                     return Err(CommandRunnerError::UnexpectedInvocation);
@@ -763,7 +794,10 @@ impl CommandRunner for FakeReleaseRunner {
             Some(program) if Path::new(program) == self.native_setup_path() => {
                 self.run_native_installer(args, env)
             }
-            Some(program) if program.ends_with("/Solstone/current/solstone-windows-app.exe") => {
+            Some(program)
+                if Path::new(program)
+                    .ends_with(Path::new("Solstone/current/solstone-windows-app.exe")) =>
+            {
                 if args != ["--dump-state"] || env.is_none() {
                     return Err(CommandRunnerError::UnexpectedInvocation);
                 }
@@ -1026,21 +1060,21 @@ fn action(program: &str, argv: &[&str]) -> Value {
 
 fn selection_value(mode: SelectionMode) -> Value {
     let mut tools = json!({
-        "rustc": {"path": "/fake-tools/rustc", "version": "1.96.0", "host": "x86_64-pc-windows-msvc"},
+        "rustc": {"path": format!("{FAKE_TOOLS_ROOT}/rustc"), "version": "1.96.0", "host": "x86_64-pc-windows-msvc"},
         "cargo": {"path": CARGO, "version": "1.96.0"},
-        "cargo-deny": {"path": "/fake-tools/cargo-deny", "version": "0.20.2"},
+        "cargo-deny": {"path": format!("{FAKE_TOOLS_ROOT}/cargo-deny"), "version": "0.20.2"},
         "dotnet": {"path": DOTNET, "version": "8.0.422"},
         "vpk": {"path": VPK, "version": "1.2.0", "packageId": "vpk"},
-        "node": {"path": "/fake-tools/node", "version": "24.16.0"},
+        "node": {"path": format!("{FAKE_TOOLS_ROOT}/node"), "version": "24.16.0"},
         "npm": {"path": NPM, "version": "11.13.0"},
         "msvc-cl": {
-            "path": "/fake-tools/VC/bin/cl.exe", "compilerVersion": "19.44.35228",
+            "path": format!("{FAKE_TOOLS_ROOT}/VC/bin/cl.exe"), "compilerVersion": "19.44.35228",
             "toolsetVersion": "14.44.35207", "host": "x64", "target": "x64",
-            "vcvarsallPath": "/fake-tools/VC/vcvarsall.bat",
+            "vcvarsallPath": format!("{FAKE_TOOLS_ROOT}/VC/vcvarsall.bat"),
             "vcvarsVersionArg": "-vcvars_ver=14.44.35207",
-            "installationPath": "/fake-tools/VisualStudio"
+            "installationPath": format!("{FAKE_TOOLS_ROOT}/VisualStudio")
         },
-        "windows-sdk": {"path": "/fake-tools/WindowsKits", "version": "10.0.26100.0"},
+        "windows-sdk": {"path": format!("{FAKE_TOOLS_ROOT}/WindowsKits"), "version": "10.0.26100.0"},
         "powershell": {"path": POWERSHELL, "version": "5.1"}
     });
     let mut actions = json!({
@@ -1084,14 +1118,18 @@ fn selection_value(mode: SelectionMode) -> Value {
         "tools": tools,
         "actions": actions,
         "msvc_environment": {
-            "PATH": "/fake-tools/VC/bin;/fake-tools/WindowsKits/bin",
-            "INCLUDE": "/fake-tools/VC/include", "LIB": "/fake-tools/VC/lib",
-            "LIBPATH": "/fake-tools/VC/libpath", "VCINSTALLDIR": "/fake-tools/VC",
-            "VCToolsInstallDir": "/fake-tools/VC/Tools/MSVC/14.44.35207",
-            "VCToolsVersion": "14.44.35207", "UniversalCRTSdkDir": "/fake-tools/WindowsKits",
-            "UCRTVersion": "10.0.26100.0", "WindowsSdkDir": "/fake-tools/WindowsKits",
-            "WindowsSdkBinPath": "/fake-tools/WindowsKits/bin",
-            "WindowsLibPath": "/fake-tools/WindowsKits/UnionMetadata",
+            "PATH": format!("{FAKE_TOOLS_ROOT}/VC/bin;{FAKE_TOOLS_ROOT}/WindowsKits/bin"),
+            "INCLUDE": format!("{FAKE_TOOLS_ROOT}/VC/include"),
+            "LIB": format!("{FAKE_TOOLS_ROOT}/VC/lib"),
+            "LIBPATH": format!("{FAKE_TOOLS_ROOT}/VC/libpath"),
+            "VCINSTALLDIR": format!("{FAKE_TOOLS_ROOT}/VC"),
+            "VCToolsInstallDir": format!("{FAKE_TOOLS_ROOT}/VC/Tools/MSVC/14.44.35207"),
+            "VCToolsVersion": "14.44.35207",
+            "UniversalCRTSdkDir": format!("{FAKE_TOOLS_ROOT}/WindowsKits"),
+            "UCRTVersion": "10.0.26100.0",
+            "WindowsSdkDir": format!("{FAKE_TOOLS_ROOT}/WindowsKits"),
+            "WindowsSdkBinPath": format!("{FAKE_TOOLS_ROOT}/WindowsKits/bin"),
+            "WindowsLibPath": format!("{FAKE_TOOLS_ROOT}/WindowsKits/UnionMetadata"),
             "WindowsSDKVersion": "10.0.26100.0"
         }
     })

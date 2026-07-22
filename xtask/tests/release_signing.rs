@@ -15,7 +15,14 @@ use xtask::release_signing::{
 };
 
 const SETUP: &str = "solstone-setup-0.2.11.exe";
+#[cfg(not(windows))]
 const SIGNTOOL: &str = "/selected/signtool.exe";
+#[cfg(windows)]
+const SIGNTOOL: &str = r"C:\selected\signtool.exe";
+#[cfg(not(windows))]
+const OTHER_SIGNTOOL: &str = "/other/signtool.exe";
+#[cfg(windows)]
+const OTHER_SIGNTOOL: &str = r"C:\other\signtool.exe";
 const PUBLIC_LEAF: &str = "ac5472d41d5f63e339468e41f7b4438126e84860";
 const PUBLIC_LEAF_UPPER: &str = "AC5472D41D5F63E339468E41F7B4438126E84860";
 
@@ -206,7 +213,7 @@ fn selected_path_and_fixed_argv_are_enforced_before_invocation() {
             &candidate,
             &runner,
             Path::new(SIGNTOOL),
-            &action("/other/signtool.exe"),
+            &action(OTHER_SIGNTOOL),
         )
         .expect_err("wrong selected SignTool must fail"),
         SigningError::WrongSelectedSignTool

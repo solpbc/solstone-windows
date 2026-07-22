@@ -553,7 +553,11 @@ fn verify_root_components(path: &Path, label: &str) -> Result<(), ArtifactFsErro
     let mut current = PathBuf::new();
     for component in absolute.components() {
         match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+                // A bare Windows prefix has no stattable filesystem object.
+                continue;
+            }
             Component::RootDir => current.push(component.as_os_str()),
             Component::CurDir => continue,
             Component::ParentDir => {
@@ -635,6 +639,53 @@ mod tests {
                 path: "artifact.bin".to_owned(),
             }
         );
+        fs::remove_dir_all(root_path).expect("remove isolated root");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_root_supports_containment_and_stable_read() {
+        let root_path = std::env::temp_dir().join(format!(
+            "solstone-artifact-fs-verbatim-root-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root_path).expect("create isolated root");
+        fs::create_dir(root_path.join("nested")).expect("create nested directory");
+        fs::write(root_path.join("nested/artifact.bin"), b"verbatim bytes")
+            .expect("write nested artifact");
+
+        let verbatim_root = fs::canonicalize(&root_path).expect("canonicalize isolated root");
+        let mut components = verbatim_root.components();
+        assert!(matches!(
+            components.next(),
+            Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim()
+        ));
+        assert!(matches!(components.next(), Some(Component::RootDir)));
+
+        let root = ContainedRoot::new(
+            &verbatim_root,
+            "verbatim candidate",
+            UnixModePolicy::AllowExecute,
+        )
+        .expect("contain verbatim root");
+        let resolved = root
+            .resolve("nested/artifact.bin", "nested artifact")
+            .expect("resolve through verbatim root");
+        assert!(fs::symlink_metadata(&resolved.canonical)
+            .expect("read resolved metadata")
+            .file_type()
+            .is_file());
+        assert_eq!(
+            resolved.read().expect("read resolved artifact"),
+            b"verbatim bytes"
+        );
+        assert_eq!(
+            root.read("nested/artifact.bin", "nested artifact")
+                .expect("read through verbatim root"),
+            b"verbatim bytes"
+        );
+
         fs::remove_dir_all(root_path).expect("remove isolated root");
     }
 }
