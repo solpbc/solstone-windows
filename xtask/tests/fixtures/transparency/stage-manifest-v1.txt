@@ -1,0 +1,2 @@
+sha256=b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060	bytes=6	path=a-first.txt
+sha256=3eeb0cea8bf176427633a47a62ee8c813844d574d48554a0d715e12dcbbaeda6	bytes=6	path=z-last/file.bin

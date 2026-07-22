@@ -1166,6 +1166,13 @@ pub fn validate_release_dir_with_facts(
     release_dir: &Path,
     facts: &CheckoutFacts,
 ) -> Result<ClassifierReport, ManifestError> {
+    validate_release_dir_with_facts_detailed(release_dir, facts).map(|(report, _)| report)
+}
+
+pub fn validate_release_dir_with_facts_detailed(
+    release_dir: &Path,
+    facts: &CheckoutFacts,
+) -> Result<(ClassifierReport, Manifest), ManifestError> {
     let names = BundleNames::for_version(&facts.version);
     let resolver = artifact_fs::ContainedRoot::new(
         release_dir,
@@ -1219,11 +1226,14 @@ pub fn validate_release_dir_with_facts(
 
     verify_artifacts(&resolver, &manifest.artifacts)?;
     validate_ledgers(&resolver, &facts.version, has_delta)?;
-    Ok(ClassifierReport {
-        mode: ClassificationMode::CompleteCurrentBundle,
-        artifact_count: manifest.artifacts.len(),
-        disclaimer: None,
-    })
+    Ok((
+        ClassifierReport {
+            mode: ClassificationMode::CompleteCurrentBundle,
+            artifact_count: manifest.artifacts.len(),
+            disclaimer: None,
+        },
+        manifest,
+    ))
 }
 
 fn read_manifest(

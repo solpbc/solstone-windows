@@ -105,6 +105,9 @@ fn rust_release_manifest_public_surface_has_no_private_data_canaries() {
         "deny.toml",
         "docs/release-runbook.md",
         "schemas/rust-release-manifest/v1.json",
+        "schemas/transparency-ledger-entry/v1.json",
+        "schemas/transparency-latest/v1.json",
+        "transparency-head-log.jsonl",
         "xtask/Cargo.toml",
     ];
     for relative in files {

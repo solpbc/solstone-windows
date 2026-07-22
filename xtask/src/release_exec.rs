@@ -76,6 +76,10 @@ pub trait CommandRunner {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessCommandRunner;
 
+/// Process runner for commands whose ambient environment must not cross the boundary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClearedEnvironmentProcessCommandRunner;
+
 impl CommandRunner for ProcessCommandRunner {
     fn run(
         &self,
@@ -84,44 +88,69 @@ impl CommandRunner for ProcessCommandRunner {
         stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
-        if !program.is_absolute() {
-            return Err(CommandRunnerError::ProgramNotAbsolute);
-        }
-
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(env) = env {
-            command.envs(env);
-        }
-
-        let mut child = command
-            .spawn()
-            .map_err(|_| CommandRunnerError::LaunchFailed)?;
-        if let Some(bytes) = stdin {
-            child
-                .stdin
-                .take()
-                .ok_or(CommandRunnerError::StdinWriteFailed)?
-                .write_all(bytes)
-                .map_err(|_| CommandRunnerError::StdinWriteFailed)?;
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|_| CommandRunnerError::WaitFailed)?;
-        Ok(CommandOutput {
-            status: output.status.code().unwrap_or(-1),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
+        run_process(program, args, stdin, env, false)
     }
+}
+
+impl CommandRunner for ClearedEnvironmentProcessCommandRunner {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        run_process(program, args, stdin, env, true)
+    }
+}
+
+fn run_process(
+    program: &Path,
+    args: &[String],
+    stdin: Option<&[u8]>,
+    env: Option<&BTreeMap<String, String>>,
+    clear_environment: bool,
+) -> Result<CommandOutput, CommandRunnerError> {
+    if !program.is_absolute() {
+        return Err(CommandRunnerError::ProgramNotAbsolute);
+    }
+
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if clear_environment {
+        command.env_clear();
+    }
+    if let Some(env) = env {
+        command.envs(env);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|_| CommandRunnerError::LaunchFailed)?;
+    if let Some(bytes) = stdin {
+        child
+            .stdin
+            .take()
+            .ok_or(CommandRunnerError::StdinWriteFailed)?
+            .write_all(bytes)
+            .map_err(|_| CommandRunnerError::StdinWriteFailed)?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|_| CommandRunnerError::WaitFailed)?;
+    Ok(CommandOutput {
+        status: output.status.code().unwrap_or(-1),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
 }
 
 pub mod test_support {
@@ -295,5 +324,19 @@ mod tests {
                 .expect_err("argv drift must fail"),
             CommandRunnerError::UnexpectedInvocation
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transparency_cleared_process_runner_exposes_no_ambient_environment() {
+        let program = [Path::new("/usr/bin/env"), Path::new("/bin/env")]
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+            .expect("env executable");
+        let output = ClearedEnvironmentProcessCommandRunner
+            .run(program, &[], None, None)
+            .expect("run with cleared environment");
+        assert_eq!(output.status, 0);
+        assert_eq!(output.stdout, b"");
     }
 }

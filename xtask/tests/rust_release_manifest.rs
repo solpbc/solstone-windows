@@ -114,6 +114,17 @@ fn fixture_root() -> PathBuf {
     repo_root().join("xtask/tests/fixtures/rust-release-manifest")
 }
 
+#[test]
+fn detailed_classifier_preserves_the_existing_report() {
+    let tree = TempTree::good();
+    let report = tree.validate_release().expect("validate through wrapper");
+    let (detailed, manifest) =
+        rust_release_manifest::validate_release_dir_with_facts_detailed(&tree.root.0, &tree.facts)
+            .expect("validate with parsed manifest");
+    assert_eq!(detailed, report);
+    assert_eq!(manifest, read_manifest(&tree.manifest_path()));
+}
+
 fn copy_tree(source: &Path, destination: &Path) {
     for entry in fs::read_dir(source).expect("read fixture tree") {
         let entry = entry.unwrap();

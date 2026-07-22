@@ -184,6 +184,7 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
     for path in [
         "scripts/preflight-toolchain.sh",
         "scripts/preflight-cargo-deny.sh",
+        "scripts/gate-minisign.sh",
         "scripts/check-win-sync-tree.sh",
         "scripts/sync-win-host.sh",
         "scripts/win-host-ci.sh",

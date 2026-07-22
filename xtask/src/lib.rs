@@ -16,4 +16,8 @@ pub mod release_selection;
 pub mod release_signing;
 pub mod release_source_binding;
 pub mod rust_release_manifest;
+pub mod transparency_format;
+pub mod transparency_publisher;
+pub mod transparency_stage;
+pub mod transparency_transport;
 pub mod version_gate;

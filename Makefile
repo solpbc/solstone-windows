@@ -33,13 +33,13 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny preflight-release-tools build test ui-test \
-	        test-scripts ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish publish-r2 \
+	        test-scripts gate-minisign ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live help
 
 help:
-	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native smoke screenshots journal-live run clean"
+	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
 	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT and SOLSTONE_ADVISORY_TREE_SHA256)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
@@ -89,6 +89,7 @@ test: preflight-toolchain
 test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
+	sh scripts/lib/transparency-guard.test.sh
 	sh scripts/lib/make-package-ordering.test.sh
 	sh scripts/lib/make-prove-native-ordering.test.sh
 	sh scripts/lib/doc-stale-scan.test.sh
@@ -116,6 +117,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(MAKE) check-release-advisory-config
 	$(MAKE) ui-test
 	$(MAKE) test-scripts
+	$(MAKE) gate-minisign
 	$(MAKE) win-host-ci
 
 # Refresh the RustSec advisory database, then check it against the locked graph.
@@ -271,6 +273,24 @@ prove-rust-release-native:
 	    exit 1; \
 	  fi; \
 	  SOLSTONE_PROOF_POWERSHELL="$(PWSH)" SOLSTONE_VERSION_GATE_CARGO="$(CARGO)" CARGO_NET_OFFLINE=true "$$xtask_bin" rust-release-manifest prove-native --release-dir "$(RELEASE_DIR)"
+
+# Publish evidence for one already-delivered validated candidate. Artifact bytes
+# go only to the operator archive channel; the public surface receives evidence.
+publish-transparency:
+	@set -eu; \
+	  if [ -z "$(RELEASE_DIR)" ]; then \
+	    echo "ERROR: RELEASE_DIR is required; pass target/release-candidate/<VERSION> and retry transparency publication." >&2; \
+	    exit 1; \
+	  fi; \
+	  CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- transparency publish --release-dir "$(RELEASE_DIR)"
+
+# Refresh only the signed latest pointer. This deliberately has no candidate input.
+resign-transparency-pointer:
+	CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- transparency resign-pointer
+
+# Real-tool acceptance for the declared minisign development prerequisite.
+gate-minisign:
+	sh scripts/gate-minisign.sh
 
 # Direct publication is fail-closed. These entry points remain visible while
 # publication ownership moves to the aggregate provenance publisher.

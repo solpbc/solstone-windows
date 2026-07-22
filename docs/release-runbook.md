@@ -14,6 +14,7 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
 | Source-bound build and atomic finalization | `EXPECTED_RELEASE_COMMIT=<commit> SOLSTONE_ADVISORY_TREE_SHA256=<digest> make package` |
 | Prove one exact signed candidate by isolated install and explicit smoke | `make prove-rust-release-native RELEASE_DIR=target/release-candidate/<VERSION>` |
+| Publish retained release evidence after delivery | `make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>` |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
 | R2 direct-publication guard (**primary channel remains R2**) | `make publish-r2` (always fails closed) |
 | GitHub direct-publication guard (optional, non-authoritative mirror) | `make publish` (always fails closed) |
@@ -295,6 +296,63 @@ only normalized identity, hashes, explicit install/smoke success, isolated-clean
 mode, and UTC proof time; it carries no host, account, credential, certificate, or
 absolute install path. This host-tested orchestration uses fakes; real install,
 certificate, and Session-1 evidence is earned only by running it on the box.
+
+## Release transparency
+
+`make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>` runs
+after delivery and never gates delivery. It snapshot-copies and re-validates the
+retained candidate, archives the complete evidence and artifact bytes first,
+then publishes only the manifest, native proof when required, signed ledger
+entry, derived ledger, and signed latest pointer. Artifact bytes never reach the
+public transparency surface.
+
+The command is environment-driven. `TRANSPARENCY_S3_ENDPOINT`,
+`TRANSPARENCY_BUCKET`, `TRANSPARENCY_S3_ACCESS_KEY_ID`,
+`TRANSPARENCY_S3_SECRET_ACCESS_KEY`, `TRANSPARENCY_MINISIGN_KEY`,
+`TRANSPARENCY_MINISIGN_PUB`, and `TRANSPARENCY_ARCHIVE_CHANNEL` are required.
+`TRANSPARENCY_BASE_URL` defaults to `https://transparency.solstone.app`, and
+`TRANSPARENCY_GENESIS=1` is explicit one-time approval for a verified empty
+product prefix. The public trust-anchor filename
+`solpbc-transparency-1.pub` and served location
+`releases/keys/solpbc-transparency-1.pub` are public contract. Rotation
+increments the numeric suffix and uses cross-signed successor files.
+`TRANSPARENCY_MINISIGN_PUB` supplies only the operator's local path to that key;
+it does not change the public filename or served location. The publisher does
+not upload the key; the operator provisions the served location. Do not give a
+local key a `.key` suffix because the repository ignore policy silently hides
+that suffix. No production public key is committed to this repository.
+
+Publication is idempotent and retryable, including when immutable evidence was
+created but the mutable pointer was not committed. A staged retry reuses the
+same entry and signature bytes and archives them before resuming public writes.
+Each version key is one-shot and permanent. If a create-only race records a
+different but valid own attempt, the next invocation first archives the adopted
+bytes and then resumes.
+
+The pointer signature is written before its body, and the body is the commit
+boundary. Consumers retry on a pointer/signature mismatch because that
+recognized transient can occur between those two writes. Mutable writes are
+unreachable after a failed immutable-byte verification.
+
+A staged retry remains valid even when its pointer has aged beyond fourteen
+days. Complete that retry with the persisted bytes, then run
+`make resign-transparency-pointer` to refresh only `signed_at`, `valid_until`,
+and the pointer signature without changing the chain length or tip digest.
+
+If the remote version prefix is empty and no archive receipt exists, a local
+attempt never reached publication and the operator may discard only that
+version's directory below `target/release-transparency-stage/`. If either a
+remote version object or an archive receipt exists, the version is permanent;
+cut the next version instead of deleting, replacing, or weakening retention.
+
+The surface attests what was released, that it is immutable, and that history
+is publicly reconstructible. It does not claim that binaries provably match
+source.
+
+The tracked [transparency head log](../transparency-head-log.jsonl) is a second
+head witness carried by ordinary repository commits. GitHub is optional and
+non-authoritative, is never required, and cannot gate release or transparency
+publication.
 
 ## Build-box gotchas
 

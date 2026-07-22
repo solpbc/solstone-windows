@@ -55,16 +55,349 @@ fn main() -> ExitCode {
         {
             cmd_rust_release_manifest_prove_native(&args)
         }
+        Some("transparency") if args.get(1).map(String::as_str) == Some("publish") => {
+            cmd_transparency_publish(&args)
+        }
+        Some("transparency")
+            if args.get(1).map(String::as_str) == Some("resign-pointer") && args.len() == 2 =>
+        {
+            cmd_transparency_resign_pointer()
+        }
         Some("purity-check") => cmd_purity_check(),
         Some("version-gate") => cmd_version_gate(&args),
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | purity-check | version-gate [--root <path>] | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  version-gate [--root <path>]: verify every committed release version surface"
+                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | transparency <publish --release-dir <candidate> | resign-pointer> | purity-check | version-gate [--root <path>] | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  transparency publish: archive and publish evidence for one validated candidate\n  transparency resign-pointer: refresh the signed latest pointer without a candidate\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
         }
     }
+}
+
+fn cmd_transparency_publish(args: &[String]) -> ExitCode {
+    let release_dir = match args {
+        [_, command, flag, value]
+            if command == "publish" && flag == "--release-dir" && !value.is_empty() =>
+        {
+            PathBuf::from(value)
+        }
+        _ => return transparency_publish_usage(),
+    };
+    let Some(context) = transparency_command_context() else {
+        return ExitCode::FAILURE;
+    };
+    if transparency_head_log_dirty(&context.root, &context.git_program) == Some(true) {
+        let row = transparency_last_head_row(&context.root);
+        eprintln!(
+            "terminal transparency witness: observed prior uncommitted {row}, expected the previous row committed before another publication; commit transparency-head-log.jsonl and retry"
+        );
+        return ExitCode::FAILURE;
+    }
+    let release_dir = if release_dir.is_absolute() {
+        release_dir
+    } else {
+        context.root.join(release_dir)
+    };
+    let cargo = xtask::version_gate::configured_cargo();
+    let facts = match xtask::rust_release_manifest::gather_checkout_facts(
+        &context.root,
+        &cargo,
+        context.git_program.as_os_str(),
+    ) {
+        Ok(facts) => facts,
+        Err(_) => {
+            eprintln!(
+                "terminal transparency candidate: observed unavailable checkout facts, expected a clean source-bound candidate; restore the checkout and retry"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let evidence_dir = context
+        .root
+        .join(xtask::release_receipt::EVIDENCE_ROOT)
+        .join(&facts.version);
+    let passphrase = match read_transparency_passphrase() {
+        Some(passphrase) => passphrase,
+        None => return ExitCode::FAILURE,
+    };
+    let runner = xtask::release_exec::ProcessCommandRunner;
+    let transport_runner = xtask::release_exec::ClearedEnvironmentProcessCommandRunner;
+    let transport = match xtask::transparency_transport::CurlTransparencyTransport::new(
+        &transport_runner,
+        context.curl_program.clone(),
+        context
+            .root
+            .join("target/release-transparency-curl-scratch"),
+        context.environment.s3_endpoint.clone(),
+        context.environment.base_url.clone(),
+        context.environment.bucket.clone(),
+        xtask::transparency_transport::TransparencyS3Credentials::new(
+            context.environment.s3_access_key_id.clone(),
+            context.environment.s3_secret_access_key.clone(),
+        ),
+    ) {
+        Ok(transport) => transport,
+        Err(_) => {
+            eprintln!(
+                "terminal transparency transport: observed invalid operator configuration, expected absolute tooling and HTTPS surfaces; correct the environment and retry"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let request = xtask::transparency_publisher::TransparencyPublishRequest {
+        checkout_root: &context.root,
+        release_dir: &release_dir,
+        evidence_dir: &evidence_dir,
+        checkout_facts: &facts,
+        environment: &context.environment,
+        minisign_program: &context.minisign_program,
+        curl_program: &context.curl_program,
+        signing_passphrase: &passphrase,
+    };
+    match xtask::transparency_publisher::publish_transparency(
+        &request,
+        &transport,
+        &runner,
+        &xtask::release_clock::SystemClock,
+    ) {
+        Ok(result) => {
+            println!(
+                "transparency publication: product={} version={} seq={} entry_sha256={} archive_sha256={} elapsed_ms={}{}",
+                result.product,
+                result.version,
+                result.seq,
+                result.entry_sha256,
+                result.archive_sha256,
+                result.elapsed_ms,
+                if result.already_published { " already-published" } else { "" }
+            );
+            println!(
+                "public entry: {}/releases/{}/v/{}/ledger-entry.json",
+                context.environment.base_url.trim_end_matches('/'),
+                result.product,
+                result.version
+            );
+            println!(
+                "public ledger: {}/releases/{}/ledger.jsonl",
+                context.environment.base_url.trim_end_matches('/'),
+                result.product
+            );
+            println!(
+                "public latest: {}/releases/{}/latest.json",
+                context.environment.base_url.trim_end_matches('/'),
+                result.product
+            );
+            match transparency_head_log_dirty(&context.root, &context.git_program) {
+                Some(false) => println!("transparency witness: row present and committed"),
+                Some(true) => println!(
+                    "transparency witness: row written uncommitted; run git add transparency-head-log.jsonl && git commit"
+                ),
+                None => println!(
+                    "transparency witness: unavailable; restore local Git and verify transparency-head-log.jsonl"
+                ),
+            }
+            if result.pointer_requires_resign {
+                println!(
+                    "transparency pointer: staged bytes were published after expiry; run make resign-transparency-pointer"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn transparency_publish_usage() -> ExitCode {
+    eprintln!(
+        "usage: cargo xtask transparency publish --release-dir <target/release-candidate/VERSION>"
+    );
+    ExitCode::from(2)
+}
+
+fn cmd_transparency_resign_pointer() -> ExitCode {
+    let Some(context) = transparency_command_context() else {
+        return ExitCode::FAILURE;
+    };
+    let passphrase = match read_transparency_passphrase() {
+        Some(passphrase) => passphrase,
+        None => return ExitCode::FAILURE,
+    };
+    let runner = xtask::release_exec::ProcessCommandRunner;
+    let transport_runner = xtask::release_exec::ClearedEnvironmentProcessCommandRunner;
+    let transport = match xtask::transparency_transport::CurlTransparencyTransport::new(
+        &transport_runner,
+        context.curl_program.clone(),
+        context
+            .root
+            .join("target/release-transparency-curl-scratch"),
+        context.environment.s3_endpoint.clone(),
+        context.environment.base_url.clone(),
+        context.environment.bucket.clone(),
+        xtask::transparency_transport::TransparencyS3Credentials::new(
+            context.environment.s3_access_key_id.clone(),
+            context.environment.s3_secret_access_key.clone(),
+        ),
+    ) {
+        Ok(transport) => transport,
+        Err(_) => {
+            eprintln!(
+                "terminal transparency transport: observed invalid operator configuration, expected absolute tooling and HTTPS surfaces; correct the environment and retry"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let request = xtask::transparency_publisher::TransparencyResignRequest {
+        checkout_root: &context.root,
+        environment: &context.environment,
+        minisign_program: &context.minisign_program,
+        curl_program: &context.curl_program,
+        signing_passphrase: &passphrase,
+    };
+    match xtask::transparency_publisher::resign_transparency_pointer(
+        &request,
+        &transport,
+        &runner,
+        &xtask::release_clock::SystemClock,
+    ) {
+        Ok(result) => {
+            println!(
+                "transparency pointer re-signed: product={} version={} chain_length={} tip_sha256={} valid_until={}",
+                result.product,
+                result.version,
+                result.chain_length,
+                result.tip_sha256,
+                result.valid_until
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+struct TransparencyCommandContext {
+    root: PathBuf,
+    git_program: PathBuf,
+    minisign_program: PathBuf,
+    curl_program: PathBuf,
+    environment: xtask::transparency_publisher::TransparencyEnvironment,
+}
+
+fn transparency_command_context() -> Option<TransparencyCommandContext> {
+    let environment =
+        match xtask::transparency_publisher::resolve_transparency_environment_with(|name| {
+            std::env::var(name).ok()
+        }) {
+            Ok(environment) => environment,
+            Err(error) => {
+                eprintln!("{error}");
+                return None;
+            }
+        };
+    let minisign_program = match resolve_path_program("minisign") {
+        Some(program) => program,
+        None => {
+            eprintln!(
+                "terminal transparency preflight: observed minisign missing, expected minisign 0.11 or 0.12; install with cargo install minisign --locked and retry"
+            );
+            return None;
+        }
+    };
+    let curl_program = match resolve_path_program("curl") {
+        Some(program) => program,
+        None => {
+            eprintln!(
+                "terminal transparency preflight: observed curl missing, expected curl with AWS SigV4 support; install curl and retry"
+            );
+            return None;
+        }
+    };
+    let git_program = match resolve_path_program("git") {
+        Some(program) => program,
+        None => {
+            eprintln!(
+                "terminal transparency preflight: observed git missing, expected a local absolute Git executable; install git and retry"
+            );
+            return None;
+        }
+    };
+    Some(TransparencyCommandContext {
+        root: repo_root(),
+        git_program,
+        minisign_program,
+        curl_program,
+        environment,
+    })
+}
+
+fn resolve_path_program(name: &str) -> Option<PathBuf> {
+    let search = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&search) {
+        for candidate_name in [name.to_owned(), format!("{name}.exe")] {
+            let candidate = directory.join(candidate_name);
+            if candidate.is_file() {
+                return std::fs::canonicalize(candidate).ok();
+            }
+        }
+    }
+    None
+}
+
+fn read_transparency_passphrase() -> Option<Vec<u8>> {
+    eprintln!("transparency minisign passphrase:");
+    let mut passphrase = String::new();
+    if std::io::stdin().read_line(&mut passphrase).is_err()
+        || passphrase.trim_end_matches(['\r', '\n']).is_empty()
+    {
+        eprintln!(
+            "terminal transparency signing: observed empty passphrase input, expected one stdin prompt response; retry with the operator-held passphrase"
+        );
+        return None;
+    }
+    Some(passphrase.into_bytes())
+}
+
+fn transparency_head_log_dirty(root: &Path, git_program: &Path) -> Option<bool> {
+    std::process::Command::new(git_program)
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--quiet", "--", "transparency-head-log.jsonl"])
+        .status()
+        .ok()
+        .and_then(|status| match status.code() {
+            Some(0) => Some(false),
+            Some(1) => Some(true),
+            _ => None,
+        })
+}
+
+fn transparency_last_head_row(root: &Path) -> String {
+    std::fs::read(root.join("transparency-head-log.jsonl"))
+        .ok()
+        .and_then(|bytes| {
+            bytes
+                .split_inclusive(|byte| *byte == b'\n')
+                .rfind(|line| !line.is_empty())
+                .and_then(|line| {
+                    serde_json::from_slice::<xtask::transparency_format::TransparencyHeadLogRow>(
+                        line,
+                    )
+                    .ok()
+                })
+        })
+        .map(|row| {
+            format!(
+                "row product={} seq={} version={} entry_sha256={}",
+                row.product, row.seq, row.version, row.entry_sha256
+            )
+        })
+        .unwrap_or_else(|| "head-log row with unreadable identity".to_owned())
 }
 
 fn cmd_rust_release_manifest_advisory_config(args: &[String]) -> ExitCode {
