@@ -324,8 +324,13 @@ that suffix. No production public key is committed to this repository.
 
 Minisign reads the secret-key passphrase directly from the interactive terminal
 with its own no-echo prompt; xtask does not read, store, pipe, or log the
-passphrase. A publication uses the sanctioned two-prompt fallback, once for the
-entry and once for the pointer. `make resign-transparency-pointer` prompts once.
+passphrase. This is a documented deviation from the contract's one-prompt
+stdin-feeding mechanism; stdin feeding works with the pinned minisign 0.11, and
+the mechanism ruling remains pending. A fresh attempt that reaches signing
+prompts exactly twice, once for the entry and once for the pointer. A
+create-only PUT adoption adds no third prompt and stops; its next invocation
+prompts exactly once for the replacement pointer. A byte-staged retry prompts
+zero times. `make resign-transparency-pointer` prompts exactly once.
 
 Publication is idempotent and retryable, including when immutable evidence was
 created but the mutable pointer was not committed. A staged retry reuses the
@@ -335,8 +340,12 @@ different but valid own attempt, the next invocation first archives the adopted
 bytes and then resumes.
 
 Only a successful `ARCHIVED <digest>` channel result creates the durable local
-acknowledgment `archive-ack.v1` beside `archive/` and `stage-manifest.v1`.
-`stage-manifest.v1` is a byte-reuse record, not an archive acknowledgment.
+acknowledgment
+`.release-transparency-recovery/solstone-windows/<VERSION>/archive-ack.v1`.
+The pointer recovery pair lives below the same operator-local directory, and
+both records survive `make clean`. The ephemeral `stage-manifest.v1` below
+`target/release-transparency-stage/` is a byte-reuse record, not an archive
+acknowledgment.
 
 The pointer signature is written before its body, and the body is the commit
 boundary. Consumers retry on a pointer/signature mismatch because that
@@ -348,11 +357,14 @@ days. Complete that retry with the persisted bytes, then run
 `make resign-transparency-pointer` to refresh only `signed_at`, `valid_until`,
 and the pointer signature without changing the chain length or tip digest.
 
-If the remote version prefix is empty and no `archive-ack.v1` acknowledgment exists, a local
-attempt never reached publication and the operator may discard only that
-version's directory below `target/release-transparency-stage/`. If either a
-remote version object or an `archive-ack.v1` acknowledgment exists, the version is permanent;
-cut the next version instead of deleting, replacing, or weakening retention.
+If the remote version prefix is empty and no `archive-ack.v1` acknowledgment
+exists, a local attempt never reached publication and the operator may discard
+only that version's directories at
+`target/release-transparency-stage/solstone-windows/<VERSION>/` and
+`.release-transparency-recovery/solstone-windows/<VERSION>/`. If either a remote
+version object or an `archive-ack.v1` acknowledgment exists, the version is
+permanent; cut the next version instead of deleting, replacing, or weakening
+retention.
 
 The surface attests what was released, that it is immutable, and that history
 is publicly reconstructible. It does not claim that binaries provably match

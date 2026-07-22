@@ -85,10 +85,6 @@ pub trait CommandRunner {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessCommandRunner;
 
-/// Process runner for commands whose ambient environment must not cross the boundary.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ClearedEnvironmentProcessCommandRunner;
-
 /// Process runner that inherits the ambient environment except for named values.
 #[derive(Clone, Copy, Debug)]
 pub struct RemovedEnvironmentProcessCommandRunner<'a> {
@@ -119,27 +115,6 @@ impl CommandRunner for ProcessCommandRunner {
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
         run_process(program, args, None, env, false, &[], true)
-    }
-}
-
-impl CommandRunner for ClearedEnvironmentProcessCommandRunner {
-    fn run(
-        &self,
-        program: &Path,
-        args: &[String],
-        stdin: Option<&[u8]>,
-        env: Option<&BTreeMap<String, String>>,
-    ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, stdin, env, true, &[], false)
-    }
-
-    fn run_interactive(
-        &self,
-        program: &Path,
-        args: &[String],
-        env: Option<&BTreeMap<String, String>>,
-    ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, None, env, true, &[], true)
     }
 }
 

@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -63,6 +64,7 @@ pub const TRANSPARENCY_ENV_NAMES: [&str; 9] = [
 
 pub const DEFAULT_TRANSPARENCY_BASE_URL: &str = "https://transparency.solstone.app";
 pub const TRANSPARENCY_STAGE_ROOT: &str = "target/release-transparency-stage";
+pub const TRANSPARENCY_RECOVERY_ROOT: &str = ".release-transparency-recovery";
 pub const TRANSPARENCY_HEAD_LOG: &str = "transparency-head-log.jsonl";
 pub const TRANSPARENCY_ARCHIVE_ACK: &str = "archive-ack.v1";
 
@@ -209,8 +211,8 @@ impl fmt::Display for TransparencyPublishError {
             Self::Rollback { observed, expected } => write!(formatter, "terminal transparency rollback: observed chain length {observed}, expected at least local head {expected}; audit the split view before retrying"),
             Self::VersionPoisoned { version, source_commit, seq, sha256 } => write!(formatter, "terminal transparency version: observed version {version} permanently recorded at source_commit={source_commit} seq={seq} sha256={sha256}, expected the current chain position; cut the next version"),
             Self::VersionPrefixPoisoned { version, observed } => write!(formatter, "terminal transparency version: observed {observed} under permanent version {version}, expected an empty prefix or one complete valid own entry; cut the next version"),
-            Self::StageInvalid => formatter.write_str("terminal transparency staging: observed malformed or changed staged bytes, expected the persisted staging-manifest v1 record; discard staging only after confirming the remote version prefix is empty"),
-            Self::StageConflict => formatter.write_str("terminal transparency staging: observed a conflicting local version stage, expected one byte-stable publication attempt; discard staging only after confirming no remote version object and no archive acknowledgment exist"),
+            Self::StageInvalid => formatter.write_str("terminal transparency staging: observed malformed or changed staged bytes, expected persisted staging and recovery records; discard target/release-transparency-stage/solstone-windows/<version>/ and .release-transparency-recovery/solstone-windows/<version>/ only after confirming the remote version prefix is empty"),
+            Self::StageConflict => formatter.write_str("terminal transparency staging: observed a conflicting local version attempt, expected one byte-stable publication attempt; discard target/release-transparency-stage/solstone-windows/<version>/ and .release-transparency-recovery/solstone-windows/<version>/ only after confirming no remote version object and no archive acknowledgment exist"),
             Self::SignatureFailed => formatter.write_str("terminal transparency signature: observed signing or verification failure, expected a locally verified body and trusted comment; restore the signing tools and retry"),
             Self::ArchiveFailed { observed, expected } => write!(formatter, "retryable transparency archive: observed {observed}, expected {expected}; retry after restoring the archive channel"),
             Self::ArchiveReceiptInvalid { observed, expected } => write!(formatter, "retryable transparency archive receipt: observed {observed}, expected {expected}; retry after correcting the archive channel"),
@@ -327,7 +329,6 @@ struct StagedPublication {
     version_prefix: String,
     entry: TransparencyLedgerEntryV1,
     entry_bytes: Vec<u8>,
-    entry_signature: Vec<u8>,
     pointer: TransparencyLatestV1,
     pointer_bytes: Vec<u8>,
     pointer_signature: Vec<u8>,
@@ -364,19 +365,25 @@ where
         environment: request.environment,
         minisign_program: request.minisign_program,
     };
-    let local_stage = request
-        .checkout_root
-        .join(TRANSPARENCY_STAGE_ROOT)
-        .join(PRODUCT)
-        .join(&live_manifest.version);
-    let chain = fetch_chain_state(
+    let publication_recovery =
+        publication_pointer_recovery_root(request.checkout_root, &live_manifest.version);
+    let recovery_location = publication_pointer_recovery_exists(&publication_recovery).then_some(
+        PointerRecoveryLocation {
+            root: &publication_recovery,
+            kind: PointerRecoveryKind::Publication,
+        },
+    );
+    let adoption_recovery =
+        publication_adoption_root(request.checkout_root, &live_manifest.version);
+    let adoption_location = adoption_recovery
+        .is_dir()
+        .then_some(adoption_recovery.as_path());
+    let mut chain = fetch_chain_state(
         &access,
         transport,
         runner,
-        local_stage.is_dir().then_some(PointerRecoveryLocation {
-            root: &local_stage,
-            kind: PointerRecoveryKind::Publication,
-        }),
+        recovery_location,
+        adoption_location,
     )?;
     check_head_log_floor(request.checkout_root, &chain)?;
 
@@ -397,13 +404,15 @@ where
             .is_some_and(|tip| tip.bytes == remote.bytes)
         {
             if chain.ledger_needs_rederive {
-                let ledger_bytes = render_ledger(&chain.entries);
-                put_mutable_and_verify(
+                chain = repair_derived_ledger(
+                    &access,
                     transport,
-                    &format!("releases/{PRODUCT}/ledger.jsonl"),
-                    &ledger_bytes,
-                    None,
+                    runner,
+                    recovery_location,
+                    adoption_location,
+                    chain,
                 )?;
+                check_head_log_floor(request.checkout_root, &chain)?;
             }
             runner.record_phase(STEP_9_HEAD_LOG)?;
             append_head_log(request.checkout_root, &remote.model, &remote.bytes)?;
@@ -421,7 +430,7 @@ where
         }
     }
 
-    let mut staged = load_or_build_stage(
+    let staged = load_or_build_stage(
         request,
         runner,
         clock,
@@ -472,7 +481,7 @@ where
             )?;
             if remote.body != bytes {
                 if name.starts_with("ledger-entry.json") {
-                    adopt_racing_entry(request, transport, runner, &chain, &mut staged)?;
+                    adopt_racing_entry(request, transport, runner, &chain, &staged)?;
                     return Err(TransparencyPublishError::AdoptedRemoteEntry);
                 }
                 return Err(TransparencyPublishError::ImmutableConflict);
@@ -502,6 +511,7 @@ where
             return Err(TransparencyPublishError::ImmutableVerification);
         }
     }
+    persist_publication_pointer_recovery(request.checkout_root, &staged)?;
 
     runner.record_phase(STEP_8_MUTABLE_COMMIT)?;
     require_pointer_unchanged(transport, &chain)?;
@@ -604,7 +614,7 @@ where
         root: &recovery_root,
         kind: PointerRecoveryKind::Resign,
     });
-    let chain = fetch_chain_state(&access, transport, runner, recovery_location)?;
+    let chain = fetch_chain_state(&access, transport, runner, recovery_location, None)?;
     check_head_log_floor(request.checkout_root, &chain)?;
     let tip = chain
         .entries
@@ -709,7 +719,8 @@ where
     )?;
     require_latest_trusted_comment_matches_body(&pointer, trusted_comment(&final_signature.body)?)
         .map_err(|_| TransparencyPublishError::MutableVerification)?;
-    fs::remove_dir_all(recovery_root).map_err(|_| TransparencyPublishError::StageInvalid)?;
+    fs::remove_dir_all(&recovery_root).map_err(|_| TransparencyPublishError::StageInvalid)?;
+    sync_parent(&recovery_root)?;
     Ok(TransparencyPointerResign {
         product: PRODUCT.to_owned(),
         version: pointer.version,
@@ -776,6 +787,9 @@ fn load_or_build_stage<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .join(&live_manifest.version);
     if stage_root.exists() {
         return load_stage(request, runner, live_manifest, chain, &stage_root);
+    }
+    if let Some(adopted) = adopted {
+        require_persisted_adoption(request.checkout_root, adopted)?;
     }
     build_stage(
         request,
@@ -896,24 +910,52 @@ fn build_stage_in<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         bytes: entry_bytes.clone(),
         signature: Some(entry_signature.clone()),
     });
-    let pointer = build_transparency_pointer(&tip, &published)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    let pointer_bytes =
-        render_transparency_latest(&pointer).map_err(|_| TransparencyPublishError::StageInvalid)?;
-    let pointer_comment = format_latest_trusted_comment(&pointer);
-    let pointer_signature = sign_bytes(
-        runner,
-        &publish_signing_material(request),
-        &pointer_bytes,
-        &pointer_comment,
-        &work_root.join("pointer-signing"),
-    )?;
-
-    let mut ledger_bytes = Vec::new();
-    for existing in &chain.entries {
-        ledger_bytes.extend_from_slice(&existing.bytes);
-    }
-    ledger_bytes.extend_from_slice(&entry_bytes);
+    let (pointer, pointer_bytes, pointer_signature, ledger_bytes) = if let Some(pending) = chain
+        .pointer_recovery
+        .as_ref()
+        .filter(|pending| pending.kind == PointerRecoveryKind::Publication)
+    {
+        let ledger = pending
+            .ledger
+            .as_ref()
+            .ok_or(TransparencyPublishError::StageConflict)?;
+        if pending.pointer.chain_length != tip.seq
+            || pending.pointer.tip_sha256 != tip.sha256
+            || pending.pointer.version != tip.version
+            || ledger
+                .last()
+                .is_none_or(|locked| locked.bytes != entry_bytes)
+            || ledger.len() != chain.entries.len().saturating_add(1)
+            || ledger
+                .iter()
+                .zip(&chain.entries)
+                .any(|(recovered, locked)| recovered.bytes != locked.bytes)
+        {
+            return Err(TransparencyPublishError::StageConflict);
+        }
+        (
+            pending.pointer.clone(),
+            pending.body.clone(),
+            pending.signature.clone(),
+            render_ledger(ledger),
+        )
+    } else {
+        let pointer = build_transparency_pointer(&tip, &published)
+            .map_err(|_| TransparencyPublishError::StageInvalid)?;
+        let pointer_bytes = render_transparency_latest(&pointer)
+            .map_err(|_| TransparencyPublishError::StageInvalid)?;
+        let pointer_comment = format_latest_trusted_comment(&pointer);
+        let pointer_signature = sign_bytes(
+            runner,
+            &publish_signing_material(request),
+            &pointer_bytes,
+            &pointer_comment,
+            &work_root.join("pointer-signing"),
+        )?;
+        let mut ledger_bytes = render_ledger(&chain.entries);
+        ledger_bytes.extend_from_slice(&entry_bytes);
+        (pointer, pointer_bytes, pointer_signature, ledger_bytes)
+    };
 
     let archive = work_root.join("archive");
     let version_prefix = format!("releases/{PRODUCT}/v/{}", entry.version);
@@ -960,7 +1002,6 @@ fn build_stage_in<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         version_prefix,
         entry,
         entry_bytes,
-        entry_signature,
         pointer,
         pointer_bytes,
         pointer_signature,
@@ -1074,7 +1115,6 @@ fn load_stage<R: CommandRunner + ?Sized>(
         version_prefix,
         entry,
         entry_bytes,
-        entry_signature,
         pointer,
         pointer_bytes,
         pointer_signature,
@@ -1374,6 +1414,110 @@ fn create_unique_stage_directory(
     }
 }
 
+fn persist_directory(root: &Path, files: &[(&str, &[u8])]) -> Result<(), TransparencyPublishError> {
+    if root.exists() {
+        if files
+            .iter()
+            .all(|(name, bytes)| fs::read(root.join(name)).is_ok_and(|value| value == *bytes))
+        {
+            for (name, _) in files {
+                sync_file(&root.join(name))?;
+            }
+            sync_directory(root)?;
+            sync_parent(root)?;
+            return Ok(());
+        }
+        return Err(TransparencyPublishError::StageConflict);
+    }
+    let parent = root
+        .parent()
+        .ok_or(TransparencyPublishError::StageInvalid)?;
+    fs::create_dir_all(parent).map_err(|_| TransparencyPublishError::StageInvalid)?;
+    let label = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(TransparencyPublishError::StageInvalid)?;
+    let temporary = create_unique_stage_directory(parent, label)?;
+    let result = (|| {
+        for (name, bytes) in files {
+            write_synced(&temporary.join(name), bytes)?;
+        }
+        sync_directory(&temporary)?;
+        fs::rename(&temporary, root).map_err(|_| TransparencyPublishError::StageConflict)?;
+        sync_parent(root)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temporary);
+    }
+    result
+}
+
+fn persist_file(path: &Path, bytes: &[u8]) -> Result<(), TransparencyPublishError> {
+    let parent = path
+        .parent()
+        .ok_or(TransparencyPublishError::StageInvalid)?;
+    fs::create_dir_all(parent).map_err(|_| TransparencyPublishError::StageInvalid)?;
+    let label = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(TransparencyPublishError::StageInvalid)?;
+    let temporary_root = create_unique_stage_directory(parent, label)?;
+    let temporary = temporary_root.join(label);
+    let result = (|| {
+        write_synced(&temporary, bytes)?;
+        fs::rename(&temporary, path).map_err(|_| TransparencyPublishError::StageInvalid)?;
+        sync_parent(path)?;
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(temporary_root);
+    result
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), TransparencyPublishError> {
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| TransparencyPublishError::StageInvalid)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| TransparencyPublishError::StageInvalid)
+}
+
+fn sync_file(path: &Path) -> Result<(), TransparencyPublishError> {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| TransparencyPublishError::StageInvalid)
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), TransparencyPublishError> {
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| TransparencyPublishError::StageInvalid)
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), TransparencyPublishError> {
+    Ok(())
+}
+
+fn sync_parent(path: &Path) -> Result<(), TransparencyPublishError> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    for ancestor in parent.ancestors() {
+        if ancestor.as_os_str().is_empty() {
+            break;
+        }
+        sync_directory(ancestor)?;
+    }
+    Ok(())
+}
+
 fn trusted_comment(signature: &[u8]) -> Result<&str, TransparencyPublishError> {
     let text =
         std::str::from_utf8(signature).map_err(|_| TransparencyPublishError::SignatureFailed)?;
@@ -1403,6 +1547,7 @@ fn fetch_chain_state<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>(
     transport: &T,
     runner: &R,
     recovery_location: Option<PointerRecoveryLocation<'_>>,
+    adoption_location: Option<&Path>,
 ) -> Result<ChainState, TransparencyPublishError> {
     let pointer_key = format!("releases/{PRODUCT}/latest.json");
     let signature_key = format!("releases/{PRODUCT}/latest.json.minisig");
@@ -1459,6 +1604,19 @@ fn fetch_chain_state<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>(
                     });
                 }
             }
+            if let Some(location) = adoption_location {
+                let adopted = load_adoption_recovery(access, runner, location)?;
+                require_genesis_adoption_keys(&adopted, &keys)?;
+                return Ok(ChainState {
+                    pointer: None,
+                    pointer_bytes: None,
+                    pointer_etag: None,
+                    entries: Vec::new(),
+                    genesis_recovery: false,
+                    ledger_needs_rederive: false,
+                    pointer_recovery: None,
+                });
+            }
             return Err(TransparencyPublishError::GenesisNotEmpty);
         }
         return Ok(ChainState {
@@ -1491,27 +1649,35 @@ fn fetch_chain_state<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>(
         });
     }
     let pointer = parse_pointer(&pointer_response.body)?;
-    let verified = verify_signature_bytes(
-        runner,
-        access.minisign_program,
-        &access.environment.minisign_public_key,
-        &pointer_response.body,
-        &signature_response.body,
-        &access
-            .checkout_root
-            .join(TRANSPARENCY_STAGE_ROOT)
-            .join(".fetch-pointer-verify"),
-    )
-    .and_then(|()| {
-        require_latest_trusted_comment_matches_body(
-            &pointer,
-            trusted_comment(&signature_response.body)?,
+    let verified = (|| {
+        verify_signature_bytes(
+            runner,
+            access.minisign_program,
+            &access.environment.minisign_public_key,
+            &pointer_response.body,
+            &signature_response.body,
+            &access
+                .checkout_root
+                .join(TRANSPARENCY_STAGE_ROOT)
+                .join(".fetch-pointer-verify"),
         )
         .map_err(|_| TransparencyPublishError::ChainInvalid {
-            observed: "pointer trusted comment mismatch".to_owned(),
-            expected: "comment fields equal canonical body".to_owned(),
+            observed: "fetched pointer signature verification failed".to_owned(),
+            expected: "a valid signature over the fetched pointer body".to_owned(),
+        })?;
+        let comment = trusted_comment(&signature_response.body).map_err(|_| {
+            TransparencyPublishError::ChainInvalid {
+                observed: "fetched pointer trusted comment is invalid".to_owned(),
+                expected: "one parseable signed trusted comment".to_owned(),
+            }
+        })?;
+        require_latest_trusted_comment_matches_body(&pointer, comment).map_err(|_| {
+            TransparencyPublishError::ChainInvalid {
+                observed: "pointer trusted comment mismatch".to_owned(),
+                expected: "comment fields equal canonical body".to_owned(),
+            }
         })
-    });
+    })();
     if let Err(error) = verified {
         if let Some(location) = recovery_location {
             if !recovery_pair_equals_remote(location, &pointer_response, &signature_response) {
@@ -1553,10 +1719,7 @@ fn recovery_pair_equals_remote(
         return false;
     }
     let parent = match location.kind {
-        PointerRecoveryKind::Publication => location
-            .root
-            .join("archive")
-            .join(format!("releases/{PRODUCT}")),
+        PointerRecoveryKind::Publication => location.root.to_path_buf(),
         PointerRecoveryKind::Resign => location.root.to_path_buf(),
     };
     fs::read(parent.join("latest.json")).is_ok_and(|bytes| bytes == pointer.body)
@@ -1697,18 +1860,12 @@ fn load_pointer_recovery<R: CommandRunner + ?Sized>(
 ) -> Result<PendingPointerRecovery, TransparencyPublishError> {
     let (body_path, signature_path, ledger) = match location.kind {
         PointerRecoveryKind::Publication => {
-            let archive = location.root.join("archive");
-            let retry_record = fs::read(location.root.join("stage-manifest.v1"))
-                .map_err(|_| TransparencyPublishError::StageInvalid)?;
-            verify_staging_manifest_v1(&archive, &retry_record)
-                .map_err(|_| TransparencyPublishError::StageInvalid)?;
-            let product_dir = archive.join(format!("releases/{PRODUCT}"));
-            let ledger_bytes = fs::read(product_dir.join("ledger.jsonl"))
+            let ledger_bytes = fs::read(location.root.join("ledger.jsonl"))
                 .map_err(|_| TransparencyPublishError::StageInvalid)?;
             let ledger = validate_ledger_bytes(&ledger_bytes)?;
             (
-                product_dir.join("latest.json"),
-                product_dir.join("latest.json.minisig"),
+                location.root.join("latest.json"),
+                location.root.join("latest.json.minisig"),
                 Some(ledger),
             )
         }
@@ -1813,11 +1970,89 @@ fn require_genesis_recovery_keys(
     Ok(())
 }
 
+fn load_adoption_recovery<R: CommandRunner + ?Sized>(
+    access: &AccessContext<'_>,
+    runner: &R,
+    root: &Path,
+) -> Result<ChainEntry, TransparencyPublishError> {
+    let body = fs::read(root.join("ledger-entry.json"))
+        .map_err(|_| TransparencyPublishError::StageInvalid)?;
+    let signature = fs::read(root.join("ledger-entry.json.minisig"))
+        .map_err(|_| TransparencyPublishError::StageInvalid)?;
+    let model = parse_entry(&body).map_err(|_| TransparencyPublishError::StageInvalid)?;
+    verify_signature_bytes(
+        runner,
+        access.minisign_program,
+        &access.environment.minisign_public_key,
+        &body,
+        &signature,
+        &access
+            .checkout_root
+            .join(TRANSPARENCY_STAGE_ROOT)
+            .join(".adoption-recovery-verify"),
+    )
+    .map_err(|_| TransparencyPublishError::StageInvalid)?;
+    let comment =
+        trusted_comment(&signature).map_err(|_| TransparencyPublishError::StageInvalid)?;
+    require_entry_trusted_comment_matches_body(&model, &body, comment)
+        .map_err(|_| TransparencyPublishError::StageInvalid)?;
+    Ok(ChainEntry {
+        model,
+        bytes: body,
+        signature: Some(signature),
+    })
+}
+
+fn require_genesis_adoption_keys(
+    adopted: &ChainEntry,
+    keys: &[String],
+) -> Result<(), TransparencyPublishError> {
+    if adopted.model.seq != 1
+        || !adopted.model.prev_version.is_empty()
+        || adopted.model.prev_sha256 != "0".repeat(64)
+    {
+        return Err(TransparencyPublishError::GenesisNotEmpty);
+    }
+    let prefix = format!("releases/{PRODUCT}/v/{}/", adopted.model.version);
+    let mut allowed = BTreeSet::from([
+        format!("{prefix}ledger-entry.json"),
+        format!("{prefix}ledger-entry.json.minisig"),
+    ]);
+    for item in adopted.model.manifests.iter().chain(&adopted.model.proofs) {
+        allowed.insert(format!("{prefix}{}", item.name));
+    }
+    if keys.is_empty() || keys.iter().any(|key| !allowed.contains(key)) {
+        return Err(TransparencyPublishError::GenesisNotEmpty);
+    }
+    Ok(())
+}
+
 fn resign_pointer_recovery_root(checkout_root: &Path) -> PathBuf {
     checkout_root
-        .join(TRANSPARENCY_STAGE_ROOT)
-        .join(".resign-pointer-recovery")
+        .join(TRANSPARENCY_RECOVERY_ROOT)
         .join(PRODUCT)
+        .join(".resign-pointer-recovery")
+}
+
+fn publication_version_recovery_root(checkout_root: &Path, version: &str) -> PathBuf {
+    checkout_root
+        .join(TRANSPARENCY_RECOVERY_ROOT)
+        .join(PRODUCT)
+        .join(version)
+}
+
+fn publication_pointer_recovery_root(checkout_root: &Path, version: &str) -> PathBuf {
+    publication_version_recovery_root(checkout_root, version).join("pointer-recovery")
+}
+
+fn publication_adoption_root(checkout_root: &Path, version: &str) -> PathBuf {
+    publication_version_recovery_root(checkout_root, version).join("adopted-entry")
+}
+
+fn publication_pointer_recovery_exists(root: &Path) -> bool {
+    ["ledger.jsonl", "latest.json", "latest.json.minisig"]
+        .iter()
+        .all(|name| root.join(name).is_file())
 }
 
 fn persist_resign_pointer_recovery(
@@ -1825,22 +2060,10 @@ fn persist_resign_pointer_recovery(
     body: &[u8],
     signature: &[u8],
 ) -> Result<(), TransparencyPublishError> {
-    let parent = root
-        .parent()
-        .ok_or(TransparencyPublishError::StageInvalid)?;
-    fs::create_dir_all(parent).map_err(|_| TransparencyPublishError::StageInvalid)?;
-    let temporary = create_unique_stage_directory(parent, &format!("{PRODUCT}.resign"))?;
-    let result = (|| {
-        fs::write(temporary.join("latest.json"), body)
-            .map_err(|_| TransparencyPublishError::StageInvalid)?;
-        fs::write(temporary.join("latest.json.minisig"), signature)
-            .map_err(|_| TransparencyPublishError::StageInvalid)?;
-        fs::rename(&temporary, root).map_err(|_| TransparencyPublishError::StageConflict)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&temporary);
-    }
-    result
+    persist_directory(
+        root,
+        &[("latest.json", body), ("latest.json.minisig", signature)],
+    )
 }
 
 fn listed_keys(bytes: &[u8]) -> Result<Vec<String>, TransparencyPublishError> {
@@ -2368,26 +2591,107 @@ fn archive_stage<R: CommandRunner + ?Sized>(
             expected: staged.manifest.sha256.clone(),
         });
     }
-    persist_archive_ack(staged)?;
+    persist_archive_ack(request.checkout_root, staged)?;
     Ok(())
 }
 
-fn persist_archive_ack(staged: &StagedPublication) -> Result<(), TransparencyPublishError> {
+fn persist_publication_pointer_recovery(
+    checkout_root: &Path,
+    staged: &StagedPublication,
+) -> Result<(), TransparencyPublishError> {
+    let root = publication_pointer_recovery_root(checkout_root, &staged.entry.version);
+    persist_directory(
+        &root,
+        &[
+            ("ledger.jsonl", &staged.ledger_bytes),
+            ("latest.json", &staged.pointer_bytes),
+            ("latest.json.minisig", &staged.pointer_signature),
+        ],
+    )
+}
+
+fn persist_archive_ack(
+    checkout_root: &Path,
+    staged: &StagedPublication,
+) -> Result<(), TransparencyPublishError> {
     let bytes = format!("ARCHIVED {}\n", staged.manifest.sha256);
-    let path = staged.root.join(TRANSPARENCY_ARCHIVE_ACK);
+    let root = publication_version_recovery_root(checkout_root, &staged.entry.version);
+    fs::create_dir_all(&root).map_err(|_| TransparencyPublishError::StageInvalid)?;
+    sync_parent(&root)?;
+    let path = root.join(TRANSPARENCY_ARCHIVE_ACK);
     match fs::read(&path) {
-        Ok(existing) if existing == bytes.as_bytes() => return Ok(()),
+        Ok(existing) if existing == bytes.as_bytes() => {
+            sync_file(&path)?;
+            sync_directory(&root)?;
+            sync_parent(&root)?;
+            return Ok(());
+        }
         Ok(_) => return Err(TransparencyPublishError::StageInvalid),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(TransparencyPublishError::StageInvalid),
     }
-    let temporary_root = create_unique_stage_directory(&staged.root, TRANSPARENCY_ARCHIVE_ACK)?;
-    let temporary = temporary_root.join(TRANSPARENCY_ARCHIVE_ACK);
-    let result = fs::write(&temporary, bytes)
-        .and_then(|()| fs::rename(&temporary, path))
-        .map_err(|_| TransparencyPublishError::StageInvalid);
-    let _ = fs::remove_dir_all(temporary_root);
-    result
+    persist_file(&path, bytes.as_bytes())
+}
+
+fn persist_adopted_entry(
+    checkout_root: &Path,
+    entry: &TransparencyLedgerEntryV1,
+    body: &[u8],
+    signature: &[u8],
+) -> Result<(), TransparencyPublishError> {
+    persist_directory(
+        &publication_adoption_root(checkout_root, &entry.version),
+        &[
+            ("ledger-entry.json", body),
+            ("ledger-entry.json.minisig", signature),
+        ],
+    )
+}
+
+fn require_persisted_adoption(
+    checkout_root: &Path,
+    adopted: &ChainEntry,
+) -> Result<(), TransparencyPublishError> {
+    let root = publication_adoption_root(checkout_root, &adopted.model.version);
+    if !root.exists() {
+        return Ok(());
+    }
+    let signature = adopted
+        .signature
+        .as_ref()
+        .ok_or(TransparencyPublishError::StageConflict)?;
+    if fs::read(root.join("ledger-entry.json")).is_ok_and(|bytes| bytes == adopted.bytes)
+        && fs::read(root.join("ledger-entry.json.minisig")).is_ok_and(|bytes| bytes == *signature)
+    {
+        return Ok(());
+    }
+    Err(TransparencyPublishError::StageConflict)
+}
+
+fn remove_archive_ack(checkout_root: &Path, version: &str) -> Result<(), TransparencyPublishError> {
+    remove_file_synced(
+        &publication_version_recovery_root(checkout_root, version).join(TRANSPARENCY_ARCHIVE_ACK),
+    )
+}
+
+fn remove_publication_pointer_recovery(
+    checkout_root: &Path,
+    version: &str,
+) -> Result<(), TransparencyPublishError> {
+    let root = publication_pointer_recovery_root(checkout_root, version);
+    match fs::remove_dir_all(&root) {
+        Ok(()) => sync_parent(&root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(TransparencyPublishError::StageInvalid),
+    }
+}
+
+fn remove_file_synced(path: &Path) -> Result<(), TransparencyPublishError> {
+    match fs::remove_file(path) {
+        Ok(()) => sync_parent(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(TransparencyPublishError::StageInvalid),
+    }
 }
 
 pub fn parse_archive_receipt(bytes: &[u8]) -> Result<String, TransparencyPublishError> {
@@ -2437,6 +2741,49 @@ fn require_pointer_unchanged<T: TransparencyObjectTransport>(
         None if response.status == 404 => Ok(()),
         _ => Err(TransparencyPublishError::ConcurrentPublish),
     }
+}
+
+fn repair_derived_ledger<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>(
+    access: &AccessContext<'_>,
+    transport: &T,
+    runner: &R,
+    recovery_location: Option<PointerRecoveryLocation<'_>>,
+    adoption_location: Option<&Path>,
+    mut chain: ChainState,
+) -> Result<ChainState, TransparencyPublishError> {
+    for _ in 0..8 {
+        if !chain.ledger_needs_rederive {
+            return Ok(chain);
+        }
+        if require_pointer_unchanged(transport, &chain).is_err() {
+            chain = fetch_chain_state(
+                access,
+                transport,
+                runner,
+                recovery_location,
+                adoption_location,
+            )?;
+            continue;
+        }
+        put_mutable_and_verify(
+            transport,
+            &format!("releases/{PRODUCT}/ledger.jsonl"),
+            &render_ledger(&chain.entries),
+            None,
+        )?;
+        if require_pointer_unchanged(transport, &chain).is_ok() {
+            chain.ledger_needs_rederive = false;
+            return Ok(chain);
+        }
+        chain = fetch_chain_state(
+            access,
+            transport,
+            runner,
+            recovery_location,
+            adoption_location,
+        )?;
+    }
+    Err(TransparencyPublishError::ConcurrentPublish)
 }
 
 fn put_mutable_and_verify<T: TransparencyObjectTransport>(
@@ -2517,13 +2864,8 @@ fn adopt_racing_entry<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>
     transport: &T,
     runner: &R,
     chain: &ChainState,
-    staged: &mut StagedPublication,
+    staged: &StagedPublication,
 ) -> Result<(), TransparencyPublishError> {
-    match fs::remove_file(staged.root.join(TRANSPARENCY_ARCHIVE_ACK)) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(TransparencyPublishError::StageInvalid),
-    }
     let entry_response = fetch_required(
         transport,
         object(
@@ -2579,24 +2921,6 @@ fn adopt_racing_entry<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>
         });
     }
 
-    let signed_at = UtcTimestamp::parse(&staged.pointer.signed_at)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    let tip = chain_tip(&ChainEntry {
-        model: entry.clone(),
-        bytes: entry_response.body.clone(),
-        signature: Some(signature_response.body.clone()),
-    });
-    let pointer = build_transparency_pointer(&tip, &signed_at)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    let pointer_bytes =
-        render_transparency_latest(&pointer).map_err(|_| TransparencyPublishError::StageInvalid)?;
-    let pointer_signature = sign_bytes(
-        runner,
-        &publish_signing_material(request),
-        &pointer_bytes,
-        &format_latest_trusted_comment(&pointer),
-        &staged.root.join("adopted-pointer-signing"),
-    )?;
     let mut ledger_bytes = Vec::new();
     for prior in &chain.entries {
         ledger_bytes.extend_from_slice(&prior.bytes);
@@ -2608,33 +2932,15 @@ fn adopt_racing_entry<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>
             observed: "a racing entry with non-monotonic chain time",
         }
     })?;
-    let version_dir = staged.archive.join(&staged.version_prefix);
-    let product_dir = staged.archive.join(format!("releases/{PRODUCT}"));
-    fs::write(version_dir.join("ledger-entry.json"), &entry_response.body)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    fs::write(
-        version_dir.join("ledger-entry.json.minisig"),
+    persist_adopted_entry(
+        request.checkout_root,
+        &entry,
+        &entry_response.body,
         &signature_response.body,
-    )
-    .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    fs::write(product_dir.join("ledger.jsonl"), &ledger_bytes)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    fs::write(product_dir.join("latest.json"), &pointer_bytes)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    fs::write(product_dir.join("latest.json.minisig"), &pointer_signature)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    let manifest = render_staging_manifest_v1(&staged.archive)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    fs::write(staged.root.join("stage-manifest.v1"), &manifest.bytes)
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
-    staged.entry = entry;
-    staged.entry_bytes = entry_response.body;
-    staged.entry_signature = signature_response.body;
-    staged.pointer = pointer;
-    staged.pointer_bytes = pointer_bytes;
-    staged.pointer_signature = pointer_signature;
-    staged.ledger_bytes = ledger_bytes;
-    staged.manifest = manifest;
+    )?;
+    remove_archive_ack(request.checkout_root, &entry.version)?;
+    remove_publication_pointer_recovery(request.checkout_root, &entry.version)?;
+    fs::remove_dir_all(&staged.root).map_err(|_| TransparencyPublishError::StageInvalid)?;
     Ok(())
 }
 
@@ -2775,16 +3081,11 @@ fn existing_archive_ack(
     request: &TransparencyPublishRequest<'_>,
     manifest: &Manifest,
 ) -> Option<String> {
-    let root = request
-        .checkout_root
-        .join(TRANSPARENCY_STAGE_ROOT)
-        .join(PRODUCT)
-        .join(&manifest.version);
-    let record = fs::read(root.join("stage-manifest.v1")).ok()?;
-    let stage = verify_staging_manifest_v1(&root.join("archive"), &record).ok()?;
-    let expected = format!("ARCHIVED {}\n", stage.sha256);
-    (fs::read(root.join(TRANSPARENCY_ARCHIVE_ACK)).ok()? == expected.as_bytes())
-        .then_some(stage.sha256)
+    let path = publication_version_recovery_root(request.checkout_root, &manifest.version)
+        .join(TRANSPARENCY_ARCHIVE_ACK);
+    let bytes = fs::read(path).ok()?;
+    let digest = parse_archive_receipt(&bytes).ok()?;
+    (bytes == format!("ARCHIVED {digest}\n").as_bytes()).then_some(digest)
 }
 
 fn render_ledger(entries: &[ChainEntry]) -> Vec<u8> {

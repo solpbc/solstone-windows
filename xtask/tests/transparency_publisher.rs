@@ -29,7 +29,7 @@ use xtask::transparency_format::{
 use xtask::transparency_publisher::{
     parse_archive_receipt, publish_transparency, resign_transparency_pointer,
     resolve_transparency_environment_with, TransparencyPublishError, TransparencyPublishRequest,
-    TransparencyResignRequest, TRANSPARENCY_ENV_NAMES,
+    TransparencyResignRequest, TRANSPARENCY_ENV_NAMES, TRANSPARENCY_RECOVERY_ROOT,
 };
 use xtask::transparency_stage::render_staging_manifest_v1;
 use xtask::transparency_transport::{
@@ -44,6 +44,7 @@ struct FakePublisherRunner {
     verification_behavior: VerificationBehavior,
     mutate_candidate_at_snapshot: Option<PathBuf>,
     phases: Mutex<Vec<&'static str>>,
+    signing_calls: AtomicUsize,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +58,7 @@ enum ArchiveBehavior {
 enum VerificationBehavior {
     Valid,
     RejectLedgerEntry,
+    RejectPointer,
 }
 
 impl CommandRunner for FakePublisherRunner {
@@ -99,6 +101,7 @@ impl CommandRunner for FakePublisherRunner {
             Some("-v") => Ok(output("minisign 0.11\n")),
             Some("--version") => Ok(output("curl 8.5.0\n")),
             Some("-S") => {
+                self.signing_calls.fetch_add(1, Ordering::SeqCst);
                 let signature_path = argument_value(args, "-x");
                 let comment = argument_value(args, "-t");
                 fs::write(
@@ -117,6 +120,12 @@ impl CommandRunner for FakePublisherRunner {
                         .map(|body| {
                             body.windows(b"transparency-ledger-entry".len())
                                 .any(|window| window == b"transparency-ledger-entry")
+                        })
+                        .map_err(|_| CommandRunnerError::UnexpectedInvocation)?,
+                    VerificationBehavior::RejectPointer => fs::read(argument_value(args, "-m"))
+                        .map(|body| {
+                            body.windows(b"transparency-latest".len())
+                                .any(|window| window == b"transparency-latest")
                         })
                         .map_err(|_| CommandRunnerError::UnexpectedInvocation)?,
                 };
@@ -189,6 +198,7 @@ fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly()
         verification_behavior: VerificationBehavior::Valid,
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
     };
     let transport = DirectoryTransparencyTransport::new(checkout.join("fake-objects"));
     let clock = FixedClock::new("2026-07-22T00:00:00Z").expect("fixed clock");
@@ -307,12 +317,15 @@ fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly()
         stage_names,
         [
             std::ffi::OsString::from("archive"),
-            std::ffi::OsString::from("archive-ack.v1"),
             std::ffi::OsString::from("stage-manifest.v1")
         ]
     );
+    let durable_recovery = checkout
+        .join(TRANSPARENCY_RECOVERY_ROOT)
+        .join(PRODUCT)
+        .join("0.2.11");
     assert_eq!(
-        fs::read(stage_root.join("archive-ack.v1")).expect("durable archive acknowledgment"),
+        fs::read(durable_recovery.join("archive-ack.v1")).expect("durable archive acknowledgment"),
         format!(
             "ARCHIVED {}\n",
             publication
@@ -368,6 +381,7 @@ fn transparency_crash_table_keeps_the_pointer_body_at_the_commit_boundary() {
             None,
             false,
             false,
+            false,
         );
     }
     for mutable_index in 0..3 {
@@ -377,10 +391,23 @@ fn transparency_crash_table_keeps_the_pointer_body_at_the_commit_boundary() {
             Some(mutable_index),
             false,
             false,
+            false,
         );
     }
-    run_crash_case("pointer-moved", None, None, true, false);
-    run_crash_case("committed", None, None, false, true);
+    run_crash_case("pointer-moved", None, None, true, false, false);
+    run_crash_case("committed", None, None, false, true, false);
+}
+
+#[test]
+fn transparency_pointer_recovery_survives_a_cleaned_target_directory() {
+    run_crash_case(
+        "mutable-body-after-clean",
+        None,
+        Some(2),
+        false,
+        false,
+        true,
+    );
 }
 
 #[test]
@@ -494,7 +521,10 @@ fn transparency_signature_verification_failure_leaves_the_next_retry_usable() {
             &failing_runner,
             &FixedClock::new("2026-07-23T00:00:00Z").unwrap(),
         ),
-        Err(TransparencyPublishError::Process)
+        Err(TransparencyPublishError::ChainInvalid {
+            observed: "fetched pointer signature verification failed".to_owned(),
+            expected: "a valid signature over the fetched pointer body".to_owned(),
+        })
     );
     let stage_root = fixture.checkout.join("target/release-transparency-stage");
     assert!(fs::read_dir(&stage_root).unwrap().all(|entry| !entry
@@ -575,6 +605,7 @@ fn transparency_contract_faults_reject_genesis_rollback_signatures_and_snapshot_
         verification_behavior: VerificationBehavior::RejectLedgerEntry,
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
     };
     assert_eq!(
         invalid_signature.publish_with(
@@ -588,6 +619,30 @@ fn transparency_contract_faults_reject_genesis_rollback_signatures_and_snapshot_
         })
     );
 
+    let invalid_pointer = OwnedPublisherFixture::new("pointer-signature");
+    invalid_pointer
+        .publish(&FixedClock::new("2026-07-22T00:00:00Z").unwrap())
+        .unwrap();
+    let rejecting_pointer_runner = FakePublisherRunner {
+        archive_program: invalid_pointer.archive_program.clone(),
+        archive_behavior: ArchiveBehavior::Valid,
+        verification_behavior: VerificationBehavior::RejectPointer,
+        mutate_candidate_at_snapshot: None,
+        phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
+    };
+    assert_eq!(
+        invalid_pointer.publish_with(
+            &invalid_pointer.environment,
+            &rejecting_pointer_runner,
+            &FixedClock::new("2026-07-23T00:00:00Z").unwrap()
+        ),
+        Err(TransparencyPublishError::ChainInvalid {
+            observed: "fetched pointer signature verification failed".to_owned(),
+            expected: "a valid signature over the fetched pointer body".to_owned(),
+        })
+    );
+
     let mut drift = OwnedPublisherFixture::new("snapshot-drift");
     let copied_release = drift.checkout.join("release-dir");
     copy_directory(&drift.release_dir, &copied_release);
@@ -598,6 +653,7 @@ fn transparency_contract_faults_reject_genesis_rollback_signatures_and_snapshot_
         verification_behavior: VerificationBehavior::Valid,
         mutate_candidate_at_snapshot: Some(copied_release.join("assets.win.json")),
         phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
     };
     assert_eq!(
         drift.publish_with(
@@ -694,6 +750,125 @@ fn transparency_derived_ledger_repairs_missing_malformed_and_superset_bytes() {
             .object_bytes(&ledger_destination)
             .expect("repaired ledger superset"),
         expected_ledger
+    );
+}
+
+#[test]
+fn transparency_derived_ledger_repair_follows_a_concurrent_pointer_advance() {
+    let fixture = OwnedPublisherFixture::new("ledger-repair-race");
+    fixture
+        .publish(&FixedClock::new("2026-07-22T00:00:00Z").unwrap())
+        .unwrap();
+    let pointer_destination = TransparencyObjectDestination {
+        plane: TransparencyPlane::S3,
+        key: format!("releases/{PRODUCT}/latest.json"),
+    };
+    let signature_destination = TransparencyObjectDestination {
+        plane: TransparencyPlane::S3,
+        key: format!("releases/{PRODUCT}/latest.json.minisig"),
+    };
+    let ledger_destination = TransparencyObjectDestination {
+        plane: TransparencyPlane::S3,
+        key: format!("releases/{PRODUCT}/ledger.jsonl"),
+    };
+    let first_pointer = fixture
+        .transport
+        .object_bytes(&pointer_destination)
+        .expect("first pointer");
+    let first_signature = fixture
+        .transport
+        .object_bytes(&signature_destination)
+        .expect("first pointer signature");
+
+    let (next_release, next_facts) = versioned_release_fixture(&fixture.checkout, "0.2.12");
+    fixture
+        .publish_candidate(
+            &next_release,
+            &next_facts,
+            &FixedClock::new("2026-07-23T00:00:00Z").unwrap(),
+        )
+        .unwrap();
+    let next_pointer = fixture
+        .transport
+        .object_bytes(&pointer_destination)
+        .expect("advanced pointer");
+    let next_signature = fixture
+        .transport
+        .object_bytes(&signature_destination)
+        .expect("advanced pointer signature");
+    let next_ledger = fixture
+        .transport
+        .object_bytes(&ledger_destination)
+        .expect("advanced ledger");
+
+    fixture
+        .transport
+        .mutable_put(
+            &signature_destination,
+            &first_signature,
+            TransparencyCachePolicy::NoCache,
+            None,
+        )
+        .unwrap();
+    fixture
+        .transport
+        .mutable_put(
+            &pointer_destination,
+            &first_pointer,
+            TransparencyCachePolicy::NoCache,
+            None,
+        )
+        .unwrap();
+    fixture
+        .transport
+        .mutable_put(
+            &ledger_destination,
+            b"malformed derived bytes\n",
+            TransparencyCachePolicy::NoCache,
+            None,
+        )
+        .unwrap();
+    let head_log = fs::read(fixture.checkout.join("transparency-head-log.jsonl")).unwrap();
+    let first_row = head_log
+        .split_inclusive(|byte| *byte == b'\n')
+        .next()
+        .expect("first head row");
+    fs::write(
+        fixture.checkout.join("transparency-head-log.jsonl"),
+        first_row,
+    )
+    .unwrap();
+
+    let transport = ConcurrentLedgerRepairTransport {
+        inner: &fixture.transport,
+        replacement_pointer: next_pointer,
+        replacement_signature: next_signature,
+        replacement_ledger: next_ledger.clone(),
+        advanced: AtomicBool::new(false),
+    };
+    let publication = publish_transparency(
+        &TransparencyPublishRequest {
+            checkout_root: &fixture.checkout,
+            release_dir: &fixture.release_dir,
+            evidence_dir: &fixture.evidence_dir,
+            checkout_facts: &fixture.facts,
+            environment: &fixture.environment,
+            minisign_program: &fixture.minisign_program,
+            curl_program: &fixture.curl_program,
+        },
+        &transport,
+        &fixture.runner,
+        &FixedClock::new("2026-07-24T00:00:00Z").unwrap(),
+    )
+    .expect("repair follows concurrent pointer");
+    assert!(publication.already_published);
+    assert!(transport.advanced.load(Ordering::SeqCst));
+    assert_eq!(
+        fixture
+            .transport
+            .object_bytes(&ledger_destination)
+            .expect("repaired advanced ledger"),
+        next_ledger
     );
 }
 
@@ -1217,6 +1392,81 @@ struct CrashTransport {
     pointer_reads: AtomicUsize,
 }
 
+struct ConcurrentLedgerRepairTransport<'a> {
+    inner: &'a DirectoryTransparencyTransport,
+    replacement_pointer: Vec<u8>,
+    replacement_signature: Vec<u8>,
+    replacement_ledger: Vec<u8>,
+    advanced: AtomicBool,
+}
+
+impl TransparencyObjectTransport for ConcurrentLedgerRepairTransport<'_> {
+    fn create_only_put(
+        &self,
+        destination: &TransparencyObjectDestination,
+        body: &[u8],
+        cache: TransparencyCachePolicy,
+    ) -> Result<ObservedHttpResponse, TransparencyTransportError> {
+        self.inner.create_only_put(destination, body, cache)
+    }
+
+    fn mutable_put(
+        &self,
+        destination: &TransparencyObjectDestination,
+        body: &[u8],
+        cache: TransparencyCachePolicy,
+        if_match: Option<&str>,
+    ) -> Result<ObservedHttpResponse, TransparencyTransportError> {
+        if destination.key == format!("releases/{PRODUCT}/ledger.jsonl")
+            && !self.advanced.swap(true, Ordering::SeqCst)
+        {
+            self.inner.mutable_put(
+                &TransparencyObjectDestination {
+                    plane: TransparencyPlane::S3,
+                    key: format!("releases/{PRODUCT}/ledger.jsonl"),
+                },
+                &self.replacement_ledger,
+                TransparencyCachePolicy::NoCache,
+                None,
+            )?;
+            self.inner.mutable_put(
+                &TransparencyObjectDestination {
+                    plane: TransparencyPlane::S3,
+                    key: format!("releases/{PRODUCT}/latest.json.minisig"),
+                },
+                &self.replacement_signature,
+                TransparencyCachePolicy::NoCache,
+                None,
+            )?;
+            self.inner.mutable_put(
+                &TransparencyObjectDestination {
+                    plane: TransparencyPlane::S3,
+                    key: format!("releases/{PRODUCT}/latest.json"),
+                },
+                &self.replacement_pointer,
+                TransparencyCachePolicy::NoCache,
+                None,
+            )?;
+        }
+        self.inner.mutable_put(destination, body, cache, if_match)
+    }
+
+    fn get(
+        &self,
+        destination: &TransparencyObjectDestination,
+        cache: TransparencyFetchPolicy,
+    ) -> Result<ObservedHttpResponse, TransparencyTransportError> {
+        self.inner.get(destination, cache)
+    }
+
+    fn list(
+        &self,
+        destination: &TransparencyListDestination,
+    ) -> Result<ObservedHttpResponse, TransparencyTransportError> {
+        self.inner.list(destination)
+    }
+}
+
 impl CrashTransport {
     fn arm_mutable_failure(&self, offset: usize) {
         self.fail_mutable_at.store(
@@ -1463,6 +1713,7 @@ fn assert_archive_fault_fails_before_publication(label: &str, archive_behavior: 
         verification_behavior: VerificationBehavior::Valid,
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
     };
     let transport = DirectoryTransparencyTransport::new(checkout.join("fake-objects"));
     let clock = FixedClock::new("2026-07-22T00:00:00Z").expect("fixed clock");
@@ -1503,7 +1754,11 @@ fn assert_archive_fault_fails_before_publication(label: &str, archive_behavior: 
         ArchiveBehavior::Valid => unreachable!("valid archive is not a fault case"),
     };
     assert_eq!(error, expected);
-    assert!(!stage_root.join("archive-ack.v1").exists());
+    assert!(!checkout
+        .join(TRANSPARENCY_RECOVERY_ROOT)
+        .join(PRODUCT)
+        .join("0.2.11/archive-ack.v1")
+        .exists());
     assert!(transport.calls().iter().all(|call| !matches!(
         call,
         RecordedTransparencyCall::CreateOnlyPut(_, _, _)
@@ -1517,6 +1772,7 @@ fn run_crash_case(
     fail_mutable_at: Option<usize>,
     move_pointer_on_recheck: bool,
     expect_committed_body: bool,
+    remove_target_before_retry: bool,
 ) {
     let checkout = temporary_root(label);
     fs::write(checkout.join("transparency-head-log.jsonl"), b"").expect("create empty head log");
@@ -1535,6 +1791,7 @@ fn run_crash_case(
         verification_behavior: VerificationBehavior::Valid,
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
     };
     let transport = CrashTransport {
         inner: DirectoryTransparencyTransport::new(checkout.join("fake-objects")),
@@ -1589,6 +1846,16 @@ fn run_crash_case(
                 expected: "HTTP 200..299".to_owned(),
             })
         );
+        if remove_target_before_retry {
+            let recovery_root = checkout
+                .join(TRANSPARENCY_RECOVERY_ROOT)
+                .join(PRODUCT)
+                .join("0.2.11/pointer-recovery");
+            assert!(recovery_root.is_dir());
+            fs::remove_dir_all(checkout.join("target"))
+                .expect("simulate cargo clean target removal");
+            assert!(recovery_root.is_dir());
+        }
         let retry = publish_transparency(
             &TransparencyPublishRequest {
                 checkout_root: &checkout,
@@ -1605,6 +1872,9 @@ fn run_crash_case(
         )
         .expect("retry resumes the exact staged mutable pair");
         assert_eq!(retry.version, "0.2.11");
+        if remove_target_before_retry {
+            assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 2);
+        }
         assert!(transport
             .inner
             .object_bytes(&TransparencyObjectDestination {
@@ -1632,6 +1902,7 @@ fn run_race_case(label: &str, mode: RaceMode) {
         verification_behavior: VerificationBehavior::Valid,
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
     };
     let transport = RaceTransport {
         inner: DirectoryTransparencyTransport::new(checkout.join("fake-objects")),
@@ -1656,6 +1927,7 @@ fn run_race_case(label: &str, mode: RaceMode) {
         &FixedClock::new("2026-07-22T00:00:00Z").unwrap(),
     )
     .expect_err("racing create must stop before mutable writes");
+    assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 2);
     assert!(transport
         .inner
         .calls()
@@ -1671,13 +1943,11 @@ fn run_race_case(label: &str, mode: RaceMode) {
         ),
         RaceMode::ValidOwn => {
             assert_eq!(error, TransparencyPublishError::AdoptedRemoteEntry);
-            let staged = fs::read(
+            let persisted = fs::read(
                 checkout
-                    .join("target/release-transparency-stage")
+                    .join(TRANSPARENCY_RECOVERY_ROOT)
                     .join(PRODUCT)
-                    .join("0.2.11/archive/releases")
-                    .join(PRODUCT)
-                    .join("v/0.2.11/ledger-entry.json"),
+                    .join("0.2.11/adopted-entry/ledger-entry.json"),
             )
             .expect("persist adopted entry");
             let remote = transport
@@ -1687,7 +1957,12 @@ fn run_race_case(label: &str, mode: RaceMode) {
                     key: format!("releases/{PRODUCT}/v/0.2.11/ledger-entry.json"),
                 })
                 .expect("read racing entry");
-            assert_eq!(staged, remote);
+            assert_eq!(persisted, remote);
+            assert!(!checkout
+                .join("target/release-transparency-stage")
+                .join(PRODUCT)
+                .join("0.2.11")
+                .exists());
             let completed = publish_transparency(
                 &TransparencyPublishRequest {
                     checkout_root: &checkout,
@@ -1707,6 +1982,7 @@ fn run_race_case(label: &str, mode: RaceMode) {
                 completed.entry_sha256,
                 xtask::transparency_format::transparency_sha256_hex(&remote)
             );
+            assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 3);
         }
     }
 }
@@ -1746,6 +2022,7 @@ impl OwnedPublisherFixture {
                 verification_behavior: VerificationBehavior::Valid,
                 mutate_candidate_at_snapshot: None,
                 phases: Mutex::new(Vec::new()),
+                signing_calls: AtomicUsize::new(0),
             },
             transport: DirectoryTransparencyTransport::new(checkout.join("fake-objects")),
             minisign_program: absolute_program("minisign"),
