@@ -1,0 +1,42 @@
+Verifying: solstone-setup-0.2.11.exe
+Signature Index: 0 (Primary Signature)
+Hash of file (sha256): 7B8ADA6779F596E814CAC77912C194F12CAC47ADE87540D2AFB4B69C7B34421E
+Signing Certificate Chain:
+    Issued to: DigiCert Assured ID Root CA
+    Issued by: DigiCert Assured ID Root CA
+    Expires:   Sun Nov 09 17:00:00 2031
+    SHA1 hash: 0563B8630D62D75ABBC8AB1E4BDFB5A899B24D43
+        Issued to: DigiCert Trusted Root G4
+        Issued by: DigiCert Assured ID Root CA
+        Expires:   Sun Nov 09 16:59:59 2031
+        SHA1 hash: A99D5B79E9F1CDA59CDAB6373169D5353F5874C6
+            Issued to: DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1
+            Issued by: DigiCert Trusted Root G4
+            Expires:   Mon Apr 28 16:59:59 2036
+            SHA1 hash: 7B0F360B775F76C94A12CA48445AA2D2A875701C
+                Issued to: sol pbc
+                Issued by: DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1
+                Expires:   Mon Jun 21 16:59:59 2027
+                SHA1 hash: AC5472D41D5F63E339468E41F7B4438126E84860
+The signature is timestamped: Wed Jul 22 01:33:32 2026
+Timestamp Verified by:
+    Issued to: DigiCert Assured ID Root CA
+    Issued by: DigiCert Assured ID Root CA
+    Expires:   Sun Nov 09 17:00:00 2031
+    SHA1 hash: 0563B8630D62D75ABBC8AB1E4BDFB5A899B24D43
+        Issued to: DigiCert Trusted Root G4
+        Issued by: DigiCert Assured ID Root CA
+        Expires:   Sun Nov 09 16:59:59 2031
+        SHA1 hash: A99D5B79E9F1CDA59CDAB6373169D5353F5874C6
+            Issued to: DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1
+            Issued by: DigiCert Trusted Root G4
+            Expires:   Thu Jan 14 16:59:59 2038
+            SHA1 hash: 07894D00FC194A17DB273AEB5CF8FACEF14423A4
+                Issued to: DigiCert SHA256 RSA4096 Timestamp Responder 2025 1
+                Issued by: DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1
+                Expires:   Wed Sep 03 16:59:59 2036
+                SHA1 hash: DD6230AC860A2D306BDA38B16879523007FB417E
+Successfully verified: solstone-setup-0.2.11.exe
+Number of signatures successfully Verified: 1
+Number of warnings: 0
+Number of errors: 0

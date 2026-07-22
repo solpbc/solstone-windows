@@ -77,38 +77,7 @@ fn action(program: &str) -> SelectedAction {
 }
 
 fn accepted_grammar() -> String {
-    format!(
-        concat!(
-            "Verifying: solstone-setup-0.2.11.exe\n",
-            "Signature Index: 0 (Primary Signature)\n",
-            "Hash of file (sha256): AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
-            "Signing Certificate Chain:\n",
-            "  Issued to: Public Root CA\n",
-            "  Issued by: Public Root CA\n",
-            "  Expires: Sat Jun 23 23:04:01 2035\n",
-            "  SHA1 hash: 1111111111111111111111111111111111111111\n",
-            "    Issued to: sol pbc\n",
-            "    Issued by: Public Code Signing CA\n",
-            "    Expires: Wed May 06 19:24:54 2027\n",
-            "    SHA1 hash: {}\n",
-            "The signature is timestamped: Tue Jul 21 12:00:00 2026\n",
-            "Timestamp protocol: RFC3161\n",
-            "Timestamp Verified by:\n",
-            "  Issued to: Public Timestamp Root\n",
-            "  Issued by: Public Timestamp Root\n",
-            "  Expires: Mon Sep 30 19:32:25 2030\n",
-            "  SHA1 hash: 2222222222222222222222222222222222222222\n",
-            "    Issued to: Public Timestamp Service\n",
-            "    Issued by: Public Timestamp Root\n",
-            "    Expires: Wed Apr 22 20:42:47 2027\n",
-            "    SHA1 hash: 3333333333333333333333333333333333333333\n",
-            "Successfully verified: solstone-setup-0.2.11.exe\n",
-            "Number of signatures successfully Verified: 1\n",
-            "Number of warnings: 0\n",
-            "Number of errors: 0\n"
-        ),
-        PUBLIC_LEAF_UPPER
-    )
+    include_str!("fixtures/signtool/verify-signed-setup.txt").to_owned()
 }
 
 fn command(candidate: &Candidate, status: i32, stdout: &[u8], stderr: &[u8]) -> FakeCommand {
@@ -196,6 +165,7 @@ fn unsigned_mode_provably_invokes_no_signer() {
 fn accepted_verbose_grammar_uses_selected_tool_and_yields_signed_verified() {
     let candidate = Candidate::new("accepted");
     let grammar = accepted_grammar();
+    assert_eq!(grammar.matches(PUBLIC_LEAF_UPPER).count(), 1);
     let runner = FakeCommandRunner::new(vec![command(&candidate, 0, grammar.as_bytes(), b"")]);
     let verified = verify_with(&candidate, &runner, Path::new(SIGNTOOL), &action(SIGNTOOL))
         .expect("accept complete selected SignTool grammar");
@@ -203,8 +173,8 @@ fn accepted_verbose_grammar_uses_selected_tool_and_yields_signed_verified() {
     assert_eq!(verified.signing_mode, SIGNED_VERIFIED_MODE);
     assert_eq!(verified.setup_sha256.as_deref().map(str::len), Some(64));
     assert_eq!(runner.remaining().expect("read fake queue"), 0);
-    // The real certificate chain and RFC 3161 timestamp exercise is box-only
-    // post-ship. CI witnesses this fail-closed parser and selected-path call.
+    // The real certificate and signing exercise is box-only post-ship. CI witnesses
+    // this fail-closed verification grammar and selected-path call.
 }
 
 #[test]
@@ -304,19 +274,37 @@ fn chain_timestamp_exit_and_grammar_failures_are_distinct() {
             "timestamp-absent",
             0,
             accepted_grammar().replace(
-                "The signature is timestamped: Tue Jul 21 12:00:00 2026\n",
+                "The signature is timestamped: Wed Jul 22 01:33:32 2026\n",
                 "",
             ),
             SigningError::MissingTimestamp,
         ),
         (
-            "timestamp-invalid",
+            "timestamp-chain-absent",
+            0,
+            accepted_grammar().replace("Timestamp Verified by:\n", ""),
+            SigningError::MissingTimestamp,
+        ),
+        (
+            "legacy-protocol-line",
             0,
             accepted_grammar().replace(
-                "Timestamp protocol: RFC3161",
-                "Timestamp protocol: Authenticode",
+                "The signature is timestamped: Wed Jul 22 01:33:32 2026\n",
+                concat!(
+                    "The signature is timestamped: Wed Jul 22 01:33:32 2026\n",
+                    "Timestamp protocol: RFC3161\n"
+                ),
             ),
-            SigningError::InvalidRfc3161Timestamp,
+            SigningError::GrammarDrift,
+        ),
+        (
+            "timestamp-chain-mangled",
+            0,
+            accepted_grammar().replace(
+                "                SHA1 hash: DD6230AC860A2D306BDA38B16879523007FB417E\n",
+                "",
+            ),
+            SigningError::GrammarDrift,
         ),
         (
             "grammar-drift",

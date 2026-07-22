@@ -68,7 +68,6 @@ pub enum SigningError {
     UntrustedChain,
     NonzeroExit,
     MissingTimestamp,
-    InvalidRfc3161Timestamp,
     GrammarDrift,
 }
 
@@ -138,10 +137,6 @@ impl fmt::Display for SigningError {
             Self::MissingTimestamp => write!(
                 formatter,
                 "Authenticode signature has no single verified timestamp chain; rebuild with the required RFC 3161 timestamp"
-            ),
-            Self::InvalidRfc3161Timestamp => write!(
-                formatter,
-                "Authenticode timestamp is not one verified RFC 3161 timestamp statement; rebuild with the approved RFC 3161 signer template"
             ),
             Self::GrammarDrift => write!(
                 formatter,
@@ -308,6 +303,7 @@ fn parse_signtool_output(
         return Err(SigningError::MissingSignature);
     }
 
+    // The closed policy pins the timestamp requirement, so verification is unconditional.
     let timestamp_statements = lines
         .iter()
         .filter(|line| line.starts_with("The signature is timestamped: "))
@@ -318,13 +314,6 @@ fn parse_signtool_output(
         .count();
     if timestamp_statements != 1 || timestamp_chains != 1 {
         return Err(SigningError::MissingTimestamp);
-    }
-    let rfc3161_statements = lines
-        .iter()
-        .filter(|line| **line == "Timestamp protocol: RFC3161")
-        .count();
-    if rfc3161_statements != 1 {
-        return Err(SigningError::InvalidRfc3161Timestamp);
     }
 
     let mut cursor = 0usize;
@@ -345,7 +334,6 @@ fn parse_signtool_output(
     if timestamp.trim().is_empty() {
         return Err(SigningError::GrammarDrift);
     }
-    expect_exact(&lines, &mut cursor, "Timestamp protocol: RFC3161")?;
     expect_exact(&lines, &mut cursor, "Timestamp Verified by:")?;
     let timestamp_thumbprints =
         parse_certificate_chain(&lines, &mut cursor, "Successfully verified: ")?;

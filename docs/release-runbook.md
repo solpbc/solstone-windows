@@ -237,10 +237,13 @@ the environment is not provisioned or the credentials cannot sign.
 
 After Velopack emits the final setup bytes, the finalizer invokes the actual
 resolver-selected SignTool with `/pa /all /v`. It requires one Authenticode
-signature, the public policy leaf thumbprint, trusted chain-policy success, and
-one valid RFC 3161 timestamp chain. Parsed success earns manifest
-`native_tools.signing_mode = "signed-verified"`; process exit or success prose
-alone is insufficient.
+signature, the public policy leaf thumbprint, trusted chain-policy success,
+one timestamp statement, and one verified timestamp certificate chain
+terminating at the successful-verification line. That output states no
+timestamp protocol, so RFC 3161 is established at sign time by the KeyLocker
+`--signTemplate` path, not asserted from verify output. Parsed success earns
+manifest `native_tools.signing_mode = "signed-verified"`; process exit or
+success prose alone is insufficient.
 
 ## Native proof
 

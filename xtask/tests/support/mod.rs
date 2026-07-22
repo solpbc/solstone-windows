@@ -89,7 +89,6 @@ pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 5] = [
 
 const ADVISORY_REPOSITORY: &str = "advisory-db-3157b0e258782691";
 const ADVISORY_ARCHIVE: &[u8] = b"deterministic RustSec git archive bytes";
-const PUBLIC_LEAF_UPPER: &str = "AC5472D41D5F63E339468E41F7B4438126E84860";
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
@@ -1452,22 +1451,7 @@ fn releases_bytes(
 }
 
 fn accepted_signtool_grammar() -> String {
-    format!(
-        concat!(
-            "Verifying: solstone-setup-0.2.11.exe\n",
-            "Signature Index: 0 (Primary Signature)\n",
-            "Hash of file (sha256): AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
-            "Signing Certificate Chain:\n",
-            "Issued to: Public Root CA\nIssued by: Public Root CA\nExpires: 2035\nSHA1 hash: 1111111111111111111111111111111111111111\n",
-            "Issued to: sol pbc\nIssued by: Public Code Signing CA\nExpires: 2027\nSHA1 hash: {}\n",
-            "The signature is timestamped: Tue Jul 21 12:00:00 2026\n",
-            "Timestamp protocol: RFC3161\nTimestamp Verified by:\n",
-            "Issued to: Public Timestamp Root\nIssued by: Public Timestamp Root\nExpires: 2030\nSHA1 hash: 2222222222222222222222222222222222222222\n",
-            "Successfully verified: solstone-setup-0.2.11.exe\n",
-            "Number of signatures successfully Verified: 1\nNumber of warnings: 0\nNumber of errors: 0\n"
-        ),
-        PUBLIC_LEAF_UPPER
-    )
+    include_str!("../fixtures/signtool/verify-signed-setup.txt").to_owned()
 }
 
 fn hex_sha1(bytes: &[u8]) -> String {
