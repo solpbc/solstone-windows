@@ -548,9 +548,12 @@ fn rust_release_manifest_rejects_checkout_binding_drift() {
     let tree = TempTree::good();
     let mut facts = tree.facts.clone();
     facts.source_dirty = true;
+    let dirty_commit = facts.source_commit.clone();
     assert_eq!(
         rust_release_manifest::validate_release_dir_with_facts(&tree.root.0, &facts),
-        Err(ManifestError::SourceDirty)
+        Err(ManifestError::SourceDirty {
+            commit: dirty_commit
+        })
     );
 
     let mut manifest = read_manifest(&tree.manifest_path());

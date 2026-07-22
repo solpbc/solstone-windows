@@ -179,7 +179,7 @@ impl<'a, R: CommandRunner + ?Sized> CurlTransparencyTransport<'a, R> {
         &self,
         destination: &TransparencyListDestination,
     ) -> Result<String, TransparencyTransportError> {
-        validate_object_key(&destination.prefix)?;
+        validate_list_prefix(&destination.prefix)?;
         Ok(format!(
             "{}/{}?list-type=2&prefix={}",
             self.s3_endpoint.trim_end_matches('/'),
@@ -413,6 +413,14 @@ fn is_safe_bucket(value: &str) -> bool {
 }
 
 fn validate_object_key(value: &str) -> Result<(), TransparencyTransportError> {
+    validate_key_core(value)
+}
+
+fn validate_list_prefix(value: &str) -> Result<(), TransparencyTransportError> {
+    validate_key_core(value.strip_suffix('/').unwrap_or(value))
+}
+
+fn validate_key_core(value: &str) -> Result<(), TransparencyTransportError> {
     if value.is_empty()
         || value.starts_with('/')
         || value.contains('\\')

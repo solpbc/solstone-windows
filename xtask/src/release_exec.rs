@@ -3,11 +3,13 @@
 
 //! Typed, injectable process execution for release tooling.
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{compiler_fence, Ordering};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandOutput {
@@ -82,6 +84,143 @@ pub trait CommandRunner {
     }
 }
 
+const UNIX_PASSPHRASE_READER: &str = "exec 2>/dev/tty || exit 1\nsaved=$(stty -g) || exit 1\ntrap 'stty \"$saved\"' 0 HUP INT TERM\nprintf 'Transparency signing key passphrase: ' >&2\nstty -echo || exit 1\nIFS= read -r passphrase\nread_status=$?\nstty \"$saved\" || exit 1\ntrap - 0 HUP INT TERM\nprintf '\\n' >&2\n[ \"$read_status\" -eq 0 ] || exit 1\n[ -n \"$passphrase\" ] || exit 1\nprintf '%s\\n' \"$passphrase\"";
+const WINDOWS_PASSPHRASE_READER: &str = "$secure = Read-Host -Prompt 'Transparency signing key passphrase' -AsSecureString; $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); $plain = $null; $bytes = $null; try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr); if ([String]::IsNullOrEmpty($plain)) { exit 1 }; $bytes = [Text.Encoding]::UTF8.GetBytes($plain); $stdout = [Console]::OpenStandardOutput(); $stdout.Write($bytes, 0, $bytes.Length); $stdout.WriteByte(10); $stdout.Flush() } finally { if ($null -ne $bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }; $plain = $null; [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }";
+
+pub(crate) fn build_passphrase_reader_command(
+    windows: bool,
+    system_root: Option<&str>,
+) -> (PathBuf, Vec<String>) {
+    if windows {
+        let system_root = system_root
+            .unwrap_or(r"C:\Windows")
+            .trim_end_matches(['\\', '/']);
+        (
+            PathBuf::from(format!(
+                r"{system_root}\System32\WindowsPowerShell\v1.0\powershell.exe"
+            )),
+            vec![
+                "-NoProfile".to_owned(),
+                "-Command".to_owned(),
+                WINDOWS_PASSPHRASE_READER.to_owned(),
+            ],
+        )
+    } else {
+        (
+            PathBuf::from("/bin/sh"),
+            vec!["-c".to_owned(), UNIX_PASSPHRASE_READER.to_owned()],
+        )
+    }
+}
+
+pub(crate) struct Passphrase {
+    bytes: Vec<u8>,
+}
+
+impl Passphrase {
+    pub(crate) fn from_command_stdout(mut bytes: Vec<u8>) -> Result<Self, ()> {
+        if !bytes
+            .last()
+            .is_some_and(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            wipe_bytes(&mut bytes);
+            return Err(());
+        }
+        while bytes
+            .last()
+            .is_some_and(|byte| matches!(byte, b'\r' | b'\n'))
+        {
+            bytes.truncate(bytes.len() - 1);
+        }
+        if bytes.is_empty() || bytes.iter().any(|byte| byte.is_ascii_control()) {
+            wipe_bytes(&mut bytes);
+            return Err(());
+        }
+        bytes.push(b'\n');
+        Ok(Self { bytes })
+    }
+
+    pub(crate) fn stdin(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn wipe(&mut self) {
+        wipe_bytes(&mut self.bytes);
+    }
+}
+
+impl Drop for Passphrase {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PassphraseAcquisitionError {
+    Invocation,
+    Rejected,
+    InvalidOutput,
+}
+
+pub(crate) struct PassphraseCache<'a> {
+    runner: &'a dyn CommandRunner,
+    cell: OnceCell<Result<Passphrase, PassphraseAcquisitionError>>,
+}
+
+impl<'a> PassphraseCache<'a> {
+    pub(crate) fn new(runner: &'a dyn CommandRunner) -> Self {
+        Self {
+            runner,
+            cell: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn get(&self) -> Result<&Passphrase, ()> {
+        self.cell
+            .get_or_init(|| acquire_passphrase(self.runner))
+            .as_ref()
+            .map_err(|_| ())
+    }
+
+    pub(crate) fn runner(&self) -> &dyn CommandRunner {
+        self.runner
+    }
+}
+
+fn acquire_passphrase(
+    runner: &dyn CommandRunner,
+) -> Result<Passphrase, PassphraseAcquisitionError> {
+    let (program, args) = production_passphrase_reader_command();
+    let mut output = runner
+        .run_interactive(&program, &args, None)
+        .map_err(|_| PassphraseAcquisitionError::Invocation)?;
+    if output.status != 0 {
+        wipe_bytes(&mut output.stdout);
+        return Err(PassphraseAcquisitionError::Rejected);
+    }
+    Passphrase::from_command_stdout(output.stdout)
+        .map_err(|()| PassphraseAcquisitionError::InvalidOutput)
+}
+
+fn wipe_bytes(bytes: &mut [u8]) {
+    for byte in bytes {
+        *byte = 0;
+    }
+    compiler_fence(Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+fn production_passphrase_reader_command() -> (PathBuf, Vec<String>) {
+    build_passphrase_reader_command(false, None)
+}
+
+#[cfg(windows)]
+fn production_passphrase_reader_command() -> (PathBuf, Vec<String>) {
+    // SystemRoot is an OS-standard location, not an operator configuration variable.
+    let system_root = std::env::var("SystemRoot").ok();
+    build_passphrase_reader_command(true, system_root.as_deref())
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProcessCommandRunner;
 
@@ -105,7 +244,7 @@ impl CommandRunner for ProcessCommandRunner {
         stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, stdin, env, false, &[], false)
+        run_process(program, args, stdin, env, &[], false)
     }
 
     fn run_interactive(
@@ -114,7 +253,7 @@ impl CommandRunner for ProcessCommandRunner {
         args: &[String],
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, None, env, false, &[], true)
+        run_process(program, args, None, env, &[], true)
     }
 }
 
@@ -126,7 +265,7 @@ impl CommandRunner for RemovedEnvironmentProcessCommandRunner<'_> {
         stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, stdin, env, false, self.removed, false)
+        run_process(program, args, stdin, env, self.removed, false)
     }
 
     fn run_interactive(
@@ -135,7 +274,7 @@ impl CommandRunner for RemovedEnvironmentProcessCommandRunner<'_> {
         args: &[String],
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
-        run_process(program, args, None, env, false, self.removed, true)
+        run_process(program, args, None, env, self.removed, true)
     }
 }
 
@@ -144,7 +283,6 @@ fn run_process(
     args: &[String],
     stdin: Option<&[u8]>,
     env: Option<&BTreeMap<String, String>>,
-    clear_environment: bool,
     removed_environment: &[&str],
     inherit_stdin: bool,
 ) -> Result<CommandOutput, CommandRunnerError> {
@@ -164,12 +302,8 @@ fn run_process(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if clear_environment {
-        command.env_clear();
-    } else {
-        for name in removed_environment {
-            command.env_remove(name);
-        }
+    for name in removed_environment {
+        command.env_remove(name);
     }
     if let Some(env) = env {
         command.envs(env);
@@ -367,6 +501,47 @@ mod tests {
                 .expect_err("argv drift must fail"),
             CommandRunnerError::UnexpectedInvocation
         );
+    }
+
+    #[test]
+    fn passphrase_reader_command_shapes_are_stable_on_both_platforms() {
+        let (unix_program, unix_args) = build_passphrase_reader_command(false, None);
+        assert_eq!(unix_program, PathBuf::from("/bin/sh"));
+        assert_eq!(unix_args, ["-c", UNIX_PASSPHRASE_READER]);
+
+        let (windows_program, windows_args) =
+            build_passphrase_reader_command(true, Some(r"D:\Windows"));
+        assert_eq!(
+            windows_program,
+            PathBuf::from(r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+        assert_eq!(
+            windows_args,
+            ["-NoProfile", "-Command", WINDOWS_PASSPHRASE_READER]
+        );
+
+        let (fallback_program, _) = build_passphrase_reader_command(true, None);
+        assert_eq!(
+            fallback_program,
+            PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        );
+    }
+
+    #[test]
+    fn passphrase_normalization_reuses_stdout_storage_and_wipes_in_place() {
+        let stdout = b"synthetic secret\r\n".to_vec();
+        let original_pointer = stdout.as_ptr();
+        let mut passphrase =
+            Passphrase::from_command_stdout(stdout).expect("normalize reader output");
+        assert_eq!(passphrase.stdin(), b"synthetic secret\n");
+        assert_eq!(passphrase.stdin().as_ptr(), original_pointer);
+
+        passphrase.wipe();
+        assert!(passphrase.stdin().iter().all(|byte| *byte == 0));
+        assert!(Passphrase::from_command_stdout(Vec::new()).is_err());
+        assert!(Passphrase::from_command_stdout(b"missing newline".to_vec()).is_err());
+        assert!(Passphrase::from_command_stdout(b"\r\n".to_vec()).is_err());
+        assert!(Passphrase::from_command_stdout(b"embedded\0byte\n".to_vec()).is_err());
     }
 
     #[cfg(unix)]

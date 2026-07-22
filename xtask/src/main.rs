@@ -93,9 +93,7 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
     );
     if transparency_head_log_dirty(&context.root, &context.git_program, &runner) == Some(true) {
         let row = transparency_last_head_row(&context.root);
-        eprintln!(
-            "terminal transparency witness: observed prior uncommitted {row}, expected the previous row committed before another publication; commit transparency-head-log.jsonl and retry"
-        );
+        eprintln!("{}", transparency_head_log_guard_diagnostic(&row));
         return ExitCode::FAILURE;
     }
     let release_dir = if release_dir.is_absolute() {
@@ -117,6 +115,10 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
         &runner,
     ) {
         Ok(facts) => facts,
+        Err(xtask::rust_release_manifest::ManifestError::SourceDirty { commit }) => {
+            eprintln!("{}", transparency_dirty_source_diagnostic(&commit));
+            return ExitCode::FAILURE;
+        }
         Err(_) => {
             eprintln!(
                 "terminal transparency candidate: observed unavailable checkout facts, expected a clean source-bound candidate; restore the checkout and retry"
@@ -192,15 +194,14 @@ fn cmd_transparency_publish(args: &[String]) -> ExitCode {
                 context.environment.base_url.trim_end_matches('/'),
                 result.product
             );
-            match transparency_head_log_dirty(&context.root, &context.git_program, &runner) {
-                Some(false) => println!("transparency witness: row present and committed"),
-                Some(true) => println!(
-                    "transparency witness: row written uncommitted; run git add transparency-head-log.jsonl && git commit"
-                ),
-                None => println!(
-                    "transparency witness: unavailable; restore local Git and verify transparency-head-log.jsonl"
-                ),
-            }
+            println!(
+                "{}",
+                transparency_head_log_summary(transparency_head_log_dirty(
+                    &context.root,
+                    &context.git_program,
+                    &runner,
+                ))
+            );
             if result.pointer_requires_resign {
                 println!(
                     "transparency pointer: staged bytes were published after expiry; run make resign-transparency-pointer"
@@ -264,6 +265,12 @@ fn cmd_transparency_resign_pointer() -> ExitCode {
         &xtask::release_clock::SystemClock,
     ) {
         Ok(result) => {
+            if let Some(discarded) = &result.discarded_recovery {
+                println!(
+                    "transparency pointer recovery: discarded stale record version={} chain_length={} tip_sha256={}",
+                    discarded.version, discarded.chain_length, discarded.tip_sha256
+                );
+            }
             println!(
                 "transparency pointer re-signed: product={} version={} chain_length={} tip_sha256={} valid_until={}",
                 result.product,
@@ -386,6 +393,30 @@ fn transparency_head_log_dirty<R: CommandRunner + ?Sized>(
         }
     }
     Some(false)
+}
+
+fn transparency_head_log_summary(dirty: Option<bool>) -> &'static str {
+    match dirty {
+        Some(false) => "transparency witness: row present and committed",
+        Some(true) => {
+            "transparency witness: row written uncommitted; run git add transparency-head-log.jsonl && git commit"
+        }
+        None => {
+            "transparency witness: unavailable; restore local Git and verify transparency-head-log.jsonl"
+        }
+    }
+}
+
+fn transparency_dirty_source_diagnostic(commit: &str) -> String {
+    format!(
+        "terminal transparency candidate: observed dirty source checkout at commit {commit}, expected a clean checkout bound to that commit; restore the checkout and retry"
+    )
+}
+
+fn transparency_head_log_guard_diagnostic(row: &str) -> String {
+    format!(
+        "terminal transparency witness: observed prior uncommitted {row}, expected the previous row committed before another publication; commit transparency-head-log.jsonl and retry"
+    )
 }
 
 fn transparency_last_head_row(root: &Path) -> String {
@@ -900,5 +931,50 @@ mod transparency_cli_tests {
             Some(true)
         );
         assert_eq!(runner.remaining(), Ok(0));
+    }
+
+    #[test]
+    fn transparency_head_log_summaries_cover_all_probe_states() {
+        for (dirty, expected) in [
+            (
+                Some(false),
+                "transparency witness: row present and committed",
+            ),
+            (
+                Some(true),
+                "transparency witness: row written uncommitted; run git add transparency-head-log.jsonl && git commit",
+            ),
+            (
+                None,
+                "transparency witness: unavailable; restore local Git and verify transparency-head-log.jsonl",
+            ),
+        ] {
+            assert_eq!(transparency_head_log_summary(dirty), expected);
+        }
+    }
+
+    #[test]
+    fn transparency_head_log_blocking_guard_is_distinct_from_routine_notice() {
+        let row = "row product=solstone-windows seq=7 version=0.2.17 entry_sha256=abc";
+        let guard = transparency_head_log_guard_diagnostic(row);
+        assert_eq!(
+            guard,
+            "terminal transparency witness: observed prior uncommitted row product=solstone-windows seq=7 version=0.2.17 entry_sha256=abc, expected the previous row committed before another publication; commit transparency-head-log.jsonl and retry"
+        );
+        assert_ne!(guard, transparency_head_log_summary(Some(true)));
+    }
+
+    #[test]
+    fn transparency_dirty_source_diagnostic_names_commit_and_state() {
+        let commit = "a".repeat(40);
+        let diagnostic = transparency_dirty_source_diagnostic(&commit);
+        assert_eq!(
+            diagnostic,
+            format!(
+                "terminal transparency candidate: observed dirty source checkout at commit {commit}, expected a clean checkout bound to that commit; restore the checkout and retry"
+            )
+        );
+        assert!(diagnostic.contains("dirty source checkout"));
+        assert!(diagnostic.contains(&commit));
     }
 }

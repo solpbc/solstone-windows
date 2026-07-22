@@ -14,7 +14,7 @@ use std::time::Instant;
 use serde::de::DeserializeOwned;
 
 use crate::release_clock::{Clock, UtcTimestamp};
-use crate::release_exec::{CommandRunner, CommandRunnerError};
+use crate::release_exec::{CommandRunner, CommandRunnerError, PassphraseCache};
 use crate::release_receipt::{
     render_windows_native_proof_receipt, WindowsNativeProofReceipt, WINDOWS_NATIVE_PROOF_FILENAME,
 };
@@ -165,6 +165,7 @@ pub enum TransparencyPublishError {
     },
     StageInvalid,
     StageConflict,
+    ResignRecoveryInvalid,
     SignatureFailed,
     ArchiveFailed {
         observed: String,
@@ -213,6 +214,7 @@ impl fmt::Display for TransparencyPublishError {
             Self::VersionPrefixPoisoned { version, observed } => write!(formatter, "terminal transparency version: observed {observed} under permanent version {version}, expected an empty prefix or one complete valid own entry; cut the next version"),
             Self::StageInvalid => formatter.write_str("terminal transparency staging: observed malformed or changed staged bytes, expected persisted staging and recovery records; discard target/release-transparency-stage/solstone-windows/<version>/ and .release-transparency-recovery/solstone-windows/<version>/ only after confirming the remote version prefix is empty"),
             Self::StageConflict => formatter.write_str("terminal transparency staging: observed a conflicting local version attempt, expected one byte-stable publication attempt; discard target/release-transparency-stage/solstone-windows/<version>/ and .release-transparency-recovery/solstone-windows/<version>/ only after confirming no remote version object and no archive acknowledgment exist"),
+            Self::ResignRecoveryInvalid => formatter.write_str("terminal transparency pointer recovery: observed unavailable or conflicting resign recovery bytes, expected a durable byte-stable record at .release-transparency-recovery/solstone-windows/.resign-pointer-recovery/; correct the local recovery state before the next attempt"),
             Self::SignatureFailed => formatter.write_str("terminal transparency signature: observed signing or verification failure, expected a locally verified body and trusted comment; restore the signing tools and retry"),
             Self::ArchiveFailed { observed, expected } => write!(formatter, "retryable transparency archive: observed {observed}, expected {expected}; retry after restoring the archive channel"),
             Self::ArchiveReceiptInvalid { observed, expected } => write!(formatter, "retryable transparency archive receipt: observed {observed}, expected {expected}; retry after correcting the archive channel"),
@@ -339,17 +341,17 @@ struct StagedPublication {
 
 static NEXT_SCRATCH_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
-pub fn publish_transparency<T, R, C>(
+pub fn publish_transparency<T, C>(
     request: &TransparencyPublishRequest<'_>,
     transport: &T,
-    runner: &R,
+    runner: &dyn CommandRunner,
     clock: &C,
 ) -> Result<TransparencyPublication, TransparencyPublishError>
 where
     T: TransparencyObjectTransport,
-    R: CommandRunner + ?Sized,
     C: Clock + ?Sized,
 {
+    let passphrases = PassphraseCache::new(runner);
     let started = Instant::now();
     runner.record_phase(STEP_1_PREFLIGHT)?;
     verify_tool_versions(request.minisign_program, request.curl_program, runner)?;
@@ -432,7 +434,7 @@ where
 
     let staged = load_or_build_stage(
         request,
-        runner,
+        &passphrases,
         clock,
         &live_manifest,
         &chain,
@@ -588,22 +590,31 @@ pub struct TransparencyPointerResign {
     pub chain_length: u64,
     pub tip_sha256: String,
     pub valid_until: String,
+    pub discarded_recovery: Option<DiscardedResignPointerIdentity>,
 }
 
-pub fn resign_transparency_pointer<T, R, C>(
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscardedResignPointerIdentity {
+    pub chain_length: u64,
+    pub tip_sha256: String,
+    pub version: String,
+}
+
+pub fn resign_transparency_pointer<T, C>(
     request: &TransparencyResignRequest<'_>,
     transport: &T,
-    runner: &R,
+    runner: &dyn CommandRunner,
     clock: &C,
 ) -> Result<TransparencyPointerResign, TransparencyPublishError>
 where
     T: TransparencyObjectTransport,
-    R: CommandRunner + ?Sized,
     C: Clock + ?Sized,
 {
-    verify_tool_versions(request.minisign_program, request.curl_program, runner)?;
+    let passphrases = PassphraseCache::new(runner);
+    verify_tool_versions(request.minisign_program, request.curl_program, runner)
+        .map_err(map_resign_recovery_error)?;
     fs::create_dir_all(request.checkout_root.join(TRANSPARENCY_STAGE_ROOT))
-        .map_err(|_| TransparencyPublishError::StageInvalid)?;
+        .map_err(|_| TransparencyPublishError::ResignRecoveryInvalid)?;
     let access = AccessContext {
         checkout_root: request.checkout_root,
         environment: request.environment,
@@ -614,8 +625,9 @@ where
         root: &recovery_root,
         kind: PointerRecoveryKind::Resign,
     });
-    let chain = fetch_chain_state(&access, transport, runner, recovery_location, None)?;
-    check_head_log_floor(request.checkout_root, &chain)?;
+    let chain = fetch_chain_state(&access, transport, runner, recovery_location, None)
+        .map_err(map_resign_recovery_error)?;
+    check_head_log_floor(request.checkout_root, &chain).map_err(map_resign_recovery_error)?;
     let tip = chain
         .entries
         .last()
@@ -630,63 +642,60 @@ where
                 root: &recovery_root,
                 kind: PointerRecoveryKind::Resign,
             },
+        )
+        .map_err(map_resign_recovery_error)?,
+        _ => build_and_persist_resign_pointer_recovery(
+            request,
+            runner,
+            &passphrases,
+            clock,
+            &identity,
+            &recovery_root,
         )?,
-        _ => {
-            let signed_at = clock
-                .now()
-                .map_err(|_| TransparencyPublishError::StageInvalid)?;
-            let pointer = build_transparency_pointer(&identity, &signed_at)
-                .map_err(|_| TransparencyPublishError::StageInvalid)?;
-            let body = render_transparency_latest(&pointer)
-                .map_err(|_| TransparencyPublishError::StageInvalid)?;
-            let signature = sign_bytes(
-                runner,
-                &SigningMaterial {
-                    minisign_program: request.minisign_program,
-                    secret_key: &request.environment.minisign_secret_key,
-                    public_key: &request.environment.minisign_public_key,
-                },
-                &body,
-                &format_latest_trusted_comment(&pointer),
-                &request
-                    .checkout_root
-                    .join(TRANSPARENCY_STAGE_ROOT)
-                    .join(".resign-pointer"),
-            )?;
-            persist_resign_pointer_recovery(&recovery_root, &body, &signature)?;
-            PendingPointerRecovery {
-                root: recovery_root.clone(),
-                kind: PointerRecoveryKind::Resign,
-                pointer,
-                body,
-                signature,
-                ledger: None,
-            }
-        }
     };
-    if pending.pointer.chain_length != identity.seq
+    let mut discarded_recovery = None;
+    let pending = if pending.pointer.chain_length != identity.seq
         || pending.pointer.tip_sha256 != identity.sha256
         || pending.pointer.version != identity.version
     {
-        return Err(TransparencyPublishError::StageConflict);
-    }
+        discarded_recovery = Some(DiscardedResignPointerIdentity {
+            chain_length: pending.pointer.chain_length,
+            tip_sha256: pending.pointer.tip_sha256,
+            version: pending.pointer.version,
+        });
+        fs::remove_dir_all(&recovery_root)
+            .map_err(|_| TransparencyPublishError::ResignRecoveryInvalid)?;
+        sync_parent(&recovery_root).map_err(map_resign_recovery_error)?;
+        build_and_persist_resign_pointer_recovery(
+            request,
+            runner,
+            &passphrases,
+            clock,
+            &identity,
+            &recovery_root,
+        )?
+    } else {
+        pending
+    };
     let recovery_root = pending.root.clone();
     let pointer = pending.pointer;
     let body = pending.body;
     let signature = pending.signature;
-    require_pointer_unchanged(transport, &chain)?;
+    require_pointer_unchanged(transport, &chain).map_err(map_resign_recovery_error)?;
     put_mutable_and_verify(
         transport,
         &format!("releases/{PRODUCT}/latest.json.minisig"),
         &signature,
         None,
-    )?;
+    )
+    .map_err(map_resign_recovery_error)?;
     put_mutable_and_verify(
         transport,
         &format!("releases/{PRODUCT}/latest.json"),
         &body,
         chain.pointer_etag.as_deref(),
-    )?;
+    )
+    .map_err(map_resign_recovery_error)?;
     let final_body = fetch_required(
         transport,
         object(
@@ -694,7 +703,8 @@ where
             &format!("releases/{PRODUCT}/latest.json"),
         ),
         TransparencyFetchPolicy::Bypass,
-    )?;
+    )
+    .map_err(map_resign_recovery_error)?;
     let final_signature = fetch_required(
         transport,
         object(
@@ -702,7 +712,8 @@ where
             &format!("releases/{PRODUCT}/latest.json.minisig"),
         ),
         TransparencyFetchPolicy::Bypass,
-    )?;
+    )
+    .map_err(map_resign_recovery_error)?;
     if final_body.body != body || final_signature.body != signature {
         return Err(TransparencyPublishError::MutableVerification);
     }
@@ -716,18 +727,74 @@ where
             .checkout_root
             .join(TRANSPARENCY_STAGE_ROOT)
             .join(".resign-final-verify"),
-    )?;
-    require_latest_trusted_comment_matches_body(&pointer, trusted_comment(&final_signature.body)?)
+    )
+    .map_err(map_resign_recovery_error)?;
+    let comment = trusted_comment(&final_signature.body).map_err(map_resign_recovery_error)?;
+    require_latest_trusted_comment_matches_body(&pointer, comment)
         .map_err(|_| TransparencyPublishError::MutableVerification)?;
-    fs::remove_dir_all(&recovery_root).map_err(|_| TransparencyPublishError::StageInvalid)?;
-    sync_parent(&recovery_root)?;
+    fs::remove_dir_all(&recovery_root)
+        .map_err(|_| TransparencyPublishError::ResignRecoveryInvalid)?;
+    sync_parent(&recovery_root).map_err(map_resign_recovery_error)?;
     Ok(TransparencyPointerResign {
         product: PRODUCT.to_owned(),
         version: pointer.version,
         chain_length: pointer.chain_length,
         tip_sha256: pointer.tip_sha256,
         valid_until: pointer.valid_until,
+        discarded_recovery,
     })
+}
+
+fn build_and_persist_resign_pointer_recovery<C: Clock + ?Sized>(
+    request: &TransparencyResignRequest<'_>,
+    runner: &dyn CommandRunner,
+    passphrases: &PassphraseCache<'_>,
+    clock: &C,
+    identity: &TransparencyTipIdentity,
+    recovery_root: &Path,
+) -> Result<PendingPointerRecovery, TransparencyPublishError> {
+    let signed_at = clock
+        .now()
+        .map_err(|_| TransparencyPublishError::ResignRecoveryInvalid)?;
+    let pointer = build_transparency_pointer(identity, &signed_at)
+        .map_err(|_| TransparencyPublishError::ResignRecoveryInvalid)?;
+    let body = render_transparency_latest(&pointer)
+        .map_err(|_| TransparencyPublishError::ResignRecoveryInvalid)?;
+    let signature = sign_bytes(
+        runner,
+        passphrases,
+        &SigningMaterial {
+            minisign_program: request.minisign_program,
+            secret_key: &request.environment.minisign_secret_key,
+            public_key: &request.environment.minisign_public_key,
+        },
+        &body,
+        &format_latest_trusted_comment(&pointer),
+        &request
+            .checkout_root
+            .join(TRANSPARENCY_STAGE_ROOT)
+            .join(".resign-pointer"),
+    )
+    .map_err(map_resign_recovery_error)?;
+    persist_resign_pointer_recovery(recovery_root, &body, &signature)
+        .map_err(map_resign_recovery_error)?;
+    Ok(PendingPointerRecovery {
+        root: recovery_root.to_path_buf(),
+        kind: PointerRecoveryKind::Resign,
+        pointer,
+        body,
+        signature,
+        ledger: None,
+    })
+}
+
+fn map_resign_recovery_error(error: TransparencyPublishError) -> TransparencyPublishError {
+    match error {
+        TransparencyPublishError::StageInvalid | TransparencyPublishError::StageConflict => {
+            TransparencyPublishError::ResignRecoveryInvalid
+        }
+        error => error,
+    }
 }
 
 fn verify_tool_versions<R: CommandRunner + ?Sized>(
@@ -772,9 +839,9 @@ fn curl_supports_sigv4(version_output: &str) -> bool {
     matches!((major, minor), (Some(major), Some(minor)) if major > 7 || (major == 7 && minor >= 75))
 }
 
-fn load_or_build_stage<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
+fn load_or_build_stage<C: Clock + ?Sized>(
     request: &TransparencyPublishRequest<'_>,
-    runner: &R,
+    passphrases: &PassphraseCache<'_>,
     clock: &C,
     live_manifest: &Manifest,
     chain: &ChainState,
@@ -786,14 +853,20 @@ fn load_or_build_stage<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .join(PRODUCT)
         .join(&live_manifest.version);
     if stage_root.exists() {
-        return load_stage(request, runner, live_manifest, chain, &stage_root);
+        return load_stage(
+            request,
+            passphrases.runner(),
+            live_manifest,
+            chain,
+            &stage_root,
+        );
     }
     if let Some(adopted) = adopted {
         require_persisted_adoption(request.checkout_root, adopted)?;
     }
     build_stage(
         request,
-        runner,
+        passphrases,
         clock,
         live_manifest,
         chain,
@@ -802,9 +875,9 @@ fn load_or_build_stage<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     )
 }
 
-fn build_stage<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
+fn build_stage<C: Clock + ?Sized>(
     request: &TransparencyPublishRequest<'_>,
-    runner: &R,
+    passphrases: &PassphraseCache<'_>,
     clock: &C,
     live_manifest: &Manifest,
     chain: &ChainState,
@@ -819,7 +892,7 @@ fn build_stage<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         create_unique_stage_directory(parent, &format!("{}.stage", live_manifest.version))?;
     let result = build_stage_in(
         request,
-        runner,
+        passphrases,
         clock,
         live_manifest,
         chain,
@@ -834,21 +907,29 @@ fn build_stage<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         }
     };
     fs::rename(&work_root, final_root).map_err(|_| TransparencyPublishError::StageConflict)?;
-    load_stage(request, runner, live_manifest, chain, final_root).map(|loaded| StagedPublication {
+    load_stage(
+        request,
+        passphrases.runner(),
+        live_manifest,
+        chain,
+        final_root,
+    )
+    .map(|loaded| StagedPublication {
         manifest: staged.manifest,
         ..loaded
     })
 }
 
-fn build_stage_in<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
+fn build_stage_in<C: Clock + ?Sized>(
     request: &TransparencyPublishRequest<'_>,
-    runner: &R,
+    passphrases: &PassphraseCache<'_>,
     clock: &C,
     live_manifest: &Manifest,
     chain: &ChainState,
     adopted: Option<&ChainEntry>,
     work_root: &Path,
 ) -> Result<StagedPublication, TransparencyPublishError> {
+    let runner = passphrases.runner();
     runner.record_phase(STEP_4_SNAPSHOT_STAGE)?;
     let snapshot = work_root.join("candidate-snapshot");
     snapshot_candidate(request.release_dir, &snapshot, live_manifest)?;
@@ -896,6 +977,7 @@ fn build_stage_in<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         let comment = format_entry_trusted_comment(&entry, &bytes);
         let signature = sign_bytes(
             runner,
+            passphrases,
             &publish_signing_material(request),
             &bytes,
             &comment,
@@ -947,6 +1029,7 @@ fn build_stage_in<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         let pointer_comment = format_latest_trusted_comment(&pointer);
         let pointer_signature = sign_bytes(
             runner,
+            passphrases,
             &publish_signing_material(request),
             &pointer_bytes,
             &pointer_comment,
@@ -1293,8 +1376,9 @@ fn copy_regular(source: &Path, target: &Path) -> Result<(), TransparencyPublishE
     fs::write(target, bytes).map_err(|_| TransparencyPublishError::StageInvalid)
 }
 
-fn sign_bytes<R: CommandRunner + ?Sized>(
-    runner: &R,
+fn sign_bytes(
+    runner: &dyn CommandRunner,
+    passphrases: &PassphraseCache<'_>,
     signing: &SigningMaterial<'_>,
     body: &[u8],
     comment: &str,
@@ -1305,21 +1389,26 @@ fn sign_bytes<R: CommandRunner + ?Sized>(
         let body_path = scratch.join("body");
         let signature_path = scratch.join("body.minisig");
         fs::write(&body_path, body).map_err(|_| TransparencyPublishError::SignatureFailed)?;
-        let output = runner.run_interactive(
-            signing.minisign_program,
-            &[
-                "-S".to_owned(),
-                "-s".to_owned(),
-                path_text(signing.secret_key)?,
-                "-m".to_owned(),
-                path_text(&body_path)?,
-                "-x".to_owned(),
-                path_text(&signature_path)?,
-                "-t".to_owned(),
-                comment.to_owned(),
-            ],
-            None,
-        )?;
+        let args = [
+            "-S".to_owned(),
+            "-s".to_owned(),
+            path_text(signing.secret_key)?,
+            "-m".to_owned(),
+            path_text(&body_path)?,
+            "-x".to_owned(),
+            path_text(&signature_path)?,
+            "-t".to_owned(),
+            comment.to_owned(),
+        ];
+        let output = match passphrases.get() {
+            Ok(passphrase) => runner.run(
+                signing.minisign_program,
+                &args,
+                Some(passphrase.stdin()),
+                None,
+            )?,
+            Err(()) => runner.run_interactive(signing.minisign_program, &args, None)?,
+        };
         if output.status != 0 {
             return Err(TransparencyPublishError::SignatureFailed);
         }
@@ -1715,15 +1804,11 @@ fn recovery_pair_equals_remote(
     pointer: &ObservedHttpResponse,
     signature: &ObservedHttpResponse,
 ) -> bool {
-    if pointer.status != 200 || signature.status != 200 {
-        return false;
-    }
-    let parent = match location.kind {
-        PointerRecoveryKind::Publication => location.root.to_path_buf(),
-        PointerRecoveryKind::Resign => location.root.to_path_buf(),
-    };
-    fs::read(parent.join("latest.json")).is_ok_and(|bytes| bytes == pointer.body)
-        && fs::read(parent.join("latest.json.minisig")).is_ok_and(|bytes| bytes == signature.body)
+    pointer.status == 200
+        && signature.status == 200
+        && fs::read(location.root.join("latest.json")).is_ok_and(|bytes| bytes == pointer.body)
+        && fs::read(location.root.join("latest.json.minisig"))
+            .is_ok_and(|bytes| bytes == signature.body)
 }
 
 fn load_entries_for_pointer<T: TransparencyObjectTransport, R: CommandRunner + ?Sized>(

@@ -299,9 +299,11 @@ certificate, and Session-1 evidence is earned only by running it on the box.
 
 ## Release transparency
 
-`make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>` runs
-after delivery and never gates delivery. It snapshot-copies and re-validates the
-retained candidate, archives the complete evidence and artifact bytes first,
+Run `make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>`
+only after the aggregate provenance publisher has completed authoritative
+delivery; transparency publication never gates or rolls back that delivery. It
+snapshot-copies and re-validates the retained candidate, archives the complete
+evidence and artifact bytes first,
 then publishes only the manifest, native proof when required, signed ledger
 entry, derived ledger, and signed latest pointer. Artifact bytes never reach the
 public transparency surface.
@@ -322,15 +324,25 @@ not upload the key; the operator provisions the served location. Do not give a
 local key a `.key` suffix because the repository ignore policy silently hides
 that suffix. No production public key is committed to this repository.
 
-Minisign reads the secret-key passphrase directly from the interactive terminal
-with its own no-echo prompt; xtask does not read, store, pipe, or log the
-passphrase. This is a documented deviation from the contract's one-prompt
-stdin-feeding mechanism; stdin feeding works with the pinned minisign 0.11, and
-the mechanism ruling remains pending. A fresh attempt that reaches signing
-prompts exactly twice, once for the entry and once for the pointer. A
-create-only PUT adoption adds no third prompt and stops; its next invocation
-prompts exactly once for the replacement pointer. A byte-staged retry prompts
-zero times. `make resign-transparency-pointer` prompts exactly once.
+xtask asks once for the secret-key passphrase with a no-echo terminal reader,
+keeps the bytes only in memory for that command invocation, and feeds the exact
+newline-terminated bytes to each required pinned-minisign signing process on
+stdin. If passphrase acquisition fails, xtask falls back to minisign's existing
+interactive no-echo prompt for each required signature. A failed stdin-fed
+signature is terminal for that attempt and does not trigger the fallback.
+
+Successful stdin feeding reduces a fresh publish from two operator prompts to
+one; the adoption, staged-retry, and resign counts remain 0, 0, and 1.
+
+| Operator path | Successful reader | Acquisition-failure fallback |
+|---|---:|---:|
+| Fresh publish | 1 prompt | 2 minisign prompts |
+| Create-only PUT adoption | 0 prompts, then 1 on the next invocation | 0 prompts, then 1 minisign prompt on the next invocation |
+| Byte-staged retry | 0 prompts | 0 prompts |
+| `make resign-transparency-pointer` | 1 prompt | 1 minisign prompt |
+
+The passphrase never enters argv, the child environment, a file, or an operator
+diagnostic.
 
 Publication is idempotent and retryable, including when immutable evidence was
 created but the mutable pointer was not committed. A staged retry reuses the

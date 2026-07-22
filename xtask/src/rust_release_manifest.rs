@@ -294,7 +294,9 @@ pub enum ManifestError {
     ProductMismatch,
     VersionMismatch,
     SourceCommitMismatch,
-    SourceDirty,
+    SourceDirty {
+        commit: String,
+    },
     CargoLockMismatch,
     PackagedExecutableInvalid,
     RustcEvidenceMismatch,
@@ -395,7 +397,9 @@ impl fmt::Display for ManifestError {
             Self::SourceCommitMismatch => {
                 "manifest source commit does not match checkout authority"
             }
-            Self::SourceDirty => "checkout has uncommitted source changes",
+            Self::SourceDirty { commit } => {
+                return write!(f, "checkout at commit {commit} has uncommitted source changes");
+            }
             Self::CargoLockMismatch => "manifest lock digest does not match checkout authority",
             Self::PackagedExecutableInvalid => {
                 "manifest packaged executable baseline is invalid; rebuild both containers and render evidence from the verified executable digest and positive byte count"
@@ -878,7 +882,9 @@ fn finish_checkout_facts(
         return Err(ManifestError::CheckoutFactUnavailable);
     }
     if !status_stdout.is_empty() {
-        return Err(ManifestError::SourceDirty);
+        return Err(ManifestError::SourceDirty {
+            commit: source_commit,
+        });
     }
 
     let lock =
@@ -960,7 +966,9 @@ pub fn validate_semantic_binding(
         return Err(ManifestError::SourceCommitMismatch);
     }
     if facts.source_dirty || manifest.source_dirty {
-        return Err(ManifestError::SourceDirty);
+        return Err(ManifestError::SourceDirty {
+            commit: facts.source_commit.clone(),
+        });
     }
     if manifest.cargo_lock_sha256 != facts.cargo_lock_sha256 {
         return Err(ManifestError::CargoLockMismatch);
@@ -1812,5 +1820,20 @@ mod tests {
             compile_schema_value(&schema),
             Err(ManifestError::SchemaCompile)
         ));
+    }
+
+    #[test]
+    fn dirty_checkout_fact_reports_the_parsed_commit() {
+        let commit = "a".repeat(40);
+        assert_eq!(
+            finish_checkout_facts(
+                Path::new("unused-after-dirty-status"),
+                "0.2.11".to_owned(),
+                format!("{commit}\n").as_bytes(),
+                true,
+                b" M Cargo.toml\0",
+            ),
+            Err(ManifestError::SourceDirty { commit })
+        );
     }
 }

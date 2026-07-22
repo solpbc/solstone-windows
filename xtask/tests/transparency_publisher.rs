@@ -45,6 +45,19 @@ struct FakePublisherRunner {
     mutate_candidate_at_snapshot: Option<PathBuf>,
     phases: Mutex<Vec<&'static str>>,
     signing_calls: AtomicUsize,
+    passphrase_reader_calls: AtomicUsize,
+    interactive_signing_calls: AtomicUsize,
+    invocations: Mutex<Vec<RecordedPublisherInvocation>>,
+    passphrase_behavior: PassphraseBehavior,
+    signing_behavior: SigningBehavior,
+}
+
+#[derive(Clone)]
+struct RecordedPublisherInvocation {
+    program: PathBuf,
+    args: Vec<String>,
+    stdin: Option<Vec<u8>>,
+    env: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -60,6 +73,20 @@ enum VerificationBehavior {
     RejectLedgerEntry,
     RejectPointer,
 }
+
+#[derive(Clone, Copy)]
+enum PassphraseBehavior {
+    Valid,
+    AcquisitionFailure,
+}
+
+#[derive(Clone, Copy)]
+enum SigningBehavior {
+    Valid,
+    RejectFed,
+}
+
+const SYNTHETIC_PASSPHRASE: &[u8] = b"synthetic publisher passphrase";
 
 impl CommandRunner for FakePublisherRunner {
     fn record_phase(&self, phase: &'static str) -> Result<(), CommandRunnerError> {
@@ -80,10 +107,19 @@ impl CommandRunner for FakePublisherRunner {
         &self,
         program: &Path,
         args: &[String],
-        _stdin: Option<&[u8]>,
+        stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
         assert!(env.is_none());
+        self.invocations
+            .lock()
+            .expect("record publisher invocation")
+            .push(RecordedPublisherInvocation {
+                program: program.to_path_buf(),
+                args: args.to_vec(),
+                stdin: stdin.map(<[u8]>::to_vec),
+                env: env.cloned(),
+            });
         if program == self.archive_program {
             let manifest = render_staging_manifest_v1(Path::new(&args[0]))
                 .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
@@ -102,6 +138,13 @@ impl CommandRunner for FakePublisherRunner {
             Some("--version") => Ok(output("curl 8.5.0\n")),
             Some("-S") => {
                 self.signing_calls.fetch_add(1, Ordering::SeqCst);
+                if stdin.is_some() && matches!(self.signing_behavior, SigningBehavior::RejectFed) {
+                    return Ok(CommandOutput {
+                        status: 1,
+                        stdout: Vec::new(),
+                        stderr: b"signature rejected".to_vec(),
+                    });
+                }
                 let signature_path = argument_value(args, "-x");
                 let comment = argument_value(args, "-t");
                 fs::write(
@@ -141,6 +184,44 @@ impl CommandRunner for FakePublisherRunner {
             }
             _ => Err(CommandRunnerError::UnexpectedInvocation),
         }
+    }
+
+    fn run_interactive(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        if matches!(args.first().map(String::as_str), Some("-c" | "-NoProfile")) {
+            assert!(env.is_none());
+            self.passphrase_reader_calls.fetch_add(1, Ordering::SeqCst);
+            self.invocations
+                .lock()
+                .expect("record passphrase reader invocation")
+                .push(RecordedPublisherInvocation {
+                    program: program.to_path_buf(),
+                    args: args.to_vec(),
+                    stdin: None,
+                    env: None,
+                });
+            return Ok(match self.passphrase_behavior {
+                PassphraseBehavior::Valid => {
+                    let mut stdout = SYNTHETIC_PASSPHRASE.to_vec();
+                    stdout.extend_from_slice(b"\r\n");
+                    output(stdout)
+                }
+                PassphraseBehavior::AcquisitionFailure => CommandOutput {
+                    status: 1,
+                    stdout: Vec::new(),
+                    stderr: b"terminal unavailable".to_vec(),
+                },
+            });
+        }
+        if args.first().map(String::as_str) == Some("-S") {
+            self.interactive_signing_calls
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        self.run(program, args, None, env)
     }
 }
 
@@ -199,6 +280,11 @@ fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly()
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
         signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior: PassphraseBehavior::Valid,
+        signing_behavior: SigningBehavior::Valid,
     };
     let transport = DirectoryTransparencyTransport::new(checkout.join("fake-objects"));
     let clock = FixedClock::new("2026-07-22T00:00:00Z").expect("fixed clock");
@@ -218,6 +304,38 @@ fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly()
         .expect("publish fixture through fakes");
     assert_eq!(publication.version, "0.2.11");
     assert_eq!(publication.seq, 1);
+    assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(runner.passphrase_reader_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(runner.interactive_signing_calls.load(Ordering::SeqCst), 0);
+    let invocations = runner
+        .invocations
+        .lock()
+        .expect("publisher invocations")
+        .clone();
+    let signing_invocations: Vec<_> = invocations
+        .iter()
+        .filter(|invocation| invocation.args.first().map(String::as_str) == Some("-S"))
+        .collect();
+    assert_eq!(signing_invocations.len(), 2);
+    let mut expected_stdin = SYNTHETIC_PASSPHRASE.to_vec();
+    expected_stdin.push(b'\n');
+    assert!(signing_invocations
+        .iter()
+        .all(|invocation| invocation.stdin.as_deref() == Some(expected_stdin.as_slice())));
+    let passphrase_text = String::from_utf8_lossy(SYNTHETIC_PASSPHRASE);
+    for invocation in &invocations {
+        assert!(!invocation
+            .program
+            .to_string_lossy()
+            .contains(&*passphrase_text));
+        assert!(!invocation.args.join(" ").contains(&*passphrase_text));
+        assert!(invocation.env.as_ref().is_none_or(|environment| environment
+            .iter()
+            .all(|(name, value)| !name.contains(&*passphrase_text)
+                && !value.contains(&*passphrase_text))));
+    }
+    assert_tree_excludes_bytes(&checkout, SYNTHETIC_PASSPHRASE);
+    assert!(!format!("{publication:?}").contains(&*passphrase_text));
     assert_eq!(
         *runner.phases.lock().expect("publisher phases"),
         [
@@ -248,6 +366,7 @@ fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly()
     assert!(retry.already_published);
     assert!(retry.pointer_requires_resign);
     assert_eq!(retry.archive_sha256, publication.archive_sha256);
+    assert_eq!(runner.passphrase_reader_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         fs::read(&staged_entry_path).expect("read retried staged entry"),
         first_entry
@@ -297,6 +416,16 @@ fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly()
     .expect("re-sign pointer through fakes");
     assert_eq!(resign.chain_length, publication.seq);
     assert_eq!(resign.tip_sha256, publication.entry_sha256);
+    assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(runner.passphrase_reader_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(runner.interactive_signing_calls.load(Ordering::SeqCst), 0);
+    assert!(runner
+        .invocations
+        .lock()
+        .expect("publisher invocations")
+        .iter()
+        .filter(|invocation| invocation.args.first().map(String::as_str) == Some("-S"))
+        .all(|invocation| invocation.stdin.as_deref() == Some(expected_stdin.as_slice())));
 
     let archive_version = checkout
         .join("target/release-transparency-stage")
@@ -360,6 +489,130 @@ fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly()
             "artifact reached public destination: {artifact}"
         );
     }
+}
+
+#[test]
+fn transparency_signing_does_not_retry_interactively_after_a_fed_signature_rejection() {
+    let fixture = OwnedPublisherFixture::new("fed-signature-rejection");
+    let runner = fake_publisher_runner(
+        fixture.archive_program.clone(),
+        PassphraseBehavior::Valid,
+        SigningBehavior::RejectFed,
+    );
+
+    let error = fixture
+        .publish_with(
+            &fixture.environment,
+            &runner,
+            &FixedClock::new("2026-07-22T00:00:00Z").unwrap(),
+        )
+        .expect_err("rejected stdin-fed signature must fail");
+    assert_eq!(error, TransparencyPublishError::SignatureFailed);
+    assert_eq!(runner.passphrase_reader_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(runner.interactive_signing_calls.load(Ordering::SeqCst), 0);
+    assert!(!error
+        .to_string()
+        .contains(&*String::from_utf8_lossy(SYNTHETIC_PASSPHRASE)));
+}
+
+#[test]
+fn transparency_signing_falls_back_only_when_passphrase_acquisition_fails() {
+    let fixture = OwnedPublisherFixture::new("passphrase-acquisition-fallback");
+    let runner = fake_publisher_runner(
+        fixture.archive_program.clone(),
+        PassphraseBehavior::AcquisitionFailure,
+        SigningBehavior::Valid,
+    );
+
+    fixture
+        .publish_with(
+            &fixture.environment,
+            &runner,
+            &FixedClock::new("2026-07-22T00:00:00Z").unwrap(),
+        )
+        .expect("interactive fallback signs both fresh bytes");
+    assert_eq!(runner.passphrase_reader_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(runner.interactive_signing_calls.load(Ordering::SeqCst), 2);
+    assert!(runner
+        .invocations
+        .lock()
+        .expect("publisher invocations")
+        .iter()
+        .filter(|invocation| invocation.args.first().map(String::as_str) == Some("-S"))
+        .all(|invocation| invocation.stdin.is_none()));
+}
+
+#[test]
+fn transparency_adoption_reads_no_passphrase_then_the_next_invocation_reads_once() {
+    let fixture = OwnedPublisherFixture::new("passphrase-adoption-counts");
+    let staging_runner = fake_publisher_runner_with_archive(
+        fixture.archive_program.clone(),
+        ArchiveBehavior::Failure,
+        PassphraseBehavior::Valid,
+        SigningBehavior::Valid,
+    );
+    let request = TransparencyPublishRequest {
+        checkout_root: &fixture.checkout,
+        release_dir: &fixture.release_dir,
+        evidence_dir: &fixture.evidence_dir,
+        checkout_facts: &fixture.facts,
+        environment: &fixture.environment,
+        minisign_program: &fixture.minisign_program,
+        curl_program: &fixture.curl_program,
+    };
+    assert!(matches!(
+        publish_transparency(
+            &request,
+            &DirectoryTransparencyTransport::new(fixture.checkout.join("adoption-staging")),
+            &staging_runner,
+            &FixedClock::new("2026-07-22T00:00:00Z").unwrap(),
+        ),
+        Err(TransparencyPublishError::ArchiveFailed { .. })
+    ));
+
+    let transport = RaceTransport {
+        inner: DirectoryTransparencyTransport::new(fixture.checkout.join("adoption-objects")),
+        mode: RaceMode::ValidOwn,
+        triggered: AtomicBool::new(false),
+    };
+    let adoption_runner = fake_publisher_runner(
+        fixture.archive_program.clone(),
+        PassphraseBehavior::Valid,
+        SigningBehavior::Valid,
+    );
+    assert_eq!(
+        publish_transparency(
+            &request,
+            &transport,
+            &adoption_runner,
+            &FixedClock::new("2026-07-22T00:00:00Z").unwrap(),
+        ),
+        Err(TransparencyPublishError::AdoptedRemoteEntry)
+    );
+    assert_eq!(adoption_runner.signing_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        adoption_runner
+            .passphrase_reader_calls
+            .load(Ordering::SeqCst),
+        0
+    );
+
+    publish_transparency(
+        &request,
+        &transport,
+        &adoption_runner,
+        &FixedClock::new("2026-07-22T00:00:00Z").unwrap(),
+    )
+    .expect("next invocation signs only the replacement pointer");
+    assert_eq!(adoption_runner.signing_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        adoption_runner
+            .passphrase_reader_calls
+            .load(Ordering::SeqCst),
+        1
+    );
 }
 
 #[test]
@@ -496,6 +749,114 @@ fn transparency_pointer_resigning_recovers_after_each_mutable_failure() {
 }
 
 #[test]
+fn transparency_pointer_resigning_does_not_wedge_on_stale_local_recovery() {
+    let fixture = OwnedPublisherFixture::new("resign-stale-local-recovery");
+    let transport = CrashTransport {
+        inner: DirectoryTransparencyTransport::new(
+            fixture.checkout.join("resign-stale-local-recovery-objects"),
+        ),
+        fail_public_at: None,
+        fail_mutable_at: AtomicUsize::new(usize::MAX),
+        public_calls: AtomicUsize::new(0),
+        mutable_calls: AtomicUsize::new(0),
+        move_pointer_on_recheck: false,
+        pointer_reads: AtomicUsize::new(0),
+    };
+    let publish_request = TransparencyPublishRequest {
+        checkout_root: &fixture.checkout,
+        release_dir: &fixture.release_dir,
+        evidence_dir: &fixture.evidence_dir,
+        checkout_facts: &fixture.facts,
+        environment: &fixture.environment,
+        minisign_program: &fixture.minisign_program,
+        curl_program: &fixture.curl_program,
+    };
+    publish_transparency(
+        &publish_request,
+        &transport,
+        &fixture.runner,
+        &FixedClock::new("2026-07-22T00:00:00Z").unwrap(),
+    )
+    .expect("publish initial pointer");
+
+    transport.arm_mutable_failure(0);
+    let resign_request = TransparencyResignRequest {
+        checkout_root: &fixture.checkout,
+        environment: &fixture.environment,
+        minisign_program: &fixture.minisign_program,
+        curl_program: &fixture.curl_program,
+    };
+    assert_eq!(
+        resign_transparency_pointer(
+            &resign_request,
+            &transport,
+            &fixture.runner,
+            &FixedClock::new("2026-07-23T00:00:00Z").unwrap(),
+        ),
+        Err(TransparencyPublishError::MutableWrite {
+            observed: 503,
+            expected: "HTTP 200..299".to_owned(),
+        })
+    );
+    let recovery_root = fixture
+        .checkout
+        .join(TRANSPARENCY_RECOVERY_ROOT)
+        .join(PRODUCT)
+        .join(".resign-pointer-recovery");
+    assert!(recovery_root.join("latest.json").is_file());
+    assert!(recovery_root.join("latest.json.minisig").is_file());
+    let discarded_pointer: TransparencyLatestV1 = serde_json::from_slice(
+        &fs::read(recovery_root.join("latest.json")).expect("read stale resign pointer"),
+    )
+    .expect("parse stale resign pointer");
+
+    let (next_release_dir, next_facts) = versioned_release_fixture(&fixture.checkout, "0.2.12");
+    publish_transparency(
+        &TransparencyPublishRequest {
+            checkout_root: &fixture.checkout,
+            release_dir: &next_release_dir,
+            evidence_dir: &fixture.evidence_dir,
+            checkout_facts: &next_facts,
+            environment: &fixture.environment,
+            minisign_program: &fixture.minisign_program,
+            curl_program: &fixture.curl_program,
+        },
+        &transport,
+        &fixture.runner,
+        &FixedClock::new("2026-07-24T00:00:00Z").unwrap(),
+    )
+    .expect("publish the next version while stale resign recovery persists");
+
+    let first = resign_transparency_pointer(
+        &resign_request,
+        &transport,
+        &fixture.runner,
+        &FixedClock::new("2026-07-25T00:00:00Z").unwrap(),
+    )
+    .expect("discard stale recovery and resign the live tip");
+    assert_eq!(
+        first.discarded_recovery,
+        Some(
+            xtask::transparency_publisher::DiscardedResignPointerIdentity {
+                chain_length: discarded_pointer.chain_length,
+                tip_sha256: discarded_pointer.tip_sha256,
+                version: discarded_pointer.version,
+            }
+        )
+    );
+    assert!(!recovery_root.exists());
+    let second = resign_transparency_pointer(
+        &resign_request,
+        &transport,
+        &fixture.runner,
+        &FixedClock::new("2026-07-25T00:00:00Z").unwrap(),
+    )
+    .expect("subsequent resign has no stale recovery");
+    assert_eq!(second.discarded_recovery, None);
+    assert!(!recovery_root.exists());
+}
+
+#[test]
 fn transparency_signature_verification_failure_leaves_the_next_retry_usable() {
     let fixture = OwnedPublisherFixture::new("signature-scratch-retry");
     fixture
@@ -606,6 +967,11 @@ fn transparency_contract_faults_reject_genesis_rollback_signatures_and_snapshot_
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
         signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior: PassphraseBehavior::Valid,
+        signing_behavior: SigningBehavior::Valid,
     };
     assert_eq!(
         invalid_signature.publish_with(
@@ -630,6 +996,11 @@ fn transparency_contract_faults_reject_genesis_rollback_signatures_and_snapshot_
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
         signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior: PassphraseBehavior::Valid,
+        signing_behavior: SigningBehavior::Valid,
     };
     assert_eq!(
         invalid_pointer.publish_with(
@@ -654,6 +1025,11 @@ fn transparency_contract_faults_reject_genesis_rollback_signatures_and_snapshot_
         mutate_candidate_at_snapshot: Some(copied_release.join("assets.win.json")),
         phases: Mutex::new(Vec::new()),
         signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior: PassphraseBehavior::Valid,
+        signing_behavior: SigningBehavior::Valid,
     };
     assert_eq!(
         drift.publish_with(
@@ -1646,6 +2022,7 @@ fn transparency_diagnostics_classify_observed_expected_and_one_remediation() {
         },
         TransparencyPublishError::StageInvalid,
         TransparencyPublishError::StageConflict,
+        TransparencyPublishError::ResignRecoveryInvalid,
         TransparencyPublishError::SignatureFailed,
         TransparencyPublishError::ArchiveFailed {
             observed: "exit 1".to_owned(),
@@ -1714,6 +2091,11 @@ fn assert_archive_fault_fails_before_publication(label: &str, archive_behavior: 
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
         signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior: PassphraseBehavior::Valid,
+        signing_behavior: SigningBehavior::Valid,
     };
     let transport = DirectoryTransparencyTransport::new(checkout.join("fake-objects"));
     let clock = FixedClock::new("2026-07-22T00:00:00Z").expect("fixed clock");
@@ -1792,6 +2174,11 @@ fn run_crash_case(
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
         signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior: PassphraseBehavior::Valid,
+        signing_behavior: SigningBehavior::Valid,
     };
     let transport = CrashTransport {
         inner: DirectoryTransparencyTransport::new(checkout.join("fake-objects")),
@@ -1856,6 +2243,7 @@ fn run_crash_case(
                 .expect("simulate cargo clean target removal");
             assert!(recovery_root.is_dir());
         }
+        let passphrase_reads_before_retry = runner.passphrase_reader_calls.load(Ordering::SeqCst);
         let retry = publish_transparency(
             &TransparencyPublishRequest {
                 checkout_root: &checkout,
@@ -1868,10 +2256,15 @@ fn run_crash_case(
             },
             &transport,
             &runner,
-            &FixedClock::new("2026-07-22T00:00:00Z").expect("retry clock"),
+            &FixedClock::new("2026-07-23T00:00:00Z").expect("retry clock"),
         )
         .expect("retry resumes the exact staged mutable pair");
         assert_eq!(retry.version, "0.2.11");
+        assert_eq!(
+            runner.passphrase_reader_calls.load(Ordering::SeqCst),
+            passphrase_reads_before_retry,
+            "a byte-staged retry must not acquire a passphrase"
+        );
         if remove_target_before_retry {
             assert_eq!(runner.signing_calls.load(Ordering::SeqCst), 2);
         }
@@ -1903,6 +2296,11 @@ fn run_race_case(label: &str, mode: RaceMode) {
         mutate_candidate_at_snapshot: None,
         phases: Mutex::new(Vec::new()),
         signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior: PassphraseBehavior::Valid,
+        signing_behavior: SigningBehavior::Valid,
     };
     let transport = RaceTransport {
         inner: DirectoryTransparencyTransport::new(checkout.join("fake-objects")),
@@ -2023,6 +2421,11 @@ impl OwnedPublisherFixture {
                 mutate_candidate_at_snapshot: None,
                 phases: Mutex::new(Vec::new()),
                 signing_calls: AtomicUsize::new(0),
+                passphrase_reader_calls: AtomicUsize::new(0),
+                interactive_signing_calls: AtomicUsize::new(0),
+                invocations: Mutex::new(Vec::new()),
+                passphrase_behavior: PassphraseBehavior::Valid,
+                signing_behavior: SigningBehavior::Valid,
             },
             transport: DirectoryTransparencyTransport::new(checkout.join("fake-objects")),
             minisign_program: absolute_program("minisign"),
@@ -2086,6 +2489,57 @@ impl OwnedPublisherFixture {
             &self.runner,
             clock,
         )
+    }
+}
+
+fn fake_publisher_runner(
+    archive_program: PathBuf,
+    passphrase_behavior: PassphraseBehavior,
+    signing_behavior: SigningBehavior,
+) -> FakePublisherRunner {
+    fake_publisher_runner_with_archive(
+        archive_program,
+        ArchiveBehavior::Valid,
+        passphrase_behavior,
+        signing_behavior,
+    )
+}
+
+fn fake_publisher_runner_with_archive(
+    archive_program: PathBuf,
+    archive_behavior: ArchiveBehavior,
+    passphrase_behavior: PassphraseBehavior,
+    signing_behavior: SigningBehavior,
+) -> FakePublisherRunner {
+    FakePublisherRunner {
+        archive_program,
+        archive_behavior,
+        verification_behavior: VerificationBehavior::Valid,
+        mutate_candidate_at_snapshot: None,
+        phases: Mutex::new(Vec::new()),
+        signing_calls: AtomicUsize::new(0),
+        passphrase_reader_calls: AtomicUsize::new(0),
+        interactive_signing_calls: AtomicUsize::new(0),
+        invocations: Mutex::new(Vec::new()),
+        passphrase_behavior,
+        signing_behavior,
+    }
+}
+
+fn assert_tree_excludes_bytes(root: &Path, needle: &[u8]) {
+    for entry in fs::read_dir(root).expect("read leak-audit directory") {
+        let entry = entry.expect("read leak-audit entry");
+        let file_type = entry.file_type().expect("read leak-audit file type");
+        if file_type.is_dir() {
+            assert_tree_excludes_bytes(&entry.path(), needle);
+        } else if file_type.is_file() {
+            let bytes = fs::read(entry.path()).expect("read leak-audit file");
+            assert!(
+                !bytes.windows(needle.len()).any(|window| window == needle),
+                "passphrase leaked to {}",
+                entry.path().display()
+            );
+        }
     }
 }
 

@@ -13,8 +13,8 @@ use transparency_support::{DirectoryTransparencyTransport, RecordedTransparencyC
 use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::transparency_transport::{
     CurlTransparencyTransport, TransparencyCachePolicy, TransparencyFetchPolicy,
-    TransparencyObjectDestination, TransparencyObjectTransport, TransparencyPlane,
-    TransparencyS3Credentials, TransparencyTransportError,
+    TransparencyListDestination, TransparencyObjectDestination, TransparencyObjectTransport,
+    TransparencyPlane, TransparencyS3Credentials, TransparencyTransportError,
 };
 
 type RecordedCurlInvocation = (
@@ -138,16 +138,36 @@ fn transparency_curl_credentials_reach_only_the_stdin_config() {
     assert_eq!(response.status, 412);
     assert_eq!(response.body, b"existing bytes");
 
-    let (_, args, stdin, env) = runner
+    let (program, args, stdin, env) = runner
         .invocation
         .lock()
         .expect("read curl invocation")
         .clone()
         .expect("curl invocation recorded");
-    assert_eq!(&args[..2], ["-K", "-"]);
-    assert!(args
-        .windows(2)
-        .any(|pair| pair == ["--header", "If-None-Match: *"]));
+    assert_eq!(program, absolute_program("curl"));
+    assert_eq!(
+        normalized_curl_args(&args),
+        [
+            "-K",
+            "-",
+            "--silent",
+            "--show-error",
+            "--request",
+            "PUT",
+            "--url",
+            "https://objects.example.invalid/release-bucket/releases/solstone-windows/v/0.2.11/ledger-entry.json",
+            "--header",
+            "If-None-Match: *",
+            "--header",
+            "Cache-Control: public,max-age=31536000,immutable",
+            "--upload-file",
+            "<request>",
+            "--dump-header",
+            "<headers>",
+            "--output",
+            "<response>",
+        ]
+    );
     let argv = args.join(" ");
     assert!(!argv.contains("shape-access-value"));
     assert!(!argv.contains("shape-secret-value"));
@@ -156,6 +176,180 @@ fn transparency_curl_credentials_reach_only_the_stdin_config() {
     assert_eq!(
         stdin,
         "aws-sigv4 = \"aws:amz:auto:s3\"\nuser = \"shape-access-value:shape-secret-value\"\n"
+    );
+}
+
+#[test]
+fn transparency_curl_list_builds_a_url_for_a_trailing_slash_prefix() {
+    let root = temporary_root("curl-list-prefix");
+    let runner = CurlShapeRunner::new();
+    let transport = CurlTransparencyTransport::new(
+        &runner,
+        absolute_program("curl"),
+        root.join("scratch"),
+        "https://objects.example.invalid".to_owned(),
+        "https://public.example.invalid".to_owned(),
+        "release-bucket".to_owned(),
+        TransparencyS3Credentials::new("access".to_owned(), "secret".to_owned()),
+    )
+    .expect("construct curl transport");
+
+    transport
+        .list(&TransparencyListDestination {
+            prefix: "releases/solstone-windows/v/".to_owned(),
+        })
+        .expect("trailing-slash prefix builds a list URL");
+
+    let (program, args, stdin, env) = runner
+        .invocation
+        .lock()
+        .expect("read curl invocation")
+        .clone()
+        .expect("curl invocation recorded");
+    assert_eq!(program, absolute_program("curl"));
+    assert_eq!(
+        normalized_curl_args(&args),
+        [
+            "-K",
+            "-",
+            "--silent",
+            "--show-error",
+            "--request",
+            "GET",
+            "--url",
+            "https://objects.example.invalid/release-bucket?list-type=2&prefix=releases%2Fsolstone-windows%2Fv%2F",
+            "--header",
+            "Cache-Control: no-cache",
+            "--dump-header",
+            "<headers>",
+            "--output",
+            "<response>",
+        ]
+    );
+    assert!(stdin.is_some());
+    assert_eq!(env, None);
+}
+
+#[test]
+fn transparency_curl_get_builds_the_exact_url_and_argument_shape() {
+    let root = temporary_root("curl-get-shape");
+    let runner = CurlShapeRunner::new();
+    let transport = curl_transport(&runner, &root);
+
+    transport
+        .get(
+            &TransparencyObjectDestination {
+                plane: TransparencyPlane::S3,
+                key: "releases/solstone-windows/latest.json".to_owned(),
+            },
+            TransparencyFetchPolicy::Bypass,
+        )
+        .expect("get builds curl arguments");
+
+    let (program, args, stdin, env) = recorded_invocation(&runner);
+    assert_eq!(program, absolute_program("curl"));
+    assert_eq!(
+        normalized_curl_args(&args),
+        [
+            "-K",
+            "-",
+            "--silent",
+            "--show-error",
+            "--request",
+            "GET",
+            "--url",
+            "https://objects.example.invalid/release-bucket/releases/solstone-windows/latest.json",
+            "--header",
+            "Cache-Control: no-cache",
+            "--dump-header",
+            "<headers>",
+            "--output",
+            "<response>",
+        ]
+    );
+    assert!(stdin.is_some());
+    assert_eq!(env, None);
+}
+
+#[test]
+fn transparency_curl_mutable_put_builds_the_exact_url_and_argument_shape() {
+    let root = temporary_root("curl-mutable-shape");
+    let runner = CurlShapeRunner::new();
+    let transport = curl_transport(&runner, &root);
+
+    transport
+        .mutable_put(
+            &TransparencyObjectDestination {
+                plane: TransparencyPlane::S3,
+                key: "releases/solstone-windows/latest.json".to_owned(),
+            },
+            b"pointer\n",
+            TransparencyCachePolicy::NoCache,
+            Some("\"old\""),
+        )
+        .expect("mutable put builds curl arguments");
+
+    let (program, args, stdin, env) = recorded_invocation(&runner);
+    assert_eq!(program, absolute_program("curl"));
+    assert_eq!(
+        normalized_curl_args(&args),
+        [
+            "-K",
+            "-",
+            "--silent",
+            "--show-error",
+            "--request",
+            "PUT",
+            "--url",
+            "https://objects.example.invalid/release-bucket/releases/solstone-windows/latest.json",
+            "--header",
+            "Cache-Control: no-cache",
+            "--header",
+            "If-Match: \"old\"",
+            "--upload-file",
+            "<request>",
+            "--dump-header",
+            "<headers>",
+            "--output",
+            "<response>",
+        ]
+    );
+    assert!(stdin.is_some());
+    assert_eq!(env, None);
+}
+
+#[test]
+fn transparency_curl_list_prefix_validation_table_fails_closed() {
+    let root = temporary_root("curl-list-validation");
+    let runner = CurlShapeRunner::new();
+    let transport = curl_transport(&runner, &root);
+
+    for prefix in [
+        "", "/", "//", "a//b", "a//", "./", "../", "a\\b/", "a\nb/", "a\0b/",
+    ] {
+        assert_eq!(
+            transport.list(&TransparencyListDestination {
+                prefix: prefix.to_owned(),
+            }),
+            Err(TransparencyTransportError::InvalidDestination),
+            "prefix {prefix:?} must remain invalid"
+        );
+    }
+    assert!(runner
+        .invocation
+        .lock()
+        .expect("read curl invocation")
+        .is_none());
+
+    transport
+        .list(&TransparencyListDestination {
+            prefix: "releases/solstone-windows/v/0.2.11/".to_owned(),
+        })
+        .expect("version prefix with one trailing slash is valid");
+    let (_, args, _, _) = recorded_invocation(&runner);
+    assert_eq!(
+        argument_value(&args, "--url"),
+        "https://objects.example.invalid/release-bucket?list-type=2&prefix=releases%2Fsolstone-windows%2Fv%2F0.2.11%2F"
     );
 }
 
@@ -278,6 +472,50 @@ fn argument_value<'a>(args: &'a [String], name: &str) -> &'a str {
         .position(|argument| argument == name)
         .expect("curl argument present");
     &args[index + 1]
+}
+
+fn curl_transport<'a>(
+    runner: &'a CurlShapeRunner,
+    root: &Path,
+) -> CurlTransparencyTransport<'a, CurlShapeRunner> {
+    CurlTransparencyTransport::new(
+        runner,
+        absolute_program("curl"),
+        root.join("scratch"),
+        "https://objects.example.invalid".to_owned(),
+        "https://public.example.invalid".to_owned(),
+        "release-bucket".to_owned(),
+        TransparencyS3Credentials::new("access".to_owned(), "secret".to_owned()),
+    )
+    .expect("construct curl transport")
+}
+
+fn recorded_invocation(runner: &CurlShapeRunner) -> RecordedCurlInvocation {
+    runner
+        .invocation
+        .lock()
+        .expect("read curl invocation")
+        .clone()
+        .expect("curl invocation recorded")
+}
+
+fn normalized_curl_args(args: &[String]) -> Vec<&str> {
+    let mut normalized: Vec<&str> = Vec::with_capacity(args.len());
+    let mut next_path: Option<&'static str> = None;
+    for argument in args {
+        if let Some(replacement) = next_path.take() {
+            normalized.push(replacement);
+        } else {
+            normalized.push(argument.as_str());
+            next_path = match argument.as_str() {
+                "--upload-file" => Some("<request>"),
+                "--dump-header" => Some("<headers>"),
+                "--output" => Some("<response>"),
+                _ => None,
+            };
+        }
+    }
+    normalized
 }
 
 fn temporary_root(label: &str) -> PathBuf {
