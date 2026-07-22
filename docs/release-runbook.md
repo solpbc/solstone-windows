@@ -301,12 +301,15 @@ certificate, and Session-1 evidence is earned only by running it on the box.
 
 Run `make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>`
 only after the aggregate provenance publisher has completed authoritative
-delivery; transparency publication never gates or rolls back that delivery. It
-snapshot-copies and re-validates the retained candidate, archives the complete
-evidence and artifact bytes first,
-then publishes only the manifest, native proof when required, signed ledger
-entry, derived ledger, and signed latest pointer. Artifact bytes never reach the
-public transparency surface.
+delivery; transparency publication never gates or rolls back that delivery.
+Both publishing and retrying require the local checkout to sit on the
+candidate's exact commit with a clean working tree; xtask inherits this from
+the release validator's live-checkout facts and refuses a dirty or mismatched
+checkout. It snapshot-copies and re-validates the retained candidate, archives
+the complete evidence and artifact bytes first, then publishes only the
+manifest, native proof when required, signed ledger entry, derived ledger, and
+signed latest pointer. Artifact bytes never reach the public transparency
+surface.
 
 The command is environment-driven. `TRANSPARENCY_S3_ENDPOINT`,
 `TRANSPARENCY_BUCKET`, `TRANSPARENCY_S3_ACCESS_KEY_ID`,
