@@ -73,6 +73,15 @@ recheck, and atomic promotion. Direct `scripts/package.ps1` and
 `scripts/win-package.cmd` reach the same transaction; neither attests a
 pre-existing executable.
 
+The manifest executable authority is equality between the canonical full-nupkg
+and portable members. The pre-pack executable hash is diagnostic only on a
+container divergence: signed vpk operates on private copies, so signed container
+bytes legitimately differ from the unsigned stage. The stage remains
+transaction-bound structurally: cleanup creates it new and empty, the build uses
+a transaction-local `CARGO_TARGET_DIR`, exactly one executable is copied into the
+stage, and vpk packs only that directory. A missing pre-pack diagnostic does not
+weaken or fail the two-container equality gate.
+
 The finalizer assembles the candidate in a newly empty sibling temporary and
 atomically renames the whole directory to
 `target/release-candidate/<VERSION>/`. It never writes candidate members
@@ -239,7 +248,7 @@ checkout facts, then runs strict whole-directory classification and hashes the
 companion manifest as candidate identity. Only then does it resolve native
 action tools for signed preflight, install, and smoke. It accepts only
 `signed-verified` candidates with a matching finalization receipt and matching
-nupkg/portable executable baseline.
+nupkg/portable canonical executable members.
 
 The command installs only the candidate's canonical versioned setup into a newly
 empty proof-owned `LOCALAPPDATA` root outside `RELEASE_DIR`. The canonical app

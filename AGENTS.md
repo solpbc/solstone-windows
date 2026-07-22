@@ -264,8 +264,12 @@ derived by the finalizer from the database it is checking. The transaction valid
 record, local commit lineage and allowed ref, clean source state, and both lock
 digests before cleanup or build. It then runs the advisory gate, UI/app build,
 Velopack pack, optional signing and selected SignTool verification, executable
-cross-container comparison, evidence rendering, strict whole-directory
-classification, and a final source/lock recheck before atomic promotion.
+cross-container comparison between the canonical full-nupkg and portable
+members, evidence rendering, strict whole-directory classification, and a final
+source/lock recheck before atomic promotion. The pre-pack executable is
+transaction-bound by the newly empty stage, transaction-local build target,
+single copy, and stage-only vpk input; its hash is divergence diagnostics, not a
+signed-container equality term.
 `Releases/` is an accumulated internal Velopack workspace; it is not the promoted
 release candidate.
 

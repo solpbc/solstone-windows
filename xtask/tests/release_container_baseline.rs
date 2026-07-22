@@ -4,8 +4,7 @@
 use std::io::{Cursor, Write};
 
 use xtask::release_container::{
-    compare_executable_baseline, BaselineSource, ContainerKind, ExecutableContainerReader,
-    ReleaseContainerError,
+    compare_executable_baseline, ContainerKind, ExecutableContainerReader, ReleaseContainerError,
 };
 use xtask::rust_release_manifest::PackagedExecutableEvidence;
 use zip::write::{SimpleFileOptions, ZipWriter};
@@ -13,22 +12,58 @@ use zip::{CompressionMethod, ZipArchive};
 
 const NUPKG_MEMBER: &str = "lib/app/solstone-windows-app.exe";
 const PORTABLE_MEMBER: &str = "current/solstone-windows-app.exe";
+const OPC_CONTENT_TYPES: &str = "[Content_Types].xml";
 const UPPER_NUPKG_MEMBER: &str = "LIB/APP/SOLSTONE-WINDOWS-APP.EXE";
 const CENTRAL_HEADER_SIGNATURE: u32 = 0x0201_4b50;
 
 #[test]
-fn exact_nupkg_and_portable_members_produce_the_expected_evidence() {
+fn measured_velopack_shapes_produce_the_expected_evidence() {
     let nupkg = build_zip(|writer| {
         add_file(
             writer,
-            "metadata/info.json",
-            b"{}",
+            OPC_CONTENT_TYPES,
+            b"content types",
             CompressionMethod::Stored,
         );
+        add_file(writer, "setup.ico", b"icon", CompressionMethod::Stored);
+        add_file(
+            writer,
+            "Solstone.nuspec",
+            b"nuspec",
+            CompressionMethod::Stored,
+        );
+        add_file(writer, "_rels/.rels", b"rels", CompressionMethod::Stored);
         add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
+        add_file(
+            writer,
+            "lib/app/solstone-windows-app_ExecutionStub.exe",
+            b"stub",
+            CompressionMethod::Stored,
+        );
+        add_file(
+            writer,
+            "lib/app/sq.version",
+            b"0.2.11",
+            CompressionMethod::Stored,
+        );
+        add_file(
+            writer,
+            "lib/app/Squirrel.exe",
+            b"squirrel",
+            CompressionMethod::Stored,
+        );
     });
     let portable = build_zip(|writer| {
+        add_file(writer, ".portable", b"", CompressionMethod::Stored);
+        add_file(writer, "sol.exe", b"launcher", CompressionMethod::Stored);
+        add_file(writer, "Update.exe", b"updater", CompressionMethod::Stored);
         add_file(writer, PORTABLE_MEMBER, b"abc", CompressionMethod::Deflated);
+        add_file(
+            writer,
+            "current/sq.version",
+            b"0.2.11",
+            CompressionMethod::Stored,
+        );
     });
 
     let expected = evidence(
@@ -42,6 +77,66 @@ fn exact_nupkg_and_portable_members_produce_the_expected_evidence() {
     assert_eq!(
         ExecutableContainerReader::read_portable(&portable).expect("read exact portable member"),
         expected
+    );
+}
+
+#[test]
+fn opc_content_types_accommodation_is_exact_and_nupkg_only() {
+    for near_miss in [
+        "nested/[Content_Types].xml",
+        "[content_types].xml",
+        "[Content_Types].xml/",
+        "[Other].xml",
+    ] {
+        let archive = build_zip(|writer| {
+            add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
+            add_file(writer, near_miss, b"near miss", CompressionMethod::Stored);
+        });
+        assert_eq!(
+            ExecutableContainerReader::read_nupkg(&archive)
+                .expect_err("near-miss OPC name must fail"),
+            ReleaseContainerError::InvalidEntryName {
+                container: ContainerKind::Nupkg,
+            },
+            "near-miss name {near_miss} was accepted"
+        );
+    }
+
+    let portable = build_zip(|writer| {
+        add_file(writer, PORTABLE_MEMBER, b"abc", CompressionMethod::Stored);
+        add_file(
+            writer,
+            OPC_CONTENT_TYPES,
+            b"content types",
+            CompressionMethod::Stored,
+        );
+    });
+    assert_eq!(
+        ExecutableContainerReader::read_portable(&portable)
+            .expect_err("OPC literal in portable ZIP must fail"),
+        ReleaseContainerError::InvalidEntryName {
+            container: ContainerKind::Portable,
+        }
+    );
+
+    let uppercase_opc = "[CONTENT_TYPES].XML";
+    let mut duplicate = build_zip(|writer| {
+        add_file(
+            writer,
+            OPC_CONTENT_TYPES,
+            b"first",
+            CompressionMethod::Stored,
+        );
+        add_file(writer, uppercase_opc, b"second", CompressionMethod::Stored);
+        add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
+    });
+    rename_entry(&mut duplicate, uppercase_opc, OPC_CONTENT_TYPES);
+    assert_eq!(
+        ExecutableContainerReader::read_nupkg(&duplicate)
+            .expect_err("duplicate OPC literal must fail"),
+        ReleaseContainerError::DuplicateEntryName {
+            container: ContainerKind::Nupkg,
+        }
     );
 }
 
@@ -217,52 +312,24 @@ fn zero_byte_member_and_reported_size_mismatch_are_distinct_errors() {
 }
 
 #[test]
-fn comparator_returns_one_baseline_for_three_identical_sources() {
+fn comparator_returns_one_baseline_for_identical_container_members() {
     let baseline = evidence(&"a".repeat(64), 123);
 
     assert_eq!(
-        compare_executable_baseline(&baseline, &baseline, &baseline)
-            .expect("identical sources agree"),
+        compare_executable_baseline(&baseline, &baseline).expect("identical containers agree"),
         baseline
     );
 }
 
 #[test]
-fn comparator_names_each_single_diverging_source() {
+fn comparator_rejects_hash_or_size_divergence_between_containers() {
     let common = evidence(&"a".repeat(64), 123);
     let divergent_hash = evidence(&"b".repeat(64), 123);
     let divergent_size = evidence(&"a".repeat(64), 124);
-    let cases = [
-        (
-            &divergent_hash,
-            &common,
-            &common,
-            BaselineSource::Nupkg,
-            "nupkg",
-        ),
-        (
-            &common,
-            &divergent_hash,
-            &common,
-            BaselineSource::Portable,
-            "portable",
-        ),
-        (
-            &common,
-            &common,
-            &divergent_size,
-            BaselineSource::Staged,
-            "staged",
-        ),
-    ];
 
-    for (nupkg, portable, staged, source, label) in cases {
-        let error = compare_executable_baseline(nupkg, portable, staged)
-            .expect_err("one-source divergence must fail");
-        assert_eq!(error, ReleaseContainerError::BaselineDiverged { source });
-        let diagnostic = error.to_string();
-        assert!(diagnostic.contains(label));
-        assert!(diagnostic.contains("rebuild both containers in this transaction"));
+    for divergent in [&divergent_hash, &divergent_size] {
+        assert!(compare_executable_baseline(&common, divergent).is_none());
+        assert!(compare_executable_baseline(divergent, &common).is_none());
     }
 }
 

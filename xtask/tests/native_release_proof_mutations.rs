@@ -6,7 +6,6 @@ mod support;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14,8 +13,9 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use support::{
-    action_uses_script, checkout_facts, request, FakeReleaseCheckout, FakeReleaseRunner,
-    NativeProofMutation, WitnessEvent, CHECKED_AT, POWERSHELL, VERSION,
+    action_uses_script, build_velopack_nupkg, build_velopack_portable, checkout_facts, request,
+    FakeReleaseCheckout, FakeReleaseRunner, NativeProofMutation, WitnessEvent, CHECKED_AT,
+    POWERSHELL, VERSION,
 };
 use xtask::native_release_proof::{
     prove_native, NativeProofError, NativeProofRuntime, STEP_10_REVALIDATE, STEP_11_RECEIPT,
@@ -32,8 +32,6 @@ use xtask::release_selection::SelectionMode;
 use xtask::rust_release_manifest::{
     companion_basename, render_release_evidence, validate_manifest_bytes, ReleaseEvidence,
 };
-use zip::write::{SimpleFileOptions, ZipWriter};
-use zip::CompressionMethod;
 
 const PROVED_AT: &str = "2026-07-21T13:00:00Z";
 
@@ -756,42 +754,34 @@ fn mutate_container_identity(prepared: &PreparedProof, mutation: ContainerMutati
     match mutation {
         ContainerMutation::NupkgDiverges => replace_nupkg(
             prepared,
-            build_zip(&[("lib/app/solstone-windows-app.exe", b"divergent nupkg app")]),
+            build_velopack_nupkg(
+                "lib/app/solstone-windows-app.exe",
+                b"divergent nupkg app",
+                false,
+            ),
         ),
-        ContainerMutation::PortableDiverges => replace_portable(
-            prepared,
-            build_zip(&[(
-                "current/solstone-windows-app.exe",
-                b"divergent portable app",
-            )]),
-        ),
+        ContainerMutation::PortableDiverges => {
+            replace_portable(prepared, build_velopack_portable(b"divergent portable app"))
+        }
         ContainerMutation::BothContainersDiffer => {
             replace_nupkg(
                 prepared,
-                build_zip(&[("lib/app/solstone-windows-app.exe", b"nupkg app")]),
+                build_velopack_nupkg("lib/app/solstone-windows-app.exe", b"nupkg app", false),
             );
-            replace_portable(
-                prepared,
-                build_zip(&[(
-                    "current/solstone-windows-app.exe",
-                    b"portable different app",
-                )]),
-            );
+            replace_portable(prepared, build_velopack_portable(b"portable different app"));
         }
         ContainerMutation::ManifestBaselineDiverges => {
             rewrite_manifest_and_receipt(prepared, |evidence| {
                 evidence.packaged_executable.sha256 = "0".repeat(64);
             });
         }
-        ContainerMutation::NupkgMemberMissing => {
-            replace_nupkg(prepared, build_zip(&[("lib/app/other.exe", b"other")]))
-        }
+        ContainerMutation::NupkgMemberMissing => replace_nupkg(
+            prepared,
+            build_velopack_nupkg("lib/app/other.exe", b"other", false),
+        ),
         ContainerMutation::NupkgMemberDuplicate => replace_nupkg(
             prepared,
-            build_zip(&[
-                ("lib/app/solstone-windows-app.exe", b"first"),
-                ("lib/app/SOLSTONE-WINDOWS-APP.EXE", b"second"),
-            ]),
+            build_velopack_nupkg("lib/app/solstone-windows-app.exe", b"first", true),
         ),
     }
 }
@@ -871,18 +861,6 @@ fn rewrite_manifest_and_receipt(
     mutate_finalization_receipt(prepared, |receipt| {
         receipt.companion_manifest.sha256 = hex_sha256(&bytes);
     });
-}
-
-fn build_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o644);
-    for (name, bytes) in members {
-        writer.start_file(*name, options).expect("start ZIP member");
-        writer.write_all(bytes).expect("write ZIP member");
-    }
-    writer.finish().expect("finish ZIP").into_inner()
 }
 
 fn hex_sha1(bytes: &[u8]) -> String {

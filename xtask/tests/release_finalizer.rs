@@ -13,15 +13,16 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use support::{
     checkout_facts, request, selection_record, FakeReleaseCheckout, FakeReleaseRunner,
-    RunnerMutation, WitnessEvent, CHECKED_AT, COMMIT, SIGNED_APP_BYTES, SIGNTOOL, SMCTL, VERSION,
-    VPK,
+    RunnerMutation, WitnessEvent, CHECKED_AT, COMMIT, SIGNED_APP_BYTES, SIGNTOOL, SMCTL,
+    UNSIGNED_APP_BYTES, VERSION, VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
 use xtask::release_clock::FixedClock;
+use xtask::release_container::{ContainerKind, ReleaseContainerError};
 use xtask::release_finalizer::{
-    finalize, FinalizeError, FinalizeRequest, PHASE_1_REQUEST_SOURCE, PHASE_2_CLEANUP,
-    PHASE_3_ADVISORY_PREFLIGHT, PHASE_4_BUILD, PHASE_5_VELOPACK, PHASE_6_BASELINE_CANDIDATE,
-    PHASE_7_EVIDENCE, PHASE_8_PROMOTION,
+    finalize, ExecutableReadSource, FinalizeError, FinalizeRequest, PHASE_1_REQUEST_SOURCE,
+    PHASE_2_CLEANUP, PHASE_3_ADVISORY_PREFLIGHT, PHASE_4_BUILD, PHASE_5_VELOPACK,
+    PHASE_6_BASELINE_CANDIDATE, PHASE_7_EVIDENCE, PHASE_8_PROMOTION,
 };
 use xtask::release_receipt::{
     render_windows_native_proof_receipt, FinalizationReceipt, WindowsNativeProofReceipt,
@@ -31,7 +32,7 @@ use xtask::release_selection::SelectionMode;
 use xtask::release_source_binding::{LockFile, SourceBindingError};
 use xtask::rust_release_manifest::{
     companion_basename, expected_artifact_names, validate_manifest_bytes,
-    validate_release_dir_with_facts, TARGET_TRIPLE,
+    validate_release_dir_with_facts, PackagedExecutableEvidence, TARGET_TRIPLE,
 };
 
 #[test]
@@ -98,7 +99,7 @@ fn unsigned_happy_path_promotes_exact_bundle_without_signer() {
 }
 
 #[test]
-fn signed_happy_path_verifies_setup_and_uses_post_pack_baseline() {
+fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
     let checkout = FakeReleaseCheckout::new("signed", false);
     let runner = FakeReleaseRunner::new(&checkout, false);
     let clock = FixedClock::new(CHECKED_AT).expect("create fixed clock");
@@ -115,6 +116,13 @@ fn signed_happy_path_verifies_setup_and_uses_post_pack_baseline() {
     assert_eq!(
         manifest.packaged_executable.sha256,
         hex_sha256(SIGNED_APP_BYTES)
+    );
+    assert_eq!(
+        fs::read(checkout.root().join(format!(
+            "target/release-finalizer/{VERSION}/vpk-stage/solstone-windows-app.exe"
+        )))
+        .expect("read transaction-bound staged executable"),
+        UNSIGNED_APP_BYTES
     );
     let events = runner.events();
     assert_witness_order(&events);
@@ -898,7 +906,6 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
     // The precise ZIP-name and comparator errors live in
     // release_container_baseline.rs. The engine must stop in Phase 6.
     for (label, mutation) in [
-        ("baseline-staged", RunnerMutation::StagedExecutableDiverges),
         ("baseline-nupkg", RunnerMutation::NupkgExecutableDiverges),
         (
             "baseline-portable",
@@ -909,19 +916,97 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
             "nupkg-member-duplicate",
             RunnerMutation::NupkgMemberDuplicate,
         ),
+        (
+            "nupkg-stable-read",
+            RunnerMutation::Phase6ContainerReadFailure,
+        ),
     ] {
         let checkout = FakeReleaseCheckout::new(label, false);
         let runner = FakeReleaseRunner::with_mutation(&checkout, false, mutation);
-        assert_engine_failure(
+        let error = run_engine_failure(&checkout, &runner, request(SelectionMode::Unsigned, false));
+        let diagnostic = error.to_string();
+        match (mutation, &error) {
+            (
+                RunnerMutation::NupkgExecutableDiverges
+                | RunnerMutation::PortableExecutableDiverges,
+                FinalizeError::ExecutableDivergence {
+                    nupkg,
+                    portable,
+                    pre_pack: Some(pre_pack),
+                },
+            ) => {
+                let foreign_bytes = if mutation == RunnerMutation::NupkgExecutableDiverges {
+                    b"divergent nupkg executable".as_slice()
+                } else {
+                    b"divergent portable executable".as_slice()
+                };
+                assert!(diagnostic.contains(&nupkg.sha256));
+                assert!(diagnostic.contains(&portable.sha256));
+                assert!(diagnostic.contains(&hex_sha256(foreign_bytes)));
+                assert!(diagnostic.contains(&hex_sha256(UNSIGNED_APP_BYTES)));
+                assert_eq!(pre_pack.sha256, hex_sha256(UNSIGNED_APP_BYTES));
+                assert!(diagnostic.contains("not an equality term"));
+            }
+            (
+                RunnerMutation::NupkgMemberMissing,
+                FinalizeError::ExecutableContainer(ReleaseContainerError::MissingCanonicalMember {
+                    container: ContainerKind::Nupkg,
+                }),
+            ) => {}
+            (
+                RunnerMutation::NupkgMemberDuplicate,
+                FinalizeError::ExecutableContainer(ReleaseContainerError::EntryCaseCollision {
+                    container: ContainerKind::Nupkg,
+                }),
+            ) => {}
+            (
+                RunnerMutation::Phase6ContainerReadFailure,
+                FinalizeError::ExecutableRead(ExecutableReadSource::FullNupkg),
+            ) => {}
+            _ => panic!("{label}: unexpected error {error:?}"),
+        }
+        assert_failure_contract(
             &checkout,
             &runner,
-            request(SelectionMode::Unsigned, false),
-            FinalizeError::ExecutableBaseline,
+            &error,
             PHASE_6_BASELINE_CANDIDATE,
             false,
             false,
         );
     }
+}
+
+#[test]
+fn divergence_diagnostic_labels_optional_pre_pack_evidence_as_diagnostic_only() {
+    let nupkg = PackagedExecutableEvidence {
+        sha256: "a".repeat(64),
+        bytes: 11,
+    };
+    let portable = PackagedExecutableEvidence {
+        sha256: "b".repeat(64),
+        bytes: 12,
+    };
+    let pre_pack = PackagedExecutableEvidence {
+        sha256: "c".repeat(64),
+        bytes: 13,
+    };
+    let available = FinalizeError::ExecutableDivergence {
+        nupkg: nupkg.clone(),
+        portable: portable.clone(),
+        pre_pack: Some(pre_pack),
+    }
+    .to_string();
+    assert!(available.contains("pre-pack diagnostic sha256="));
+    assert!(available.contains("not an equality term"));
+
+    let unavailable = FinalizeError::ExecutableDivergence {
+        nupkg,
+        portable,
+        pre_pack: None,
+    }
+    .to_string();
+    assert!(unavailable.contains("pre-pack diagnostic unavailable, not an equality term"));
+    assert!(unavailable.ends_with("rebuild both containers in this transaction and retry"));
 }
 
 #[test]

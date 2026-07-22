@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use crate::artifact_fs::{self, child_process_path_text, ContainedRoot, UnixModePolicy};
 use crate::release_advisory::{run_advisory_check, AdvisoryProvenance};
 use crate::release_clock::Clock;
-use crate::release_container::{compare_executable_baseline, ExecutableContainerReader};
+use crate::release_container::{
+    compare_executable_baseline, ExecutableContainerReader, ReleaseContainerError,
+};
 use crate::release_exec::{CommandOutput, CommandRunner};
 use crate::release_finalizer_fs::{
     create_candidate_temp, create_contained_directory, DeletionPlan, ReleaseCleanupCatalog,
@@ -30,8 +32,9 @@ use crate::release_selection::{
 use crate::release_signing::{verify_release_signing, SigningPolicy, SigningVerificationRequest};
 use crate::release_source_binding::{SourceBinding, SourceBindingError, SourceBindingVerifier};
 use crate::rust_release_manifest::{
-    self, companion_basename, ArtifactEvidence, BundleNames, DependencyPolicy, ReleaseEvidence,
-    RustEvidence, TargetEvidence, PRODUCT, TARGET_FEATURES, TARGET_PROFILE, TARGET_TRIPLE,
+    self, companion_basename, ArtifactEvidence, BundleNames, DependencyPolicy,
+    PackagedExecutableEvidence, ReleaseEvidence, RustEvidence, TargetEvidence, PRODUCT,
+    TARGET_FEATURES, TARGET_PROFILE, TARGET_TRIPLE,
 };
 use crate::version_gate;
 
@@ -73,6 +76,13 @@ pub struct FinalizeResult {
     pub signing_mode: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutableReadSource {
+    VelopackOutput,
+    FullNupkg,
+    PortableZip,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FinalizeError {
     PhaseTransition,
@@ -98,7 +108,13 @@ pub enum FinalizeError {
     AssetsReconciliation,
     LedgerReconciliation,
     SigningVerification,
-    ExecutableBaseline,
+    ExecutableDivergence {
+        nupkg: PackagedExecutableEvidence,
+        portable: PackagedExecutableEvidence,
+        pre_pack: Option<PackagedExecutableEvidence>,
+    },
+    ExecutableContainer(ReleaseContainerError),
+    ExecutableRead(ExecutableReadSource),
     CandidateAssembly,
     EvidenceConstruction,
     ManifestValidation,
@@ -205,10 +221,48 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "final setup signing verification failed; restore the approved signing identity, trust, and RFC 3161 timestamp"
             ),
-            Self::ExecutableBaseline => write!(
-                formatter,
-                "staged, nupkg, and portable executable bytes disagree; rebuild both containers in this transaction"
-            ),
+            Self::ExecutableDivergence {
+                nupkg,
+                portable,
+                pre_pack,
+            } => {
+                write!(
+                    formatter,
+                    "full nupkg and portable executable evidence disagree (full nupkg sha256={}, bytes={}; portable ZIP sha256={}, bytes={}; ",
+                    nupkg.sha256, nupkg.bytes, portable.sha256, portable.bytes
+                )?;
+                if let Some(pre_pack) = pre_pack {
+                    write!(
+                        formatter,
+                        "pre-pack diagnostic sha256={}, bytes={}, not an equality term",
+                        pre_pack.sha256, pre_pack.bytes
+                    )?;
+                } else {
+                    write!(
+                        formatter,
+                        "pre-pack diagnostic unavailable, not an equality term"
+                    )?;
+                }
+                write!(
+                    formatter,
+                    "); rebuild both containers in this transaction and retry"
+                )
+            }
+            Self::ExecutableContainer(cause) => cause.fmt(formatter),
+            Self::ExecutableRead(source) => match source {
+                ExecutableReadSource::VelopackOutput => write!(
+                    formatter,
+                    "Velopack output containment could not be established for executable comparison; restore the newly produced output directory and restart the transaction"
+                ),
+                ExecutableReadSource::FullNupkg => write!(
+                    formatter,
+                    "full nupkg could not be stable-read for executable comparison; restore one regular contained current full package and restart the transaction"
+                ),
+                ExecutableReadSource::PortableZip => write!(
+                    formatter,
+                    "portable ZIP could not be stable-read for executable comparison; restore one regular contained portable package and restart the transaction"
+                ),
+            },
             Self::CandidateAssembly => write!(
                 formatter,
                 "candidate assembly failed before evidence rendering; discard the temporary candidate and restart"
@@ -507,25 +561,34 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         "Velopack output",
         UnixModePolicy::AllowExecute,
     )
-    .map_err(|_| FinalizeError::ExecutableBaseline)?;
-    let stage = ContainedRoot::new(&paths.stage, "Velopack stage", UnixModePolicy::AllowExecute)
-        .map_err(|_| FinalizeError::ExecutableBaseline)?;
+    .map_err(|_| FinalizeError::ExecutableRead(ExecutableReadSource::VelopackOutput))?;
     let nupkg_bytes = output
         .read(names.full_package(), "full nupkg")
-        .map_err(|_| FinalizeError::ExecutableBaseline)?;
+        .map_err(|_| FinalizeError::ExecutableRead(ExecutableReadSource::FullNupkg))?;
     let portable_bytes = output
         .read(names.portable(), "portable ZIP")
-        .map_err(|_| FinalizeError::ExecutableBaseline)?;
-    let staged_bytes = stage
-        .read(STAGED_EXECUTABLE, "staged app executable")
-        .map_err(|_| FinalizeError::ExecutableBaseline)?;
+        .map_err(|_| FinalizeError::ExecutableRead(ExecutableReadSource::PortableZip))?;
     let nupkg = ExecutableContainerReader::read_nupkg(&nupkg_bytes)
-        .map_err(|_| FinalizeError::ExecutableBaseline)?;
+        .map_err(FinalizeError::ExecutableContainer)?;
     let portable = ExecutableContainerReader::read_portable(&portable_bytes)
-        .map_err(|_| FinalizeError::ExecutableBaseline)?;
-    let staged = executable_evidence(&staged_bytes)?;
-    let packaged_executable = compare_executable_baseline(&nupkg, &portable, &staged)
-        .map_err(|_| FinalizeError::ExecutableBaseline)?;
+        .map_err(FinalizeError::ExecutableContainer)?;
+
+    // The packaged equality authority is deliberately container-only. Cleanup creates a new,
+    // empty stage, the build uses a transaction-local CARGO_TARGET_DIR, exactly one executable is
+    // copied into that stage, and the selected vpk action packs only that directory. Those
+    // structural bindings make the pre-pack executable transaction-bound without requiring signed
+    // container bytes to equal it; vpk signs private copies and leaves the stage unsigned.
+    let pre_pack = ContainedRoot::new(&paths.stage, "Velopack stage", UnixModePolicy::AllowExecute)
+        .ok()
+        .and_then(|stage| stage.read(STAGED_EXECUTABLE, "staged app executable").ok())
+        .and_then(|bytes| executable_evidence(&bytes));
+    let packaged_executable = compare_executable_baseline(&nupkg, &portable).ok_or_else(|| {
+        FinalizeError::ExecutableDivergence {
+            nupkg: nupkg.clone(),
+            portable: portable.clone(),
+            pre_pack,
+        }
+    })?;
 
     let candidate = create_candidate_temp(checkout.canonical_path(), version)
         .map_err(|_| FinalizeError::CandidateAssembly)?;
@@ -973,14 +1036,12 @@ fn rewrite_assets_installer(
         .map_err(|_| FinalizeError::AssetsReconciliation)
 }
 
-fn executable_evidence(
-    bytes: &[u8],
-) -> Result<rust_release_manifest::PackagedExecutableEvidence, FinalizeError> {
-    let count = u64::try_from(bytes.len()).map_err(|_| FinalizeError::ExecutableBaseline)?;
+fn executable_evidence(bytes: &[u8]) -> Option<PackagedExecutableEvidence> {
+    let count = u64::try_from(bytes.len()).ok()?;
     if count == 0 {
-        return Err(FinalizeError::ExecutableBaseline);
+        return None;
     }
-    Ok(rust_release_manifest::PackagedExecutableEvidence {
+    Some(PackagedExecutableEvidence {
         sha256: sha256_hex(bytes),
         bytes: count,
     })

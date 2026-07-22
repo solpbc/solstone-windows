@@ -15,6 +15,7 @@ use crate::rust_release_manifest::PackagedExecutableEvidence;
 
 const NUPKG_EXECUTABLE: &str = "lib/app/solstone-windows-app.exe";
 const PORTABLE_EXECUTABLE: &str = "current/solstone-windows-app.exe";
+const NUPKG_OPC_CONTENT_TYPES: &str = "[Content_Types].xml";
 const CENTRAL_HEADER_SIGNATURE: u32 = 0x0201_4b50;
 const CENTRAL_HEADER_LEN: usize = 46;
 const UNIX_TYPE_MASK: u32 = 0o170_000;
@@ -26,13 +27,6 @@ const UNIX_SPECIAL_PERMISSIONS: u32 = 0o007_000;
 pub enum ContainerKind {
     Nupkg,
     Portable,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BaselineSource {
-    Nupkg,
-    Portable,
-    Staged,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,8 +43,6 @@ pub enum ReleaseContainerError {
     EmptyCanonicalMember { container: ContainerKind },
     CanonicalMemberSizeMismatch { container: ContainerKind },
     CanonicalMemberReadFailed { container: ContainerKind },
-    BaselineDiverged { source: BaselineSource },
-    BaselineHasNoAgreement,
 }
 
 impl fmt::Display for ReleaseContainerError {
@@ -116,15 +108,6 @@ impl fmt::Display for ReleaseContainerError {
                 "{} canonical app member could not be streamed and verified; rebuild that container in this transaction",
                 container.label()
             ),
-            Self::BaselineDiverged { source } => write!(
-                formatter,
-                "{} executable diverged from the other two release sources; rebuild both containers in this transaction",
-                source.label()
-            ),
-            Self::BaselineHasNoAgreement => write!(
-                formatter,
-                "nupkg, portable, and staged executables all disagree; rebuild both containers in this transaction"
-            ),
         }
     }
 }
@@ -143,16 +126,6 @@ impl ContainerKind {
         match self {
             Self::Nupkg => NUPKG_EXECUTABLE,
             Self::Portable => PORTABLE_EXECUTABLE,
-        }
-    }
-}
-
-impl BaselineSource {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Nupkg => "nupkg",
-            Self::Portable => "portable",
-            Self::Staged => "staged",
         }
     }
 }
@@ -271,27 +244,8 @@ impl ExecutableContainerReader {
 pub fn compare_executable_baseline(
     nupkg: &PackagedExecutableEvidence,
     portable: &PackagedExecutableEvidence,
-    staged: &PackagedExecutableEvidence,
-) -> Result<PackagedExecutableEvidence, ReleaseContainerError> {
-    if nupkg == portable && portable == staged {
-        return Ok(nupkg.clone());
-    }
-    if portable == staged {
-        return Err(ReleaseContainerError::BaselineDiverged {
-            source: BaselineSource::Nupkg,
-        });
-    }
-    if nupkg == staged {
-        return Err(ReleaseContainerError::BaselineDiverged {
-            source: BaselineSource::Portable,
-        });
-    }
-    if nupkg == portable {
-        return Err(ReleaseContainerError::BaselineDiverged {
-            source: BaselineSource::Staged,
-        });
-    }
-    Err(ReleaseContainerError::BaselineHasNoAgreement)
+) -> Option<PackagedExecutableEvidence> {
+    (nupkg == portable).then(|| nupkg.clone())
 }
 
 fn central_directory_names(
@@ -357,8 +311,12 @@ fn validate_entry_names(
         } else {
             name.as_str()
         };
-        validate_relative_path(spelling)
-            .map_err(|_| ReleaseContainerError::InvalidEntryName { container })?;
+        // OPC requires this exact root metadata name. It is nupkg-only and is never extracted;
+        // duplicate, case-collision, encryption, mode, and canonical-member checks still apply.
+        if !(container == ContainerKind::Nupkg && name == NUPKG_OPC_CONTENT_TYPES) {
+            validate_relative_path(spelling)
+                .map_err(|_| ReleaseContainerError::InvalidEntryName { container })?;
+        }
         if !exact.insert(name.as_str()) {
             return Err(ReleaseContainerError::DuplicateEntryName { container });
         }

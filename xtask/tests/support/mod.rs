@@ -69,6 +69,23 @@ pub const SIGNTOOL: &str = "/fake-tools/signtool";
 pub const SIGNTOOL: &str = r"C:\fake-tools\signtool.exe";
 pub const UNSIGNED_APP_BYTES: &[u8] = b"inert unsigned release executable";
 pub const SIGNED_APP_BYTES: &[u8] = b"inert signed release executable";
+pub const VELOPACK_NUPKG_ENTRY_NAMES: [&str; 8] = [
+    "[Content_Types].xml",
+    "setup.ico",
+    "Solstone.nuspec",
+    "_rels/.rels",
+    "lib/app/solstone-windows-app.exe",
+    "lib/app/solstone-windows-app_ExecutionStub.exe",
+    "lib/app/sq.version",
+    "lib/app/Squirrel.exe",
+];
+pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 5] = [
+    ".portable",
+    "sol.exe",
+    "Update.exe",
+    "current/solstone-windows-app.exe",
+    "current/sq.version",
+];
 
 const ADVISORY_REPOSITORY: &str = "advisory-db-3157b0e258782691";
 const ADVISORY_ARCHIVE: &[u8] = b"deterministic RustSec git archive bytes";
@@ -134,11 +151,11 @@ pub enum RunnerMutation {
     DeltaAssetsMissing,
     DeltaPackageMissing,
     ReleasesFullMissing,
-    StagedExecutableDiverges,
     NupkgExecutableDiverges,
     PortableExecutableDiverges,
     NupkgMemberMissing,
     NupkgMemberDuplicate,
+    Phase6ContainerReadFailure,
     SignToolFailure,
     HistoricalCandidateLeak,
     PostHashArtifactMutation,
@@ -631,29 +648,20 @@ impl FakeReleaseRunner {
         let stage = argument_after(args, "--packDir")?;
         let output = argument_after(args, "--outputDir")?;
         let signed = args.iter().any(|arg| arg == "--signTemplate");
-        if signed {
-            fs::write(
-                Path::new(stage).join("solstone-windows-app.exe"),
-                SIGNED_APP_BYTES,
-            )
+        let staged_bytes = fs::read(Path::new(stage).join("solstone-windows-app.exe"))
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
-        }
-        let app_bytes = fs::read(Path::new(stage).join("solstone-windows-app.exe"))
-            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        let app_bytes = if signed {
+            SIGNED_APP_BYTES
+        } else {
+            &staged_bytes
+        };
         emit_velopack_output(
             Path::new(output),
-            &app_bytes,
+            app_bytes,
             signed,
             self.reverse_output_order,
             self.mutation,
         )?;
-        if self.mutation == RunnerMutation::StagedExecutableDiverges {
-            fs::write(
-                Path::new(stage).join("solstone-windows-app.exe"),
-                b"divergent staged executable",
-            )
-            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
-        }
         Ok(Self::output(Vec::new()))
     }
 }
@@ -664,6 +672,14 @@ impl CommandRunner for FakeReleaseRunner {
             .lock()
             .map_err(|_| CommandRunnerError::FakeStatePoisoned)?
             .push(WitnessEvent::Phase(phase.to_owned()));
+        if phase == xtask::release_finalizer::PHASE_6_BASELINE_CANDIDATE
+            && self.mutation == RunnerMutation::Phase6ContainerReadFailure
+        {
+            fs::remove_file(self.checkout.join(format!(
+                "target/release-finalizer/{VERSION}/vpk-output/Solstone-{VERSION}-full.nupkg"
+            )))
+            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        }
         if phase == xtask::release_finalizer::PHASE_7_EVIDENCE
             && self.mutation == RunnerMutation::HistoricalCandidateLeak
         {
@@ -1182,24 +1198,23 @@ fn emit_velopack_output(
     let feed_name = canonical_names.release_feed().to_owned();
     let default_setup_name = default_velopack_setup_basename();
     let full = match mutation {
-        RunnerMutation::NupkgExecutableDiverges => build_zip(
+        RunnerMutation::NupkgExecutableDiverges => build_velopack_nupkg(
             "lib/app/solstone-windows-app.exe",
             b"divergent nupkg executable",
+            false,
         ),
-        RunnerMutation::NupkgMemberMissing => build_zip("lib/app/not-the-app.exe", app_bytes),
-        RunnerMutation::NupkgMemberDuplicate => build_zip_members(&[
-            ("lib/app/solstone-windows-app.exe", app_bytes),
-            ("lib/app/SOLSTONE-windows-app.exe", app_bytes),
-        ]),
-        _ => build_zip("lib/app/solstone-windows-app.exe", app_bytes),
+        RunnerMutation::NupkgMemberMissing => {
+            build_velopack_nupkg("lib/app/not-the-app.exe", app_bytes, false)
+        }
+        RunnerMutation::NupkgMemberDuplicate => {
+            build_velopack_nupkg("lib/app/solstone-windows-app.exe", app_bytes, true)
+        }
+        _ => build_velopack_nupkg("lib/app/solstone-windows-app.exe", app_bytes, false),
     };
     let portable = if mutation == RunnerMutation::PortableExecutableDiverges {
-        build_zip(
-            "current/solstone-windows-app.exe",
-            b"divergent portable executable",
-        )
+        build_velopack_portable(b"divergent portable executable")
     } else {
-        build_zip("current/solstone-windows-app.exe", app_bytes)
+        build_velopack_portable(app_bytes)
     };
     let delta = format!("inert delta for {VERSION}").into_bytes();
     let setup = if signed {
@@ -1307,8 +1322,35 @@ fn emit_velopack_output(
     Ok(())
 }
 
-fn build_zip(member: &str, bytes: &[u8]) -> Vec<u8> {
-    build_zip_members(&[(member, bytes)])
+pub fn build_velopack_nupkg(
+    app_name: &str,
+    app_bytes: &[u8],
+    add_case_colliding_canonical: bool,
+) -> Vec<u8> {
+    let mut members: Vec<(&str, &[u8])> = vec![
+        (VELOPACK_NUPKG_ENTRY_NAMES[0], b"inert content types"),
+        (VELOPACK_NUPKG_ENTRY_NAMES[1], b"inert icon"),
+        (VELOPACK_NUPKG_ENTRY_NAMES[2], b"inert nuspec"),
+        (VELOPACK_NUPKG_ENTRY_NAMES[3], b"inert relationships"),
+        (app_name, app_bytes),
+        (VELOPACK_NUPKG_ENTRY_NAMES[5], b"inert execution stub"),
+        (VELOPACK_NUPKG_ENTRY_NAMES[6], VERSION.as_bytes()),
+        (VELOPACK_NUPKG_ENTRY_NAMES[7], b"inert squirrel executable"),
+    ];
+    if add_case_colliding_canonical {
+        members.push(("LIB/APP/SOLSTONE-WINDOWS-APP.EXE", app_bytes));
+    }
+    build_zip_members(&members)
+}
+
+pub fn build_velopack_portable(app_bytes: &[u8]) -> Vec<u8> {
+    build_zip_members(&[
+        (VELOPACK_PORTABLE_ENTRY_NAMES[0], b""),
+        (VELOPACK_PORTABLE_ENTRY_NAMES[1], b"inert portable launcher"),
+        (VELOPACK_PORTABLE_ENTRY_NAMES[2], b"inert portable updater"),
+        (VELOPACK_PORTABLE_ENTRY_NAMES[3], app_bytes),
+        (VELOPACK_PORTABLE_ENTRY_NAMES[4], VERSION.as_bytes()),
+    ])
 }
 
 fn build_zip_members(members: &[(&str, &[u8])]) -> Vec<u8> {

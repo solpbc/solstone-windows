@@ -6,12 +6,14 @@ mod support;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Cursor;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use support::{
     action_uses_script, checkout_facts, request, FakeReleaseCheckout, FakeReleaseRunner,
-    WitnessEvent, CHECKED_AT, COMMIT, FAKE_TOOLS_ROOT, POWERSHELL, SIGNED_APP_BYTES, VERSION,
+    WitnessEvent, CHECKED_AT, COMMIT, FAKE_TOOLS_ROOT, POWERSHELL, SIGNED_APP_BYTES,
+    VELOPACK_NUPKG_ENTRY_NAMES, VELOPACK_PORTABLE_ENTRY_NAMES, VERSION,
 };
 use xtask::native_release_proof::{
     prove_native, NativeProofRuntime, STEP_10_REVALIDATE, STEP_11_RECEIPT, STEP_11_RECEIPT_STAGED,
@@ -25,6 +27,7 @@ use xtask::release_receipt::{
 };
 use xtask::release_selection::SelectionMode;
 use xtask::rust_release_manifest::{companion_basename, validate_manifest_bytes};
+use zip::ZipArchive;
 
 const PROVED_AT: &str = "2026-07-21T13:00:00Z";
 
@@ -44,6 +47,22 @@ fn signed_candidate_installs_smokes_and_writes_atomic_private_clean_proof() {
         .root()
         .join(format!("target/release-candidate/{VERSION}"));
     let before = flat_file_snapshot(&candidate);
+    assert_eq!(
+        zip_entry_names(
+            before
+                .get(&format!("Solstone-{VERSION}-full.nupkg"))
+                .expect("candidate contains full nupkg")
+        ),
+        VELOPACK_NUPKG_ENTRY_NAMES
+    );
+    assert_eq!(
+        zip_entry_names(
+            before
+                .get("Solstone-win-Portable.zip")
+                .expect("candidate contains portable ZIP")
+        ),
+        VELOPACK_PORTABLE_ENTRY_NAMES
+    );
     let manifest_filename = companion_basename();
     let manifest_bytes = before
         .get(&manifest_filename)
@@ -136,6 +155,19 @@ fn flat_file_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
             assert!(entry.file_type().expect("read candidate kind").is_file());
             let bytes = fs::read(entry.path()).expect("read candidate file");
             (name, bytes)
+        })
+        .collect()
+}
+
+fn zip_entry_names(bytes: &[u8]) -> Vec<String> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("open candidate ZIP");
+    (0..archive.len())
+        .map(|index| {
+            archive
+                .by_index_raw(index)
+                .expect("read candidate ZIP entry")
+                .name()
+                .to_owned()
         })
         .collect()
 }
