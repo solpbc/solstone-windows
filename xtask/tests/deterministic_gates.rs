@@ -300,7 +300,7 @@ fn dependency_and_release_lockdown_topology_is_static() {
 }
 
 #[test]
-fn publication_and_parallel_version_sources_are_locked_out() {
+fn release_entrypoints_and_cross_file_gates_are_locked_out() {
     let root = repo_root();
     let exact_message = "ERROR: publication locked: direct publication is disabled; release publication belongs to the aggregate provenance publisher.";
     let guard = read(&root, "scripts/lib/publication-guard.sh");

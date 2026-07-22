@@ -760,6 +760,10 @@ pub fn gather_checkout_facts(
     cargo: &OsStr,
     git: &OsStr,
 ) -> Result<CheckoutFacts, ManifestError> {
+    let git_path = Path::new(git);
+    if !git_path.is_absolute() && git_path.components().count() != 1 {
+        return Err(ManifestError::CheckoutFactUnavailable);
+    }
     let version = version_gate::authoritative_version(root, cargo)
         .map_err(|_| ManifestError::CheckoutFactUnavailable)?;
     Version::parse(&version).map_err(|_| ManifestError::LedgerVersionMalformed)?;

@@ -418,6 +418,53 @@ fn rust_release_manifest_good_modes_accept_and_report_boundaries() {
     assert_eq!(release.artifact_count, 6);
 }
 
+#[cfg(unix)]
+#[test]
+fn gather_checkout_facts_rejects_multi_component_relative_git() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = repo_root();
+    let target = root.join("target");
+    fs::create_dir_all(&target).expect("create target directory");
+    let fixture = tempfile::Builder::new()
+        .prefix("checkout-facts-git-shape-")
+        .tempdir_in(&target)
+        .expect("create fake git directory");
+    let fake_git = fixture.path().join("git");
+    fs::write(
+        &fake_git,
+        concat!(
+            "#!/bin/sh\n",
+            "set -eu\n",
+            "case \"$1\" in\n",
+            "  rev-parse) printf '%s\\n' '1111111111111111111111111111111111111111' ;;\n",
+            "  status) exit 0 ;;\n",
+            "  *) exit 97 ;;\n",
+            "esac\n",
+        ),
+    )
+    .expect("write fake git");
+    let mut permissions = fs::metadata(&fake_git)
+        .expect("read fake git metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_git, permissions).expect("make fake git executable");
+    let relative_git = fake_git
+        .strip_prefix(&root)
+        .expect("fake git is beneath checkout");
+    assert!(!relative_git.is_absolute());
+    assert!(relative_git.components().count() > 1);
+
+    assert_eq!(
+        rust_release_manifest::gather_checkout_facts(
+            &root,
+            std::ffi::OsStr::new(env!("CARGO")),
+            relative_git.as_os_str(),
+        ),
+        Err(ManifestError::CheckoutFactUnavailable)
+    );
+}
+
 #[test]
 fn rust_release_manifest_accepts_exact_signed_and_current_delta_shapes() {
     let tree = TempTree::good();
