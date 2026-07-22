@@ -346,6 +346,13 @@ fn publication_and_parallel_version_sources_are_locked_out() {
     assert!(npm_cache_preflight.contains("run 'make install' on the build box"));
     let version_gate = read(&root, "xtask/src/version_gate.rs");
     assert!(version_gate.contains("format!(\"solstone-setup-{version}.exe\")"));
+    let release_tool_preflight = read(&root, "packaging/preflight-release-tools.ps1");
+    assert!(
+        release_tool_preflight.contains("[Console]::SetOut(")
+            && release_tool_preflight.contains("UTF8Encoding($false)")
+            && release_tool_preflight.contains("$OutputEncoding ="),
+        "release-tool preflight must pin BOM-less UTF-8 stdout without requiring an attached console"
+    );
 
     let win_ci = read(&root, "scripts/win-ci.cmd");
     for test in [

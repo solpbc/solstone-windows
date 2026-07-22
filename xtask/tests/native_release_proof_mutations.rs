@@ -107,6 +107,24 @@ fn invalid_candidate_and_receipt_binding_fail_before_native_actions() {
 }
 
 #[test]
+fn resolver_stdout_encoding_fails_before_native_actions() {
+    run_case(
+        "resolver-stdout-legacy-codepage",
+        SelectionMode::Signed,
+        NativeProofMutation::ResolverStdoutLegacyCodepageBytes,
+        |_| {},
+        NativeProofError::ToolResolverEncoding,
+        "preflight stdout",
+        STEP_3_TOOLS,
+        SeamExpectation {
+            resolver: true,
+            installer: false,
+            smoke: false,
+        },
+    );
+}
+
+#[test]
 fn setup_source_is_exactly_the_candidate_canonical_setup() {
     run_case(
         "missing-canonical-setup",

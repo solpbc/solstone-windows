@@ -5,6 +5,17 @@ param([switch]$Sign)
 
 $ErrorActionPreference = "Stop"
 
+# Native proof consumes stdout through a raw pipe and may attach no console.
+# Windows PowerShell 5.1 defaults to a legacy single-byte codepage.
+# This BOM-less UTF-8 writer governs selection-record bytes over every transport.
+# [Console]::OutputEncoding is deliberately not assigned: its setter calls
+# SetConsoleOutputCP and throws when no console is attached.
+$Utf8NoBom = New-Object Text.UTF8Encoding($false)
+$OutputEncoding = $Utf8NoBom
+$Utf8Stdout = New-Object IO.StreamWriter([Console]::OpenStandardOutput(), $Utf8NoBom)
+$Utf8Stdout.AutoFlush = $true
+[Console]::SetOut($Utf8Stdout)
+
 function Fail-Contract([string]$Message) {
     [Console]::Error.WriteLine("ERROR: release toolchain contract invalid: $Message")
     exit 1

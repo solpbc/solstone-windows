@@ -8,7 +8,8 @@ $SourceContract = Join-Path $RepoRoot "packaging\release-toolchain.json"
 $PowerShellPath = (Get-Process -Id $PID).Path
 $Temp = Join-Path ([IO.Path]::GetTempPath()) ("solstone-release-tools-" + [Guid]::NewGuid().ToString("N"))
 $FakeBin = Join-Path $Temp "bin"
-$FakeProfile = Join-Path $Temp "profile"
+$ProfileCharacter = [char]0x00E9
+$FakeProfile = Join-Path $Temp ("profil" + $ProfileCharacter)
 $FakeKits = Join-Path $Temp "kits"
 $FakeVs = Join-Path $Temp "vs install"
 $ContractPath = Join-Path $Temp "contract.json"
@@ -41,6 +42,7 @@ function Run-Preflight([switch]$Sign) {
     $info.UseShellExecute = $false
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false, $true)
     $process = [Diagnostics.Process]::Start($info)
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
@@ -275,6 +277,9 @@ exit /b 98
     Assert-True ((Test-Path -LiteralPath (Join-Path $FakeBin "npm.cmd") -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $FakeBin "npm") -PathType Leaf)) "canonical npm companions present"
     Assert-True ($selection.tools.npm.path -eq (Join-Path $FakeBin "npm.cmd")) "selected callable npm.cmd path"
     Assert-True ($selection.tools.vpk.version -eq "1.2.0") "selected vpk version"
+    $expectedVpkPath = Join-Path $FakeProfile ".dotnet\tools\vpk.exe"
+    Assert-True ($selection.tools.vpk.path -eq $expectedVpkPath) "selected vpk path round-trips UTF-8 profile"
+    Assert-True ($selection.tools.vpk.path.Contains([string]$ProfileCharacter)) "selected vpk path preserves non-ASCII profile character"
     Assert-True ($selection.tools.'msvc-cl'.compilerVersion -eq "19.44.35228") "compiler banner selected"
     Assert-True ($selection.tools.'msvc-cl'.toolsetVersion -eq "14.44.35207") "toolset directory selected"
     Assert-True ($selection.tools.'msvc-cl'.vcvarsVersionArg -eq "-vcvars_ver=14.44.35207") "pinned vcvars activation selected"
@@ -285,6 +290,7 @@ exit /b 98
     Assert-True (($selection.actions.npm_ci.argv -join " ") -eq "--prefix ui ci --offline") "npm action emits fixed argv"
     Assert-True ($selection.actions.cargo_release_build.program -eq (Join-Path $FakeBin "cargo.cmd")) "release-build action uses selected Cargo"
     Assert-True ($selection.actions.vpk_pack.program -eq (Join-Path $FakeProfile ".dotnet\tools\vpk.exe")) "vpk action uses selected vpk"
+    Assert-True ($selection.actions.vpk_pack.program.Contains([string]$ProfileCharacter)) "vpk action preserves non-ASCII profile character"
     Assert-True ($selection.actions.cargo_deny_advisories.program -eq (Join-Path $FakeBin "cargo.cmd")) "advisory action uses selected cargo"
     Assert-True ($selection.actions.native_smoke.program -eq $PowerShellPath) "native smoke uses selected PowerShell"
     Assert-True ($null -eq $selection.actions.signing_auth_preflight) "unsigned omits auth action"

@@ -261,6 +261,16 @@ action tools for signed preflight, install, and smoke. It accepts only
 `signed-verified` candidates with a matching finalization receipt and matching
 nupkg/portable canonical executable members.
 
+Native proof obtains Git from `GIT`, defaulting to the single-component name
+`git`, which the operating system resolves through its search path. It obtains
+PowerShell from `SOLSTONE_PROOF_POWERSHELL`, defaulting to `powershell`, and
+`resolve_bootstrap` resolves that single-component name through `PATH` to the
+absolute program required by `ProcessCommandRunner`; either variable may instead
+name an absolute executable. This differs deliberately from finalization: the
+source-bound signing transaction accepts only the absolute `GIT` established by
+its package bootstrap. Name search or an absolute override are the only supported
+bootstrap modes; there is no third resolution mechanism.
+
 The command installs only the candidate's canonical versioned setup into a newly
 empty proof-owned `LOCALAPPDATA` root outside `RELEASE_DIR`. The canonical app
 must be absent before setup and created afterward; no existing-install no-op or
@@ -287,6 +297,9 @@ certificate, and Session-1 evidence is earned only by running it on the box.
   package`, or use the box-native `scripts/win-package.cmd`.
 - Packaging consumes the exact cargo, npm, PowerShell, vpk, and smctl paths selected
   by `packaging/preflight-release-tools.ps1`; do not substitute ambient tools.
+- `packaging/preflight-release-tools.ps1` must emit its one selection record as
+  UTF-8 on stdout over every transport; the native-proof resolver decodes it
+  strictly and rejects legacy-codepage bytes.
 - Canonical checkout paths keep their Windows verbatim form for containment and
   identity checks, but child-process path text permits only drive and UNC forms
   and removes their verbatim prefix. The ordinary child paths therefore inherit

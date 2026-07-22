@@ -77,6 +77,7 @@ pub enum NativeProofError {
     FinalizationReceiptMismatch,
     UnsignedCandidate,
     ToolResolver,
+    ToolResolverEncoding,
     ToolSelection,
     ToolProjectionMismatch,
     ExecutableContainer(ReleaseContainerError),
@@ -140,6 +141,10 @@ impl fmt::Display for NativeProofError {
             Self::ToolResolver => write!(
                 formatter,
                 "native proof signed tool preflight could not produce one selection record; restore the configured PowerShell bootstrap and rerun preflight"
+            ),
+            Self::ToolResolverEncoding => write!(
+                formatter,
+                "native proof signed tool preflight stdout is not utf-8; repair the stdout encoding forced in packaging/preflight-release-tools.ps1 and retry"
             ),
             Self::ToolSelection => write!(
                 formatter,
@@ -558,7 +563,8 @@ fn run_signed_tool_resolver<R: CommandRunner + ?Sized>(
     if output.status != 0 || !output.stderr.is_empty() {
         return Err(NativeProofError::ToolResolver);
     }
-    let text = std::str::from_utf8(&output.stdout).map_err(|_| NativeProofError::ToolResolver)?;
+    let text =
+        std::str::from_utf8(&output.stdout).map_err(|_| NativeProofError::ToolResolverEncoding)?;
     let record = text.trim_end_matches(['\r', '\n']);
     if record.is_empty() || record.contains(['\r', '\n']) {
         return Err(NativeProofError::ToolResolver);

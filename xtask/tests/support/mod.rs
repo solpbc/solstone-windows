@@ -171,6 +171,7 @@ pub enum RunnerMutation {
 pub enum NativeProofMutation {
     #[default]
     None,
+    ResolverStdoutLegacyCodepageBytes,
     NupkgContainerReadFailure,
     PortableContainerReadFailure,
     NonemptyProofRoot,
@@ -1083,7 +1084,17 @@ fn native_proof_selection_record(mutation: NativeProofMutation) -> Vec<u8> {
         }
         _ => {}
     }
-    serde_json::to_vec(&value).expect("render native proof selection")
+    let mut record = serde_json::to_vec(&value).expect("render native proof selection");
+    if mutation == NativeProofMutation::ResolverStdoutLegacyCodepageBytes {
+        let installation_path = b"/VisualStudio";
+        let insertion = record
+            .windows(installation_path.len())
+            .position(|window| window == installation_path)
+            .expect("native proof Visual Studio path")
+            + installation_path.len();
+        record.insert(insertion, 0xe9);
+    }
+    record
 }
 
 fn mutate_companion_after_smoke(checkout: &Path) -> Result<(), CommandRunnerError> {

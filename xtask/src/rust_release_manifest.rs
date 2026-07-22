@@ -427,7 +427,7 @@ impl fmt::Display for ManifestError {
                 "release-toolchain contract does not match its required shape"
             }
             Self::DenyTomlMalformed => "dependency policy document is malformed",
-            Self::CheckoutFactUnavailable => "a checkout authority fact could not be established",
+            Self::CheckoutFactUnavailable => "a checkout authority fact could not be established; ensure configured cargo and git are available and the checkout authority files are readable",
             Self::Io { .. } => "artifact I/O failed",
             Self::UnsafePath { .. } => "artifact path is unsafe",
             Self::Traversal { .. } => "artifact path contains traversal",
