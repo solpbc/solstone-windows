@@ -9,15 +9,20 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$previousPreference = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-Push-Location $Root
+$locationPushed = $false
 try {
+    Push-Location $Root
+    $locationPushed = $true
+    # npm writes notices to stderr even on success; keep native stderr
+    # non-terminating and judge the probe solely by its exit code.
+    $ErrorActionPreference = "Continue"
     & $NpmPath --prefix ui ci --offline --dry-run
     $probeStatus = $LASTEXITCODE
 } finally {
-    Pop-Location
-    $ErrorActionPreference = $previousPreference
+    $ErrorActionPreference = "Stop"
+    if ($locationPushed) {
+        Pop-Location
+    }
 }
 if ($probeStatus -ne 0) {
     throw "npm offline cache preflight failed; run 'make install' on the build box with network access, then rerun the source-bound package command."

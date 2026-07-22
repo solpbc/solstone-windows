@@ -1119,18 +1119,20 @@ mod tests {
 
     #[test]
     fn action_failure_uses_stdout_fallback_and_keeps_a_bounded_utf8_tail() {
+        let expected_suffix = "x".repeat(ACTION_OUTPUT_TAIL_BYTES - 1);
         let output = CommandOutput {
             status: 1,
-            stdout: format!("{}{}", "discarded ".repeat(80), "e\u{301}".repeat(220)).into_bytes(),
+            stdout: format!("discarded\u{e9}{expected_suffix}").into_bytes(),
             stderr: b" \r\n\t".to_vec(),
         };
+        let normalized = normalize_child_output(&output.stdout);
+        let nominal_start = normalized.len() - ACTION_OUTPUT_TAIL_BYTES;
+        assert!(!normalized.is_char_boundary(nominal_start));
 
         let (tail, truncated) = action_output_tail(&output);
         assert!(truncated);
         assert!(tail.len() <= ACTION_OUTPUT_TAIL_BYTES);
-        assert!(tail.is_char_boundary(0));
-        assert!(tail.ends_with("e\u{301}"));
-        assert!(!tail.contains("discarded"));
+        assert_eq!(tail, expected_suffix);
 
         let diagnostic = action_failed("npm_ci", Some(&output)).to_string();
         assert!(diagnostic.contains("child output tail (truncated to 512 bytes):"));

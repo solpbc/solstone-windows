@@ -267,11 +267,14 @@ certificate, and Session-1 evidence is earned only by running it on the box.
 - Canonical checkout paths keep their Windows verbatim form for containment and
   identity checks, but child-process path text permits only drive and UNC forms
   and removes their verbatim prefix. The ordinary child paths therefore inherit
-  the 260-character limit of tools that do not opt in to long paths. The
-  deepest finalizer child is 78 characters beyond the checkout and the deepest
-  native-proof child is 90; even a conservative 81-character sanctioned
-  checkout totals 171 characters. There is no length fallback, retry, or
-  environment override.
+  the 260-character limit of tools that do not opt in to long paths. For the
+  current layout and version, the longest repository-constructed finalizer path
+  is 78 characters beyond the checkout and the longest native-proof path is 90.
+  Those counts do not bound or prove Cargo- or Tauri-created descendants beneath
+  `CARGO_TARGET_DIR`, including build-script output and dependency intermediate
+  directories. A shallow `~/swbuild`-style checkout is the sanctioned convention,
+  not a maximum enforced by this repository or the build box. There is
+  deliberately no length fallback, retry, heuristic, or environment override.
 - Tauri-generated capability schemas under `src-tauri/gen/schemas/` are ignored
   by the root ignore policy. Other generated or foreign files under
   `src-tauri/gen/` remain visible to source-state checks.
