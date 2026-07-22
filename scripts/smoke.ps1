@@ -99,16 +99,6 @@ if ($NativeProofMode) {
     if ($ObservedSha256 -ne $ExpectedSha256) {
         throw "native-proof explicit app SHA-256 does not match the finalized baseline"
     }
-    $DumpStateLines = @(& $AppExe --dump-state)
-    if ($LASTEXITCODE -ne 0) { throw "native-proof explicit app --dump-state failed ($LASTEXITCODE)" }
-    try {
-        $DumpState = ($DumpStateLines -join "`n") | ConvertFrom-Json
-    } catch {
-        throw "native-proof explicit app --dump-state returned malformed JSON"
-    }
-    if ($null -eq $DumpState.version -or [string]$DumpState.version -ne $ExpectedVersion) {
-        throw "native-proof explicit app version does not match ExpectedVersion"
-    }
 } else {
     # Locate the installed app (Velopack per-user layout). This legacy discovery
     # remains available only to the default operator smoke.
@@ -189,6 +179,22 @@ if ($GateExit -ne 0) {
     Remove-Task "solstone-smoke-app"
     Write-Host "SMOKE_FAIL (gate exit $GateExit)"
     exit $GateExit
+}
+
+if ($NativeProofMode) {
+    try {
+        $VersionGate = Join-Path $PSScriptRoot "lib\smoke-version-gate.ps1"
+        . $VersionGate
+        try {
+            $HealthResponse = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
+        } catch {
+            throw "native-proof launched app /healthz was unreachable after the health/render gate passed; inspect the launched Session-1 app and retry"
+        }
+        Assert-NativeProofHealthVersion -Body ([string]$HealthResponse.Content) -ExpectedVersion $ExpectedVersion
+    } catch {
+        Remove-Task "solstone-smoke-app"
+        throw
+    }
 }
 
 if (-not $FailInject) {

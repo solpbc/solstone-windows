@@ -90,6 +90,7 @@ test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
 	sh scripts/lib/make-package-ordering.test.sh
+	sh scripts/lib/make-prove-native-ordering.test.sh
 	sh scripts/lib/doc-stale-scan.test.sh
 
 # UI unit tests (vitest+jsdom) on the Linux host. Materialize only the committed
@@ -250,14 +251,26 @@ package:
 	  fi
 
 # Strict native install/smoke proof for one already-finalized signed candidate.
-# Candidate classification occurs inside xtask before signed tool resolution.
+# Build then invoke directly: cargo run adds rustup's toolchain bin to PATH, making
+# signed-preflight cargo/rustc resolution ambiguous. configured_cargo() otherwise
+# loses cargo run's injected CARGO; SOLSTONE_VERSION_GATE_CARGO prevents PATH fallback.
 prove-rust-release-native:
 	@set -eu; \
 	  if [ -z "$(RELEASE_DIR)" ]; then \
 	    echo "ERROR: RELEASE_DIR is required; pass target/release-candidate/<VERSION> and retry." >&2; \
 	    exit 1; \
 	  fi; \
-	  SOLSTONE_PROOF_POWERSHELL="$(PWSH)" CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- rust-release-manifest prove-native --release-dir "$(RELEASE_DIR)"
+	  target_dir="$${CARGO_TARGET_DIR:-target}"; \
+	  CARGO_NET_OFFLINE=true $(CARGO) build --locked -q -p xtask; \
+	  xtask_bin="$$target_dir/debug/xtask"; \
+	  if [ ! -x "$$xtask_bin" ]; then \
+	    xtask_bin="$$target_dir/debug/xtask.exe"; \
+	  fi; \
+	  if [ ! -x "$$xtask_bin" ]; then \
+	    echo "ERROR: built xtask executable not found at $$target_dir/debug/xtask or $$target_dir/debug/xtask.exe; restore CARGO_TARGET_DIR consistency and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  SOLSTONE_PROOF_POWERSHELL="$(PWSH)" SOLSTONE_VERSION_GATE_CARGO="$(CARGO)" CARGO_NET_OFFLINE=true "$$xtask_bin" rust-release-manifest prove-native --release-dir "$(RELEASE_DIR)"
 
 # Direct publication is fail-closed. These entry points remain visible while
 # publication ownership moves to the aggregate provenance publisher.

@@ -261,6 +261,13 @@ action tools for signed preflight, install, and smoke. It accepts only
 `signed-verified` candidates with a matching finalization receipt and matching
 nupkg/portable canonical executable members.
 
+The atomic Make wrapper builds xtask with the selected Cargo and then invokes the
+built binary directly, honoring `CARGO_TARGET_DIR` and the platform executable
+suffix. Direct invocation avoids adding the rustup toolchain bin directory to the
+signed preflight's `PATH`. The wrapper also binds xtask's version-gate Cargo to
+the same selected executable, preserving the Cargo identity used for checkout
+metadata acquisition.
+
 Native proof obtains Git from `GIT`, defaulting to the single-component name
 `git`, which the operating system resolves through its search path. It obtains
 PowerShell from `SOLSTONE_PROOF_POWERSHELL`, defaulting to `powershell`, and
@@ -276,9 +283,11 @@ empty proof-owned `LOCALAPPDATA` root outside `RELEASE_DIR`. The canonical app
 must be absent before setup and created afterward; no existing-install no-op or
 setup fallback is accepted. The installed app, both containers, and manifest
 baseline must agree by SHA-256 and byte count. The explicit installed binary must
-report the candidate version through `--dump-state`, then the selected smoke must
-run with fallback disabled and emit the load-bearing `SMOKE_OK` health/render
-evidence. Post-smoke strict validation and companion bytes must be unchanged.
+report the candidate version through STEP_8's direct `--dump-state` invocation.
+The selected smoke must run with fallback disabled, emit the load-bearing
+`SMOKE_OK` health/render evidence, and verify the launched Session-1 instance's
+version from `/healthz`. Post-smoke strict validation and companion bytes must be
+unchanged.
 
 Success atomically writes
 `target/release-evidence/<VERSION>/windows-native-proof.json`. The receipt records

@@ -52,6 +52,7 @@ if not "%WIN_CI_UI_LOCK_SHA256%"=="%EXPECTED_UI_PACKAGE_LOCK_SHA256%" ( echo ERR
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\preflight-release-tools.test.ps1 || exit /b 1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\lock-guard.test.ps1 || exit /b 1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\package-entrypoints.test.ps1 || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\smoke-version-gate.test.ps1 || exit /b 1
 call scripts\lib\preflight-toolchain.test.cmd || exit /b 1
 call scripts\preflight-toolchain.cmd || exit /b 1
 
