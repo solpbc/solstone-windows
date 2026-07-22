@@ -94,9 +94,14 @@ PACKAGE_SOURCE="$REPO_ROOT/scripts/package.ps1"
 preflight_line=$(grep -n '\$SelectionLines = @(' "$PACKAGE_SOURCE" | cut -d: -f1)
 version_line=$(grep -n '\$VersionOutput = @(' "$PACKAGE_SOURCE" | cut -d: -f1)
 lock_line=$(grep -n 'packaging\\lock-guard.ps1' "$PACKAGE_SOURCE" | cut -d: -f1)
+commit_validation_line=$(grep -n 'EXPECTED_RELEASE_COMMIT is required' "$PACKAGE_SOURCE" | cut -d: -f1)
+advisory_validation_line=$(grep -n 'SOLSTONE_ADVISORY_TREE_SHA256 is required' "$PACKAGE_SOURCE" | cut -d: -f1)
+npm_cache_line=$(grep -n 'packaging\\npm-cache-preflight.ps1' "$PACKAGE_SOURCE" | cut -d: -f1)
 finalize_line=$(grep -n '\$SelectionJson | & \$CargoPath @FinalizeArgs' "$PACKAGE_SOURCE" | cut -d: -f1)
-assert_true "package.ps1 keeps preflight-version-lock-finalize order" \
-  "[ '$preflight_line' -lt '$version_line' ] && [ '$version_line' -lt '$lock_line' ] && [ '$lock_line' -lt '$finalize_line' ]"
+assert_true "package.ps1 keeps preflight-version-lock-npm-cache-finalize order" \
+  "[ '$preflight_line' -lt '$version_line' ] && [ '$version_line' -lt '$lock_line' ] && [ '$lock_line' -lt '$npm_cache_line' ] && [ '$npm_cache_line' -lt '$finalize_line' ]"
+assert_true "package.ps1 validates commit and advisory digest before npm cache probe" \
+  "[ '$lock_line' -lt '$commit_validation_line' ] && [ '$commit_validation_line' -lt '$advisory_validation_line' ] && [ '$advisory_validation_line' -lt '$npm_cache_line' ]"
 assert_eq "package.ps1 has one finalizer invocation" "1" \
   "$(grep -c '\$SelectionJson | & \$CargoPath @FinalizeArgs' "$PACKAGE_SOURCE")"
 assert_true "package.ps1 never attests a pre-existing app exe" \

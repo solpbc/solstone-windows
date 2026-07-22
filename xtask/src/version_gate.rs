@@ -11,6 +11,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::artifact_fs::child_process_path_text;
 use crate::release_exec::{CommandRunner, CommandRunnerError};
 
 const APP_PACKAGE: &str = "solstone-windows-app";
@@ -85,8 +86,7 @@ pub fn authoritative_version_with_runner<R: CommandRunner + ?Sized>(
     runner: &R,
 ) -> Result<String, VersionGateError> {
     let manifest = root.join("Cargo.toml");
-    let manifest = manifest
-        .to_str()
+    let manifest = child_process_path_text(&manifest)
         .ok_or_else(|| VersionGateError::Authority("checkout path is not UTF-8".to_owned()))?;
     let args = vec![
         "metadata".to_owned(),
@@ -95,7 +95,7 @@ pub fn authoritative_version_with_runner<R: CommandRunner + ?Sized>(
         "1".to_owned(),
         "--locked".to_owned(),
         "--manifest-path".to_owned(),
-        manifest.to_owned(),
+        manifest,
     ];
     let env =
         std::collections::BTreeMap::from([("CARGO_NET_OFFLINE".to_owned(), "true".to_owned())]);

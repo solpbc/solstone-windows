@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
+use xtask::artifact_fs::child_process_path_text;
 use xtask::release_advisory::{ADVISORY_DB_RELATIVE, RUSTSEC_SOURCE_ID};
 use xtask::release_clock::UtcTimestamp;
 use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
@@ -83,7 +84,11 @@ pub fn action_uses_script(args: &[String], expected: &Path) -> bool {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WitnessEvent {
     Phase(String),
-    Invocation { program: PathBuf, args: Vec<String> },
+    Invocation {
+        program: PathBuf,
+        args: Vec<String>,
+        env: Option<BTreeMap<String, String>>,
+    },
 }
 
 /// One engine-boundary mutation per runner. Pure validation details remain in
@@ -312,12 +317,16 @@ impl FakeReleaseRunner {
         mutation: RunnerMutation,
         native_proof_mutation: NativeProofMutation,
     ) -> Self {
+        let canonical_checkout =
+            fs::canonicalize(checkout.root()).expect("canonical fake checkout");
+        let checkout = PathBuf::from(
+            child_process_path_text(&canonical_checkout).expect("child-process fake checkout"),
+        );
         Self {
-            checkout: fs::canonicalize(checkout.root()).expect("canonical fake checkout"),
-            advisory_repository: fs::canonicalize(checkout.root())
-                .expect("canonical fake checkout")
+            advisory_repository: checkout
                 .join(ADVISORY_DB_RELATIVE)
                 .join(ADVISORY_REPOSITORY),
+            checkout,
             reverse_output_order,
             mutation,
             native_proof_mutation,
@@ -748,6 +757,7 @@ impl CommandRunner for FakeReleaseRunner {
             .push(WitnessEvent::Invocation {
                 program: program.to_path_buf(),
                 args: args.to_vec(),
+                env: env.cloned(),
             });
         match program.to_str() {
             Some(GIT) => self.run_git(args),

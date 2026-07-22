@@ -15,7 +15,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use toml::Value;
 
-use crate::artifact_fs::{self, verify_contained_path, ContainedRoot, UnixModePolicy};
+use crate::artifact_fs::{
+    self, child_process_path_text, verify_contained_path, ContainedRoot, UnixModePolicy,
+};
 use crate::release_clock::{Clock, UtcTimestamp};
 use crate::release_exec::{CommandOutput, CommandRunner};
 use crate::release_selection::SelectedAction;
@@ -232,13 +234,12 @@ pub fn render_advisory_config(
         parsed_ignores.push((id, reason));
     }
 
-    let database_root = isolated_database_root
-        .to_str()
+    let database_root = child_process_path_text(isolated_database_root)
         .ok_or(AdvisoryError::DatabaseRootInvalid)?;
     let mut rendered = String::new();
     rendered.push_str("[advisories]\n");
     rendered.push_str("db-path = ");
-    rendered.push_str(&toml_string(database_root));
+    rendered.push_str(&toml_string(&database_root));
     rendered.push('\n');
     rendered.push_str("db-urls = [\"");
     rendered.push_str(RUSTSEC_SOURCE_ID);
@@ -438,16 +439,23 @@ impl AdvisorySnapshot {
         )
         .map_err(|_| AdvisoryError::SnapshotContainment)?;
 
-        let mut children = fs::read_dir(&database_root)
-            .map_err(|_| AdvisoryError::DatabaseRootInvalid)?
-            .map(|entry| {
-                entry
+        let mut children = Vec::new();
+        for entry in fs::read_dir(&database_root).map_err(|_| AdvisoryError::DatabaseRootInvalid)? {
+            let entry = entry.map_err(|_| AdvisoryError::DatabaseRootInvalid)?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| AdvisoryError::RepositoryName)?;
+            if name == "db.lock"
+                && fs::symlink_metadata(entry.path())
                     .map_err(|_| AdvisoryError::DatabaseRootInvalid)?
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| AdvisoryError::RepositoryName)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                    .file_type()
+                    .is_file()
+            {
+                continue;
+            }
+            children.push(name);
+        }
         children.sort();
         if children.len() != 1 {
             return Err(AdvisoryError::RepositoryCount);
@@ -505,14 +513,12 @@ impl AdvisorySnapshot {
             .modified()
             .map_err(|_| AdvisoryError::FetchHeadMissing)?;
 
-        let repository_arg = repository
-            .canonical_path()
-            .to_str()
+        let repository_arg = child_process_path_text(repository.canonical_path())
             .ok_or(AdvisoryError::SnapshotContainment)?;
         let status = run_git(
             runner,
             git_program,
-            repository_arg,
+            &repository_arg,
             &[
                 "status",
                 "--porcelain=v1",
@@ -528,7 +534,7 @@ impl AdvisorySnapshot {
         let source = run_git(
             runner,
             git_program,
-            repository_arg,
+            &repository_arg,
             &["remote", "get-url", "origin"],
             "source",
         )?;
@@ -540,7 +546,7 @@ impl AdvisorySnapshot {
         let commit_output = run_git(
             runner,
             git_program,
-            repository_arg,
+            &repository_arg,
             &["rev-parse", "HEAD^{commit}"],
             "commit",
         )?;
@@ -553,7 +559,7 @@ impl AdvisorySnapshot {
         let shallow = run_git(
             runner,
             git_program,
-            repository_arg,
+            &repository_arg,
             &["rev-parse", "--is-shallow-repository"],
             "shallow",
         )?;
@@ -563,7 +569,7 @@ impl AdvisorySnapshot {
         let archive = run_git(
             runner,
             git_program,
-            repository_arg,
+            &repository_arg,
             &["archive", "--format=tar", "HEAD"],
             "archive",
         )?;
@@ -634,10 +640,8 @@ pub fn run_advisory_check<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     {
         return Err(AdvisoryError::AdvisoryActionInvalid);
     }
-    let config_path = config
-        .path
-        .to_str()
-        .ok_or(AdvisoryError::ConfigLocationInvalid)?;
+    let config_path =
+        child_process_path_text(&config.path).ok_or(AdvisoryError::ConfigLocationInvalid)?;
     let placeholder_count = advisory_action
         .argv
         .iter()
@@ -651,7 +655,7 @@ pub fn run_advisory_check<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .iter()
         .map(|arg| {
             if arg == "{advisory_config}" {
-                config_path.to_owned()
+                config_path.clone()
             } else {
                 arg.clone()
             }

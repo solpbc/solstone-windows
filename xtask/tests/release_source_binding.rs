@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use xtask::artifact_fs::child_process_path_text;
 use xtask::release_exec::test_support::{FakeCommand, FakeCommandRunner};
 use xtask::release_exec::{CommandOutput, ProcessCommandRunner};
 use xtask::release_source_binding::{LockFile, SourceBindingError, SourceBindingVerifier};
@@ -46,11 +47,8 @@ impl TestCheckout {
     }
 
     fn canonical(&self) -> String {
-        fs::canonicalize(&self.root)
-            .expect("canonicalize checkout")
-            .to_str()
-            .expect("utf8 test checkout")
-            .to_owned()
+        let canonical = fs::canonicalize(&self.root).expect("canonicalize checkout");
+        child_process_path_text(&canonical).expect("child-process test checkout")
     }
 }
 

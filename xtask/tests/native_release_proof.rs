@@ -206,7 +206,7 @@ fn invocation_index(
     events
         .iter()
         .position(|event| match event {
-            WitnessEvent::Invocation { program, args } => predicate(program, args),
+            WitnessEvent::Invocation { program, args, .. } => predicate(program, args),
             WitnessEvent::Phase(_) => false,
         })
         .expect("missing native proof invocation")

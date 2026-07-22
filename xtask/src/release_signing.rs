@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::artifact_fs::{ContainedRoot, UnixModePolicy};
+use crate::artifact_fs::{child_process_path_text, ContainedRoot, UnixModePolicy};
 use crate::release_exec::CommandRunner;
 use crate::release_selection::SelectedAction;
 
@@ -224,13 +224,13 @@ fn verify_signed_setup<R: CommandRunner + ?Sized>(
     let setup_path = candidate.canonical_path().join(setup_relative);
     let before = resolved.read().map_err(|_| SigningError::SetupReadFailed)?;
     let before_sha256 = sha256_hex(&before);
-    let setup_arg = setup_path.to_str().ok_or(SigningError::SetupContainment)?;
+    let setup_arg = child_process_path_text(&setup_path).ok_or(SigningError::SetupContainment)?;
     let args: Vec<String> = action
         .argv
         .iter()
         .map(|arg| {
             if arg == "{file}" {
-                setup_arg.to_owned()
+                setup_arg.clone()
             } else {
                 arg.clone()
             }

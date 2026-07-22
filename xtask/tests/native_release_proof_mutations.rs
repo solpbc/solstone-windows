@@ -654,7 +654,7 @@ fn assert_last_step(events: &[WitnessEvent], expected: &str) {
 
 fn has_resolver(events: &[WitnessEvent]) -> bool {
     events.iter().any(|event| match event {
-        WitnessEvent::Invocation { program, args } => {
+        WitnessEvent::Invocation { program, args, .. } => {
             program == Path::new(POWERSHELL)
                 && action_uses_script(args, Path::new("packaging/preflight-release-tools.ps1"))
         }
@@ -664,7 +664,7 @@ fn has_resolver(events: &[WitnessEvent]) -> bool {
 
 fn has_installer(events: &[WitnessEvent]) -> bool {
     events.iter().any(|event| match event {
-        WitnessEvent::Invocation { program, args } => {
+        WitnessEvent::Invocation { program, args, .. } => {
             program.ends_with(format!("solstone-setup-{VERSION}.exe"))
                 && args.first().map(String::as_str) == Some("--silent")
         }
@@ -674,7 +674,7 @@ fn has_installer(events: &[WitnessEvent]) -> bool {
 
 fn has_smoke(events: &[WitnessEvent]) -> bool {
     events.iter().any(|event| match event {
-        WitnessEvent::Invocation { program, args } => {
+        WitnessEvent::Invocation { program, args, .. } => {
             program == Path::new(POWERSHELL) && args.iter().any(|arg| arg == "scripts/smoke.ps1")
         }
         WitnessEvent::Phase(_) => false,

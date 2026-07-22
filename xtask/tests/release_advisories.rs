@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
+use xtask::artifact_fs::child_process_path_text;
 use xtask::release_advisory::{
     materialize_advisory_config_at, render_advisory_config, run_advisory_check, AdvisoryError,
     AdvisorySnapshot, ADVISORY_DB_RELATIVE, RUSTSEC_SOURCE_ID,
@@ -87,16 +88,20 @@ impl TestCheckout {
     }
 
     fn repository_path(&self) -> PathBuf {
-        fs::canonicalize(self.root.join(ADVISORY_DB_RELATIVE).join(REPOSITORY))
-            .expect("canonicalize fake repository")
+        let canonical = fs::canonicalize(self.root.join(ADVISORY_DB_RELATIVE).join(REPOSITORY))
+            .expect("canonicalize fake repository");
+        PathBuf::from(
+            child_process_path_text(&canonical).expect("child-process fake repository path"),
+        )
     }
 
     fn config_path(&self) -> PathBuf {
-        fs::canonicalize(&self.root)
+        let config = fs::canonicalize(&self.root)
             .expect("canonicalize fake checkout")
-            .join(format!(
-                "target/release-finalizer/{VERSION}/advisory/deny.toml"
-            ))
+            .join(format!("target/release-finalizer/{VERSION}"))
+            .join("advisory")
+            .join("deny.toml");
+        PathBuf::from(child_process_path_text(&config).expect("child-process fake config path"))
     }
 }
 
@@ -293,6 +298,47 @@ fn clean_full_fresh_snapshot_passes_with_public_provenance() {
     assert_eq!(snapshot.acquired_at, FRESH);
     assert_eq!(clock.calls(), 1);
     assert_eq!(runner.remaining().expect("read fake queue"), 0);
+}
+
+#[test]
+fn regular_database_lock_is_tolerated_but_a_foreign_child_is_not() {
+    let checkout = TestCheckout::new("snapshot-db-lock");
+    fs::write(
+        checkout.root.join(ADVISORY_DB_RELATIVE).join("db.lock"),
+        b"cargo-deny lock",
+    )
+    .expect("write regular db.lock");
+    let runner = FakeCommandRunner::new(snapshot_commands(&checkout));
+    AdvisorySnapshot::inspect(
+        &checkout.root,
+        Path::new(GIT),
+        &tree_sha256(),
+        &runner,
+        &FixedClock::new(NOW).expect("clock"),
+    )
+    .expect("regular db.lock beside the repository is tolerated");
+    assert_eq!(runner.remaining().expect("read fake queue"), 0);
+
+    let checkout = TestCheckout::new("snapshot-foreign-child");
+    fs::write(
+        checkout
+            .root
+            .join(ADVISORY_DB_RELATIVE)
+            .join("foreign-child"),
+        b"foreign",
+    )
+    .expect("write foreign child");
+    assert_eq!(
+        AdvisorySnapshot::inspect(
+            &checkout.root,
+            Path::new(GIT),
+            &tree_sha256(),
+            &FakeCommandRunner::new(Vec::new()),
+            &FixedClock::new(NOW).expect("clock"),
+        )
+        .expect_err("foreign second child must fail"),
+        AdvisoryError::RepositoryCount
+    );
 }
 
 #[test]

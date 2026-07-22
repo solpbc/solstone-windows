@@ -251,6 +251,27 @@ for target in build test ui-test package ci audit; do
     "cargo install cargo-deny"
 done
 
+TAURI_IGNORE_REPO="$TMP_ROOT/tauri-ignore-repo"
+mkdir "$TAURI_IGNORE_REPO"
+git -C "$TAURI_IGNORE_REPO" init -q
+git -C "$TAURI_IGNORE_REPO" config user.name "solstone gate test"
+git -C "$TAURI_IGNORE_REPO" config user.email "gate-test@example.invalid"
+cp "$REPO_ROOT/.gitignore" "$TAURI_IGNORE_REPO/.gitignore"
+git -C "$TAURI_IGNORE_REPO" add .gitignore
+git -C "$TAURI_IGNORE_REPO" commit -qm "root ignore policy"
+mkdir -p "$TAURI_IGNORE_REPO/src-tauri/gen/schemas"
+for schema in acl-manifests.json capabilities.json windows-schema.json desktop-schema.json; do
+  printf '%s\n' "generated" > "$TAURI_IGNORE_REPO/src-tauri/gen/schemas/$schema"
+done
+tauri_ignore_status=$(git -C "$TAURI_IGNORE_REPO" status --porcelain=v1 --untracked-files=all)
+assert_eq "Tauri generated schemas are ignored behaviorally" "" "$tauri_ignore_status"
+printf '%s\n' "foreign" > "$TAURI_IGNORE_REPO/foreign-untracked.txt"
+tauri_ignore_status=$(git -C "$TAURI_IGNORE_REPO" status --porcelain=v1 --untracked-files=all)
+assert_eq \
+  "foreign untracked files remain visible beside ignored Tauri schemas" \
+  "?? foreign-untracked.txt" \
+  "$tauri_ignore_status"
+
 GIT_REPO="$TMP_ROOT/git-repo"
 mkdir "$GIT_REPO"
 git -C "$GIT_REPO" init -q

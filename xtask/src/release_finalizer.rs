@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::artifact_fs::{self, ContainedRoot, UnixModePolicy};
+use crate::artifact_fs::{self, child_process_path_text, ContainedRoot, UnixModePolicy};
 use crate::release_advisory::{run_advisory_check, AdvisoryProvenance};
 use crate::release_clock::Clock;
 use crate::release_container::{compare_executable_baseline, ExecutableContainerReader};
-use crate::release_exec::CommandRunner;
+use crate::release_exec::{CommandOutput, CommandRunner};
 use crate::release_finalizer_fs::{
     create_candidate_temp, create_contained_directory, DeletionPlan, ReleaseCleanupCatalog,
 };
@@ -37,6 +37,7 @@ use crate::version_gate;
 
 const STAGED_EXECUTABLE: &str = "solstone-windows-app.exe";
 const SIGNING_POLICY: &str = "packaging/signing-policy.json";
+const ACTION_OUTPUT_TAIL_BYTES: usize = 512;
 
 pub const PHASE_1_REQUEST_SOURCE: &str = "finalize.phase-1.request-source";
 pub const PHASE_2_CLEANUP: &str = "finalize.phase-2.cleanup";
@@ -85,7 +86,11 @@ pub enum FinalizeError {
     Advisory,
     ReleaseNotes,
     SigningRuntime,
-    ActionFailed { action: &'static str },
+    ActionFailed {
+        action: &'static str,
+        output_tail: String,
+        output_truncated: bool,
+    },
     BuildArtifact,
     DeltaSeed,
     VelopackInventory,
@@ -150,10 +155,28 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "signed finalization lacks a safe keypair alias runtime input; provide the build-box SM_KEYPAIR_ALIAS and restart"
             ),
-            Self::ActionFailed { action } => write!(
-                formatter,
-                "selected release action {action} failed; repair that selected tool or its inputs and restart the whole transaction"
-            ),
+            Self::ActionFailed {
+                action,
+                output_tail,
+                output_truncated,
+            } => {
+                if output_tail.is_empty() {
+                    write!(
+                        formatter,
+                        "selected release action {action} failed without child output; repair that selected tool or its inputs and restart the whole transaction"
+                    )
+                } else if *output_truncated {
+                    write!(
+                        formatter,
+                        "selected release action {action} failed; child output tail (truncated to {ACTION_OUTPUT_TAIL_BYTES} bytes): {output_tail}; repair that selected tool or its inputs and restart the whole transaction"
+                    )
+                } else {
+                    write!(
+                        formatter,
+                        "selected release action {action} failed; child output: {output_tail}; repair that selected tool or its inputs and restart the whole transaction"
+                    )
+                }
+            }
             Self::BuildArtifact => write!(
                 formatter,
                 "the release build did not produce one stable contained app executable; repair the selected Cargo build and restart"
@@ -350,7 +373,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
                 .ok_or(FinalizeError::SelectionInvalid)?,
             &BTreeMap::from([(
                 "{smctl_path}",
-                path_text(&smctl.path, FinalizeError::SigningRuntime)?,
+                child_process_path_text(&smctl.path).ok_or(FinalizeError::SigningRuntime)?,
             )]),
             None,
             "signing_auth_preflight",
@@ -376,7 +399,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     let mut msvc_env = selection.msvc_env_overlay();
     msvc_env.insert(
         "CARGO_TARGET_DIR".to_owned(),
-        path_text(&paths.cargo_target, FinalizeError::TransactionDirectory)?,
+        child_process_path_text(&paths.cargo_target).ok_or(FinalizeError::TransactionDirectory)?,
     );
     run_action(
         &selection.actions.cargo_release_build,
@@ -404,15 +427,16 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             ("{version}", version.to_owned()),
             (
                 "{stage_dir}",
-                path_text(&paths.stage, FinalizeError::TransactionDirectory)?,
+                child_process_path_text(&paths.stage).ok_or(FinalizeError::TransactionDirectory)?,
             ),
             (
                 "{output_dir}",
-                path_text(&paths.output, FinalizeError::TransactionDirectory)?,
+                child_process_path_text(&paths.output)
+                    .ok_or(FinalizeError::TransactionDirectory)?,
             ),
             (
                 "{release_notes}",
-                path_text(&paths.notes, FinalizeError::ReleaseNotes)?,
+                child_process_path_text(&paths.notes).ok_or(FinalizeError::ReleaseNotes)?,
             ),
         ]),
     )?;
@@ -727,11 +751,60 @@ fn run_program<R: CommandRunner + ?Sized>(
 ) -> Result<(), FinalizeError> {
     let output = runner
         .run(&action.program, args, None, env)
-        .map_err(|_| FinalizeError::ActionFailed { action: name })?;
+        .map_err(|_| action_failed(name, None))?;
     if output.status != 0 {
-        return Err(FinalizeError::ActionFailed { action: name });
+        return Err(action_failed(name, Some(&output)));
     }
     Ok(())
+}
+
+fn action_failed(action: &'static str, output: Option<&CommandOutput>) -> FinalizeError {
+    let (output_tail, output_truncated) = output
+        .map(action_output_tail)
+        .unwrap_or_else(|| (String::new(), false));
+    FinalizeError::ActionFailed {
+        action,
+        output_tail,
+        output_truncated,
+    }
+}
+
+fn action_output_tail(output: &CommandOutput) -> (String, bool) {
+    let stderr = normalize_child_output(&output.stderr);
+    let normalized = if stderr.is_empty() {
+        normalize_child_output(&output.stdout)
+    } else {
+        stderr
+    };
+    if normalized.len() <= ACTION_OUTPUT_TAIL_BYTES {
+        return (normalized, false);
+    }
+
+    let mut start = normalized.len() - ACTION_OUTPUT_TAIL_BYTES;
+    while !normalized.is_char_boundary(start) {
+        start += 1;
+    }
+    (normalized[start..].to_owned(), true)
+}
+
+fn normalize_child_output(bytes: &[u8]) -> String {
+    let mut normalized = String::new();
+    let mut separating = true;
+    for character in String::from_utf8_lossy(bytes).chars() {
+        if character.is_whitespace() || character.is_control() {
+            if !separating {
+                normalized.push(' ');
+                separating = true;
+            }
+        } else {
+            normalized.push(character);
+            separating = false;
+        }
+    }
+    if separating {
+        normalized.pop();
+    }
+    normalized
 }
 
 fn substitute_args(
@@ -763,7 +836,7 @@ fn sign_template(action: &SelectedAction, alias: &str) -> Result<String, Finaliz
     ]) {
         return Err(FinalizeError::SelectionInvalid);
     }
-    let program = path_text(&action.program, FinalizeError::SigningRuntime)?;
+    let program = child_process_path_text(&action.program).ok_or(FinalizeError::SigningRuntime)?;
     Ok(format!(
         "\"{program}\" sign --keypair-alias {alias} --input {{{{file}}}}"
     ))
@@ -1019,13 +1092,56 @@ fn cleanup_failed_transaction(
         .map_err(|_| FinalizeError::FailureCleanup)
 }
 
-fn path_text(path: &Path, error: FinalizeError) -> Result<String, FinalizeError> {
-    path.to_str().map(str::to_owned).ok_or(error)
-}
-
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_failure_prefers_stderr_and_normalizes_one_operator_line() {
+        let output = CommandOutput {
+            status: 1,
+            stdout: b"stdout fallback".to_vec(),
+            stderr: b"\n child\tfailed\r\nwith\0details \xff ".to_vec(),
+        };
+
+        assert_eq!(
+            action_output_tail(&output),
+            ("child failed with details \u{fffd}".to_owned(), false)
+        );
+    }
+
+    #[test]
+    fn action_failure_uses_stdout_fallback_and_keeps_a_bounded_utf8_tail() {
+        let output = CommandOutput {
+            status: 1,
+            stdout: format!("{}{}", "discarded ".repeat(80), "e\u{301}".repeat(220)).into_bytes(),
+            stderr: b" \r\n\t".to_vec(),
+        };
+
+        let (tail, truncated) = action_output_tail(&output);
+        assert!(truncated);
+        assert!(tail.len() <= ACTION_OUTPUT_TAIL_BYTES);
+        assert!(tail.is_char_boundary(0));
+        assert!(tail.ends_with("e\u{301}"));
+        assert!(!tail.contains("discarded"));
+
+        let diagnostic = action_failed("npm_ci", Some(&output)).to_string();
+        assert!(diagnostic.contains("child output tail (truncated to 512 bytes):"));
+        assert!(diagnostic.contains(&tail));
+    }
+
+    #[test]
+    fn action_failure_without_output_says_so_explicitly() {
+        assert_eq!(
+            action_failed("cargo_release_build", None).to_string(),
+            "selected release action cargo_release_build failed without child output; repair that selected tool or its inputs and restart the whole transaction"
+        );
+    }
 }

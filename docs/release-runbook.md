@@ -44,6 +44,9 @@ Set `EXPECTED_RELEASE_COMMIT` to the exact full lowercase release commit. Run
 accepts the generated config offline. The release transaction itself requires a
 clean, full, non-shallow RustSec snapshot no older than 24 hours and earns
 `advisory_checked_at` only after the offline advisory check succeeds.
+The isolated database root may also contain cargo-deny's regular top-level
+`db.lock`; finalization tolerates but never removes that file. A link, special
+file, or any other extra child still fails snapshot classification.
 
 Review the isolated RustSec repository at the intended full commit before
 finalization. From that reviewed repository, compute the archive-tree digest
@@ -52,6 +55,13 @@ and set its 64-lowercase-hex result as `SOLSTONE_ADVISORY_TREE_SHA256`. This is 
 independent operator input: do not auto-derive it inside finalization from the
 same database being checked, because that would make swapped-database detection
 circular.
+
+After the inline commit and advisory-digest checks, the package bootstrap asks
+the selected npm to run `--prefix ui ci --offline --dry-run`. This probe does not
+materialize `ui/node_modules`; if the cache is incomplete, run `make install` on
+the build box with network access and restart the source-bound package command.
+The dry run's cache-honesty must also be confirmed on the box with warm and
+deliberately incomplete caches during post-ship verification.
 
 `EXPECTED_RELEASE_COMMIT=<commit> SOLSTONE_ADVISORY_TREE_SHA256=<digest> make
 package` delegates through
@@ -254,6 +264,17 @@ certificate, and Session-1 evidence is earned only by running it on the box.
   package`, or use the box-native `scripts/win-package.cmd`.
 - Packaging consumes the exact cargo, npm, PowerShell, vpk, and smctl paths selected
   by `packaging/preflight-release-tools.ps1`; do not substitute ambient tools.
+- Canonical checkout paths keep their Windows verbatim form for containment and
+  identity checks, but child-process path text permits only drive and UNC forms
+  and removes their verbatim prefix. The ordinary child paths therefore inherit
+  the 260-character limit of tools that do not opt in to long paths. The
+  deepest finalizer child is 78 characters beyond the checkout and the deepest
+  native-proof child is 90; even a conservative 81-character sanctioned
+  checkout totals 171 characters. There is no length fallback, retry, or
+  environment override.
+- Tauri-generated capability schemas under `src-tauri/gen/schemas/` are ignored
+  by the root ignore policy. Other generated or foreign files under
+  `src-tauri/gen/` remain visible to source-state checks.
 - Invoke `.cmd` shims via `cmd.exe /c`.
 - The FlaUI smoke runs via a low-privilege scheduled task
   (`LogonType=Interactive`) into Session 1 against the installed app.

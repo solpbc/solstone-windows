@@ -16,7 +16,7 @@ use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::artifact_fs::{ContainedRoot, UnixModePolicy};
+use crate::artifact_fs::{child_process_path_text, ContainedRoot, UnixModePolicy};
 use crate::release_clock::Clock;
 use crate::release_container::ExecutableContainerReader;
 use crate::release_exec::CommandRunner;
@@ -336,13 +336,16 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .read(setup_relative, "native proof setup executable")
         .map_err(|_| NativeProofError::SetupInvocation)?;
     let setup_sha256 = sha256_hex(&setup_bytes);
-    let setup_program = candidate.canonical_path().join(setup_relative);
-    let install_root_text = path_text(&install_root, NativeProofError::SetupInvocation)?;
-    let local_app_data_text = path_text(&local_app_data, NativeProofError::SetupInvocation)?;
+    let setup_program = child_process_path_text(&candidate.canonical_path().join(setup_relative))
+        .ok_or(NativeProofError::SetupInvocation)?;
+    let install_root_text =
+        child_process_path_text(&install_root).ok_or(NativeProofError::SetupInvocation)?;
+    let local_app_data_text =
+        child_process_path_text(&local_app_data).ok_or(NativeProofError::SetupInvocation)?;
     let isolated_env = BTreeMap::from([("LOCALAPPDATA".to_owned(), local_app_data_text)]);
     let install_output = runner
         .run(
-            &setup_program,
+            Path::new(&setup_program),
             &[
                 "--silent".to_owned(),
                 "--installto".to_owned(),
@@ -382,9 +385,11 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     }
 
     record_step(runner, STEP_8_DUMP_STATE)?;
+    let installed_app_program =
+        child_process_path_text(&installed_app).ok_or(NativeProofError::DumpStateInvocation)?;
     let dump = runner
         .run(
-            &installed_app,
+            Path::new(&installed_app_program),
             &["--dump-state".to_owned()],
             None,
             Some(&isolated_env),
@@ -401,7 +406,7 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         &BTreeMap::from([
             (
                 "{installed_exe}",
-                path_text(&installed_app, NativeProofError::SmokeInvocation)?,
+                child_process_path_text(&installed_app).ok_or(NativeProofError::SmokeInvocation)?,
             ),
             ("{expected_version}", manifest.version.clone()),
             (
@@ -410,10 +415,8 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             ),
             (
                 "{dotnet_path}",
-                path_text(
-                    &selection.tools.dotnet.path,
-                    NativeProofError::SmokeInvocation,
-                )?,
+                child_process_path_text(&selection.tools.dotnet.path)
+                    .ok_or(NativeProofError::SmokeInvocation)?,
             ),
         ]),
     )?;
@@ -533,7 +536,7 @@ fn run_signed_tool_resolver<R: CommandRunner + ?Sized>(
         "-ExecutionPolicy".to_owned(),
         "Bypass".to_owned(),
         "-File".to_owned(),
-        path_text(&script, NativeProofError::ToolResolver)?,
+        child_process_path_text(&script).ok_or(NativeProofError::ToolResolver)?,
         "-Sign".to_owned(),
     ];
     let output = runner
@@ -705,10 +708,6 @@ fn record_step<R: CommandRunner + ?Sized>(
     runner
         .record_phase(step)
         .map_err(|_| NativeProofError::PhaseTransition)
-}
-
-fn path_text(path: &Path, error: NativeProofError) -> Result<String, NativeProofError> {
-    path.to_str().map(str::to_owned).ok_or(error)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

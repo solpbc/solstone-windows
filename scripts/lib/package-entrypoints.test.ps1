@@ -91,6 +91,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $Temp "scripts"), (Join-Path $Temp "packaging") -Force | Out-Null
     Copy-Item (Join-Path $RepoRoot "scripts\package.ps1") (Join-Path $Temp "scripts\package.ps1") -Force
     Copy-Item (Join-Path $RepoRoot "scripts\win-package.cmd") (Join-Path $Temp "scripts\win-package.cmd") -Force
+    Copy-Item (Join-Path $RepoRoot "packaging\npm-cache-preflight.ps1") (Join-Path $Temp "packaging\npm-cache-preflight.ps1") -Force
     Write-Ascii (Join-Path $Temp "Cargo.lock") "fake cargo lock`r`n"
     Write-Ascii (Join-Path $Temp "ui\package-lock.json") "{}`r`n"
 
@@ -103,7 +104,10 @@ if ($env:PACKAGE_TEST_FAIL -eq "preflight") { exit 30 }
 $record = [ordered]@{
     schema = "solstone.release-tool-selection.v1"
     mode = $(if ($Sign -or $env:SOLSTONE_SIGN -eq "1") { "signed" } else { "unsigned" })
-    tools = [ordered]@{ cargo = [ordered]@{ path = $env:PACKAGE_TEST_CARGO } }
+    tools = [ordered]@{
+        cargo = [ordered]@{ path = $env:PACKAGE_TEST_CARGO }
+        npm = [ordered]@{ path = $env:PACKAGE_TEST_NPM }
+    }
 }
 $json = $record | ConvertTo-Json -Depth 6 -Compress
 [IO.File]::WriteAllText($env:PACKAGE_TEST_EMITTED_SELECTION, $json, [Text.Encoding]::UTF8)
@@ -139,10 +143,20 @@ if not errorlevel 1 (
 exit /b 90
 '@
 
+    $npm = Join-Path $Temp "fake-npm.cmd"
+    Write-Ascii $npm @'
+@echo off
+if not "%*"=="--prefix ui ci --offline --dry-run" exit /b 91
+echo npm-cache>>"%PACKAGE_TEST_WITNESS%"
+if "%PACKAGE_TEST_FAIL%"=="npm-cache" exit /b 34
+exit /b 0
+'@
+
     Set-TestEnvironment "PACKAGE_TEST_WITNESS" $Witness
     Set-TestEnvironment "PACKAGE_TEST_SELECTION_STDIN" $SelectionStdin
     Set-TestEnvironment "PACKAGE_TEST_EMITTED_SELECTION" $EmittedSelection
     Set-TestEnvironment "PACKAGE_TEST_CARGO" $cargo
+    Set-TestEnvironment "PACKAGE_TEST_NPM" $npm
     $git = Join-Path $Temp "fake-git.cmd"
     Write-Ascii $git "@echo off`r`nexit /b 0`r`n"
     Set-TestEnvironment "PACKAGE_TEST_GIT" $git
@@ -160,6 +174,7 @@ exit /b 90
         ,@("preflight", "preflight")
         ,@("version", "preflight`r`nversion-gate")
         ,@("lock", "preflight`r`nversion-gate`r`nlock-guard")
+        ,@("npm-cache", "preflight`r`nversion-gate`r`nlock-guard`r`nnpm-cache")
     )) {
         Reset-Case
         Set-TestEnvironment "PACKAGE_TEST_FAIL" $entry[0]
@@ -167,6 +182,11 @@ exit /b 90
         Assert-True ($result.status -ne 0) "direct $($entry[0]) failure exits nonzero"
         Assert-True ((Witness-Text) -eq $entry[1]) "direct $($entry[0]) stops at the expected gate"
         Assert-True (-not (Witness-Text).Contains("finalize|")) "direct $($entry[0]) invokes no finalizer"
+        if ($entry[0] -eq "npm-cache") {
+            $failureOutput = $result.stdout + $result.stderr
+            Assert-True ($failureOutput.Contains("npm offline cache preflight failed")) "npm cache failure keeps its stable prefix"
+            Assert-True ($failureOutput.Contains("make install")) "npm cache failure names the warm command"
+        }
     }
 
     Reset-Case
@@ -179,6 +199,7 @@ exit /b 90
     Set-TestEnvironment "SOLSTONE_ADVISORY_TREE_SHA256" $null
     $result = Run-Direct
     Assert-True ($result.status -ne 0) "direct invocation requires SOLSTONE_ADVISORY_TREE_SHA256"
+    Assert-True ((Witness-Text) -eq "preflight`r`nversion-gate`r`nlock-guard") "direct missing advisory digest stops before npm cache probe"
     Assert-True (-not (Witness-Text).Contains("finalize|")) "direct missing advisory digest invokes no finalizer"
 
     foreach ($invalidSign in @("0", "false", " ")) {
@@ -192,7 +213,7 @@ exit /b 90
     Reset-Case
     $result = Run-Direct
     Assert-True ($result.status -eq 0) "direct unsigned delegation succeeds"
-    Assert-True ((Witness-Text).StartsWith("preflight`r`nversion-gate`r`nlock-guard`r`nfinalize|")) "direct unsigned gate order"
+    Assert-True ((Witness-Text).StartsWith("preflight`r`nversion-gate`r`nlock-guard`r`nnpm-cache`r`nfinalize|")) "direct unsigned gate order"
     Assert-OneFinalizer "direct unsigned"
 
     Reset-Case
@@ -210,6 +231,7 @@ exit /b 90
     Set-TestEnvironment "SOLSTONE_ADVISORY_TREE_SHA256" $null
     $result = Run-Wrapper
     Assert-True ($result.status -ne 0) "cmd wrapper requires advisory digest"
+    Assert-True ((Witness-Text) -eq "") "cmd wrapper missing advisory digest stops before package.ps1"
     Assert-True (-not (Witness-Text).Contains("finalize|")) "cmd wrapper missing advisory digest invokes no finalizer"
 
     foreach ($invalidSign in @("0", "false", " ")) {
@@ -223,7 +245,7 @@ exit /b 90
     Reset-Case
     $result = Run-Wrapper
     Assert-True ($result.status -eq 0) "cmd wrapper unsigned delegation succeeds"
-    Assert-True ((Witness-Text).StartsWith("preflight`r`nversion-gate`r`nlock-guard`r`nfinalize|")) "cmd wrapper unsigned gate order"
+    Assert-True ((Witness-Text).StartsWith("preflight`r`nversion-gate`r`nlock-guard`r`nnpm-cache`r`nfinalize|")) "cmd wrapper unsigned gate order"
     Assert-OneFinalizer "cmd wrapper unsigned"
 
     Reset-Case

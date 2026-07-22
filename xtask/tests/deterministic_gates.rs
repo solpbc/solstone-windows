@@ -335,10 +335,15 @@ fn publication_and_parallel_version_sources_are_locked_out() {
     assert!(!package.to_ascii_lowercase().contains("signtool verify"));
     assert!(package.contains("$SelectionJson | & $CargoPath @FinalizeArgs"));
     assert!(package.contains("EXPECTED_RELEASE_COMMIT is required"));
+    assert!(package.contains("packaging\\npm-cache-preflight.ps1"));
+    assert!(package.contains("-NpmPath $NpmPath"));
     assert!(package.contains("\"rust-release-manifest\","));
     assert!(package.contains("\"finalize\","));
     assert!(!package.contains("solstone-windows-app.exe"));
     assert!(!package.to_ascii_lowercase().contains("vpk pack"));
+    let npm_cache_preflight = read(&root, "packaging/npm-cache-preflight.ps1");
+    assert!(npm_cache_preflight.contains("& $NpmPath --prefix ui ci --offline --dry-run"));
+    assert!(npm_cache_preflight.contains("run 'make install' on the build box"));
     let version_gate = read(&root, "xtask/src/version_gate.rs");
     assert!(version_gate.contains("format!(\"solstone-setup-{version}.exe\")"));
 

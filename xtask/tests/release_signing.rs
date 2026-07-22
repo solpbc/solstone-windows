@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use xtask::artifact_fs::child_process_path_text;
 use xtask::release_exec::test_support::{FakeCommand, FakeCommandRunner};
 use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::release_selection::SelectedAction;
@@ -45,7 +46,9 @@ impl Candidate {
     }
 
     fn setup_path(&self) -> PathBuf {
-        fs::canonicalize(self.root.join(SETUP)).expect("canonicalize setup fixture")
+        let canonical =
+            fs::canonicalize(self.root.join(SETUP)).expect("canonicalize setup fixture");
+        PathBuf::from(child_process_path_text(&canonical).expect("child-process setup path"))
     }
 }
 

@@ -81,9 +81,11 @@ fn unsigned_happy_path_promotes_exact_bundle_without_signer() {
 
     assert_eq!(result.signing_mode, "unsigned");
     assert_promoted_bundle(&checkout, false, "unsigned");
-    assert_witness_order(&runner.events());
-    assert!(runner.events().iter().all(|event| match event {
-        WitnessEvent::Invocation { program, args } => {
+    let events = runner.events();
+    assert_witness_order(&events);
+    assert_child_process_path_witnesses(&events);
+    assert!(events.iter().all(|event| match event {
+        WitnessEvent::Invocation { program, args, .. } => {
             program != Path::new(SMCTL)
                 && program != Path::new(SIGNTOOL)
                 && !args.iter().any(|arg| arg == "--signTemplate")
@@ -121,7 +123,7 @@ fn signed_happy_path_verifies_setup_and_uses_post_pack_baseline() {
         WitnessEvent::Invocation { program, .. } if program == Path::new(SIGNTOOL)
     )));
     assert!(events.iter().any(|event| match event {
-        WitnessEvent::Invocation { program, args } if program == Path::new(VPK) => args
+        WitnessEvent::Invocation { program, args, .. } if program == Path::new(VPK) => args
             .windows(2)
             .any(|pair| pair[0] == "--signTemplate" && pair[1].contains(SMCTL)),
         _ => false,
@@ -538,13 +540,19 @@ fn phase_one_through_three_gates_precede_all_byte_changing_actions() {
     let checkout = FakeReleaseCheckout::new("signing-auth", false);
     let runner =
         FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::SigningAuthFailure);
+    let expected = FinalizeError::ActionFailed {
+        action: "signing_auth_preflight",
+        output_tail: "signing authentication unavailable".to_owned(),
+        output_truncated: false,
+    };
+    let diagnostic = expected.to_string();
+    assert!(diagnostic.contains("signing_auth_preflight"));
+    assert!(diagnostic.contains("signing authentication unavailable"));
     assert_engine_failure(
         &checkout,
         &runner,
         request(SelectionMode::Signed, false),
-        FinalizeError::ActionFailed {
-            action: "signing_auth_preflight",
-        },
+        expected,
         PHASE_3_ADVISORY_PREFLIGHT,
         true,
         false,
@@ -1238,22 +1246,30 @@ fn stale_build_output_and_missing_offline_npm_cache_cannot_be_reused() {
 
     let checkout = FakeReleaseCheckout::new("offline-npm-cache", false);
     let runner = FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::NpmCiFailure);
+    let expected = FinalizeError::ActionFailed {
+        action: "npm_ci",
+        output_tail: "offline npm cache missing".to_owned(),
+        output_truncated: false,
+    };
+    let diagnostic = expected.to_string();
+    assert!(diagnostic.contains("npm_ci"));
+    assert!(diagnostic.contains("offline npm cache missing"));
     assert_engine_failure(
         &checkout,
         &runner,
         request(SelectionMode::Unsigned, false),
-        FinalizeError::ActionFailed { action: "npm_ci" },
+        expected,
         PHASE_4_BUILD,
         false,
         false,
     );
     assert!(runner.events().iter().all(|event| match event {
-        WitnessEvent::Invocation { program, args }
+        WitnessEvent::Invocation { program, args, .. }
             if program == Path::new(support::NPM) && args.iter().any(|arg| arg == "run") =>
         {
             false
         }
-        WitnessEvent::Invocation { program, args }
+        WitnessEvent::Invocation { program, args, .. }
             if (program == Path::new(support::CARGO)
                 && args.first().map(String::as_str) == Some("build"))
                 || program == Path::new(VPK) =>
@@ -1396,7 +1412,7 @@ fn assert_failure_contract(
 
     if before_build {
         assert!(runner.events().iter().all(|event| match event {
-            WitnessEvent::Invocation { program, args } => {
+            WitnessEvent::Invocation { program, args, .. } => {
                 program != Path::new(support::NPM)
                     && program != Path::new(VPK)
                     && program != Path::new(SMCTL)
@@ -1609,14 +1625,16 @@ fn assert_witness_order(events: &[WitnessEvent]) {
     let action_order: Vec<&str> = events
         .iter()
         .filter_map(|event| match event {
-            WitnessEvent::Invocation { program, args } if program == Path::new(support::NPM) => {
+            WitnessEvent::Invocation { program, args, .. }
+                if program == Path::new(support::NPM) =>
+            {
                 if args.iter().any(|arg| arg == "ci") {
                     Some("npm_ci")
                 } else {
                     Some("npm_build")
                 }
             }
-            WitnessEvent::Invocation { program, args }
+            WitnessEvent::Invocation { program, args, .. }
                 if program == Path::new(support::CARGO)
                     && args.first().map(String::as_str) == Some("build") =>
             {
@@ -1632,6 +1650,42 @@ fn assert_witness_order(events: &[WitnessEvent]) {
         action_order,
         ["npm_ci", "npm_build", "cargo_release_build", "vpk_pack"]
     );
+}
+
+fn assert_child_process_path_witnesses(events: &[WitnessEvent]) {
+    let cargo_target = events
+        .iter()
+        .find_map(|event| match event {
+            WitnessEvent::Invocation {
+                program,
+                args,
+                env: Some(env),
+            } if program == Path::new(support::CARGO)
+                && args.first().map(String::as_str) == Some("build") =>
+            {
+                env.get("CARGO_TARGET_DIR")
+            }
+            _ => None,
+        })
+        .expect("cargo build records CARGO_TARGET_DIR");
+    assert!(!cargo_target.starts_with(r"\\?\"));
+
+    let vpk_args = events
+        .iter()
+        .find_map(|event| match event {
+            WitnessEvent::Invocation { program, args, .. } if program == Path::new(VPK) => {
+                Some(args)
+            }
+            _ => None,
+        })
+        .expect("record vpk invocation");
+    for flag in ["--packDir", "--outputDir", "--releaseNotes"] {
+        let value = vpk_args
+            .windows(2)
+            .find_map(|pair| (pair[0] == flag).then_some(&pair[1]))
+            .unwrap_or_else(|| panic!("vpk invocation records {flag}"));
+        assert!(!value.starts_with(r"\\?\"), "{flag} leaked {value}");
+    }
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {

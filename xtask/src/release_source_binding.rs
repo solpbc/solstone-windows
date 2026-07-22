@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::artifact_fs::{ContainedRoot, UnixModePolicy};
+use crate::artifact_fs::{child_process_path_text, ContainedRoot, UnixModePolicy};
 use crate::release_exec::{CommandOutput, CommandRunner};
 
 const CARGO_LOCK: &str = "Cargo.lock";
@@ -163,11 +163,8 @@ impl<'a, R: CommandRunner + ?Sized> SourceBindingVerifier<'a, R> {
             UnixModePolicy::AllowExecute,
         )
         .map_err(|_| SourceBindingError::CheckoutContainment)?;
-        let checkout_arg = checkout
-            .canonical_path()
-            .to_str()
-            .ok_or(SourceBindingError::CheckoutContainment)?
-            .to_owned();
+        let checkout_arg = child_process_path_text(checkout.canonical_path())
+            .ok_or(SourceBindingError::CheckoutContainment)?;
         Ok(Self {
             checkout,
             checkout_arg,

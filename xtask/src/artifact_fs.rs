@@ -347,6 +347,40 @@ pub fn validate_relative_path(path: &str) -> Result<(), ArtifactFsError> {
     Ok(())
 }
 
+/// Convert a filesystem path to the conservative text form accepted by child tools.
+///
+/// Windows canonicalization produces verbatim paths. Only verbatim drive and UNC
+/// paths have an equivalent ordinary spelling; every other verbatim namespace is
+/// refused rather than passed to a tool with different path semantics.
+pub fn child_process_path_text(path: &Path) -> Option<String> {
+    let text = path.to_str()?;
+    let Some(verbatim) = text.strip_prefix(r"\\?\") else {
+        return Some(text.to_owned());
+    };
+
+    let bytes = verbatim.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' {
+        return Some(verbatim.to_owned());
+    }
+
+    if verbatim
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("UNC"))
+        && bytes.get(3) == Some(&b'\\')
+    {
+        let authority = &verbatim[4..];
+        let (server, after_server) = authority.split_once('\\')?;
+        let share = after_server
+            .split_once('\\')
+            .map_or(after_server, |pair| pair.0);
+        if !server.is_empty() && !share.is_empty() {
+            return Some(format!(r"\\{authority}"));
+        }
+    }
+
+    None
+}
+
 pub fn file_kind(metadata: &fs::Metadata) -> &'static str {
     let kind = metadata.file_type();
     if kind.is_symlink() {
@@ -597,6 +631,55 @@ mod tests {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
     #[test]
+    fn child_process_paths_simplify_only_allowlisted_verbatim_shapes() {
+        assert_eq!(
+            child_process_path_text(Path::new(r"\\?\C:\checkout\target")),
+            Some(r"C:\checkout\target".to_owned())
+        );
+        assert_eq!(
+            child_process_path_text(Path::new(r"\\?\d:\checkout")),
+            Some(r"d:\checkout".to_owned())
+        );
+        assert_eq!(
+            child_process_path_text(Path::new(r"\\?\UNC\server\share\checkout")),
+            Some(r"\\server\share\checkout".to_owned())
+        );
+        assert_eq!(
+            child_process_path_text(Path::new(r"\\?\unc\Server\Share")),
+            Some(r"\\Server\Share".to_owned())
+        );
+
+        for ordinary in [r"C:\checkout", r"\\server\share\checkout", "/checkout"] {
+            assert_eq!(
+                child_process_path_text(Path::new(ordinary)),
+                Some(ordinary.to_owned())
+            );
+        }
+
+        for refused in [
+            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\checkout",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
+            r"\\?\pipe\service",
+            r"\\?\C:checkout",
+            r"\\?\C:/checkout",
+            r"\\?\UNC\server",
+            r"\\?\UNC\\share",
+            r"\\?\UNC\server\\checkout",
+        ] {
+            assert_eq!(child_process_path_text(Path::new(refused)), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_process_path_rejects_non_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+        assert_eq!(child_process_path_text(&path), None);
+    }
+
+    #[test]
     fn synthetic_parent_reparse_is_an_unsafe_resolution() {
         let metadata = fs::symlink_metadata(".").expect("current directory metadata");
         assert!(matches!(
@@ -662,6 +745,13 @@ mod tests {
             Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim()
         ));
         assert!(matches!(components.next(), Some(Component::RootDir)));
+        let child_root = child_process_path_text(&verbatim_root)
+            .expect("simplify real canonical Windows root for child tools");
+        assert!(!child_root.starts_with(r"\\?\"));
+        assert_eq!(
+            fs::canonicalize(Path::new(&child_root)).expect("canonicalize simplified child root"),
+            verbatim_root
+        );
 
         let root = ContainedRoot::new(
             &verbatim_root,
