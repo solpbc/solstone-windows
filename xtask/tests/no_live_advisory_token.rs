@@ -323,16 +323,32 @@ impl fmt::Display for ScanError {
     }
 }
 
+const GIT_SELECTION_ENV_VARS: [&str; 7] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+];
+
+// Let current_dir alone select the repository so ambient Git state cannot
+// redirect the scan or let a fixture touch a caller-owned repository.
+fn scrub_git_environment(command: &mut Command) {
+    command.env_remove(SCAN_MODE_ENV);
+    for spec in &NEEDLE_SPECS {
+        command.env_remove(spec.env);
+    }
+    for variable in GIT_SELECTION_ENV_VARS {
+        command.env_remove(variable);
+    }
+}
+
 /// Returns indexed bytes for every stage-zero regular, executable, and symlink
 /// blob. It deliberately does not read or require a clean worktree; unstaged
 /// and worktree-only changes are outside this tracked-index scan.
 fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> {
-    let remove_needle_environment = |command: &mut Command| {
-        command.env_remove(SCAN_MODE_ENV);
-        for spec in &NEEDLE_SPECS {
-            command.env_remove(spec.env);
-        }
-    };
     let is_valid_oid = |value: &[u8]| {
         matches!(value.len(), 40 | 64)
             && value
@@ -344,7 +360,7 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
     ls_files
         .args(["ls-files", "-s", "-z"])
         .current_dir(repository_root);
-    remove_needle_environment(&mut ls_files);
+    scrub_git_environment(&mut ls_files);
     let index_output = match ls_files.output() {
         Ok(output) => output,
         Err(error) => {
@@ -522,7 +538,7 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
         .args(["cat-file", "--batch", "--buffer"])
         .current_dir(repository_root)
         .stdin(Stdio::from(request_file));
-    remove_needle_environment(&mut cat_file);
+    scrub_git_environment(&mut cat_file);
     let batch_output = match cat_file.output() {
         Ok(output) => output,
         Err(error) => {
@@ -717,10 +733,8 @@ impl Drop for TestRepository {
 
 fn fixture_git_output(root: &Path, args: &[&str], stdin: Option<&[u8]>) -> std::process::Output {
     let mut git = Command::new("git");
-    git.args(args).current_dir(root).env_remove(SCAN_MODE_ENV);
-    for spec in &NEEDLE_SPECS {
-        git.env_remove(spec.env);
-    }
+    git.args(args).current_dir(root);
+    scrub_git_environment(&mut git);
     if let Some(bytes) = stdin {
         let mut input = tempfile::tempfile().expect("create synthetic Git input");
         input.write_all(bytes).expect("write synthetic Git input");
