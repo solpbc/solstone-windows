@@ -13,9 +13,9 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use support::{
     checkout_facts, request, selection_record, FakeReleaseCheckout, FakeReleaseRunner,
-    RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT,
-    LIVE_ADVISORY_REPOSITORY, MINISIGN, SIGNED_APP_BYTES, SIGNTOOL, SMCTL, UNSIGNED_APP_BYTES,
-    VERSION, VPK,
+    RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT, MINISIGN,
+    MIRROR_ADVISORY_REPOSITORY, SIGNED_APP_BYTES, SIGNTOOL, SMCTL, UNSIGNED_APP_BYTES, VERSION,
+    VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
 use xtask::release_advisory::{AdvisoryError, MIRROR_COHORT_ID};
@@ -1188,18 +1188,18 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
 
     for (label, mutation, expected) in [
         (
-            "live-advisory-source",
+            "mirror-basename-advisory-source",
             RunnerMutation::AdvisorySourceMismatch,
             AdvisoryError::SourceMismatch,
         ),
         (
-            "live-advisory-mirror-commit",
+            "mirror-basename-advisory-commit",
             RunnerMutation::AdvisoryMirrorCommitMismatch,
             AdvisoryError::FreshnessCommitMismatch,
         ),
     ] {
         let checkout =
-            FakeReleaseCheckout::with_advisory_repository(label, false, LIVE_ADVISORY_REPOSITORY);
+            FakeReleaseCheckout::with_advisory_repository(label, false, MIRROR_ADVISORY_REPOSITORY);
         let candidate = checkout
             .root()
             .join(format!("target/release-candidate/{VERSION}"));
@@ -1217,7 +1217,7 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
             &runner,
             &clock,
         )
-        .expect_err("live-basename advisory mismatch must fail");
+        .expect_err("mirror-basename advisory mismatch must fail");
         assert_eq!(error, FinalizeError::Advisory(expected), "{label}");
         assert!(clock.calls() < 3, "{label}: checked_at was not earned");
         assert_failure_contract(

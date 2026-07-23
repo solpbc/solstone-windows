@@ -24,10 +24,11 @@ const FRESH: &str = "2026-07-21T00:00:00Z";
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const LOCATOR: &str = "https://private-token@mirror.example.invalid/advisory-db";
 const REPOSITORY: &str = "advisory-db-a5a5a5a5a5a5a5a5";
-// Public-safe structural equivalent of the deployed bare-repo mirror shape,
-// whose terminal path component is `rustsec-advisory-db.git`.
-const LIVE_LOCATOR: &str = "ssh://git@mirror.example.invalid/rustsec/rustsec-advisory-db.git";
-const LIVE_REPOSITORY: &str = "rustsec-advisory-db.git-02e9ad11cd7b884e";
+// Public-safe, grammar-only mirror locator fixture whose terminal path component is
+// `rustsec-advisory-db.git`; it is unrelated to any real locator.
+const MIRROR_LOCATOR: &str = "ssh://git@mirror.example.invalid/rustsec/rustsec-advisory-db.git";
+// Grammar-only cache-basename fixture, unrelated to any real locator.
+const MIRROR_REPOSITORY: &str = "rustsec-advisory-db.git-b0b0b0b0b0b0b0b0";
 const FAKE_PUBLIC_KEY: &[u8] = b"untrusted comment: fake mirror test key\nRWQFAKEMIRRORKEY\n";
 #[cfg(not(windows))]
 const GIT: &str = "/selected/git";
@@ -380,13 +381,13 @@ fn deterministic_advisory_config_is_byte_exact() {
 fn deterministic_advisory_config_round_trips_dotgit_locator() {
     let deny = fs::read(workspace_root().join("deny.toml")).expect("read deny.toml");
     let database = Path::new(ISOLATED_ADVISORY_DB);
-    let first = render_advisory_config(&deny, database, LIVE_LOCATOR).expect("render config");
+    let first = render_advisory_config(&deny, database, MIRROR_LOCATOR).expect("render config");
     let second =
-        render_advisory_config(&deny, database, LIVE_LOCATOR).expect("render config again");
+        render_advisory_config(&deny, database, MIRROR_LOCATOR).expect("render config again");
     assert_eq!(first, second);
     let text = String::from_utf8(first).expect("utf8 advisory config");
     assert!(
-        text.contains(&format!("db-urls = [\"{LIVE_LOCATOR}\"]\n")),
+        text.contains(&format!("db-urls = [\"{MIRROR_LOCATOR}\"]\n")),
         "db-urls must carry the .git locator byte-for-byte:\n{text}"
     );
 }
@@ -394,8 +395,8 @@ fn deterministic_advisory_config_round_trips_dotgit_locator() {
 #[test]
 fn mirror_locator_validation_rejects_public_or_malformed_sources() {
     validate_mirror_locator(LOCATOR).expect("accept credential-bearing private locator");
-    validate_mirror_locator(LIVE_LOCATOR)
-        .expect("accept deployed rustsec-advisory-db.git mirror locator");
+    validate_mirror_locator(MIRROR_LOCATOR)
+        .expect("accept mirror-shaped rustsec-advisory-db.git locator");
     validate_mirror_locator("https://private-token@mirror.example.invalid/rustsec-advisory-db.git")
         .expect("accept https rustsec-advisory-db.git locator");
     for locator in [
@@ -445,7 +446,7 @@ fn mirror_locator_validation_rejects_public_or_malformed_sources() {
 }
 
 #[test]
-fn deployed_freshness_protocol_rendering_is_byte_exact() {
+fn mirror_freshness_protocol_rendering_is_byte_exact() {
     assert_eq!(
         canonical_freshness_body(COMMIT, NOW, 86_400),
         format!("{{\"max_age\":86400,\"synced_commit\":\"{COMMIT}\",\"utc\":\"{NOW}\"}}\n")
@@ -522,7 +523,7 @@ fn dotgit_locator_origin_equality_passes_and_mismatch_fails_closed() {
         &checkout,
         &["remote", "get-url", "origin"],
         0,
-        format!("{LIVE_LOCATOR}\n").as_bytes(),
+        format!("{MIRROR_LOCATOR}\n").as_bytes(),
     );
     let runner = FakeCommandRunner::new(commands);
     let clock = FixedClock::new(NOW).expect("clock");
@@ -530,7 +531,7 @@ fn dotgit_locator_origin_equality_passes_and_mismatch_fails_closed() {
         &checkout.root,
         Path::new(GIT),
         &tree_sha256(),
-        LIVE_LOCATOR,
+        MIRROR_LOCATOR,
         &runner,
         &clock,
     )
@@ -555,7 +556,7 @@ fn dotgit_locator_origin_equality_passes_and_mismatch_fails_closed() {
             &checkout.root,
             Path::new(GIT),
             &tree_sha256(),
-            LIVE_LOCATOR,
+            MIRROR_LOCATOR,
             &runner,
             &clock,
         )
@@ -566,8 +567,8 @@ fn dotgit_locator_origin_equality_passes_and_mismatch_fails_closed() {
 }
 
 #[test]
-fn live_url_derived_basename_snapshot_passes() {
-    let checkout = TestCheckout::with_repository("snapshot-live-basename", LIVE_REPOSITORY);
+fn mirror_url_derived_basename_snapshot_passes() {
+    let checkout = TestCheckout::with_repository("snapshot-mirror-basename", MIRROR_REPOSITORY);
     let runner = FakeCommandRunner::new(snapshot_commands(&checkout));
     let clock = FixedClock::new(NOW).expect("create fixed clock");
     let snapshot = AdvisorySnapshot::inspect(
@@ -578,7 +579,7 @@ fn live_url_derived_basename_snapshot_passes() {
         &runner,
         &clock,
     )
-    .expect("inspect snapshot under live cargo-deny basename");
+    .expect("inspect snapshot under mirror-shaped cargo-deny basename");
 
     assert_eq!(snapshot.source_id, MIRROR_COHORT_ID);
     assert_eq!(snapshot.commit, COMMIT);

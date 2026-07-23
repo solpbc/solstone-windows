@@ -1237,7 +1237,7 @@ mod tests {
     #[test]
     fn url_derived_repository_name_grammar_is_byte_exact() {
         for name in [
-            "rustsec-advisory-db.git-02e9ad11cd7b884e",
+            "rustsec-advisory-db.git-b0b0b0b0b0b0b0b0",
             "advisory-db-a5a5a5a5a5a5a5a5",
             "advisory-db-aaaaaaaaaaaaaaaa",
         ] {

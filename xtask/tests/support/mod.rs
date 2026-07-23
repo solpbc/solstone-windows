@@ -95,10 +95,11 @@ pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 5] = [
 
 pub const ADVISORY_MIRROR_LOCATOR: &str =
     "https://private-token@mirror.example.invalid/advisory-db";
-// This shaped basename is shared by the focused advisory fixture. cargo-deny
-// owns the URL-hash algorithm; production accepts any canonical shaped name.
+// These shaped basenames are shared by the focused grammar-only advisory fixtures.
+// cargo-deny owns the URL-hash algorithm; production accepts any canonical shape.
 const ADVISORY_REPOSITORY: &str = "advisory-db-a5a5a5a5a5a5a5a5";
-pub const LIVE_ADVISORY_REPOSITORY: &str = "rustsec-advisory-db.git-02e9ad11cd7b884e";
+// Grammar-only mirror-shaped fixture, unrelated to any real locator.
+pub const MIRROR_ADVISORY_REPOSITORY: &str = "rustsec-advisory-db.git-b0b0b0b0b0b0b0b0";
 const ADVISORY_ARCHIVE: &[u8] = b"deterministic RustSec git archive bytes";
 const ADVISORY_MIRROR_PUBLIC_KEY: &[u8] = b"untrusted comment: fake mirror key\nRWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n";
 
