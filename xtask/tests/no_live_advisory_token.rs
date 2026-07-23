@@ -70,17 +70,27 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
-fn redact_needles(path: &str, needles: &[(&str, Vec<u8>)]) -> String {
-    let mut redacted = path.to_owned();
+fn redact_needles(path: &[u8], needles: &[(&str, Vec<u8>)]) -> String {
+    let mut redacted = path.to_vec();
     for (_, needle) in needles {
-        let needle = std::str::from_utf8(needle).expect("validated needle must be UTF-8");
-        redacted = redacted.replace(needle, REDACTED_NEEDLE);
+        let mut replaced = Vec::with_capacity(redacted.len());
+        let mut cursor = 0;
+        while cursor < redacted.len() {
+            if redacted[cursor..].starts_with(needle) {
+                replaced.extend_from_slice(REDACTED_NEEDLE.as_bytes());
+                cursor += needle.len();
+            } else {
+                replaced.push(redacted[cursor]);
+                cursor += 1;
+            }
+        }
+        redacted = replaced;
     }
-    redacted
+    String::from_utf8_lossy(&redacted).into_owned()
 }
 
 #[test]
-fn offending_paths_redact_all_active_needles() {
+fn redact_needles_redacts_all_active_needles_before_lossy_display() {
     let needles = vec![
         ("token", b"synthetic-token".to_vec()),
         ("host", b"synthetic-host".to_vec()),
@@ -89,19 +99,23 @@ fn offending_paths_redact_all_active_needles() {
     ];
 
     assert_eq!(
-        redact_needles("synthetic-token/synthetic-token.txt", &needles),
+        redact_needles(b"synthetic-token/synthetic-token.txt", &needles),
         "<redacted-needle>/<redacted-needle>.txt"
     );
     assert_eq!(
         redact_needles(
-            "synthetic-host/synthetic-path/synthetic-locator-synthetic-token.txt",
+            b"synthetic-host/synthetic-path/synthetic-locator-synthetic-token.txt",
             &needles
         ),
         "<redacted-needle>/<redacted-needle>/<redacted-needle>-<redacted-needle>.txt"
     );
     assert_eq!(
-        redact_needles("fixtures/clean.txt", &needles),
+        redact_needles(b"fixtures/clean.txt", &needles),
         "fixtures/clean.txt"
+    );
+    assert_eq!(
+        redact_needles(b"prefix-\xff-synthetic-token", &needles),
+        "prefix-\u{fffd}-<redacted-needle>"
     );
 }
 
@@ -143,9 +157,9 @@ fn is_nonempty_no_control_rejects_ascii_whitespace_and_controls() {
 }
 
 #[test]
-fn out_of_band_needles_are_absent_from_the_tracked_tree() {
+fn out_of_band_needles_are_absent_from_the_head_tree() {
     if env::var_os(SCAN_MODE_ENV).is_none() {
-        eprintln!("skipping tracked-tree needle scan: {SCAN_MODE_ENV} is not set");
+        eprintln!("skipping HEAD-tree needle scan: {SCAN_MODE_ENV} is not set");
         return;
     }
 
@@ -186,38 +200,56 @@ fn out_of_band_needles_are_absent_from_the_tracked_tree() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask manifest directory must have a workspace parent");
-    let blobs = match tracked_blobs(workspace_root) {
-        Ok(blobs) => blobs,
-        Err(error) => panic!("tracked-tree needle scan error: {error}"),
+    let records = match head_tree_records(workspace_root) {
+        Ok(records) => records,
+        Err(error) => panic!("HEAD-tree needle scan error: {error}"),
     };
 
     let mut matches = vec![Vec::new(); needles.len()];
-    for tracked_blob in &blobs {
+    for record in &records {
         for (index, (_, needle)) in needles.iter().enumerate() {
-            if contains_subslice(&tracked_blob.bytes, needle) {
-                matches[index].push(tracked_blob.path.as_str());
+            if contains_subslice(&record.path, needle) {
+                matches[index].push(("path", record.path.clone()));
             }
         }
     }
 
-    for ((label, _), offending_paths) in needles.iter().zip(matches) {
-        let redacted_paths = offending_paths
+    let blobs = match read_tree_blobs(workspace_root, &records) {
+        Ok(blobs) => blobs,
+        Err(error) => panic!("HEAD-tree needle scan error: {error}"),
+    };
+
+    for blob in &blobs {
+        for (index, (_, needle)) in needles.iter().enumerate() {
+            if contains_subslice(&blob.bytes, needle) {
+                matches[index].push(("blob", blob.path.clone()));
+            }
+        }
+    }
+
+    for ((label, _), offending_matches) in needles.iter().zip(matches) {
+        let redacted_matches = offending_matches
             .iter()
-            .map(|path| redact_needles(path, &needles))
+            .map(|(location, path)| format!("{location}: {}", redact_needles(path, &needles)))
             .collect::<Vec<_>>();
         assert!(
-            offending_paths.is_empty(),
-            "tracked-tree needle match found ({label}): {} offending tracked paths:\n{}",
-            offending_paths.len(),
-            redacted_paths.join("\n")
+            offending_matches.is_empty(),
+            "HEAD-tree needle match found ({label}): {} offending matches:\n{}",
+            offending_matches.len(),
+            redacted_matches.join("\n")
         );
     }
 }
 
-#[derive(Debug)]
 struct TrackedBlob {
-    path: String,
+    path: Vec<u8>,
     bytes: Vec<u8>,
+}
+
+struct TreeRecord {
+    mode: String,
+    oid: String,
+    path: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -234,20 +266,18 @@ enum ScanError {
         operation: &'static str,
         kind: ErrorKind,
     },
-    MalformedIndexRecord {
+    MalformedHeadCommit {
+        reason: &'static str,
+    },
+    UnbornHead,
+    EmptyHeadTree,
+    MalformedTreeRecord {
         ordinal: usize,
         reason: &'static str,
     },
-    UnsupportedIndexMode {
+    UnsupportedTreeMode {
         ordinal: usize,
         mode: String,
-    },
-    UnsupportedIndexStage {
-        ordinal: usize,
-        stage: String,
-    },
-    NonUtf8IndexPath {
-        ordinal: usize,
     },
     MalformedBatchResponse {
         ordinal: usize,
@@ -283,18 +313,16 @@ impl fmt::Display for ScanError {
             Self::TempFile { operation, kind } => {
                 write!(formatter, "temporary request file {operation} failed: {kind}")
             }
-            Self::MalformedIndexRecord { ordinal, reason } => {
-                write!(formatter, "index record {ordinal} is malformed ({reason})")
+            Self::MalformedHeadCommit { reason } => {
+                write!(formatter, "git rev-parse returned a malformed HEAD commit ({reason})")
             }
-            Self::UnsupportedIndexMode { ordinal, mode } => {
-                write!(formatter, "index record {ordinal} has unsupported mode {mode}")
+            Self::UnbornHead => write!(formatter, "repository HEAD is unborn"),
+            Self::EmptyHeadTree => write!(formatter, "resolved HEAD commit has an empty tree"),
+            Self::MalformedTreeRecord { ordinal, reason } => {
+                write!(formatter, "tree record {ordinal} is malformed ({reason})")
             }
-            Self::UnsupportedIndexStage { ordinal, stage } => write!(
-                formatter,
-                "index record {ordinal} has unsupported stage {stage}"
-            ),
-            Self::NonUtf8IndexPath { ordinal } => {
-                write!(formatter, "index record {ordinal} has a non-UTF-8 path")
+            Self::UnsupportedTreeMode { ordinal, mode } => {
+                write!(formatter, "tree record {ordinal} has unsupported mode {mode}")
             }
             Self::MalformedBatchResponse { ordinal, reason } => write!(
                 formatter,
@@ -323,7 +351,7 @@ impl fmt::Display for ScanError {
     }
 }
 
-const GIT_SELECTION_ENV_VARS: [&str; 7] = [
+const GIT_SELECTION_ENV_VARS: [&str; 8] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -331,6 +359,7 @@ const GIT_SELECTION_ENV_VARS: [&str; 7] = [
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
+    "GIT_REPLACE_REF_BASE",
 ];
 
 // Let current_dir alone select the repository so ambient Git state cannot
@@ -345,47 +374,106 @@ fn scrub_git_environment(command: &mut Command) {
     }
 }
 
-/// Returns indexed bytes for every stage-zero regular, executable, and symlink
-/// blob. It deliberately does not read or require a clean worktree; unstaged
-/// and worktree-only changes are outside this tracked-index scan.
-fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> {
-    let is_valid_oid = |value: &[u8]| {
-        matches!(value.len(), 40 | 64)
-            && value
-                .iter()
-                .all(|byte| matches!(*byte, b'0'..=b'9' | b'a'..=b'f'))
-    };
+fn is_valid_oid(value: &[u8]) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .iter()
+            .all(|byte| matches!(*byte, b'0'..=b'9' | b'a'..=b'f'))
+}
 
-    let mut ls_files = Command::new("git");
-    ls_files
-        .args(["ls-files", "-s", "-z"])
+/// Resolves HEAD once and returns strict raw records from that exact committed
+/// tree. It never reads the mutable index or the worktree.
+fn head_tree_records(repository_root: &Path) -> Result<Vec<TreeRecord>, ScanError> {
+    let mut rev_parse = Command::new("git");
+    rev_parse
+        .args([
+            "--no-replace-objects",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "HEAD^{commit}",
+        ])
         .current_dir(repository_root);
-    scrub_git_environment(&mut ls_files);
-    let index_output = match ls_files.output() {
+    scrub_git_environment(&mut rev_parse);
+    let commit_output = match rev_parse.output() {
         Ok(output) => output,
         Err(error) => {
             return Err(ScanError::GitSpawn {
-                subcommand: "ls-files",
+                subcommand: "rev-parse",
                 kind: error.kind(),
             });
         }
     };
-    if !index_output.status.success() {
+    if !commit_output.status.success() {
+        if commit_output.status.code() == Some(1) && commit_output.stdout.is_empty() {
+            return Err(ScanError::UnbornHead);
+        }
         return Err(ScanError::GitExit {
-            subcommand: "ls-files",
-            status: index_output.status,
+            subcommand: "rev-parse",
+            status: commit_output.status,
         });
     }
 
-    let mut entries = Vec::new();
+    let commit_oid_bytes = match commit_output.stdout.strip_suffix(b"\n") {
+        Some(value) => value,
+        None => {
+            return Err(ScanError::MalformedHeadCommit {
+                reason: "missing line terminator",
+            });
+        }
+    };
+    if commit_oid_bytes.is_empty() {
+        return Err(ScanError::MalformedHeadCommit {
+            reason: "missing object id",
+        });
+    }
+    if !is_valid_oid(commit_oid_bytes) {
+        return Err(ScanError::MalformedHeadCommit {
+            reason: "invalid object id",
+        });
+    }
+    let commit_oid: String = commit_oid_bytes
+        .iter()
+        .map(|byte| char::from(*byte))
+        .collect();
+
+    let mut ls_tree = Command::new("git");
+    ls_tree
+        .args([
+            "--no-replace-objects",
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            commit_oid.as_str(),
+        ])
+        .current_dir(repository_root);
+    scrub_git_environment(&mut ls_tree);
+    let tree_output = match ls_tree.output() {
+        Ok(output) => output,
+        Err(error) => {
+            return Err(ScanError::GitSpawn {
+                subcommand: "ls-tree",
+                kind: error.kind(),
+            });
+        }
+    };
+    if !tree_output.status.success() {
+        return Err(ScanError::GitExit {
+            subcommand: "ls-tree",
+            status: tree_output.status,
+        });
+    }
+
+    let mut records = Vec::new();
     let mut cursor = 0;
     let mut ordinal = 1;
-    while cursor < index_output.stdout.len() {
-        let remaining = &index_output.stdout[cursor..];
+    while cursor < tree_output.stdout.len() {
+        let remaining = &tree_output.stdout[cursor..];
         let record_end = match remaining.iter().position(|byte| *byte == 0) {
             Some(position) => position,
             None => {
-                return Err(ScanError::MalformedIndexRecord {
+                return Err(ScanError::MalformedTreeRecord {
                     ordinal,
                     reason: "missing NUL terminator",
                 });
@@ -394,7 +482,7 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
         let record = &remaining[..record_end];
         cursor += record_end + 1;
         if record.is_empty() {
-            return Err(ScanError::MalformedIndexRecord {
+            return Err(ScanError::MalformedTreeRecord {
                 ordinal,
                 reason: "empty record",
             });
@@ -403,16 +491,16 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
         let metadata_end = match record.iter().position(|byte| *byte == b'\t') {
             Some(position) => position,
             None => {
-                return Err(ScanError::MalformedIndexRecord {
+                return Err(ScanError::MalformedTreeRecord {
                     ordinal,
-                    reason: "missing metadata separator",
+                    reason: "missing path separator",
                 });
             }
         };
         let metadata = &record[..metadata_end];
         let path_bytes = &record[metadata_end + 1..];
         if path_bytes.is_empty() {
-            return Err(ScanError::MalformedIndexRecord {
+            return Err(ScanError::MalformedTreeRecord {
                 ordinal,
                 reason: "empty path",
             });
@@ -422,79 +510,96 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
         let mode = match fields.next() {
             Some(value) if !value.is_empty() => value,
             _ => {
-                return Err(ScanError::MalformedIndexRecord {
+                return Err(ScanError::MalformedTreeRecord {
                     ordinal,
                     reason: "missing mode",
+                });
+            }
+        };
+        let object_type = match fields.next() {
+            Some(value) if !value.is_empty() => value,
+            _ => {
+                return Err(ScanError::MalformedTreeRecord {
+                    ordinal,
+                    reason: "missing object type",
                 });
             }
         };
         let oid_bytes = match fields.next() {
             Some(value) if !value.is_empty() => value,
             _ => {
-                return Err(ScanError::MalformedIndexRecord {
+                return Err(ScanError::MalformedTreeRecord {
                     ordinal,
                     reason: "missing object id",
                 });
             }
         };
-        let stage = match fields.next() {
-            Some(value) if !value.is_empty() => value,
-            _ => {
-                return Err(ScanError::MalformedIndexRecord {
-                    ordinal,
-                    reason: "missing stage",
-                });
-            }
-        };
         if fields.next().is_some() {
-            return Err(ScanError::MalformedIndexRecord {
+            return Err(ScanError::MalformedTreeRecord {
                 ordinal,
                 reason: "unexpected metadata field",
             });
         }
 
         if mode.len() != 6 || !mode.iter().all(|byte| matches!(*byte, b'0'..=b'7')) {
-            return Err(ScanError::MalformedIndexRecord {
+            return Err(ScanError::MalformedTreeRecord {
                 ordinal,
                 reason: "invalid mode",
             });
         }
-        if mode != b"100644" && mode != b"100755" && mode != b"120000" {
-            let mode = mode.iter().map(|byte| char::from(*byte)).collect();
-            return Err(ScanError::UnsupportedIndexMode { ordinal, mode });
+        if object_type != b"blob" && object_type != b"commit" {
+            return Err(ScanError::MalformedTreeRecord {
+                ordinal,
+                reason: "invalid object type",
+            });
+        }
+        let valid_mode_type_pair = matches!(
+            (mode, object_type),
+            (b"100644" | b"100755" | b"120000", b"blob") | (b"160000", b"commit")
+        );
+        if !valid_mode_type_pair {
+            return Err(ScanError::MalformedTreeRecord {
+                ordinal,
+                reason: "invalid mode and object type pair",
+            });
         }
 
         if !is_valid_oid(oid_bytes) {
-            return Err(ScanError::MalformedIndexRecord {
+            return Err(ScanError::MalformedTreeRecord {
                 ordinal,
                 reason: "invalid object id",
             });
         }
-        let oid: String = oid_bytes.iter().map(|byte| char::from(*byte)).collect();
-
-        if !stage.iter().all(u8::is_ascii_digit) {
-            return Err(ScanError::MalformedIndexRecord {
-                ordinal,
-                reason: "invalid stage",
-            });
-        }
-        if stage != b"0" {
-            let stage = stage.iter().map(|byte| char::from(*byte)).collect();
-            return Err(ScanError::UnsupportedIndexStage { ordinal, stage });
-        }
-
-        let path = match String::from_utf8(path_bytes.to_vec()) {
-            Ok(path) => path,
-            Err(_) => {
-                return Err(ScanError::NonUtf8IndexPath { ordinal });
-            }
-        };
-        entries.push((path, oid));
+        let mode = mode.iter().map(|byte| char::from(*byte)).collect();
+        let oid = oid_bytes.iter().map(|byte| char::from(*byte)).collect();
+        records.push(TreeRecord {
+            mode,
+            oid,
+            path: path_bytes.to_vec(),
+        });
         ordinal += 1;
     }
 
-    if entries.is_empty() {
-        return Ok(Vec::new());
+    if records.is_empty() {
+        return Err(ScanError::EmptyHeadTree);
+    }
+
+    Ok(records)
+}
+
+/// Reads all blobs from validated committed-tree records without opening a
+/// worktree path or resolving a symlink target. Gitlinks fail closed.
+fn read_tree_blobs(
+    repository_root: &Path,
+    records: &[TreeRecord],
+) -> Result<Vec<TrackedBlob>, ScanError> {
+    for (index, record) in records.iter().enumerate() {
+        if record.mode == "160000" {
+            return Err(ScanError::UnsupportedTreeMode {
+                ordinal: index + 1,
+                mode: record.mode.clone(),
+            });
+        }
     }
 
     let mut request_file = match tempfile::tempfile() {
@@ -506,8 +611,8 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
             });
         }
     };
-    for (_, oid) in &entries {
-        if let Err(error) = request_file.write_all(oid.as_bytes()) {
+    for record in records {
+        if let Err(error) = request_file.write_all(record.oid.as_bytes()) {
             return Err(ScanError::TempFile {
                 operation: "write",
                 kind: error.kind(),
@@ -535,7 +640,7 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
 
     let mut cat_file = Command::new("git");
     cat_file
-        .args(["cat-file", "--batch", "--buffer"])
+        .args(["--no-replace-objects", "cat-file", "--batch", "--buffer"])
         .current_dir(repository_root)
         .stdin(Stdio::from(request_file));
     scrub_git_environment(&mut cat_file);
@@ -555,10 +660,10 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
         });
     }
 
-    let request_count = entries.len();
+    let request_count = records.len();
     let mut blobs = Vec::with_capacity(request_count);
     let mut cursor = 0;
-    for (index, (path, expected_oid)) in entries.into_iter().enumerate() {
+    for (index, record) in records.iter().enumerate() {
         let ordinal = index + 1;
         if cursor == batch_output.stdout.len() {
             return Err(ScanError::BatchResponseCount {
@@ -580,7 +685,7 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
         let header = &remaining[..header_end];
         cursor += header_end + 1;
 
-        let rejection_reason = match header.strip_prefix(expected_oid.as_bytes()) {
+        let rejection_reason = match header.strip_prefix(record.oid.as_bytes()) {
             Some(b" missing") => Some("missing object"),
             Some(b" ambiguous") => Some("ambiguous object"),
             _ => None,
@@ -634,10 +739,10 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
             .iter()
             .map(|byte| char::from(*byte))
             .collect();
-        if actual_oid != expected_oid {
+        if actual_oid != record.oid {
             return Err(ScanError::BatchOidMismatch {
                 ordinal,
-                expected_oid,
+                expected_oid: record.oid.clone(),
                 actual_oid,
             });
         }
@@ -681,7 +786,10 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
             });
         }
         cursor = payload_end + 1;
-        blobs.push(TrackedBlob { path, bytes });
+        blobs.push(TrackedBlob {
+            path: record.path.clone(),
+            bytes,
+        });
     }
     if cursor != batch_output.stdout.len() {
         return Err(ScanError::TrailingBatchBytes {
@@ -691,7 +799,9 @@ fn tracked_blobs(repository_root: &Path) -> Result<Vec<TrackedBlob>, ScanError> 
     Ok(blobs)
 }
 
-const SYNTHETIC_MARKER: &[u8] = b"synthetic-index-only-blob";
+const SYNTHETIC_MARKER: &[u8] = b"synthetic-committed-tree-marker";
+const SYNTHETIC_CLEAN_BLOB: &[u8] = b"synthetic clean blob contents";
+const SYNTHETIC_REPLACEMENT_BLOB: &[u8] = b"synthetic replacement blob contents";
 const SYNTHETIC_GITLINK_OID: &str = "1111111111111111111111111111111111111111";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -702,7 +812,7 @@ struct TestRepository {
 impl TestRepository {
     fn new(label: &str) -> Self {
         let root = env::temp_dir().join(format!(
-            "solstone-index-blob-test-{label}-{}-{}",
+            "solstone-head-tree-test-{label}-{}-{}",
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ));
@@ -714,6 +824,14 @@ impl TestRepository {
         git_ok(&self.root, &["init", "-b", "main"]);
         git_ok(&self.root, &["config", "user.email", "tests@solstone.app"]);
         git_ok(&self.root, &["config", "user.name", "solstone tests"]);
+        git_ok(&self.root, &["config", "core.autocrlf", "false"]);
+    }
+
+    fn commit(&self) {
+        git_ok(
+            &self.root,
+            &["commit", "--no-gpg-sign", "-m", "synthetic committed tree"],
+        );
     }
 
     fn write(&self, relative: &str, bytes: &[u8]) {
@@ -751,8 +869,8 @@ fn git_ok(root: &Path, args: &[&str]) {
     let output = fixture_git_output(root, args, None);
     assert!(
         output.status.success(),
-        "synthetic fixture Git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "synthetic fixture Git exited with {}",
+        output.status
     );
 }
 
@@ -760,14 +878,14 @@ fn git_output_with_stdin(root: &Path, args: &[&str], stdin: &[u8]) -> Vec<u8> {
     let output = fixture_git_output(root, args, Some(stdin));
     assert!(
         output.status.success(),
-        "synthetic fixture Git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "synthetic fixture Git exited with {}",
+        output.status
     );
     output.stdout
 }
 
-fn hash_synthetic_marker(root: &Path) -> String {
-    let output = git_output_with_stdin(root, &["hash-object", "-w", "--stdin"], SYNTHETIC_MARKER);
+fn hash_blob(root: &Path, bytes: &[u8]) -> String {
+    let output = git_output_with_stdin(root, &["hash-object", "-w", "--stdin"], bytes);
     String::from_utf8(output)
         .expect("synthetic object id must be UTF-8")
         .trim()
@@ -775,61 +893,190 @@ fn hash_synthetic_marker(root: &Path) -> String {
 }
 
 #[test]
-fn tracked_blobs_reads_deleted_worktree_file_from_index() {
+fn head_tree_blobs_read_committed_file_when_worktree_file_is_missing() {
     let repository = TestRepository::new("deleted-worktree-file");
     repository.init();
     let path = "synthetic-deleted.txt";
     repository.write(path, SYNTHETIC_MARKER);
     git_ok(&repository.root, &["add", "--", path]);
+    repository.commit();
     fs::remove_file(repository.root.join(path)).expect("delete synthetic worktree file");
 
     assert!(fs::read(repository.root.join(path)).is_err());
-    let blobs = tracked_blobs(&repository.root).expect("read indexed synthetic blob");
+    let records = head_tree_records(&repository.root).expect("enumerate committed tree");
+    let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
     let blob = blobs
         .iter()
-        .find(|blob| blob.path == path)
-        .expect("find deleted-worktree indexed blob");
-    assert_eq!(blob.path.as_str(), path);
-    assert!(contains_subslice(&blob.bytes, SYNTHETIC_MARKER));
+        .find(|blob| blob.path == path.as_bytes())
+        .expect("find committed blob for missing worktree file");
+    assert!(
+        blob.path == path.as_bytes(),
+        "unexpected committed blob path"
+    );
+    assert!(
+        contains_subslice(&blob.bytes, SYNTHETIC_MARKER),
+        "committed blob does not contain the synthetic marker"
+    );
 }
 
 #[test]
-fn tracked_blobs_reads_staged_symlink_blob_without_worktree_symlink() {
-    let repository = TestRepository::new("staged-symlink");
+fn head_tree_blobs_read_committed_broken_symlink_without_resolving_target() {
+    let repository = TestRepository::new("broken-symlink");
     repository.init();
     let path = "synthetic-link";
-    let oid = hash_synthetic_marker(&repository.root);
+    let oid = hash_blob(&repository.root, SYNTHETIC_MARKER);
     let cache_info = format!("120000,{oid},{path}");
     git_ok(
         &repository.root,
         &["update-index", "--add", "--cacheinfo", &cache_info],
     );
+    repository.commit();
 
-    assert!(fs::read(repository.root.join(path)).is_err());
-    let blobs = tracked_blobs(&repository.root).expect("read indexed synthetic symlink");
+    assert!(
+        fs::symlink_metadata(repository.root.join(path)).is_err(),
+        "synthetic worktree symlink unexpectedly exists"
+    );
+    let records = head_tree_records(&repository.root).expect("enumerate committed tree");
+    let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
     let blob = blobs
         .iter()
-        .find(|blob| blob.path == path)
-        .expect("find no-worktree symlink blob");
-    assert_eq!(blob.path.as_str(), path);
-    assert!(contains_subslice(&blob.bytes, SYNTHETIC_MARKER));
+        .find(|blob| blob.path == path.as_bytes())
+        .expect("find committed broken-symlink blob");
+    assert!(
+        blob.path == path.as_bytes(),
+        "unexpected committed symlink path"
+    );
+    assert!(
+        contains_subslice(&blob.bytes, SYNTHETIC_MARKER),
+        "committed symlink blob does not contain the synthetic marker"
+    );
 }
 
 #[test]
-fn tracked_blobs_returns_error_outside_a_repository() {
-    let repository = TestRepository::new("not-a-repository");
-    match tracked_blobs(&repository.root) {
-        Err(ScanError::GitExit { subcommand, .. }) => assert_eq!(subcommand, "ls-files"),
-        Err(error) => panic!("unexpected synthetic scan error: {error}"),
-        Ok(blobs) => panic!(
-            "synthetic non-repository scan unexpectedly returned {} blobs",
-            blobs.len()
-        ),
-    }
+fn head_tree_blobs_read_committed_file_after_staged_deletion() {
+    let repository = TestRepository::new("staged-deletion");
+    repository.init();
+    let path = "synthetic-staged-deletion.txt";
+    repository.write(path, SYNTHETIC_MARKER);
+    git_ok(&repository.root, &["add", "--", path]);
+    repository.commit();
+    git_ok(&repository.root, &["rm", "--cached", "--", path]);
+
+    let records = head_tree_records(&repository.root).expect("enumerate committed tree");
+    let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
+    let blob = blobs
+        .iter()
+        .find(|blob| blob.path == path.as_bytes())
+        .expect("find committed blob after staged deletion");
+    assert!(
+        contains_subslice(&blob.bytes, SYNTHETIC_MARKER),
+        "committed blob does not contain the synthetic marker"
+    );
 }
 
 #[test]
-fn tracked_blobs_rejects_gitlink_mode() {
+fn head_tree_records_expose_needle_bearing_filename() {
+    let repository = TestRepository::new("needle-filename");
+    repository.init();
+    let marker = std::str::from_utf8(SYNTHETIC_MARKER).expect("synthetic marker must be UTF-8");
+    let path = format!("prefix-{marker}-suffix.txt");
+    repository.write(&path, SYNTHETIC_CLEAN_BLOB);
+    git_ok(&repository.root, &["add", "--", &path]);
+    repository.commit();
+
+    let records = head_tree_records(&repository.root).expect("enumerate committed tree");
+    let record = records
+        .iter()
+        .find(|record| contains_subslice(&record.path, SYNTHETIC_MARKER))
+        .expect("find marker-bearing committed path");
+    assert!(
+        record.path == path.as_bytes(),
+        "unexpected marker-bearing committed path"
+    );
+    let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
+    let blob = blobs
+        .iter()
+        .find(|blob| blob.path == path.as_bytes())
+        .expect("find clean blob for marker-bearing path");
+    assert!(
+        !contains_subslice(&blob.bytes, SYNTHETIC_MARKER),
+        "clean blob unexpectedly contains the synthetic marker"
+    );
+}
+
+#[test]
+fn head_tree_records_preserve_non_utf8_needle_bearing_path() {
+    let repository = TestRepository::new("non-utf8-path");
+    repository.init();
+    let oid = hash_blob(&repository.root, SYNTHETIC_CLEAN_BLOB);
+    let mut tree_info = format!("100644 {oid}\t").into_bytes();
+    tree_info.extend_from_slice(b"raw-\xff-");
+    tree_info.extend_from_slice(SYNTHETIC_MARKER);
+    tree_info.push(b'\n');
+    let output = git_output_with_stdin(
+        &repository.root,
+        &["update-index", "--index-info"],
+        &tree_info,
+    );
+    assert!(output.is_empty(), "update-index returned unexpected output");
+    repository.commit();
+
+    let records = head_tree_records(&repository.root).expect("enumerate committed tree");
+    let record = records
+        .iter()
+        .find(|record| contains_subslice(&record.path, SYNTHETIC_MARKER))
+        .expect("find non-UTF-8 marker-bearing committed path");
+    assert!(
+        record.path.contains(&0xff),
+        "committed path does not preserve the non-UTF-8 byte"
+    );
+    let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
+    let blob = blobs
+        .iter()
+        .find(|blob| blob.path == record.path)
+        .expect("find blob for non-UTF-8 committed path");
+    assert!(
+        !contains_subslice(&blob.bytes, SYNTHETIC_MARKER),
+        "clean blob unexpectedly contains the synthetic marker"
+    );
+}
+
+#[test]
+fn head_tree_blobs_read_original_bytes_despite_an_active_replace_ref() {
+    let repository = TestRepository::new("replace-ref");
+    repository.init();
+    let path = "synthetic-replaced.txt";
+    let original_oid = hash_blob(&repository.root, SYNTHETIC_MARKER);
+    let cache_info = format!("100644,{original_oid},{path}");
+    git_ok(
+        &repository.root,
+        &["update-index", "--add", "--cacheinfo", &cache_info],
+    );
+    repository.commit();
+    let replacement_oid = hash_blob(&repository.root, SYNTHETIC_REPLACEMENT_BLOB);
+    git_ok(
+        &repository.root,
+        &["replace", "-f", &original_oid, &replacement_oid],
+    );
+
+    let records = head_tree_records(&repository.root).expect("enumerate committed tree");
+    let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
+    let blob = blobs
+        .iter()
+        .find(|blob| blob.path == path.as_bytes())
+        .expect("find committed blob with active replacement");
+    assert!(
+        blob.bytes == SYNTHETIC_MARKER,
+        "batch read did not return the original committed bytes"
+    );
+    assert!(
+        blob.bytes != SYNTHETIC_REPLACEMENT_BLOB,
+        "batch read returned replacement bytes"
+    );
+}
+
+#[test]
+fn head_tree_records_expose_gitlink_path_before_blob_read_rejects_mode() {
     let repository = TestRepository::new("gitlink-mode");
     repository.init();
     let path = "synthetic-gitlink";
@@ -838,9 +1085,18 @@ fn tracked_blobs_rejects_gitlink_mode() {
         &repository.root,
         &["update-index", "--add", "--cacheinfo", &cache_info],
     );
+    repository.commit();
 
-    match tracked_blobs(&repository.root) {
-        Err(ScanError::UnsupportedIndexMode { mode, .. }) => assert_eq!(mode, "160000"),
+    let records = head_tree_records(&repository.root).expect("enumerate committed tree");
+    let record = records
+        .iter()
+        .find(|record| record.path == path.as_bytes())
+        .expect("find committed gitlink path");
+    assert!(record.mode == "160000", "unexpected committed gitlink mode");
+    match read_tree_blobs(&repository.root, &records) {
+        Err(ScanError::UnsupportedTreeMode { mode, .. }) => {
+            assert!(mode == "160000", "unexpected unsupported tree mode");
+        }
         Err(error) => panic!("unexpected synthetic scan error: {error}"),
         Ok(blobs) => panic!(
             "synthetic gitlink scan unexpectedly returned {} blobs",
@@ -850,25 +1106,59 @@ fn tracked_blobs_rejects_gitlink_mode() {
 }
 
 #[test]
-fn tracked_blobs_rejects_nonzero_index_stage() {
-    let repository = TestRepository::new("nonzero-stage");
+fn head_tree_records_report_unborn_head() {
+    let repository = TestRepository::new("unborn-head");
     repository.init();
-    let path = "synthetic-unmerged.txt";
-    let oid = hash_synthetic_marker(&repository.root);
-    let index_info = format!("100644 {oid} 1\t{path}\n");
-    let output = git_output_with_stdin(
-        &repository.root,
-        &["update-index", "--index-info"],
-        index_info.as_bytes(),
-    );
-    assert!(output.is_empty());
 
-    match tracked_blobs(&repository.root) {
-        Err(ScanError::UnsupportedIndexStage { stage, .. }) => assert_eq!(stage, "1"),
+    match head_tree_records(&repository.root) {
+        Err(ScanError::UnbornHead) => {}
         Err(error) => panic!("unexpected synthetic scan error: {error}"),
-        Ok(blobs) => panic!(
-            "synthetic nonzero-stage scan unexpectedly returned {} blobs",
-            blobs.len()
+        Ok(records) => panic!(
+            "synthetic unborn-HEAD scan unexpectedly returned {} records",
+            records.len()
+        ),
+    }
+}
+
+#[test]
+fn head_tree_records_reject_empty_committed_tree() {
+    let repository = TestRepository::new("empty-tree");
+    repository.init();
+    git_ok(
+        &repository.root,
+        &[
+            "commit",
+            "--allow-empty",
+            "--no-gpg-sign",
+            "-m",
+            "synthetic empty tree",
+        ],
+    );
+
+    match head_tree_records(&repository.root) {
+        Err(ScanError::EmptyHeadTree) => {}
+        Err(error) => panic!("unexpected synthetic scan error: {error}"),
+        Ok(records) => panic!(
+            "synthetic empty-tree scan unexpectedly returned {} records",
+            records.len()
+        ),
+    }
+}
+
+#[test]
+fn head_tree_records_return_git_exit_outside_a_repository() {
+    let repository = TestRepository::new("not-a-repository");
+    match head_tree_records(&repository.root) {
+        Err(ScanError::GitExit { subcommand, .. }) => {
+            assert!(
+                subcommand == "rev-parse",
+                "unexpected failing Git subcommand"
+            );
+        }
+        Err(error) => panic!("unexpected synthetic scan error: {error}"),
+        Ok(records) => panic!(
+            "synthetic non-repository scan unexpectedly returned {} records",
+            records.len()
         ),
     }
 }
