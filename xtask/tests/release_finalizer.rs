@@ -17,7 +17,7 @@ use support::{
     SIGNED_APP_BYTES, SIGNTOOL, SMCTL, UNSIGNED_APP_BYTES, VERSION, VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
-use xtask::release_advisory::MIRROR_COHORT_ID;
+use xtask::release_advisory::{AdvisoryError, MIRROR_COHORT_ID};
 use xtask::release_clock::FixedClock;
 use xtask::release_container::{ContainerKind, ReleaseContainerError};
 use xtask::release_finalizer::{
@@ -557,7 +557,7 @@ fn phase_one_through_three_gates_precede_all_byte_changing_actions() {
         &checkout,
         &runner,
         request(SelectionMode::Unsigned, false),
-        FinalizeError::Advisory,
+        FinalizeError::Advisory(AdvisoryError::CargoDenyFailed),
         PHASE_3_ADVISORY_PREFLIGHT,
         true,
         false,
@@ -1072,45 +1072,69 @@ fn a_historical_package_byte_cannot_leak_into_the_current_candidate() {
 
 #[test]
 fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
-    // The exact AdvisoryError variants are covered in release_advisories.rs.
-    // At engine level, each rejected packet/snapshot must leave fewer than the
-    // three clock observations required to earn advisory_checked_at.
-    for (label, mutation) in [
+    // At engine level, each rejected packet/snapshot must preserve its exact
+    // AdvisoryError and leave fewer than the three clock observations required
+    // to earn advisory_checked_at.
+    for (label, mutation, expected) in [
         (
             "advisory-mirror-wrong-key",
             RunnerMutation::AdvisoryMirrorWrongKey,
+            AdvisoryError::MirrorPublicKeyPinMismatch,
         ),
         (
             "advisory-mirror-signature",
             RunnerMutation::AdvisoryMirrorSignatureFailure,
+            AdvisoryError::FreshnessSignatureInvalid,
         ),
         (
             "advisory-mirror-comment",
             RunnerMutation::AdvisoryMirrorMalformedComment,
+            AdvisoryError::FreshnessTrustedCommentFields,
         ),
         (
             "advisory-mirror-body",
             RunnerMutation::AdvisoryMirrorBodyMismatch,
+            AdvisoryError::FreshnessBodyMismatch,
         ),
         (
             "advisory-mirror-future",
             RunnerMutation::AdvisoryMirrorFuture,
+            AdvisoryError::FreshnessUtcFuture,
         ),
-        ("advisory-mirror-stale", RunnerMutation::AdvisoryMirrorStale),
+        (
+            "advisory-mirror-stale",
+            RunnerMutation::AdvisoryMirrorStale,
+            AdvisoryError::FreshnessStale,
+        ),
         (
             "advisory-mirror-commit",
             RunnerMutation::AdvisoryMirrorCommitMismatch,
+            AdvisoryError::FreshnessCommitMismatch,
         ),
-        ("advisory-dirty", RunnerMutation::AdvisoryDirty),
-        ("advisory-source", RunnerMutation::AdvisorySourceMismatch),
-        ("advisory-shallow", RunnerMutation::AdvisoryShallow),
+        (
+            "advisory-dirty",
+            RunnerMutation::AdvisoryDirty,
+            AdvisoryError::SnapshotDirty,
+        ),
+        (
+            "advisory-source",
+            RunnerMutation::AdvisorySourceMismatch,
+            AdvisoryError::SourceMismatch,
+        ),
+        (
+            "advisory-shallow",
+            RunnerMutation::AdvisoryShallow,
+            AdvisoryError::ShallowRepository,
+        ),
         (
             "advisory-swapped-archive",
             RunnerMutation::AdvisoryArchiveMismatch,
+            AdvisoryError::ArchiveDigestMismatch,
         ),
         (
             "advisory-deny-failure",
             RunnerMutation::AdvisoryCommandFailure,
+            AdvisoryError::CargoDenyFailed,
         ),
     ] {
         let checkout = FakeReleaseCheckout::new(label, false);
@@ -1123,7 +1147,7 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
             &clock,
         )
         .expect_err("mutated advisory snapshot must fail");
-        assert_eq!(error, FinalizeError::Advisory, "{label}");
+        assert_eq!(error, FinalizeError::Advisory(expected), "{label}");
         assert!(clock.calls() < 3, "{label}: checked_at was not earned");
         assert_failure_contract(
             &checkout,
@@ -1169,7 +1193,7 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
         &checkout,
         &runner,
         request(SelectionMode::Unsigned, false),
-        FinalizeError::Advisory,
+        FinalizeError::Advisory(AdvisoryError::DatabaseRootInvalid),
         PHASE_3_ADVISORY_PREFLIGHT,
         true,
         false,
@@ -1187,7 +1211,7 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
         &checkout,
         &runner,
         request(SelectionMode::Unsigned, false),
-        FinalizeError::Advisory,
+        FinalizeError::Advisory(AdvisoryError::RepositoryCount),
         PHASE_3_ADVISORY_PREFLIGHT,
         true,
         false,
@@ -1207,13 +1231,16 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
         &checkout,
         &runner,
         request(SelectionMode::Unsigned, false),
-        FinalizeError::Advisory,
+        FinalizeError::Advisory(AdvisoryError::RepositoryName),
         PHASE_3_ADVISORY_PREFLIGHT,
         true,
         false,
     );
 
-    for (label, offset) in [("advisory-stale", -25_i64), ("advisory-future", 1_i64)] {
+    for (label, offset, expected) in [
+        ("advisory-stale", -25_i64, AdvisoryError::SnapshotStale),
+        ("advisory-future", 1_i64, AdvisoryError::AcquisitionFuture),
+    ] {
         let checkout = FakeReleaseCheckout::new(label, false);
         let now = xtask::release_clock::UtcTimestamp::parse(CHECKED_AT)
             .expect("parse check time")
@@ -1234,7 +1261,7 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
             &checkout,
             &runner,
             request(SelectionMode::Unsigned, false),
-            FinalizeError::Advisory,
+            FinalizeError::Advisory(expected),
             PHASE_3_ADVISORY_PREFLIGHT,
             true,
             false,
@@ -1574,6 +1601,8 @@ fn assert_failure_contract(
             "pass",
             "refresh",
             "remediate",
+            "provision",
+            "reprovision",
             "use ",
             "check out",
         ]

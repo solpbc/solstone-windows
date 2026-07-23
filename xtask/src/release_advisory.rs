@@ -581,6 +581,7 @@ fn validate_operator_path(path: &Path) -> Option<()> {
 }
 
 fn is_public_rustsec_github_locator(locator: &str) -> bool {
+    let locator = locator.split(['?', '#']).next().unwrap_or(locator);
     let lower = locator.to_ascii_lowercase();
     let normalized = lower.trim_end_matches('/');
     let normalized = normalized.strip_suffix(".git").unwrap_or(normalized);

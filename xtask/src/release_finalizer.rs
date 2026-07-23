@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{self, child_process_path_text, ContainedRoot, UnixModePolicy};
-use crate::release_advisory::{run_advisory_check, AdvisoryProvenance, MirrorPacketInputs};
+use crate::release_advisory::{
+    run_advisory_check, AdvisoryError, AdvisoryProvenance, MirrorPacketInputs,
+};
 use crate::release_clock::Clock;
 use crate::release_container::{
     compare_executable_baseline, ExecutableContainerReader, ReleaseContainerError,
@@ -100,7 +102,7 @@ pub enum FinalizeError {
     SourceBinding(SourceBindingError),
     Cleanup,
     TransactionDirectory,
-    Advisory,
+    Advisory(AdvisoryError),
     ReleaseNotes,
     SigningRuntime,
     ActionFailed {
@@ -166,10 +168,9 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "release transaction directories are not newly empty and contained; run confined cleanup and restart"
             ),
-            Self::Advisory => write!(
-                formatter,
-                "release advisory gate failed; refresh the isolated reviewed snapshot or remediate cargo-deny and restart"
-            ),
+            Self::Advisory(cause) => {
+                write!(formatter, "release advisory gate failed: {cause}")
+            }
             Self::ReleaseNotes => write!(
                 formatter,
                 "CHANGELOG lacks one nonempty section for the cargo-metadata release version; cut the reviewed release notes and restart"
@@ -425,7 +426,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         runner,
         clock,
     )
-    .map_err(|_| FinalizeError::Advisory)?;
+    .map_err(FinalizeError::Advisory)?;
     materialize_release_notes(checkout, version, &paths.notes)?;
     let signing_child_env = if selection.mode == SelectionMode::Signed {
         let signing_child_env = selection

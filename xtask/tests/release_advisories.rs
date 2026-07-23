@@ -382,6 +382,9 @@ fn mirror_locator_validation_rejects_public_or_malformed_sources() {
     }
     for locator in [
         "https://github.com/RustSec/advisory-db",
+        "https://github.com/RustSec/advisory-db?x",
+        "https://github.com/RustSec/advisory-db#x",
+        "https://github.com/rustsec/advisory-db/?a=b",
         "HTTP://GITHUB.COM/rustsec/advisory-db.git/",
         "git://github.com/RustSec/advisory-db",
         "ssh://git@github.com/RustSec/advisory-db.git",
