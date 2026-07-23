@@ -24,6 +24,7 @@ const FRESH: &str = "2026-07-21T00:00:00Z";
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const LOCATOR: &str = "https://private-token@mirror.example.invalid/advisory-db";
 const REPOSITORY: &str = "advisory-db-a5a5a5a5a5a5a5a5";
+const LIVE_REPOSITORY: &str = "rustsec-advisory-db.git-02e9ad11cd7b884e";
 const FAKE_PUBLIC_KEY: &[u8] = b"untrusted comment: fake mirror test key\nRWQFAKEMIRRORKEY\n";
 #[cfg(not(windows))]
 const GIT: &str = "/selected/git";
@@ -49,10 +50,15 @@ struct TestCheckout {
     root: PathBuf,
     freshness_receipt: PathBuf,
     mirror_public_key: PathBuf,
+    repository_name: String,
 }
 
 impl TestCheckout {
     fn new(label: &str) -> Self {
+        Self::with_repository(label, REPOSITORY)
+    }
+
+    fn with_repository(label: &str, repository_name: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "solstone-release-advisory-{label}-{}-{}",
             std::process::id(),
@@ -86,8 +92,9 @@ impl TestCheckout {
             root,
             freshness_receipt,
             mirror_public_key,
+            repository_name: repository_name.to_owned(),
         };
-        checkout.create_repository(REPOSITORY, FRESH);
+        checkout.create_repository(repository_name, FRESH);
         checkout
     }
 
@@ -118,8 +125,12 @@ impl TestCheckout {
     }
 
     fn repository_path(&self) -> PathBuf {
-        let canonical = fs::canonicalize(self.root.join(ADVISORY_DB_RELATIVE).join(REPOSITORY))
-            .expect("canonicalize fake repository");
+        let canonical = fs::canonicalize(
+            self.root
+                .join(ADVISORY_DB_RELATIVE)
+                .join(&self.repository_name),
+        )
+        .expect("canonicalize fake repository");
         PathBuf::from(
             child_process_path_text(&canonical).expect("child-process fake repository path"),
         )
@@ -469,6 +480,29 @@ fn clean_full_fresh_snapshot_passes_with_public_provenance() {
 }
 
 #[test]
+fn live_url_derived_basename_snapshot_passes() {
+    let checkout = TestCheckout::with_repository("snapshot-live-basename", LIVE_REPOSITORY);
+    let runner = FakeCommandRunner::new(snapshot_commands(&checkout));
+    let clock = FixedClock::new(NOW).expect("create fixed clock");
+    let snapshot = AdvisorySnapshot::inspect(
+        &checkout.root,
+        Path::new(GIT),
+        &tree_sha256(),
+        LOCATOR,
+        &runner,
+        &clock,
+    )
+    .expect("inspect snapshot under live cargo-deny basename");
+
+    assert_eq!(snapshot.source_id, MIRROR_COHORT_ID);
+    assert_eq!(snapshot.commit, COMMIT);
+    assert_eq!(snapshot.tree_sha256, tree_sha256());
+    assert_eq!(snapshot.acquired_at, FRESH);
+    assert_eq!(clock.calls(), 1);
+    assert_eq!(runner.remaining().expect("read fake queue"), 0);
+}
+
+#[test]
 fn regular_database_lock_is_tolerated_but_a_foreign_child_is_not() {
     let checkout = TestCheckout::new("snapshot-db-lock");
     fs::write(
@@ -509,6 +543,52 @@ fn regular_database_lock_is_tolerated_but_a_foreign_child_is_not() {
         .expect_err("foreign second child must fail"),
         AdvisoryError::RepositoryCount
     );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let checkout = TestCheckout::new("snapshot-linked-child");
+        symlink(
+            checkout.root.join("mirror-packet"),
+            checkout
+                .root
+                .join(ADVISORY_DB_RELATIVE)
+                .join("linked-child"),
+        )
+        .expect("plant linked advisory child");
+        assert_eq!(
+            AdvisorySnapshot::inspect(
+                &checkout.root,
+                Path::new(GIT),
+                &tree_sha256(),
+                LOCATOR,
+                &FakeCommandRunner::new(Vec::new()),
+                &FixedClock::new(NOW).expect("clock"),
+            )
+            .expect_err("symlinked child must fail"),
+            AdvisoryError::SnapshotContainment
+        );
+
+        let checkout = TestCheckout::new("snapshot-linked-db-lock");
+        symlink(
+            &checkout.mirror_public_key,
+            checkout.root.join(ADVISORY_DB_RELATIVE).join("db.lock"),
+        )
+        .expect("plant linked db.lock");
+        assert_eq!(
+            AdvisorySnapshot::inspect(
+                &checkout.root,
+                Path::new(GIT),
+                &tree_sha256(),
+                LOCATOR,
+                &FakeCommandRunner::new(Vec::new()),
+                &FixedClock::new(NOW).expect("clock"),
+            )
+            .expect_err("symlinked db.lock must fail"),
+            AdvisoryError::SnapshotContainment
+        );
+    }
 }
 
 #[test]
@@ -538,8 +618,24 @@ fn source_repo_count_name_and_archive_identity_fail_closed() {
     );
     assert_eq!(clock.calls(), 0);
 
+    let checkout = TestCheckout::new("zero-repos");
+    fs::remove_dir_all(checkout.root.join(ADVISORY_DB_RELATIVE).join(REPOSITORY))
+        .expect("remove only advisory repository");
+    assert_eq!(
+        AdvisorySnapshot::inspect(
+            &checkout.root,
+            Path::new(GIT),
+            &tree_sha256(),
+            LOCATOR,
+            &FakeCommandRunner::new(Vec::new()),
+            &FixedClock::new(NOW).expect("clock"),
+        )
+        .expect_err("zero repositories must fail"),
+        AdvisoryError::RepositoryCount
+    );
+
     let checkout = TestCheckout::new("multiple-repos");
-    checkout.create_repository("advisory-db-aaaaaaaaaaaaaaaa", FRESH);
+    checkout.create_repository("swapped-default-cache", FRESH);
     let runner = FakeCommandRunner::new(Vec::new());
     let clock = FixedClock::new(NOW).expect("clock");
     assert_eq!(
@@ -553,6 +649,49 @@ fn source_repo_count_name_and_archive_identity_fail_closed() {
         )
         .expect_err("multiple repositories must fail"),
         AdvisoryError::RepositoryCount
+    );
+
+    let checkout = TestCheckout::new("non-directory-repo");
+    fs::remove_dir_all(checkout.root.join(ADVISORY_DB_RELATIVE).join(REPOSITORY))
+        .expect("remove repository directory");
+    fs::write(
+        checkout.root.join(ADVISORY_DB_RELATIVE).join(REPOSITORY),
+        b"not a repository directory",
+    )
+    .expect("write non-directory repository");
+    assert_eq!(
+        AdvisorySnapshot::inspect(
+            &checkout.root,
+            Path::new(GIT),
+            &tree_sha256(),
+            LOCATOR,
+            &FakeCommandRunner::new(Vec::new()),
+            &FixedClock::new(NOW).expect("clock"),
+        )
+        .expect_err("non-directory repository must fail"),
+        AdvisoryError::RepositoryCount
+    );
+
+    let checkout = TestCheckout::new("missing-git-directory");
+    fs::remove_dir_all(
+        checkout
+            .root
+            .join(ADVISORY_DB_RELATIVE)
+            .join(REPOSITORY)
+            .join(".git"),
+    )
+    .expect("remove repository .git directory");
+    assert_eq!(
+        AdvisorySnapshot::inspect(
+            &checkout.root,
+            Path::new(GIT),
+            &tree_sha256(),
+            LOCATOR,
+            &FakeCommandRunner::new(Vec::new()),
+            &FixedClock::new(NOW).expect("clock"),
+        )
+        .expect_err("repository without .git must fail"),
+        AdvisoryError::SnapshotContainment
     );
 
     let checkout = TestCheckout::new("wrong-repo-name");

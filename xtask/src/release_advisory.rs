@@ -243,7 +243,7 @@ impl fmt::Display for AdvisoryError {
             ),
             Self::RepositoryName => write!(
                 formatter,
-                "isolated advisory repository name is not cargo-deny's canonical URL-derived name; reprovision the isolated RustSec cache"
+                "isolated advisory repository name is not a cargo-deny URL-derived cache name; reprovision the isolated RustSec cache"
             ),
             Self::SnapshotContainment => write!(
                 formatter,
@@ -1157,13 +1157,36 @@ fn parse_git_line(bytes: &[u8]) -> Option<String> {
     String::from_utf8(line.to_vec()).ok()
 }
 
+/// Accepts cargo-deny's URL-derived cache basename shape:
+/// `[a-z0-9][a-z0-9._-]*-[0-9a-f]{16}`. This is structural only;
+/// the basename never establishes source authority.
 fn is_url_derived_repository_name(name: &str) -> bool {
-    name.strip_prefix("advisory-db-").is_some_and(|suffix| {
-        suffix.len() == 16
-            && suffix
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+    let bytes = name.as_bytes();
+    if bytes.len() < 17 {
+        return false;
+    }
+
+    let prefix_length = bytes.len() - 17;
+    let (prefix, suffix) = bytes.split_at(prefix_length);
+    let Some((&first, prefix_rest)) = prefix.split_first() else {
+        return false;
+    };
+
+    let valid_prefix_byte = |byte: u8| {
+        byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || byte == b'.'
+            || byte == b'_'
+            || byte == b'-'
+    };
+
+    (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && prefix_rest.iter().copied().all(valid_prefix_byte)
+        && suffix[0] == b'-'
+        && suffix[1..]
+            .iter()
+            .copied()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn is_lower_hex(value: &str, length: usize) -> bool {
@@ -1199,4 +1222,48 @@ fn toml_string(value: &str) -> String {
     }
     escaped.push('"');
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_url_derived_repository_name;
+
+    #[test]
+    fn url_derived_repository_name_grammar_is_byte_exact() {
+        for name in [
+            "rustsec-advisory-db.git-02e9ad11cd7b884e",
+            "advisory-db-a5a5a5a5a5a5a5a5",
+            "advisory-db-aaaaaaaaaaaaaaaa",
+        ] {
+            assert!(
+                is_url_derived_repository_name(name),
+                "expected accepted repository name: {name:?}"
+            );
+        }
+
+        for name in [
+            "Advisory-db-aaaaaaaaaaaaaaaa",
+            "advisory-db-Aaaaaaaaaaaaaaaa",
+            "advisory-db-aaaaaaaaaaaaaaa",
+            "advisory-db-aaaaaaaaaaaaaaaaa",
+            "advisory-db-aaaaaaaaaaaaaaag",
+            "-aaaaaaaaaaaaaaaa",
+            ".cache-aaaaaaaaaaaaaaaa",
+            "cache-aaaaaaaaaaaaaaaa.",
+            ".-aaaaaaaaaaaaaaaa",
+            "a/b-aaaaaaaaaaaaaaaa",
+            "a\\b-aaaaaaaaaaaaaaaa",
+            "a:b-aaaaaaaaaaaaaaaa",
+            " cache-aaaaaaaaaaaaaaaa",
+            "cache-aaaaaaaaaaaaaaaa ",
+            "é-aaaaaaaaaaaaaaaa",
+            "a\0b-aaaaaaaaaaaaaaaa",
+            "a\nb-aaaaaaaaaaaaaaaa",
+        ] {
+            assert!(
+                !is_url_derived_repository_name(name),
+                "expected rejected repository name: {name:?}"
+            );
+        }
+    }
 }

@@ -162,17 +162,43 @@ check-release-advisory-config: preflight-toolchain preflight-cargo-deny
 	  fi; \
 	  cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
 	  host_db_root="$$cargo_home/advisory-dbs"; \
+	  fail_unsafe_advisory_cache() { \
+	    echo "ERROR: advisory database root or child under $$host_db_root is unsafe/inaccessible; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; \
+	    exit 1; \
+	  }; \
+	  if [ -L "$$host_db_root" ] || [ ! -d "$$host_db_root" ] || [ ! -r "$$host_db_root" ] || [ ! -x "$$host_db_root" ]; then \
+	    fail_unsafe_advisory_cache; \
+	  fi; \
+	  if ! find "$$host_db_root" -mindepth 1 -maxdepth 1 -print >/dev/null; then \
+	    fail_unsafe_advisory_cache; \
+	  fi; \
 	  host_repo=; \
-	  for candidate in "$$host_db_root"/advisory-db-*; do \
-	    [ -d "$$candidate/.git" ] || continue; \
-	    if [ -n "$$host_repo" ]; then \
-	      echo "ERROR: multiple advisory repositories found under $$host_db_root; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; \
-	      exit 1; \
+	  host_repo_count=0; \
+	  for c in "$$host_db_root"/* "$$host_db_root"/.[!.]* "$$host_db_root"/..?*; do \
+	    if [ ! -e "$$c" ] && [ ! -L "$$c" ]; then \
+	      if [ "$$c" = "$$host_db_root/*" ] || [ "$$c" = "$$host_db_root/.[!.]*" ] || [ "$$c" = "$$host_db_root/..?*" ]; then \
+	        continue; \
+	      fi; \
+	      fail_unsafe_advisory_cache; \
 	    fi; \
-	    host_repo=$$candidate; \
+	    child_name=$${c##*/}; \
+	    if [ "$$child_name" = db.lock ]; then \
+	      if [ -f "$$c" ] && [ ! -L "$$c" ]; then \
+	        continue; \
+	      fi; \
+	      fail_unsafe_advisory_cache; \
+	    fi; \
+	    if [ -d "$$c" ] && [ ! -L "$$c" ] && [ -d "$$c/.git" ] && [ ! -L "$$c/.git" ]; then \
+	      host_repo_count=$$(($$host_repo_count + 1)); \
+	      if [ "$$host_repo_count" -eq 1 ]; then \
+	        host_repo=$$c; \
+	      fi; \
+	      continue; \
+	    fi; \
+	    fail_unsafe_advisory_cache; \
 	  done; \
-	  if [ -z "$$host_repo" ]; then \
-	    echo "ERROR: advisory mirror database is absent under $$host_db_root; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; \
+	  if [ "$$host_repo_count" -ne 1 ]; then \
+	    echo "ERROR: advisory database root $$host_db_root does not contain exactly one contained mirror repository; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; \
 	    exit 1; \
 	  fi; \
 	  repo_root=$$(pwd -P); \

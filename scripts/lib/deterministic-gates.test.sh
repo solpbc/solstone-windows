@@ -241,6 +241,30 @@ assert_contains \
   "advisory config check removes its transient lock" \
   "$advisory_config_dry_run" \
   'db_lock="$isolated/db.lock"'
+assert_contains \
+  "advisory config check enumerates every direct child" \
+  "$advisory_config_dry_run" \
+  'find "$host_db_root" -mindepth 1 -maxdepth 1'
+assert_contains \
+  "advisory config check enumerates single-dot children" \
+  "$advisory_config_dry_run" \
+  '"$host_db_root"/.[!.]*'
+assert_contains \
+  "advisory config check enumerates double-dot children" \
+  "$advisory_config_dry_run" \
+  '"$host_db_root"/..?*'
+assert_contains \
+  "advisory config check rejects unsafe or inaccessible children" \
+  "$advisory_config_dry_run" \
+  'advisory database root or child under $host_db_root is unsafe/inaccessible'
+assert_contains \
+  "advisory config check requires exactly one mirror repository" \
+  "$advisory_config_dry_run" \
+  "does not contain exactly one contained mirror repository"
+assert_not_contains \
+  "advisory config check does not prefix-filter cache basenames" \
+  "$advisory_config_dry_run" \
+  'advisory-db-*'
 ui_update_dry_run=$(MAKEFLAGS= make -C "$REPO_ROOT" -n ui-deps-update 2>&1)
 assert_contains "named UI dependency update verb" "$ui_update_dry_run" "npm --prefix ui install"
 for target in build test ui-test package ci audit; do

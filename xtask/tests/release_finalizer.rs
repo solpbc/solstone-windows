@@ -13,8 +13,9 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use support::{
     checkout_facts, request, selection_record, FakeReleaseCheckout, FakeReleaseRunner,
-    RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT, MINISIGN,
-    SIGNED_APP_BYTES, SIGNTOOL, SMCTL, UNSIGNED_APP_BYTES, VERSION, VPK,
+    RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT,
+    LIVE_ADVISORY_REPOSITORY, MINISIGN, SIGNED_APP_BYTES, SIGNTOOL, SMCTL, UNSIGNED_APP_BYTES,
+    VERSION, VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
 use xtask::release_advisory::{AdvisoryError, MIRROR_COHORT_ID};
@@ -1183,6 +1184,58 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
                 _ => true,
             }));
         }
+    }
+
+    for (label, mutation, expected) in [
+        (
+            "live-advisory-source",
+            RunnerMutation::AdvisorySourceMismatch,
+            AdvisoryError::SourceMismatch,
+        ),
+        (
+            "live-advisory-mirror-commit",
+            RunnerMutation::AdvisoryMirrorCommitMismatch,
+            AdvisoryError::FreshnessCommitMismatch,
+        ),
+    ] {
+        let checkout =
+            FakeReleaseCheckout::with_advisory_repository(label, false, LIVE_ADVISORY_REPOSITORY);
+        let candidate = checkout
+            .root()
+            .join(format!("target/release-candidate/{VERSION}"));
+        let receipt = checkout.root().join(format!(
+            "target/release-evidence/{VERSION}/rust-release-finalization.json"
+        ));
+        assert!(!candidate.exists(), "{label}: candidate must start absent");
+        assert!(!receipt.exists(), "{label}: receipt must start absent");
+
+        let runner = FakeReleaseRunner::with_mutation(&checkout, false, mutation);
+        let clock = FixedClock::new(CHECKED_AT).expect("create fixed clock");
+        let error = finalize(
+            checkout.runtime(None),
+            &request(SelectionMode::Unsigned, false),
+            &runner,
+            &clock,
+        )
+        .expect_err("live-basename advisory mismatch must fail");
+        assert_eq!(error, FinalizeError::Advisory(expected), "{label}");
+        assert!(clock.calls() < 3, "{label}: checked_at was not earned");
+        assert_failure_contract(
+            &checkout,
+            &runner,
+            &error,
+            PHASE_3_ADVISORY_PREFLIGHT,
+            true,
+            false,
+        );
+        assert!(
+            !candidate.exists(),
+            "{label}: failed preflight must not create candidate bytes"
+        );
+        assert!(
+            !receipt.exists(),
+            "{label}: failed preflight must not emit a successful receipt"
+        );
     }
 
     let checkout = FakeReleaseCheckout::new("advisory-db-missing", false);

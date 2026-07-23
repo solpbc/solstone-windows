@@ -98,6 +98,7 @@ pub const ADVISORY_MIRROR_LOCATOR: &str =
 // This shaped basename is shared by the focused advisory fixture. cargo-deny
 // owns the URL-hash algorithm; production accepts any canonical shaped name.
 const ADVISORY_REPOSITORY: &str = "advisory-db-a5a5a5a5a5a5a5a5";
+pub const LIVE_ADVISORY_REPOSITORY: &str = "rustsec-advisory-db.git-02e9ad11cd7b884e";
 const ADVISORY_ARCHIVE: &[u8] = b"deterministic RustSec git archive bytes";
 const ADVISORY_MIRROR_PUBLIC_KEY: &[u8] = b"untrusted comment: fake mirror key\nRWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n";
 
@@ -218,10 +219,19 @@ pub enum NativeProofMutation {
 
 pub struct FakeReleaseCheckout {
     root: PathBuf,
+    advisory_repository_name: String,
 }
 
 impl FakeReleaseCheckout {
     pub fn new(label: &str, delta_base: bool) -> Self {
+        Self::with_advisory_repository(label, delta_base, ADVISORY_REPOSITORY)
+    }
+
+    pub fn with_advisory_repository(
+        label: &str,
+        delta_base: bool,
+        advisory_repository_name: &str,
+    ) -> Self {
         let root = std::env::temp_dir().join(format!(
             "solstone-finalizer-{label}-{}-{}",
             std::process::id(),
@@ -248,7 +258,9 @@ impl FakeReleaseCheckout {
         )
         .expect("write changelog");
 
-        let repository = root.join(ADVISORY_DB_RELATIVE).join(ADVISORY_REPOSITORY);
+        let repository = root
+            .join(ADVISORY_DB_RELATIVE)
+            .join(advisory_repository_name);
         fs::create_dir_all(repository.join(".git")).expect("create advisory git directory");
         fs::write(repository.join(".git/HEAD"), b"ref: refs/heads/main\n")
             .expect("write advisory HEAD");
@@ -283,7 +295,10 @@ impl FakeReleaseCheckout {
             )
             .expect("write historical full package");
         }
-        Self { root }
+        Self {
+            root,
+            advisory_repository_name: advisory_repository_name.to_owned(),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -294,7 +309,7 @@ impl FakeReleaseCheckout {
         fs::canonicalize(
             self.root
                 .join(ADVISORY_DB_RELATIVE)
-                .join(ADVISORY_REPOSITORY),
+                .join(&self.advisory_repository_name),
         )
         .expect("canonical advisory repository")
     }
@@ -378,6 +393,7 @@ impl FakeReleaseRunner {
         mutation: RunnerMutation,
         native_proof_mutation: NativeProofMutation,
     ) -> Self {
+        let advisory_repository_name = checkout.advisory_repository_name.clone();
         let packet_root = checkout.root().join("operator-mirror-packet");
         match mutation {
             RunnerMutation::AdvisoryMirrorWrongKey => {
@@ -421,7 +437,7 @@ impl FakeReleaseRunner {
         Self {
             advisory_repository: checkout
                 .join(ADVISORY_DB_RELATIVE)
-                .join(ADVISORY_REPOSITORY),
+                .join(advisory_repository_name),
             checkout,
             reverse_output_order,
             mutation,
