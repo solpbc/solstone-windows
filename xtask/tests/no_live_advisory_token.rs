@@ -10,6 +10,7 @@ const TOKEN_ENV: &str = "SOLSTONE_LIVE_TOKEN_NEEDLE";
 const LOCATOR_ENV: &str = "SOLSTONE_LIVE_LOCATOR_NEEDLE";
 const TOKEN_RULE: &str = "must match ^[0-9a-f]{16}$";
 const LOCATOR_RULE: &str = "must be non-empty and contain no ASCII whitespace or control bytes";
+const REDACTED_NEEDLE: &str = "<redacted-needle>";
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
@@ -26,6 +27,33 @@ fn read_present_env(name: &'static str, rule: &str) -> Option<Vec<u8>> {
             .unwrap_or_else(|_| panic!("{name} {rule}"))
             .into_bytes(),
     )
+}
+
+fn redact_needles(path: &str, needles: &[(&str, Vec<u8>)]) -> String {
+    let mut redacted = path.to_owned();
+    for (_, needle) in needles {
+        let needle = std::str::from_utf8(needle).expect("validated needle must be UTF-8");
+        redacted = redacted.replace(needle, REDACTED_NEEDLE);
+    }
+    redacted
+}
+
+#[test]
+fn offending_paths_redact_all_active_needles() {
+    let needles = vec![("first", b"alpha".to_vec()), ("second", b"beta".to_vec())];
+
+    assert_eq!(
+        redact_needles("alpha/alpha.txt", &needles),
+        "<redacted-needle>/<redacted-needle>.txt"
+    );
+    assert_eq!(
+        redact_needles("alpha/beta/alpha-beta.txt", &needles),
+        "<redacted-needle>/<redacted-needle>/<redacted-needle>-<redacted-needle>.txt"
+    );
+    assert_eq!(
+        redact_needles("fixtures/clean.txt", &needles),
+        "fixtures/clean.txt"
+    );
 }
 
 #[test]
@@ -75,6 +103,8 @@ fn out_of_band_needles_are_absent_from_the_tracked_tree() {
     let output = Command::new("git")
         .args(["ls-files", "-z"])
         .current_dir(workspace_root)
+        .env_remove(TOKEN_ENV)
+        .env_remove(LOCATOR_ENV)
         .output()
         .expect("git ls-files must run for the tracked-tree needle scan");
     assert!(
@@ -100,11 +130,15 @@ fn out_of_band_needles_are_absent_from_the_tracked_tree() {
     }
 
     for ((name, _), offending_paths) in needles.iter().zip(matches) {
+        let redacted_paths = offending_paths
+            .iter()
+            .map(|path| redact_needles(path, &needles))
+            .collect::<Vec<_>>();
         assert!(
             offending_paths.is_empty(),
             "{name}: {} offending tracked paths:\n{}",
             offending_paths.len(),
-            offending_paths.join("\n")
+            redacted_paths.join("\n")
         );
     }
 }
