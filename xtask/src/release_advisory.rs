@@ -127,7 +127,7 @@ impl fmt::Display for AdvisoryError {
         match self {
             Self::MirrorLocatorInvalid => write!(
                 formatter,
-                "advisory mirror locator is missing or malformed; set SOLSTONE_ADVISORY_MIRROR_LOCATOR to the approved private Git URL ending in advisory-db and retry"
+                "advisory mirror locator is missing or malformed; set SOLSTONE_ADVISORY_MIRROR_LOCATOR to the approved private Git URL whose final path component is exactly advisory-db or rustsec-advisory-db.git and retry"
             ),
             Self::PublicRustsecSourceForbidden => write!(
                 formatter,
@@ -539,7 +539,13 @@ pub fn validate_mirror_locator(locator: &str) -> Result<(), AdvisoryError> {
     if is_public_rustsec_github_locator(locator) {
         return Err(AdvisoryError::PublicRustsecSourceForbidden);
     }
-    if locator.ends_with('/') || locator_final_path(locator) != Some("advisory-db") {
+    if locator.ends_with('/')
+        || locator.contains(['?', '#'])
+        || !matches!(
+            locator_final_path(locator),
+            Some("advisory-db") | Some("rustsec-advisory-db.git")
+        )
+    {
         return Err(AdvisoryError::MirrorLocatorInvalid);
     }
     Ok(())

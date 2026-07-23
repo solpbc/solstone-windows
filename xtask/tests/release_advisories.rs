@@ -24,6 +24,9 @@ const FRESH: &str = "2026-07-21T00:00:00Z";
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const LOCATOR: &str = "https://private-token@mirror.example.invalid/advisory-db";
 const REPOSITORY: &str = "advisory-db-a5a5a5a5a5a5a5a5";
+// Public-safe structural equivalent of the deployed bare-repo mirror shape,
+// whose terminal path component is `rustsec-advisory-db.git`.
+const LIVE_LOCATOR: &str = "ssh://git@mirror.example.invalid/rustsec/rustsec-advisory-db.git";
 const LIVE_REPOSITORY: &str = "rustsec-advisory-db.git-02e9ad11cd7b884e";
 const FAKE_PUBLIC_KEY: &[u8] = b"untrusted comment: fake mirror test key\nRWQFAKEMIRRORKEY\n";
 #[cfg(not(windows))]
@@ -374,8 +377,27 @@ fn deterministic_advisory_config_is_byte_exact() {
 }
 
 #[test]
+fn deterministic_advisory_config_round_trips_dotgit_locator() {
+    let deny = fs::read(workspace_root().join("deny.toml")).expect("read deny.toml");
+    let database = Path::new(ISOLATED_ADVISORY_DB);
+    let first = render_advisory_config(&deny, database, LIVE_LOCATOR).expect("render config");
+    let second =
+        render_advisory_config(&deny, database, LIVE_LOCATOR).expect("render config again");
+    assert_eq!(first, second);
+    let text = String::from_utf8(first).expect("utf8 advisory config");
+    assert!(
+        text.contains(&format!("db-urls = [\"{LIVE_LOCATOR}\"]\n")),
+        "db-urls must carry the .git locator byte-for-byte:\n{text}"
+    );
+}
+
+#[test]
 fn mirror_locator_validation_rejects_public_or_malformed_sources() {
     validate_mirror_locator(LOCATOR).expect("accept credential-bearing private locator");
+    validate_mirror_locator(LIVE_LOCATOR)
+        .expect("accept deployed rustsec-advisory-db.git mirror locator");
+    validate_mirror_locator("https://private-token@mirror.example.invalid/rustsec-advisory-db.git")
+        .expect("accept https rustsec-advisory-db.git locator");
     for locator in [
         "",
         " ",
@@ -384,6 +406,18 @@ fn mirror_locator_validation_rejects_public_or_malformed_sources() {
         "https://mirror.example.invalid/advisory\n-db",
         "https://mirror.example.invalid/not-advisory-db",
         "https://mirror.example.invalid/advisory-db/",
+        "https://mirror.example.invalid/advisory-db.git",
+        "https://mirror.example.invalid/rustsec-advisory-db",
+        "https://mirror.example.invalid/x-rustsec-advisory-db.git",
+        "https://mirror.example.invalid/rustsec-advisory-db.gitx",
+        "https://mirror.example.invalid/rustsec-advisory-db.git.git",
+        "ssh://git@mirror.example.invalid/rustsec/rustsec-advisory-db.git/foo",
+        "ssh://git@mirror.example.invalid/rustsec/rustsec-advisory-db.git/",
+        "https://mirror.example.invalid/RUSTSEC-ADVISORY-DB.GIT",
+        "https://mirror.example.invalid/advisory-db?x",
+        "https://mirror.example.invalid/advisory-db#y",
+        "https://mirror.example.invalid/rustsec-advisory-db.git?x",
+        "https://mirror.example.invalid/rustsec-advisory-db.git#y",
     ] {
         assert_eq!(
             validate_mirror_locator(locator).expect_err("malformed locator must fail"),
@@ -477,6 +511,58 @@ fn clean_full_fresh_snapshot_passes_with_public_provenance() {
     assert_eq!(snapshot.acquired_at, FRESH);
     assert_eq!(clock.calls(), 1);
     assert_eq!(runner.remaining().expect("read fake queue"), 0);
+}
+
+#[test]
+fn dotgit_locator_origin_equality_passes_and_mismatch_fails_closed() {
+    // Exact origin: repository origin equals the .git locator byte-for-byte.
+    let checkout = TestCheckout::new("dotgit-origin-pass");
+    let mut commands = snapshot_commands(&checkout);
+    commands[1] = git_command(
+        &checkout,
+        &["remote", "get-url", "origin"],
+        0,
+        format!("{LIVE_LOCATOR}\n").as_bytes(),
+    );
+    let runner = FakeCommandRunner::new(commands);
+    let clock = FixedClock::new(NOW).expect("clock");
+    let snapshot = AdvisorySnapshot::inspect(
+        &checkout.root,
+        Path::new(GIT),
+        &tree_sha256(),
+        LIVE_LOCATOR,
+        &runner,
+        &clock,
+    )
+    .expect("exact .git origin must pass");
+    assert_eq!(snapshot.commit, COMMIT);
+    assert_eq!(runner.remaining().expect("read fake queue"), 0);
+
+    // Origin mismatch: repository origin differs from the supplied .git locator.
+    let checkout = TestCheckout::new("dotgit-origin-mismatch");
+    let mut commands = snapshot_commands(&checkout);
+    commands.truncate(2);
+    commands[1] = git_command(
+        &checkout,
+        &["remote", "get-url", "origin"],
+        0,
+        format!("{LOCATOR}\n").as_bytes(),
+    );
+    let runner = FakeCommandRunner::new(commands);
+    let clock = FixedClock::new(NOW).expect("clock");
+    assert_eq!(
+        AdvisorySnapshot::inspect(
+            &checkout.root,
+            Path::new(GIT),
+            &tree_sha256(),
+            LIVE_LOCATOR,
+            &runner,
+            &clock,
+        )
+        .expect_err("origin mismatch must fail"),
+        AdvisoryError::SourceMismatch
+    );
+    assert_eq!(clock.calls(), 0);
 }
 
 #[test]
