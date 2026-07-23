@@ -14,6 +14,7 @@ const HEX16_RULE: &str = "must match ^[0-9a-f]{16}$";
 const NONEMPTY_NO_CONTROL_RULE: &str =
     "must be non-empty and contain no ASCII whitespace or control bytes";
 const REDACTED_NEEDLE: &str = "<redacted-needle>";
+const WITHHELD_PATH: &str = "<withheld-path>";
 
 struct NeedleSpec {
     label: &'static str,
@@ -86,7 +87,37 @@ fn redact_needles(path: &[u8], needles: &[(&str, Vec<u8>)]) -> String {
         }
         redacted = replaced;
     }
-    String::from_utf8_lossy(&redacted).into_owned()
+    let rendered = String::from_utf8_lossy(&redacted).into_owned();
+    for (_, needle) in needles {
+        if contains_subslice(rendered.as_bytes(), needle) {
+            return WITHHELD_PATH.to_owned();
+        }
+    }
+    rendered
+}
+
+/// Collects one labeled hit per scanned item containing a needle. Index i of
+/// the result corresponds to needles[i].
+fn collect_needle_matches(
+    scanned: &[(&'static str, &[u8], &[u8])],
+    needles: &[(&str, Vec<u8>)],
+) -> Vec<Vec<(&'static str, Vec<u8>)>> {
+    let mut matches = vec![Vec::new(); needles.len()];
+    for (location, path, haystack) in scanned {
+        for (index, (_, needle)) in needles.iter().enumerate() {
+            if contains_subslice(haystack, needle) {
+                matches[index].push((*location, path.to_vec()));
+            }
+        }
+    }
+    matches
+}
+
+fn render_matches(matches: &[(&'static str, Vec<u8>)], needles: &[(&str, Vec<u8>)]) -> Vec<String> {
+    matches
+        .iter()
+        .map(|(location, path)| format!("{location}: {}", redact_needles(path, needles)))
+        .collect()
 }
 
 #[test]
@@ -116,6 +147,18 @@ fn redact_needles_redacts_all_active_needles_before_lossy_display() {
     assert_eq!(
         redact_needles(b"prefix-\xff-synthetic-token", &needles),
         "prefix-\u{fffd}-<redacted-needle>"
+    );
+
+    let replacement_collision = vec![("host", b"redacted-needle".to_vec())];
+    assert_eq!(
+        redact_needles(b"prefix-redacted-needle-suffix", &replacement_collision),
+        "<withheld-path>"
+    );
+
+    let lossy_collision = vec![("host", b"\xef\xbf\xbd".to_vec())];
+    assert_eq!(
+        redact_needles(b"prefix-\xff-suffix", &lossy_collision),
+        "<withheld-path>"
     );
 }
 
@@ -205,33 +248,28 @@ fn out_of_band_needles_are_absent_from_the_head_tree() {
         Err(error) => panic!("HEAD-tree needle scan error: {error}"),
     };
 
-    let mut matches = vec![Vec::new(); needles.len()];
-    for record in &records {
-        for (index, (_, needle)) in needles.iter().enumerate() {
-            if contains_subslice(&record.path, needle) {
-                matches[index].push(("path", record.path.clone()));
-            }
-        }
-    }
+    let scanned_paths = records
+        .iter()
+        .map(|record| ("path", record.path.as_slice(), record.path.as_slice()))
+        .collect::<Vec<_>>();
+    let mut matches = collect_needle_matches(&scanned_paths, &needles);
 
     let blobs = match read_tree_blobs(workspace_root, &records) {
         Ok(blobs) => blobs,
         Err(error) => panic!("HEAD-tree needle scan error: {error}"),
     };
 
-    for blob in &blobs {
-        for (index, (_, needle)) in needles.iter().enumerate() {
-            if contains_subslice(&blob.bytes, needle) {
-                matches[index].push(("blob", blob.path.clone()));
-            }
-        }
+    let scanned_blobs = blobs
+        .iter()
+        .map(|blob| ("blob", blob.path.as_slice(), blob.bytes.as_slice()))
+        .collect::<Vec<_>>();
+    let blob_matches = collect_needle_matches(&scanned_blobs, &needles);
+    for (matches, blob_matches) in matches.iter_mut().zip(blob_matches) {
+        matches.extend(blob_matches);
     }
 
     for ((label, _), offending_matches) in needles.iter().zip(matches) {
-        let redacted_matches = offending_matches
-            .iter()
-            .map(|(location, path)| format!("{location}: {}", redact_needles(path, &needles)))
-            .collect::<Vec<_>>();
+        let redacted_matches = render_matches(&offending_matches, &needles);
         assert!(
             offending_matches.is_empty(),
             "HEAD-tree needle match found ({label}): {} offending matches:\n{}",
@@ -993,6 +1031,27 @@ fn head_tree_records_expose_needle_bearing_filename() {
         record.path == path.as_bytes(),
         "unexpected marker-bearing committed path"
     );
+    let needles = vec![("marker", SYNTHETIC_MARKER.to_vec())];
+    let scanned = [("path", record.path.as_slice(), record.path.as_slice())];
+    let matches = collect_needle_matches(&scanned, &needles);
+    assert!(
+        matches.len() == 1 && matches[0].len() == 1,
+        "marker-bearing path did not produce exactly one match"
+    );
+    assert!(matches[0][0].0 == "path", "marker hit was not labeled path");
+    assert!(
+        matches[0][0].1 == record.path,
+        "marker hit did not retain its committed path"
+    );
+    let rendered = render_matches(&matches[0], &needles);
+    assert!(
+        rendered.len() == 1 && rendered[0] == "path: prefix-<redacted-needle>-suffix.txt",
+        "marker-bearing path was not rendered in redacted form"
+    );
+    assert!(
+        !contains_subslice(rendered[0].as_bytes(), SYNTHETIC_MARKER),
+        "rendered path contains the synthetic marker"
+    );
     let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
     let blob = blobs
         .iter()
@@ -1029,6 +1088,23 @@ fn head_tree_records_preserve_non_utf8_needle_bearing_path() {
     assert!(
         record.path.contains(&0xff),
         "committed path does not preserve the non-UTF-8 byte"
+    );
+    let needles = vec![("marker", SYNTHETIC_MARKER.to_vec())];
+    let scanned = [("path", record.path.as_slice(), record.path.as_slice())];
+    let matches = collect_needle_matches(&scanned, &needles);
+    assert!(
+        matches.len() == 1 && matches[0].len() == 1,
+        "non-UTF-8 marker-bearing path did not produce exactly one match"
+    );
+    assert!(matches[0][0].0 == "path", "marker hit was not labeled path");
+    let rendered = render_matches(&matches[0], &needles);
+    assert!(
+        rendered.len() == 1 && rendered[0].contains(REDACTED_NEEDLE),
+        "non-UTF-8 path was not rendered with the redaction marker"
+    );
+    assert!(
+        !contains_subslice(rendered[0].as_bytes(), SYNTHETIC_MARKER),
+        "rendered non-UTF-8 path contains the synthetic marker"
     );
     let blobs = read_tree_blobs(&repository.root, &records).expect("read committed tree blobs");
     let blob = blobs
@@ -1079,7 +1155,8 @@ fn head_tree_blobs_read_original_bytes_despite_an_active_replace_ref() {
 fn head_tree_records_expose_gitlink_path_before_blob_read_rejects_mode() {
     let repository = TestRepository::new("gitlink-mode");
     repository.init();
-    let path = "synthetic-gitlink";
+    let marker = std::str::from_utf8(SYNTHETIC_MARKER).expect("synthetic marker must be UTF-8");
+    let path = format!("synthetic-gitlink-{marker}");
     let cache_info = format!("160000,{SYNTHETIC_GITLINK_OID},{path}");
     git_ok(
         &repository.root,
@@ -1093,6 +1170,17 @@ fn head_tree_records_expose_gitlink_path_before_blob_read_rejects_mode() {
         .find(|record| record.path == path.as_bytes())
         .expect("find committed gitlink path");
     assert!(record.mode == "160000", "unexpected committed gitlink mode");
+    let needles = vec![("marker", SYNTHETIC_MARKER.to_vec())];
+    let scanned = [("path", record.path.as_slice(), record.path.as_slice())];
+    let matches = collect_needle_matches(&scanned, &needles);
+    assert!(
+        matches.len() == 1 && matches[0].len() == 1,
+        "marker-bearing gitlink path did not produce exactly one match"
+    );
+    assert!(
+        matches[0][0].0 == "path",
+        "gitlink marker hit was not labeled path"
+    );
     match read_tree_blobs(&repository.root, &records) {
         Err(ScanError::UnsupportedTreeMode { mode, .. }) => {
             assert!(mode == "160000", "unexpected unsupported tree mode");
