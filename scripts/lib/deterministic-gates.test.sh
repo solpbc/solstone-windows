@@ -236,7 +236,7 @@ assert_contains \
 assert_contains \
   "advisory config check missing-cache remediation" \
   "$advisory_config_dry_run" \
-  "run 'make audit' or refresh the RustSec cache, then retry"
+  "use a clean/isolated cargo home containing the approved mirror cache"
 assert_contains \
   "advisory config check removes its transient lock" \
   "$advisory_config_dry_run" \

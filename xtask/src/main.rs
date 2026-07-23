@@ -468,6 +468,17 @@ fn cmd_rust_release_manifest_advisory_config(args: &[String]) -> ExitCode {
     let (Some(database_root), Some(mut output)) = (database_root, output) else {
         return advisory_config_usage();
     };
+    let mirror_locator = match std::env::var("SOLSTONE_ADVISORY_MIRROR_LOCATOR")
+        .map_err(|_| xtask::release_advisory::AdvisoryError::MirrorLocatorInvalid)
+        .and_then(|locator| {
+            xtask::release_advisory::validate_mirror_locator(&locator).map(|()| locator)
+        }) {
+        Ok(locator) => locator,
+        Err(error) => {
+            eprintln!("rust release advisory config failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if !database_root.is_absolute() {
         eprintln!(
             "rust release advisory config failed: --db-root is not absolute; pass the mapped target/release-advisory-db path and retry"
@@ -478,7 +489,12 @@ fn cmd_rust_release_manifest_advisory_config(args: &[String]) -> ExitCode {
     if !output.is_absolute() {
         output = root.join(output);
     }
-    match xtask::release_advisory::materialize_advisory_config_at(&root, &database_root, &output) {
+    match xtask::release_advisory::materialize_advisory_config_at(
+        &root,
+        &database_root,
+        &output,
+        &mirror_locator,
+    ) {
         Ok(_) => {
             println!("rust release advisory config: deterministic offline policy materialized");
             ExitCode::SUCCESS
@@ -570,6 +586,51 @@ fn cmd_rust_release_manifest_finalize(args: &[String]) -> ExitCode {
     } else {
         None
     };
+    let mirror_locator = match std::env::var("SOLSTONE_ADVISORY_MIRROR_LOCATOR")
+        .map_err(|_| xtask::release_advisory::AdvisoryError::MirrorLocatorInvalid)
+        .and_then(|locator| {
+            xtask::release_advisory::validate_mirror_locator(&locator).map(|()| locator)
+        }) {
+        Ok(locator) => locator,
+        Err(error) => {
+            eprintln!("rust release finalizer failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let freshness_receipt = match std::env::var("SOLSTONE_ADVISORY_RECEIPT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or(xtask::release_advisory::AdvisoryError::FreshnessReceiptPathInvalid)
+        .and_then(|path| {
+            xtask::release_advisory::validate_freshness_receipt_path(&path).map(|()| path)
+        }) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("rust release finalizer failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mirror_public_key = match std::env::var("SOLSTONE_ADVISORY_MIRROR_PUB")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or(xtask::release_advisory::AdvisoryError::MirrorPublicKeyPathInvalid)
+        .and_then(|path| {
+            xtask::release_advisory::validate_mirror_public_key_path(&path).map(|()| path)
+        }) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("rust release finalizer failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(minisign_program) = resolve_path_program("minisign") else {
+        eprintln!(
+            "rust release finalizer failed: advisory mirror signature verifier is unavailable; install minisign on PATH and retry"
+        );
+        return ExitCode::FAILURE;
+    };
     let request = xtask::release_finalizer::FinalizeRequest {
         expected_release_commit,
         sign_mode: if sign {
@@ -588,6 +649,11 @@ fn cmd_rust_release_manifest_finalize(args: &[String]) -> ExitCode {
         git_program: &git_program,
         advisory_tree_sha256: &advisory_tree_sha256,
         signing_keypair_alias: signing_keypair_alias.as_deref(),
+        mirror_locator,
+        freshness_receipt,
+        mirror_public_key,
+        minisign_program,
+        mirror_public_key_sha256: xtask::release_advisory::MIRROR_MINISIGN_PUBKEY_SHA256.to_owned(),
     };
     match xtask::release_finalizer::finalize(runtime, &request, &runner, &clock) {
         Ok(result) => {

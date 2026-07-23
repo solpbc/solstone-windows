@@ -45,6 +45,12 @@ export PACKAGE_WITNESS="$WITNESS"
 
 EXPECTED=0123456789abcdef0123456789abcdef01234567
 ADVISORY=$(printf 'a%.0s' $(seq 1 64))
+MIRROR_LOCATOR=https://private-token@mirror.example.invalid/advisory-db
+MIRROR_RECEIPT=/operator/packet/freshness.json
+MIRROR_PUB=/operator/keys/advisory-mirror.pub
+export SOLSTONE_ADVISORY_MIRROR_LOCATOR="$MIRROR_LOCATOR"
+export SOLSTONE_ADVISORY_RECEIPT="$MIRROR_RECEIPT"
+export SOLSTONE_ADVISORY_MIRROR_PUB="$MIRROR_PUB"
 
 : > "$WITNESS"
 if env -u EXPECTED_RELEASE_COMMIT -u SOLSTONE_ADVISORY_TREE_SHA256 -u SOLSTONE_SIGN \
@@ -57,6 +63,9 @@ assert_eq "missing commit invokes nothing" "" "$(cat "$WITNESS")"
 : > "$WITNESS"
 EXPECTED_RELEASE_COMMIT="$EXPECTED" \
   SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
+  SOLSTONE_ADVISORY_MIRROR_LOCATOR="$MIRROR_LOCATOR" \
+  SOLSTONE_ADVISORY_RECEIPT="$MIRROR_RECEIPT" \
+  SOLSTONE_ADVISORY_MIRROR_PUB="$MIRROR_PUB" \
   make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
 assert_eq "unsigned make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
 assert_eq "unsigned delegation" \
@@ -64,7 +73,10 @@ assert_eq "unsigned delegation" \
   "$(cat "$WITNESS")"
 
 : > "$WITNESS"
-EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" SOLSTONE_SIGN=1 \
+EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
+  SOLSTONE_ADVISORY_MIRROR_LOCATOR="$MIRROR_LOCATOR" \
+  SOLSTONE_ADVISORY_RECEIPT="$MIRROR_RECEIPT" SOLSTONE_ADVISORY_MIRROR_PUB="$MIRROR_PUB" \
+  SOLSTONE_SIGN=1 \
   make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
 assert_eq "signed make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
 assert_eq "signed delegation translates flag" \
@@ -82,6 +94,9 @@ assert_eq "missing advisory digest invokes nothing" "" "$(cat "$WITNESS")"
 for invalid_sign in 0 false ' '; do
   : > "$WITNESS"
   if EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
+      SOLSTONE_ADVISORY_MIRROR_LOCATOR="$MIRROR_LOCATOR" \
+      SOLSTONE_ADVISORY_RECEIPT="$MIRROR_RECEIPT" \
+      SOLSTONE_ADVISORY_MIRROR_PUB="$MIRROR_PUB" \
       SOLSTONE_SIGN="$invalid_sign" \
       make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null 2>&1; then
     fail "invalid SOLSTONE_SIGN value must fail"
@@ -90,8 +105,19 @@ for invalid_sign in 0 false ' '; do
   assert_eq "invalid SOLSTONE_SIGN invokes nothing" "" "$(cat "$WITNESS")"
 done
 
+for missing in SOLSTONE_ADVISORY_MIRROR_LOCATOR SOLSTONE_ADVISORY_RECEIPT SOLSTONE_ADVISORY_MIRROR_PUB; do
+  : > "$WITNESS"
+  if env -u "$missing" EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
+      make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null 2>&1; then
+    fail "missing $missing must fail"
+  fi
+  ASSERTIONS=$((ASSERTIONS + 1))
+  assert_eq "missing mirror packet input invokes nothing" "" "$(cat "$WITNESS")"
+done
+
 PACKAGE_SOURCE="$REPO_ROOT/scripts/package.ps1"
 preflight_line=$(grep -n '\$SelectionLines = @(' "$PACKAGE_SOURCE" | cut -d: -f1)
+mirror_validation_line=$(grep -n 'SOLSTONE_ADVISORY_MIRROR_LOCATOR is required' "$PACKAGE_SOURCE" | cut -d: -f1)
 version_line=$(grep -n '\$VersionOutput = @(' "$PACKAGE_SOURCE" | cut -d: -f1)
 lock_line=$(grep -n 'packaging\\lock-guard.ps1' "$PACKAGE_SOURCE" | cut -d: -f1)
 commit_validation_line=$(grep -n 'EXPECTED_RELEASE_COMMIT is required' "$PACKAGE_SOURCE" | cut -d: -f1)
@@ -100,6 +126,8 @@ npm_cache_line=$(grep -n 'packaging\\npm-cache-preflight.ps1' "$PACKAGE_SOURCE" 
 finalize_line=$(grep -n '\$SelectionJson | & \$CargoPath @FinalizeArgs' "$PACKAGE_SOURCE" | cut -d: -f1)
 assert_true "package.ps1 keeps preflight-version-lock-npm-cache-finalize order" \
   "[ '$preflight_line' -lt '$version_line' ] && [ '$version_line' -lt '$lock_line' ] && [ '$lock_line' -lt '$npm_cache_line' ] && [ '$npm_cache_line' -lt '$finalize_line' ]"
+assert_true "package.ps1 validates mirror packet presence before tool preflight" \
+  "[ '$mirror_validation_line' -lt '$preflight_line' ]"
 assert_true "package.ps1 validates commit and advisory digest before npm cache probe" \
   "[ '$lock_line' -lt '$commit_validation_line' ] && [ '$commit_validation_line' -lt '$advisory_validation_line' ] && [ '$advisory_validation_line' -lt '$npm_cache_line' ]"
 assert_eq "package.ps1 has one finalizer invocation" "1" \

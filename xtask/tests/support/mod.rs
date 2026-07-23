@@ -12,7 +12,9 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use xtask::artifact_fs::child_process_path_text;
-use xtask::release_advisory::{ADVISORY_DB_RELATIVE, RUSTSEC_SOURCE_ID};
+use xtask::release_advisory::{
+    canonical_freshness_body, format_advisory_mirror_trusted_comment, ADVISORY_DB_RELATIVE,
+};
 use xtask::release_clock::UtcTimestamp;
 use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::release_finalizer::{FinalizeRequest, FinalizeRuntime};
@@ -43,6 +45,10 @@ pub const GIT: &str = r"C:\fake-tools\git.exe";
 pub const CARGO: &str = "/fake-tools/cargo";
 #[cfg(windows)]
 pub const CARGO: &str = r"C:\fake-tools\cargo.exe";
+#[cfg(not(windows))]
+pub const MINISIGN: &str = "/fake-tools/minisign";
+#[cfg(windows)]
+pub const MINISIGN: &str = r"C:\fake-tools\minisign.exe";
 #[cfg(not(windows))]
 pub const NPM: &str = "/fake-tools/npm";
 #[cfg(windows)]
@@ -87,8 +93,13 @@ pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 5] = [
     "current/sq.version",
 ];
 
-const ADVISORY_REPOSITORY: &str = "advisory-db-3157b0e258782691";
+pub const ADVISORY_MIRROR_LOCATOR: &str =
+    "https://private-token@mirror.example.invalid/advisory-db";
+// This shaped basename is shared by the focused advisory fixture. cargo-deny
+// owns the URL-hash algorithm; production accepts any canonical shaped name.
+const ADVISORY_REPOSITORY: &str = "advisory-db-a5a5a5a5a5a5a5a5";
 const ADVISORY_ARCHIVE: &[u8] = b"deterministic RustSec git archive bytes";
+const ADVISORY_MIRROR_PUBLIC_KEY: &[u8] = b"untrusted comment: fake mirror key\nRWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n";
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
@@ -136,6 +147,13 @@ pub enum RunnerMutation {
     AdvisoryShallow,
     AdvisoryArchiveMismatch,
     AdvisoryCommandFailure,
+    AdvisoryMirrorWrongKey,
+    AdvisoryMirrorSignatureFailure,
+    AdvisoryMirrorMalformedComment,
+    AdvisoryMirrorBodyMismatch,
+    AdvisoryMirrorFuture,
+    AdvisoryMirrorStale,
+    AdvisoryMirrorCommitMismatch,
     SigningAuthFailure,
     NpmCiFailure,
     CargoBuildNoOutput,
@@ -248,6 +266,15 @@ impl FakeReleaseCheckout {
             .set_times(FileTimes::new().set_modified(acquired))
             .expect("set advisory acquisition time");
 
+        let packet_root = root.join("operator-mirror-packet");
+        fs::create_dir(&packet_root).expect("create advisory mirror packet directory");
+        write_mirror_packet(&packet_root, ADVISORY_COMMIT, CHECKED_AT, false);
+        fs::write(
+            packet_root.join("solpbc-advisory-mirror.pub"),
+            ADVISORY_MIRROR_PUBLIC_KEY,
+        )
+        .expect("write advisory mirror public key");
+
         if delta_base {
             fs::create_dir(root.join("Releases")).expect("create Releases");
             fs::write(
@@ -272,12 +299,26 @@ impl FakeReleaseCheckout {
         .expect("canonical advisory repository")
     }
 
+    pub fn freshness_receipt(&self) -> PathBuf {
+        self.root.join("operator-mirror-packet/freshness.json")
+    }
+
+    pub fn mirror_public_key(&self) -> PathBuf {
+        self.root
+            .join("operator-mirror-packet/solpbc-advisory-mirror.pub")
+    }
+
     pub fn runtime<'a>(&'a self, signing_alias: Option<&'a str>) -> FinalizeRuntime<'a> {
         FinalizeRuntime {
             checkout_root: &self.root,
             git_program: Path::new(GIT),
             advisory_tree_sha256: advisory_tree_sha256_static(),
             signing_keypair_alias: signing_alias,
+            mirror_locator: ADVISORY_MIRROR_LOCATOR.to_owned(),
+            freshness_receipt: self.freshness_receipt(),
+            mirror_public_key: self.mirror_public_key(),
+            minisign_program: PathBuf::from(MINISIGN),
+            mirror_public_key_sha256: advisory_mirror_public_key_sha256().to_owned(),
         }
     }
 }
@@ -337,6 +378,41 @@ impl FakeReleaseRunner {
         mutation: RunnerMutation,
         native_proof_mutation: NativeProofMutation,
     ) -> Self {
+        let packet_root = checkout.root().join("operator-mirror-packet");
+        match mutation {
+            RunnerMutation::AdvisoryMirrorWrongKey => {
+                fs::write(
+                    packet_root.join("solpbc-advisory-mirror.pub"),
+                    b"untrusted comment: substituted key\nattacker-controlled-key\n",
+                )
+                .expect("substitute advisory mirror public key");
+            }
+            RunnerMutation::AdvisoryMirrorMalformedComment => {
+                fs::write(
+                    packet_root.join("freshness.json.minisig"),
+                    b"untrusted comment: signature\ntrusted comment: malformed-private-comment\nsignature\n",
+                )
+                .expect("malform advisory mirror trusted comment");
+            }
+            RunnerMutation::AdvisoryMirrorBodyMismatch => {
+                write_mirror_packet(&packet_root, ADVISORY_COMMIT, CHECKED_AT, true);
+            }
+            RunnerMutation::AdvisoryMirrorFuture => {
+                write_mirror_packet(&packet_root, ADVISORY_COMMIT, "2026-07-21T12:05:01Z", false);
+            }
+            RunnerMutation::AdvisoryMirrorStale => {
+                write_mirror_packet(&packet_root, ADVISORY_COMMIT, "2026-07-20T11:59:59Z", false);
+            }
+            RunnerMutation::AdvisoryMirrorCommitMismatch => {
+                write_mirror_packet(
+                    &packet_root,
+                    "fedcba9876543210fedcba9876543210fedcba98",
+                    CHECKED_AT,
+                    false,
+                );
+            }
+            _ => {}
+        }
         let canonical_checkout =
             fs::canonicalize(checkout.root()).expect("canonical fake checkout");
         let checkout = PathBuf::from(
@@ -570,7 +646,7 @@ impl FakeReleaseRunner {
                             b"https://github.com/other/advisory-db\n".to_vec(),
                         ))
                     } else {
-                        Ok(Self::output(format!("{RUSTSEC_SOURCE_ID}\n")))
+                        Ok(Self::output(format!("{ADVISORY_MIRROR_LOCATOR}\n")))
                     }
                 }
                 ["rev-parse", "HEAD^{commit}"] => Ok(Self::output(format!("{ADVISORY_COMMIT}\n"))),
@@ -697,6 +773,46 @@ impl FakeReleaseRunner {
         )?;
         Ok(Self::output(Vec::new()))
     }
+
+    fn run_minisign(
+        &self,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        // Build the scratch path segment-by-segment so the platform separator
+        // matches the finalizer's canonicalized path. A single forward-slash
+        // literal joined onto a Windows base leaves mixed separators that no
+        // longer string-equal the product's all-backslash canonical path.
+        let scratch = self
+            .checkout
+            .join("target")
+            .join("release-finalizer")
+            .join(VERSION)
+            .join(".advisory-mirror-verify");
+        let expected = vec![
+            "-V".to_owned(),
+            "-p".to_owned(),
+            child_process_path_text(&scratch.join("mirror.pub"))
+                .ok_or(CommandRunnerError::UnexpectedInvocation)?,
+            "-m".to_owned(),
+            child_process_path_text(&scratch.join("freshness.json"))
+                .ok_or(CommandRunnerError::UnexpectedInvocation)?,
+            "-x".to_owned(),
+            child_process_path_text(&scratch.join("freshness.json.minisig"))
+                .ok_or(CommandRunnerError::UnexpectedInvocation)?,
+        ];
+        if args != expected || stdin.is_some() || env.is_some() {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        Ok(
+            if self.mutation == RunnerMutation::AdvisoryMirrorSignatureFailure {
+                Self::failure(b"signature verification failed")
+            } else {
+                Self::output(Vec::new())
+            },
+        )
+    }
 }
 
 impl CommandRunner for FakeReleaseRunner {
@@ -812,7 +928,7 @@ impl CommandRunner for FakeReleaseRunner {
         &self,
         program: &Path,
         args: &[String],
-        _stdin: Option<&[u8]>,
+        stdin: Option<&[u8]>,
         env: Option<&BTreeMap<String, String>>,
     ) -> Result<CommandOutput, CommandRunnerError> {
         self.events
@@ -826,6 +942,7 @@ impl CommandRunner for FakeReleaseRunner {
         match program.to_str() {
             Some(GIT) => self.run_git(args),
             Some(CARGO) => self.run_cargo(args, env),
+            Some(MINISIGN) => self.run_minisign(args, stdin, env),
             Some(NPM) if args.starts_with(&["--prefix".to_owned(), "ui".to_owned()]) => Ok(
                 if self.mutation == RunnerMutation::NpmCiFailure
                     && args.iter().any(|arg| arg == "ci")
@@ -1133,6 +1250,30 @@ pub fn advisory_tree_sha256() -> String {
 fn advisory_tree_sha256_static() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     DIGEST.get_or_init(advisory_tree_sha256).as_str()
+}
+
+fn advisory_mirror_public_key_sha256() -> &'static str {
+    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIGEST
+        .get_or_init(|| hex_sha256(ADVISORY_MIRROR_PUBLIC_KEY))
+        .as_str()
+}
+
+fn write_mirror_packet(packet_root: &Path, commit: &str, utc: &str, body_mismatch: bool) {
+    let mut body = canonical_freshness_body(commit, utc, 86_400);
+    if body_mismatch {
+        body.extend_from_slice(b" ");
+    }
+    fs::write(packet_root.join("freshness.json"), body)
+        .expect("write advisory mirror freshness receipt");
+    let trusted = format_advisory_mirror_trusted_comment(commit, utc, 86_400);
+    fs::write(
+        packet_root.join("freshness.json.minisig"),
+        format!(
+            "untrusted comment: signature from fake mirror\ntrusted comment: {trusted}\nfake-global-signature\n"
+        ),
+    )
+    .expect("write advisory mirror freshness signature");
 }
 
 fn workspace_root() -> &'static Path {

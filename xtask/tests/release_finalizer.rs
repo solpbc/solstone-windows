@@ -13,10 +13,11 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use support::{
     checkout_facts, request, selection_record, FakeReleaseCheckout, FakeReleaseRunner,
-    RunnerMutation, WitnessEvent, CHECKED_AT, COMMIT, SIGNED_APP_BYTES, SIGNTOOL, SMCTL,
-    UNSIGNED_APP_BYTES, VERSION, VPK,
+    RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT, MINISIGN,
+    SIGNED_APP_BYTES, SIGNTOOL, SMCTL, UNSIGNED_APP_BYTES, VERSION, VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
+use xtask::release_advisory::MIRROR_COHORT_ID;
 use xtask::release_clock::FixedClock;
 use xtask::release_container::{ContainerKind, ReleaseContainerError};
 use xtask::release_finalizer::{
@@ -26,7 +27,7 @@ use xtask::release_finalizer::{
 };
 use xtask::release_receipt::{
     render_windows_native_proof_receipt, FinalizationReceipt, WindowsNativeProofReceipt,
-    WINDOWS_NATIVE_PROOF_SCHEMA,
+    FINALIZATION_RECEIPT_SCHEMA_V2, WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use xtask::release_selection::{ReleaseToolSelection, SelectionMode};
 use xtask::release_signing::{SigningError, SigningGrammarStage};
@@ -41,6 +42,10 @@ fn finalize_cli_accepts_the_entrypoint_selected_absolute_git_path() {
     let checkout = FakeReleaseCheckout::new("cli-git", false);
     let git = checkout.root().join("fake-git");
     fs::write(&git, b"inert absolute Git selection").expect("write fake Git selection");
+    let tools = checkout.root().join("fake-cli-tools");
+    fs::create_dir(&tools).expect("create fake CLI tools");
+    fs::write(tools.join("minisign"), b"inert minisign selection")
+        .expect("write fake minisign selection");
     let mut child = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .args([
             "rust-release-manifest",
@@ -49,7 +54,11 @@ fn finalize_cli_accepts_the_entrypoint_selected_absolute_git_path() {
             COMMIT,
         ])
         .env("GIT", &git)
+        .env("PATH", &tools)
         .env("SOLSTONE_ADVISORY_TREE_SHA256", "a".repeat(64))
+        .env("SOLSTONE_ADVISORY_MIRROR_LOCATOR", ADVISORY_MIRROR_LOCATOR)
+        .env("SOLSTONE_ADVISORY_RECEIPT", checkout.freshness_receipt())
+        .env("SOLSTONE_ADVISORY_MIRROR_PUB", checkout.mirror_public_key())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -203,7 +212,7 @@ fn fixed_inputs_are_deterministic_across_roots_temp_names_and_iteration_order() 
         fs::read(first.root().join(&relative)).expect("read first manifest"),
         fs::read(second.root().join(&relative)).expect("read second manifest")
     );
-    assert_eq!(clock.calls(), 4);
+    assert_eq!(clock.calls(), 6);
 }
 
 #[test]
@@ -1064,9 +1073,34 @@ fn a_historical_package_byte_cannot_leak_into_the_current_candidate() {
 #[test]
 fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
     // The exact AdvisoryError variants are covered in release_advisories.rs.
-    // At engine level, each rejected snapshot must leave fewer than the two
-    // clock observations required to earn advisory_checked_at.
+    // At engine level, each rejected packet/snapshot must leave fewer than the
+    // three clock observations required to earn advisory_checked_at.
     for (label, mutation) in [
+        (
+            "advisory-mirror-wrong-key",
+            RunnerMutation::AdvisoryMirrorWrongKey,
+        ),
+        (
+            "advisory-mirror-signature",
+            RunnerMutation::AdvisoryMirrorSignatureFailure,
+        ),
+        (
+            "advisory-mirror-comment",
+            RunnerMutation::AdvisoryMirrorMalformedComment,
+        ),
+        (
+            "advisory-mirror-body",
+            RunnerMutation::AdvisoryMirrorBodyMismatch,
+        ),
+        (
+            "advisory-mirror-future",
+            RunnerMutation::AdvisoryMirrorFuture,
+        ),
+        ("advisory-mirror-stale", RunnerMutation::AdvisoryMirrorStale),
+        (
+            "advisory-mirror-commit",
+            RunnerMutation::AdvisoryMirrorCommitMismatch,
+        ),
         ("advisory-dirty", RunnerMutation::AdvisoryDirty),
         ("advisory-source", RunnerMutation::AdvisorySourceMismatch),
         ("advisory-shallow", RunnerMutation::AdvisoryShallow),
@@ -1090,7 +1124,7 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
         )
         .expect_err("mutated advisory snapshot must fail");
         assert_eq!(error, FinalizeError::Advisory, "{label}");
-        assert!(clock.calls() < 2, "{label}: checked_at was not earned");
+        assert!(clock.calls() < 3, "{label}: checked_at was not earned");
         assert_failure_contract(
             &checkout,
             &runner,
@@ -1099,6 +1133,32 @@ fn advisory_snapshot_mutations_never_earn_checked_at_or_start_a_build() {
             true,
             false,
         );
+        if mutation == RunnerMutation::AdvisoryMirrorWrongKey {
+            assert!(runner.events().iter().all(|event| !matches!(
+                event,
+                WitnessEvent::Invocation { program, .. } if program == Path::new(MINISIGN)
+            )));
+        }
+        if mutation == RunnerMutation::AdvisoryMirrorSignatureFailure {
+            assert!(runner.events().iter().all(|event| match event {
+                WitnessEvent::Invocation { program, args, .. }
+                    if program == Path::new(support::GIT) =>
+                {
+                    !args.iter().any(|arg| {
+                        matches!(
+                            arg.as_str(),
+                            "origin" | "HEAD^{commit}" | "--is-shallow-repository"
+                        )
+                    })
+                }
+                WitnessEvent::Invocation { program, args, .. }
+                    if program == Path::new(support::CARGO) =>
+                {
+                    args.first().map(String::as_str) != Some("deny")
+                }
+                _ => true,
+            }));
+        }
     }
 
     let checkout = FakeReleaseCheckout::new("advisory-db-missing", false);
@@ -1725,6 +1785,8 @@ fn assert_promoted_bundle(
     let receipt: FinalizationReceipt =
         serde_json::from_slice(&fs::read(receipt_path).expect("read finalization receipt"))
             .expect("parse finalization receipt");
+    assert_eq!(receipt.schema, FINALIZATION_RECEIPT_SCHEMA_V2);
+    assert_eq!(receipt.advisory_database.source_id, MIRROR_COHORT_ID);
     assert_eq!(receipt.signing_mode, signing_mode);
     assert_eq!(receipt.candidate.file_count, if has_delta { 8 } else { 7 });
     assert_eq!(
@@ -1757,6 +1819,36 @@ fn assert_witness_order(events: &[WitnessEvent]) {
         })
         .collect();
     assert_eq!(actual, phases);
+
+    let minisign = events
+        .iter()
+        .position(|event| matches!(
+            event,
+            WitnessEvent::Invocation { program, args, .. }
+                if program == Path::new(MINISIGN) && args.first().map(String::as_str) == Some("-V")
+        ))
+        .expect("mirror signature verification witness");
+    let advisory_origin = events
+        .iter()
+        .position(|event| matches!(
+            event,
+            WitnessEvent::Invocation { program, args, .. }
+                if program == Path::new(support::GIT)
+                    && args.ends_with(&["remote".to_owned(), "get-url".to_owned(), "origin".to_owned()])
+        ))
+        .expect("advisory origin witness");
+    let cargo_deny = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                WitnessEvent::Invocation { program, args, .. }
+                    if program == Path::new(support::CARGO)
+                        && args.first().map(String::as_str) == Some("deny")
+            )
+        })
+        .expect("cargo-deny witness");
+    assert!(minisign < advisory_origin && advisory_origin < cargo_deny);
 
     let action_order: Vec<&str> = events
         .iter()

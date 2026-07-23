@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{self, child_process_path_text, ContainedRoot, UnixModePolicy};
-use crate::release_advisory::{run_advisory_check, AdvisoryProvenance};
+use crate::release_advisory::{run_advisory_check, AdvisoryProvenance, MirrorPacketInputs};
 use crate::release_clock::Clock;
 use crate::release_container::{
     compare_executable_baseline, ExecutableContainerReader, ReleaseContainerError,
@@ -24,7 +24,7 @@ use crate::release_finalizer_fs::{
 };
 use crate::release_receipt::{
     candidate_relative_path, stage_finalization_receipt, AdvisoryDatabaseReceipt, CandidateReceipt,
-    CompanionManifestReceipt, FinalizationReceipt, FINALIZATION_RECEIPT_SCHEMA,
+    CompanionManifestReceipt, FinalizationReceipt, FINALIZATION_RECEIPT_SCHEMA_V2,
 };
 use crate::release_selection::{
     ManifestSafeToolProjection, ReleaseToolSelection, SelectedAction, SelectionMode,
@@ -61,12 +61,17 @@ pub struct FinalizeRequest {
     pub delta_base_fulls: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FinalizeRuntime<'a> {
     pub checkout_root: &'a Path,
     pub git_program: &'a Path,
     pub advisory_tree_sha256: &'a str,
     pub signing_keypair_alias: Option<&'a str>,
+    pub mirror_locator: String,
+    pub freshness_receipt: PathBuf,
+    pub mirror_public_key: PathBuf,
+    pub minisign_program: PathBuf,
+    pub mirror_public_key_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -365,7 +370,7 @@ pub fn finalize<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
 
     let transaction_result = run_mutating_transaction(
         &checkout,
-        runtime,
+        &runtime,
         request,
         &selection,
         safe_tools,
@@ -391,7 +396,7 @@ pub fn finalize<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
 #[allow(clippy::too_many_arguments)]
 fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     checkout: &ContainedRoot,
-    runtime: FinalizeRuntime<'_>,
+    runtime: &FinalizeRuntime<'_>,
     request: &FinalizeRequest,
     selection: &ReleaseToolSelection,
     safe_tools: ManifestSafeToolProjection,
@@ -403,12 +408,20 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
 ) -> Result<FinalizeResult, FinalizeError> {
     record_phase(runner, PHASE_3_ADVISORY_PREFLIGHT)?;
     let paths = create_transaction_paths(checkout, version)?;
+    let mirror = MirrorPacketInputs {
+        locator: &runtime.mirror_locator,
+        receipt_path: &runtime.freshness_receipt,
+        public_key_path: &runtime.mirror_public_key,
+        minisign_program: &runtime.minisign_program,
+        expected_public_key_sha256: &runtime.mirror_public_key_sha256,
+    };
     let advisory = run_advisory_check(
         checkout.canonical_path(),
         version,
         runtime.git_program,
         runtime.advisory_tree_sha256,
         &selection.actions.cargo_deny_advisories,
+        &mirror,
         runner,
         clock,
     )
@@ -1110,7 +1123,7 @@ fn finalization_receipt(
     advisory: &AdvisoryProvenance,
 ) -> FinalizationReceipt {
     FinalizationReceipt {
-        schema: FINALIZATION_RECEIPT_SCHEMA.to_owned(),
+        schema: FINALIZATION_RECEIPT_SCHEMA_V2.to_owned(),
         product: PRODUCT.to_owned(),
         version: version.to_owned(),
         target: TARGET_TRIPLE.to_owned(),

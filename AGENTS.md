@@ -70,7 +70,7 @@ charter and license.
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
 | `make check-rust-release-manifest` | offline schema, checkout binding, ledger, current-bundle, and deterministic-render verification; mode selected by `MANIFEST` or `RELEASE_DIR` |
 | `make check-release-advisory-config` | materialize the isolated release advisory config and prove the real pinned cargo-deny accepts it offline |
-| `make package` | source-bound build-to-finalize transaction → `target/release-candidate/<VERSION>/`; requires full lowercase `EXPECTED_RELEASE_COMMIT` and reviewed `SOLSTONE_ADVISORY_TREE_SHA256` (unsigned unless `SOLSTONE_SIGN=1`) |
+| `make package` | source-bound build-to-finalize transaction → `target/release-candidate/<VERSION>/`; requires full lowercase `EXPECTED_RELEASE_COMMIT`, reviewed `SOLSTONE_ADVISORY_TREE_SHA256`, and the signed mirror packet environment documented in the release runbook (unsigned unless `SOLSTONE_SIGN=1`) |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | strict signed-candidate install and explicit-binary smoke → `target/release-evidence/<VERSION>/windows-native-proof.json` |
 | `make publish-transparency RELEASE_DIR=<candidate>` | archive complete retained release bytes, then publish only signed transparency evidence; runs after delivery and never gates it |
 | `make resign-transparency-pointer` | refresh the latest-pointer signature and validity without changing the chain tip; no candidate input |
@@ -260,7 +260,10 @@ only. Package construction performs no publication auth or transport; release
 publication belongs to the aggregate provenance publisher. See `docs/release-runbook.md`.
 
 `EXPECTED_RELEASE_COMMIT=<full-lowercase-commit>
-SOLSTONE_ADVISORY_TREE_SHA256=<reviewed-lowercase-digest> make package` is the
+SOLSTONE_ADVISORY_TREE_SHA256=<reviewed-lowercase-digest>
+SOLSTONE_ADVISORY_MIRROR_LOCATOR=<private-git-url>
+SOLSTONE_ADVISORY_RECEIPT=<absolute-body-path>
+SOLSTONE_ADVISORY_MIRROR_PUB=<absolute-pubkey-path> make package` is the
 canonical source-bound build-to-finalize transaction. The advisory digest is an
 operator-reviewed input computed from the intended isolated RustSec commit, not
 derived by the finalizer from the database it is checking. The transaction validates the selected tool/action

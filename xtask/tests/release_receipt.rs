@@ -5,13 +5,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use xtask::release_advisory::RUSTSEC_SOURCE_ID;
+use xtask::release_advisory::MIRROR_COHORT_ID;
 use xtask::release_clock::{Clock, FixedClock};
 use xtask::release_receipt::{
     render_finalization_receipt, render_windows_native_proof_receipt, stage_finalization_receipt,
     stage_windows_native_proof_receipt, AdvisoryDatabaseReceipt, CandidateReceipt,
     CompanionManifestReceipt, FinalizationReceipt, ReceiptError, WindowsNativeProofReceipt,
-    FINALIZATION_RECEIPT_SCHEMA, WINDOWS_NATIVE_PROOF_SCHEMA,
+    FINALIZATION_RECEIPT_SCHEMA, FINALIZATION_RECEIPT_SCHEMA_V2, WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use xtask::rust_release_manifest::{companion_basename, PRODUCT, TARGET_TRIPLE};
 
@@ -50,9 +50,11 @@ fn companion() -> CompanionManifestReceipt {
     }
 }
 
-fn finalization_receipt() -> FinalizationReceipt {
+const HISTORICAL_ADVISORY_SOURCE_ID_V1: &str = "https://github.com/RustSec/advisory-db";
+
+fn finalization_receipt_for(schema: &str, source_id: &str) -> FinalizationReceipt {
     FinalizationReceipt {
-        schema: FINALIZATION_RECEIPT_SCHEMA.to_owned(),
+        schema: schema.to_owned(),
         product: PRODUCT.to_owned(),
         version: "0.2.11".to_owned(),
         target: TARGET_TRIPLE.to_owned(),
@@ -67,13 +69,24 @@ fn finalization_receipt() -> FinalizationReceipt {
         selection_record_sha256: "d".repeat(64),
         signing_mode: "signed-verified".to_owned(),
         advisory_database: AdvisoryDatabaseReceipt {
-            source_id: RUSTSEC_SOURCE_ID.to_owned(),
+            source_id: source_id.to_owned(),
             commit: "e".repeat(40),
             tree_sha256: "f".repeat(64),
             acquired_at: "2026-07-21T10:00:00Z".to_owned(),
         },
         advisory_checked_at: "2026-07-21T11:00:00Z".to_owned(),
     }
+}
+
+fn finalization_receipt_v1() -> FinalizationReceipt {
+    finalization_receipt_for(
+        FINALIZATION_RECEIPT_SCHEMA,
+        HISTORICAL_ADVISORY_SOURCE_ID_V1,
+    )
+}
+
+fn finalization_receipt() -> FinalizationReceipt {
+    finalization_receipt_for(FINALIZATION_RECEIPT_SCHEMA_V2, MIRROR_COHORT_ID)
 }
 
 fn native_proof_receipt(proved_at: &str) -> WindowsNativeProofReceipt {
@@ -98,7 +111,7 @@ fn native_proof_receipt(proved_at: &str) -> WindowsNativeProofReceipt {
 fn finalization_receipt_render_is_byte_exact_and_canonical() {
     let clock = FixedClock::new("2026-07-21T11:00:00Z").expect("create fixed clock");
     let checked_at = clock.now().expect("read advisory check time");
-    let mut receipt = finalization_receipt();
+    let mut receipt = finalization_receipt_v1();
     receipt.advisory_checked_at = checked_at.as_str().to_owned();
     let expected = concat!(
         "{\n",
@@ -133,6 +146,58 @@ fn finalization_receipt_render_is_byte_exact_and_canonical() {
         expected.as_bytes()
     );
     assert_eq!(clock.calls(), 1);
+}
+
+#[test]
+fn finalization_receipt_v2_render_is_byte_exact_and_canonical() {
+    let v1 = String::from_utf8(
+        render_finalization_receipt(&finalization_receipt_v1()).expect("render v1 golden"),
+    )
+    .expect("v1 receipt is UTF-8");
+    let expected = v1
+        .replace(
+            "solstone.rust-release-finalization.v1",
+            "solstone.rust-release-finalization.v2",
+        )
+        .replace(HISTORICAL_ADVISORY_SOURCE_ID_V1, MIRROR_COHORT_ID);
+    assert_eq!(
+        render_finalization_receipt(&finalization_receipt()).expect("render v2 receipt"),
+        expected.as_bytes()
+    );
+}
+
+#[test]
+fn finalization_receipt_schema_selects_the_advisory_source_authority() {
+    render_finalization_receipt(&finalization_receipt_v1())
+        .expect("historical v1 receipt remains valid");
+    render_finalization_receipt(&finalization_receipt()).expect("current v2 receipt is valid");
+
+    for (schema, source_id) in [
+        (FINALIZATION_RECEIPT_SCHEMA, MIRROR_COHORT_ID),
+        (
+            FINALIZATION_RECEIPT_SCHEMA_V2,
+            HISTORICAL_ADVISORY_SOURCE_ID_V1,
+        ),
+        (FINALIZATION_RECEIPT_SCHEMA_V2, "operator-label"),
+        (
+            FINALIZATION_RECEIPT_SCHEMA_V2,
+            "https://private-token@mirror.example.invalid/advisory-db",
+        ),
+    ] {
+        let receipt = finalization_receipt_for(schema, source_id);
+        assert!(matches!(
+            render_finalization_receipt(&receipt),
+            Err(ReceiptError::InvalidField {
+                field: "advisory_database.source_id"
+            })
+        ));
+    }
+    let unknown =
+        finalization_receipt_for("solstone.rust-release-finalization.v3", MIRROR_COHORT_ID);
+    assert!(matches!(
+        render_finalization_receipt(&unknown),
+        Err(ReceiptError::InvalidField { field: "schema" })
+    ));
 }
 
 #[test]
@@ -243,6 +308,9 @@ fn receipt_types_cannot_carry_private_source_data() {
         command_line: &'static str,
         environment: &'static str,
         certificate: &'static str,
+        mirror_locator: &'static str,
+        freshness_receipt: &'static str,
+        mirror_public_key: &'static str,
     }
 
     let private = PrivateSourceData {
@@ -252,6 +320,9 @@ fn receipt_types_cannot_carry_private_source_data() {
         command_line: "smctl sign --keypair-alias private-alias",
         environment: "USERPROFILE=C:\\Users\\PrivateOperator",
         certificate: "private-certificate-material",
+        mirror_locator: "https://private-token@mirror.example.invalid/advisory-db",
+        freshness_receipt: "/operator/private/freshness.json",
+        mirror_public_key: "/operator/private/advisory-mirror.pub",
     };
     let mut bytes =
         render_finalization_receipt(&finalization_receipt()).expect("render finalization receipt");
@@ -267,6 +338,9 @@ fn receipt_types_cannot_carry_private_source_data() {
         private.command_line,
         private.environment,
         private.certificate,
+        private.mirror_locator,
+        private.freshness_receipt,
+        private.mirror_public_key,
     ] {
         assert!(!rendered.contains(private_value));
     }

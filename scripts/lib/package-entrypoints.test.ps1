@@ -17,6 +17,9 @@ $Assertions = 0
 $SavedEnvironment = @{}
 $ExpectedCommit = "0123456789abcdef0123456789abcdef01234567"
 $AdvisoryTreeSha256 = "a" * 64
+$MirrorLocator = "https://private-token@mirror.example.invalid/advisory-db"
+$MirrorReceipt = "C:\operator\packet\freshness.json"
+$MirrorPublicKey = "C:\operator\keys\advisory-mirror.pub"
 
 function Assert-True([bool]$Condition, [string]$Label) {
     if (-not $Condition) { throw "package-entrypoints.test.ps1: assertion failed: $Label" }
@@ -45,6 +48,9 @@ function Reset-Case {
     Set-TestEnvironment "SOLSTONE_SIGN" $null
     Set-TestEnvironment "EXPECTED_RELEASE_COMMIT" $ExpectedCommit
     Set-TestEnvironment "SOLSTONE_ADVISORY_TREE_SHA256" $AdvisoryTreeSha256
+    Set-TestEnvironment "SOLSTONE_ADVISORY_MIRROR_LOCATOR" $MirrorLocator
+    Set-TestEnvironment "SOLSTONE_ADVISORY_RECEIPT" $MirrorReceipt
+    Set-TestEnvironment "SOLSTONE_ADVISORY_MIRROR_PUB" $MirrorPublicKey
 }
 
 function Run-Process([string]$FileName, [string]$Arguments) {
@@ -187,6 +193,18 @@ exit /b 0
             Assert-True ($failureOutput.Contains("npm offline cache preflight failed")) "npm cache failure keeps its stable prefix"
             Assert-True ($failureOutput.Contains("make install")) "npm cache failure names the warm command"
         }
+    }
+
+    foreach ($missing in @(
+        "SOLSTONE_ADVISORY_MIRROR_LOCATOR",
+        "SOLSTONE_ADVISORY_RECEIPT",
+        "SOLSTONE_ADVISORY_MIRROR_PUB"
+    )) {
+        Reset-Case
+        Set-TestEnvironment $missing $null
+        $result = Run-Direct
+        Assert-True ($result.status -ne 0) "direct invocation requires $missing"
+        Assert-True ((Witness-Text) -eq "") "direct missing $missing stops before tool preflight"
     }
 
     Reset-Case

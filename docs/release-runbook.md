@@ -12,7 +12,7 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 | Refresh RustSec data + check current advisories | `make audit` |
 | Prove the materialized release advisory config with cargo-deny 0.20.2 offline | `make check-release-advisory-config` |
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
-| Source-bound build and atomic finalization | `EXPECTED_RELEASE_COMMIT=<commit> SOLSTONE_ADVISORY_TREE_SHA256=<digest> make package` |
+| Source-bound build and atomic finalization | Set the release commit, advisory digest, and the three mirror-packet variables below, then run `make package` |
 | Prove one exact signed candidate by isolated install and explicit smoke | `make prove-rust-release-native RELEASE_DIR=target/release-candidate/<VERSION>` |
 | Publish retained release evidence after delivery | `make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>` |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
@@ -38,13 +38,33 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 
 ## Source-bound finalization
 
-Set `EXPECTED_RELEASE_COMMIT` to the exact full lowercase release commit. Run
-`make audit` to refresh the RustSec cache, then
-`make check-release-advisory-config` to map it to the isolated
-`target/release-advisory-db/` shape and prove that the real pinned cargo-deny
-accepts the generated config offline. The release transaction itself requires a
-clean, full, non-shallow RustSec snapshot no older than 24 hours and earns
-`advisory_checked_at` only after the offline advisory check succeeds.
+Set `EXPECTED_RELEASE_COMMIT` to the exact full lowercase release commit.
+Provision a clean cargo home containing only the approved private RustSec mirror
+cache, set `SOLSTONE_ADVISORY_MIRROR_LOCATOR` to that mirror's private Git URL,
+and run `make check-release-advisory-config`. This maps the cache to the isolated
+`target/release-advisory-db/` shape and proves that cargo-deny 0.20.2 accepts the
+locator-bound generated config offline. This config-only verb reads the locator
+only; it does not consume or verify the freshness packet.
+
+For finalization, obtain the operator-supplied mirror freshness receipt body and
+its adjacent `<body>.minisig`, plus the approved mirror public-key file. Keep all
+three outside `target/release-advisory-db/`, put `minisign` on `PATH`, and set:
+
+- `SOLSTONE_ADVISORY_MIRROR_LOCATOR` to the private mirror Git URL.
+- `SOLSTONE_ADVISORY_RECEIPT` to the absolute receipt-body path.
+- `SOLSTONE_ADVISORY_MIRROR_PUB` to the absolute public-key path.
+
+The finalizer first reads the packet files once, checks the supplied public-key
+file bytes against the committed SHA-256 pin, verifies the body and trusted
+comment with `minisign -V`, enforces the signed UTC freshness window, and obtains
+the signed mirror commit. It then renders locator-bound cargo-deny config,
+inspects the clean full mirror repository and exact origin offline, requires
+repository `HEAD` to equal the signed commit, and finally runs cargo-deny
+offline. `advisory_checked_at` is earned only after that final check succeeds.
+Any failure occurs before application build. Never commit a production mirror
+packet, signature, or operator public-key file; supply them from the controlled
+release environment.
+
 The isolated database root may also contain cargo-deny's regular top-level
 `db.lock`; finalization tolerates but never removes that file. A link, special
 file, or any other extra child still fails snapshot classification.
@@ -64,8 +84,9 @@ the build box with network access and restart the source-bound package command.
 The dry run's cache-honesty must also be confirmed on the box with warm and
 deliberately incomplete caches during post-ship verification.
 
-`EXPECTED_RELEASE_COMMIT=<commit> SOLSTONE_ADVISORY_TREE_SHA256=<digest> make
-package` delegates through
+With the three mirror-packet variables above set,
+`EXPECTED_RELEASE_COMMIT=<commit> SOLSTONE_ADVISORY_TREE_SHA256=<digest> make package`
+delegates through
 `scripts/package.ps1` to the single xtask finalizer. That transaction owns npm
 materialization/build, the locked release build, Velopack packing, optional
 KeyLocker signing, selected SignTool verification, executable cross-container
@@ -163,11 +184,15 @@ a release.
 
 **Flow** (keeps publication credentials out of package construction):
 
-1. Run `make audit`, then `make check-release-advisory-config`; a failed refresh,
-   materialization, or real-pin offline advisory check blocks finalization.
-2. On the clean build box, set the full lowercase `EXPECTED_RELEASE_COMMIT`, set
-   the independently reviewed `SOLSTONE_ADVISORY_TREE_SHA256`, and run
-   `SOLSTONE_SIGN=1 make package` (or the thin `.cmd` wrapper) for a signed candidate.
+1. Provision the approved mirror cache, set
+   `SOLSTONE_ADVISORY_MIRROR_LOCATOR`, and run
+   `make check-release-advisory-config`; a failed materialization or offline
+   cargo-deny check ends this step before finalization begins.
+2. On the clean build box, supply the current body plus adjacent `.minisig`, the
+   approved public-key file, and `minisign` on `PATH`. Set the three mirror-packet
+   variables, the full lowercase `EXPECTED_RELEASE_COMMIT`, and the independently
+   reviewed `SOLSTONE_ADVISORY_TREE_SHA256`; then run `SOLSTONE_SIGN=1 make
+   package` (or the thin `.cmd` wrapper) for a signed candidate.
 3. Run `make prove-rust-release-native
    RELEASE_DIR=target/release-candidate/<VERSION>`. A green proof atomically adds
    `target/release-evidence/<VERSION>/windows-native-proof.json` outside the

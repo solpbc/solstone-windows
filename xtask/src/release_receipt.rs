@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{verify_contained_path, ContainedRoot, UnixModePolicy};
-use crate::release_advisory::RUSTSEC_SOURCE_ID;
+use crate::release_advisory::MIRROR_COHORT_ID;
 use crate::release_clock::UtcTimestamp;
 use crate::release_finalizer_fs::create_contained_directory;
 use crate::rust_release_manifest::{
@@ -21,6 +21,7 @@ use crate::rust_release_manifest::{
 };
 
 pub const FINALIZATION_RECEIPT_SCHEMA: &str = "solstone.rust-release-finalization.v1";
+pub const FINALIZATION_RECEIPT_SCHEMA_V2: &str = "solstone.rust-release-finalization.v2";
 pub const WINDOWS_NATIVE_PROOF_SCHEMA: &str = "solstone.windows-native-proof.v1";
 pub const FINALIZATION_RECEIPT_FILENAME: &str = "rust-release-finalization.json";
 pub const WINDOWS_NATIVE_PROOF_FILENAME: &str = "windows-native-proof.json";
@@ -29,6 +30,7 @@ pub const EVIDENCE_ROOT: &str = "target/release-evidence";
 pub const CANDIDATE_ROOT: &str = "target/release-candidate";
 pub(crate) const FINALIZATION_RECEIPT_TEMP: &str = ".rust-release-finalization.json.tmp";
 const WINDOWS_NATIVE_PROOF_TEMP: &str = ".windows-native-proof.json.tmp";
+const HISTORICAL_ADVISORY_SOURCE_ID_V1: &str = "https://github.com/RustSec/advisory-db";
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -291,9 +293,14 @@ impl Drop for StagedReceipt {
 }
 
 fn validate_finalization_receipt(receipt: &FinalizationReceipt) -> Result<(), ReceiptError> {
+    let expected_source_id = match receipt.schema.as_str() {
+        FINALIZATION_RECEIPT_SCHEMA => HISTORICAL_ADVISORY_SOURCE_ID_V1,
+        FINALIZATION_RECEIPT_SCHEMA_V2 => MIRROR_COHORT_ID,
+        _ => return invalid("schema"),
+    };
     validate_common(
         &receipt.schema,
-        FINALIZATION_RECEIPT_SCHEMA,
+        &receipt.schema,
         &receipt.product,
         &receipt.version,
         &receipt.target,
@@ -315,7 +322,7 @@ fn validate_finalization_receipt(receipt: &FinalizationReceipt) -> Result<(), Re
     ) {
         return invalid("signing_mode");
     }
-    if receipt.advisory_database.source_id != RUSTSEC_SOURCE_ID {
+    if receipt.advisory_database.source_id != expected_source_id {
         return invalid("advisory_database.source_id");
     }
     validate_commit(

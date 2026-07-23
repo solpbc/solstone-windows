@@ -18,6 +18,16 @@ if ($SignEnvironment.Length -ne 0 -and $SignEnvironment -ne "1") {
 }
 $SignEnabled = $Sign -or $SignEnvironment -eq "1"
 
+if ([string]::IsNullOrWhiteSpace([string]$env:SOLSTONE_ADVISORY_MIRROR_LOCATOR)) {
+    throw "SOLSTONE_ADVISORY_MIRROR_LOCATOR is required; set the approved private mirror locator and retry."
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:SOLSTONE_ADVISORY_RECEIPT)) {
+    throw "SOLSTONE_ADVISORY_RECEIPT is required; set the signed mirror freshness receipt body path and retry."
+}
+if ([string]::IsNullOrWhiteSpace([string]$env:SOLSTONE_ADVISORY_MIRROR_PUB)) {
+    throw "SOLSTONE_ADVISORY_MIRROR_PUB is required; set the approved mirror public-key path and retry."
+}
+
 $Preflight = Join-Path $Root "packaging\preflight-release-tools.ps1"
 $PowerShellPath = (Get-Process -Id $PID).Path
 $PreflightArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Preflight)

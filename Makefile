@@ -40,7 +40,7 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 
 help:
 	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
-	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT and SOLSTONE_ADVISORY_TREE_SHA256)"
+	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT, SOLSTONE_ADVISORY_TREE_SHA256, and the signed mirror packet environment)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
@@ -155,19 +155,24 @@ check-rust-release-manifest: preflight-toolchain
 # always uses the isolated target/release-advisory-db path written into config.
 check-release-advisory-config: preflight-toolchain preflight-cargo-deny
 	@set -eu; \
+	  mirror_locator="$${SOLSTONE_ADVISORY_MIRROR_LOCATOR:-}"; \
+	  if [ -z "$$mirror_locator" ]; then \
+	    echo "ERROR: SOLSTONE_ADVISORY_MIRROR_LOCATOR is required; set it to the approved private mirror Git URL and retry." >&2; \
+	    exit 1; \
+	  fi; \
 	  cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
 	  host_db_root="$$cargo_home/advisory-dbs"; \
 	  host_repo=; \
 	  for candidate in "$$host_db_root"/advisory-db-*; do \
 	    [ -d "$$candidate/.git" ] || continue; \
 	    if [ -n "$$host_repo" ]; then \
-	      echo "ERROR: multiple RustSec advisory repositories found under $$host_db_root; retain exactly the cargo-deny RustSec cache, then retry." >&2; \
+	      echo "ERROR: multiple advisory repositories found under $$host_db_root; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; \
 	      exit 1; \
 	    fi; \
 	    host_repo=$$candidate; \
 	  done; \
 	  if [ -z "$$host_repo" ]; then \
-	    echo "ERROR: RustSec advisory database is absent under $$host_db_root; run 'make audit' or refresh the RustSec cache, then retry." >&2; \
+	    echo "ERROR: advisory mirror database is absent under $$host_db_root; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; \
 	    exit 1; \
 	  fi; \
 	  repo_root=$$(pwd -P); \
@@ -191,7 +196,7 @@ check-release-advisory-config: preflight-toolchain preflight-cargo-deny
 	  mkdir "$$stage/new"; \
 	  cp -a "$$host_repo" "$$stage/new/"; \
 	  repo_name=$${host_repo##*/}; \
-	  [ -d "$$stage/new/$$repo_name/.git" ] || { echo "ERROR: mapped RustSec cache lacks its Git repository; run 'make audit' or refresh the RustSec cache, then retry." >&2; exit 1; }; \
+	  [ -d "$$stage/new/$$repo_name/.git" ] || { echo "ERROR: mapped advisory cache lacks its Git repository; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; exit 1; }; \
 	  previous=; \
 	  if [ -d "$$isolated" ]; then \
 	    previous="$$stage/previous"; \
@@ -215,7 +220,7 @@ check-release-advisory-config: preflight-toolchain preflight-cargo-deny
 	    exit 1; \
 	  fi; \
 	  rm -f "$$config"; \
-	  CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- rust-release-manifest advisory-config --db-root "$$isolated" --out "$$config"; \
+	  SOLSTONE_ADVISORY_MIRROR_LOCATOR="$$mirror_locator" CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- rust-release-manifest advisory-config --db-root "$$isolated" --out "$$config"; \
 	  $(CARGO) deny --locked --version; \
 	  db_lock="$$isolated/db.lock"; \
 	  CARGO_NET_OFFLINE=true $(CARGO) deny --locked --offline --config "$$config" check advisories; \
@@ -240,6 +245,18 @@ package:
 	    exit 1; \
 	  fi; \
 	  case "$$advisory_digest" in *[!0-9a-f]*) echo "ERROR: SOLSTONE_ADVISORY_TREE_SHA256 is required as 64 lowercase hex; supply the reviewed isolated RustSec archive digest and retry." >&2; exit 1 ;; esac; \
+	  if [ -z "$${SOLSTONE_ADVISORY_MIRROR_LOCATOR:-}" ]; then \
+	    echo "ERROR: SOLSTONE_ADVISORY_MIRROR_LOCATOR is required; set the approved private mirror locator and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  if [ -z "$${SOLSTONE_ADVISORY_RECEIPT:-}" ]; then \
+	    echo "ERROR: SOLSTONE_ADVISORY_RECEIPT is required; set the signed mirror freshness receipt body path and retry." >&2; \
+	    exit 1; \
+	  fi; \
+	  if [ -z "$${SOLSTONE_ADVISORY_MIRROR_PUB:-}" ]; then \
+	    echo "ERROR: SOLSTONE_ADVISORY_MIRROR_PUB is required; set the approved mirror public-key path and retry." >&2; \
+	    exit 1; \
+	  fi; \
 	  sign_arg=; \
 	  case "$${SOLSTONE_SIGN:-}" in \
 	    "") ;; \
