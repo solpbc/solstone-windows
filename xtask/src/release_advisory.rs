@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -513,9 +513,21 @@ pub(crate) fn verified_isolated_database_root(
         .strip_prefix(checkout.path())
         .or_else(|_| isolated_database_root.strip_prefix(checkout.canonical_path()))
         .map_err(|_| AdvisoryError::DatabaseRootInvalid)?;
-    let relative = relative
-        .to_str()
-        .ok_or(AdvisoryError::DatabaseRootInvalid)?;
+    // `verify_contained_path` takes a `/`-separated relative string, not a platform
+    // path. Windows `strip_prefix` yields `\` separators, so rebuild the contract
+    // spelling from normal components and refuse anything that is not one.
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err(AdvisoryError::DatabaseRootInvalid);
+        };
+        components.push(part.to_str().ok_or(AdvisoryError::DatabaseRootInvalid)?);
+    }
+    if components.is_empty() {
+        return Err(AdvisoryError::DatabaseRootInvalid);
+    }
+    let relative = components.join("/");
+    let relative = relative.as_str();
     let database = verify_contained_path(
         checkout.path(),
         checkout.canonical_path(),
