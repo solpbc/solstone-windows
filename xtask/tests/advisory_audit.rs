@@ -15,6 +15,7 @@ use xtask::advisory_audit::{
     run_advisory_audit, AdvisoryAuditPrograms, AdvisoryAuditRequest, AdvisoryAuditTrust,
     AdvisoryAuditWitness, AuditError, CARGO_DENY_VERSION,
 };
+use xtask::artifact_fs::child_process_path_text;
 use xtask::release_advisory::{
     canonical_freshness_body, format_advisory_mirror_trusted_comment, validate_mirror_locator,
     AdvisoryError,
@@ -359,7 +360,12 @@ fn assert_exact_git_contract(invocations: &[Invocation], bundle: &Path, commit: 
             && git[0].args.get(3).map(String::as_str) == Some("--initial-branch=main"),
         "Git init argv contract changed"
     );
-    let canonical_bundle = fs::canonicalize(bundle).expect("canonical synthetic bundle");
+    // Child tools receive the simplified spelling, never the verbatim prefix that
+    // Windows canonicalization adds; on Unix this is the canonical path unchanged.
+    let canonical_bundle = PathBuf::from(
+        child_process_path_text(&fs::canonicalize(bundle).expect("canonical synthetic bundle"))
+            .expect("child-process text for the synthetic bundle"),
+    );
     for (invocation, operation) in [(git[1], "verify"), (git[2], "list-heads")] {
         assert!(
             invocation.args.len() == 5
