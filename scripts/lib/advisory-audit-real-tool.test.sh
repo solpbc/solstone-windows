@@ -23,6 +23,7 @@ export SOLSTONE_TEST_GIT="$GIT_BIN"
 export SOLSTONE_TEST_MINISIGN="$MINISIGN_BIN"
 export SOLSTONE_TEST_CARGO_DENY="$CARGO_DENY_BIN"
 export SOLSTONE_TEST_GIT_TRACE_SINK="$TMP_ROOT/git-trace"
+export SOLSTONE_TEST_WITNESS_SINK="$TMP_ROOT/witness"
 export GIT_TRACE="$SOLSTONE_TEST_GIT_TRACE_SINK"
 
 POISON="$TMP_ROOT/poison-network"
@@ -50,5 +51,22 @@ if [ -e "$SOLSTONE_TEST_NETWORK_WITNESS" ]; then
 fi
 if [ -s "$SOLSTONE_TEST_GIT_TRACE_SINK" ]; then
   echo "advisory-audit-real-tool.test.sh: removed Git trace sink received child output" >&2
+  exit 1
+fi
+if [ ! -f "$SOLSTONE_TEST_WITNESS_SINK" ]; then
+  echo "advisory-audit-real-tool.test.sh: rendered witness sink was not written" >&2
+  exit 1
+fi
+WITNESS_LINE_COUNT=$(wc -l <"$SOLSTONE_TEST_WITNESS_SINK" | tr -d '[:space:]')
+if [ "$WITNESS_LINE_COUNT" -ne 1 ]; then
+  echo "advisory-audit-real-tool.test.sh: rendered witness is not exactly one line" >&2
+  exit 1
+fi
+if [ -n "$(tail -c 1 "$SOLSTONE_TEST_WITNESS_SINK")" ]; then
+  echo "advisory-audit-real-tool.test.sh: rendered witness does not end in a newline" >&2
+  exit 1
+fi
+if ! tr -d '\r' <"$SOLSTONE_TEST_WITNESS_SINK" | cmp -s - "$SOLSTONE_TEST_WITNESS_SINK"; then
+  echo "advisory-audit-real-tool.test.sh: rendered witness contains a carriage return" >&2
   exit 1
 fi

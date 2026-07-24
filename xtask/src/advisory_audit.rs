@@ -23,7 +23,7 @@ use crate::release_advisory::{
 };
 use crate::release_clock::Clock;
 use crate::release_exec::{minisign_version_is_supported, resolve_path_program, CommandRunner};
-use crate::rust_release_manifest::{render_canonical_json, PRODUCT};
+use crate::rust_release_manifest::PRODUCT;
 
 pub const ADVISORY_AUDIT_SCHEMA: &str = "solstone.advisory-audit.v1";
 pub const CARGO_DENY_VERSION: &str = "0.20.2";
@@ -518,8 +518,10 @@ fn run_in_temporary<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         cargo_deny_version: CARGO_DENY_VERSION.to_owned(),
         verdict: "pass".to_owned(),
     };
-    Ok(render_canonical_json(&witness)
-        .expect("closed advisory audit witness fields serialize as canonical JSON"))
+    let mut bytes = serde_json::to_vec(&witness)
+        .expect("closed advisory audit witness fields serialize as canonical JSON");
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 fn derive_database_name(locator: &str) -> Result<String, AuditError> {

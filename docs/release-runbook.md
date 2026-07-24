@@ -52,10 +52,10 @@ put Git, minisign 0.11 or 0.12, and cargo-deny 0.20.2 on `PATH`, and set:
 receipt signature and freshness, requires the bundle to advertise exactly `HEAD`
 and `refs/heads/main` at the signed commit, and checks the locked graph against a
 full clean isolated checkout with cargo-deny offline. It removes all recurring
-audit database and scratch bytes before emitting its sole canonical JSON witness.
-If cleanup fails, restore permissions, remove only the owned
-`target/.advisory-audit-*` run directory, and retry; do not remove any release
-candidate, release evidence, packet input, or ambient Cargo-home data.
+audit database and scratch bytes before emitting its sole witness as a single
+line of canonical JSON. If cleanup fails, restore permissions, remove only the
+owned `target/.advisory-audit-*` run directory, and retry; do not remove any
+release candidate, release evidence, packet input, or ambient Cargo-home data.
 
 Separately, set `EXPECTED_RELEASE_COMMIT` to the exact full lowercase release
 commit. Provision a clean cargo home containing only the approved private RustSec

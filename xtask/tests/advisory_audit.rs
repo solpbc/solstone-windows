@@ -218,8 +218,7 @@ fn signed_packet_bundle_and_offline_check_emit_one_canonical_witness() {
         &FixedClock::new(NOW).expect("clock"),
     )
     .expect("synthetic audit passes");
-    let witness: AdvisoryAuditWitness = serde_json::from_slice(&bytes).expect("parse witness");
-    assert!(bytes.ends_with(b"\n"), "witness must end in one newline");
+    let witness = single_line_witness(&bytes).expect("parse single-line witness");
     assert_eq!(witness.schema, "solstone.advisory-audit.v1");
     assert_eq!(witness.product, "solstone-windows");
     assert_eq!(witness.synced_commit, fixture.commit);
@@ -299,6 +298,45 @@ fn signed_packet_bundle_and_offline_check_emit_one_canonical_witness() {
             .and_then(|env| env.get("CARGO_NET_OFFLINE"))
             .map(String::as_str),
         Some("true")
+    );
+}
+
+#[test]
+fn single_line_witness_rejects_noncanonical_line_shapes() {
+    let fixture = Fixture::new("single-line-shapes");
+    let bytes = run_advisory_audit(
+        &fixture.request(),
+        &RecordingRunner::new(&fixture.commit),
+        &FixedClock::new(NOW).expect("clock"),
+    )
+    .expect("synthetic audit passes");
+    let witness = single_line_witness(&bytes).expect("real compact witness is accepted");
+
+    let mut pretty = serde_json::to_vec_pretty(&witness).expect("pretty witness serializes");
+    pretty.push(b'\n');
+    assert!(
+        single_line_witness(&pretty).is_none(),
+        "pretty witness must be rejected"
+    );
+
+    let mut carriage_return = bytes.clone();
+    carriage_return.insert(carriage_return.len() - 1, b'\r');
+    assert!(
+        single_line_witness(&carriage_return).is_none(),
+        "witness containing a carriage return must be rejected"
+    );
+
+    let missing_newline = &bytes[..bytes.len() - 1];
+    assert!(
+        single_line_witness(missing_newline).is_none(),
+        "witness missing its trailing newline must be rejected"
+    );
+
+    let mut second_newline = bytes;
+    second_newline.push(b'\n');
+    assert!(
+        single_line_witness(&second_newline).is_none(),
+        "witness with a second trailing newline must be rejected"
     );
 }
 
@@ -1073,6 +1111,17 @@ fn assert_no_audit_temporary_state(checkout: &Path) {
     }));
 }
 
+fn single_line_witness(bytes: &[u8]) -> Option<AdvisoryAuditWitness> {
+    let body = bytes.strip_suffix(b"\n")?;
+    if body.contains(&b'\n') || body.contains(&b'\r') {
+        return None;
+    }
+    let witness: AdvisoryAuditWitness = serde_json::from_slice(body).ok()?;
+    let mut rendered = serde_json::to_vec(&witness).ok()?;
+    rendered.push(b'\n');
+    (rendered == bytes).then_some(witness)
+}
+
 #[test]
 #[ignore = "requires real git, minisign, and cargo-deny 0.20.2; run through advisory-audit-real-tool.test.sh"]
 fn real_tool_derived_name_matches_cargo_deny() {
@@ -1081,6 +1130,7 @@ fn real_tool_derived_name_matches_cargo_deny() {
     let cargo_deny = required_test_tool("SOLSTONE_TEST_CARGO_DENY");
     let fixture = RealFixture::new(&git, &minisign);
     let trace_sink = required_test_path("SOLSTONE_TEST_GIT_TRACE_SINK");
+    let witness_sink = required_test_path("SOLSTONE_TEST_WITNESS_SINK");
     fs::write(&trace_sink, b"").expect("reset synthetic Git trace sink");
     let runner = CargoHomeRunner {
         inner: RemovedEnvironmentProcessCommandRunner::new(
@@ -1104,14 +1154,12 @@ fn real_tool_derived_name_matches_cargo_deny() {
             public_key_id: &fixture.public_key_id,
         },
     };
-    let witness = run_advisory_audit(&request, &runner, &FixedClock::new(NOW).expect("clock"))
-        .expect("real cargo-deny accepts the product-derived database location");
-    assert_eq!(
-        serde_json::from_slice::<AdvisoryAuditWitness>(&witness)
-            .expect("parse real-tool witness")
-            .verdict,
-        "pass"
-    );
+    let witness_bytes =
+        run_advisory_audit(&request, &runner, &FixedClock::new(NOW).expect("clock"))
+            .expect("real cargo-deny accepts the product-derived database location");
+    let witness = single_line_witness(&witness_bytes).expect("parse single-line real-tool witness");
+    fs::write(&witness_sink, &witness_bytes).expect("write real-tool witness sink");
+    assert_eq!(witness.verdict, "pass");
     assert!(
         fs::read(&trace_sink)
             .expect("read synthetic Git trace sink")
