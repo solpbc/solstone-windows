@@ -29,7 +29,7 @@ pub const ADVISORY_AUDIT_SCHEMA: &str = "solstone.advisory-audit.v1";
 pub const CARGO_DENY_VERSION: &str = "0.20.2";
 const CACHE_HASH_SEED: u64 = 0xca80de71;
 
-pub const ADVISORY_AUDIT_REMOVED_ENV: [&str; 24] = [
+pub const ADVISORY_AUDIT_REMOVED_ENV: [&str; 55] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -54,6 +54,37 @@ pub const ADVISORY_AUDIT_REMOVED_ENV: [&str; 24] = [
     "GIT_TEMPLATE_DIR",
     "GIT_EXEC_PATH",
     "GIT_CEILING_DIRECTORIES",
+    "GIT_TRACE",
+    "GIT_TRACE2",
+    "GIT_TRACE2_BRIEF",
+    "GIT_TRACE2_CONFIG_PARAMS",
+    "GIT_TRACE2_DST_DEBUG",
+    "GIT_TRACE2_ENV_VARS",
+    "GIT_TRACE2_EVENT",
+    "GIT_TRACE2_EVENT_BRIEF",
+    "GIT_TRACE2_EVENT_NESTING",
+    "GIT_TRACE2_MAX_FILES",
+    "GIT_TRACE2_PARENT_NAME",
+    "GIT_TRACE2_PARENT_SID",
+    "GIT_TRACE2_PERF",
+    "GIT_TRACE2_PERF_BRIEF",
+    "GIT_TRACE_BARE",
+    "GIT_TRACE_CURL",
+    "GIT_TRACE_CURL_NO_DATA",
+    "GIT_TRACE_FSMONITOR",
+    "GIT_TRACE_PACKET",
+    "GIT_TRACE_PACKFILE",
+    "GIT_TRACE_PACK_ACCESS",
+    "GIT_TRACE_PERFORMANCE",
+    "GIT_TRACE_REDACT",
+    "GIT_TRACE_REFS",
+    "GIT_TRACE_SETUP",
+    "GIT_TRACE_SHALLOW",
+    "GIT_TRACE_WORKING_TREE_ENCODING",
+    "SOLSTONE_ADVISORY_MIRROR_LOCATOR",
+    "SOLSTONE_ADVISORY_RECEIPT",
+    "SOLSTONE_ADVISORY_MIRROR_PUB",
+    "SOLSTONE_ADVISORY_BUNDLE",
 ];
 
 #[derive(Clone, Debug)]
@@ -102,6 +133,8 @@ pub struct AdvisoryAuditWitness {
     pub verdict: String,
 }
 
+/// Shared-authority diagnostics are deliberately passed through unchanged so
+/// signer and receipt rejection remains identical across both entry points.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuditError {
     Authority(AdvisoryError),
@@ -125,8 +158,8 @@ pub enum AuditError {
     CargoLockUnavailable,
     CargoDenyInvocationFailed,
     CargoDenyRejected,
+    CargoLockChanged,
     ClockUnavailable,
-    WitnessSerializationFailed,
     CleanupFailed,
 }
 
@@ -154,8 +187,8 @@ impl fmt::Display for AuditError {
             Self::CargoLockUnavailable => write!(formatter, "advisory audit lockfile gate failed; restore the tracked Cargo.lock and retry"),
             Self::CargoDenyInvocationFailed => write!(formatter, "advisory audit cargo-deny invocation failed; restore the pinned cargo-deny installation and retry"),
             Self::CargoDenyRejected => write!(formatter, "advisory audit advisory-policy gate failed; remediate the locked dependency graph and retry"),
+            Self::CargoLockChanged => write!(formatter, "advisory audit lockfile-stability gate failed; retry from an idle checkout"),
             Self::ClockUnavailable => write!(formatter, "advisory audit clock gate failed; correct the host clock and retry"),
-            Self::WitnessSerializationFailed => write!(formatter, "advisory audit witness-rendering gate failed; restore the xtask installation and retry"),
             Self::CleanupFailed => write!(formatter, "advisory audit cleanup gate failed; restore target-directory permissions and remove the failed run state"),
         }
     }
@@ -462,6 +495,12 @@ fn run_in_temporary<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     if cargo_deny.status != 0 {
         return Err(AuditError::CargoDenyRejected);
     }
+    let cargo_lock_after = checkout
+        .read("Cargo.lock", "Cargo.lock")
+        .map_err(|_| AuditError::CargoLockChanged)?;
+    if cargo_lock_after != cargo_lock {
+        return Err(AuditError::CargoLockChanged);
+    }
     let checked_at = clock
         .now()
         .map_err(|_| AuditError::ClockUnavailable)?
@@ -479,14 +518,15 @@ fn run_in_temporary<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         cargo_deny_version: CARGO_DENY_VERSION.to_owned(),
         verdict: "pass".to_owned(),
     };
-    render_canonical_json(&witness).map_err(|_| AuditError::WitnessSerializationFailed)
+    Ok(render_canonical_json(&witness)
+        .expect("closed advisory audit witness fields serialize as canonical JSON"))
 }
 
 fn derive_database_name(locator: &str) -> Result<String, AuditError> {
     let first = Url::parse(locator).map_err(|_| AuditError::LocatorNotUrl)?;
     if !matches!(first.scheme(), "https" | "ssh")
         || first.cannot_be_a_base()
-        || first.domain().is_none()
+        || first.host().is_none()
     {
         return Err(AuditError::LocatorNotUrl);
     }
@@ -535,7 +575,12 @@ fn git_output<R: CommandRunner + ?Sized>(
 ) -> Result<crate::release_exec::CommandOutput, AuditError> {
     let output = runner
         .run(program, &args, None, Some(env))
-        .map_err(|_| error.clone())?;
+        .map_err(|runner_error| match runner_error {
+            crate::release_exec::CommandRunnerError::ProgramNotAbsolute
+            | crate::release_exec::CommandRunnerError::LaunchFailed
+            | crate::release_exec::CommandRunnerError::WaitFailed => AuditError::GitUnavailable,
+            _ => error.clone(),
+        })?;
     if output.status != 0 {
         return Err(error);
     }

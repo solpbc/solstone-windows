@@ -22,6 +22,8 @@ done
 export SOLSTONE_TEST_GIT="$GIT_BIN"
 export SOLSTONE_TEST_MINISIGN="$MINISIGN_BIN"
 export SOLSTONE_TEST_CARGO_DENY="$CARGO_DENY_BIN"
+export SOLSTONE_TEST_GIT_TRACE_SINK="$TMP_ROOT/git-trace"
+export GIT_TRACE="$SOLSTONE_TEST_GIT_TRACE_SINK"
 
 POISON="$TMP_ROOT/poison-network"
 cat >"$POISON" <<'EOF'
@@ -44,5 +46,9 @@ cd "$REPO_ROOT"
 
 if [ -e "$SOLSTONE_TEST_NETWORK_WITNESS" ]; then
   echo "advisory-audit-real-tool.test.sh: poisoned network helper was invoked" >&2
+  exit 1
+fi
+if [ -s "$SOLSTONE_TEST_GIT_TRACE_SINK" ]; then
+  echo "advisory-audit-real-tool.test.sh: removed Git trace sink received child output" >&2
   exit 1
 fi

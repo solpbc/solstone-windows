@@ -4,6 +4,7 @@
 //! Workspace task runner.
 //!
 //! Verbs:
+//! - `advisory-audit` — verify a signed advisory packet and self-contained bundle, then check the locked graph offline.
 //! - `contract` — regenerate `automation-contract.json` + the `ui/src/lib/contract.ts` codegen.
 //! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate and the `contract_not_stale` test both invoke it).
 //! - `observer-contract check` — verify the vendored observer-client authority bundle and adoption record.

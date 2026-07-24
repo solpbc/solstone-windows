@@ -764,7 +764,7 @@ impl FakeReleaseRunner {
                 ["remote", "get-url", "origin"] => {
                     if self.mutation == RunnerMutation::AdvisorySourceMismatch {
                         Ok(Self::output(
-                            b"https://github.com/other/advisory-db\n".to_vec(),
+                            b"https://other.example.invalid/advisory-db\n".to_vec(),
                         ))
                     } else {
                         Ok(Self::output(format!("{ADVISORY_MIRROR_LOCATOR}\n")))

@@ -9,6 +9,8 @@ use std::sync::Mutex;
 
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
+use twox_hash::XxHash64;
+use url::Url;
 use xtask::advisory_audit::{
     run_advisory_audit, AdvisoryAuditPrograms, AdvisoryAuditRequest, AdvisoryAuditTrust,
     AdvisoryAuditWitness, AuditError, CARGO_DENY_VERSION,
@@ -97,6 +99,7 @@ impl CommandRunner for RecordingRunner {
 struct Fixture {
     _root: tempfile::TempDir,
     checkout: PathBuf,
+    packet_root: PathBuf,
     receipt: PathBuf,
     public_key: PathBuf,
     bundle: PathBuf,
@@ -173,6 +176,7 @@ impl Fixture {
         Self {
             _root: root,
             checkout,
+            packet_root: operator,
             receipt,
             public_key,
             bundle,
@@ -224,7 +228,10 @@ fn signed_packet_bundle_and_offline_check_emit_one_canonical_witness() {
     assert_eq!(witness.cargo_deny_version, CARGO_DENY_VERSION);
     assert_eq!(witness.verdict, "pass");
     assert!(!String::from_utf8_lossy(&bytes).contains(CANARY));
-    assert_eq!(preserved_inventory(&fixture), before);
+    assert!(
+        preserved_inventory(&fixture) == before,
+        "preserved recursive inventory changed"
+    );
     assert_no_audit_temporary_state(&fixture.checkout);
 
     let invocations = runner.invocations();
@@ -250,12 +257,7 @@ fn signed_packet_bundle_and_offline_check_emit_one_canonical_witness() {
         !invocation.args.iter().any(|arg| arg == LOCATOR)
             || invocation.program == Path::new(CARGO_DENY)
     }));
-    assert!(!invocations.iter().any(|invocation| {
-        invocation
-            .args
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "fetch" | "pull" | "ls-remote"))
-    }));
+    assert_exact_git_contract(&invocations, &fixture.bundle, &fixture.commit);
     for invocation in invocations
         .iter()
         .filter(|invocation| invocation.program == Path::new(GIT))
@@ -296,6 +298,131 @@ fn signed_packet_bundle_and_offline_check_emit_one_canonical_witness() {
             .and_then(|env| env.get("CARGO_NET_OFFLINE"))
             .map(String::as_str),
         Some("true")
+    );
+}
+
+#[test]
+fn child_environment_removal_covers_operator_inputs_and_git_trace_controls() {
+    let removed: std::collections::BTreeSet<&str> =
+        xtask::advisory_audit::ADVISORY_AUDIT_REMOVED_ENV
+            .into_iter()
+            .collect();
+    assert_eq!(
+        removed.len(),
+        xtask::advisory_audit::ADVISORY_AUDIT_REMOVED_ENV.len(),
+        "removed child environment list must not contain duplicates"
+    );
+    for required in [
+        "SOLSTONE_ADVISORY_MIRROR_LOCATOR",
+        "SOLSTONE_ADVISORY_RECEIPT",
+        "SOLSTONE_ADVISORY_MIRROR_PUB",
+        "SOLSTONE_ADVISORY_BUNDLE",
+        "GIT_TRACE",
+        "GIT_TRACE2",
+        "GIT_TRACE2_EVENT",
+        "GIT_TRACE2_PERF",
+        "GIT_TRACE_PACKET",
+        "GIT_TRACE_PACKFILE",
+        "GIT_TRACE_PACK_ACCESS",
+        "GIT_TRACE_PERFORMANCE",
+        "GIT_TRACE_SETUP",
+        "GIT_TRACE_CURL",
+        "GIT_TRACE_CURL_NO_DATA",
+        "GIT_TRACE_REFS",
+        "GIT_TRACE_SHALLOW",
+        "GIT_TRACE_FSMONITOR",
+    ] {
+        assert!(
+            removed.contains(required),
+            "required child environment removal is missing"
+        );
+    }
+}
+
+fn assert_exact_git_contract(invocations: &[Invocation], bundle: &Path, commit: &str) {
+    let git: Vec<&Invocation> = invocations
+        .iter()
+        .filter(|invocation| invocation.program == Path::new(GIT))
+        .collect();
+    assert!(git.len() == 8, "unexpected Git invocation count");
+
+    let verify_root = git[0].args.get(1).map(PathBuf::from);
+    assert!(
+        git[0].args.len() == 4
+            && git[0].args.first().map(String::as_str) == Some("-C")
+            && verify_root
+                .as_deref()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some("bundle-verify")
+            && git[0].args.get(2).map(String::as_str) == Some("init")
+            && git[0].args.get(3).map(String::as_str) == Some("--initial-branch=main"),
+        "Git init argv contract changed"
+    );
+    let canonical_bundle = fs::canonicalize(bundle).expect("canonical synthetic bundle");
+    for (invocation, operation) in [(git[1], "verify"), (git[2], "list-heads")] {
+        assert!(
+            invocation.args.len() == 5
+                && invocation.args.first().map(String::as_str) == Some("-C")
+                && invocation.args.get(1).map(PathBuf::from) == verify_root
+                && invocation.args.get(2).map(String::as_str) == Some("bundle")
+                && invocation.args.get(3).map(String::as_str) == Some(operation)
+                && invocation.args.get(4).map(PathBuf::from) == Some(canonical_bundle.clone()),
+            "Git bundle argv contract changed"
+        );
+    }
+    assert!(
+        git[3].args.len() == 5
+            && git[3].args.first().map(String::as_str) == Some("clone")
+            && git[3].args.get(1).map(String::as_str) == Some("--no-checkout")
+            && git[3].args.get(2).map(String::as_str) == Some("--no-tags")
+            && git[3].args.get(3).map(PathBuf::from) == Some(canonical_bundle)
+            && git[3]
+                .args
+                .get(4)
+                .map(PathBuf::from)
+                .as_deref()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some("database"),
+        "Git clone argv contract changed"
+    );
+    let database_checkout = git[3].args.get(4).map(PathBuf::from);
+    for invocation in &git[4..] {
+        assert!(
+            invocation.args.first().map(String::as_str) == Some("-C")
+                && invocation.args.get(1).map(PathBuf::from) == database_checkout,
+            "Git checkout inspection root changed"
+        );
+    }
+    assert!(
+        git[4].args.len() == 6
+            && git[4].args.get(2).map(String::as_str) == Some("checkout")
+            && git[4].args.get(3).map(String::as_str) == Some("--detach")
+            && git[4].args.get(4).map(String::as_str) == Some("--force")
+            && git[4].args.get(5).map(String::as_str) == Some(commit),
+        "Git checkout argv contract changed"
+    );
+    assert!(
+        git[5].args.len() == 5
+            && git[5].args.get(2).map(String::as_str) == Some("rev-parse")
+            && git[5].args.get(3).map(String::as_str) == Some("--verify")
+            && git[5].args.get(4).map(String::as_str) == Some("HEAD^{commit}"),
+        "Git HEAD inspection argv contract changed"
+    );
+    assert!(
+        git[6].args.len() == 4
+            && git[6].args.get(2).map(String::as_str) == Some("rev-parse")
+            && git[6].args.get(3).map(String::as_str) == Some("--is-shallow-repository"),
+        "Git shallow inspection argv contract changed"
+    );
+    assert!(
+        git[7].args.len() == 5
+            && git[7].args.get(2).map(String::as_str) == Some("status")
+            && git[7].args.get(3).map(String::as_str) == Some("--porcelain=v1")
+            && git[7].args.get(4).map(String::as_str) == Some("--untracked-files=all"),
+        "Git status argv contract changed"
     );
 }
 
@@ -370,10 +497,16 @@ fn shared_locator_rejections_are_identical_and_scp_style_is_recurring_only() {
 #[test]
 fn recurring_locator_accepts_https_and_ssh_with_userinfo_and_ports() {
     let fixture = Fixture::new("url-shapes");
-    for locator in [
-        "https://synthetic-user@mirror.example.invalid:8443/advisory-db",
-        "ssh://synthetic-user@mirror.example.invalid:2222/rustsec-advisory-db.git",
-    ] {
+    let locators = [
+        "https://synthetic-user@mirror.example.invalid:8443/advisory-db".to_owned(),
+        "ssh://synthetic-user@mirror.example.invalid:2222/rustsec-advisory-db.git".to_owned(),
+        format!("https://{}.{}.{}.{}:8443/advisory-db", 192, 0, 2, 1),
+        format!(
+            "ssh://[{}:{}::{}]:2222/rustsec-advisory-db.git",
+            "2001", "db8", 1
+        ),
+    ];
+    for locator in &locators {
         let mut request = fixture.request();
         request.locator = locator;
         let witness = run_advisory_audit(
@@ -479,6 +612,57 @@ fn bundle_heads_must_be_exact_and_cleanup_still_runs() {
     assert_no_audit_temporary_state(&fixture.checkout);
 }
 
+#[test]
+fn each_bundle_head_must_name_the_signed_commit() {
+    for wrong_head in [WrongHead::Head, WrongHead::Main] {
+        let fixture = Fixture::new("head-commit");
+        let runner = WrongHeadCommitRunner {
+            inner: RecordingRunner::new(&fixture.commit),
+            wrong_head,
+        };
+        assert_eq!(
+            run_advisory_audit(
+                &fixture.request(),
+                &runner,
+                &FixedClock::new(NOW).expect("clock"),
+            )
+            .expect_err("bundle head at the wrong commit must fail"),
+            AuditError::BundleHeadsMismatch
+        );
+        assert_no_audit_temporary_state(&fixture.checkout);
+    }
+}
+
+#[test]
+fn recursive_inventory_detects_new_files_in_every_preserved_scope() {
+    for scope in [
+        "packet",
+        "source",
+        "ambient",
+        "releases",
+        "candidate",
+        "evidence",
+    ] {
+        let fixture = Fixture::new("inventory-addition");
+        let before = preserved_inventory(&fixture);
+        let root = match scope {
+            "packet" => fixture.packet_root.clone(),
+            "source" => fixture.checkout.clone(),
+            "ambient" => fixture.ambient_cargo_home.clone(),
+            "releases" => fixture.checkout.join("Releases"),
+            "candidate" => fixture.checkout.join("target/release-candidate"),
+            "evidence" => fixture.checkout.join("target/release-evidence"),
+            _ => unreachable!("closed synthetic inventory scope"),
+        };
+        fs::write(root.join("synthetic-added-file"), b"synthetic added bytes")
+            .expect("write recursive inventory mutation");
+        assert!(
+            preserved_inventory(&fixture) != before,
+            "recursive inventory missed an added file"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn cleanup_failure_suppresses_an_otherwise_successful_witness() {
@@ -510,6 +694,41 @@ fn cleanup_failure_suppresses_an_otherwise_successful_witness() {
     permissions.set_mode(0o700);
     fs::set_permissions(&run_root, permissions).expect("restore failed-run permissions");
     fs::remove_dir_all(&run_root).expect("remove deliberately failed audit run");
+    assert_no_audit_temporary_state(&fixture.checkout);
+}
+
+#[test]
+fn cargo_lock_change_after_the_check_suppresses_the_witness() {
+    let fixture = Fixture::new("lock-change");
+    let runner = LockMutationRunner {
+        inner: RecordingRunner::new(&fixture.commit),
+        cargo_lock: fixture.checkout.join("Cargo.lock"),
+    };
+    assert_eq!(
+        run_advisory_audit(
+            &fixture.request(),
+            &runner,
+            &FixedClock::new(NOW).expect("clock"),
+        )
+        .expect_err("changed lockfile must suppress success"),
+        AuditError::CargoLockChanged
+    );
+    assert_no_audit_temporary_state(&fixture.checkout);
+}
+
+#[test]
+fn git_launch_failure_is_not_reported_as_a_bundle_failure() {
+    let fixture = Fixture::new("git-launch");
+    let runner = GitLaunchFailureRunner(RecordingRunner::new(&fixture.commit));
+    assert_eq!(
+        run_advisory_audit(
+            &fixture.request(),
+            &runner,
+            &FixedClock::new(NOW).expect("clock"),
+        )
+        .expect_err("unlaunchable Git must fail its preflight"),
+        AuditError::GitUnavailable
+    );
     assert_no_audit_temporary_state(&fixture.checkout);
 }
 
@@ -558,37 +777,79 @@ impl CommandRunner for CleanupFailureRunner {
     }
 }
 
+struct LockMutationRunner {
+    inner: RecordingRunner,
+    cargo_lock: PathBuf,
+}
+
+impl CommandRunner for LockMutationRunner {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        let output = self.inner.run(program, args, stdin, env)?;
+        if program == Path::new(CARGO_DENY) && args.iter().any(|arg| arg == "advisories") {
+            fs::write(
+                &self.cargo_lock,
+                b"# synthetic concurrent lockfile change\n",
+            )
+            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        }
+        Ok(output)
+    }
+}
+
+struct GitLaunchFailureRunner(RecordingRunner);
+
+impl CommandRunner for GitLaunchFailureRunner {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        if program == Path::new(GIT) {
+            return Err(CommandRunnerError::LaunchFailed);
+        }
+        self.0.run(program, args, stdin, env)
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn cli_never_forwards_child_output_to_either_stream() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let fixture = Fixture::new("cli-redaction");
     let tools = fixture._root.path().join("synthetic-tools");
     fs::create_dir(&tools).expect("create synthetic tool directory");
+    let child_env_witness = fixture._root.path().join("child-env-witness");
     for (name, body) in [
         (
             "minisign",
             format!(
-                "#!/bin/sh\nif [ \"$1\" = -v ]; then printf 'minisign 0.12\\n'; printf '%s\\n' {CANARY} >&2; exit 0; fi\nprintf '%s\\n' {CANARY} >&2\nexit 1\n"
+                "#!/bin/sh\n{}if [ \"$1\" = -v ]; then printf 'minisign 0.12\\n'; printf '%s\\n' {CANARY} >&2; exit 0; fi\nprintf '%s\\n' {CANARY} >&2\nexit 1\n",
+                child_environment_guard()
             ),
         ),
         (
             "cargo-deny",
             format!(
-                "#!/bin/sh\nprintf '%s\\n' {CANARY} >&2\nif [ \"$1\" = --version ]; then printf 'cargo-deny 0.20.2\\n'; exit 0; fi\nexit 1\n"
+                "#!/bin/sh\n{}printf '%s\\n' {CANARY} >&2\nif [ \"$1\" = --version ]; then printf 'cargo-deny 0.20.2\\n'; exit 0; fi\nexit 1\n",
+                child_environment_guard()
             ),
         ),
         (
             "git",
-            format!("#!/bin/sh\nprintf '%s\\n' {CANARY} >&2\nexit 1\n"),
+            format!(
+                "#!/bin/sh\n{}printf '%s\\n' {CANARY} >&2\nexit 1\n",
+                child_environment_guard()
+            ),
         ),
     ] {
-        let path = tools.join(name);
-        fs::write(&path, body).expect("write synthetic child tool");
-        let mut permissions = fs::metadata(&path).expect("tool metadata").permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(path, permissions).expect("make synthetic tool executable");
+        write_executable_tool(&tools.join(name), &body);
     }
     let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .arg("advisory-audit")
@@ -597,6 +858,7 @@ fn cli_never_forwards_child_output_to_either_stream() {
         .env("SOLSTONE_ADVISORY_RECEIPT", &fixture.receipt)
         .env("SOLSTONE_ADVISORY_MIRROR_PUB", &fixture.public_key)
         .env("SOLSTONE_ADVISORY_BUNDLE", &fixture.bundle)
+        .env("SOLSTONE_TEST_CHILD_ENV_WITNESS", &child_env_witness)
         .output()
         .expect("run advisory-audit CLI");
     assert!(!output.status.success(), "wrong production key must fail");
@@ -606,6 +868,61 @@ fn cli_never_forwards_child_output_to_either_stream() {
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains(CANARY));
     assert!(!String::from_utf8_lossy(&output.stderr).contains(CANARY));
+    assert!(
+        !child_env_witness.exists(),
+        "operator inputs must be removed from every child environment"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_never_forwards_child_stdout_canaries() {
+    let fixture = Fixture::new("cli-stdout-redaction");
+    let tools = fixture._root.path().join("synthetic-stdout-tools");
+    fs::create_dir(&tools).expect("create synthetic stdout tool directory");
+    write_executable_tool(
+        &tools.join("minisign"),
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = -v ]; then printf 'minisign 0.12\\n%s\\n' {CANARY}; exit 0; fi\nexit 1\n"
+        ),
+    );
+    for name in ["cargo-deny", "git"] {
+        write_executable_tool(&tools.join(name), "#!/bin/sh\nexit 1\n");
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("advisory-audit")
+        .env("PATH", &tools)
+        .env("SOLSTONE_ADVISORY_MIRROR_LOCATOR", LOCATOR)
+        .env("SOLSTONE_ADVISORY_RECEIPT", &fixture.receipt)
+        .env("SOLSTONE_ADVISORY_MIRROR_PUB", &fixture.public_key)
+        .env("SOLSTONE_ADVISORY_BUNDLE", &fixture.bundle)
+        .output()
+        .expect("run advisory-audit stdout-redaction CLI");
+    assert!(
+        !output.status.success(),
+        "canary version output must fail safely"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "failed audit stdout must be empty"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(CANARY));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(CANARY));
+}
+
+#[cfg(unix)]
+fn write_executable_tool(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fs::write(path, body).expect("write synthetic child tool");
+    let mut permissions = fs::metadata(path).expect("tool metadata").permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions).expect("make synthetic tool executable");
+}
+
+#[cfg(unix)]
+fn child_environment_guard() -> &'static str {
+    "if [ \"${SOLSTONE_ADVISORY_MIRROR_LOCATOR+x}\" = x ] || [ \"${SOLSTONE_ADVISORY_RECEIPT+x}\" = x ] || [ \"${SOLSTONE_ADVISORY_MIRROR_PUB+x}\" = x ] || [ \"${SOLSTONE_ADVISORY_BUNDLE+x}\" = x ]; then printf 'inherited\\n' >>\"$SOLSTONE_TEST_CHILD_ENV_WITNESS\"; fi\n"
 }
 
 struct WrongHeadsRunner(RecordingRunner);
@@ -628,24 +945,116 @@ impl CommandRunner for WrongHeadsRunner {
     }
 }
 
-fn preserved_inventory(fixture: &Fixture) -> Vec<Vec<u8>> {
-    [
-        fixture.receipt.clone(),
-        fixture.receipt.with_extension("json.minisig"),
-        fixture.public_key.clone(),
-        fixture.bundle.clone(),
-        fixture.checkout.join("Cargo.toml"),
-        fixture.checkout.join("Cargo.lock"),
-        fixture.checkout.join("deny.toml"),
-        fixture.checkout.join("src/lib.rs"),
-        fixture.ambient_cargo_home.join("sentinel"),
-        fixture.checkout.join("Releases/sentinel"),
-        fixture.checkout.join("target/release-candidate/sentinel"),
-        fixture.checkout.join("target/release-evidence/sentinel"),
-    ]
-    .iter()
-    .map(|path| fs::read(path).expect("read preserved input"))
-    .collect()
+#[derive(Clone, Copy)]
+enum WrongHead {
+    Head,
+    Main,
+}
+
+struct WrongHeadCommitRunner {
+    inner: RecordingRunner,
+    wrong_head: WrongHead,
+}
+
+impl CommandRunner for WrongHeadCommitRunner {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        let mut output = self.inner.run(program, args, stdin, env)?;
+        if args.iter().any(|arg| arg == "list-heads") {
+            let wrong_commit = "fedcba9876543210fedcba9876543210fedcba98";
+            output.stdout = match self.wrong_head {
+                WrongHead::Head => format!(
+                    "{wrong_commit} HEAD\n{} refs/heads/main\n",
+                    self.inner.commit
+                ),
+                WrongHead::Main => format!(
+                    "{} HEAD\n{wrong_commit} refs/heads/main\n",
+                    self.inner.commit
+                ),
+            }
+            .into_bytes();
+        }
+        Ok(output)
+    }
+}
+
+#[derive(Eq, PartialEq)]
+struct InventoryEntry {
+    scope: &'static str,
+    relative: PathBuf,
+    kind: &'static str,
+    bytes: Vec<u8>,
+}
+
+fn preserved_inventory(fixture: &Fixture) -> Vec<InventoryEntry> {
+    let mut entries = Vec::new();
+    let releases = fixture.checkout.join("Releases");
+    let release_candidate = fixture.checkout.join("target/release-candidate");
+    let release_evidence = fixture.checkout.join("target/release-evidence");
+    for (scope, root) in [
+        ("packet-inputs", fixture.packet_root.as_path()),
+        ("source-tree", fixture.checkout.as_path()),
+        ("ambient-cargo-home", fixture.ambient_cargo_home.as_path()),
+        ("releases", releases.as_path()),
+        ("release-candidate", release_candidate.as_path()),
+        ("release-evidence", release_evidence.as_path()),
+    ] {
+        collect_inventory(scope, root, Path::new(""), &mut entries);
+    }
+    entries
+        .sort_by(|left, right| (left.scope, &left.relative).cmp(&(right.scope, &right.relative)));
+    entries
+}
+
+fn collect_inventory(
+    scope: &'static str,
+    root: &Path,
+    relative: &Path,
+    entries: &mut Vec<InventoryEntry>,
+) {
+    let path = root.join(relative);
+    let metadata = fs::symlink_metadata(&path).expect("read recursive inventory metadata");
+    let file_type = metadata.file_type();
+    let (kind, bytes) = if file_type.is_dir() {
+        ("directory", Vec::new())
+    } else if file_type.is_file() {
+        (
+            "file",
+            fs::read(&path).expect("read recursive inventory file"),
+        )
+    } else if file_type.is_symlink() {
+        (
+            "symlink",
+            fs::read_link(&path)
+                .expect("read recursive inventory link")
+                .to_string_lossy()
+                .into_owned()
+                .into_bytes(),
+        )
+    } else {
+        ("other", Vec::new())
+    };
+    entries.push(InventoryEntry {
+        scope,
+        relative: relative.to_path_buf(),
+        kind,
+        bytes,
+    });
+    if file_type.is_dir() {
+        let mut children: Vec<PathBuf> = fs::read_dir(&path)
+            .expect("read recursive inventory directory")
+            .map(|entry| relative.join(entry.expect("read recursive inventory entry").file_name()))
+            .collect();
+        children.sort();
+        for child in children {
+            collect_inventory(scope, root, &child, entries);
+        }
+    }
 }
 
 fn assert_no_audit_temporary_state(checkout: &Path) {
@@ -665,9 +1074,14 @@ fn real_tool_derived_name_matches_cargo_deny() {
     let minisign = required_test_tool("SOLSTONE_TEST_MINISIGN");
     let cargo_deny = required_test_tool("SOLSTONE_TEST_CARGO_DENY");
     let fixture = RealFixture::new(&git, &minisign);
-    let runner = RemovedEnvironmentProcessCommandRunner::new(
-        &xtask::advisory_audit::ADVISORY_AUDIT_REMOVED_ENV,
-    );
+    let trace_sink = required_test_path("SOLSTONE_TEST_GIT_TRACE_SINK");
+    fs::write(&trace_sink, b"").expect("reset synthetic Git trace sink");
+    let runner = CargoHomeRunner {
+        inner: RemovedEnvironmentProcessCommandRunner::new(
+            &xtask::advisory_audit::ADVISORY_AUDIT_REMOVED_ENV,
+        ),
+        cargo_home: fixture.ambient_cargo_home.clone(),
+    };
     let request = AdvisoryAuditRequest {
         checkout_root: &fixture.checkout,
         locator: LOCATOR,
@@ -692,6 +1106,13 @@ fn real_tool_derived_name_matches_cargo_deny() {
             .verdict,
         "pass"
     );
+    assert!(
+        fs::read(&trace_sink)
+            .expect("read synthetic Git trace sink")
+            .is_empty(),
+        "audit child wrote to the removed Git trace sink"
+    );
+    fixture.assert_decoy_database_rejects(&cargo_deny);
     let mut thin_request = request.clone();
     thin_request.bundle_path = &fixture.thin_bundle;
     assert_eq!(
@@ -704,6 +1125,34 @@ fn real_tool_derived_name_matches_cargo_deny() {
         AuditError::BundleVerificationFailed
     );
     fixture.assert_wrong_database_name_fails(&git, &cargo_deny);
+    assert!(
+        fs::read(trace_sink)
+            .expect("read final synthetic Git trace sink")
+            .is_empty(),
+        "audit child wrote to the removed Git trace sink"
+    );
+}
+
+struct CargoHomeRunner<R> {
+    inner: R,
+    cargo_home: PathBuf,
+}
+
+impl<R: CommandRunner> CommandRunner for CargoHomeRunner<R> {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        let mut child_env = env.cloned().unwrap_or_default();
+        child_env.insert(
+            "CARGO_HOME".to_owned(),
+            self.cargo_home.to_string_lossy().into_owned(),
+        );
+        self.inner.run(program, args, stdin, Some(&child_env))
+    }
 }
 
 struct RealFixture {
@@ -716,6 +1165,7 @@ struct RealFixture {
     public_key_sha256: String,
     public_key_id: String,
     repository: PathBuf,
+    ambient_cargo_home: PathBuf,
 }
 
 impl RealFixture {
@@ -769,6 +1219,35 @@ impl RealFixture {
                 "synthetic advisory database",
             ],
         );
+
+        let ambient_cargo_home = root.path().join("ambient-cargo-home");
+        let ambient_database_root = ambient_cargo_home.join("advisory-dbs");
+        let decoy_repository = ambient_database_root.join(cargo_deny_database_name(LOCATOR));
+        fs::create_dir_all(&decoy_repository).expect("create synthetic decoy database");
+        command_ok(git, &decoy_repository, &["init", "-b", "main"]);
+        command_ok(
+            git,
+            &decoy_repository,
+            &["config", "user.email", "synthetic@example.invalid"],
+        );
+        command_ok(
+            git,
+            &decoy_repository,
+            &["config", "user.name", "synthetic advisory decoy"],
+        );
+        fs::create_dir_all(decoy_repository.join("crates/synthetic"))
+            .expect("create synthetic decoy advisory crates");
+        fs::write(
+            decoy_repository.join("crates/synthetic/RUSTSEC-2099-0002.md"),
+            b"# Synthetic malformed decoy advisory\n\n```toml\n[advisory]\nid = \"RUSTSEC-2099-0002\"\npackage = \"synthetic-advisory-consumer\"\ndate = \"not-a-date\"\nurl = \"https://decoy-advisory.example.invalid/synthetic\"\n\n[versions]\npatched = [\">= 1.0.0\"]\n```\n",
+        )
+        .expect("write synthetic decoy advisory");
+        command_ok(git, &decoy_repository, &["add", "--", "."]);
+        command_ok(
+            git,
+            &decoy_repository,
+            &["commit", "--no-gpg-sign", "-m", "synthetic decoy database"],
+        );
         let commit = command_stdout(git, &repository, &["rev-parse", "HEAD"]);
         let bundle = root.path().join("synthetic-advisory.bundle");
         command_ok(
@@ -813,19 +1292,22 @@ impl RealFixture {
             .expect("run minisign keygen");
         assert!(keygen.status.success(), "synthetic minisign keygen failed");
         let public_key_bytes = fs::read(&public_key).expect("read generated public key");
-        let public_key_id = String::from_utf8_lossy(&public_key_bytes)
+        let public_key_text = String::from_utf8_lossy(&public_key_bytes);
+        let public_key_payload = public_key_text
             .lines()
-            .find_map(|line| {
-                line.strip_prefix("untrusted comment: minisign public key ")
-                    .filter(|value| {
-                        value.len() == 16
-                            && value
-                                .bytes()
-                                .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
-                    })
-            })
-            .expect("generated minisign key ID")
-            .to_owned();
+            .nth(1)
+            .expect("generated minisign public-key payload");
+        let decoded_public_key = base64::engine::general_purpose::STANDARD
+            .decode(public_key_payload)
+            .expect("decode generated minisign public key");
+        let public_key_id = format!(
+            "{:016X}",
+            u64::from_le_bytes(
+                decoded_public_key[2..10]
+                    .try_into()
+                    .expect("generated minisign key-ID bytes"),
+            )
+        );
         let signature = receipt.with_extension("json.minisig");
         let sign = Command::new(minisign)
             .arg("-S")
@@ -850,7 +1332,37 @@ impl RealFixture {
             public_key_sha256: format!("{:x}", Sha256::digest(&public_key_bytes)),
             public_key_id,
             repository,
+            ambient_cargo_home,
         }
+    }
+
+    fn assert_decoy_database_rejects(&self, cargo_deny: &Path) {
+        let config = self._root.path().join("decoy-deny.toml");
+        let bytes = xtask::release_advisory::render_advisory_config(
+            &fs::read(self.checkout.join("deny.toml")).expect("read policy"),
+            &self.ambient_cargo_home.join("advisory-dbs"),
+            LOCATOR,
+        )
+        .expect("render decoy config");
+        fs::write(&config, bytes).expect("write decoy config");
+        let mut command = Command::new(cargo_deny);
+        scrub_setup_git_environment(&mut command);
+        let output = command
+            .arg("--manifest-path")
+            .arg(self.checkout.join("Cargo.toml"))
+            .arg("--locked")
+            .arg("--offline")
+            .arg("--config")
+            .arg(config)
+            .args(["check", "advisories"])
+            .env("CARGO_HOME", &self.ambient_cargo_home)
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+            .expect("run decoy cargo-deny check");
+        assert!(
+            !output.status.success(),
+            "ambient decoy database must produce a rejecting verdict"
+        );
     }
 
     fn assert_wrong_database_name_fails(&self, git: &Path, cargo_deny: &Path) {
@@ -876,7 +1388,9 @@ impl RealFixture {
         )
         .expect("render wrong-name config");
         fs::write(&config, bytes).expect("write wrong-name config");
-        let output = Command::new(cargo_deny)
+        let mut command = Command::new(cargo_deny);
+        scrub_setup_git_environment(&mut command);
+        let output = command
             .arg("--manifest-path")
             .arg(self.checkout.join("Cargo.toml"))
             .arg("--locked")
@@ -928,6 +1442,24 @@ fn required_test_tool(name: &str) -> PathBuf {
         "test tool must be absolute"
     );
     path
+}
+
+fn required_test_path(name: &str) -> PathBuf {
+    let value = std::env::var_os(name).expect("real-tool script exports test path");
+    let path = PathBuf::from(value);
+    assert!(path.is_absolute(), "test path must be absolute");
+    path
+}
+
+fn cargo_deny_database_name(locator: &str) -> String {
+    let first = Url::parse(locator).expect("synthetic locator parses");
+    let second = Url::parse(&first.as_str().to_lowercase()).expect("lowercase locator parses");
+    let last = second
+        .path_segments()
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
+        .expect("synthetic locator has a final segment");
+    let hash = XxHash64::oneshot(0xca80de71, second.as_str().as_bytes());
+    format!("{last}-{hash:016x}")
 }
 
 fn command_ok(program: &Path, root: &Path, args: &[&str]) {
