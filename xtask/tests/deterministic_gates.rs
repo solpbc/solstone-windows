@@ -56,8 +56,6 @@ fn every_gated_cargo_resolution_is_locked() {
                     index + 1
                 );
             }
-            // Advisory database refresh does not resolve the project dependency graph.
-            "deny" if line.contains(" deny fetch db") => {}
             "deny" => {
                 make_resolving += 1;
                 assert!(
@@ -158,12 +156,10 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
     assert!(makefile
         .lines()
         .any(|line| line == "ci: preflight-toolchain preflight-cargo-deny"));
-    assert!(makefile
-        .lines()
-        .any(|line| line == "audit: preflight-toolchain preflight-cargo-deny"));
-    assert!(makefile.contains(
-        "ERROR: RustSec advisory database refresh failed; no current advisory result was produced."
-    ));
+    assert!(makefile.lines().any(|line| line == "audit:"));
+    assert!(makefile.contains("\n\t@sh scripts/preflight-toolchain.sh\n"));
+    assert!(makefile.contains("\n\t@CARGO=\"$(CARGO)\" sh scripts/preflight-cargo-deny.sh\n"));
+    assert!(!makefile.contains("RustSec advisory database refresh failed"));
 
     assert!(makefile.contains(
         "sync-win-host: require-win-remote-host\n\t@WIN_REMOTE_HOST=\"$(WIN_REMOTE_HOST)\" GIT=\"$(GIT)\" SCP=\"$(SCP)\" sh scripts/sync-win-host.sh"
@@ -477,10 +473,7 @@ fn cargo_graph_invocation(line: &str, path: &Path) -> bool {
         return false;
     }
     let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("echo ")
-        || lower.contains(" deny --version")
-        || lower.contains(" deny fetch db")
-    {
+    if lower.starts_with("echo ") || lower.contains(" deny --version") {
         return false;
     }
     let cargoish = lower.contains("cargo ")

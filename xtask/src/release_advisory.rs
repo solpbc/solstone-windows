@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use base64::Engine as _;
 use semver::Version;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -26,6 +27,7 @@ use crate::release_selection::SelectedAction;
 pub const MIRROR_COHORT_ID: &str = "sol-controlled-rustsec-mirror-v1";
 pub const MIRROR_MINISIGN_PUBKEY_SHA256: &str =
     "c9fb713fe57791afbdebddde7b334e950ce1efcc167d49daf4cc1cbd930bb122";
+pub const MIRROR_MINISIGN_PUBKEY_ID: &str = "5FCC81CD3DE12315";
 pub const ADVISORY_DB_RELATIVE: &str = "target/release-advisory-db";
 const MAX_SNAPSHOT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_RECEIPT_FUTURE: Duration = Duration::from_secs(5 * 60);
@@ -38,13 +40,21 @@ pub struct MirrorPacketInputs<'a> {
     pub public_key_path: &'a Path,
     pub minisign_program: &'a Path,
     pub expected_public_key_sha256: &'a str,
+    pub expected_public_key_id: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct FreshnessFields {
-    synced_commit: String,
-    utc: UtcTimestamp,
-    max_age: u64,
+pub(crate) struct VerifiedMirrorFreshness {
+    pub(crate) synced_commit: String,
+    pub(crate) utc: UtcTimestamp,
+    pub(crate) max_age: u64,
+}
+
+pub(crate) struct AdvisoryVerificationScratch<'a> {
+    pub(crate) containment_root: &'a Path,
+    pub(crate) parent_relative: &'a str,
+    pub(crate) root_label: &'a str,
+    pub(crate) parent_label: &'a str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,6 +93,7 @@ pub enum AdvisoryError {
     FreshnessSignatureMissing,
     MirrorPublicKeyMissing,
     MirrorPublicKeyPinMismatch,
+    MirrorPublicKeyIdMismatch,
     FreshnessVerificationScratch,
     MinisignInvocationFailed,
     FreshnessSignatureInvalid,
@@ -156,6 +167,10 @@ impl fmt::Display for AdvisoryError {
             Self::MirrorPublicKeyPinMismatch => write!(
                 formatter,
                 "advisory mirror public key does not match the pinned mirror identity; restore the approved public-key file and retry"
+            ),
+            Self::MirrorPublicKeyIdMismatch => write!(
+                formatter,
+                "advisory mirror public key does not match the pinned key ID; restore the approved public-key file and retry"
             ),
             Self::FreshnessVerificationScratch => write!(
                 formatter,
@@ -399,7 +414,8 @@ pub fn materialize_advisory_config(
         UnixModePolicy::AllowExecute,
     )
     .map_err(|_| AdvisoryError::CheckoutContainment)?;
-    let database_root = verified_isolated_database_root(&checkout)?;
+    let isolated_database_root = checkout.path().join(ADVISORY_DB_RELATIVE);
+    let database_root = verified_isolated_database_root(&checkout, &isolated_database_root)?;
     let bytes = render_checkout_advisory_config(&checkout, &database_root, locator)?;
 
     let transaction_relative = format!("target/release-finalizer/{version}");
@@ -456,13 +472,7 @@ pub fn materialize_advisory_config_at(
         UnixModePolicy::AllowExecute,
     )
     .map_err(|_| AdvisoryError::CheckoutContainment)?;
-    let database_root = verified_isolated_database_root(&checkout)?;
-    if database_root
-        != fs::canonicalize(isolated_database_root)
-            .map_err(|_| AdvisoryError::DatabaseRootInvalid)?
-    {
-        return Err(AdvisoryError::DatabaseRootInvalid);
-    }
+    let database_root = verified_isolated_database_root(&checkout, isolated_database_root)?;
 
     let output_parent = output_path
         .parent()
@@ -495,11 +505,21 @@ pub fn materialize_advisory_config_at(
     })
 }
 
-fn verified_isolated_database_root(checkout: &ContainedRoot) -> Result<PathBuf, AdvisoryError> {
+pub(crate) fn verified_isolated_database_root(
+    checkout: &ContainedRoot,
+    isolated_database_root: &Path,
+) -> Result<PathBuf, AdvisoryError> {
+    let relative = isolated_database_root
+        .strip_prefix(checkout.path())
+        .or_else(|_| isolated_database_root.strip_prefix(checkout.canonical_path()))
+        .map_err(|_| AdvisoryError::DatabaseRootInvalid)?;
+    let relative = relative
+        .to_str()
+        .ok_or(AdvisoryError::DatabaseRootInvalid)?;
     let database = verify_contained_path(
         checkout.path(),
         checkout.canonical_path(),
-        ADVISORY_DB_RELATIVE,
+        relative,
         "release checkout",
         "isolated advisory database",
     )
@@ -624,32 +644,28 @@ fn locator_final_path(locator: &str) -> Option<&str> {
     path.rsplit('/').next()
 }
 
-fn verify_mirror_freshness<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
-    checkout_root: &Path,
-    version: &str,
+pub(crate) fn verify_mirror_freshness<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
+    isolated_database_root: &Path,
+    scratch: &AdvisoryVerificationScratch<'_>,
     mirror: &MirrorPacketInputs<'_>,
     runner: &R,
     clock: &C,
-) -> Result<String, AdvisoryError> {
-    let parsed = Version::parse(version).map_err(|_| AdvisoryError::InvalidVersion)?;
-    if parsed.to_string() != version {
-        return Err(AdvisoryError::InvalidVersion);
-    }
+) -> Result<VerifiedMirrorFreshness, AdvisoryError> {
     let signature_path = freshness_signature_path(mirror.receipt_path);
     let body = read_packet_file(
-        checkout_root,
+        isolated_database_root,
         mirror.receipt_path,
         "advisory mirror freshness receipt",
         AdvisoryError::FreshnessReceiptMissing,
     )?;
     let signature = read_packet_file(
-        checkout_root,
+        isolated_database_root,
         &signature_path,
         "advisory mirror freshness signature",
         AdvisoryError::FreshnessSignatureMissing,
     )?;
     let public_key = read_packet_file(
-        checkout_root,
+        isolated_database_root,
         mirror.public_key_path,
         "advisory mirror public key",
         AdvisoryError::MirrorPublicKeyMissing,
@@ -659,10 +675,21 @@ fn verify_mirror_freshness<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     {
         return Err(AdvisoryError::MirrorPublicKeyPinMismatch);
     }
+    if let Some(expected_key_id) = mirror.expected_public_key_id {
+        let key_id =
+            minisign_public_key_id(&public_key).ok_or(AdvisoryError::MirrorPublicKeyIdMismatch)?;
+        if expected_key_id.len() != 16
+            || !expected_key_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+            || key_id != expected_key_id
+        {
+            return Err(AdvisoryError::MirrorPublicKeyIdMismatch);
+        }
+    }
 
     verify_freshness_signature(
-        checkout_root,
-        version,
+        scratch,
         mirror.minisign_program,
         &public_key,
         &body,
@@ -676,11 +703,29 @@ fn verify_mirror_freshness<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         return Err(AdvisoryError::FreshnessBodyMismatch);
     }
     validate_freshness_time(&fields, clock)?;
-    Ok(fields.synced_commit)
+    Ok(fields)
 }
 
-fn read_packet_file(
-    checkout_root: &Path,
+fn minisign_public_key_id(public_key: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(public_key).ok()?;
+    let mut lines = text.lines();
+    lines.next()?.strip_prefix("untrusted comment: ")?;
+    let payload = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .ok()?;
+    if decoded.len() != 42 || decoded.get(..2) != Some(b"Ed") {
+        return None;
+    }
+    let key_id = u64::from_le_bytes(decoded.get(2..10)?.try_into().ok()?);
+    Some(format!("{key_id:016X}"))
+}
+
+pub(crate) fn read_packet_file(
+    isolated_database_root: &Path,
     path: &Path,
     label: &str,
     error: AdvisoryError,
@@ -688,8 +733,8 @@ fn read_packet_file(
     artifact_fs::verify_regular_file(path, label, UnixModePolicy::StrictNoExecute)
         .map_err(|_| error.clone())?;
     let canonical = fs::canonicalize(path).map_err(|_| error.clone())?;
-    let database_root = fs::canonicalize(checkout_root.join(ADVISORY_DB_RELATIVE))
-        .map_err(|_| AdvisoryError::DatabaseRootInvalid)?;
+    let database_root =
+        fs::canonicalize(isolated_database_root).map_err(|_| AdvisoryError::DatabaseRootInvalid)?;
     if canonical.starts_with(database_root) {
         return Err(error);
     }
@@ -697,33 +742,33 @@ fn read_packet_file(
 }
 
 fn verify_freshness_signature<R: CommandRunner + ?Sized>(
-    checkout_root: &Path,
-    version: &str,
+    scratch_plan: &AdvisoryVerificationScratch<'_>,
     minisign_program: &Path,
     public_key: &[u8],
     body: &[u8],
     signature: &[u8],
     runner: &R,
 ) -> Result<(), AdvisoryError> {
-    let checkout = ContainedRoot::new(
-        checkout_root,
-        "release checkout",
+    let containment_root = ContainedRoot::new(
+        scratch_plan.containment_root,
+        scratch_plan.root_label,
         UnixModePolicy::AllowExecute,
     )
     .map_err(|_| AdvisoryError::CheckoutContainment)?;
-    let transaction_relative = format!("target/release-finalizer/{version}");
-    let transaction = verify_contained_path(
-        checkout.path(),
-        checkout.canonical_path(),
-        &transaction_relative,
-        "release checkout",
-        "release finalizer transaction",
+    let scratch_parent = verify_contained_path(
+        containment_root.path(),
+        containment_root.canonical_path(),
+        scratch_plan.parent_relative,
+        scratch_plan.root_label,
+        scratch_plan.parent_label,
     )
     .map_err(|_| AdvisoryError::FreshnessVerificationScratch)?;
-    if !transaction.metadata().file_type().is_dir() {
+    if !scratch_parent.metadata().file_type().is_dir() {
         return Err(AdvisoryError::FreshnessVerificationScratch);
     }
-    let scratch = transaction.canonical_path().join(".advisory-mirror-verify");
+    let scratch = scratch_parent
+        .canonical_path()
+        .join(".advisory-mirror-verify");
     fs::create_dir(&scratch).map_err(|_| AdvisoryError::FreshnessVerificationScratch)?;
     let result = (|| {
         let body_path = scratch.join("freshness.json");
@@ -786,7 +831,7 @@ fn trusted_comment(signature: &[u8]) -> Result<&str, AdvisoryError> {
 
 fn parse_freshness_trusted_comment(
     trusted_comment: &str,
-) -> Result<FreshnessFields, AdvisoryError> {
+) -> Result<VerifiedMirrorFreshness, AdvisoryError> {
     let fields: Vec<&str> = trusted_comment.split(' ').collect();
     if fields.len() != 4 || fields.iter().any(|field| field.is_empty()) {
         return Err(AdvisoryError::FreshnessTrustedCommentFields);
@@ -804,7 +849,7 @@ fn parse_freshness_trusted_comment(
     if max_age != "86400" {
         return Err(AdvisoryError::FreshnessMaxAgeInvalid);
     }
-    let parsed = FreshnessFields {
+    let parsed = VerifiedMirrorFreshness {
         synced_commit: synced_commit.to_owned(),
         utc,
         max_age: REQUIRED_RECEIPT_MAX_AGE,
@@ -829,7 +874,7 @@ fn required_comment_value<'a>(field: &'a str, prefix: &str) -> Result<&'a str, A
 }
 
 fn validate_freshness_time<C: Clock + ?Sized>(
-    fields: &FreshnessFields,
+    fields: &VerifiedMirrorFreshness,
     clock: &C,
 ) -> Result<(), AdvisoryError> {
     let now = clock.now().map_err(|_| AdvisoryError::ClockUnavailable)?;
@@ -1064,7 +1109,20 @@ pub fn run_advisory_check<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     runner: &R,
     clock: &C,
 ) -> Result<AdvisoryProvenance, AdvisoryError> {
-    let synced_commit = verify_mirror_freshness(checkout_root, version, mirror, runner, clock)?;
+    let parsed = Version::parse(version).map_err(|_| AdvisoryError::InvalidVersion)?;
+    if parsed.to_string() != version {
+        return Err(AdvisoryError::InvalidVersion);
+    }
+    let isolated_database_root = checkout_root.join(ADVISORY_DB_RELATIVE);
+    let transaction_relative = format!("target/release-finalizer/{version}");
+    let scratch = AdvisoryVerificationScratch {
+        containment_root: checkout_root,
+        parent_relative: &transaction_relative,
+        root_label: "release checkout",
+        parent_label: "release finalizer transaction",
+    };
+    let freshness =
+        verify_mirror_freshness(&isolated_database_root, &scratch, mirror, runner, clock)?;
     let config = materialize_advisory_config(checkout_root, version, mirror.locator)?;
     let snapshot = AdvisorySnapshot::inspect(
         checkout_root,
@@ -1074,7 +1132,7 @@ pub fn run_advisory_check<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         runner,
         clock,
     )?;
-    if snapshot.commit != synced_commit {
+    if snapshot.commit != freshness.synced_commit {
         return Err(AdvisoryError::FreshnessCommitMismatch);
     }
     let expected_argv = [

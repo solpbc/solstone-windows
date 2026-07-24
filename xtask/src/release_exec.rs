@@ -18,6 +18,30 @@ pub struct CommandOutput {
     pub stderr: Vec<u8>,
 }
 
+pub(crate) fn minisign_version_is_supported(output: &CommandOutput) -> bool {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let observed = if stdout.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    output.status == 0 && matches!(observed, "minisign 0.11" | "minisign 0.12")
+}
+
+pub fn resolve_path_program(name: &str) -> Option<PathBuf> {
+    let search = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&search) {
+        for candidate_name in [name.to_owned(), format!("{name}.exe")] {
+            let candidate = directory.join(candidate_name);
+            if candidate.is_file() {
+                return std::fs::canonicalize(candidate).ok();
+            }
+        }
+    }
+    None
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandRunnerError {
     ProgramNotAbsolute,
@@ -439,6 +463,26 @@ mod tests {
     const SELECTED_TOOL: &str = "/selected/tool";
     #[cfg(windows)]
     const SELECTED_TOOL: &str = r"C:\selected\tool";
+
+    #[test]
+    fn minisign_version_acceptance_is_shared_and_exact() {
+        for (status, stdout, stderr, expected) in [
+            (0, b"minisign 0.11\n".as_slice(), b"".as_slice(), true),
+            (0, b"minisign 0.12\n".as_slice(), b"".as_slice(), true),
+            (0, b"".as_slice(), b"minisign 0.12\n".as_slice(), true),
+            (0, b"minisign 0.13\n".as_slice(), b"".as_slice(), false),
+            (1, b"minisign 0.12\n".as_slice(), b"".as_slice(), false),
+        ] {
+            assert_eq!(
+                minisign_version_is_supported(&CommandOutput {
+                    status,
+                    stdout: stdout.to_vec(),
+                    stderr: stderr.to_vec(),
+                }),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn fake_matches_full_typed_invocation_and_records_order() {

@@ -9,8 +9,8 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 |---|---|
 | Build binary + webview | `make build` |
 | Deterministic composite gate (host checks · offline dependency policy · native Windows build/test) | `make ci` |
-| Refresh RustSec data + check current advisories | `make audit` |
-| Prove the materialized release advisory config with cargo-deny 0.20.2 offline | `make check-release-advisory-config` |
+| Verify one signed advisory packet and contained bundle, then check current advisories offline | Set the four advisory packet variables below, then run `make audit` |
+| Prove the release finalizer's separately materialized advisory config with cargo-deny 0.20.2 offline | `make check-release-advisory-config` |
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
 | Source-bound build and atomic finalization | Set the release commit, advisory digest, and the three mirror-packet variables below, then run `make package` |
 | Prove one exact signed candidate by isolated install and explicit smoke | `make prove-rust-release-native RELEASE_DIR=target/release-candidate/<VERSION>` |
@@ -38,15 +38,30 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
 
 ## Source-bound finalization
 
-Set `EXPECTED_RELEASE_COMMIT` to the exact full lowercase release commit.
-Provision a clean cargo home containing only the approved private RustSec mirror
-cache, set `SOLSTONE_ADVISORY_MIRROR_LOCATOR` to that mirror's private Git URL,
-and run `make check-release-advisory-config`. This maps the cache to the isolated
-`target/release-advisory-db/` shape and proves that cargo-deny 0.20.2 accepts the
-locator-bound generated config offline. This config-only verb reads the locator
-only; it does not consume or verify the freshness packet.
+For the recurring audit, obtain the signed freshness receipt body, its adjacent
+`<body>.minisig`, the approved mirror public-key file, and the self-contained Git
+bundle. Keep every input outside the audit's checkout-local temporary database,
+put Git, minisign 0.11 or 0.12, and cargo-deny 0.20.2 on `PATH`, and set:
 
-For finalization, obtain the operator-supplied mirror freshness receipt body and
+- `SOLSTONE_ADVISORY_MIRROR_LOCATOR` to the private hierarchical HTTPS or SSH mirror URL.
+- `SOLSTONE_ADVISORY_RECEIPT` to the absolute receipt-body path.
+- `SOLSTONE_ADVISORY_MIRROR_PUB` to the absolute public-key path.
+- `SOLSTONE_ADVISORY_BUNDLE` to the absolute self-contained bundle path.
+
+`make audit` checks the committed public-key SHA-256 and key-ID pins, verifies the
+receipt signature and freshness, requires the bundle to advertise exactly `HEAD`
+and `refs/heads/main` at the signed commit, and checks the locked graph against a
+full clean isolated checkout with cargo-deny offline. It removes all recurring
+audit database and scratch bytes before emitting its sole canonical JSON witness.
+
+Separately, set `EXPECTED_RELEASE_COMMIT` to the exact full lowercase release
+commit. Provision a clean cargo home containing only the approved private RustSec
+mirror cache, set the same mirror locator, and run
+`make check-release-advisory-config`; this config-only finalizer compatibility
+check maps that cache to `target/release-advisory-db/` and does not consume or
+verify the signed packet.
+
+For finalization, retain the operator-supplied mirror freshness receipt body and
 its adjacent `<body>.minisig`, plus the approved mirror public-key file. Keep all
 three outside `target/release-advisory-db/`, put `minisign` on `PATH`, and set:
 
@@ -54,23 +69,26 @@ three outside `target/release-advisory-db/`, put `minisign` on `PATH`, and set:
 - `SOLSTONE_ADVISORY_RECEIPT` to the absolute receipt-body path.
 - `SOLSTONE_ADVISORY_MIRROR_PUB` to the absolute public-key path.
 
-The finalizer first reads the packet files once, checks the supplied public-key
-file bytes against the committed SHA-256 pin, verifies the body and trusted
-comment with `minisign -V`, enforces the signed UTC freshness window, and obtains
-the signed mirror commit. It then renders locator-bound cargo-deny config,
-inspects the clean full mirror repository and exact origin offline, requires
-repository `HEAD` to equal the signed commit, and finally runs cargo-deny
-offline. `advisory_checked_at` is earned only after that final check succeeds.
-Any failure occurs before application build. Never commit a production mirror
-packet, signature, or operator public-key file; supply them from the controlled
-release environment.
+Both entry points read the packet files once, check the supplied public-key bytes
+against the committed SHA-256 pin, verify the body and trusted comment with
+`minisign -V`, enforce the signed UTC freshness window, and obtain the signed
+mirror commit. The recurring audit additionally enforces the committed key-ID
+pin and signed bundle boundary; the release finalizer retains its clean-tree,
+origin, archive-digest, and `FETCH_HEAD` evidence checks. Each checked-at value
+is earned only after its offline cargo-deny check succeeds, and any finalizer
+failure occurs before application build. Never commit a production mirror
+packet, signature, bundle, or operator public-key file; supply them from the
+controlled operator environment.
 
-The isolated database root may also contain cargo-deny's regular top-level
-`db.lock`; finalization tolerates but never removes that file. A link, special
-file, or any other extra child still fails snapshot classification.
+The release finalizer's isolated database root may also contain cargo-deny's
+regular top-level `db.lock`; finalization tolerates but never removes that file.
+A link, special file, or any other extra child still fails snapshot
+classification. The recurring audit instead owns and removes its complete
+temporary database root before success.
 
-Review the isolated RustSec repository at the intended full commit before
-finalization. From that reviewed repository, compute the archive-tree digest
+Review the release finalizer's isolated RustSec repository at the intended full
+commit before finalization. From that reviewed repository, compute the
+archive-tree digest
 with `git -C <isolated-advisory-db-repo> archive --format=tar HEAD | sha256sum`
 and set its 64-lowercase-hex result as `SOLSTONE_ADVISORY_TREE_SHA256`. This is an
 independent operator input: do not auto-derive it inside finalization from the
@@ -184,15 +202,15 @@ a release.
 
 **Flow** (keeps publication credentials out of package construction):
 
-1. Provision the approved mirror cache, set
-   `SOLSTONE_ADVISORY_MIRROR_LOCATOR`, and run
-   `make check-release-advisory-config`; a failed materialization or offline
-   cargo-deny check ends this step before finalization begins.
-2. On the clean build box, supply the current body plus adjacent `.minisig`, the
-   approved public-key file, and `minisign` on `PATH`. Set the three mirror-packet
-   variables, the full lowercase `EXPECTED_RELEASE_COMMIT`, and the independently
-   reviewed `SOLSTONE_ADVISORY_TREE_SHA256`; then run `SOLSTONE_SIGN=1 make
-   package` (or the thin `.cmd` wrapper) for a signed candidate.
+1. Supply the current body plus adjacent `.minisig`, approved public-key file,
+   self-contained bundle, and four advisory packet variables; run `make audit`,
+   and stop before finalization unless its offline canonical witness passes.
+2. Provision the finalizer's approved mirror cache and run
+   `make check-release-advisory-config`. On the clean build box, retain the three
+   finalizer packet variables, set the full lowercase `EXPECTED_RELEASE_COMMIT`
+   and independently reviewed `SOLSTONE_ADVISORY_TREE_SHA256`, then run
+   `SOLSTONE_SIGN=1 make package` (or the thin `.cmd` wrapper) for a signed
+   candidate.
 3. Run `make prove-rust-release-native
    RELEASE_DIR=target/release-candidate/<VERSION>`. A green proof atomically adds
    `target/release-evidence/<VERSION>/windows-native-proof.json` outside the

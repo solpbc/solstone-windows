@@ -5,9 +5,13 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+
+#[allow(dead_code)]
+mod support;
+
+use support::{git_ok, git_output_with_stdin, TestRepository};
 
 const SCAN_MODE_ENV: &str = "SOLSTONE_ADVISORY_NEEDLE_SCAN";
 const HEX16_RULE: &str = "must match ^[0-9a-f]{16}$";
@@ -841,87 +845,6 @@ const SYNTHETIC_MARKER: &[u8] = b"synthetic-committed-tree-marker";
 const SYNTHETIC_CLEAN_BLOB: &[u8] = b"synthetic clean blob contents";
 const SYNTHETIC_REPLACEMENT_BLOB: &[u8] = b"synthetic replacement blob contents";
 const SYNTHETIC_GITLINK_OID: &str = "1111111111111111111111111111111111111111";
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
-struct TestRepository {
-    root: PathBuf,
-}
-
-impl TestRepository {
-    fn new(label: &str) -> Self {
-        let root = env::temp_dir().join(format!(
-            "solstone-head-tree-test-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).expect("create synthetic repository root");
-        Self { root }
-    }
-
-    fn init(&self) {
-        git_ok(&self.root, &["init", "-b", "main"]);
-        git_ok(&self.root, &["config", "user.email", "tests@solstone.app"]);
-        git_ok(&self.root, &["config", "user.name", "solstone tests"]);
-        git_ok(&self.root, &["config", "core.autocrlf", "false"]);
-    }
-
-    fn commit(&self) {
-        git_ok(
-            &self.root,
-            &["commit", "--no-gpg-sign", "-m", "synthetic committed tree"],
-        );
-    }
-
-    fn write(&self, relative: &str, bytes: &[u8]) {
-        let path = self.root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create synthetic file parent");
-        }
-        fs::write(path, bytes).expect("write synthetic repository file");
-    }
-}
-
-impl Drop for TestRepository {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).expect("remove synthetic repository root");
-    }
-}
-
-fn fixture_git_output(root: &Path, args: &[&str], stdin: Option<&[u8]>) -> std::process::Output {
-    let mut git = Command::new("git");
-    git.args(args).current_dir(root);
-    scrub_git_environment(&mut git);
-    if let Some(bytes) = stdin {
-        let mut input = tempfile::tempfile().expect("create synthetic Git input");
-        input.write_all(bytes).expect("write synthetic Git input");
-        input.flush().expect("flush synthetic Git input");
-        input
-            .seek(SeekFrom::Start(0))
-            .expect("rewind synthetic Git input");
-        git.stdin(Stdio::from(input));
-    }
-    git.output().expect("run synthetic fixture Git")
-}
-
-fn git_ok(root: &Path, args: &[&str]) {
-    let output = fixture_git_output(root, args, None);
-    assert!(
-        output.status.success(),
-        "synthetic fixture Git exited with {}",
-        output.status
-    );
-}
-
-fn git_output_with_stdin(root: &Path, args: &[&str], stdin: &[u8]) -> Vec<u8> {
-    let output = fixture_git_output(root, args, Some(stdin));
-    assert!(
-        output.status.success(),
-        "synthetic fixture Git exited with {}",
-        output.status
-    );
-    output.stdout
-}
-
 fn hash_blob(root: &Path, bytes: &[u8]) -> String {
     let output = git_output_with_stdin(root, &["hash-object", "-w", "--stdin"], bytes);
     String::from_utf8(output)

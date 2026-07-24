@@ -13,7 +13,10 @@ packaging, and FlaUI smoke** require the Windows build box.
 - **Rust 1.96.0**, pinned by `rust-toolchain.toml`. Run `make rust-toolchain`
   to install the exact toolchain, rustfmt, clippy, and Windows MSVC target.
 - **cargo-deny 0.20.2** for `make ci` / `make audit`; provision it explicitly with
-  `make provision-cargo-deny`.
+  `make provision-cargo-deny`. The recurring audit also requires Git, minisign
+  0.11 or 0.12, and the four signed-packet values
+  `SOLSTONE_ADVISORY_MIRROR_LOCATOR`, `SOLSTONE_ADVISORY_RECEIPT`,
+  `SOLSTONE_ADVISORY_MIRROR_PUB`, and `SOLSTONE_ADVISORY_BUNDLE`.
 - That's it for `make test` of the pure crates and `make contract`.
 
 ### Windows build box (binary, packaging, smoke)

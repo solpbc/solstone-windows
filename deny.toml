@@ -8,7 +8,7 @@
 #      (gated by `cargo xtask purity-check`; see the note under [bans]).
 #
 # `make ci` checks bans/licenses/sources offline against the locked graph.
-# `make audit` refreshes RustSec data and checks advisories separately.
+# `make audit` verifies a signed self-contained advisory bundle and checks it offline.
 
 [graph]
 all-features = true

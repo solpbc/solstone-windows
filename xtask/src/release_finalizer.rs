@@ -415,6 +415,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         public_key_path: &runtime.mirror_public_key,
         minisign_program: &runtime.minisign_program,
         expected_public_key_sha256: &runtime.mirror_public_key_sha256,
+        expected_public_key_id: None,
     };
     let advisory = run_advisory_check(
         checkout.canonical_path(),

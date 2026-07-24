@@ -3,8 +3,9 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, FileTimes};
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -104,6 +105,109 @@ const ADVISORY_ARCHIVE: &[u8] = b"deterministic RustSec git archive bytes";
 const ADVISORY_MIRROR_PUBLIC_KEY: &[u8] = b"untrusted comment: fake mirror key\nRWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n";
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+#[allow(dead_code)]
+const GIT_SELECTION_ENV_VARS: [&str; 8] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_REPLACE_REF_BASE",
+];
+
+#[allow(dead_code)]
+pub fn scrub_git_environment(command: &mut Command) {
+    for variable in GIT_SELECTION_ENV_VARS {
+        command.env_remove(variable);
+    }
+}
+
+#[allow(dead_code)]
+pub struct TestRepository {
+    pub root: PathBuf,
+}
+
+#[allow(dead_code)]
+impl TestRepository {
+    pub fn new(label: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "solstone-git-test-{label}-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).expect("create synthetic repository root");
+        Self { root }
+    }
+
+    pub fn init(&self) {
+        git_ok(&self.root, &["init", "-b", "main"]);
+        git_ok(&self.root, &["config", "user.email", "tests@solstone.app"]);
+        git_ok(&self.root, &["config", "user.name", "solstone tests"]);
+        git_ok(&self.root, &["config", "core.autocrlf", "false"]);
+    }
+
+    pub fn commit(&self) {
+        git_ok(
+            &self.root,
+            &["commit", "--no-gpg-sign", "-m", "synthetic committed tree"],
+        );
+    }
+
+    pub fn write(&self, relative: &str, bytes: &[u8]) {
+        let path = self.root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create synthetic file parent");
+        }
+        fs::write(path, bytes).expect("write synthetic repository file");
+    }
+}
+
+impl Drop for TestRepository {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.root).expect("remove synthetic repository root");
+    }
+}
+
+#[allow(dead_code)]
+pub fn fixture_git_output(root: &Path, args: &[&str], stdin: Option<&[u8]>) -> Output {
+    let mut git = Command::new("git");
+    git.args(args).current_dir(root);
+    scrub_git_environment(&mut git);
+    if let Some(bytes) = stdin {
+        let mut input = tempfile::tempfile().expect("create synthetic Git input");
+        input.write_all(bytes).expect("write synthetic Git input");
+        input.flush().expect("flush synthetic Git input");
+        input
+            .seek(SeekFrom::Start(0))
+            .expect("rewind synthetic Git input");
+        git.stdin(Stdio::from(input));
+    }
+    git.output().expect("run synthetic fixture Git")
+}
+
+#[allow(dead_code)]
+pub fn git_ok(root: &Path, args: &[&str]) {
+    let output = fixture_git_output(root, args, None);
+    assert!(
+        output.status.success(),
+        "synthetic fixture Git exited with {}",
+        output.status
+    );
+}
+
+#[allow(dead_code)]
+pub fn git_output_with_stdin(root: &Path, args: &[&str], stdin: &[u8]) -> Vec<u8> {
+    let output = fixture_git_output(root, args, Some(stdin));
+    assert!(
+        output.status.success(),
+        "synthetic fixture Git exited with {}",
+        output.status
+    );
+    output.stdout
+}
 
 pub fn action_uses_script(args: &[String], expected: &Path) -> bool {
     args.windows(2)

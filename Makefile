@@ -90,6 +90,8 @@ test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
 	sh scripts/lib/transparency-guard.test.sh
+	sh scripts/lib/make-audit-ordering.test.sh
+	sh scripts/lib/advisory-audit-real-tool.test.sh
 	sh scripts/lib/make-package-ordering.test.sh
 	sh scripts/lib/make-prove-native-ordering.test.sh
 	sh scripts/lib/doc-stale-scan.test.sh
@@ -120,11 +122,13 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(MAKE) gate-minisign
 	$(MAKE) win-host-ci
 
-# Refresh the RustSec advisory database, then check it against the locked graph.
-# This networked freshness check is deliberately separate from deterministic CI.
-audit: preflight-toolchain preflight-cargo-deny
-	@$(CARGO) deny fetch db || { echo "ERROR: RustSec advisory database refresh failed; no current advisory result was produced." >&2; exit 1; }
-	$(CARGO) deny --locked check advisories
+# Verify the signed advisory packet and self-contained bundle, then check the
+# locked graph against the contained database with network access disabled.
+audit:
+	@set -eu; if [ -z "$${SOLSTONE_ADVISORY_MIRROR_LOCATOR:-}" ]; then echo "ERROR: SOLSTONE_ADVISORY_MIRROR_LOCATOR is required; supply all four signed advisory packet values and retry." >&2; exit 1; fi; if [ -z "$${SOLSTONE_ADVISORY_RECEIPT:-}" ]; then echo "ERROR: SOLSTONE_ADVISORY_RECEIPT is required; supply all four signed advisory packet values and retry." >&2; exit 1; fi; if [ -z "$${SOLSTONE_ADVISORY_MIRROR_PUB:-}" ]; then echo "ERROR: SOLSTONE_ADVISORY_MIRROR_PUB is required; supply all four signed advisory packet values and retry." >&2; exit 1; fi; if [ -z "$${SOLSTONE_ADVISORY_BUNDLE:-}" ]; then echo "ERROR: SOLSTONE_ADVISORY_BUNDLE is required; supply all four signed advisory packet values and retry." >&2; exit 1; fi
+	@sh scripts/preflight-toolchain.sh
+	@CARGO="$(CARGO)" sh scripts/preflight-cargo-deny.sh
+	@CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- advisory-audit
 
 # Regenerate automation-contract.json + the ui codegen; the operator commits.
 contract: preflight-toolchain

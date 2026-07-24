@@ -14,7 +14,9 @@ use std::time::Instant;
 use serde::de::DeserializeOwned;
 
 use crate::release_clock::{Clock, UtcTimestamp};
-use crate::release_exec::{CommandRunner, CommandRunnerError, PassphraseCache};
+use crate::release_exec::{
+    minisign_version_is_supported, CommandRunner, CommandRunnerError, PassphraseCache,
+};
 use crate::release_receipt::{
     render_windows_native_proof_receipt, WindowsNativeProofReceipt, WINDOWS_NATIVE_PROOF_FILENAME,
 };
@@ -803,14 +805,7 @@ fn verify_tool_versions<R: CommandRunner + ?Sized>(
     runner: &R,
 ) -> Result<(), TransparencyPublishError> {
     let minisign = runner.run(minisign_program, &["-v".to_owned()], None, None)?;
-    let minisign_text = String::from_utf8_lossy(&minisign.stdout);
-    let minisign_error = String::from_utf8_lossy(&minisign.stderr);
-    let observed_version = if minisign_text.trim().is_empty() {
-        minisign_error.trim()
-    } else {
-        minisign_text.trim()
-    };
-    if minisign.status != 0 || !matches!(observed_version, "minisign 0.11" | "minisign 0.12") {
+    if !minisign_version_is_supported(&minisign) {
         return Err(TransparencyPublishError::ToolUnavailable { tool: "minisign" });
     }
     let curl = runner.run(curl_program, &["--version".to_owned()], None, None)?;

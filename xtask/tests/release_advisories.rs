@@ -156,6 +156,7 @@ impl TestCheckout {
             public_key_path: &self.mirror_public_key,
             minisign_program: Path::new(MINISIGN),
             expected_public_key_sha256: fake_public_key_sha256(),
+            expected_public_key_id: None,
         }
     }
 

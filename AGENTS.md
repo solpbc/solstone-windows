@@ -65,7 +65,7 @@ charter and license.
 | `make build` | `cargo build` the binary + `npm run build` the webview → `ui/dist` |
 | `make test` | `cargo test --workspace` (the pure tier runs off-Windows too) |
 | `make ci` | host fmt/clippy/contract/tests · offline locked bans/licenses/sources · UI/shell tests · native Windows build/test |
-| `make audit` | refresh the RustSec database, then check advisories against the locked graph |
+| `make audit` | verify the signed advisory packet and self-contained bundle, then check advisories against the locked graph offline |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
 | `make check-rust-release-manifest` | offline schema, checkout binding, ledger, current-bundle, and deterministic-render verification; mode selected by `MANIFEST` or `RELEASE_DIR` |
@@ -86,6 +86,7 @@ charter and license.
 | Repository entry point | Evidence class | Exact claim |
 |---|---|---|
 | `make test`, `make ui-test`, `make test-scripts`, and the local Rust legs of `make ci` | Host evidence | Linux-host formatting, compilation/tests for the host-testable subset, UI tests, and shell policy; no Windows compilation |
+| `make audit` | Host evidence | Verifies the pinned signing identity and fresh receipt, proves a self-contained bundle advertises only `HEAD` and `refs/heads/main` at the signed commit, materializes one full clean isolated checkout, and runs the pinned cargo-deny offline; temporary database bytes are removed before the canonical success witness is emitted |
 | `make purity-check` | Cross-target classification evidence | Enumerates every workspace member from `cargo metadata` and inspects each exactly once with `cargo tree --target all --all-features -e normal,build`; the Windows family is forbidden in each strict member's shipped (normal+build) graph. Dev-only reachability is out of scope because dev-dependencies never ship; the reviewed Windows-capable set includes platform/composition/app members and `xtask` build tooling. Unknown or stale exceptions fail. This does not compile or link MSVC code |
 | `make check-rust-release-manifest` | Host evidence | Offline exact-schema and semantic self-check with no environment selector; `MANIFEST=<path>` verifies one manifest and its named sibling bytes without claiming completeness; `RELEASE_DIR=<path>` classifies one exact flat current-only bundle |
 | `make publish-transparency RELEASE_DIR=<candidate>` | Host-orchestrated publication | Re-validates a snapshot, retains candidate artifact bytes only through the operator archive channel, and publishes an immutable signed entry plus derived mutable pointers through conditional HTTP operations; host tests use fakes and do not prove a real bucket |
@@ -101,7 +102,10 @@ bans/licenses/sources sub-gate is offline.
 
 All gated project dependency resolution holds `Cargo.lock` with `--locked`. The
 one deliberate dependency-update path is `cargo update -p <crate>`: review and
-commit the resulting `Cargo.lock`, then rerun `make ci` and `make audit`.
+commit the resulting `Cargo.lock`, then rerun `make ci`; rerun `make audit` with
+`SOLSTONE_ADVISORY_MIRROR_LOCATOR`, `SOLSTONE_ADVISORY_RECEIPT`,
+`SOLSTONE_ADVISORY_MIRROR_PUB`, and `SOLSTONE_ADVISORY_BUNDLE` set to one current
+signed advisory packet.
 
 The workspace lint floor denies unsafe code. Item-level exceptions may exist only
 inside the five audited platform crates named above; crate-wide

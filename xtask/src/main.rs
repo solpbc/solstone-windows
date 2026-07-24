@@ -14,12 +14,12 @@
 //! - `version-gate [--root <path>]` — resolve the product version from cargo metadata and verify every committed release version surface.
 //! - `dev` — developer convenience launcher (stub).
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use observer_contract::generate_contract;
-use xtask::release_exec::CommandRunner;
+use xtask::release_exec::{resolve_path_program, CommandRunner};
 
 /// The committed contract artifact's filename at the repo root.
 const CONTRACT_FILE: &str = "automation-contract.json";
@@ -33,6 +33,7 @@ fn main() -> ExitCode {
             let check = args.iter().any(|a| a == "--check");
             cmd_contract(check)
         }
+        Some("advisory-audit") if args.len() == 1 => cmd_advisory_audit(),
         Some("observer-contract")
             if args.get(1).map(String::as_str) == Some("check") && args.len() == 2 =>
         {
@@ -69,9 +70,80 @@ fn main() -> ExitCode {
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | transparency <publish --release-dir <candidate> | resign-pointer> | purity-check | version-gate [--root <path>] | dev>\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  transparency publish: archive and publish evidence for one validated candidate\n  transparency resign-pointer: refresh the signed latest pointer without a candidate\n  version-gate [--root <path>]: verify every committed release version surface"
+                "usage: cargo xtask <advisory-audit | contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | transparency <publish --release-dir <candidate> | resign-pointer> | purity-check | version-gate [--root <path>] | dev>\n  advisory-audit: verify the signed advisory packet and bundle, then check the locked graph offline\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  transparency publish: archive and publish evidence for one validated candidate\n  transparency resign-pointer: refresh the signed latest pointer without a candidate\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_advisory_audit() -> ExitCode {
+    let required = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let (Some(locator), Some(receipt), Some(public_key), Some(bundle)) = (
+        required("SOLSTONE_ADVISORY_MIRROR_LOCATOR"),
+        required("SOLSTONE_ADVISORY_RECEIPT"),
+        required("SOLSTONE_ADVISORY_MIRROR_PUB"),
+        required("SOLSTONE_ADVISORY_BUNDLE"),
+    ) else {
+        eprintln!(
+            "advisory audit input gate failed; set all four required SOLSTONE_ADVISORY_* values and retry"
+        );
+        return ExitCode::FAILURE;
+    };
+    let receipt = PathBuf::from(receipt);
+    let public_key = PathBuf::from(public_key);
+    let bundle = PathBuf::from(bundle);
+    if let Err(error) = xtask::advisory_audit::validate_advisory_audit_inputs(
+        &locator,
+        &receipt,
+        &public_key,
+        &bundle,
+    ) {
+        eprintln!("{error}");
+        return ExitCode::FAILURE;
+    }
+    let programs = match xtask::advisory_audit::resolve_advisory_audit_programs() {
+        Ok(programs) => programs,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let root = repo_root();
+    let request = xtask::advisory_audit::AdvisoryAuditRequest {
+        checkout_root: &root,
+        locator: &locator,
+        receipt_path: &receipt,
+        public_key_path: &public_key,
+        bundle_path: &bundle,
+        programs: xtask::advisory_audit::AdvisoryAuditPrograms {
+            git: &programs.git,
+            minisign: &programs.minisign,
+            cargo_deny: &programs.cargo_deny,
+        },
+        trust: xtask::advisory_audit::AdvisoryAuditTrust {
+            public_key_sha256: xtask::release_advisory::MIRROR_MINISIGN_PUBKEY_SHA256,
+            public_key_id: xtask::release_advisory::MIRROR_MINISIGN_PUBKEY_ID,
+        },
+    };
+    let runner = xtask::release_exec::RemovedEnvironmentProcessCommandRunner::new(
+        &xtask::advisory_audit::ADVISORY_AUDIT_REMOVED_ENV,
+    );
+    match xtask::advisory_audit::run_advisory_audit(
+        &request,
+        &runner,
+        &xtask::release_clock::SystemClock,
+    ) {
+        Ok(witness) => {
+            if std::io::stdout().write_all(&witness).is_err() {
+                eprintln!("advisory audit output gate failed; restore stdout and retry");
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -341,19 +413,6 @@ fn transparency_command_context() -> Option<TransparencyCommandContext> {
         curl_program,
         environment,
     })
-}
-
-fn resolve_path_program(name: &str) -> Option<PathBuf> {
-    let search = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&search) {
-        for candidate_name in [name.to_owned(), format!("{name}.exe")] {
-            let candidate = directory.join(candidate_name);
-            if candidate.is_file() {
-                return std::fs::canonicalize(candidate).ok();
-            }
-        }
-    }
-    None
 }
 
 fn resolve_configured_program(program: &std::ffi::OsStr) -> Option<PathBuf> {
