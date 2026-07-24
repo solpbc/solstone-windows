@@ -319,6 +319,20 @@ fn single_line_witness_rejects_noncanonical_line_shapes() {
         "pretty witness must be rejected"
     );
 
+    let value: serde_json::Value = serde_json::from_slice(
+        bytes
+            .strip_suffix(b"\n")
+            .expect("real compact witness has one trailing newline"),
+    )
+    .expect("real compact witness parses as JSON");
+    let mut alphabetical_key_order =
+        serde_json::to_vec(&value).expect("JSON value witness serializes");
+    alphabetical_key_order.push(b'\n');
+    assert!(
+        single_line_witness(&alphabetical_key_order).is_none(),
+        "witness with alphabetical key order must be rejected"
+    );
+
     let mut carriage_return = bytes.clone();
     carriage_return.insert(carriage_return.len() - 1, b'\r');
     assert!(
