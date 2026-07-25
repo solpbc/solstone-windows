@@ -15,8 +15,10 @@
 //!
 //! Byte layout verified against the journal builder (`solstone/apps/link`) and
 //! the iOS `PairURL` / Android `PairLink` parsers. Port 0 means
-//! [`DEFAULT_DIRECT_PORT`](crate::DEFAULT_DIRECT_PORT). Loopback candidates are
-//! dropped (a remote observer can never reach the journal's own 127/8). The CA
+//! [`DEFAULT_DIRECT_PORT`](crate::DEFAULT_DIRECT_PORT). Direct addresses are
+//! limited to RFC 1918, 169.254/16, 100.64/10, and 127/8 (loopback is admitted);
+//! one disallowed address refuses the whole link. V05 accepts one through four
+//! raw candidates and coalesces duplicates in first-occurrence order. The CA
 //! fingerprint is the 16-byte SHA-256-of-CA-cert-DER prefix the TLS layer pins.
 
 use thiserror::Error;
@@ -38,7 +40,8 @@ pub struct Endpoint {
 /// pairing nonce, and the CA-fingerprint prefix to pin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairLink {
-    /// Candidate journal endpoints, in pair-link order (loopback filtered out).
+    /// Policy-approved, de-duplicated journal endpoints in first-occurrence
+    /// pair-link order.
     pub candidates: Vec<Endpoint>,
     /// The pairing nonce, lowercase hex (32 chars for the 16 raw bytes).
     pub nonce_hex: String,
@@ -80,13 +83,24 @@ pub enum PairLinkError {
     Truncated { expected: usize, got: usize },
     #[error("pair-link blob length mismatch (expected {expected} bytes, got {got})")]
     LengthMismatch { expected: usize, got: usize },
-    #[error("pair-link carried no reachable (non-loopback) candidate")]
-    NoReachableCandidate,
+    #[error("direct pair-link address is outside the allowed IPv4 ranges: {address}")]
+    DisallowedDirectIpv4 { address: String },
+    #[error("direct pair-link candidate count must be between 1 and 4, got {count}")]
+    InvalidCandidateCount { count: u8 },
 }
 
 const ADDR_TYPE_IPV4: u8 = 0x01;
 const NONCE_LEN: usize = 16;
 const CA_FP_LEN: usize = 16;
+const MAX_DIRECT_CANDIDATES: u8 = 4;
+const ALLOWED_DIRECT_IPV4_RANGES: [(u32, u32); 6] = [
+    (0x0a00_0000, 0x0aff_ffff), // 10/8
+    (0xac10_0000, 0xac1f_ffff), // 172.16/12
+    (0xc0a8_0000, 0xc0a8_ffff), // 192.168/16
+    (0xa9fe_0000, 0xa9fe_ffff), // 169.254/16
+    (0x6440_0000, 0x647f_ffff), // 100.64/10
+    (0x7f00_0000, 0x7fff_ffff), // 127/8
+];
 const RELAY_CA_FP_TAG_SPKI_SHA256: u8 = 0x01;
 const RELAY_WINDOW_BASE_LEN: usize = 27;
 
@@ -98,7 +112,7 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-fn ipv4_string(octets: &[u8]) -> String {
+fn ipv4_string(octets: &[u8; 4]) -> String {
     format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
 }
 
@@ -114,8 +128,11 @@ pub(crate) fn uuid_string(raw: &[u8]) -> String {
     )
 }
 
-fn is_loopback(octets: &[u8]) -> bool {
-    octets[0] == 127
+fn is_allowed_direct_ipv4(octets: &[u8; 4]) -> bool {
+    let address = u32::from_be_bytes(*octets);
+    ALLOWED_DIRECT_IPV4_RANGES
+        .iter()
+        .any(|(lo, hi)| (*lo..=*hi).contains(&address))
 }
 
 fn normalize_port(raw: u16) -> u16 {
@@ -207,24 +224,21 @@ fn parse_v04(blob: &[u8]) -> Result<PairLink, PairLinkError> {
     if blob[1] != ADDR_TYPE_IPV4 {
         return Err(PairLinkError::UnsupportedAddressType(blob[1]));
     }
-    let octets = &blob[2..6];
+    let octets = [blob[2], blob[3], blob[4], blob[5]];
     let port = normalize_port(u16::from_be_bytes([blob[6], blob[7]]));
     let nonce = &blob[8..8 + NONCE_LEN];
     let ca_fp = &blob[24..24 + CA_FP_LEN];
 
-    let candidates = if is_loopback(octets) {
-        Vec::new()
-    } else {
-        vec![Endpoint {
-            host: ipv4_string(octets),
-            port,
-        }]
-    };
-    if candidates.is_empty() {
-        return Err(PairLinkError::NoReachableCandidate);
+    if !is_allowed_direct_ipv4(&octets) {
+        return Err(PairLinkError::DisallowedDirectIpv4 {
+            address: ipv4_string(&octets),
+        });
     }
     Ok(PairLink {
-        candidates,
+        candidates: vec![Endpoint {
+            host: ipv4_string(&octets),
+            port,
+        }],
         nonce_hex: hex_lower(nonce),
         ca_fp_prefix: ca_fp.to_vec(),
     })
@@ -235,7 +249,11 @@ fn parse_v05(blob: &[u8]) -> Result<PairLink, PairLinkError> {
     if blob[1] != ADDR_TYPE_IPV4 {
         return Err(PairLinkError::UnsupportedAddressType(blob[1]));
     }
-    let count = blob[2] as usize;
+    let raw_count = blob[2];
+    if raw_count == 0 || raw_count > MAX_DIRECT_CANDIDATES {
+        return Err(PairLinkError::InvalidCandidateCount { count: raw_count });
+    }
+    let count = raw_count as usize;
     require(blob, 5)?;
     let port = normalize_port(u16::from_be_bytes([blob[3], blob[4]]));
     let addrs_start = 5;
@@ -244,19 +262,37 @@ fn parse_v05(blob: &[u8]) -> Result<PairLink, PairLinkError> {
     let total = nonce_end + CA_FP_LEN;
     require(blob, total)?;
 
+    for i in 0..count {
+        let offset = addrs_start + 4 * i;
+        let octets = [
+            blob[offset],
+            blob[offset + 1],
+            blob[offset + 2],
+            blob[offset + 3],
+        ];
+        if !is_allowed_direct_ipv4(&octets) {
+            return Err(PairLinkError::DisallowedDirectIpv4 {
+                address: ipv4_string(&octets),
+            });
+        }
+    }
+
     let mut candidates = Vec::with_capacity(count);
     for i in 0..count {
-        let octets = &blob[addrs_start + 4 * i..addrs_start + 4 * i + 4];
-        if is_loopback(octets) {
-            continue;
+        let offset = addrs_start + 4 * i;
+        let octets = [
+            blob[offset],
+            blob[offset + 1],
+            blob[offset + 2],
+            blob[offset + 3],
+        ];
+        let host = ipv4_string(&octets);
+        if !candidates
+            .iter()
+            .any(|candidate: &Endpoint| candidate.host == host && candidate.port == port)
+        {
+            candidates.push(Endpoint { host, port });
         }
-        candidates.push(Endpoint {
-            host: ipv4_string(octets),
-            port,
-        });
-    }
-    if candidates.is_empty() {
-        return Err(PairLinkError::NoReachableCandidate);
     }
     let nonce = &blob[addrs_end..nonce_end];
     let ca_fp = &blob[nonce_end..total];
@@ -355,19 +391,75 @@ mod tests {
     }
 
     #[test]
+    fn allowed_direct_ipv4_ranges_include_exact_boundaries() {
+        for address in [
+            [10, 0, 0, 0],
+            [10, 255, 255, 255],
+            [172, 16, 0, 0],
+            [172, 31, 255, 255],
+            [192, 168, 0, 0],
+            [192, 168, 255, 255],
+            [169, 254, 0, 0],
+            [169, 254, 255, 255],
+            [100, 64, 0, 0],
+            [100, 127, 255, 255],
+            [127, 0, 0, 0],
+            [127, 255, 255, 255],
+        ] {
+            assert!(
+                is_allowed_direct_ipv4(&address),
+                "{} should be allowed",
+                ipv4_string(&address)
+            );
+        }
+    }
+
+    #[test]
+    fn addresses_immediately_outside_allowed_ranges_are_rejected() {
+        for address in [
+            [9, 255, 255, 255],
+            [11, 0, 0, 0],
+            [172, 15, 255, 255],
+            [172, 32, 0, 0],
+            [192, 167, 255, 255],
+            [192, 169, 0, 0],
+            [169, 253, 255, 255],
+            [169, 255, 0, 0],
+            [100, 63, 255, 255],
+            [100, 128, 0, 0],
+            [126, 255, 255, 255],
+            [128, 0, 0, 0],
+            [0, 0, 0, 0],
+            [255, 255, 255, 255],
+            [224, 0, 0, 1],
+            [192, 0, 2, 42],
+            [198, 51, 100, 20],
+            [203, 0, 113, 5],
+            [198, 18, 0, 1],
+            [8, 8, 8, 8],
+        ] {
+            assert!(
+                !is_allowed_direct_ipv4(&address),
+                "{} should be rejected",
+                ipv4_string(&address)
+            );
+        }
+    }
+
+    #[test]
     fn parses_v05_multi_address() {
-        let blob = build_v05(&[[192, 0, 2, 10], [198, 51, 100, 20]], 7657);
+        let blob = build_v05(&[[192, 168, 2, 10], [100, 64, 100, 20]], 7657);
         let url = format!("https://go.solstone.app/p#{}", crockford::encode(&blob));
         let pl = direct(parse(&url).unwrap());
         assert_eq!(
             pl.candidates,
             vec![
                 Endpoint {
-                    host: "192.0.2.10".into(),
+                    host: "192.168.2.10".into(),
                     port: 7657
                 },
                 Endpoint {
-                    host: "198.51.100.20".into(),
+                    host: "100.64.100.20".into(),
                     port: 7657
                 },
             ]
@@ -386,6 +478,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_v04_cgnat_single_address() {
+        let blob = build_v04([100, 64, 0, 1], 7657);
+        let pl = direct(parse_blob(&blob).unwrap());
+        assert_eq!(
+            pl.candidates,
+            vec![Endpoint {
+                host: "100.64.0.1".into(),
+                port: 7657,
+            }]
+        );
+    }
+
+    #[test]
+    fn v04_rejects_disallowed_direct_ipv4_with_address_only() {
+        let blob = build_v04([192, 0, 2, 42], 7657);
+        assert_eq!(
+            parse_blob(&blob).unwrap_err(),
+            PairLinkError::DisallowedDirectIpv4 {
+                address: "192.0.2.42".into(),
+            }
+        );
+    }
+
+    #[test]
     fn port_zero_defaults_to_direct_port() {
         let blob = build_v05(&[[10, 0, 0, 5]], 0);
         let pl = direct(parse_blob(&blob).unwrap());
@@ -393,19 +509,183 @@ mod tests {
     }
 
     #[test]
-    fn filters_loopback_candidates() {
+    fn admits_loopback_candidates_in_pair_link_order() {
         let blob = build_v05(&[[127, 0, 0, 1], [192, 168, 1, 9]], 7657);
         let pl = direct(parse_blob(&blob).unwrap());
-        assert_eq!(pl.candidates.len(), 1);
-        assert_eq!(pl.candidates[0].host, "192.168.1.9");
+        assert_eq!(
+            pl.candidates,
+            vec![
+                Endpoint {
+                    host: "127.0.0.1".into(),
+                    port: 7657,
+                },
+                Endpoint {
+                    host: "192.168.1.9".into(),
+                    port: 7657,
+                },
+            ]
+        );
     }
 
     #[test]
-    fn all_loopback_is_no_reachable_candidate() {
+    fn admits_single_loopback_candidate() {
         let blob = build_v05(&[[127, 0, 0, 1]], 7657);
         assert_eq!(
+            direct(parse_blob(&blob).unwrap()).candidates,
+            vec![Endpoint {
+                host: "127.0.0.1".into(),
+                port: 7657,
+            }]
+        );
+    }
+
+    #[test]
+    fn v05_rejects_disallowed_member_in_every_position() {
+        let allowed_a = [10, 0, 0, 1];
+        let allowed_b = [192, 168, 1, 2];
+        let disallowed = [192, 0, 2, 42];
+        for addresses in [
+            [disallowed, allowed_a, allowed_b],
+            [allowed_a, disallowed, allowed_b],
+            [allowed_a, allowed_b, disallowed],
+        ] {
+            let result = parse_blob(&build_v05(&addresses, 7657));
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err(),
+                PairLinkError::DisallowedDirectIpv4 {
+                    address: "192.0.2.42".into(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn v05_rejects_candidate_counts_outside_one_through_four() {
+        assert_eq!(
+            parse_blob(&build_v05(&[], 7657)).unwrap_err(),
+            PairLinkError::InvalidCandidateCount { count: 0 }
+        );
+        assert_eq!(
+            parse_blob(&build_v05(
+                &[
+                    [10, 0, 0, 1],
+                    [10, 0, 0, 2],
+                    [10, 0, 0, 3],
+                    [10, 0, 0, 4],
+                    [10, 0, 0, 5],
+                ],
+                7657,
+            ))
+            .unwrap_err(),
+            PairLinkError::InvalidCandidateCount { count: 5 }
+        );
+    }
+
+    #[test]
+    fn v05_count_four_round_trips_fields_and_normalizes_port() {
+        let pl = direct(
+            parse_blob(&build_v05(
+                &[
+                    [10, 0, 0, 1],
+                    [172, 16, 0, 2],
+                    [192, 168, 0, 3],
+                    [100, 64, 0, 4],
+                ],
+                0,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            pl.candidates,
+            vec![
+                Endpoint {
+                    host: "10.0.0.1".into(),
+                    port: DEFAULT_DIRECT_PORT,
+                },
+                Endpoint {
+                    host: "172.16.0.2".into(),
+                    port: DEFAULT_DIRECT_PORT,
+                },
+                Endpoint {
+                    host: "192.168.0.3".into(),
+                    port: DEFAULT_DIRECT_PORT,
+                },
+                Endpoint {
+                    host: "100.64.0.4".into(),
+                    port: DEFAULT_DIRECT_PORT,
+                },
+            ]
+        );
+        assert_eq!(pl.nonce_hex, "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(pl.ca_fp_prefix, cafp16());
+    }
+
+    #[test]
+    fn v05_coalesces_duplicate_candidates_in_first_occurrence_order() {
+        let pl = direct(
+            parse_blob(&build_v05(
+                &[
+                    [10, 0, 0, 1],
+                    [192, 168, 0, 2],
+                    [10, 0, 0, 1],
+                    [100, 64, 0, 3],
+                ],
+                7657,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            pl.candidates,
+            vec![
+                Endpoint {
+                    host: "10.0.0.1".into(),
+                    port: 7657,
+                },
+                Endpoint {
+                    host: "192.168.0.2".into(),
+                    port: 7657,
+                },
+                Endpoint {
+                    host: "100.64.0.3".into(),
+                    port: 7657,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_candidates_do_not_hide_a_disallowed_member() {
+        let blob = build_v05(&[[10, 0, 0, 1], [10, 0, 0, 1], [192, 0, 2, 42]], 7657);
+        assert_eq!(
             parse_blob(&blob).unwrap_err(),
-            PairLinkError::NoReachableCandidate
+            PairLinkError::DisallowedDirectIpv4 {
+                address: "192.0.2.42".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn v05_structural_errors_precede_address_policy_and_trailing_bytes_remain_tolerated() {
+        let mut truncated = build_v05(&[[192, 0, 2, 42]], 7657);
+        truncated.pop();
+        assert!(matches!(
+            parse_blob(&truncated).unwrap_err(),
+            PairLinkError::Truncated { .. }
+        ));
+
+        let mut unsupported = build_v05(&[[10, 0, 0, 1]], 7657);
+        unsupported[1] = 0x02;
+        assert_eq!(
+            parse_blob(&unsupported).unwrap_err(),
+            PairLinkError::UnsupportedAddressType(0x02)
+        );
+
+        let mut trailing = build_v05(&[[10, 0, 0, 1]], 7657);
+        trailing.extend_from_slice(&[0xaa, 0xbb]);
+        assert_eq!(
+            direct(parse_blob(&trailing).unwrap()).candidates[0].host,
+            "10.0.0.1"
         );
     }
 
