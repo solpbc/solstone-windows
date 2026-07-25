@@ -153,7 +153,7 @@ pub(crate) async fn pair_with_seam(
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or(TransportError::NoEndpoint))
+    Err(last_err.expect("a non-empty endpoint list always records a preparation error"))
 }
 
 /// Parse a `https://go.solstone.app/p#…` pair-link and pair against it.
