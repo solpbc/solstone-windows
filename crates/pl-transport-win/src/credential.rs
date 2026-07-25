@@ -262,6 +262,7 @@ impl PairedState {
 pub struct GeneratedKey {
     pub key_pem: String,
     pub csr_pem: String,
+    pub public_key_spki_der: Vec<u8>,
 }
 
 pub(crate) fn endpoint_addrs_from_local_endpoints(
@@ -310,6 +311,7 @@ pub fn generate_csr(device_label: &str) -> Result<GeneratedKey, TransportError> 
     Ok(GeneratedKey {
         key_pem: key_pair.serialize_pem(),
         csr_pem,
+        public_key_spki_der: key_pair.public_key_der(),
     })
 }
 
@@ -427,10 +429,12 @@ mod tests {
     }
 
     #[test]
-    fn generated_csr_is_pem_with_local_key() {
+    fn generated_csr_carries_matching_public_key_spki_der() {
         let g = generate_csr("solstone-windows-test").unwrap();
         assert!(g.csr_pem.contains("BEGIN CERTIFICATE REQUEST"));
         assert!(g.key_pem.contains("BEGIN PRIVATE KEY"));
+        let key = KeyPair::from_pem(&g.key_pem).unwrap();
+        assert_eq!(g.public_key_spki_der, key.public_key_der());
     }
 
     #[test]

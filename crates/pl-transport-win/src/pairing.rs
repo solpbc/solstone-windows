@@ -7,47 +7,149 @@
 //! `/app/network/pair?token=<nonce>`; the journal signs it and returns the client
 //! cert + CA chain + its identity. We verify the returned `fingerprint` equals
 //! `sha256:<hex>` of the signed client cert (the integrity check the Android/iOS
-//! clients also do) before trusting the credential. Multi-address pair-links are
-//! tried in order; the first candidate that completes wins.
+//! clients also do) before trusting the credential. One key/CSR and request body
+//! are generated per ceremony. Candidates are prepared in order, but only a
+//! pre-write preparation failure advances to the next candidate: the first
+//! prepared connection receives the sole request and its outcome is terminal.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use observer_pl::http::HttpResponse;
 use observer_pl::pairlink::{self, Endpoint, ParsedPairLink};
 use observer_pl::wire::{PairRequest, PairResponse};
 use observer_pl::{ca, paths};
+use rustls::ClientConfig;
+use tokio::net::TcpStream;
+use tokio_rustls::client::TlsStream;
 
-use crate::connection::request_once;
-use crate::credential::{generate_csr, Credential, EndpointAddr};
+use crate::connection::{dial_tls, run_request_over_stream};
+use crate::credential::{generate_csr, Credential, EndpointAddr, GeneratedKey};
 use crate::relay_pairing;
 use crate::{tls, TransportError};
 
+pub(crate) type DirectPairPrepareFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<Box<dyn PreparedDirectPairConnection>, TransportError>>
+            + Send
+            + 'a,
+    >,
+>;
+
+pub(crate) type DirectPairSendFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<HttpResponse, TransportError>> + Send + 'a>>;
+
+pub(crate) trait DirectPairingSeam: Send + Sync {
+    fn generate_material(&self, device_label: &str) -> Result<GeneratedKey, TransportError>;
+
+    fn prepare<'a>(
+        &'a self,
+        config: Arc<ClientConfig>,
+        endpoint: &'a Endpoint,
+    ) -> DirectPairPrepareFuture<'a>;
+}
+
+pub(crate) trait PreparedDirectPairConnection: Send {
+    fn send<'a>(
+        self: Box<Self>,
+        method: &'a str,
+        path: &'a str,
+        headers: &'a [(String, String)],
+        body: &'a [u8],
+    ) -> DirectPairSendFuture<'a>;
+}
+
+struct RealDirectPairingSeam;
+
+struct TlsPreparedDirectPairConnection {
+    stream: TlsStream<TcpStream>,
+}
+
+impl DirectPairingSeam for RealDirectPairingSeam {
+    fn generate_material(&self, device_label: &str) -> Result<GeneratedKey, TransportError> {
+        generate_csr(device_label)
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        config: Arc<ClientConfig>,
+        endpoint: &'a Endpoint,
+    ) -> DirectPairPrepareFuture<'a> {
+        Box::pin(async move {
+            let stream = dial_tls(config, &endpoint.host, endpoint.port).await?;
+            Ok(Box::new(TlsPreparedDirectPairConnection { stream })
+                as Box<dyn PreparedDirectPairConnection>)
+        })
+    }
+}
+
+impl PreparedDirectPairConnection for TlsPreparedDirectPairConnection {
+    fn send<'a>(
+        self: Box<Self>,
+        method: &'a str,
+        path: &'a str,
+        headers: &'a [(String, String)],
+        body: &'a [u8],
+    ) -> DirectPairSendFuture<'a> {
+        Box::pin(
+            async move { run_request_over_stream(self.stream, method, path, headers, body).await },
+        )
+    }
+}
+
 /// Pair against the given candidate endpoints using the one-shot `nonce_hex` and
 /// the pinned `ca_fp_prefix`. Returns the signed [`Credential`] on success.
+/// Direct-address allow-listing and duplicate coalescing are pair-link parser
+/// policy; this lower-level function uses endpoints exactly as supplied.
 pub async fn pair(
     endpoints: &[Endpoint],
     nonce_hex: &str,
     ca_fp_prefix: &[u8],
     device_label: &str,
 ) -> Result<Credential, TransportError> {
+    pair_with_seam(
+        endpoints,
+        nonce_hex,
+        ca_fp_prefix,
+        device_label,
+        Arc::new(RealDirectPairingSeam),
+    )
+    .await
+}
+
+pub(crate) async fn pair_with_seam(
+    endpoints: &[Endpoint],
+    nonce_hex: &str,
+    ca_fp_prefix: &[u8],
+    device_label: &str,
+    seam: Arc<dyn DirectPairingSeam>,
+) -> Result<Credential, TransportError> {
     if endpoints.is_empty() {
         return Err(TransportError::NoEndpoint);
     }
     let config = Arc::new(tls::pairing_config(ca_fp_prefix)?);
     let path = format!("{}?token={}", paths::PAIR, nonce_hex);
+    let generated = seam.generate_material(device_label)?;
+    let request = PairRequest {
+        csr: generated.csr_pem.clone(),
+        device_label: device_label.to_string(),
+    };
+    let body = serde_json::to_vec(&request)?;
+    let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
 
     let mut last_err: Option<TransportError> = None;
     for endpoint in endpoints {
-        match pair_one(
-            config.clone(),
-            endpoint,
-            &path,
-            ca_fp_prefix,
-            device_label,
-            endpoints,
-        )
-        .await
-        {
-            Ok(cred) => return Ok(cred),
+        match seam.prepare(config.clone(), endpoint).await {
+            Ok(connection) => {
+                let response = connection.send("POST", &path, &headers, &body).await?;
+                return credential_from_direct_pair_response(
+                    response,
+                    generated,
+                    ca_fp_prefix,
+                    endpoints,
+                );
+            }
             Err(e) => last_err = Some(e),
         }
     }
@@ -56,14 +158,23 @@ pub async fn pair(
 
 /// Parse a `https://go.solstone.app/p#…` pair-link and pair against it.
 pub async fn pair_from_link(link: &str, device_label: &str) -> Result<Credential, TransportError> {
+    pair_from_link_with_seam(link, device_label, Arc::new(RealDirectPairingSeam)).await
+}
+
+async fn pair_from_link_with_seam(
+    link: &str,
+    device_label: &str,
+    seam: Arc<dyn DirectPairingSeam>,
+) -> Result<Credential, TransportError> {
     let parsed = pairlink::parse(link).map_err(|e| TransportError::PairLink(e.to_string()))?;
     match parsed {
         ParsedPairLink::Direct(pl) => {
-            pair(
+            pair_with_seam(
                 &pl.candidates,
                 &pl.nonce_hex,
                 &pl.ca_fp_prefix,
                 device_label,
+                seam,
             )
             .await
         }
@@ -71,36 +182,25 @@ pub async fn pair_from_link(link: &str, device_label: &str) -> Result<Credential
     }
 }
 
-async fn pair_one(
-    config: Arc<rustls::ClientConfig>,
-    endpoint: &Endpoint,
-    path: &str,
+fn summarize_rejection_body(body: &[u8]) -> String {
+    let digest = ca::sha256_hex(body);
+    format!(
+        "rejection-body bytes={} sha256={}",
+        body.len(),
+        &digest[..12]
+    )
+}
+
+fn credential_from_direct_pair_response(
+    response: HttpResponse,
+    generated: GeneratedKey,
     ca_fp_prefix: &[u8],
-    device_label: &str,
     all_endpoints: &[Endpoint],
 ) -> Result<Credential, TransportError> {
-    let generated = generate_csr(device_label)?;
-    let request = PairRequest {
-        csr: generated.csr_pem,
-        device_label: device_label.to_string(),
-    };
-    let body = serde_json::to_vec(&request)?;
-    let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-
-    let response = request_once(
-        config,
-        &endpoint.host,
-        endpoint.port,
-        "POST",
-        path,
-        &headers,
-        &body,
-    )
-    .await?;
     if !response.is_success() {
         return Err(TransportError::Rejected {
             status: response.status,
-            body: response.body_text(),
+            body: summarize_rejection_body(&response.body),
         });
     }
 
@@ -116,6 +216,14 @@ async fn pair_one(
             pair.fingerprint, computed
         )));
     }
+    let cert_spki = ca::extract_spki_der(cert_der.as_ref()).map_err(|_| {
+        TransportError::Pairing("client certificate public key is malformed".into())
+    })?;
+    if cert_spki != generated.public_key_spki_der {
+        return Err(TransportError::Pairing(
+            "client certificate public key does not match generated key".into(),
+        ));
+    }
 
     Ok(Credential {
         client_key_pem: generated.key_pem,
@@ -129,4 +237,568 @@ async fn pair_one(
         device_token: None,
         device_token_expires_at: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::collections::VecDeque;
+    use std::io;
+    use std::sync::Mutex;
+
+    use observer_pl::mux::MuxError;
+    use rcgen::{
+        BasicConstraints, CertificateParams, CertificateSigningRequestParams, IsCa, KeyPair,
+        KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    };
+
+    #[derive(Debug, Default)]
+    struct PairingCounters {
+        material_generations: usize,
+        prepare_attempts: Vec<Endpoint>,
+        request_writes: usize,
+    }
+
+    struct FakeDirectPairingSeam {
+        material: Mutex<Option<GeneratedKey>>,
+        prepare_results: Mutex<VecDeque<Result<(), TransportError>>>,
+        send_result: Arc<Mutex<Option<Result<HttpResponse, TransportError>>>>,
+        counters: Arc<Mutex<PairingCounters>>,
+    }
+
+    impl FakeDirectPairingSeam {
+        fn new(
+            material: GeneratedKey,
+            prepare_results: Vec<Result<(), TransportError>>,
+            send_result: Result<HttpResponse, TransportError>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                material: Mutex::new(Some(material)),
+                prepare_results: Mutex::new(VecDeque::from(prepare_results)),
+                send_result: Arc::new(Mutex::new(Some(send_result))),
+                counters: Arc::new(Mutex::new(PairingCounters::default())),
+            })
+        }
+
+        fn counters(&self) -> Arc<Mutex<PairingCounters>> {
+            self.counters.clone()
+        }
+    }
+
+    impl DirectPairingSeam for FakeDirectPairingSeam {
+        fn generate_material(&self, _device_label: &str) -> Result<GeneratedKey, TransportError> {
+            self.counters.lock().unwrap().material_generations += 1;
+            Ok(self
+                .material
+                .lock()
+                .unwrap()
+                .take()
+                .expect("one scripted material generation"))
+        }
+
+        fn prepare<'a>(
+            &'a self,
+            _config: Arc<ClientConfig>,
+            endpoint: &'a Endpoint,
+        ) -> DirectPairPrepareFuture<'a> {
+            self.counters
+                .lock()
+                .unwrap()
+                .prepare_attempts
+                .push(endpoint.clone());
+            let result = self
+                .prepare_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted prepare result");
+            let send_result = self.send_result.clone();
+            let counters = self.counters.clone();
+            Box::pin(async move {
+                result?;
+                Ok(Box::new(FakePreparedDirectPairConnection {
+                    send_result,
+                    counters,
+                }) as Box<dyn PreparedDirectPairConnection>)
+            })
+        }
+    }
+
+    struct FakePreparedDirectPairConnection {
+        send_result: Arc<Mutex<Option<Result<HttpResponse, TransportError>>>>,
+        counters: Arc<Mutex<PairingCounters>>,
+    }
+
+    impl PreparedDirectPairConnection for FakePreparedDirectPairConnection {
+        fn send<'a>(
+            self: Box<Self>,
+            _method: &'a str,
+            _path: &'a str,
+            _headers: &'a [(String, String)],
+            _body: &'a [u8],
+        ) -> DirectPairSendFuture<'a> {
+            self.counters.lock().unwrap().request_writes += 1;
+            let result = self
+                .send_result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("one scripted request write");
+            Box::pin(async move { result })
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum TestCertificateMode {
+        SubmittedCsr,
+        UnrelatedKey,
+    }
+
+    fn pair_response(material: &GeneratedKey, mode: TestCertificateMode) -> PairResponse {
+        let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        ca_params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let client_cert = match mode {
+            TestCertificateMode::SubmittedCsr => {
+                CertificateSigningRequestParams::from_pem(&material.csr_pem)
+                    .unwrap()
+                    .signed_by(&ca_cert, &ca_key)
+                    .unwrap()
+            }
+            TestCertificateMode::UnrelatedKey => {
+                let unrelated_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+                CertificateParams::new(Vec::<String>::new())
+                    .unwrap()
+                    .signed_by(&unrelated_key, &ca_cert, &ca_key)
+                    .unwrap()
+            }
+        };
+        PairResponse {
+            client_cert: client_cert.pem(),
+            ca_chain: vec![ca_cert.pem()],
+            instance_id: "test-instance".into(),
+            home_label: "Home".into(),
+            fingerprint: format!("sha256:{}", ca::sha256_hex(client_cert.der())),
+            home_attestation: None,
+            local_endpoints: None,
+        }
+    }
+
+    fn http_response(status: u16, body: Vec<u8>) -> HttpResponse {
+        HttpResponse {
+            status,
+            headers: Vec::new(),
+            body,
+        }
+    }
+
+    fn successful_response(material: &GeneratedKey) -> HttpResponse {
+        http_response(
+            200,
+            serde_json::to_vec(&pair_response(material, TestCertificateMode::SubmittedCsr))
+                .unwrap(),
+        )
+    }
+
+    fn endpoint(host: &str, port: u16) -> Endpoint {
+        Endpoint {
+            host: host.into(),
+            port,
+        }
+    }
+
+    fn test_endpoints() -> Vec<Endpoint> {
+        vec![
+            endpoint("10.0.0.1", 7657),
+            endpoint("192.168.0.2", 7657),
+            endpoint("100.64.0.3", 7657),
+        ]
+    }
+
+    fn direct_v05_link(addresses: &[[u8; 4]]) -> String {
+        let mut blob = vec![0x05, 0x01, addresses.len() as u8];
+        blob.extend_from_slice(&7657u16.to_be_bytes());
+        for address in addresses {
+            blob.extend_from_slice(address);
+        }
+        blob.extend_from_slice(&[0x11; 16]);
+        blob.extend_from_slice(&[0x22; 16]);
+        format!(
+            "https://go.solstone.app/p#{}",
+            observer_pl::crockford::encode(&blob)
+        )
+    }
+
+    fn prepare_error(message: &'static str) -> TransportError {
+        TransportError::Io(io::Error::other(message))
+    }
+
+    #[tokio::test]
+    async fn direct_pair_link_refusal_has_zero_material_prepare_and_write_counts() {
+        let material = generate_csr("test-device").unwrap();
+        let response = successful_response(&material);
+        let seam = FakeDirectPairingSeam::new(material, vec![], Ok(response));
+        let counters = seam.counters();
+        let link = direct_v05_link(&[[10, 0, 0, 1], [192, 0, 2, 42]]);
+
+        let error = pair_from_link_with_seam(&link, "test-device", seam)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, TransportError::PairLink(_)));
+        let counters = counters.lock().unwrap();
+        assert_eq!(counters.material_generations, 0);
+        assert!(counters.prepare_attempts.is_empty());
+        assert_eq!(counters.request_writes, 0);
+    }
+
+    #[tokio::test]
+    async fn direct_pairing_generates_one_material_and_prepares_in_candidate_order() {
+        let material = generate_csr("test-device").unwrap();
+        let response = successful_response(&material);
+        let seam = FakeDirectPairingSeam::new(
+            material,
+            vec![
+                Err(prepare_error("first unavailable")),
+                Err(prepare_error("second unavailable")),
+                Ok(()),
+            ],
+            Ok(response),
+        );
+        let counters = seam.counters();
+        let endpoints = test_endpoints();
+
+        let credential = pair_with_seam(
+            &endpoints,
+            "00112233445566778899aabbccddeeff",
+            &[0x22; 16],
+            "test-device",
+            seam,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(credential.endpoints.len(), 3);
+        let counters = counters.lock().unwrap();
+        assert_eq!(counters.material_generations, 1);
+        assert_eq!(counters.prepare_attempts, endpoints);
+        assert_eq!(counters.request_writes, 1);
+    }
+
+    #[tokio::test]
+    async fn direct_pairing_all_prepare_failures_return_last_error_without_writing() {
+        let material = generate_csr("test-device").unwrap();
+        let response = successful_response(&material);
+        let seam = FakeDirectPairingSeam::new(
+            material,
+            vec![
+                Err(prepare_error("first unavailable")),
+                Err(prepare_error("second unavailable")),
+                Err(TransportError::Tls("last handshake failed".into())),
+            ],
+            Ok(response),
+        );
+        let counters = seam.counters();
+        let endpoints = test_endpoints();
+
+        let error = pair_with_seam(
+            &endpoints,
+            "00112233445566778899aabbccddeeff",
+            &[0x22; 16],
+            "test-device",
+            seam,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TransportError::Tls(message) if message == "last handshake failed"
+        ));
+        let counters = counters.lock().unwrap();
+        assert_eq!(counters.material_generations, 1);
+        assert_eq!(counters.prepare_attempts, endpoints);
+        assert_eq!(counters.request_writes, 0);
+    }
+
+    #[tokio::test]
+    async fn parser_coalesced_candidates_are_each_prepared_at_most_once() {
+        let material = generate_csr("test-device").unwrap();
+        let response = successful_response(&material);
+        let seam = FakeDirectPairingSeam::new(
+            material,
+            vec![
+                Err(prepare_error("first unavailable")),
+                Err(prepare_error("second unavailable")),
+            ],
+            Ok(response),
+        );
+        let counters = seam.counters();
+        let link = direct_v05_link(&[[10, 0, 0, 1], [192, 168, 0, 2], [10, 0, 0, 1]]);
+
+        let error = pair_from_link_with_seam(&link, "test-device", seam)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, TransportError::Io(_)));
+        let counters = counters.lock().unwrap();
+        assert_eq!(
+            counters.prepare_attempts,
+            vec![endpoint("10.0.0.1", 7657), endpoint("192.168.0.2", 7657),]
+        );
+        assert_eq!(counters.request_writes, 0);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum TerminalFailureKind {
+        ImmediateWrite,
+        PartialWrite,
+        ResponseTimeout,
+        ResponseReset,
+        ResponseClose,
+        Http400,
+        Http403,
+        Http500,
+        MalformedJson,
+        NoClientCertificate,
+        FingerprintMismatch,
+        DifferentKeyCertificate,
+        MalformedCertificate,
+        CredentialConstruction,
+    }
+
+    enum ExpectedFailure {
+        Io(io::ErrorKind, &'static str),
+        Mux(MuxError),
+        Rejected(u16),
+        Json,
+        TlsPrefix(&'static str),
+        PairingExact(&'static str),
+        PairingPrefix(&'static str),
+    }
+
+    fn terminal_failure_script(
+        kind: TerminalFailureKind,
+        material: &GeneratedKey,
+    ) -> (Result<HttpResponse, TransportError>, ExpectedFailure) {
+        match kind {
+            // The seam observes a send failure, not TCP byte progress. Distinct
+            // errors keep immediate and partial writes independently attributable
+            // without claiming the fake can see how many bytes reached the peer.
+            TerminalFailureKind::ImmediateWrite => (
+                Err(TransportError::Io(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "immediate write failed",
+                ))),
+                ExpectedFailure::Io(io::ErrorKind::BrokenPipe, "immediate write failed"),
+            ),
+            TerminalFailureKind::PartialWrite => (
+                Err(TransportError::Io(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "partial write failed",
+                ))),
+                ExpectedFailure::Io(io::ErrorKind::WriteZero, "partial write failed"),
+            ),
+            TerminalFailureKind::ResponseTimeout => (
+                Err(TransportError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "response timed out",
+                ))),
+                ExpectedFailure::Io(io::ErrorKind::TimedOut, "response timed out"),
+            ),
+            TerminalFailureKind::ResponseReset => (
+                Err(TransportError::Mux(MuxError::StreamReset)),
+                ExpectedFailure::Mux(MuxError::StreamReset),
+            ),
+            TerminalFailureKind::ResponseClose => (
+                Err(TransportError::Mux(MuxError::Incomplete)),
+                ExpectedFailure::Mux(MuxError::Incomplete),
+            ),
+            TerminalFailureKind::Http400 => (
+                Ok(http_response(400, b"bad request".to_vec())),
+                ExpectedFailure::Rejected(400),
+            ),
+            TerminalFailureKind::Http403 => (
+                Ok(http_response(403, b"forbidden".to_vec())),
+                ExpectedFailure::Rejected(403),
+            ),
+            TerminalFailureKind::Http500 => (
+                Ok(http_response(500, b"server error".to_vec())),
+                ExpectedFailure::Rejected(500),
+            ),
+            TerminalFailureKind::MalformedJson => {
+                (Ok(http_response(200, b"{".to_vec())), ExpectedFailure::Json)
+            }
+            TerminalFailureKind::NoClientCertificate => {
+                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
+                response.client_cert.clear();
+                (
+                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
+                    ExpectedFailure::PairingExact("pair response carried no client cert"),
+                )
+            }
+            TerminalFailureKind::FingerprintMismatch => {
+                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
+                response.fingerprint = "sha256:not-the-client-cert".into();
+                (
+                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
+                    ExpectedFailure::PairingPrefix("client cert fingerprint mismatch"),
+                )
+            }
+            TerminalFailureKind::DifferentKeyCertificate => {
+                let response = pair_response(material, TestCertificateMode::UnrelatedKey);
+                (
+                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
+                    ExpectedFailure::PairingExact(
+                        "client certificate public key does not match generated key",
+                    ),
+                )
+            }
+            TerminalFailureKind::MalformedCertificate => {
+                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
+                response.client_cert =
+                    "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n".into();
+                response.fingerprint = format!("sha256:{}", ca::sha256_hex(&[0]));
+                (
+                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
+                    ExpectedFailure::PairingExact("client certificate public key is malformed"),
+                )
+            }
+            TerminalFailureKind::CredentialConstruction => {
+                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
+                response.client_cert =
+                    "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n".into();
+                (
+                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
+                    ExpectedFailure::TlsPrefix("bad certificate PEM:"),
+                )
+            }
+        }
+    }
+
+    fn assert_expected_failure(error: TransportError, expected: ExpectedFailure) {
+        match (error, expected) {
+            (TransportError::Io(error), ExpectedFailure::Io(kind, message)) => {
+                assert_eq!(error.kind(), kind);
+                assert_eq!(error.to_string(), message);
+            }
+            (TransportError::Mux(actual), ExpectedFailure::Mux(expected)) => {
+                assert_eq!(actual, expected);
+            }
+            (TransportError::Rejected { status, .. }, ExpectedFailure::Rejected(expected)) => {
+                assert_eq!(status, expected)
+            }
+            (TransportError::Json(_), ExpectedFailure::Json) => {}
+            (TransportError::Tls(actual), ExpectedFailure::TlsPrefix(expected)) => {
+                assert!(
+                    actual.starts_with(expected),
+                    "unexpected TLS error: {actual}"
+                );
+            }
+            (TransportError::Pairing(actual), ExpectedFailure::PairingExact(expected)) => {
+                assert_eq!(actual, expected);
+            }
+            (TransportError::Pairing(actual), ExpectedFailure::PairingPrefix(expected)) => {
+                assert!(
+                    actual.starts_with(expected),
+                    "unexpected pairing error: {actual}"
+                );
+            }
+            (actual, _) => panic!("unexpected terminal error: {actual:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_pairing_first_write_is_terminal_for_every_failure_shape() {
+        for kind in [
+            TerminalFailureKind::ImmediateWrite,
+            TerminalFailureKind::PartialWrite,
+            TerminalFailureKind::ResponseTimeout,
+            TerminalFailureKind::ResponseReset,
+            TerminalFailureKind::ResponseClose,
+            TerminalFailureKind::Http400,
+            TerminalFailureKind::Http403,
+            TerminalFailureKind::Http500,
+            TerminalFailureKind::MalformedJson,
+            TerminalFailureKind::NoClientCertificate,
+            TerminalFailureKind::FingerprintMismatch,
+            TerminalFailureKind::DifferentKeyCertificate,
+            TerminalFailureKind::MalformedCertificate,
+            TerminalFailureKind::CredentialConstruction,
+        ] {
+            let material = generate_csr("test-device").unwrap();
+            let (send_result, expected) = terminal_failure_script(kind, &material);
+            let seam = FakeDirectPairingSeam::new(material, vec![Ok(())], send_result);
+            let counters = seam.counters();
+            let error = pair_with_seam(
+                &test_endpoints(),
+                "00112233445566778899aabbccddeeff",
+                &[0x22; 16],
+                "test-device",
+                seam,
+            )
+            .await
+            .unwrap_err();
+
+            assert_expected_failure(error, expected);
+            let counters = counters.lock().unwrap();
+            assert_eq!(
+                counters.prepare_attempts.len(),
+                1,
+                "later endpoint prepared after {kind:?}"
+            );
+            assert_eq!(
+                counters.request_writes, 1,
+                "extra request written after {kind:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_pairing_rejection_preserves_status_and_displays_only_body_summary() {
+        let nonce = "00112233445566778899aabbccddeeff";
+        let csr = "-----BEGIN CERTIFICATE REQUEST-----";
+        let ca_fp_prefix = [0x22; 16];
+        let ca_fp = "22222222222222222222222222222222";
+        let fragment = "PAIRLINK-FRAGMENT-SENTINEL";
+        let request_url =
+            "https://10.0.0.1:7657/app/network/pair?token=00112233445566778899aabbccddeeff";
+        let mut raw_body = format!(
+            "reflected nonce={nonce} csr={csr} ca={ca_fp} fragment={fragment} url={request_url}"
+        )
+        .into_bytes();
+        raw_body.push(0xff);
+        assert_ne!(String::from_utf8_lossy(&raw_body).len(), raw_body.len());
+        let expected_digest = ca::sha256_hex(&raw_body);
+        let expected_display = format!(
+            "server rejected request: HTTP 403 rejection-body bytes={} sha256={}",
+            raw_body.len(),
+            &expected_digest[..12]
+        );
+
+        let material = generate_csr("test-device").unwrap();
+        let seam =
+            FakeDirectPairingSeam::new(material, vec![Ok(())], Ok(http_response(403, raw_body)));
+        let error = pair_with_seam(&test_endpoints(), nonce, &ca_fp_prefix, "test-device", seam)
+            .await
+            .unwrap_err();
+
+        assert_eq!(crate::transport_error_code(&error), "http_403");
+        let display = error.to_string();
+        assert_eq!(display, expected_display);
+        for sentinel in [nonce, csr, ca_fp, fragment, request_url, "?token="] {
+            assert!(
+                !display.contains(sentinel),
+                "rejection display reflected {sentinel}"
+            );
+        }
+        assert!(matches!(
+            error,
+            TransportError::Rejected { status: 403, .. }
+        ));
+    }
 }

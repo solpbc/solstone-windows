@@ -264,19 +264,39 @@ async fn serve_one(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     serve_one_response(listener, acceptor, "200 OK", b"{\"status\":\"ok\"}").await
 }
 
+#[derive(Clone, Copy)]
+enum PairCertificateMode {
+    SubmittedCsr,
+    UnrelatedKey,
+}
+
 async fn serve_one_pair_response(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     signing_cert: rcgen::Certificate,
     signing_key: KeyPair,
+    mode: PairCertificateMode,
 ) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
     let mut tls = acceptor.accept(tcp).await.unwrap();
     let (stream_id, request) = read_framed_request(&mut tls).await;
     let pair_request: observer_pl::wire::PairRequest =
         serde_json::from_value(request_body(&request)).unwrap();
-    let csr = CertificateSigningRequestParams::from_pem(&pair_request.csr).unwrap();
-    let client_cert = csr.signed_by(&signing_cert, &signing_key).unwrap();
+    let client_cert = match mode {
+        PairCertificateMode::SubmittedCsr => {
+            CertificateSigningRequestParams::from_pem(&pair_request.csr)
+                .unwrap()
+                .signed_by(&signing_cert, &signing_key)
+                .unwrap()
+        }
+        PairCertificateMode::UnrelatedKey => {
+            let unrelated_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+            CertificateParams::new(Vec::<String>::new())
+                .unwrap()
+                .signed_by(&unrelated_key, &signing_cert, &signing_key)
+                .unwrap()
+        }
+    };
     let fixture = authority_fixture("example.link.pair.response.200.application-json.default");
     let payload = &fixture["payload"];
     let response_body = serde_json::to_vec(&serde_json::json!({
@@ -929,6 +949,7 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
         acceptor,
         signing_cert,
         signing_key,
+        PairCertificateMode::SubmittedCsr,
     ));
     let nonce = request_fixture["payload"]["nonce"].as_str().unwrap();
     let label = request_fixture["payload"]["device_label"].as_str().unwrap();
@@ -949,6 +970,14 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
         response_fixture["payload"]["home_label"]
     );
     assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
+    let credential_key = KeyPair::from_pem(&credential.client_key_pem).unwrap();
+    let credential_leaf = pl_transport_win::tls::parse_certs(&credential.client_cert_pem)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        credential_key.public_key_der(),
+        observer_pl::ca::extract_spki_der(credential_leaf.as_ref()).unwrap()
+    );
     let request = server.await.unwrap();
     assert!(pair_capture_matches(&request, nonce, label));
     let mutated = String::from_utf8(request.clone()).unwrap().replacen(
@@ -957,6 +986,77 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
         1,
     );
     assert!(!pair_capture_matches(mutated.as_bytes(), nonce, label));
+}
+
+#[tokio::test]
+async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+    ca_params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+    let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let signing_cert = ca_params.self_signed(&signing_key).unwrap();
+
+    let (server_cert, server_key) = self_signed();
+    let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+    let first_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_port = first_listener.local_addr().unwrap().port();
+    let first_server = tokio::spawn(serve_one_pair_response(
+        first_listener,
+        acceptor,
+        signing_cert,
+        signing_key,
+        PairCertificateMode::UnrelatedKey,
+    ));
+
+    let later_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let later_port = later_listener.local_addr().unwrap().port();
+    let later_accepts = Arc::new(AtomicUsize::new(0));
+    let later_server = tokio::spawn({
+        let later_accepts = later_accepts.clone();
+        async move {
+            if let Ok(Ok((tcp, _))) = tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                later_listener.accept(),
+            )
+            .await
+            {
+                later_accepts.fetch_add(1, Ordering::SeqCst);
+                drop(tcp);
+            }
+        }
+    });
+    let endpoints = [
+        observer_pl::pairlink::Endpoint {
+            host: "127.0.0.1".into(),
+            port: first_port,
+        },
+        observer_pl::pairlink::Endpoint {
+            host: "127.0.0.1".into(),
+            port: later_port,
+        },
+    ];
+
+    let error = pl_transport_win::pairing::pair(
+        &endpoints,
+        "00112233445566778899aabbccddeeff",
+        &server_pin,
+        "win-test",
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        TransportError::Pairing(message)
+            if message == "client certificate public key does not match generated key"
+    ));
+    let request = first_server.await.unwrap();
+    assert!(String::from_utf8_lossy(&request)
+        .starts_with("POST /app/network/pair?token=00112233445566778899aabbccddeeff HTTP/1.1"));
+    later_server.await.unwrap();
+    assert_eq!(later_accepts.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

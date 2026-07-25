@@ -143,6 +143,29 @@ describe("settings renderer characterization", () => {
     expect(present(ids["settings.status.upload.state"]).textContent).toContain("not paired");
   });
 
+  it("renders failed pairing diagnostic detail", () => {
+    const base = notPairedDump();
+    const dump = {
+      ...base,
+      sync: {
+        ...base.sync,
+        pairing: {
+          ...base.sync.pairing,
+          phase: "failed" as const,
+          detail: "http_403",
+        },
+      },
+    };
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+
+    app.__test__.renderSettings(dump);
+
+    expect(present(ids["settings.pairing.state"]).textContent).toBe(
+      "pairing failed: http_403",
+    );
+  });
+
   it("renders a faulted required source with its detail", () => {
     const dump = faultedSourceDump();
     app.__test__.setRoute("sources");
