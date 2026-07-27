@@ -185,7 +185,7 @@ Rotation sequence:
 
 Audio in orphan note: quarantine moves the whole `.incomplete` dir aside, so any audio in that in-flight orphan is preserved but set aside. That is acceptable for v1 and affects at most the segment active at crash. Do not build per-file recovery.
 
-Alternative for Jer: fMP4 plus periodic `Flush`, with recovery sealing flushed orphans as already playable. This is closer to macOS movie-fragment parity but adds COM/container surface and remains unverifiable in-lode until a post-ship/live Windows validation gate.
+Alternative: fMP4 plus periodic `Flush`, with recovery sealing flushed orphans as already playable. This is closer to macOS movie-fragment parity but adds COM/container surface and remains unverifiable in-lode until a post-ship/live Windows validation gate.
 
 ## D6 - Finalize Failure, Accounting, and Contract
 
@@ -355,7 +355,7 @@ No implementation-stage edit expected:
 
 ## Decisions For Jer To Confirm
 
-1. D5 product call: approve plain MP4 plus finalize-at-rotation plus orphan quarantine (recommended), or choose fMP4 plus periodic `Flush` plus seal-flushed orphan for macOS parity (deferred; partial-playability is unverifiable in-lode).
+1. Product call: approve plain MP4 plus finalize-at-rotation plus orphan quarantine (recommended), or choose fMP4 plus periodic `Flush` plus seal-flushed orphan for macOS parity (deferred; partial-playability is unverifiable in-lode).
 
 Senior-decided (flag if you disagree): D2 channel-split, D7 sticky-async errors plus sync dim-reject, D8 pure `SCREEN_FILE_NAME` constant.
 
