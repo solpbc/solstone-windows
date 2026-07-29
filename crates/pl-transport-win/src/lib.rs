@@ -32,6 +32,7 @@ pub mod credential;
 pub mod heartbeat;
 pub mod journal_bridge;
 mod journal_bridge_carrier;
+pub mod observe;
 pub mod pairing;
 pub mod relay;
 pub(crate) mod relay_http;

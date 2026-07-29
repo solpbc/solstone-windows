@@ -26,8 +26,10 @@ use tokio_rustls::client::TlsStream;
 
 use crate::connection::{dial_tls, run_request_over_stream};
 use crate::credential::{generate_csr, Credential, EndpointAddr, GeneratedKey};
+use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
 use crate::relay_pairing;
 use crate::{tls, TransportError};
+use observer_model::TransportPath;
 
 pub(crate) type DirectPairPrepareFuture<'a> = Pin<
     Box<
@@ -60,7 +62,12 @@ pub(crate) trait PreparedDirectPairConnection: Send {
     ) -> DirectPairSendFuture<'a>;
 }
 
-struct RealDirectPairingSeam;
+/// The production direct-pairing seam. It carries the observation handle rather
+/// than widening [`DirectPairingSeam`], so the trait the tests implement is
+/// unchanged.
+struct RealDirectPairingSeam {
+    observer: ObserverHandle,
+}
 
 struct TlsPreparedDirectPairConnection {
     stream: TlsStream<TcpStream>,
@@ -77,7 +84,9 @@ impl DirectPairingSeam for RealDirectPairingSeam {
         endpoint: &'a Endpoint,
     ) -> DirectPairPrepareFuture<'a> {
         Box::pin(async move {
+            note_dial_attempt(&self.observer);
             let stream = dial_tls(config, &endpoint.host, endpoint.port).await?;
+            note_dial_success(&self.observer, TransportPath::Direct);
             Ok(Box::new(TlsPreparedDirectPairConnection { stream })
                 as Box<dyn PreparedDirectPairConnection>)
         })
@@ -113,7 +122,7 @@ pub async fn pair(
         nonce_hex,
         ca_fp_prefix,
         device_label,
-        Arc::new(RealDirectPairingSeam),
+        Arc::new(RealDirectPairingSeam { observer: None }),
     )
     .await
 }
@@ -158,13 +167,27 @@ pub(crate) async fn pair_with_seam(
 
 /// Parse a `https://go.solstone.app/p#…` pair-link and pair against it.
 pub async fn pair_from_link(link: &str, device_label: &str) -> Result<Credential, TransportError> {
-    pair_from_link_with_seam(link, device_label, Arc::new(RealDirectPairingSeam)).await
+    pair_from_link_observed(link, device_label, None).await
+}
+
+/// [`pair_from_link`] with an operation-scoped observation seam attached, so a
+/// ceremony's dials are counted like every other leg of an operation.
+pub async fn pair_from_link_observed(
+    link: &str,
+    device_label: &str,
+    observer: ObserverHandle,
+) -> Result<Credential, TransportError> {
+    let seam = Arc::new(RealDirectPairingSeam {
+        observer: observer.clone(),
+    });
+    pair_from_link_with_seam(link, device_label, seam, observer).await
 }
 
 async fn pair_from_link_with_seam(
     link: &str,
     device_label: &str,
     seam: Arc<dyn DirectPairingSeam>,
+    observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
     let parsed = pairlink::parse(link).map_err(|e| TransportError::PairLink(e.to_string()))?;
     match parsed {
@@ -178,7 +201,9 @@ async fn pair_from_link_with_seam(
             )
             .await
         }
-        ParsedPairLink::Relay(rl) => relay_pairing::pair_over_relay(&rl, device_label).await,
+        ParsedPairLink::Relay(rl) => {
+            relay_pairing::pair_over_relay_observed(&rl, device_label, observer).await
+        }
     }
 }
 
@@ -445,7 +470,7 @@ mod tests {
         let counters = seam.counters();
         let link = direct_v05_link(&[[10, 0, 0, 1], [192, 0, 2, 42]]);
 
-        let error = pair_from_link_with_seam(&link, "test-device", seam)
+        let error = pair_from_link_with_seam(&link, "test-device", seam, None)
             .await
             .unwrap_err();
 
@@ -540,7 +565,7 @@ mod tests {
         let counters = seam.counters();
         let link = direct_v05_link(&[[10, 0, 0, 1], [192, 168, 0, 2], [10, 0, 0, 1]]);
 
-        let error = pair_from_link_with_seam(&link, "test-device", seam)
+        let error = pair_from_link_with_seam(&link, "test-device", seam, None)
             .await
             .unwrap_err();
 

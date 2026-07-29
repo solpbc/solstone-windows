@@ -27,6 +27,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
+use crate::observe::{note_close_completed, note_request_bytes, ObserverHandle};
 use crate::tls::pinned_server_name;
 use crate::TransportError;
 
@@ -54,8 +55,22 @@ pub async fn request_once(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<HttpResponse, TransportError> {
+    request_once_observed(config, host, port, method, path, headers, body, &None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn request_once_observed(
+    config: Arc<ClientConfig>,
+    host: &str,
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    observer: &ObserverHandle,
+) -> Result<HttpResponse, TransportError> {
     let tls = dial_tls(config, host, port).await?;
-    run_request_over_stream(tls, method, path, headers, body).await
+    run_request_over_stream_observed(tls, method, path, headers, body, observer).await
 }
 
 pub(crate) async fn dial_tls(
@@ -81,11 +96,25 @@ pub(crate) async fn dial_tls(
 }
 
 pub(crate) async fn run_request_over_stream<S>(
+    stream: S,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<HttpResponse, TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    run_request_over_stream_observed(stream, method, path, headers, body, &None).await
+}
+
+pub(crate) async fn run_request_over_stream_observed<S>(
     mut stream: S,
     method: &str,
     path: &str,
     headers: &[(String, String)],
     body: &[u8],
+    observer: &ObserverHandle,
 ) -> Result<HttpResponse, TransportError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -113,6 +142,10 @@ where
                     "PL write timed out sending request frame",
                 )
                 .await?;
+                // Recorded per frame, not per burst: a write that fails partway
+                // through a burst must still leave the bytes that did reach the
+                // wire visible, which is what an interrupted upload looks like.
+                note_request_bytes(observer, upload.sent_bytes() as u64);
                 wrote = true;
             }
             if wrote {
@@ -182,7 +215,15 @@ where
     // Best-effort clean close.
     let _ = stream.shutdown().await;
 
-    Ok(assembler.into_response()?)
+    let response = assembler.into_response()?;
+    // `close_completed` is the strong reading: the half-closing CLOSE went out
+    // *and* the peer's terminal response came back. An early peer rejection that
+    // closed our stream before the body finished leaves `is_done()` false, and is
+    // honestly reported as an incomplete close.
+    if upload.is_done() {
+        note_close_completed(observer);
+    }
+    Ok(response)
 }
 
 async fn write_all_with_timeout<S>(
@@ -352,6 +393,152 @@ mod tests {
 
         assert_eq!(response.body, vec![b'x'; BODY_BYTES]);
         fake_peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_completed_request_records_every_byte_and_a_completed_close() {
+        use crate::observe::OperationObserver;
+
+        let observer = OperationObserver::new();
+        let body = vec![b'z'; 4096];
+        let (client, mut peer) = tokio::io::duplex(INITIAL_WINDOW * 2);
+        let fake_peer = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = read_request_close(&mut peer, &mut decoder).await;
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+            send_frame(&mut peer, stream_id, FLAG_DATA | FLAG_CLOSE, &response).await;
+            let mut tail = [0u8; 64];
+            while peer.read(&mut tail).await.unwrap() != 0 {}
+        });
+
+        let request_len =
+            http::build_request("POST", "/app/observer/ingest", &[], &body).len() as u64;
+        let response = run_request_over_stream_observed(
+            client,
+            "POST",
+            "/app/observer/ingest",
+            &[],
+            &body,
+            &Some(observer.clone()),
+        )
+        .await
+        .unwrap();
+        fake_peer.await.unwrap();
+
+        assert_eq!(response.status, 200);
+        let counts = observer.counts();
+        assert_eq!(counts.request_bytes_sent, request_len);
+        assert!(
+            counts.close_completed,
+            "CLOSE went out and the peer's terminal response came back"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_request_records_progress_without_a_completed_close() {
+        use crate::observe::OperationObserver;
+
+        // A body past the initial window: the peer takes the first window's worth
+        // of DATA and then drops, which is the shape a bounded operator
+        // interruption lands in — progress made, no terminal close.
+        let observer = OperationObserver::new();
+        let body = vec![b'z'; INITIAL_WINDOW * 2];
+        let (client, mut peer) = tokio::io::duplex(64 * 1024);
+        let fake_peer = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let mut data = 0usize;
+            while data < INITIAL_WINDOW / 2 {
+                let frame = next_frame(&mut peer, &mut decoder).await;
+                if frame.flags & FLAG_DATA != 0 {
+                    data += frame.payload.len();
+                }
+            }
+            drop(peer); // interrupt mid-upload, before any response
+        });
+
+        let error = run_request_over_stream_observed(
+            client,
+            "POST",
+            "/app/observer/ingest",
+            &[],
+            &body,
+            &Some(observer.clone()),
+        )
+        .await
+        .unwrap_err();
+        fake_peer.await.unwrap();
+
+        // An interrupted upload is an error, not a quiet success.
+        assert!(matches!(
+            error,
+            TransportError::Io(_) | TransportError::Mux(_)
+        ));
+        let counts = observer.counts();
+        assert!(
+            counts.request_bytes_sent > 0,
+            "progress before the interruption is visible"
+        );
+        assert!(
+            counts.request_bytes_sent < body.len() as u64,
+            "the whole body cannot have landed"
+        );
+        assert!(
+            !counts.close_completed,
+            "an interrupted upload must never report a completed close"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_early_peer_rejection_reports_an_incomplete_close() {
+        use crate::observe::OperationObserver;
+
+        // The peer answers and closes our stream before the body is done. There is
+        // a valid response, but our CLOSE never went out, so the close is honestly
+        // incomplete.
+        let observer = OperationObserver::new();
+        let body = vec![b'z'; INITIAL_WINDOW * 2];
+        let (client, mut peer) = tokio::io::duplex(INITIAL_WINDOW * 2);
+        let fake_peer = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let mut stream_id = None;
+            while stream_id.is_none() {
+                let frame = next_frame(&mut peer, &mut decoder).await;
+                if frame.flags & FLAG_DATA != 0 {
+                    stream_id = Some(frame.stream_id);
+                }
+            }
+            let response =
+                b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 3\r\n\r\nbig".to_vec();
+            send_frame(
+                &mut peer,
+                stream_id.unwrap(),
+                FLAG_DATA | FLAG_CLOSE,
+                &response,
+            )
+            .await;
+            let mut tail = [0u8; 1024];
+            while peer.read(&mut tail).await.unwrap_or(0) != 0 {}
+        });
+
+        let response = run_request_over_stream_observed(
+            client,
+            "POST",
+            "/app/observer/ingest",
+            &[],
+            &body,
+            &Some(observer.clone()),
+        )
+        .await
+        .unwrap();
+        fake_peer.await.unwrap();
+
+        assert_eq!(response.status, 413);
+        let counts = observer.counts();
+        assert!(counts.request_bytes_sent > 0);
+        assert!(
+            !counts.close_completed,
+            "a rejection that preempted our CLOSE is not a completed close"
+        );
     }
 
     #[tokio::test]

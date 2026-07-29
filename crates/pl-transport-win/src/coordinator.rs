@@ -507,6 +507,7 @@ impl UploadCoordinator {
                         confirmed_now += 1;
                         self.on_confirmed(
                             &segment_key,
+                            &server_key,
                             bytes,
                             duration_ms,
                             metadata.path,
@@ -591,9 +592,11 @@ impl UploadCoordinator {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_confirmed(
         &self,
         segment_key: &str,
+        server_key: &str,
         bytes: u64,
         duration_ms: u64,
         path: TransportPath,
@@ -606,6 +609,7 @@ impl UploadCoordinator {
             // The end-of-tick rescan (set_pending after the loop) stays authoritative.
             snapshot.upload.pending_segments = snapshot.upload.pending_segments.saturating_sub(1);
             snapshot.upload.last_uploaded_segment = Some(segment_key.to_string());
+            snapshot.upload.last_uploaded_server_segment = Some(server_key.to_string());
             snapshot.upload.last_error = None;
             snapshot.upload.last_upload_duration_ms = Some(duration_ms);
             snapshot.upload.last_upload_bytes = Some(bytes);

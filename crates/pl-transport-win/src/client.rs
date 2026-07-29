@@ -29,8 +29,9 @@ use observer_pl::{
 use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::connection::{dial_tls, request_once};
+use crate::connection::{dial_tls, request_once_observed};
 use crate::credential::{Credential, PairedState};
+use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
 use crate::relay::{dial_relay_carrier, request_once_relay, RelayTerminationHandle};
 use crate::relay_token::{refresh_device_token, RefreshOutcome};
 use crate::{tls, transport_error_code, RelayError, TransportError};
@@ -88,6 +89,8 @@ pub struct ObserverClient {
     device_token: Option<tokio::sync::Mutex<String>>,
     /// Optional persisted pairing state path for best-effort refreshed-token write-back.
     state_path: Option<PathBuf>,
+    /// Optional operation-scoped observation seam. `None` in the GUI.
+    observer: ObserverHandle,
 }
 
 impl ObserverClient {
@@ -109,6 +112,7 @@ impl ObserverClient {
             boundary_counter: AtomicU64::new(1),
             device_token,
             state_path: None,
+            observer: None,
         })
     }
 
@@ -121,6 +125,15 @@ impl ObserverClient {
     /// Attach the persisted pairing state path for best-effort relay token refresh write-back.
     pub fn with_state_path(mut self, path: PathBuf) -> Self {
         self.state_path = Some(path);
+        self
+    }
+
+    /// Attach an operation-scoped observation seam.
+    ///
+    /// Observation only: every dial site records through it without branching on
+    /// what it holds, so retry policy, backoff, and ordering are unchanged.
+    pub fn with_observer(mut self, observer: ObserverHandle) -> Self {
+        self.observer = observer;
         self
     }
 
@@ -270,8 +283,10 @@ impl ObserverClient {
         let mut last_err: Option<TransportError> = None;
         for attempt in 0..MAX_ATTEMPTS {
             for endpoint in &self.credential.endpoints {
+                note_dial_attempt(&self.observer);
                 match dial_tls(self.config.clone(), &endpoint.host, endpoint.port).await {
                     Ok(stream) => {
+                        note_dial_success(&self.observer, TransportPath::Direct);
                         return Ok(DialedCarrier {
                             stream: Box::new(stream),
                             kind: CarrierKind::Lan,
@@ -388,6 +403,7 @@ impl ObserverClient {
         loop {
             let token = self.current_token().await;
             attempts = attempts.saturating_add(1);
+            note_dial_attempt(&self.observer);
             log_dial_start(path, attempts);
             let started = Instant::now();
             match request_once_relay(
@@ -403,6 +419,7 @@ impl ObserverClient {
             .await
             {
                 Ok(response) => {
+                    note_dial_success(&self.observer, TransportPath::Relay);
                     log_dial_success(path, attempts, elapsed_ms(started));
                     log_path_selected(TransportPath::Relay);
                     return Ok((response, attempts));
@@ -460,8 +477,10 @@ impl ObserverClient {
         let mut transient_attempt = 0usize;
         loop {
             let token = self.current_token().await;
+            note_dial_attempt(&self.observer);
             match dial_relay_carrier(self.config.clone(), origin, instance_id, &token).await {
                 Ok(carrier) => {
+                    note_dial_success(&self.observer, TransportPath::Relay);
                     return Ok(DialedCarrier {
                         stream: Box::new(carrier.stream),
                         kind: CarrierKind::Relay {
@@ -512,9 +531,10 @@ impl ObserverClient {
         for attempt in 0..MAX_ATTEMPTS {
             for endpoint in &self.credential.endpoints {
                 attempts = attempts.saturating_add(1);
+                note_dial_attempt(&self.observer);
                 log_dial_start(path, attempts);
                 let started = Instant::now();
-                match request_once(
+                match request_once_observed(
                     self.config.clone(),
                     &endpoint.host,
                     endpoint.port,
@@ -522,10 +542,12 @@ impl ObserverClient {
                     path,
                     headers,
                     body,
+                    &self.observer,
                 )
                 .await
                 {
                     Ok(response) => {
+                        note_dial_success(&self.observer, TransportPath::Direct);
                         log_dial_success(path, attempts, elapsed_ms(started));
                         let transport_path = TransportPath::Direct;
                         log_path_selected(transport_path);
@@ -572,7 +594,10 @@ impl ObserverClient {
                 response,
                 metadata: SendMetadata {
                     path: TransportPath::Relay,
-                    attempts: relay_attempts,
+                    // The exhausted LAN legs were real dials on the way here, so
+                    // the reported total spans both. Reporting only the relay
+                    // count would understate the work this request cost.
+                    attempts: attempts.saturating_add(relay_attempts),
                 },
             });
         }

@@ -72,6 +72,20 @@ pub async fn start(
     paired: &PairedState,
     state_path: PathBuf,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
+    start_observed(paired, state_path, None).await
+}
+
+/// [`start`] with an operation-scoped observation seam attached to the bridge's
+/// client.
+///
+/// The bridge's [`MuxCarrier`] redials silently whenever its cached carrier is
+/// dead; because those redials go through this client's `dial_carrier`, attaching
+/// the handle here is what makes them countable.
+pub async fn start_observed(
+    paired: &PairedState,
+    state_path: PathBuf,
+    observer: crate::observe::ObserverHandle,
+) -> Result<JournalBridgeHandle, BridgeStartError> {
     let credential = paired
         .credential
         .clone()
@@ -93,7 +107,8 @@ pub async fn start(
     let client = ObserverClient::new(credential)
         .map_err(BridgeStartError::Client)?
         .with_observer_key(Some(observer_key))
-        .with_state_path(state_path);
+        .with_state_path(state_path)
+        .with_observer(observer);
     let client = Arc::new(client);
     let carrier = Arc::new(MuxCarrier::new(client));
 

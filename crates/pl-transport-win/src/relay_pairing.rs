@@ -13,7 +13,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::credential::{endpoint_addrs_from_local_endpoints, generate_csr, Credential};
+use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
 use crate::{relay, relay_http, spki_pin, tls, RelayControlEndpoint, TransportError};
+use observer_model::TransportPath;
 
 #[derive(Deserialize)]
 struct EnrollResponse {
@@ -24,9 +26,23 @@ pub async fn pair_over_relay(
     link: &RelayPairLink,
     device_label: &str,
 ) -> Result<Credential, TransportError> {
+    pair_over_relay_observed(link, device_label, None).await
+}
+
+/// [`pair_over_relay`] with an operation-scoped observation seam attached.
+///
+/// The ceremony's dials are the pair-dial websocket, the inner TLS handshake
+/// carried on it, and the relay `/enroll/device` control request. All three are
+/// counted, so a reported "total dial attempts" for `pair` omits no class of dial.
+pub async fn pair_over_relay_observed(
+    link: &RelayPairLink,
+    device_label: &str,
+    observer: ObserverHandle,
+) -> Result<Credential, TransportError> {
     let rk = observer_pl::relay_window::derive_rk(&link.s);
     let url = observer_pl::relay::pair_dial_url(&link.relay_origin)
         .map_err(|e| TransportError::PairLink(format!("relay origin: {e}")))?;
+    note_dial_attempt(&observer);
     let ws = relay::dial_pair_relay_ws(&url, &hex_lower(&rk), relay::outer_config()).await?;
 
     let generated = generate_csr(device_label)?;
@@ -38,6 +54,7 @@ pub async fn pair_over_relay(
     let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
     let path = format!("{}?token={}", paths::PAIR, hex_lower(&link.s));
     let inner_config = Arc::new(tls::trust_all_pairing_config()?);
+    note_dial_attempt(&observer);
     let (response, peer_leaf) = relay::request_once_over_ws_with_peer_leaf(
         ws,
         inner_config,
@@ -48,6 +65,7 @@ pub async fn pair_over_relay(
         &body,
     )
     .await?;
+    note_dial_success(&observer, TransportPath::Relay);
     let peer_leaf =
         peer_leaf.ok_or_else(|| TransportError::Pairing("relay missing peer leaf".into()))?;
     if !response.is_success() {
@@ -90,8 +108,13 @@ pub async fn pair_over_relay(
         .home_attestation
         .as_deref()
         .ok_or_else(|| TransportError::Pairing("relay response missing home attestation".into()))?;
-    let device_token =
-        enroll_device(&link.relay_origin, &pair.instance_id, home_attestation).await?;
+    let device_token = enroll_device(
+        &link.relay_origin,
+        &pair.instance_id,
+        home_attestation,
+        &observer,
+    )
+    .await?;
     let device_token_expires_at =
         observer_pl::jwt::decode_unverified_claims(&device_token).map(|c| c.exp);
     let ca_fp_prefix = ca::sha256(pinned_ca.as_ref())[..16].to_vec();
@@ -115,12 +138,15 @@ async fn enroll_device(
     relay_origin: &str,
     instance_id: &str,
     home_attestation: &str,
+    observer: &ObserverHandle,
 ) -> Result<String, TransportError> {
     let body = serde_json::to_vec(&json!({
         "instance_id": instance_id,
         "home_attestation": home_attestation,
     }))?;
+    note_dial_attempt(observer);
     let response = relay_http::relay_https_post_json(relay_origin, "/enroll/device", &body).await?;
+    note_dial_success(observer, TransportPath::Relay);
     if !response.is_success() {
         return Err(TransportError::RelayControlRejected {
             endpoint: RelayControlEndpoint::EnrollDevice,

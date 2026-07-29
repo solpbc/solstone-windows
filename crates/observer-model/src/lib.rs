@@ -482,8 +482,16 @@ pub struct UploadStatus {
     /// Segments moved aside after repeated journal rejections.
     #[serde(default)]
     pub quarantined_segments: u64,
-    /// The last segment confirmed landed (`HHMMSS_LEN`).
+    /// The last segment confirmed landed (`HHMMSS_LEN`), as this device named it.
     pub last_uploaded_segment: Option<String>,
+    /// The segment key the journal reported for that same upload.
+    ///
+    /// Normally equal to [`Self::last_uploaded_segment`]; it differs when the
+    /// journal remapped a duplicate or a DST-fold collision to another key. It is
+    /// recorded rather than discarded so a caller can tell which identity actually
+    /// holds the bytes.
+    #[serde(default)]
+    pub last_uploaded_server_segment: Option<String>,
     /// The last upload error detail, when one occurred.
     pub last_error: Option<String>,
     /// Epoch milliseconds of the last successful sync tick.
@@ -827,6 +835,7 @@ mod tests {
                     failed_segments: 1,
                     quarantined_segments: 0,
                     last_uploaded_segment: Some("120000".into()),
+                    last_uploaded_server_segment: Some("120000".into()),
                     last_error: None,
                     last_successful_sync: Some(1_700_000_000_000),
                     recent_error_count: 1,
@@ -1134,6 +1143,7 @@ mod tests {
             failed_segments: 1,
             quarantined_segments: 4,
             last_uploaded_segment: Some("120000_300".into()),
+            last_uploaded_server_segment: Some("120000_300".into()),
             last_error: None,
             last_successful_sync: Some(1_700_000_000_000),
             recent_error_count: 1,
