@@ -6,7 +6,6 @@
 #![allow(dead_code)] // Each integration-test binary compiles this shared helper independently.
 
 use std::io;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
@@ -92,7 +91,6 @@ pub(crate) struct MockState {
     pub(crate) pair_instance_id: Mutex<Option<String>>,
     pub(crate) enroll_status: Mutex<Option<u16>>,
     pub(crate) refresh_status: Mutex<Option<u16>>,
-    refresh_hits: AtomicUsize,
     pub(crate) expected_pair_token: Mutex<String>,
     pub(crate) pair_request: Mutex<Option<PairRequest>>,
 }
@@ -107,7 +105,6 @@ impl MockState {
             pair_instance_id: Mutex::new(None),
             enroll_status: Mutex::new(None),
             refresh_status: Mutex::new(None),
-            refresh_hits: AtomicUsize::new(0),
             expected_pair_token: Mutex::new(PAIR_SECRET_HEX.to_owned()),
             pair_request: Mutex::new(None),
         }
@@ -243,7 +240,6 @@ async fn handle_http(mut tcp: TcpStream, state: Arc<MockState>) -> io::Result<()
             None => write_json(&mut tcp, 200, json!({"device_token":ENROLL_TOKEN})).await?,
         }
     } else if path == "/token/refresh" {
-        state.refresh_hits.fetch_add(1, Ordering::SeqCst);
         let status = *state.refresh_status.lock().unwrap();
         match status {
             Some(401) => write_json(&mut tcp, 401, json!({"reason":"expired"})).await?,

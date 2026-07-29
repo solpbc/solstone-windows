@@ -44,7 +44,7 @@ type OpResult = (Option<Failure>, Evidence);
 // The shipped binary's main thread reserves 1 MiB (measured as 0x100000, the
 // MSVC default, with no /STACK override), and the full relay pairing path
 // aborts at that size. Native MSVC debug measurements established 2 MiB as the
-// smallest sufficient reservation. Reserve 4 MiB for 2x headroom; Windows
+// smallest reservation proven sufficient. Reserve 4 MiB for 2x headroom; Windows
 // reserves this range as virtual address space and commits pages lazily, so the
 // headroom costs address space rather than 4 MiB of memory up front.
 const OPERATION_WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
