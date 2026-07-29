@@ -4,3 +4,4 @@
 pub mod journal_fake;
 pub mod log_capture;
 pub mod observer_contract;
+pub mod relay_pairing;

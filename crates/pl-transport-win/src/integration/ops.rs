@@ -41,7 +41,45 @@ use crate::TransportError;
 /// The result of one operation: how it failed (if it did) and what it earned.
 type OpResult = (Option<Failure>, Evidence);
 
+// The shipped binary's main thread reserves 1 MiB (measured as 0x100000, the
+// MSVC default, with no /STACK override), and the full relay pairing path
+// aborts at that size. Native MSVC debug measurements established 2 MiB as the
+// smallest sufficient reservation. Reserve 4 MiB for 2x headroom; Windows
+// reserves this range as virtual address space and commits pages lazily, so the
+// headroom costs address space rather than 4 MiB of memory up front.
+const OPERATION_WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Run the operation on a dedicated worker because the shipped binary's main
+/// thread cannot hold the relay pairing path. Worker panics resume into
+/// `report_for`'s `catch_unwind`, the single producer of `internal_panic`; the
+/// borrowed scope lets the worker take `&Command` and `&Environment`.
 pub(crate) fn execute(
+    command: &Command,
+    environment: &Environment,
+    observer: Arc<OperationObserver>,
+) -> OpResult {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .stack_size(OPERATION_WORKER_STACK_BYTES)
+            .spawn_scoped(scope, move || execute_inner(command, environment, observer));
+        match worker {
+            Ok(worker) => match worker.join() {
+                Ok(result) => result,
+                Err(payload) => std::panic::resume_unwind(payload),
+            },
+            Err(_) => (
+                Some(Failure::error(
+                    Phase::Validate,
+                    "operation_worker_unavailable",
+                    "could not start the dedicated worker thread for this operation",
+                )),
+                Evidence::default(),
+            ),
+        }
+    })
+}
+
+fn execute_inner(
     command: &Command,
     environment: &Environment,
     observer: Arc<OperationObserver>,
