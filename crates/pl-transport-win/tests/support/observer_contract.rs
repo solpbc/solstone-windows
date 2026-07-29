@@ -34,6 +34,7 @@ fn record(document: &str, array: &str, id: &str) -> Value {
         .clone()
 }
 
+#[allow(dead_code)] // Each integration-test binary compiles this shared helper independently.
 pub fn fixture(id: &str) -> Value {
     assert!(
         ADOPTED_FIXTURE_IDS.contains(&id),

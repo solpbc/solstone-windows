@@ -9,6 +9,8 @@
 //! far side runs the same pinned inner TLS + PL framing server used by the LAN
 //! round-trip tests.
 
+mod support;
+
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -27,8 +29,7 @@ use pl_transport_win::relay::{dial_relay_ws, request_once_over_ws, request_once_
 use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{transport_error_code, RelayError, TransportError};
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::{ClientConfig, ServerConfig};
+use rustls::ClientConfig;
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
@@ -40,30 +41,15 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, accept_hdr_async, WebSocketStream};
 
+use support::journal_fake::{self_signed, server_config};
+use support::log_capture::CapturingSubscriber;
+
 const RELAY_TOKEN: &str = "test-device-token";
 const INSTANCE_ID: &str = "12345678-1234-5678-1234-567812345678";
 const CARRIER_READ_BUF_BYTES: usize = 64 * 1024;
 const LARGE_WS_FRAME_BYTES: usize = 256 * 1024;
 const LARGE_RESPONSE_BYTES: usize = 512 * 1024 + 137;
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
-    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-    let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
-    let cert = params.self_signed(&key).unwrap();
-    let cert_der = CertificateDer::from(cert.der().to_vec());
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
-    (cert_der, key_der)
-}
-
-fn server_config(cert: CertificateDer<'static>, key: PrivateKeyDer<'static>) -> ServerConfig {
-    ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert], key)
-        .unwrap()
-}
 
 fn client_config(pin: &[u8]) -> Arc<ClientConfig> {
     Arc::new(pairing_config(pin).unwrap())
@@ -219,76 +205,6 @@ fn response_body(response: &[u8]) -> String {
         .split_once("\r\n\r\n")
         .map(|(_, body)| body.to_string())
         .unwrap()
-}
-
-#[derive(Clone)]
-struct CapturingSubscriber {
-    lines: Arc<Mutex<Vec<String>>>,
-}
-
-impl tracing::Subscriber for CapturingSubscriber {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.target() == "journal_bridge"
-    }
-
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-
-    fn event(&self, event: &tracing::Event<'_>) {
-        if !self.enabled(event.metadata()) {
-            return;
-        }
-        let mut visitor = LogVisitor::default();
-        event.record(&mut visitor);
-        self.lines.lock().unwrap().push(visitor.line);
-    }
-
-    fn enter(&self, _span: &tracing::span::Id) {}
-
-    fn exit(&self, _span: &tracing::span::Id) {}
-}
-
-#[derive(Default)]
-struct LogVisitor {
-    line: String,
-}
-
-impl LogVisitor {
-    fn field(&mut self, name: &str, value: impl std::fmt::Display) {
-        if !self.line.is_empty() {
-            self.line.push(' ');
-        }
-        self.line.push_str(name);
-        self.line.push('=');
-        self.line.push_str(&value.to_string());
-    }
-}
-
-impl tracing::field::Visit for LogVisitor {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.field(field.name(), format!("{value:?}"));
-    }
-
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.field(field.name(), value);
-    }
-
-    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.field(field.name(), value);
-    }
-
-    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.field(field.name(), value);
-    }
-
-    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.field(field.name(), value);
-    }
 }
 
 async fn pump_ws(
@@ -1453,11 +1369,8 @@ async fn relay_bridge_initial_dial_failure_returns_502_and_next_request_redials(
         fresh_token.clone(),
     )
     .await;
-    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
-    let subscriber = CapturingSubscriber {
-        lines: lines.clone(),
-    };
-    let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
+    let subscriber = CapturingSubscriber::for_target("journal_bridge");
+    let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber.clone()));
     let credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token.clone());
     let paired = relay_bridge_state(credential);
     let handle = journal_bridge::start(&paired, temp_pairing_path("bridge-relay-fail"))
@@ -1478,7 +1391,7 @@ async fn relay_bridge_initial_dial_failure_returns_502_and_next_request_redials(
     );
 
     handle.shutdown_and_wait().await;
-    let logs = lines.lock().unwrap().join("\n");
+    let logs = subscriber.joined();
     assert!(logs.contains("category=upstream_unreachable"));
     assert!(logs.contains("code=relay_unauthorized"));
     assert!(!logs.contains(&old_token));

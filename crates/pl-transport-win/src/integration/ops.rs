@@ -1107,6 +1107,24 @@ mod tests {
         )
     }
 
+    /// A well-formed `0x05` multi-direct IPv4 link.
+    ///
+    /// Layout: `[version][addr type][candidate count][port][4 bytes per
+    /// candidate][16-byte nonce][16-byte CA fp]`. The address must be inside the
+    /// protocol's allowed direct ranges or the parser refuses it before form ever
+    /// comes up.
+    fn valid_direct_link() -> String {
+        let mut blob = vec![0x05u8, 0x01, 0x01];
+        blob.extend_from_slice(&7657u16.to_be_bytes());
+        blob.extend_from_slice(&[192, 168, 1, 10]);
+        blob.extend_from_slice(&[0xC3; 16]);
+        blob.extend_from_slice(&[0xD4; 16]);
+        format!(
+            "https://go.solstone.app/p#{}",
+            observer_pl::crockford::encode(&blob)
+        )
+    }
+
     fn pair_command(deadline_secs: u64) -> Command {
         Command {
             operation: super::super::args::Operation::Pair,
@@ -1188,15 +1206,13 @@ mod tests {
         let root = temp_root("direct-refused");
         let environment = environment(&root);
 
-        // A well-formed 0x05 direct link: refused because pair requires relay form.
-        let mut blob = vec![0x05u8, 1, 192, 168, 1, 10];
-        blob.extend_from_slice(&7657u16.to_be_bytes());
-        blob.extend_from_slice(&[0xC3; 16]);
-        blob.extend_from_slice(&[0xD4; 16]);
-        let link = format!(
-            "https://go.solstone.app/p#{}",
-            observer_pl::crockford::encode(&blob)
-        );
+        let link = valid_direct_link();
+        // The link really is a well-formed direct link, so this exercises the
+        // relay-form refusal and not an incidental parse failure.
+        assert!(matches!(
+            pairlink::parse(&link).unwrap(),
+            ParsedPairLink::Direct(_)
+        ));
 
         let runtime = super::super::runtime().unwrap();
         let observer = OperationObserver::new();
@@ -1209,11 +1225,51 @@ mod tests {
 
         let failure = failure.expect("a direct link is not a relay link");
         assert_eq!(failure.phase(), Phase::Validate);
+        assert!(
+            matches!(&failure, Failure::Error { reason, .. } if reason == "link_not_relay_form"),
+            "expected the relay-form refusal, got {failure:?}"
+        );
         assert_eq!(
             observer.counts().dial_attempts,
             0,
             "refusal must precede every dial"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unparseable_link_is_refused_with_the_sanitizer_s_own_token() {
+        let root = temp_root("bad-link");
+        let environment = environment(&root);
+        let runtime = super::super::runtime().unwrap();
+
+        for link in [
+            "not-a-link".to_string(),
+            "https://go.solstone.app/p#!!!!".to_string(),
+            // Valid crockford, unsupported version byte.
+            format!(
+                "https://go.solstone.app/p#{}",
+                observer_pl::crockford::encode(&[0x09u8; 40])
+            ),
+        ] {
+            let observer = OperationObserver::new();
+            let (failure, _) = runtime.block_on(pair(
+                &pair_command(20),
+                &environment,
+                Some(observer.clone()),
+                link.clone(),
+            ));
+            let failure = failure.expect("an unparseable link cannot pair");
+            assert_eq!(failure.phase(), Phase::Validate);
+            assert!(
+                matches!(&failure, Failure::Error { reason, .. } if reason == "pair_link"),
+                "expected the pair_link token for {link:?}, got {failure:?}"
+            );
+            assert_eq!(observer.counts().dial_attempts, 0);
+            // The rejected link is never reflected back.
+            assert!(!format!("{failure:?}").contains(&link));
+        }
 
         let _ = std::fs::remove_dir_all(&root);
     }
