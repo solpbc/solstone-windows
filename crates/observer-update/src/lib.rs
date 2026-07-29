@@ -42,7 +42,7 @@ impl CheckInterval {
     }
 }
 
-/// Persisted updater preferences. Defaults are the founder-approved set:
+/// Persisted updater preferences. Defaults are the operator-approved set:
 /// auto-check **on**, **weekly**, auto-download **off** (install on relaunch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdatePrefs {

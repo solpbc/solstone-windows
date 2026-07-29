@@ -269,7 +269,7 @@ pub(crate) fn endpoint_addrs_from_local_endpoints(
     value: Option<&serde_json::Value>,
 ) -> Vec<EndpointAddr> {
     // Relay pair-response local_endpoints are {ip, port, scope}; scope is kept
-    // server-side for now and intentionally not persisted by this lode.
+    // server-side for now and intentionally not persisted here.
     let Some(serde_json::Value::Array(entries)) = value else {
         return Vec::new();
     };
