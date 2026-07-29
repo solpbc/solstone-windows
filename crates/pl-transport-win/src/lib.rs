@@ -30,6 +30,7 @@ pub mod connection;
 pub mod coordinator;
 pub mod credential;
 pub mod heartbeat;
+pub mod integration;
 pub mod journal_bridge;
 mod journal_bridge_carrier;
 pub mod observe;

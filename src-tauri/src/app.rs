@@ -44,7 +44,7 @@ pub struct AppState {
 }
 
 /// The observer's hostname for registration, best-effort.
-fn observer_hostname() -> String {
+pub(crate) fn observer_hostname() -> String {
     std::env::var("COMPUTERNAME")
         .ok()
         .filter(|s| !s.is_empty())

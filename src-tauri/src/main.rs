@@ -17,6 +17,7 @@ mod control;
 mod exclusions;
 mod health;
 mod hotkey;
+mod integration;
 mod ipc;
 mod lifecycle;
 mod mic;
@@ -78,6 +79,12 @@ fn main() -> ExitCode {
     if args.iter().any(|a| a == "--dump-windows") {
         println!("{}", exclusions::dump_windows_json());
         return ExitCode::SUCCESS;
+    }
+
+    // Operator integration mode. The selection predicate and every decision live
+    // in the gated `pl-transport-win` crate; this is dispatch only.
+    if let Some(code) = integration::dispatch(&args) {
+        return code;
     }
 
     if args.iter().any(|a| a == "--log-path") {

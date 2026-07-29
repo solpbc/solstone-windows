@@ -11,6 +11,7 @@ const SUPPRESS: &[&str] = &[
     "--apply-update",
     "--dump-windows",
     "--log-path",
+    "--integration",
     "--open-journal",
     "--veloapp-install",
     "--veloapp-updated",
@@ -50,6 +51,30 @@ mod tests {
         assert!(!launch_should_surface(&["--dump-windows"]));
         assert!(!launch_should_surface(&["--log-path"]));
         assert!(!launch_should_surface(&["--open-journal"]));
+    }
+
+    #[test]
+    fn integration_mode_suppresses() {
+        // The operator mode is headless: it must never surface a window, with or
+        // without its operation argument.
+        assert!(!launch_should_surface(&["--integration"]));
+        assert!(!launch_should_surface(&["--integration", "pair"]));
+        assert!(!launch_should_surface(&[
+            "--integration",
+            "roundtrip",
+            "--deadline-secs",
+            "30"
+        ]));
+    }
+
+    #[test]
+    fn a_bare_launch_is_untouched_by_the_integration_entry() {
+        // The negative half of the same guarantee: normal GUI startup only
+        // changes when the flag is actually present.
+        assert!(launch_should_surface::<&str>(&[]));
+        assert!(launch_should_surface(&["--open-view", "home"]));
+        assert!(launch_should_surface(&["integration"]));
+        assert!(launch_should_surface(&["--integration-like"]));
     }
 
     #[test]
