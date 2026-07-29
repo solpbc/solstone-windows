@@ -34,6 +34,54 @@ pub fn utc_parts(epoch_secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     (year, month, day, hour, minute, second)
 }
 
+/// Days since 1970-01-01 for a civil date — the exact inverse of the
+/// civil-from-days step in [`utc_parts`] (Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = if month > 2 { month - 3 } else { month + 9 } as i64; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + day as i64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
+}
+
+/// The epoch second whose device-local wall clock under `offset_secs` is exactly
+/// the supplied civil date and time — the inverse of [`day_string_local`] +
+/// [`segment_key_string_local`].
+///
+/// Returns `None` for a date/time that is not a real calendar instant or that
+/// falls outside the representable epoch range, so a caller-named identity can
+/// never be fabricated from nonsense. Round-tripping the result back through
+/// [`utc_parts`] is what earns the name.
+pub fn epoch_from_local_parts(
+    year: i64,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    offset_secs: i64,
+) -> Option<u64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    // Reject a day that does not exist in this month (e.g. 20260231): the
+    // round-trip through civil-from-days lands on a different date.
+    let (ry, rm, rd, _, _, _) = utc_parts(u64::try_from(days.checked_mul(86_400)?).ok()?);
+    if (ry, rm, rd) != (year, month, day) {
+        return None;
+    }
+    let local = days
+        .checked_mul(86_400)?
+        .checked_add(i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second))?;
+    u64::try_from(local.checked_sub(offset_secs)?).ok()
+}
+
 /// `YYYYMMDD` for the boundary in device-local wall clock (`offset_secs` = local-UTC).
 pub fn day_string_local(boundary_epoch_secs: u64, offset_secs: i64) -> String {
     let shifted = boundary_epoch_secs as i64 + offset_secs;
@@ -61,6 +109,50 @@ mod tests {
     #[test]
     fn epoch_zero_is_unix_birth() {
         assert_eq!(utc_parts(0), (1970, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn epoch_from_local_parts_inverts_utc_parts() {
+        for secs in [0u64, 1_700_000_000, 1_781_706_600, 1_709_164_800] {
+            let (y, m, d, h, mi, s) = utc_parts(secs);
+            assert_eq!(
+                epoch_from_local_parts(y, m, d, h, mi, s, 0),
+                Some(secs),
+                "round trip for {secs}"
+            );
+        }
+    }
+
+    #[test]
+    fn epoch_from_local_parts_applies_the_offset() {
+        // 2026-06-17 07:30:00 local at UTC-7 is 2026-06-17T14:30:00Z.
+        let epoch = epoch_from_local_parts(2026, 6, 17, 7, 30, 0, -7 * 3600).unwrap();
+        assert_eq!(epoch, 1_781_706_600);
+        assert_eq!(day_string_local(epoch, -7 * 3600), "20260617");
+        assert_eq!(
+            segment_key_string_local(epoch, -7 * 3600, 300),
+            "073000_300"
+        );
+    }
+
+    #[test]
+    fn epoch_from_local_parts_rejects_impossible_civil_values() {
+        assert_eq!(epoch_from_local_parts(2026, 2, 31, 0, 0, 0, 0), None);
+        assert_eq!(epoch_from_local_parts(2026, 13, 1, 0, 0, 0, 0), None);
+        assert_eq!(epoch_from_local_parts(2026, 0, 1, 0, 0, 0, 0), None);
+        assert_eq!(epoch_from_local_parts(2026, 1, 0, 0, 0, 0, 0), None);
+        assert_eq!(epoch_from_local_parts(2026, 1, 1, 24, 0, 0, 0), None);
+        assert_eq!(epoch_from_local_parts(2026, 1, 1, 0, 60, 0, 0), None);
+        assert_eq!(epoch_from_local_parts(2026, 1, 1, 0, 0, 60, 0), None);
+        // Pre-epoch instants are not representable as a segment boundary.
+        assert_eq!(epoch_from_local_parts(1969, 12, 31, 23, 59, 59, 0), None);
+    }
+
+    #[test]
+    fn epoch_from_local_parts_accepts_a_real_leap_day() {
+        let epoch = epoch_from_local_parts(2024, 2, 29, 0, 0, 0, 0).unwrap();
+        assert_eq!(epoch, 1_709_164_800);
+        assert_eq!(day_string_local(epoch, 0), "20240229");
     }
 
     #[test]

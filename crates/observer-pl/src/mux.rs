@@ -220,6 +220,16 @@ impl WindowedUpload {
         self.closed
     }
 
+    /// Request bytes already handed to the wire as DATA payload.
+    ///
+    /// This is progress *sent*, not progress the peer has acknowledged: it counts
+    /// bytes emitted in frames, so an upload interrupted mid-body reports how far
+    /// it got. [`is_done`](Self::is_done) says whether the half-closing `CLOSE`
+    /// followed; neither says the peer answered.
+    pub fn sent_bytes(&self) -> usize {
+        self.offset
+    }
+
     /// True when bytes remain but the window is exhausted — the transport must
     /// read an inbound `WINDOW` grant before [`poll_send`](Self::poll_send) will
     /// produce anything. (Distinguishes "blocked" from "done" for callers/tests.)
@@ -936,6 +946,34 @@ mod tests {
             .iter()
             .filter(|f| f.flags & FLAG_DATA != 0)
             .all(|f| f.payload.len() <= RECOMMENDED_CHUNK));
+    }
+
+    #[test]
+    fn sent_bytes_tracks_progress_and_stops_at_the_window_until_granted() {
+        let body = vec![0x5Au8; INITIAL_WINDOW * 2];
+        let request = http::build_request("POST", "/app/observer/ingest", &[], &body);
+        let mut up = WindowedUpload::new(3, &request);
+        assert_eq!(up.sent_bytes(), 0, "nothing handed to the wire yet");
+
+        // First pass drains exactly the initial window and then blocks.
+        while up.poll_send().unwrap().is_some() {}
+        assert_eq!(up.sent_bytes(), INITIAL_WINDOW);
+        assert!(up.is_blocked());
+        assert!(
+            !up.is_done(),
+            "progress without a CLOSE is exactly the interrupted-upload shape"
+        );
+
+        let mut guard = 0;
+        while !up.is_done() {
+            up.grant((INITIAL_WINDOW / 2) as u32).unwrap();
+            while up.poll_send().unwrap().is_some() {}
+            guard += 1;
+            assert!(guard < 100, "should converge well before this");
+        }
+        // Every request byte was handed to the wire, and only then did CLOSE follow.
+        assert_eq!(up.sent_bytes(), request.len());
+        assert!(up.is_done());
     }
 
     #[test]

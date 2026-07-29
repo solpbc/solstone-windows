@@ -185,6 +185,10 @@ fn is_framing_owned(name: &str) -> bool {
         || name.eq_ignore_ascii_case("accept")
 }
 
+/// The journal's pinned TLS server name, and the `host` every journal-facing
+/// request carries.
+pub const JOURNAL_HOST: &str = "spl.local";
+
 /// Build the HTTP/1.1 request bytes for a single PL stream. `headers` are the
 /// caller's extra headers (e.g. auth, content-type); `host`, `content-length`,
 /// and a default `accept` are added by the transport, `accept` overridable.
@@ -194,12 +198,31 @@ pub fn build_request(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Vec<u8> {
+    build_request_with_host(method, path, JOURNAL_HOST, headers, body)
+}
+
+/// [`build_request`] with an explicit `host`.
+///
+/// The host is a parameter, never a caller header: a `host` in `headers` is still
+/// dropped as framing-owned, so nothing reflected from a browser or a peer can
+/// retarget a journal request. The loopback journal-bridge leg authorizes on
+/// `127.0.0.1:<port>` (`bridge::authorize`), which is the one caller that needs
+/// to say so explicitly.
+pub fn build_request_with_host(
+    method: &str,
+    path: &str,
+    host: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Vec<u8> {
     let mut head = String::new();
     head.push_str(method);
     head.push(' ');
     head.push_str(path);
     head.push_str(" HTTP/1.1\r\n");
-    head.push_str("host: spl.local\r\n");
+    head.push_str("host: ");
+    head.push_str(host);
+    head.push_str("\r\n");
 
     match headers
         .iter()
@@ -349,6 +372,33 @@ mod tests {
         assert!(!text.contains("host: evil"));
         assert!(!text.contains("content-length: 999"));
         assert!(text.ends_with("\r\n\r\npayload"));
+    }
+
+    #[test]
+    fn explicit_host_targets_the_loopback_leg_without_admitting_a_caller_header() {
+        let headers = vec![
+            ("Cookie".to_string(), "__solstone_journal_cap=x".to_string()),
+            // Still framing-owned: a caller header can never retarget the request.
+            ("host".to_string(), "evil".to_string()),
+        ];
+        let text = String::from_utf8(build_request_with_host(
+            "GET",
+            "/x",
+            "127.0.0.1:8080",
+            &headers,
+            b"",
+        ))
+        .unwrap();
+        assert!(text.contains("host: 127.0.0.1:8080\r\n"));
+        assert!(!text.contains("host: evil"));
+        assert!(!text.contains("host: spl.local"));
+        assert_eq!(text.matches("host: ").count(), 1);
+    }
+
+    #[test]
+    fn build_request_defaults_to_the_pinned_journal_host() {
+        let text = String::from_utf8(build_request("GET", "/x", &[], b"")).unwrap();
+        assert!(text.contains(&format!("host: {JOURNAL_HOST}\r\n")));
     }
 
     #[test]
