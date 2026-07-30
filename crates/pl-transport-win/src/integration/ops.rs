@@ -268,10 +268,13 @@ async fn pair(
         )
         .await;
 
-    // From here on the ceremony has touched the relay and the journal, so any
+    // From here on the ceremony may have touched the relay and the journal, so any
     // failure owes both a local cleanup and an honest statement of remote residue.
     let credential = match ceremony {
         Err(deadline) => {
+            // `Possible` covers both mid-ceremony timeout and never-polled
+            // exhaustion: uncertainty is safer than `None`, which could hide
+            // remote residue.
             evidence.remote_residue = Some(RemoteResidue {
                 journal_pairing_identity: Residue::Possible,
                 relay_device_enrollment: Residue::Possible,
@@ -1113,24 +1116,67 @@ mod tests {
         }
     }
 
-    async fn serve_delayed_roundtrip(listener: TcpListener, acceptor: TlsAcceptor) {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut tls = acceptor.accept(tcp).await.unwrap();
-        let stream_id = read_closed_stream_id(&mut tls).await.unwrap();
-        tokio::time::advance(Duration::from_secs(6)).await;
-        let heartbeat = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, heartbeat.to_vec());
-        tls.write_all(&frame.encode().unwrap()).await.unwrap();
-        tls.flush().await.unwrap();
-        let _ = tls.shutdown().await;
+    async fn advance_past_roundtrip_budget() {
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+    }
 
+    async fn fault_past_roundtrip_budget(faulted: &AtomicBool, heartbeat_owed: bool) {
+        faulted.store(true, Ordering::SeqCst);
+        if heartbeat_owed {
+            tokio::time::advance(Duration::from_secs(6)).await;
+        }
+        advance_past_roundtrip_budget().await;
+    }
+
+    async fn serve_delayed_roundtrip(
+        listener: TcpListener,
+        acceptor: TlsAcceptor,
+        faulted: Arc<AtomicBool>,
+    ) {
+        // This fake owns the test's only clock movement, so every exit must
+        // advance past the operation budget or production can wait forever on
+        // a timer that automatic paused-time advancement cannot drive.
         let Ok((tcp, _)) = listener.accept().await else {
+            fault_past_roundtrip_budget(&faulted, true).await;
             return;
         };
         let Ok(mut tls) = acceptor.accept(tcp).await else {
+            fault_past_roundtrip_budget(&faulted, true).await;
             return;
         };
         let Some(stream_id) = read_closed_stream_id(&mut tls).await else {
+            fault_past_roundtrip_budget(&faulted, true).await;
+            return;
+        };
+        tokio::time::advance(Duration::from_secs(6)).await;
+        let heartbeat = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, heartbeat.to_vec());
+        let Ok(encoded) = frame.encode() else {
+            fault_past_roundtrip_budget(&faulted, false).await;
+            return;
+        };
+        if tls.write_all(&encoded).await.is_err() {
+            fault_past_roundtrip_budget(&faulted, false).await;
+            return;
+        }
+        if tls.flush().await.is_err() {
+            fault_past_roundtrip_budget(&faulted, false).await;
+            return;
+        }
+        let _ = tls.shutdown().await;
+
+        let Ok((tcp, _)) = listener.accept().await else {
+            fault_past_roundtrip_budget(&faulted, false).await;
+            return;
+        };
+        let Ok(mut tls) = acceptor.accept(tcp).await else {
+            fault_past_roundtrip_budget(&faulted, false).await;
+            return;
+        };
+        let Some(stream_id) = read_closed_stream_id(&mut tls).await else {
+            fault_past_roundtrip_budget(&faulted, false).await;
             return;
         };
         // Split the unconditional 4s delay so the first advance reaches the
@@ -1139,9 +1185,7 @@ mod tests {
         // solely in production budget arithmetic. The response remains
         // unconditional and tolerates a peer that has already gone away,
         // because post-fix the operation returns while this task is mid-flight.
-        tokio::time::advance(Duration::from_secs(2)).await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(2)).await;
+        advance_past_roundtrip_budget().await;
         let body = br#"{"items":[],"total":0,"protocol_version":2}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -1169,10 +1213,7 @@ mod tests {
             observer_name: Some("Test observer".into()),
         };
         paired.save(&environment.state_path).unwrap();
-        let server = tokio::spawn(serve_delayed_roundtrip(
-            listener,
-            TlsAcceptor::from(Arc::new(server_config)),
-        ));
+        let fixture_faulted = Arc::new(AtomicBool::new(false));
 
         // Tokio cannot auto-advance paused time while a blocking task is
         // running. Holding one for the whole test makes every clock movement
@@ -1186,6 +1227,11 @@ mod tests {
             let _ = release_rx.recv();
         });
         started_rx.await.unwrap();
+        let server = tokio::spawn(serve_delayed_roundtrip(
+            listener,
+            TlsAcceptor::from(Arc::new(server_config)),
+            fixture_faulted.clone(),
+        ));
 
         let command = Command {
             operation: super::super::args::Operation::Roundtrip,
@@ -1210,6 +1256,10 @@ mod tests {
         let _ = server.await;
         let _ = std::fs::remove_dir_all(&root);
 
+        assert!(
+            !fixture_faulted.load(Ordering::SeqCst),
+            "the fake journal hit a socket fault"
+        );
         let failure = failure.expect("the shared budget must expire");
         assert!(
             matches!(
