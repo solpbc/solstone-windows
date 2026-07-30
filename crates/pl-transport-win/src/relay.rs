@@ -32,7 +32,8 @@ use tokio_tungstenite::{
     connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
 };
 
-use crate::connection::run_request_over_stream;
+use crate::connection::run_request_over_stream_observed;
+use crate::observe::ObserverHandle;
 use crate::tls::pinned_server_name;
 use crate::{RelayError, TransportError};
 
@@ -43,6 +44,34 @@ pub(crate) const RELAY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// separate from the typed inner-handshake stalled outcome.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_WS_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Borrowed inputs for one relay-carried request, including its optional
+/// operation-scoped observation handle.
+pub(crate) struct RelayRequestSpec<'a> {
+    method: &'a str,
+    path: &'a str,
+    headers: &'a [(String, String)],
+    body: &'a [u8],
+    observer: &'a ObserverHandle,
+}
+
+impl<'a> RelayRequestSpec<'a> {
+    pub(crate) fn new(
+        method: &'a str,
+        path: &'a str,
+        headers: &'a [(String, String)],
+        body: &'a [u8],
+        observer: &'a ObserverHandle,
+    ) -> Self {
+        Self {
+            method,
+            path,
+            headers,
+            body,
+            observer,
+        }
+    }
+}
 
 pub(crate) fn outer_config() -> Arc<ClientConfig> {
     static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
@@ -347,6 +376,10 @@ pub async fn dial_pair_relay_ws(
     }
 }
 
+/// Send one unobserved compatibility request over an established relay WebSocket.
+///
+/// Production [`crate::client::ObserverClient`] requests use the crate-private
+/// observed counterpart.
 pub async fn request_once_over_ws(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     inner_config: Arc<ClientConfig>,
@@ -356,19 +389,27 @@ pub async fn request_once_over_ws(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<HttpResponse, TransportError> {
-    request_once_over_ws_inner(
-        ws,
-        inner_config,
-        handshake_timeout,
-        method,
-        path,
-        headers,
-        body,
-    )
-    .await
-    .map(|(response, _peer_leaf)| response)
+    let observer = None;
+    let request = RelayRequestSpec::new(method, path, headers, body, &observer);
+    request_once_over_ws_observed(ws, inner_config, handshake_timeout, request).await
 }
 
+/// The observed production counterpart to [`request_once_over_ws`].
+pub(crate) async fn request_once_over_ws_observed(
+    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    inner_config: Arc<ClientConfig>,
+    handshake_timeout: Duration,
+    request: RelayRequestSpec<'_>,
+) -> Result<HttpResponse, TransportError> {
+    request_once_over_ws_inner(ws, inner_config, handshake_timeout, request)
+        .await
+        .map(|(response, _peer_leaf)| response)
+}
+
+/// Send the pairing request and return its peer leaf.
+///
+/// The pairing ceremony deliberately observes dials only, so this public wrapper
+/// delegates without observing request bytes or completion.
 pub async fn request_once_over_ws_with_peer_leaf(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     inner_config: Arc<ClientConfig>,
@@ -378,16 +419,9 @@ pub async fn request_once_over_ws_with_peer_leaf(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<(HttpResponse, Option<CertificateDer<'static>>), TransportError> {
-    request_once_over_ws_inner(
-        ws,
-        inner_config,
-        handshake_timeout,
-        method,
-        path,
-        headers,
-        body,
-    )
-    .await
+    let observer = None;
+    let request = RelayRequestSpec::new(method, path, headers, body, &observer);
+    request_once_over_ws_inner(ws, inner_config, handshake_timeout, request).await
 }
 
 pub(crate) struct RelayCarrier {
@@ -432,10 +466,7 @@ async fn request_once_over_ws_inner(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     inner_config: Arc<ClientConfig>,
     handshake_timeout: Duration,
-    method: &str,
-    path: &str,
-    headers: &[(String, String)],
-    body: &[u8],
+    request: RelayRequestSpec<'_>,
 ) -> Result<(HttpResponse, Option<CertificateDer<'static>>), TransportError> {
     let (duplex, termination) = WsByteDuplex::new(ws);
     let connector = TlsConnector::from(inner_config);
@@ -461,7 +492,16 @@ async fn request_once_over_ws_inner(
         .and_then(|certs| certs.first())
         .cloned();
 
-    match run_request_over_stream(tls, method, path, headers, body).await {
+    match run_request_over_stream_observed(
+        tls,
+        request.method,
+        request.path,
+        request.headers,
+        request.body,
+        request.observer,
+    )
+    .await
+    {
         Ok(response) => Ok((response, peer_leaf)),
         Err(error) => {
             if let Some(value) = termination.current() {
@@ -473,6 +513,7 @@ async fn request_once_over_ws_inner(
     }
 }
 
+/// Send one unobserved compatibility request through a freshly dialed relay.
 #[allow(clippy::too_many_arguments)]
 pub async fn request_once_relay(
     inner_config: Arc<ClientConfig>,
@@ -484,19 +525,30 @@ pub async fn request_once_relay(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<HttpResponse, TransportError> {
+    let observer = None;
+    let request = RelayRequestSpec::new(method, path, headers, body, &observer);
+    request_once_relay_observed(
+        inner_config,
+        relay_origin,
+        instance_id,
+        device_token,
+        request,
+    )
+    .await
+}
+
+/// The observed production counterpart to [`request_once_relay`].
+pub(crate) async fn request_once_relay_observed(
+    inner_config: Arc<ClientConfig>,
+    relay_origin: &str,
+    instance_id: &str,
+    device_token: &str,
+    request: RelayRequestSpec<'_>,
+) -> Result<HttpResponse, TransportError> {
     let url = observer_pl::relay::dial_url(relay_origin, instance_id)
         .map_err(|e| TransportError::PairLink(format!("relay origin: {e}")))?;
     let ws = dial_relay_ws(&url, device_token, outer_config()).await?;
-    request_once_over_ws(
-        ws,
-        inner_config,
-        RELAY_HANDSHAKE_TIMEOUT,
-        method,
-        path,
-        headers,
-        body,
-    )
-    .await
+    request_once_over_ws_observed(ws, inner_config, RELAY_HANDSHAKE_TIMEOUT, request).await
 }
 
 #[cfg(test)]

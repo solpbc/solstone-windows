@@ -18,13 +18,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW};
-use observer_pl::http::HttpResponse;
+use observer_model::TransportPath;
+use observer_pl::frame::{
+    Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RECOMMENDED_CHUNK,
+};
+use observer_pl::http::{self, HttpResponse};
+use observer_pl::multipart::FilePart;
 use observer_pl::mux::INITIAL_WINDOW;
 use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::journal_bridge;
+use pl_transport_win::observe::{DialCounts, OperationObserver};
 use pl_transport_win::relay::{dial_relay_ws, request_once_over_ws, request_once_relay};
 use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{transport_error_code, RelayError, TransportError};
@@ -33,6 +38,7 @@ use rustls::ClientConfig;
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -49,7 +55,19 @@ const INSTANCE_ID: &str = "12345678-1234-5678-1234-567812345678";
 const CARRIER_READ_BUF_BYTES: usize = 64 * 1024;
 const LARGE_WS_FRAME_BYTES: usize = 256 * 1024;
 const LARGE_RESPONSE_BYTES: usize = 512 * 1024 + 137;
+const OBSERVER_CLIENT_PRODUCTION_DIAL_ATTEMPTS: u64 = 6;
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelayRequestArtifacts {
+    request_bytes: Vec<u8>,
+    head_boundary_found: bool,
+    saw_request_close: bool,
+    sent_terminal_response: bool,
+    tcp_accepts: usize,
+    ws_dials: usize,
+    inner_requests: usize,
+}
 
 fn client_config(pin: &[u8]) -> Arc<ClientConfig> {
     Arc::new(pairing_config(pin).unwrap())
@@ -269,6 +287,93 @@ async fn pump_ws(
     }
 }
 
+/// Pump one opaque relay stream until the inner server requests a terminal close.
+///
+/// The trigger and acknowledgement are both load-bearing: the inner server keeps
+/// its TLS/duplex alive until the pump confirms that close 4402 was flushed. If it
+/// dropped the duplex first, an EOF could win the race, map to `Abnormal`, and make
+/// the client retry five times against this deliberately one-shot fixture.
+async fn pump_ws_with_terminal_close(
+    ws: WebSocketStream<TcpStream>,
+    relay_side: DuplexStream,
+    mut close_trigger: oneshot::Receiver<u16>,
+    close_sent: oneshot::Sender<()>,
+) -> io::Result<()> {
+    let (mut ws_sink, mut ws_stream) = ws.split();
+    let (mut relay_read, mut relay_write) = tokio::io::split(relay_side);
+
+    let to_inner = async move {
+        while let Some(message) = ws_stream.next().await {
+            match message.map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "relay websocket receive failed")
+            })? {
+                Message::Binary(bytes) => {
+                    relay_write.write_all(&bytes).await?;
+                    relay_write.flush().await?;
+                }
+                Message::Close(_) => {
+                    let _ = relay_write.shutdown().await;
+                    return Ok(());
+                }
+                Message::Ping(_) | Message::Pong(_) => {}
+                Message::Text(_) | Message::Frame(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "relay tunnel received non-binary message",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+
+    let to_ws_or_close = async move {
+        let mut buf = [0u8; 512];
+        loop {
+            tokio::select! {
+                read = relay_read.read(&mut buf) => {
+                    let n = read?;
+                    if n == 0 {
+                        let _ = ws_sink.close().await;
+                        return Ok(());
+                    }
+                    ws_sink
+                        .send(Message::Binary(buf[..n].to_vec().into()))
+                        .await
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "relay websocket send failed",
+                            )
+                        })?;
+                }
+                code = &mut close_trigger => {
+                    let code = code.map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "relay terminal-close trigger dropped",
+                        )
+                    })?;
+                    ws_sink
+                        .send(Message::Close(Some(CloseFrame {
+                            code: CloseCode::from(code),
+                            reason: "".into(),
+                        })))
+                        .await
+                        .map_err(io::Error::other)?;
+                    let _ = close_sent.send(());
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    tokio::select! {
+        result = to_inner => result,
+        result = to_ws_or_close => result,
+    }
+}
+
 async fn pump_ws_large_response_frames(
     ws: WebSocketStream<TcpStream>,
     relay_side: DuplexStream,
@@ -365,6 +470,21 @@ async fn accept_relay_stream(
         let _ = pump_ws(ws, relay_side, capture_first_inbound).await;
     });
     server_side
+}
+
+async fn accept_counted_relay_stream(
+    listener: TcpListener,
+    duplex_capacity: usize,
+) -> (DuplexStream, usize, usize) {
+    let (tcp, _) = listener.accept().await.unwrap();
+    let tcp_accepts = 1;
+    let ws = accept_async(tcp).await.unwrap();
+    let ws_dials = 1;
+    let (relay_side, server_side) = tokio::io::duplex(duplex_capacity);
+    tokio::spawn(async move {
+        let _ = pump_ws(ws, relay_side, None).await;
+    });
+    (server_side, tcp_accepts, ws_dials)
 }
 
 async fn accept_relay_stream_large_response_frames(
@@ -475,7 +595,10 @@ where
     request
 }
 
-async fn serve_stream_with_flow_control<S>(stream: S, acceptor: TlsAcceptor) -> Vec<u8>
+async fn serve_stream_with_flow_control<S>(
+    stream: S,
+    acceptor: TlsAcceptor,
+) -> RelayRequestArtifacts
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -502,7 +625,15 @@ where
                     let reset = Frame::new(stream_id, FLAG_RESET, vec![0x03]);
                     tls.write_all(&reset.encode().unwrap()).await.unwrap();
                     tls.flush().await.unwrap();
-                    return request;
+                    return RelayRequestArtifacts {
+                        head_boundary_found: request_head_len(&request).is_some(),
+                        request_bytes: request,
+                        saw_request_close: closed,
+                        sent_terminal_response: false,
+                        tcp_accepts: 0,
+                        ws_dials: 0,
+                        inner_requests: 1,
+                    };
                 }
                 recv_credit -= len;
                 unacked += len;
@@ -531,8 +662,17 @@ where
     let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
     tls.write_all(&frame.encode().unwrap()).await.unwrap();
     tls.flush().await.unwrap();
+    let sent_terminal_response = true;
     let _ = tls.shutdown().await;
-    request
+    RelayRequestArtifacts {
+        head_boundary_found: request_head_len(&request).is_some(),
+        request_bytes: request,
+        saw_request_close: closed,
+        sent_terminal_response,
+        tcp_accepts: 0,
+        ws_dials: 0,
+        inner_requests: 1,
+    }
 }
 
 async fn spawn_response_relay(
@@ -551,12 +691,109 @@ async fn spawn_response_relay(
     (origin, task)
 }
 
-async fn spawn_flow_relay(acceptor: TlsAcceptor) -> (String, JoinHandle<Vec<u8>>) {
+async fn spawn_flow_relay(acceptor: TlsAcceptor) -> (String, JoinHandle<RelayRequestArtifacts>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
-        let stream = accept_relay_stream(listener, None, 1024).await;
-        serve_stream_with_flow_control(stream, acceptor).await
+        let (stream, tcp_accepts, ws_dials) = accept_counted_relay_stream(listener, 1024).await;
+        let mut artifacts = serve_stream_with_flow_control(stream, acceptor).await;
+        artifacts.tcp_accepts = tcp_accepts;
+        artifacts.ws_dials = ws_dials;
+        artifacts
+    });
+    (origin, task)
+}
+
+async fn serve_stream_until_terminal_close<S>(
+    stream: S,
+    acceptor: TlsAcceptor,
+    close_trigger: oneshot::Sender<u16>,
+    close_sent: oneshot::Receiver<()>,
+) -> RelayRequestArtifacts
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut tls = acceptor.accept(stream).await.unwrap();
+    let mut decoder = FrameDecoder::new();
+    let mut request = Vec::new();
+    let mut saw_request_close = false;
+    let mut buf = [0u8; 16 * 1024];
+
+    while request.len() < INITIAL_WINDOW && !saw_request_close {
+        let n = tls.read(&mut buf).await.unwrap();
+        if n == 0 {
+            break;
+        }
+        decoder.feed(&buf[..n]);
+        for frame in decoder.drain().unwrap() {
+            if frame.flags & FLAG_DATA != 0 {
+                request.extend_from_slice(&frame.payload);
+            }
+            if frame.flags & FLAG_CLOSE != 0 {
+                saw_request_close = true;
+            }
+        }
+    }
+
+    let head_len = request_head_len(&request);
+    assert_eq!(
+        request.len(),
+        INITIAL_WINDOW,
+        "client must consume exactly its initial send window before interruption"
+    );
+    assert!(
+        head_len.is_some_and(|len| request.len() > len),
+        "fixture must receive at least one request-body byte before interruption"
+    );
+    assert!(
+        !saw_request_close,
+        "fixture must interrupt before the request CLOSE"
+    );
+
+    close_trigger.send(4402).unwrap();
+    close_sent
+        .await
+        .expect("relay pump must flush close 4402 before inner TLS drops");
+
+    RelayRequestArtifacts {
+        request_bytes: request,
+        head_boundary_found: head_len.is_some(),
+        saw_request_close,
+        sent_terminal_response: false,
+        tcp_accepts: 0,
+        ws_dials: 0,
+        inner_requests: 1,
+    }
+}
+
+async fn spawn_interrupted_flow_relay(
+    acceptor: TlsAcceptor,
+) -> (String, JoinHandle<RelayRequestArtifacts>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let tcp_accepts = 1;
+        let ws = accept_async(tcp).await.unwrap();
+        let ws_dials = 1;
+        let (relay_side, server_side) = tokio::io::duplex(1024);
+        let (close_trigger_tx, close_trigger_rx) = oneshot::channel();
+        let (close_sent_tx, close_sent_rx) = oneshot::channel();
+        let pump = tokio::spawn(async move {
+            pump_ws_with_terminal_close(ws, relay_side, close_trigger_rx, close_sent_tx).await
+        });
+
+        let mut artifacts = serve_stream_until_terminal_close(
+            server_side,
+            acceptor,
+            close_trigger_tx,
+            close_sent_rx,
+        )
+        .await;
+        artifacts.tcp_accepts = tcp_accepts;
+        artifacts.ws_dials = ws_dials;
+        pump.await.unwrap().unwrap();
+        artifacts
     });
     (origin, task)
 }
@@ -829,11 +1066,17 @@ where
     }
 }
 
+fn request_head_len(raw: &[u8]) -> Option<usize> {
+    raw.windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+}
+
 fn request_complete(raw: &[u8]) -> bool {
-    let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+    let Some(head_len) = request_head_len(raw) else {
         return false;
     };
-    let head = String::from_utf8_lossy(&raw[..split]);
+    let head = String::from_utf8_lossy(&raw[..head_len - 4]);
     let len = head
         .lines()
         .find_map(|line| {
@@ -843,7 +1086,7 @@ fn request_complete(raw: &[u8]) -> bool {
                 .flatten()
         })
         .unwrap_or(0);
-    raw.len() >= split + 4 + len
+    raw.len() >= head_len + len
 }
 
 async fn write_json<S>(stream: &mut S, status: u16, body: serde_json::Value) -> io::Result<()>
@@ -871,6 +1114,112 @@ fn deterministic_bytes(len: usize) -> Vec<u8> {
     (0..len)
         .map(|i| ((i.wrapping_mul(31) + (i / 7)) % 251) as u8)
         .collect()
+}
+
+fn rebuild_captured_request(raw: &[u8]) -> Vec<u8> {
+    let head_len = request_head_len(raw).expect("captured request must contain an HTTP head");
+    let head = std::str::from_utf8(&raw[..head_len - 4]).unwrap();
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap();
+    let path = request_parts.next().unwrap();
+    assert_eq!(request_parts.next(), Some("HTTP/1.1"));
+    assert_eq!(request_parts.next(), None);
+    let headers = lines
+        .map(|line| {
+            let (name, value) = line.split_once(':').unwrap();
+            (name.to_string(), value.trim_start().to_string())
+        })
+        .collect::<Vec<_>>();
+    http::build_request(method, path, &headers, &raw[head_len..])
+}
+
+fn full_request_len_from_captured_head(raw: &[u8]) -> usize {
+    let head_len = request_head_len(raw).expect("captured request must contain an HTTP head");
+    let head = std::str::from_utf8(&raw[..head_len - 4]).unwrap();
+    let content_length = head
+        .split("\r\n")
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .expect("captured request must contain content-length");
+    head_len + content_length
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CompleteClientOutcome {
+    status: String,
+    path: TransportPath,
+    attempts: u32,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InterruptedClientOutcome {
+    RelayUnpaid,
+}
+
+fn production_ingest_files() -> Vec<FilePart> {
+    vec![FilePart {
+        filename: "display_1_screen.mp4".into(),
+        content_type: "video/mp4".into(),
+        bytes: deterministic_bytes(INITIAL_WINDOW + RECOMMENDED_CHUNK + 17),
+    }]
+}
+
+async fn run_complete_observer_ingest(
+    observer: Option<Arc<OperationObserver>>,
+    token: String,
+) -> (RelayRequestArtifacts, CompleteClientOutcome) {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let (origin, server) = spawn_flow_relay(acceptor).await;
+    let client =
+        heartbeat_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
+    let (response, metadata) = client
+        .ingest(
+            "143000_300",
+            "20260729",
+            "windows",
+            &production_ingest_files(),
+        )
+        .await
+        .unwrap();
+    let artifacts = server.await.unwrap();
+    (
+        artifacts,
+        CompleteClientOutcome {
+            status: response.status,
+            path: metadata.path,
+            attempts: metadata.attempts,
+        },
+    )
+}
+
+async fn run_interrupted_observer_ingest(
+    observer: Option<Arc<OperationObserver>>,
+    token: String,
+) -> (RelayRequestArtifacts, InterruptedClientOutcome) {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let (origin, server) = spawn_interrupted_flow_relay(acceptor).await;
+    let client =
+        heartbeat_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
+    let error = client
+        .ingest(
+            "143000_300",
+            "20260729",
+            "windows",
+            &production_ingest_files(),
+        )
+        .await
+        .unwrap_err();
+    let outcome = match error {
+        TransportError::Relay(RelayError::Unpaid) => InterruptedClientOutcome::RelayUnpaid,
+        other => panic!("expected the terminal relay unpaid error, got {other:?}"),
+    };
+    let artifacts = server.await.unwrap();
+    (artifacts, outcome)
 }
 
 #[allow(clippy::result_large_err)]
@@ -935,7 +1284,8 @@ async fn relay_streams_multi_mib_body_under_flow_control() {
 
     assert_eq!(response.status, 200);
     assert_eq!(response.body_text(), "{\"status\":\"accepted\"}");
-    let received = server.await.unwrap();
+    let artifacts = server.await.unwrap();
+    let received = artifacts.request_bytes;
     assert!(
         received.len() > INITIAL_WINDOW * 2,
         "server should receive the whole multi-MiB request, got {} bytes",
@@ -1246,6 +1596,134 @@ async fn relay_fallbacks_after_lan_unreachable() {
     let request_text = String::from_utf8_lossy(&requests[0]);
     assert!(request_text.starts_with("POST /app/observer/ingest/event HTTP/1.1\r\n"));
     relay.abort();
+}
+
+/// The operation observer reports the exact production ingest request without
+/// changing anything visible to the relay fixture.
+#[tokio::test]
+async fn relay_observer_is_inert_and_reports_every_byte_of_a_complete_production_ingest() {
+    let token = mint_jwt(epoch_secs(), epoch_secs() + 10_000);
+    let observed = OperationObserver::new();
+    let unattached = OperationObserver::new();
+
+    let (observed_artifacts, observed_outcome) =
+        run_complete_observer_ingest(Some(observed.clone()), token.clone()).await;
+    let (unobserved_artifacts, unobserved_outcome) =
+        run_complete_observer_ingest(None, token).await;
+
+    assert_eq!(observed_artifacts, unobserved_artifacts);
+    assert_eq!(observed_outcome, unobserved_outcome);
+    assert_eq!(observed_outcome.status, "accepted");
+    assert_eq!(observed_outcome.path, TransportPath::Relay);
+    assert_eq!(
+        u64::from(observed_outcome.attempts),
+        OBSERVER_CLIENT_PRODUCTION_DIAL_ATTEMPTS
+    );
+
+    assert!(observed_artifacts.head_boundary_found);
+    assert!(observed_artifacts.saw_request_close);
+    assert!(observed_artifacts.sent_terminal_response);
+    assert_eq!(observed_artifacts.tcp_accepts, 1);
+    assert_eq!(observed_artifacts.ws_dials, 1);
+    assert_eq!(observed_artifacts.inner_requests, 1);
+
+    let rebuilt = rebuild_captured_request(&observed_artifacts.request_bytes);
+    assert_eq!(rebuilt, observed_artifacts.request_bytes);
+    assert_eq!(observed_artifacts.request_bytes.len(), rebuilt.len());
+
+    let counts = observed.counts();
+    assert_eq!(
+        counts.dial_attempts,
+        OBSERVER_CLIENT_PRODUCTION_DIAL_ATTEMPTS
+    );
+    assert_eq!(counts.request_bytes_sent, rebuilt.len() as u64);
+    assert!(counts.close_completed);
+    assert_eq!(counts.direct_successes, 0);
+    assert_eq!(counts.relay_successes, 1);
+    assert_eq!(
+        unattached.counts(),
+        DialCounts {
+            dial_attempts: 0,
+            direct_successes: 0,
+            relay_successes: 0,
+            request_bytes_sent: 0,
+            close_completed: false,
+        }
+    );
+}
+
+/// Close 4402 is selected because it is the only close code that terminates
+/// after one relay attempt: Unauthorized burns a reactive refresh, while
+/// Overflow and Abnormal enter the five-attempt transient ladder. This fixture
+/// selects that terminal property; it does not model a billing failure.
+#[tokio::test]
+async fn relay_observer_is_inert_and_reports_progress_for_the_only_one_attempt_close_4402() {
+    let token = mint_jwt(epoch_secs(), epoch_secs() + 10_000);
+    let observed = OperationObserver::new();
+    let unattached = OperationObserver::new();
+
+    let (observed_artifacts, observed_outcome) =
+        run_interrupted_observer_ingest(Some(observed.clone()), token.clone()).await;
+    let (unobserved_artifacts, unobserved_outcome) =
+        run_interrupted_observer_ingest(None, token).await;
+
+    assert_eq!(observed_artifacts, unobserved_artifacts);
+    assert_eq!(observed_outcome, unobserved_outcome);
+    assert_eq!(observed_outcome, InterruptedClientOutcome::RelayUnpaid);
+
+    assert!(observed_artifacts.head_boundary_found);
+    assert!(!observed_artifacts.saw_request_close);
+    assert!(!observed_artifacts.sent_terminal_response);
+    assert_eq!(observed_artifacts.tcp_accepts, 1);
+    assert_eq!(
+        observed_artifacts.ws_dials, 1,
+        "the fixture's WS dial count is the authoritative relay-attempt count"
+    );
+    assert_eq!(observed_artifacts.inner_requests, 1);
+
+    let encoded_head_len = request_head_len(&observed_artifacts.request_bytes).unwrap();
+    let full_http_request_len =
+        full_request_len_from_captured_head(&observed_artifacts.request_bytes);
+    let counts = observed.counts();
+    assert_eq!(
+        counts.dial_attempts,
+        OBSERVER_CLIENT_PRODUCTION_DIAL_ATTEMPTS
+    );
+
+    assert!(
+        encoded_head_len < counts.request_bytes_sent as usize,
+        "at least one request-body byte must be reported before interruption"
+    );
+    assert!(
+        (counts.request_bytes_sent as usize) < full_http_request_len,
+        "the interrupted request must not report the unsent tail"
+    );
+    assert!(!counts.close_completed);
+    assert_eq!(
+        counts.request_bytes_sent as usize,
+        observed_artifacts.request_bytes.len()
+    );
+    assert_eq!(
+        observed_artifacts.request_bytes.len(),
+        INITIAL_WINDOW,
+        "the no-WINDOW fixture deterministically exhausts only the initial credit"
+    );
+    assert!(
+        counts.request_bytes_sent >= RECOMMENDED_CHUNK as u64,
+        "the first full 64 KiB request DATA frame must be visible"
+    );
+    assert_eq!(counts.direct_successes, 0);
+    assert_eq!(counts.relay_successes, 0);
+    assert_eq!(
+        unattached.counts(),
+        DialCounts {
+            dial_attempts: 0,
+            direct_successes: 0,
+            relay_successes: 0,
+            request_bytes_sent: 0,
+            close_completed: false,
+        }
+    );
 }
 
 #[tokio::test]

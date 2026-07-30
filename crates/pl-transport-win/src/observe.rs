@@ -10,16 +10,18 @@
 //! codebase forbids.
 //!
 //! It is threaded explicitly as [`ObserverHandle`] (an `Option`, defaulting to
-//! `None`) through [`ObserverClient`](crate::client::ObserverClient), the pairing
-//! ceremony, and [`journal_bridge::start_observed`](crate::journal_bridge::start_observed)
-//! — the last of which is what makes the bridge's silent `MuxCarrier` redials
-//! visible.
+//! `None`) through [`ObserverClient`](crate::client::ObserverClient), including
+//! its direct and relay-carried one-shot requests, through pairing-ceremony dial
+//! accounting, and through
+//! [`journal_bridge::start_observed`](crate::journal_bridge::start_observed) —
+//! the last of which makes the bridge's silent `MuxCarrier` redials visible.
+//! Pairing deliberately observes only its dials, not its request body.
 //!
 //! **Observation only.** Every method is a relaxed `fetch_add`/`fetch_max`/`store`
 //! at a seam the transport already passes through. Nothing here awaits, branches
 //! on an observed value, or feeds a loop bound, so retry counts, backoff, and
 //! ordering are identical whether or not anyone is watching. `observation_is_inert`
-//! in `tests/integration_mode.rs` proves it by running the same scenario with
+//! in `tests/observation_inertness.rs` proves it by running the same scenario with
 //! `Some(handle)` and with `None` and comparing the emitted dial sequence.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

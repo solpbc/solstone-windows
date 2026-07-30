@@ -32,7 +32,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::connection::{dial_tls, request_once_observed};
 use crate::credential::{Credential, PairedState};
 use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
-use crate::relay::{dial_relay_carrier, request_once_relay, RelayTerminationHandle};
+use crate::relay::{
+    dial_relay_carrier, request_once_relay_observed, RelayRequestSpec, RelayTerminationHandle,
+};
 use crate::relay_token::{refresh_device_token, RefreshOutcome};
 use crate::{tls, transport_error_code, RelayError, TransportError};
 
@@ -406,15 +408,13 @@ impl ObserverClient {
             note_dial_attempt(&self.observer);
             log_dial_start(path, attempts);
             let started = Instant::now();
-            match request_once_relay(
+            let request = RelayRequestSpec::new(method, path, headers, body, &self.observer);
+            match request_once_relay_observed(
                 self.config.clone(),
                 origin,
                 instance_id,
                 &token,
-                method,
-                path,
-                headers,
-                body,
+                request,
             )
             .await
             {
