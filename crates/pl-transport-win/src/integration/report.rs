@@ -173,7 +173,7 @@ impl Failure {
         match self {
             Self::Assertion { guidance, .. } | Self::Error { guidance, .. } => guidance.clone(),
             Self::Deadline { .. } => {
-                bounded("the operation did not finish inside --deadline-secs; raise the deadline or check relay reachability")
+                bounded("the operation's awaited async work spent its one --deadline-secs budget; raise the deadline or check relay reachability. Blocking local I/O, hashing, and envelope serialization are outside it and need the caller's process timeout")
             }
         }
     }

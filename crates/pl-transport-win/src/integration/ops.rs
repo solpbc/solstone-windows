@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_model::{SyncSnapshot, TransportPath};
 use observer_pl::civil;
@@ -27,7 +27,8 @@ use tokio::net::TcpStream;
 use super::args::{Command, OperationArgs};
 use super::report::{Evidence, Failure, Phase, RemoteResidue, Residue};
 use super::{
-    progress, relay_path_failure, runtime, shared_observer, with_deadline, Environment, FixedOffset,
+    progress, relay_path_failure, runtime, shared_observer, Environment, FixedOffset,
+    OperationBudget,
 };
 use crate::client::ObserverClient;
 use crate::coordinator::UploadCoordinator;
@@ -259,12 +260,13 @@ async fn pair(
     }
 
     progress("pairing over the production relay ceremony");
-    let ceremony = with_deadline(
-        command.deadline,
-        Phase::Pair,
-        pairing::pair_from_link_observed(&link, &environment.device_label, observer.clone()),
-    )
-    .await;
+    let budget = OperationBudget::start(command.deadline);
+    let ceremony = budget
+        .run(
+            Phase::Pair,
+            pairing::pair_from_link_observed(&link, &environment.device_label, observer.clone()),
+        )
+        .await;
 
     // From here on the ceremony has touched the relay and the journal, so any
     // failure owes both a local cleanup and an honest statement of remote residue.
@@ -321,18 +323,18 @@ async fn pair(
         }
     };
 
-    let registration = with_deadline(
-        command.deadline,
-        Phase::Register,
-        client.register(
-            &environment.platform,
-            &environment.device_label,
-            &environment.stream_type,
-            &environment.app_version,
-            None,
-        ),
-    )
-    .await;
+    let registration = budget
+        .run(
+            Phase::Register,
+            client.register(
+                &environment.platform,
+                &environment.device_label,
+                &environment.stream_type,
+                &environment.app_version,
+                None,
+            ),
+        )
+        .await;
 
     let registration = match registration {
         Err(deadline) => {
@@ -359,6 +361,10 @@ async fn pair(
         observer_key: Some(registration.key.clone()),
         observer_name: Some(registration.name.clone()),
     };
+    if let Some(deadline) = budget.checkpoint(Phase::Persist) {
+        evidence.local_residue_cleared = Some(clear_local_credential(environment));
+        return (Some(deadline), evidence);
+    }
     if let Err(error) = paired.save(&environment.state_path) {
         evidence.local_residue_cleared = Some(clear_local_credential(environment));
         return (
@@ -451,7 +457,8 @@ async fn roundtrip(
 
     progress("posting an authenticated heartbeat");
     let event = HeartbeatEvent::status(false);
-    match with_deadline(command.deadline, Phase::Heartbeat, client.heartbeat(&event)).await {
+    let budget = OperationBudget::start(command.deadline);
+    match budget.run(Phase::Heartbeat, client.heartbeat(&event)).await {
         Err(deadline) => return (Some(deadline), evidence),
         Ok(Err(error)) => {
             return (
@@ -470,12 +477,9 @@ async fn roundtrip(
     // the request only has to be authenticated and answered.
     let day = civil::day_string_local(now_secs(), 0);
     progress("listing the journal's segments for the day");
-    match with_deadline(
-        command.deadline,
-        Phase::ListSegments,
-        client.list_segments(&day),
-    )
-    .await
+    match budget
+        .run(Phase::ListSegments, client.list_segments(&day))
+        .await
     {
         Err(deadline) => return (Some(deadline), evidence),
         Ok(Err(error)) => {
@@ -495,6 +499,13 @@ async fn roundtrip(
     }
 
     let counts = counts_source.counts();
+    // The single post-await boundary for roundtrip, fetch, and upload sits
+    // immediately before relay-path finalization. Assertions drawn from earned
+    // data keep precedence; the budget gates the sole remaining route to PASS.
+    // Both failures are FAIL, so this ordering can never fabricate a pass.
+    if let Some(deadline) = budget.checkpoint(Phase::Assert) {
+        return (Some(deadline), evidence);
+    }
     evidence.observed_path = Some(TransportPath::Relay.as_str());
     (relay_path_failure(counts), evidence)
 }
@@ -593,35 +604,40 @@ async fn fetch(
     };
 
     progress("starting the production journal bridge");
-    let handle =
-        match journal_bridge::start_observed(&paired, environment.state_path.clone(), observer)
-            .await
-        {
-            Ok(handle) => handle,
-            Err(error) => {
-                let failure = match error {
-                    journal_bridge::BridgeStartError::Client(error) => Failure::transport(
-                        Phase::BridgeStart,
-                        &error,
-                        "the journal bridge could not build its client from the stored credential",
-                    ),
-                    journal_bridge::BridgeStartError::Bind(_) => Failure::error(
-                        Phase::BridgeStart,
-                        "bridge_bind_failed",
-                        "the journal bridge could not bind its loopback listener",
-                    ),
-                    journal_bridge::BridgeStartError::NotReady => Failure::error(
-                        Phase::BridgeStart,
-                        "not_paired",
-                        "the profile has no credential and observer handle for the bridge",
-                    ),
-                };
-                return (Some(failure), evidence);
-            }
-        };
+    let budget = OperationBudget::start(command.deadline);
+    let handle = match budget
+        .run(
+            Phase::BridgeStart,
+            journal_bridge::start_observed(&paired, environment.state_path.clone(), observer),
+        )
+        .await
+    {
+        Err(deadline) => return (Some(deadline), evidence),
+        Ok(Ok(handle)) => handle,
+        Ok(Err(error)) => {
+            let failure = match error {
+                journal_bridge::BridgeStartError::Client(error) => Failure::transport(
+                    Phase::BridgeStart,
+                    &error,
+                    "the journal bridge could not build its client from the stored credential",
+                ),
+                journal_bridge::BridgeStartError::Bind(_) => Failure::error(
+                    Phase::BridgeStart,
+                    "bridge_bind_failed",
+                    "the journal bridge could not bind its loopback listener",
+                ),
+                journal_bridge::BridgeStartError::NotReady => Failure::error(
+                    Phase::BridgeStart,
+                    "not_paired",
+                    "the profile has no credential and observer handle for the bridge",
+                ),
+            };
+            return (Some(failure), evidence);
+        }
+    };
 
     let outcome = fetch_through_bridge(
-        command.deadline,
+        &budget,
         &handle,
         journal_path,
         expected_bytes,
@@ -632,19 +648,26 @@ async fn fetch(
     .await;
 
     evidence.bridge_contacted = Some(handle.contacted());
-    handle.shutdown_and_wait().await;
+    // At zero remainder `run` drops the unpolled future, which drops its
+    // oneshot sender. The accept loop's shutdown arm resolves on sender closure,
+    // and the current-thread runtime is dropped at execute_inner's tail, so no
+    // special begin_shutdown branch is needed.
+    let _ = budget.run(Phase::Assert, handle.shutdown_and_wait()).await;
 
     if let Some(failure) = outcome {
         return (Some(failure), evidence);
     }
 
     let counts = counts_source.counts();
+    if let Some(deadline) = budget.checkpoint(Phase::Assert) {
+        return (Some(deadline), evidence);
+    }
     evidence.observed_path = Some(TransportPath::Relay.as_str());
     (relay_path_failure(counts), evidence)
 }
 
 async fn fetch_through_bridge(
-    deadline: Duration,
+    budget: &OperationBudget,
     handle: &journal_bridge::JournalBridgeHandle,
     journal_path: &str,
     expected_bytes: u64,
@@ -665,12 +688,12 @@ async fn fetch_through_bridge(
         .unwrap_or_else(|| bridge::BOOTSTRAP_ROUTE.to_string());
 
     progress("bootstrapping the bridge capability");
-    let bootstrap = match with_deadline(
-        deadline,
-        Phase::BridgeStart,
-        loopback_get(port, &bootstrap_target, None, limit),
-    )
-    .await
+    let bootstrap = match budget
+        .run(
+            Phase::BridgeStart,
+            loopback_get(port, &bootstrap_target, None, limit),
+        )
+        .await
     {
         Err(deadline) => return Some(deadline),
         Ok(Err(error)) => {
@@ -695,12 +718,12 @@ async fn fetch_through_bridge(
     };
 
     progress("retrieving the journal path through the bridge");
-    let response = match with_deadline(
-        deadline,
-        Phase::BridgeFetch,
-        loopback_get(port, journal_path, Some(&capability), limit),
-    )
-    .await
+    let response = match budget
+        .run(
+            Phase::BridgeFetch,
+            loopback_get(port, journal_path, Some(&capability), limit),
+        )
+        .await
     {
         Err(deadline) => return Some(deadline),
         Ok(Err(error)) => {
@@ -946,7 +969,8 @@ async fn upload(
     );
 
     progress("uploading through the production coordinator");
-    let ticked = with_deadline(command.deadline, Phase::Ingest, coordinator.tick()).await;
+    let budget = OperationBudget::start(command.deadline);
+    let ticked = budget.run(Phase::Ingest, coordinator.tick()).await;
 
     // Progress evidence is read whether or not the tick succeeded: a bounded
     // interruption must be visible as bytes sent without a completed close.
@@ -985,6 +1009,9 @@ async fn upload(
         );
     }
 
+    if let Some(deadline) = budget.checkpoint(Phase::Assert) {
+        return (Some(deadline), evidence);
+    }
     evidence.observed_path = Some(TransportPath::Relay.as_str());
     (relay_path_failure(counts), evidence)
 }
@@ -992,6 +1019,13 @@ async fn upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
 
     fn environment(root: &Path) -> Environment {
         Environment {
@@ -1016,6 +1050,178 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    // Deliberate build-unit-local overlap with tests/support/journal_fake.rs:
+    // in-crate tests cannot import an integration-test module, and this fixture
+    // needs only two requests decoded through FLAG_CLOSE.
+    fn roundtrip_server_config() -> (rustls::ServerConfig, Vec<u8>) {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        let pin = ca::sha256(cert_der.as_ref())[..16].to_vec();
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+        (config, pin)
+    }
+
+    fn roundtrip_credential(pin: Vec<u8>, port: u16) -> crate::credential::Credential {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = CertificateParams::new(vec!["observer.test".to_string()]).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        crate::credential::Credential {
+            client_key_pem: key.serialize_pem(),
+            client_cert_pem: cert.pem(),
+            ca_chain_pem: vec![cert.pem()],
+            ca_fp_prefix: pin,
+            instance_id: "test-instance".into(),
+            home_label: "Home".into(),
+            endpoints: vec![crate::credential::EndpointAddr {
+                host: "127.0.0.1".into(),
+                port,
+            }],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        }
+    }
+
+    async fn read_closed_stream_id(
+        tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+    ) -> Option<u32> {
+        let mut decoder = FrameDecoder::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let read = tls.read(&mut buf).await.ok()?;
+            if read == 0 {
+                return None;
+            }
+            decoder.feed(&buf[..read]);
+            for frame in decoder.drain().ok()? {
+                if frame.flags & FLAG_CLOSE != 0 {
+                    return Some(frame.stream_id);
+                }
+            }
+        }
+    }
+
+    async fn serve_delayed_roundtrip(listener: TcpListener, acceptor: TlsAcceptor) {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let stream_id = read_closed_stream_id(&mut tls).await.unwrap();
+        tokio::time::advance(Duration::from_secs(6)).await;
+        let heartbeat = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, heartbeat.to_vec());
+        tls.write_all(&frame.encode().unwrap()).await.unwrap();
+        tls.flush().await.unwrap();
+        let _ = tls.shutdown().await;
+
+        let Ok((tcp, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(mut tls) = acceptor.accept(tcp).await else {
+            return;
+        };
+        let Some(stream_id) = read_closed_stream_id(&mut tls).await else {
+            return;
+        };
+        // Split the unconditional 4s delay so the first advance reaches the
+        // operation's 8s deadline exactly, then let it observe exhaustion
+        // before advancing again. This keeps the pre-fix/post-fix difference
+        // solely in production budget arithmetic. The response remains
+        // unconditional and tolerates a peer that has already gone away,
+        // because post-fix the operation returns while this task is mid-flight.
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let body = br#"{"items":[],"total":0,"protocol_version":2}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
+        if let Ok(encoded) = frame.encode() {
+            let _ = tls.write_all(&encoded).await;
+            let _ = tls.flush().await;
+        }
+        let _ = tls.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_operation_budget_is_shared_across_roundtrip_phases() {
+        let root = temp_root("roundtrip-budget");
+        let environment = environment(&root);
+        let (server_config, pin) = roundtrip_server_config();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let paired = PairedState {
+            credential: Some(roundtrip_credential(pin, port)),
+            observer_key: Some("observer-key".into()),
+            observer_name: Some("Test observer".into()),
+        };
+        paired.save(&environment.state_path).unwrap();
+        let server = tokio::spawn(serve_delayed_roundtrip(
+            listener,
+            TlsAcceptor::from(Arc::new(server_config)),
+        ));
+
+        // Tokio cannot auto-advance paused time while a blocking task is
+        // running. Holding one for the whole test makes every clock movement
+        // explicit and prevents readiness windows from being skipped. Await
+        // its started signal before the operation so no auto-advance window
+        // remains before the budget is established.
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let inhibitor = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.await.unwrap();
+
+        let command = Command {
+            operation: super::super::args::Operation::Roundtrip,
+            deadline: Duration::from_secs(8),
+            max_dials: None,
+            args: OperationArgs::Roundtrip,
+        };
+        let counts_source = OperationObserver::new();
+        let started = tokio::time::Instant::now();
+        let (failure, evidence) = roundtrip(
+            &command,
+            &environment,
+            Some(counts_source.clone()),
+            &counts_source,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        drop(release_tx);
+        inhibitor.await.unwrap();
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(&root);
+
+        let failure = failure.expect("the shared budget must expire");
+        assert!(
+            matches!(
+                failure,
+                Failure::Deadline {
+                    phase: Phase::ListSegments
+                }
+            ),
+            "expected list_segments deadline, got {failure:?}; virtual elapsed {elapsed:?}"
+        );
+        assert_eq!(elapsed, Duration::from_secs(8));
+        assert_eq!(evidence.heartbeat_ok, Some(true));
     }
 
     #[test]

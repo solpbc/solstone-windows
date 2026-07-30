@@ -258,18 +258,45 @@ pub(crate) fn deadline_failure(phase: Phase) -> Failure {
     Failure::Deadline { phase }
 }
 
-/// Run `future` under the caller's fixed deadline.
-pub(crate) async fn with_deadline<F, T>(
-    deadline: Duration,
-    phase: Phase,
-    future: F,
-) -> Result<T, Failure>
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::time::timeout(deadline, future)
-        .await
-        .map_err(|_| deadline_failure(phase))
+/// One absolute, monotonic budget shared by every awaited phase of one
+/// integration operation.
+///
+/// Construct it immediately before the operation's first awaited async work;
+/// blocking local preflight remains outside. [`Self::run`] refuses to poll a
+/// future when no time remains, and [`Self::checkpoint`] reports exhaustion
+/// before synchronous persistence or final assertions. It does not preempt
+/// blocking local I/O, hashing, or envelope serialization.
+pub(crate) struct OperationBudget {
+    deadline: tokio::time::Instant,
+}
+
+impl OperationBudget {
+    pub(crate) fn start(total: Duration) -> Self {
+        Self {
+            deadline: tokio::time::Instant::now() + total,
+        }
+    }
+
+    pub(crate) fn remaining(&self) -> Duration {
+        self.deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+    }
+
+    pub(crate) async fn run<F, T>(&self, phase: Phase, future: F) -> Result<T, Failure>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        if self.remaining().is_zero() {
+            return Err(deadline_failure(phase));
+        }
+        tokio::time::timeout_at(self.deadline, future)
+            .await
+            .map_err(|_| deadline_failure(phase))
+    }
+
+    pub(crate) fn checkpoint(&self, phase: Phase) -> Option<Failure> {
+        self.remaining().is_zero().then(|| deadline_failure(phase))
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +389,73 @@ mod tests {
             join.await.unwrap()
         });
         assert_eq!(spawned, 7);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_exhausted_operation_budget_does_not_poll_the_next_phase() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let budget = OperationBudget::start(Duration::from_secs(5));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let polls = Arc::new(AtomicUsize::new(0));
+        let polls_for_future = polls.clone();
+        let future = std::future::poll_fn(move |_| {
+            polls_for_future.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::<()>::Pending
+        });
+
+        let failure = budget.run(Phase::Heartbeat, future).await.unwrap_err();
+        assert!(matches!(
+            failure,
+            Failure::Deadline {
+                phase: Phase::Heartbeat
+            }
+        ));
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_exhausted_operation_budget_checkpoints_the_named_boundary() {
+        let budget = OperationBudget::start(Duration::from_secs(5));
+        tokio::time::advance(Duration::from_secs(5)).await;
+
+        assert!(matches!(
+            budget.checkpoint(Phase::Persist),
+            Some(Failure::Deadline {
+                phase: Phase::Persist
+            })
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn operation_budget_reports_the_exact_remaining_sub_budget() {
+        let budget = OperationBudget::start(Duration::from_secs(10));
+        tokio::time::advance(Duration::from_secs(3)).await;
+
+        assert_eq!(budget.remaining(), Duration::from_secs(7));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn operation_budget_runs_only_for_the_exact_remaining_sub_budget() {
+        let budget = OperationBudget::start(Duration::from_secs(10));
+        tokio::time::advance(Duration::from_secs(3)).await;
+        let started = tokio::time::Instant::now();
+
+        let failure = budget
+            .run(
+                Phase::ListSegments,
+                tokio::time::sleep(Duration::from_secs(30)),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            failure,
+            Failure::Deadline {
+                phase: Phase::ListSegments
+            }
+        ));
+        assert_eq!(started.elapsed(), Duration::from_secs(7));
     }
 
     #[test]

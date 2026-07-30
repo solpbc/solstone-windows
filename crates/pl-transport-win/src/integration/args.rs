@@ -320,7 +320,10 @@ Operations:
   upload      send one caller-named synthetic segment through the production uploader
 
 Common flags:
-  --deadline-secs <n>      required; bounded wall-clock budget for the operation
+  --deadline-secs <n>      required; one budget for awaited async work; blocking
+                           local stdin/file reads or writes, hashing, and envelope
+                           serialization stay outside it; use the caller's process
+                           timeout to bound them
   --max-dials <n>          optional; exceeding it is an assertion failure, not a pass
 
 fetch flags:
