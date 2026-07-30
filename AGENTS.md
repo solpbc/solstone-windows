@@ -192,8 +192,7 @@ truth: the `observer-contract` crate (AutomationId `const`s + the generator); th
 token vocabulary derives from the `observer-model` enums via `strum::EnumIter`.
 
 - `make contract` regenerates the JSON + `ui/src/lib/contract.ts`; commit both.
-- `cargo xtask contract --check` (run by `make ci` and by the `contract_not_stale`
-  test) exits 1 on drift, so `cargo test` alone also catches it.
+- `cargo xtask contract --check` (run by `make ci`) exits 1 on drift.
 - Three consumers: the FlaUI harness (finds elements), the webview codegen
   (stamps `data-automation-id`), and `--dump-state` / `/healthz` (the tokens).
 

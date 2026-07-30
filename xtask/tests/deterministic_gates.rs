@@ -128,9 +128,6 @@ fn every_gated_cargo_resolution_is_locked() {
     assert!(
         purity.contains("\"metadata\", \"--locked\", \"--format-version\", \"1\", \"--no-deps\"")
     );
-
-    let contract_test = read(&root, "xtask/tests/contract_not_stale.rs");
-    assert!(contract_test.contains("\"run\", \"--locked\","));
 }
 
 #[test]

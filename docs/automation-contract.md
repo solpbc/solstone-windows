@@ -30,8 +30,6 @@ trailing newline.
 - `make contract` (= `cargo xtask contract`) regenerates the JSON + the ui
   codegen; the operator commits the result.
 - `cargo xtask contract --check` regenerates in memory and exits 1 on any diff.
-- A `#[test] contract_not_stale` shells to `--check`, so `cargo test` alone also
-  catches drift.
 - `make ci` runs `--check` before the test suite — fail fast.
 
 ## How to extend
