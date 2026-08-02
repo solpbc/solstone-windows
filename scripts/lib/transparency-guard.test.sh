@@ -29,6 +29,19 @@ for tool in gh wrangler scp; do
 done
 
 release_dir="$repo_root/xtask/tests/fixtures/rust-release-manifest/release-dir"
+if output=$(PATH="$fake_bin:$PATH" \
+  TRANSPARENCY_GUARD_WITNESS="$witness" \
+  MAKEFLAGS= \
+  make -s -C "$repo_root" publish-transparency RELEASE_DIR="$release_dir" 2>&1); then
+  fail "make publish-transparency must be suspended by default"
+fi
+
+case "$output" in
+  *"transparency is suspended for the Rust conversion freeze"*) ;;
+  *) fail "suspension diagnostic missing" ;;
+esac
+[ ! -s "$witness" ] || fail "a delivery command was invoked while suspended"
+
 if output=$(env \
   -u TRANSPARENCY_BASE_URL \
   -u TRANSPARENCY_S3_ENDPOINT \
@@ -41,6 +54,7 @@ if output=$(env \
   -u TRANSPARENCY_GENESIS \
   PATH="$fake_bin:$PATH" \
   TRANSPARENCY_GUARD_WITNESS="$witness" \
+  TRANSPARENCY_ACTIVATED=1 \
   MAKEFLAGS= \
   make -s -C "$repo_root" publish-transparency RELEASE_DIR="$release_dir" 2>&1); then
   fail "make publish-transparency must fail closed without configuration"

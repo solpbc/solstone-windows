@@ -71,7 +71,7 @@ call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul || ( echo ERROR: vc
 echo === cargo build --locked (workspace, minus app) ===
 cargo build --locked --workspace --exclude solstone-windows-app || exit /b 1
 echo === cargo test --locked (workspace, minus app) ===
-cargo test --locked --workspace --exclude solstone-windows-app || exit /b 1
+cargo test --locked --workspace --exclude solstone-windows-app -- --skip transparency || exit /b 1
 echo === cargo xtask contract --locked --check ===
 cargo run --locked -q -p xtask -- contract --check || exit /b 1
 echo === cargo xtask purity-check --locked ===

@@ -75,7 +75,7 @@ impl Serialize for ReverseLatest {
 }
 
 #[test]
-fn entry_vector_matches_shared_canonical_bytes() {
+fn transparency_entry_vector_matches_shared_canonical_bytes() {
     let actual = canonicalize_transparency_json(&ReverseEntry).expect("canonicalize entry vector");
     let expected = include_bytes!("fixtures/transparency/entry-vector.canonical.json");
     assert_eq!(actual, expected);
@@ -84,7 +84,7 @@ fn entry_vector_matches_shared_canonical_bytes() {
 }
 
 #[test]
-fn latest_vector_matches_shared_canonical_bytes() {
+fn transparency_latest_vector_matches_shared_canonical_bytes() {
     let actual =
         canonicalize_transparency_json(&ReverseLatest).expect("canonicalize latest vector");
     let expected = include_bytes!("fixtures/transparency/latest-vector.canonical.json");

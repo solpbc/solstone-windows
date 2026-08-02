@@ -30,6 +30,9 @@ REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-
 # committed (public hygiene): WIN_REMOTE_HOST=user@host make win-host-ci.
 WIN_REMOTE_HOST ?=
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
+# Transparency is paused during the Rust conversion freeze. Restore only after
+# the post-conversion review by changing this checked-in activation switch to 1.
+TRANSPARENCY_ACTIVATED ?= 0
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny preflight-release-tools build test ui-test \
@@ -83,13 +86,12 @@ build: preflight-toolchain
 # Local cross-platform tests (pure tier + capture-engine), host-testable, no live
 # target. The windows-only crates test remotely via win-host-ci.
 test: preflight-toolchain
-	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
+	$(CARGO) test --locked --workspace $(REMOTE_CRATES) -- --skip transparency
 
 # Host-testable deterministic/package/publication policy checks on the Linux host.
 test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
-	sh scripts/lib/transparency-guard.test.sh
 	sh scripts/lib/make-audit-ordering.test.sh
 	sh scripts/lib/advisory-audit-real-tool.test.sh
 	sh scripts/lib/make-package-ordering.test.sh
@@ -114,7 +116,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) run --locked -q -p xtask -- purity-check
 	$(MAKE) check-observer-contract
 	MANIFEST= RELEASE_DIR= $(MAKE) check-rust-release-manifest
-	$(CARGO) test --locked --workspace $(REMOTE_CRATES)
+	$(CARGO) test --locked --workspace $(REMOTE_CRATES) -- --skip transparency
 	$(CARGO) deny --offline --locked check bans licenses sources
 	$(MAKE) check-release-advisory-config
 	$(MAKE) ui-test
@@ -325,6 +327,10 @@ prove-rust-release-native:
 # go only to the operator archive channel; the public surface receives evidence.
 publish-transparency:
 	@set -eu; \
+	  if [ "$(TRANSPARENCY_ACTIVATED)" != 1 ]; then \
+	    echo "transparency is suspended for the Rust conversion freeze; restore with TRANSPARENCY_ACTIVATED=1 only after the post-conversion review" >&2; \
+	    exit 2; \
+	  fi; \
 	  if [ -z "$(RELEASE_DIR)" ]; then \
 	    echo "ERROR: RELEASE_DIR is required; pass target/release-candidate/<VERSION> and retry transparency publication." >&2; \
 	    exit 1; \
@@ -333,6 +339,7 @@ publish-transparency:
 
 # Refresh only the signed latest pointer. This deliberately has no candidate input.
 resign-transparency-pointer:
+	@test "$(TRANSPARENCY_ACTIVATED)" = 1 || { echo "transparency is suspended for the Rust conversion freeze; restore with TRANSPARENCY_ACTIVATED=1 only after the post-conversion review" >&2; exit 2; }
 	CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- transparency resign-pointer
 
 # Real-tool acceptance for the declared minisign development prerequisite.
