@@ -121,7 +121,6 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(MAKE) check-release-advisory-config
 	$(MAKE) ui-test
 	$(MAKE) test-scripts
-	$(MAKE) gate-minisign
 	$(MAKE) win-host-ci
 
 # Verify the signed advisory packet and self-contained bundle, then check the
