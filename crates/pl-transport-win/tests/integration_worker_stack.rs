@@ -67,7 +67,7 @@ fn assert_not_reflected(channel: &str, output: &str, secrets: &[&str]) {
 }
 
 /// This cannot reach PASS: the fixture serves the pairing ceremony and
-/// `/enroll/device`, but not `/app/observer/register`. Exit 2 or 3 is therefore
+/// `/enroll/device`, but not `/app/devices/register`. Exit 2 or 3 is therefore
 /// the expected completed-operation shape, not a weakened success oracle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn integration_pair_emits_one_envelope_from_one_mib_caller_stack() {

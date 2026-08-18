@@ -412,11 +412,11 @@ mod tests {
         });
 
         let request_len =
-            http::build_request("POST", "/app/observer/ingest", &[], &body).len() as u64;
+            http::build_request("POST", "/app/devices/ingest", &[], &body).len() as u64;
         let response = run_request_over_stream_observed(
             client,
             "POST",
-            "/app/observer/ingest",
+            "/app/devices/ingest",
             &[],
             &body,
             &Some(observer.clone()),
@@ -459,7 +459,7 @@ mod tests {
         let error = run_request_over_stream_observed(
             client,
             "POST",
-            "/app/observer/ingest",
+            "/app/devices/ingest",
             &[],
             &body,
             &Some(observer.clone()),
@@ -523,7 +523,7 @@ mod tests {
         let response = run_request_over_stream_observed(
             client,
             "POST",
-            "/app/observer/ingest",
+            "/app/devices/ingest",
             &[],
             &body,
             &Some(observer.clone()),

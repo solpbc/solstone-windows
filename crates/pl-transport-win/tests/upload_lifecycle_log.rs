@@ -109,7 +109,7 @@ async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
         .await
         .unwrap();
     let request = String::from_utf8(server.await.unwrap()).unwrap();
-    assert!(request.starts_with("POST /app/observer/ingest HTTP/1.1\r\n"));
+    assert!(request.starts_with("POST /app/devices/ingest HTTP/1.1\r\n"));
     assert!(request.contains("X-Solstone-Observer: authority-observer\r\n"));
     assert!(request.contains("Authorization: Bearer authority-observer\r\n"));
     assert!(request.contains(&format!(

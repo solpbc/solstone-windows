@@ -121,22 +121,22 @@ pub const WINDOWS_OPERATION_MAPPINGS: &[OperationMapping] = &[
     OperationMapping {
         operation_id: "observer.ingestEvent",
         method: "POST",
-        path: "/app/observer/ingest/event",
+        path: "/app/devices/ingest/event",
     },
     OperationMapping {
         operation_id: "observer.ingestSegments",
         method: "GET",
-        path: "/app/observer/ingest/segments/{day}",
+        path: "/app/devices/ingest/segments/{day}",
     },
     OperationMapping {
         operation_id: "observer.ingestUpload",
         method: "POST",
-        path: "/app/observer/ingest",
+        path: "/app/devices/ingest",
     },
     OperationMapping {
         operation_id: "observer.register",
         method: "POST",
-        path: "/app/observer/register",
+        path: "/app/devices/register",
     },
 ];
 
@@ -544,7 +544,10 @@ pub fn verify(bundle_dir: &Path, adoption_path: &Path) -> Result<VerifyReport, V
     }
 
     verify_manifest_fields(&manifest)?;
-    verify_projection(&bundle_dir.join(PROJECTION_PATH))?;
+    verify_projection(
+        &bundle_dir.join(PROJECTION_PATH),
+        WINDOWS_OPERATION_MAPPINGS,
+    )?;
     verify_id_document(
         &bundle_dir.join("fixtures/wire-behavior.json"),
         "fixtures/wire-behavior.json",
@@ -950,7 +953,16 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
     Ok(())
 }
 
-fn verify_projection(path: &Path) -> Result<(), VerifyError> {
+/// One-way consumer overlay: the vendored export still spells `/app/observer`;
+/// retire this when the journal re-exports `/app/devices`.
+fn overlay_projection_path(path: &str) -> String {
+    match path.strip_prefix("/app/observer/") {
+        Some(rest) => format!("/app/devices/{rest}"),
+        None => path.to_owned(),
+    }
+}
+
+pub fn verify_projection(path: &Path, mappings: &[OperationMapping]) -> Result<(), VerifyError> {
     let bytes = read_file(path, PROJECTION_PATH)?;
     let projection = parse_json(&bytes, PROJECTION_PATH)?;
     let paths = projection
@@ -999,9 +1011,15 @@ fn verify_projection(path: &Path) -> Result<(), VerifyError> {
             message: "operation ID set differs from the authority pin".to_owned(),
         });
     }
-    for mapping in WINDOWS_OPERATION_MAPPINGS {
+    for mapping in mappings {
         let expected = (mapping.method.to_owned(), mapping.path.to_owned());
-        if operations.get(mapping.operation_id) != Some(&expected) {
+        let Some((method, path)) = operations.get(mapping.operation_id) else {
+            return Err(VerifyError::ProjectionMismatch {
+                message: format!("mapping differs for {}", mapping.operation_id),
+            });
+        };
+        let compared = (method.clone(), overlay_projection_path(path));
+        if compared != expected {
             return Err(VerifyError::ProjectionMismatch {
                 message: format!("mapping differs for {}", mapping.operation_id),
             });

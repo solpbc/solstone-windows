@@ -360,9 +360,9 @@ mod tests {
             ("host".to_string(), "evil".to_string()),
             ("content-length".to_string(), "999".to_string()),
         ];
-        let bytes = build_request("POST", "/app/observer/ingest", &headers, b"payload");
+        let bytes = build_request("POST", "/app/devices/ingest", &headers, b"payload");
         let text = String::from_utf8(bytes).unwrap();
-        assert!(text.starts_with("POST /app/observer/ingest HTTP/1.1\r\n"));
+        assert!(text.starts_with("POST /app/devices/ingest HTTP/1.1\r\n"));
         assert!(text.contains("host: spl.local\r\n"));
         assert!(text.contains("accept: application/json\r\n"));
         assert!(text.contains("Content-Type: application/json\r\n"));

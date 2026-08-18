@@ -15,8 +15,8 @@
 //! - [`http`] — HTTP/1.1 request build + response parse, exactly as the Android
 //!   `PlHttp` transport frames it (`host: spl.local`, framing-owned headers).
 //! - [`wire`] — the serde request/response shapes for `/app/network/pair`,
-//!   `/app/observer/register`, `/app/observer/ingest`, `/ingest/event`
-//!   (heartbeat), and `/ingest/segments/<day>` (reconcile).
+//!   `/app/devices/register`, `/app/devices/ingest`, `/app/devices/ingest/event`
+//!   (heartbeat), and `/app/devices/ingest/segments/<day>` (reconcile).
 //! - [`multipart`] — the ingest multipart body, byte-identical to the macOS /
 //!   Android / iOS uploaders (`files` field name; the server reads
 //!   `request.files.getlist("files")`).
@@ -62,17 +62,17 @@ pub const OBSERVER_HANDLE_HEADER: &str = "X-Solstone-Observer";
 /// Protocol-version header name.
 pub const PROTOCOL_VERSION_HEADER: &str = "X-Solstone-Protocol-Version";
 
-/// Observer endpoint paths (relative to the journal origin), reused verbatim
-/// from the convey blueprint so the Windows client cannot drift.
+/// Observer endpoint paths (relative to the journal origin). PAIR still matches
+/// the convey blueprint; the four journal endpoints use `/app/devices`.
 pub mod paths {
     /// Mobile/observer pairing endpoint. Carries `?token=<pair-token-hex>`.
     pub const PAIR: &str = "/app/network/pair";
     /// Self-register an observer after pairing.
-    pub const REGISTER: &str = "/app/observer/register";
+    pub const REGISTER: &str = "/app/devices/register";
     /// Segment upload (multipart).
-    pub const INGEST: &str = "/app/observer/ingest";
+    pub const INGEST: &str = "/app/devices/ingest";
     /// Observer event relay; the heartbeat posts `observe.status` here.
-    pub const INGEST_EVENT: &str = "/app/observer/ingest/event";
+    pub const INGEST_EVENT: &str = "/app/devices/ingest/event";
     /// Per-day segment list for reconciliation (append `/<YYYYMMDD>`).
-    pub const INGEST_SEGMENTS: &str = "/app/observer/ingest/segments";
+    pub const INGEST_SEGMENTS: &str = "/app/devices/ingest/segments";
 }

@@ -4,7 +4,7 @@
 //! The upload/sync coordinator — the macOS `UploadCoordinator`/`SyncService`
 //! analog.
 //!
-//! On each tick it scans sealed segments, ships each to `/app/observer/ingest`,
+//! On each tick it scans sealed segments, ships each to `/app/devices/ingest`,
 //! then **reconciles**: it lists the journal's segments for the day and confirms
 //! the journal recorded the same sha256 for every uploaded file before deleting
 //! the local copy. A segment counts as `uploaded` only after that confirmation —

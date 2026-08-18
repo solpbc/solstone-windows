@@ -129,7 +129,7 @@ fn request_body(request: &[u8]) -> serde_json::Value {
 fn heartbeat_capture_matches(request: &[u8], fixture: &serde_json::Value) -> bool {
     let text = String::from_utf8_lossy(request);
     let body = request_body(request);
-    text.starts_with("POST /app/observer/ingest/event HTTP/1.1\r\n")
+    text.starts_with("POST /app/devices/ingest/event HTTP/1.1\r\n")
         && text.contains("X-Solstone-Observer: authority-observer\r\n")
         && text.contains("Authorization: Bearer authority-observer\r\n")
         && text.contains(&format!(
@@ -161,7 +161,7 @@ fn pair_capture_matches(request: &[u8], nonce: &str, label: &str) -> bool {
 
 fn ingest_capture_matches(request: &[u8], payload: &serde_json::Value, filenames: &[&str]) -> bool {
     let text = String::from_utf8_lossy(request);
-    text.starts_with("POST /app/observer/ingest HTTP/1.1\r\n")
+    text.starts_with("POST /app/devices/ingest HTTP/1.1\r\n")
         && text.contains("X-Solstone-Observer: authority-observer\r\n")
         && text.contains("Authorization: Bearer authority-observer\r\n")
         && text.contains(&format!(
@@ -1082,7 +1082,7 @@ async fn observer_contract_authority_register_captures_real_request_and_response
         .unwrap();
     let request = server.await.unwrap();
     let text = String::from_utf8_lossy(&request);
-    assert!(text.starts_with("POST /app/observer/register HTTP/1.1\r\n"));
+    assert!(text.starts_with("POST /app/devices/register HTTP/1.1\r\n"));
     assert!(text.contains("Content-Type: application/json\r\n"));
     assert!(!text.contains("X-Solstone-Observer:"));
     assert!(!text.contains("Authorization:"));
@@ -1111,10 +1111,10 @@ async fn observer_contract_authority_heartbeat_captures_production_subset() {
     assert!(heartbeat_capture_matches(&request, &request_fixture));
     for (from, to) in [
         (
-            "POST /app/observer/ingest/event",
-            "GET /app/observer/ingest/event",
+            "POST /app/devices/ingest/event",
+            "GET /app/devices/ingest/event",
         ),
-        ("/app/observer/ingest/event", "/app/observer/ingest/wrong"),
+        ("/app/devices/ingest/event", "/app/devices/ingest/wrong"),
         ("X-Solstone-Observer:", "X-Wrong-Observer:"),
         ("Bearer authority-observer", "Bearer wrong"),
         ("Content-Type: application/json", "Content-Type: text/plain"),
@@ -1189,7 +1189,7 @@ async fn observer_contract_authority_list_segments_drives_v2_and_legacy_branches
         let request = server.await.unwrap();
         let text = String::from_utf8_lossy(&request);
         assert!(text.starts_with(&format!(
-            "GET /app/observer/ingest/segments/{day} HTTP/1.1\r\n"
+            "GET /app/devices/ingest/segments/{day} HTTP/1.1\r\n"
         )));
         assert_authenticated_request(&text);
         assert!(text.ends_with("\r\n\r\n"), "GET body must be empty");
@@ -2314,7 +2314,7 @@ async fn streams_multi_mib_body_under_window_flow_control() {
         "127.0.0.1",
         port,
         "POST",
-        "/app/observer/ingest",
+        "/app/devices/ingest",
         &[(
             "Content-Type".to_string(),
             "application/octet-stream".to_string(),
@@ -2335,7 +2335,7 @@ async fn streams_multi_mib_body_under_window_flow_control() {
         received.len()
     );
     let received_text = String::from_utf8_lossy(&received[..received.len().min(256)]);
-    assert!(received_text.starts_with("POST /app/observer/ingest HTTP/1.1\r\n"));
+    assert!(received_text.starts_with("POST /app/devices/ingest HTTP/1.1\r\n"));
     assert!(received.ends_with(&big_body));
 }
 

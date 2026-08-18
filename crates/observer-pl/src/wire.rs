@@ -39,9 +39,9 @@ pub struct PairResponse {
     pub local_endpoints: Option<serde_json::Value>,
 }
 
-// ── /app/observer/register ───────────────────────────────────────────────────
+// ── /app/devices/register ────────────────────────────────────────────────────
 
-/// POST body for `/app/observer/register`. `stream_type` is `"desktop"` for the
+/// POST body for `/app/devices/register`. `stream_type` is `"desktop"` for the
 /// Windows observer; `platform` is `"windows"`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterRequest {
@@ -53,7 +53,7 @@ pub struct RegisterRequest {
     pub label: Option<String>,
 }
 
-/// Response from `/app/observer/register`. `key` is the observer handle used in
+/// Response from `/app/devices/register`. `key` is the observer handle used in
 /// the `X-Solstone-Observer` header on every subsequent request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterResponse {
@@ -67,9 +67,9 @@ pub struct RegisterResponse {
     pub protocol_version: Option<u32>,
 }
 
-// ── /app/observer/ingest ─────────────────────────────────────────────────────
+// ── /app/devices/ingest ──────────────────────────────────────────────────────
 
-/// Response from `/app/observer/ingest`. `status` is `ok` / `duplicate` /
+/// Response from `/app/devices/ingest`. `status` is `ok` / `duplicate` /
 /// `collision`; on collision `segment` carries the adjusted key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestResponse {
@@ -92,7 +92,7 @@ impl IngestResponse {
     }
 }
 
-// ── /app/observer/ingest/event (heartbeat) ───────────────────────────────────
+// ── /app/devices/ingest/event (heartbeat) ────────────────────────────────────
 
 /// Diagnostics-only health fields carried by `observe.status`. All fields are
 /// optional and omitted when absent so the legacy heartbeat body stays unchanged.
@@ -147,7 +147,7 @@ impl HeartbeatEvent {
     }
 }
 
-// ── /app/observer/ingest/segments/<day> (reconcile) ──────────────────────────
+// ── /app/devices/ingest/segments/<day> (reconcile) ───────────────────────────
 
 /// One file recorded on the journal for a segment, used to reconcile by filename,
 /// sha256, and held status. `current_path` is omitted because the client only

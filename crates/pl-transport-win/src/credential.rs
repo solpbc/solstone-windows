@@ -200,7 +200,7 @@ pub struct Credential {
 }
 
 /// The full persisted sync identity: the credential plus the registered
-/// observer handle (minted by `/app/observer/register`).
+/// observer handle (minted by `/app/devices/register`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PairedState {
     pub credential: Option<Credential>,

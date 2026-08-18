@@ -5,7 +5,9 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use xtask::observer_contract::{self, UnsafePathReason, VerifyError};
+use xtask::observer_contract::{
+    self, OperationMapping, UnsafePathReason, VerifyError, WINDOWS_OPERATION_MAPPINGS,
+};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -464,6 +466,67 @@ fn observer_contract_rejects_manifest_projection_and_adopted_set_mutations() {
         tree.verify(),
         Err(VerifyError::VectorSetMismatch { .. })
     ));
+}
+
+fn committed_projection() -> PathBuf {
+    repo_root()
+        .join("contracts/observer-client/bundle")
+        .join(observer_contract::PROJECTION_PATH)
+}
+
+fn catalog_with(operation_id: &str, path: &'static str) -> Vec<OperationMapping> {
+    WINDOWS_OPERATION_MAPPINGS
+        .iter()
+        .copied()
+        .map(|mapping| {
+            if mapping.operation_id == operation_id {
+                OperationMapping { path, ..mapping }
+            } else {
+                mapping
+            }
+        })
+        .collect()
+}
+
+fn assert_projection_mismatch(mappings: &[OperationMapping]) {
+    assert!(matches!(
+        observer_contract::verify_projection(&committed_projection(), mappings),
+        Err(VerifyError::ProjectionMismatch { .. })
+    ));
+}
+
+#[test]
+fn observer_contract_devices_overlay_is_one_way_against_the_committed_projection() {
+    observer_contract::verify_projection(&committed_projection(), WINDOWS_OPERATION_MAPPINGS)
+        .expect("devices pins overlay the untouched /app/observer projection");
+
+    for (operation_id, observer_path, wrong_devices_path) in [
+        (
+            "observer.ingestEvent",
+            "/app/observer/ingest/event",
+            "/app/devices/ingest/wrong",
+        ),
+        (
+            "observer.ingestSegments",
+            "/app/observer/ingest/segments/{day}",
+            "/app/devices/ingest/segments/wrong",
+        ),
+        (
+            "observer.ingestUpload",
+            "/app/observer/ingest",
+            "/app/devices/ingest/wrong",
+        ),
+        (
+            "observer.register",
+            "/app/observer/register",
+            "/app/devices/register/wrong",
+        ),
+    ] {
+        assert_projection_mismatch(&catalog_with(operation_id, observer_path));
+        assert_projection_mismatch(&catalog_with(operation_id, wrong_devices_path));
+    }
+
+    assert_projection_mismatch(&catalog_with("link.pair", "/app/network/wrong"));
 }
 
 #[test]

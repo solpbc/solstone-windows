@@ -1245,7 +1245,7 @@ async fn relay_round_trips_small_body() {
         "inst-small",
         RELAY_TOKEN,
         "POST",
-        "/app/observer/register",
+        "/app/devices/register",
         &[("Content-Type".to_string(), "application/json".to_string())],
         b"{\"device\":\"win\"}",
     )
@@ -1256,7 +1256,7 @@ async fn relay_round_trips_small_body() {
     assert_eq!(response.body_text(), "{\"status\":\"ok\"}");
     let received = server.await.unwrap();
     let received_text = String::from_utf8_lossy(&received);
-    assert!(received_text.starts_with("POST /app/observer/register HTTP/1.1\r\n"));
+    assert!(received_text.starts_with("POST /app/devices/register HTTP/1.1\r\n"));
     assert!(received_text.ends_with("{\"device\":\"win\"}"));
 }
 
@@ -1272,7 +1272,7 @@ async fn relay_streams_multi_mib_body_under_flow_control() {
         "inst-flow",
         RELAY_TOKEN,
         "POST",
-        "/app/observer/ingest",
+        "/app/devices/ingest",
         &[(
             "Content-Type".to_string(),
             "application/octet-stream".to_string(),
@@ -1350,7 +1350,7 @@ async fn relay_is_blind_to_inner_http_and_tokens() {
         instance_id,
         token,
         "POST",
-        "/app/observer/register",
+        "/app/devices/register",
         &[(
             observer_pl::OBSERVER_HANDLE_HEADER.to_string(),
             "observer-key".to_string(),
@@ -1560,7 +1560,7 @@ async fn relay_inner_app_503_returns_http_response_not_home_offline() {
         "inst-inner-503",
         RELAY_TOKEN,
         "GET",
-        "/app/observer/ingest",
+        "/app/devices/ingest",
         &[],
         b"",
     )
@@ -1594,7 +1594,7 @@ async fn relay_fallbacks_after_lan_unreachable() {
     let requests = relay.state.inner_requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     let request_text = String::from_utf8_lossy(&requests[0]);
-    assert!(request_text.starts_with("POST /app/observer/ingest/event HTTP/1.1\r\n"));
+    assert!(request_text.starts_with("POST /app/devices/ingest/event HTTP/1.1\r\n"));
     relay.abort();
 }
 

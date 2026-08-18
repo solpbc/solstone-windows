@@ -10,10 +10,10 @@
 //! 1. **Pair** ([`pairing`]) — certless TLS to the journal with CA-fp pinning,
 //!    POST a freshly-minted CSR to `/app/network/pair`, store the signed client
 //!    credential.
-//! 2. **Register** ([`client`]) — over mTLS, `/app/observer/register`, learn the
+//! 2. **Register** ([`client`]) — over mTLS, `/app/devices/register`, learn the
 //!    observer handle.
 //! 3. **Upload** ([`coordinator`]) — ship sealed segments to
-//!    `/app/observer/ingest`, prove journal custody, retry with backoff.
+//!    `/app/devices/ingest`, prove journal custody, retry with backoff.
 //! 4. **Heartbeat** ([`heartbeat`]) — periodic `observe.status` POST so the
 //!    journal sees the observer as live.
 //!

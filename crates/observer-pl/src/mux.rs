@@ -895,7 +895,7 @@ mod tests {
     fn body_within_initial_window_sends_without_blocking() {
         // 2 chunks + change, all well under the 1 MiB initial window.
         let body = vec![0xABu8; RECOMMENDED_CHUNK * 2 + 17];
-        let request = http::build_request("POST", "/app/observer/ingest", &[], &body);
+        let request = http::build_request("POST", "/app/devices/ingest", &[], &body);
         let mut up = WindowedUpload::new(5, &request);
         let frames = drain_permitted(&mut up);
         assert!(up.is_done(), "small body completes in one credit pass");
@@ -910,7 +910,7 @@ mod tests {
         // 2.5 MiB body — far past the 1 MiB initial window, so the upload must
         // pause and resume on WINDOW grants (the >1 MiB path encoded segments hit).
         let body = vec![0x5Au8; INITIAL_WINDOW * 2 + INITIAL_WINDOW / 2];
-        let request = http::build_request("POST", "/app/observer/ingest", &[], &body);
+        let request = http::build_request("POST", "/app/devices/ingest", &[], &body);
         let mut up = WindowedUpload::new(3, &request);
 
         let mut all = FrameDecoder::new();
@@ -951,7 +951,7 @@ mod tests {
     #[test]
     fn sent_bytes_tracks_progress_and_stops_at_the_window_until_granted() {
         let body = vec![0x5Au8; INITIAL_WINDOW * 2];
-        let request = http::build_request("POST", "/app/observer/ingest", &[], &body);
+        let request = http::build_request("POST", "/app/devices/ingest", &[], &body);
         let mut up = WindowedUpload::new(3, &request);
         assert_eq!(up.sent_bytes(), 0, "nothing handed to the wire yet");
 
