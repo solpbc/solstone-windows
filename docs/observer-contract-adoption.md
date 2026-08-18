@@ -43,6 +43,10 @@ projection mappings, coverage sets, and focused behavior through the real Rust
 wire types and local transport seams. It does not contact a live journal, prove
 native packaging, or provide release or installed-artifact evidence.
 
+Windows pins for `/app/devices/…` are accepted against a projection that still
+publishes `/app/observer/…`; the overlay is one-way and the vendored export is
+not rewritten.
+
 ## Re-vendoring ceremony
 
 1. Start from a clean detached checkout of
