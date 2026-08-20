@@ -39,7 +39,7 @@ TRANSPARENCY_ACTIVATED ?= 0
 	        test-scripts gate-minisign ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
-	        smoke screenshots journal-live help
+	        smoke screenshots journal-live brand-sync help
 
 help:
 	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
@@ -56,6 +56,23 @@ install:
 # resulting ui/package-lock.json diff before using deterministic consumers.
 ui-deps-update:
 	npm --prefix ui install
+
+# Re-vendor brand assets from the canonical brand source. CI verifies the
+# committed output (it does not run brand-sync) — run this locally when the
+# brand spec updates, then commit the diff.
+#
+# The app icon and its PNG are committed binaries in the brand source and are
+# copied as-is. The tray set has no committed raster anywhere: it is built from
+# the brand status marks by scripts/build-tray-icons.sh, which needs
+# rsvg-convert and icotool. See that script for the frame table and why
+# `pending` is a copy of `full`.
+brand-sync:
+	@test -n "$(BRAND_DIR)" || { echo "brand: BRAND_DIR is required — point it at your brand asset directory (BRAND_DIR=/path/to/brand make brand-sync)"; exit 1; }
+	@test -d "$(BRAND_DIR)" || { echo "brand: BRAND_DIR=$(BRAND_DIR) not found"; exit 1; }
+	cp "$(BRAND_DIR)/windows/icon.ico"                                     src-tauri/icons/icon.ico
+	cp "$(BRAND_DIR)/app-icon/png-transparent/sol-app-icon-transparent-256.png" src-tauri/icons/icon.png
+	@BRAND_DIR="$(BRAND_DIR)" sh scripts/build-tray-icons.sh
+	@echo "brand: synced from $(BRAND_DIR)"
 
 rust-toolchain:
 	@version=$$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$$/\1/p' rust-toolchain.toml | sed -n '1p'); \
