@@ -19,7 +19,7 @@ use xtask::release_advisory::{
 use xtask::release_clock::UtcTimestamp;
 use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::release_finalizer::{FinalizeRequest, FinalizeRuntime};
-use xtask::release_selection::SelectionMode;
+use xtask::release_selection::{SelectionMode, PACK_TITLE, PORTABLE_LAUNCHER};
 use xtask::release_source_binding::SourceBinding;
 use xtask::rust_release_manifest::{
     companion_basename, default_velopack_setup_basename, gather_checkout_facts_from_binding,
@@ -88,7 +88,7 @@ pub const VELOPACK_NUPKG_ENTRY_NAMES: [&str; 8] = [
 ];
 pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 5] = [
     ".portable",
-    "sol.exe",
+    PORTABLE_LAUNCHER,
     "Update.exe",
     "current/solstone-windows-app.exe",
     "current/sq.version",
@@ -1438,7 +1438,7 @@ fn selection_value(mode: SelectionMode) -> Value {
         "npm_ci": action(NPM, &["--prefix", "ui", "ci", "--offline"]),
         "npm_build": action(NPM, &["--prefix", "ui", "run", "build"]),
         "cargo_release_build": action(CARGO, &["build", "--locked", "-p", "solstone-windows-app", "--release", "--features", "custom-protocol"]),
-        "vpk_pack": action(VPK, &["pack", "--packId", "Solstone", "--packVersion", "{version}", "--packDir", "{stage_dir}", "--mainExe", "solstone-windows-app.exe", "--outputDir", "{output_dir}", "--packTitle", "sol", "--packAuthors", "sol pbc", "--icon", "src-tauri/icons/icon.ico", "--channel", "win", "--framework", "webview2", "--releaseNotes", "{release_notes}"]),
+        "vpk_pack": action(VPK, &["pack", "--packId", "Solstone", "--packVersion", "{version}", "--packDir", "{stage_dir}", "--mainExe", "solstone-windows-app.exe", "--outputDir", "{output_dir}", "--packTitle", PACK_TITLE, "--packAuthors", "sol pbc", "--icon", "src-tauri/icons/icon.ico", "--channel", "win", "--framework", "webview2", "--releaseNotes", "{release_notes}"]),
         "cargo_deny_advisories": action(CARGO, &["deny", "--locked", "--offline", "--config", "{advisory_config}", "check", "advisories"]),
         "native_smoke": action(POWERSHELL, &["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/smoke.ps1", "-AppExe", "{installed_exe}", "-ExpectedVersion", "{expected_version}", "-ExpectedSha256", "{expected_sha256}", "-DisableInstalledFallback", "-DotnetPath", "{dotnet_path}"])
     });

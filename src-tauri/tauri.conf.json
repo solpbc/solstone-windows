@@ -21,8 +21,8 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "category": "Utility",
-    "shortDescription": "sol for Windows — part of solstone.",
-    "longDescription": "sol runs quietly in the tray, takes in your screen and system audio (plus the microphone when present), and keeps it in local, owner-controlled segments for your journal."
+    "shortDescription": "the solstone app for windows",
+    "longDescription": "the solstone app for windows takes in what you share with it from your screen, system audio, and any microphone you choose. it prepares local, owner-controlled segments for your journal. the solstone app runs on windows; your journal runs on a mac or linux computer. no telemetry."
   },
   "plugins": {}
 }

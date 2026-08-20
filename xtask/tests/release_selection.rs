@@ -5,7 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use xtask::release_selection::{ReleaseToolSelection, SelectionError, SelectionMode};
+use xtask::release_selection::{
+    ReleaseToolSelection, SelectionError, SelectionMode, PACK_TITLE, PORTABLE_LAUNCHER,
+};
 
 #[cfg(not(windows))]
 const PRIVATE_ROOT: &str = "/private/operator/release-tools";
@@ -86,7 +88,7 @@ fn valid_selection(mode: SelectionMode) -> Value {
             &[
                 "pack", "--packId", "Solstone", "--packVersion", "{version}",
                 "--packDir", "{stage_dir}", "--mainExe", "solstone-windows-app.exe",
-                "--outputDir", "{output_dir}", "--packTitle", "sol", "--packAuthors",
+                "--outputDir", "{output_dir}", "--packTitle", PACK_TITLE, "--packAuthors",
                 "sol pbc", "--icon", "src-tauri/icons/icon.ico", "--channel", "win",
                 "--framework", "webview2", "--releaseNotes", "{release_notes}"
             ]
@@ -234,6 +236,93 @@ fn committed_action_templates_match_the_closed_selection_parser() {
         .collect();
     parsed_environment.sort_unstable();
     assert_eq!(configured_environment, parsed_environment);
+}
+
+fn winget_apps_and_features_display_name(source: &str) -> &str {
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        if line == "AppsAndFeaturesEntries:" {
+            let Some(next) = lines.next() else {
+                panic!(
+                    "packaging/winget/solpbc.Solstone.installer.yaml: AppsAndFeaturesEntries: is not followed by a line"
+                );
+            };
+            const PREFIX: &str = "  - DisplayName: ";
+            let Some(value) = next.strip_prefix(PREFIX) else {
+                panic!(
+                    "packaging/winget/solpbc.Solstone.installer.yaml: expected the line after AppsAndFeaturesEntries: to be exactly `  - DisplayName: <value>`, found {next:?}"
+                );
+            };
+            let value = value.trim();
+            if value.is_empty() {
+                panic!(
+                    "packaging/winget/solpbc.Solstone.installer.yaml: DisplayName value is empty"
+                );
+            }
+            return value;
+        }
+    }
+    panic!(
+        "packaging/winget/solpbc.Solstone.installer.yaml: missing column-0 AppsAndFeaturesEntries: key"
+    );
+}
+
+#[test]
+fn derived_pack_title_identity_agrees_across_projections() {
+    let contract: Value = serde_json::from_slice(
+        &fs::read(workspace_root().join("packaging/release-toolchain.json"))
+            .expect("read release-toolchain authority"),
+    )
+    .expect("parse release-toolchain authority");
+    let committed_argv = contract["selection"]["actions"]["vpk_pack"]["argv"]
+        .as_array()
+        .expect("vpk_pack argv");
+    let title_index = committed_argv
+        .iter()
+        .position(|value| value.as_str() == Some("--packTitle"))
+        .expect("packaging/release-toolchain.json: vpk_pack argv is missing --packTitle");
+    let committed_title = committed_argv
+        .get(title_index + 1)
+        .and_then(Value::as_str)
+        .expect("packaging/release-toolchain.json: --packTitle is not followed by a value");
+    assert_eq!(committed_title, PACK_TITLE);
+
+    let mut selection = valid_selection(SelectionMode::Unsigned);
+    let program = selection["tools"]["vpk"]["path"]
+        .as_str()
+        .expect("selected vpk path")
+        .to_owned();
+    selection["actions"]["vpk_pack"] = json!({
+        "program": program,
+        "argv": contract["selection"]["actions"]["vpk_pack"]["argv"].clone(),
+    });
+    parse(&selection).expect("committed vpk_pack argv must pass the closed selection parser");
+
+    let mut mutated = selection.clone();
+    mutated["actions"]["vpk_pack"]["argv"][title_index + 1] = json!("mutated-title");
+    assert_eq!(
+        parse(&mutated),
+        Err(SelectionError::ActionArgvMismatch { action: "vpk_pack" })
+    );
+
+    assert_eq!(PORTABLE_LAUNCHER, format!("{PACK_TITLE}.exe"));
+
+    let installer = fs::read_to_string(
+        workspace_root().join("packaging/winget/solpbc.Solstone.installer.yaml"),
+    )
+    .expect("read winget installer manifest");
+    assert_eq!(
+        winget_apps_and_features_display_name(&installer),
+        PACK_TITLE
+    );
+
+    let scoop: Value = serde_json::from_slice(
+        &fs::read(workspace_root().join("packaging/scoop/solstone.json"))
+            .expect("read scoop manifest"),
+    )
+    .expect("parse scoop manifest");
+    assert_eq!(scoop["bin"].as_str(), Some(PORTABLE_LAUNCHER));
+    assert_eq!(scoop["shortcuts"], json!([[PORTABLE_LAUNCHER, PACK_TITLE]]));
 }
 
 #[test]

@@ -14,8 +14,8 @@ GitHub Releases mirror is optional and non-authoritative.
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to
 `%LocalAppData%\Solstone` with no elevation, and registers an Add/Remove-Programs
-entry that winget uses for version detection. **That entry's `DisplayName` is `sol`**
-— Velopack names it after `--packTitle` (see `scripts/package.ps1`), *not* after the
+entry that winget uses for version detection. **That entry's `DisplayName` is `solstone`**
+— Velopack names it after `--packTitle` (see `packaging/release-toolchain.json`), *not* after the
 pack id (`Solstone`). Manifest correlation fields must match it exactly or `winget
 upgrade` cannot tell the package is installed.
 
@@ -98,7 +98,7 @@ hash, and an interactive Windows-Sandbox install before a moderator/bot merges.
   anything that sniffs the PE header (komac did) writes `x86`. The application it
   installs, `solstone-windows-app.exe`, is PE32+ x86-64. Architecture describes the
   app's applicability, not the stub.
-- **`AppsAndFeaturesEntries.DisplayName: sol`** — the ARP name, not `Solstone`.
+- **`AppsAndFeaturesEntries.DisplayName: solstone`** — the ARP name, not `Solstone`.
   Every field listed there must match the real ARP entry or correlation fails.
 
 ## scoop
@@ -114,7 +114,7 @@ The direct scoop script is locked. Hashing the finalized `Portable.zip` and
 publishing the complete reviewed manifest to `solpbc/scoop-solstone` belongs to the aggregate provenance publisher.
 
 **`bin` / `shortcuts` must name a file that exists in the portable zip.** Velopack
-names the top-level launcher after `--packTitle` — today `sol.exe`. If `--packTitle`
+names the top-level launcher after `--packTitle` — today `solstone.exe`. If `--packTitle`
 ever changes again, these change with it, or `scoop install` breaks at shim time.
 Check with `unzip -Z1 Solstone-win-Portable.zip`.
 

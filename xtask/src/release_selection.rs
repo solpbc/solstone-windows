@@ -15,6 +15,15 @@ use crate::rust_release_manifest::{self, ReleaseToolProjection};
 
 pub const SELECTION_SCHEMA: &str = "solstone.release-tool-selection.v1";
 
+/// The Velopack `--packTitle`. Velopack derives the Add/Remove-Programs
+/// DisplayName and the portable archive's top-level launcher from it; the
+/// winget `AppsAndFeaturesEntries.DisplayName` and the Scoop `bin`/`shortcuts`
+/// must agree or upgrades and shims fail silently.
+pub const PACK_TITLE: &str = "solstone";
+/// `{PACK_TITLE}.exe` — `concat!` cannot fold a const, so the invariant test
+/// pins the relationship.
+pub const PORTABLE_LAUNCHER: &str = "solstone.exe";
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SelectionMode {
@@ -505,7 +514,7 @@ impl ReleaseToolSelection {
                 "--outputDir",
                 "{output_dir}",
                 "--packTitle",
-                "sol",
+                PACK_TITLE,
                 "--packAuthors",
                 "sol pbc",
                 "--icon",

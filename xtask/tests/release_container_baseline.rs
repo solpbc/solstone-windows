@@ -6,6 +6,7 @@ use std::io::{Cursor, Write};
 use xtask::release_container::{
     compare_executable_baseline, ContainerKind, ExecutableContainerReader, ReleaseContainerError,
 };
+use xtask::release_selection::PORTABLE_LAUNCHER;
 use xtask::rust_release_manifest::PackagedExecutableEvidence;
 use zip::write::{SimpleFileOptions, ZipWriter};
 use zip::{CompressionMethod, ZipArchive};
@@ -55,7 +56,12 @@ fn measured_velopack_shapes_produce_the_expected_evidence() {
     });
     let portable = build_zip(|writer| {
         add_file(writer, ".portable", b"", CompressionMethod::Stored);
-        add_file(writer, "sol.exe", b"launcher", CompressionMethod::Stored);
+        add_file(
+            writer,
+            PORTABLE_LAUNCHER,
+            b"launcher",
+            CompressionMethod::Stored,
+        );
         add_file(writer, "Update.exe", b"updater", CompressionMethod::Stored);
         add_file(writer, PORTABLE_MEMBER, b"abc", CompressionMethod::Deflated);
         add_file(

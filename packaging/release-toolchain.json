@@ -38,7 +38,7 @@
       },
       "vpk_pack": {
         "tool": "vpk",
-        "argv": ["pack", "--packId", "Solstone", "--packVersion", "{version}", "--packDir", "{stage_dir}", "--mainExe", "solstone-windows-app.exe", "--outputDir", "{output_dir}", "--packTitle", "sol", "--packAuthors", "sol pbc", "--icon", "src-tauri/icons/icon.ico", "--channel", "win", "--framework", "webview2", "--releaseNotes", "{release_notes}"]
+        "argv": ["pack", "--packId", "Solstone", "--packVersion", "{version}", "--packDir", "{stage_dir}", "--mainExe", "solstone-windows-app.exe", "--outputDir", "{output_dir}", "--packTitle", "solstone", "--packAuthors", "sol pbc", "--icon", "src-tauri/icons/icon.ico", "--channel", "win", "--framework", "webview2", "--releaseNotes", "{release_notes}"]
       },
       "smctl_sign": {
         "tool": "smctl",
