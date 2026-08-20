@@ -70,7 +70,7 @@ brand-sync:
 	@test -n "$(BRAND_DIR)" || { echo "brand: BRAND_DIR is required — point it at your brand asset directory (BRAND_DIR=/path/to/brand make brand-sync)"; exit 1; }
 	@test -d "$(BRAND_DIR)" || { echo "brand: BRAND_DIR=$(BRAND_DIR) not found"; exit 1; }
 	cp "$(BRAND_DIR)/windows/icon.ico"                                     src-tauri/icons/icon.ico
-	cp "$(BRAND_DIR)/app-icon/png-transparent/sol-app-icon-transparent-256.png" src-tauri/icons/icon.png
+	cp "$(BRAND_DIR)/app-icon/png-transparent/app-icon-transparent-256.png" src-tauri/icons/icon.png
 	@BRAND_DIR="$(BRAND_DIR)" sh scripts/build-tray-icons.sh
 	@echo "brand: synced from $(BRAND_DIR)"
 
