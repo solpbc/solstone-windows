@@ -175,11 +175,11 @@ pub fn apply_state(
 
 fn icon_for(visual: TrayVisual) -> Image<'static> {
     let bytes = match visual {
-        TrayVisual::Full => include_bytes!("../icons/tray/full.ico").as_slice(),
-        TrayVisual::Half => include_bytes!("../icons/tray/half.ico").as_slice(),
-        TrayVisual::Cloud => include_bytes!("../icons/tray/paused.ico").as_slice(),
+        TrayVisual::Healthy => include_bytes!("../icons/tray/healthy.ico").as_slice(),
+        TrayVisual::Connecting => include_bytes!("../icons/tray/connecting.ico").as_slice(),
+        TrayVisual::Paused => include_bytes!("../icons/tray/paused.ico").as_slice(),
+        TrayVisual::Offline => include_bytes!("../icons/tray/offline.ico").as_slice(),
         TrayVisual::Error => include_bytes!("../icons/tray/error.ico").as_slice(),
-        TrayVisual::Pending => include_bytes!("../icons/tray/pending.ico").as_slice(),
     };
     Image::from_bytes(bytes).expect("bundled tray icon is a valid ICO")
 }

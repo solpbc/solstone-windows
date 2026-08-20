@@ -8,11 +8,11 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayVisual {
-    Full,
-    Half,
-    Cloud,
+    Healthy,
+    Connecting,
+    Paused,
+    Offline,
     Error,
-    Pending,
 }
 
 pub fn pause_enabled(phase: AppPhase) -> bool {
@@ -56,31 +56,45 @@ pub fn classify_tray(
     fault_detail: Option<&str>,
 ) -> (TrayVisual, String) {
     match app {
-        AppPhase::Idle => (TrayVisual::Pending, "sol — idle".to_string()),
-        AppPhase::Starting => (TrayVisual::Pending, "sol — starting…".to_string()),
+        AppPhase::Idle => (TrayVisual::Connecting, "connecting".to_string()),
+        AppPhase::Starting => (TrayVisual::Connecting, "starting…".to_string()),
         AppPhase::Paused => {
             let tooltip = match pause.and_then(|p| p.seconds_remaining) {
-                Some(secs) => format!("sol — paused, {} left", format_remaining(secs)),
-                None => "sol — paused".to_string(),
+                Some(secs) => format!("paused, {} left", format_remaining(secs)),
+                None => "paused".to_string(),
             };
-            (TrayVisual::Cloud, tooltip)
+            (TrayVisual::Paused, tooltip)
         }
-        AppPhase::Error => match fault_detail {
-            Some(detail) if !detail.is_empty() => (TrayVisual::Error, format!("sol — {detail}")),
-            _ => (TrayVisual::Error, "sol — needs attention".to_string()),
+        AppPhase::Error => match fault_detail.filter(|detail| !detail.is_empty()) {
+            Some(detail) => (TrayVisual::Error, detail.to_string()),
+            None => (TrayVisual::Error, "needs a restart".to_string()),
         },
         AppPhase::Observing => match (sync.pairing.phase, sync.upload.heartbeat_ok) {
+            (PairingPhase::Pairing, true) => (TrayVisual::Connecting, "connecting".to_string()),
+            (PairingPhase::Pairing, false) => (TrayVisual::Connecting, "connecting".to_string()),
+            (PairingPhase::NotPaired, true) => (
+                TrayVisual::Paused,
+                "on, not connected to a journal".to_string(),
+            ),
+            (PairingPhase::NotPaired, false) => (
+                TrayVisual::Paused,
+                "on, not connected to a journal".to_string(),
+            ),
+            (PairingPhase::Failed, true) => (
+                TrayVisual::Paused,
+                "on, not connected to a journal".to_string(),
+            ),
+            (PairingPhase::Failed, false) => (
+                TrayVisual::Paused,
+                "on, not connected to a journal".to_string(),
+            ),
             (PairingPhase::Paired, true) => (
-                TrayVisual::Full,
-                "sol — on, connected to your journal".to_string(),
+                TrayVisual::Healthy,
+                "on, connected to your journal".to_string(),
             ),
             (PairingPhase::Paired, false) => {
-                (TrayVisual::Half, "sol — on, saved on this PC".to_string())
+                (TrayVisual::Offline, "on, saved on this PC".to_string())
             }
-            _ => (
-                TrayVisual::Half,
-                "sol — on, no journal connected".to_string(),
-            ),
         },
     }
 }
@@ -123,17 +137,13 @@ mod tests {
         }
     }
 
-    fn assert_tray(
+    fn tray_visual(
         app: AppPhase,
         sync: &SyncSnapshot,
         pause: Option<&PauseSnapshot>,
         fault_detail: Option<&str>,
-        expected_visual: TrayVisual,
-        expected_tooltip: &str,
-    ) {
-        let (visual, tooltip) = classify_tray(app, sync, pause, fault_detail);
-        assert_eq!(visual, expected_visual);
-        assert_eq!(tooltip, expected_tooltip);
+    ) -> TrayVisual {
+        classify_tray(app, sync, pause, fault_detail).0
     }
 
     fn faulted_source(kind: SourceKind, detail: impl Into<String>) -> SourceReport {
@@ -148,90 +158,151 @@ mod tests {
     }
 
     #[test]
-    fn classify_tray_basic_phases() {
-        let sync = SyncSnapshot::default();
-        assert_tray(
-            AppPhase::Idle,
-            &sync,
-            None,
-            None,
-            TrayVisual::Pending,
-            "sol — idle",
+    fn classify_connecting_visuals() {
+        let idle = SyncSnapshot::default();
+        assert_eq!(
+            tray_visual(AppPhase::Idle, &idle, None, None),
+            TrayVisual::Connecting
         );
-        assert_tray(
-            AppPhase::Starting,
-            &sync,
-            None,
-            None,
-            TrayVisual::Pending,
-            "sol — starting…",
+        assert_eq!(
+            tray_visual(AppPhase::Starting, &idle, None, None),
+            TrayVisual::Connecting
         );
-        assert_tray(
-            AppPhase::Error,
-            &sync,
-            None,
-            None,
-            TrayVisual::Error,
-            "sol — needs attention",
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::Pairing, false),
+                None,
+                None
+            ),
+            TrayVisual::Connecting
         );
-    }
-
-    #[test]
-    fn classify_tray_observing_sync_states() {
-        assert_tray(
-            AppPhase::Observing,
-            &sync(PairingPhase::NotPaired, false),
-            None,
-            None,
-            TrayVisual::Half,
-            "sol — on, no journal connected",
-        );
-        assert_tray(
-            AppPhase::Observing,
-            &sync(PairingPhase::Paired, true),
-            None,
-            None,
-            TrayVisual::Full,
-            "sol — on, connected to your journal",
-        );
-        assert_tray(
-            AppPhase::Observing,
-            &sync(PairingPhase::Paired, false),
-            None,
-            None,
-            TrayVisual::Half,
-            "sol — on, saved on this PC",
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::Pairing, true),
+                None,
+                None
+            ),
+            TrayVisual::Connecting
         );
     }
 
     #[test]
-    fn classify_tray_paused_states() {
-        let sync = SyncSnapshot::default();
+    fn classify_paused_visuals() {
+        let idle = SyncSnapshot::default();
         let indefinite = PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: None,
         };
-        assert_tray(
-            AppPhase::Paused,
-            &sync,
-            Some(&indefinite),
-            None,
-            TrayVisual::Cloud,
-            "sol — paused",
+        assert_eq!(
+            tray_visual(AppPhase::Paused, &idle, Some(&indefinite), None),
+            TrayVisual::Paused
         );
 
         let bounded = PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: Some(14 * 60 + 30),
         };
-        assert_tray(
-            AppPhase::Paused,
-            &sync,
-            Some(&bounded),
-            None,
-            TrayVisual::Cloud,
-            "sol — paused, 14 min left",
+        assert_eq!(
+            tray_visual(AppPhase::Paused, &idle, Some(&bounded), None),
+            TrayVisual::Paused
         );
+
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::NotPaired, false),
+                None,
+                None
+            ),
+            TrayVisual::Paused
+        );
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::NotPaired, true),
+                None,
+                None
+            ),
+            TrayVisual::Paused
+        );
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::Failed, false),
+                None,
+                None
+            ),
+            TrayVisual::Paused
+        );
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::Failed, true),
+                None,
+                None
+            ),
+            TrayVisual::Paused
+        );
+    }
+
+    #[test]
+    fn classify_observing_paired_visuals() {
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::Paired, true),
+                None,
+                None
+            ),
+            TrayVisual::Healthy
+        );
+        assert_eq!(
+            tray_visual(
+                AppPhase::Observing,
+                &sync(PairingPhase::Paired, false),
+                None,
+                None
+            ),
+            TrayVisual::Offline
+        );
+    }
+
+    #[test]
+    fn paired_heartbeat_down_is_offline_not_paused() {
+        let visual = tray_visual(
+            AppPhase::Observing,
+            &sync(PairingPhase::Paired, false),
+            None,
+            None,
+        );
+        assert_eq!(visual, TrayVisual::Offline);
+        assert_ne!(visual, TrayVisual::Paused);
+    }
+
+    #[test]
+    fn observing_not_paired_is_paused_not_offline() {
+        let visual = tray_visual(
+            AppPhase::Observing,
+            &sync(PairingPhase::NotPaired, false),
+            None,
+            None,
+        );
+        assert_eq!(visual, TrayVisual::Paused);
+        assert_ne!(visual, TrayVisual::Offline);
+    }
+
+    #[test]
+    fn observing_failed_is_paused_not_error() {
+        let visual = tray_visual(
+            AppPhase::Observing,
+            &sync(PairingPhase::Failed, false),
+            None,
+            None,
+        );
+        assert_eq!(visual, TrayVisual::Paused);
+        assert_ne!(visual, TrayVisual::Error);
     }
 
     #[test]
@@ -254,27 +325,22 @@ mod tests {
         };
         let detail = owner_fault_detail(&[], Some(&storage));
 
-        assert_tray(
+        let (visual, tooltip) = classify_tray(
             AppPhase::Error,
             &SyncSnapshot::default(),
             None,
             detail.as_deref(),
-            TrayVisual::Error,
-            "sol — disk full",
         );
+        assert_eq!(visual, TrayVisual::Error);
+        assert_eq!(tooltip, "disk full");
     }
 
     #[test]
     fn no_fault_detail_uses_error_fallback() {
         assert_eq!(owner_fault_detail(&[], None), None);
-
-        assert_tray(
-            AppPhase::Error,
-            &SyncSnapshot::default(),
-            None,
-            None,
-            TrayVisual::Error,
-            "sol — needs attention",
+        assert_eq!(
+            tray_visual(AppPhase::Error, &SyncSnapshot::default(), None, None),
+            TrayVisual::Error
         );
     }
 

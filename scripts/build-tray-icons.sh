@@ -22,13 +22,9 @@ set -eu
 FRAME_SIZES="16 20 24 32 40 48"
 
 # tray icon name : brand source stem
-TRAY_MARKS="full:sol-ring-icon half:sol-ring-icon-half paused:sol-ring-icon-paused error:sol-ring-icon-error"
+TRAY_MARKS="healthy:mark connecting:mark-connecting paused:mark-paused offline:mark-offline error:mark-error"
 
-# `pending` has no distinct mark in the brand source: the tray shows the same
-# glyph it shows when running, and the tooltip carries the difference. Keep it a
-# byte-identical copy of `full` rather than inventing a mark here — introducing
-# one is a design decision, not a build step.
-TRAY_ALIASES="pending:full"
+# Each of the five tray visuals has its own brand mark.
 
 OUT_DIR="${OUT_DIR:-src-tauri/icons/tray}"
 
@@ -69,11 +65,4 @@ for entry in $TRAY_MARKS; do
     # shellcheck disable=SC2086
     icotool -c -o "$OUT_DIR/$name.ico" $frames
     echo "  tray: $name.ico  <- $stem.svg  ($FRAME_SIZES)"
-done
-
-for entry in $TRAY_ALIASES; do
-    name=${entry%%:*}
-    of=${entry#*:}
-    cp "$OUT_DIR/$of.ico" "$OUT_DIR/$name.ico"
-    echo "  tray: $name.ico  <- $of.ico (alias)"
 done

@@ -64,8 +64,8 @@ ui-deps-update:
 # The app icon and its PNG are committed binaries in the brand source and are
 # copied as-is. The tray set has no committed raster anywhere: it is built from
 # the brand status marks by scripts/build-tray-icons.sh, which needs
-# rsvg-convert and icotool. See that script for the frame table and why
-# `pending` is a copy of `full`.
+# rsvg-convert and icotool. See that script for the frame table. Each of the
+# five tray visuals has its own brand mark.
 brand-sync:
 	@test -n "$(BRAND_DIR)" || { echo "brand: BRAND_DIR is required — point it at your brand asset directory (BRAND_DIR=/path/to/brand make brand-sync)"; exit 1; }
 	@test -d "$(BRAND_DIR)" || { echo "brand: BRAND_DIR=$(BRAND_DIR) not found"; exit 1; }
