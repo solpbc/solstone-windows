@@ -22,13 +22,12 @@ ReleaseDate: 2026-07-16
 Dependencies:
   PackageDependencies:
     - PackageIdentifier: Microsoft.EdgeWebView2Runtime
-# Correlation for `winget upgrade`: the app registers in Add/Remove Programs under
-# its Velopack --packTitle ("solstone"), NOT the pack id ("Solstone"). Every field listed
-# here must match the real ARP entry or winget cannot correlate the installed app,
-# and upgrades go undetected. The 0.2.0 manifest said "Solstone" and could not.
+# Correlation for `winget upgrade`: released 0.2.11 registers ARP DisplayName `sol`;
+# the next package registers `solstone`. The stable ProductCode `Solstone` (Velopack
+# --packId, capital S; not --packTitle `solstone`) spans that transition, so DisplayName
+# is omitted here. Keep ProductCode at installer scope and in this section (winget 1.12).
 AppsAndFeaturesEntries:
-  - DisplayName: solstone
-    ProductCode: Solstone
+  - ProductCode: Solstone
 InstallationMetadata:
   DefaultInstallLocation: '%LocalAppData%\Solstone'
 Installers:

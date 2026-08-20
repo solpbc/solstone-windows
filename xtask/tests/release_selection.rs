@@ -238,25 +238,54 @@ fn committed_action_templates_match_the_closed_selection_parser() {
     assert_eq!(configured_environment, parsed_environment);
 }
 
-fn winget_apps_and_features_display_name(source: &str) -> &str {
+fn winget_apps_and_features_product_code(source: &str) -> &str {
     let mut lines = source.lines();
     while let Some(line) = lines.next() {
         if line == "AppsAndFeaturesEntries:" {
-            let Some(next) = lines.next() else {
+            let mut block = Vec::new();
+            for next in lines {
+                if !next.is_empty()
+                    && !next.starts_with(' ')
+                    && !next.starts_with('\t')
+                    && !next.starts_with('#')
+                    && next.contains(':')
+                {
+                    break;
+                }
+                block.push(next);
+            }
+            for block_line in &block {
+                let trimmed = block_line.trim_start();
+                let body = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+                if body.starts_with("DisplayName:") {
+                    panic!(
+                        "packaging/winget/solpbc.Solstone.installer.yaml: AppsAndFeaturesEntries must not contain DisplayName; omit it and correlate on ProductCode"
+                    );
+                }
+            }
+            let significant: Vec<&str> = block
+                .iter()
+                .copied()
+                .filter(|block_line| {
+                    !block_line.is_empty() && !block_line.trim_start().starts_with('#')
+                })
+                .collect();
+            if significant.len() != 1 {
                 panic!(
-                    "packaging/winget/solpbc.Solstone.installer.yaml: AppsAndFeaturesEntries: is not followed by a line"
+                    "packaging/winget/solpbc.Solstone.installer.yaml: expected AppsAndFeaturesEntries to contain exactly one list item `  - ProductCode: <value>`"
                 );
-            };
-            const PREFIX: &str = "  - DisplayName: ";
-            let Some(value) = next.strip_prefix(PREFIX) else {
+            }
+            const PREFIX: &str = "  - ProductCode: ";
+            let item = significant[0];
+            let Some(value) = item.strip_prefix(PREFIX) else {
                 panic!(
-                    "packaging/winget/solpbc.Solstone.installer.yaml: expected the line after AppsAndFeaturesEntries: to be exactly `  - DisplayName: <value>`, found {next:?}"
+                    "packaging/winget/solpbc.Solstone.installer.yaml: expected the AppsAndFeaturesEntries list item to be exactly `  - ProductCode: <value>`, found {item:?}"
                 );
             };
             let value = value.trim();
             if value.is_empty() {
                 panic!(
-                    "packaging/winget/solpbc.Solstone.installer.yaml: DisplayName value is empty"
+                    "packaging/winget/solpbc.Solstone.installer.yaml: AppsAndFeaturesEntries ProductCode value is empty"
                 );
             }
             return value;
@@ -265,6 +294,26 @@ fn winget_apps_and_features_display_name(source: &str) -> &str {
     panic!(
         "packaging/winget/solpbc.Solstone.installer.yaml: missing column-0 AppsAndFeaturesEntries: key"
     );
+}
+
+fn winget_installer_scope_product_code(source: &str) -> &str {
+    let values: Vec<&str> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix("ProductCode:").map(str::trim))
+        .collect();
+    match values.as_slice() {
+        [] => panic!(
+            "packaging/winget/solpbc.Solstone.installer.yaml: missing column-0 ProductCode: key"
+        ),
+        [""] => panic!(
+            "packaging/winget/solpbc.Solstone.installer.yaml: column-0 ProductCode value is empty"
+        ),
+        [value] => value,
+        rest => panic!(
+            "packaging/winget/solpbc.Solstone.installer.yaml: expected exactly one column-0 ProductCode: key, found {}",
+            rest.len()
+        ),
+    }
 }
 
 #[test]
@@ -307,15 +356,6 @@ fn derived_pack_title_identity_agrees_across_projections() {
 
     assert_eq!(PORTABLE_LAUNCHER, format!("{PACK_TITLE}.exe"));
 
-    let installer = fs::read_to_string(
-        workspace_root().join("packaging/winget/solpbc.Solstone.installer.yaml"),
-    )
-    .expect("read winget installer manifest");
-    assert_eq!(
-        winget_apps_and_features_display_name(&installer),
-        PACK_TITLE
-    );
-
     let scoop: Value = serde_json::from_slice(
         &fs::read(workspace_root().join("packaging/scoop/solstone.json"))
             .expect("read scoop manifest"),
@@ -323,6 +363,39 @@ fn derived_pack_title_identity_agrees_across_projections() {
     .expect("parse scoop manifest");
     assert_eq!(scoop["bin"].as_str(), Some(PORTABLE_LAUNCHER));
     assert_eq!(scoop["shortcuts"], json!([[PORTABLE_LAUNCHER, PACK_TITLE]]));
+}
+
+#[test]
+fn derived_pack_id_agrees_with_winget_product_code() {
+    let contract: Value = serde_json::from_slice(
+        &fs::read(workspace_root().join("packaging/release-toolchain.json"))
+            .expect("read release-toolchain authority"),
+    )
+    .expect("parse release-toolchain authority");
+    let committed_argv = contract["selection"]["actions"]["vpk_pack"]["argv"]
+        .as_array()
+        .expect("vpk_pack argv");
+    let id_index = committed_argv
+        .iter()
+        .position(|value| value.as_str() == Some("--packId"))
+        .expect("packaging/release-toolchain.json: vpk_pack argv is missing --packId");
+    let committed_id = committed_argv
+        .get(id_index + 1)
+        .and_then(Value::as_str)
+        .expect("packaging/release-toolchain.json: --packId is not followed by a value");
+
+    let installer = fs::read_to_string(
+        workspace_root().join("packaging/winget/solpbc.Solstone.installer.yaml"),
+    )
+    .expect("read winget installer manifest");
+    assert_eq!(
+        winget_installer_scope_product_code(&installer),
+        committed_id
+    );
+    assert_eq!(
+        winget_apps_and_features_product_code(&installer),
+        committed_id
+    );
 }
 
 #[test]

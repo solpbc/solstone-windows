@@ -14,10 +14,10 @@ GitHub Releases mirror is optional and non-authoritative.
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to
 `%LocalAppData%\Solstone` with no elevation, and registers an Add/Remove-Programs
-entry that winget uses for version detection. **That entry's `DisplayName` is `solstone`**
-— Velopack names it after `--packTitle` (see `packaging/release-toolchain.json`), *not* after the
-pack id (`Solstone`). Manifest correlation fields must match it exactly or `winget
-upgrade` cannot tell the package is installed.
+entry that winget uses for version detection. Released 0.2.11's ARP name is `sol`;
+the next release's is `solstone`. Correlation is anchored to the stable ProductCode
+`Solstone`, not the changing DisplayName. This repo omits DisplayName; the published
+0.2.11 manifest in microsoft/winget-pkgs stays artifact-accurate and is untouched.
 
 ## The manifests live in this repo
 
@@ -98,8 +98,10 @@ hash, and an interactive Windows-Sandbox install before a moderator/bot merges.
   anything that sniffs the PE header (komac did) writes `x86`. The application it
   installs, `solstone-windows-app.exe`, is PE32+ x86-64. Architecture describes the
   app's applicability, not the stub.
-- **`AppsAndFeaturesEntries.DisplayName: solstone`** — the ARP name, not `Solstone`.
-  Every field listed there must match the real ARP entry or correlation fails.
+- **`AppsAndFeaturesEntries.ProductCode: Solstone`** — the Velopack `--packId`
+  (capital S), not `--packTitle` / ARP DisplayName (`sol` today, `solstone` next).
+  Omit DisplayName so correlation spans that transition; do not write either name
+  into this section. ProductCode must also remain at installer scope (winget 1.12).
 
 ## scoop
 
