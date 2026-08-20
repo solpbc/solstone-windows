@@ -390,7 +390,7 @@ fn observer_contract_authority_real_wire_types_parse_applicable_examples() {
         fixtures["example.link.pair.request.body.application-json.default"]["payload"].clone(),
     )
     .expect("real PairRequest tolerates authority-only example fields");
-    assert_eq!(pair_request.device_label, "Jer iPhone");
+    assert_eq!(pair_request.device_label, "Rae's iPhone");
     assert!(pair_request.csr.contains("CERTIFICATE REQUEST"));
 
     let pair_response: PairResponse = serde_json::from_value(

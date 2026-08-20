@@ -2,28 +2,28 @@
   "adoption_schema_version": 1,
   "consumer_identifier": "solstone-windows",
   "authority_repository": "https://github.com/solpbc/solstone-journal",
-  "authority_commit": "827d3761e2b515b9bd537ded28b245c8c6d86cc0",
-  "bundle_semver": "1.0.2",
-  "archive_sha256": "3b57fa9fb4736dff1f72ffdd48928834ea33d3925d132874202764cf9f988667",
-  "archive_size_bytes": 16950,
+  "authority_commit": "766021cd44d4a0a7ce471d2affb461bf3ce0fc39",
+  "bundle_semver": "8.0.0",
+  "archive_sha256": "6f182448bd66cd6a81b24a1715536f761ff94303e5404646125eb32172b91ed0",
+  "archive_size_bytes": 15755,
   "authority_manifest_path": "manifest.json",
-  "authority_manifest_sha256": "9ecf4bbfcd793a8aecc9e2257254e68c74c48cde22282ff07369101b90d97c33",
+  "authority_manifest_sha256": "9b3bcd6b7f8a83adb9007e32501af44403cb93cfb8d80f256b6a7b5b9f93057e",
   "bundle_files": [
     {
       "path": "consumer-audit.json",
-      "sha256": "f3562062aeb971c9dc95ae5d14333566b28431758bcd232c33c093757df7bc18"
+      "sha256": "3f9938b38994ea2a3a19ea154152e5dc8b3f24843e53eb1f14b6fb33d58e6ac9"
     },
     {
       "path": "fixtures/wire-behavior.json",
-      "sha256": "9749a50daba9b4a270da045d350bc5edb7a42c9723fa0bf420c8fb8a4a0415f8"
+      "sha256": "b9ed72f3c3de4a890978079fcf286ddad212c6ac99bd32d3e080afdd5a787dc4"
     },
     {
       "path": "projection.openapi.json",
-      "sha256": "8a2b7037552edf710597f2ffa6fdc5aa715311df4ea8cf168e70abe4231c64ca"
+      "sha256": "46eb05e6889f9176446fb315585a0e15a57600aead9ed1aaf948a93eee596c35"
     },
     {
       "path": "vectors.json",
-      "sha256": "7a5132c57b61e2a615a22719abc77e40b708d4a6636c45690cc522dc26c36dec"
+      "sha256": "a4cb9712bf5a6679a2fefc6b94f1618dfbd8e7f227364103d70095a8dd6bce1f"
     }
   ],
   "adopted_operation_ids": [

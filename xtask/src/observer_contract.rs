@@ -18,14 +18,14 @@ pub use crate::artifact_fs::{validate_relative_path, UnsafePathReason};
 pub const ADOPTION_SCHEMA_VERSION: u64 = 1;
 pub const CONSUMER_IDENTIFIER: &str = "solstone-windows";
 pub const AUTHORITY_REPOSITORY: &str = "https://github.com/solpbc/solstone-journal";
-pub const AUTHORITY_COMMIT: &str = "827d3761e2b515b9bd537ded28b245c8c6d86cc0";
-pub const BUNDLE_SEMVER: &str = "1.0.2";
-pub const ARCHIVE_SHA256: &str = "3b57fa9fb4736dff1f72ffdd48928834ea33d3925d132874202764cf9f988667";
-pub const ARCHIVE_SIZE_BYTES: u64 = 16_950;
+pub const AUTHORITY_COMMIT: &str = "766021cd44d4a0a7ce471d2affb461bf3ce0fc39";
+pub const BUNDLE_SEMVER: &str = "8.0.0";
+pub const ARCHIVE_SHA256: &str = "6f182448bd66cd6a81b24a1715536f761ff94303e5404646125eb32172b91ed0";
+pub const ARCHIVE_SIZE_BYTES: u64 = 15_755;
 /// All authority paths are relative to the explicit bundle directory.
 pub const AUTHORITY_MANIFEST_PATH: &str = "manifest.json";
 pub const AUTHORITY_MANIFEST_SHA256: &str =
-    "9ecf4bbfcd793a8aecc9e2257254e68c74c48cde22282ff07369101b90d97c33";
+    "9b3bcd6b7f8a83adb9007e32501af44403cb93cfb8d80f256b6a7b5b9f93057e";
 pub const GENERATOR_IDENTITY: &str = "solstone.convey.contract.observer_bundle.v1";
 pub const BUNDLE_SCHEMA_IDENTITY: &str = "solstone.observer-client-contract-bundle.schema.v1";
 pub const SCHEMA_DIALECT_URI: &str = "https://json-schema.org/draft/2020-12/schema";
@@ -44,19 +44,19 @@ pub struct FilePin {
 pub const BUNDLE_FILES: &[FilePin] = &[
     FilePin {
         path: "consumer-audit.json",
-        sha256: "f3562062aeb971c9dc95ae5d14333566b28431758bcd232c33c093757df7bc18",
+        sha256: "3f9938b38994ea2a3a19ea154152e5dc8b3f24843e53eb1f14b6fb33d58e6ac9",
     },
     FilePin {
         path: "fixtures/wire-behavior.json",
-        sha256: "9749a50daba9b4a270da045d350bc5edb7a42c9723fa0bf420c8fb8a4a0415f8",
+        sha256: "b9ed72f3c3de4a890978079fcf286ddad212c6ac99bd32d3e080afdd5a787dc4",
     },
     FilePin {
         path: "projection.openapi.json",
-        sha256: "8a2b7037552edf710597f2ffa6fdc5aa715311df4ea8cf168e70abe4231c64ca",
+        sha256: "46eb05e6889f9176446fb315585a0e15a57600aead9ed1aaf948a93eee596c35",
     },
     FilePin {
         path: "vectors.json",
-        sha256: "7a5132c57b61e2a615a22719abc77e40b708d4a6636c45690cc522dc26c36dec",
+        sha256: "a4cb9712bf5a6679a2fefc6b94f1618dfbd8e7f227364103d70095a8dd6bce1f",
     },
 ];
 
@@ -82,7 +82,6 @@ pub const INITIAL_TARGETS: &[&str] = &["solstone-linux", "solstone-windows"];
 
 pub const OPERATION_IDS: &[&str] = &[
     "callosum.rootEvents",
-    "chat.openSolChatRequest",
     "link.pair",
     "observer.callosumStream",
     "observer.ingestEvent",
@@ -145,8 +144,6 @@ pub const FULL_FIXTURE_IDS: &[&str] = &[
     "declared.observer.ingestSegments.envelope_total_mismatch",
     "declared.observer.ingestUpload.status_unknown_rejected",
     "example.callosum.rootEvents.response.200.text-event-stream.default",
-    "example.chat.openSolChatRequest.request.body.application-json.default",
-    "example.chat.openSolChatRequest.response.200.application-json.default",
     "example.link.pair.request.body.application-json.default",
     "example.link.pair.response.200.application-json.default",
     "example.observer.callosumStream.response.200.text-event-stream.default",
@@ -161,8 +158,6 @@ pub const FULL_FIXTURE_IDS: &[&str] = &[
     "example.observer.register.response.200.application-json.default",
     "recorded.auth.bearer.segments",
     "recorded.auth.handle.segments",
-    "recorded.chat.openSolChatRequest.missing",
-    "recorded.chat.openSolChatRequest.ok",
     "recorded.ingestUpload.collision",
     "recorded.ingestUpload.conflict",
     "recorded.ingestUpload.duplicate",
@@ -215,8 +210,6 @@ pub const ADOPTED_FIXTURE_IDS: &[&str] = &[
 pub const FULL_VECTOR_IDS: &[&str] = &[
     "callosum.rootEvents.sse.data_unknown_event",
     "callosum.rootEvents.sse.heartbeat",
-    "chat.openSolChatRequest.missing_required_field",
-    "chat.openSolChatRequest.ok",
     "observer.auth.bearer",
     "observer.auth.handle",
     "observer.callosumStream.sse.data",

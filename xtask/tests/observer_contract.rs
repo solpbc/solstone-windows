@@ -92,7 +92,7 @@ fn manifest_path_mutation(path: &str) -> VerifyError {
 fn observer_contract_good_tree_verifies() {
     let tree = TempTree::good();
     let report = tree.verify().expect("known-good tree verifies");
-    assert_eq!(report.operation_count, 8);
+    assert_eq!(report.operation_count, 7);
     assert_eq!(report.fixture_count, 29);
     assert_eq!(report.vector_count, 17);
 }

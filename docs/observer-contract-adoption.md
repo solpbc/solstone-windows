@@ -8,7 +8,7 @@ this repository's generated AutomationId and state-token contract described in
 `docs/automation-contract.md`.
 
 The adopted authority revision is
-`827d3761e2b515b9bd537ded28b245c8c6d86cc0`, bundle version `1.0.2`. Its
+`766021cd44d4a0a7ce471d2affb461bf3ce0fc39`, bundle version `8.0.0`. Its
 generator identity is `solstone.convey.contract.observer_bundle.v1`; its bundle
 schema identity is `solstone.observer-client-contract-bundle.schema.v1`.
 
