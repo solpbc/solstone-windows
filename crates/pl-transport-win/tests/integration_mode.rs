@@ -12,13 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use observer_pl::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
-use observer_pl::wire::HeartbeatEvent;
-use pl_transport_win::client::ObserverClient;
+use pl_transport_win::credential::{Credential, PairedState};
 use pl_transport_win::integration::report::{
-    EXIT_ASSERTION_FAILED, EXIT_ERROR, EXIT_PASS, SCHEMA_VERSION,
+    Outcome, EXIT_ASSERTION_FAILED, EXIT_ERROR, EXIT_PASS, SCHEMA_VERSION,
 };
 use pl_transport_win::integration::{self, Carrier, Environment};
-use pl_transport_win::observe::OperationObserver;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -54,17 +52,124 @@ fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
 
-/// Run the mode the way the binary does and return the parsed stdout object plus
-/// the exit status.
-fn run(argv: &[&str], root: &Path) -> (serde_json::Value, u8) {
+/// Run the mode the way the binary does and return its terminal outcome.
+fn outcome_for(argv: &[&str], root: &Path) -> Outcome {
     let selection = integration::selected(&args(argv)).expect("the mode was selected");
-    let outcome = integration::report_for(selection, &environment(root));
+    integration::report_for(selection, &environment(root))
+}
+
+fn outcome_value(outcome: &Outcome) -> serde_json::Value {
     let json = outcome.json();
     // Exactly one object: the whole string parses as a single JSON value.
     let value: serde_json::Value =
         serde_json::from_str(&json).expect("stdout carries one parseable JSON object");
     assert!(!json.trim_end().contains('\n'), "one line, one object");
+    value
+}
+
+/// Run the mode the way the binary does and return the parsed stdout object plus
+/// the exit status.
+fn run(argv: &[&str], root: &Path) -> (serde_json::Value, u8) {
+    let outcome = outcome_for(argv, root);
+    let value = outcome_value(&outcome);
     (value, outcome.exit_code)
+}
+
+fn start_direct_upload_journal(
+    confirmed: bool,
+    payload: &[u8],
+) -> (Credential, std::thread::JoinHandle<()>) {
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let sha256 = observer_pl::ca::sha256_hex(payload);
+    let size = payload.len() as u64;
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = TcpListener::from_std(listener).unwrap();
+            serve_direct_upload_journal(listener, acceptor, confirmed, size, &sha256).await;
+        });
+    });
+    (direct_credential(pin, port), server)
+}
+
+async fn serve_direct_upload_journal(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    confirmed: bool,
+    size: u64,
+    sha256: &str,
+) {
+    let day = "20260617";
+    let segment = "143000_300";
+    let file =
+        format!(r#"{{"name":"payload.bin","size":{size},"sha256":"{sha256}","status":"present"}}"#);
+    let day_manifest = if confirmed {
+        format!(r#"{{"version":1,"day":"{day}","segments":{{"{segment}":{{"files":[{file}]}}}}}}"#)
+    } else {
+        format!(r#"{{"version":1,"day":"{day}","segments":{{}}}}"#)
+    };
+    let segments = if confirmed {
+        format!(
+            r#"{{"items":[{{"key":"{segment}","observed":true,"files":[{file}]}}],"total":1,"protocol_version":3}}"#
+        )
+    } else {
+        r#"{"items":[],"total":0,"protocol_version":3}"#.to_string()
+    };
+    let responses = [
+        (
+            "POST /app/devices/ingest HTTP/1.1\r\n",
+            format!(r#"{{"status":"ok","segment":"{segment}"}}"#),
+        ),
+        (
+            "GET /app/devices/ingest/manifest HTTP/1.1\r\n",
+            format!(r#"{{"days":{{"{day}":{{"segments":1}}}}}}"#),
+        ),
+        (
+            "GET /app/devices/ingest/manifest/20260617 HTTP/1.1\r\n",
+            day_manifest,
+        ),
+        (
+            "GET /app/devices/ingest/segments/20260617 HTTP/1.1\r\n",
+            segments,
+        ),
+    ];
+
+    for (route, body) in responses {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let (stream_id, request) = read_framed_request(&mut tls).await;
+        assert!(
+            request.starts_with(route.as_bytes()),
+            "expected route {route:?}, got {:?}",
+            String::from_utf8_lossy(&request)
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
+        tls.write_all(&frame.encode().unwrap()).await.unwrap();
+        tls.flush().await.unwrap();
+        let _ = tls.shutdown().await;
+    }
+}
+
+fn save_direct_pairing(root: &Path, credential: Credential) {
+    PairedState {
+        credential: Some(credential),
+        observer_key: None,
+        observer_name: None,
+    }
+    .save(&environment(root).state_path)
+    .unwrap();
 }
 
 const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -331,53 +436,49 @@ fn a_dial_ceiling_is_reported_even_when_it_is_not_exceeded() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// A direct-path success must never read PASS for an operation that requires a
-/// relay carrier.
-#[tokio::test]
-async fn a_direct_path_success_is_an_assertion_failure_not_a_pass() {
-    let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
+/// A full upload can earn a custody witness over direct PL but must still fail
+/// when the operator required the relay carrier.
+#[test]
+fn an_upload_carrier_mismatch_is_a_nonzero_terminal_outcome() {
+    let root = temp_root("carrier-mismatch");
+    let payload = b"carrier-mismatch-payload";
+    let payload_path = root.join("payload.bin");
+    std::fs::write(&payload_path, payload).unwrap();
+    let (credential, server) = start_direct_upload_journal(true, payload);
+    save_direct_pairing(&root, credential);
 
-    let server = tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut tls = acceptor.accept(tcp).await.unwrap();
-        let (stream_id, _request) = read_framed_request(&mut tls).await;
-        let body = b"{\"ok\":true}";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            String::from_utf8_lossy(body)
-        );
-        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
-        tls.write_all(&frame.encode().unwrap()).await.unwrap();
-        tls.flush().await.unwrap();
-        let _ = tls.shutdown().await;
-    });
+    let argv = vec![
+        "--integration".to_string(),
+        "upload".to_string(),
+        "--deadline-secs".to_string(),
+        "5".to_string(),
+        "--payload".to_string(),
+        payload_path.display().to_string(),
+        "--day".to_string(),
+        "20260617".to_string(),
+        "--segment".to_string(),
+        "143000_300".to_string(),
+        "--carrier".to_string(),
+        "relay".to_string(),
+    ];
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let outcome = outcome_for(&borrowed, &root);
+    let value = outcome_value(&outcome);
+    server.join().unwrap();
 
-    // A real, successful request over the direct LAN path, observed.
-    let observer = OperationObserver::new();
-    let client = ObserverClient::new(direct_credential(pin, port))
-        .unwrap()
-        .with_observer_key(Some("observer-key".into()))
-        .with_observer(Some(observer.clone()));
-    client
-        .heartbeat(&HeartbeatEvent::status(false))
-        .await
-        .unwrap();
-    server.await.unwrap();
-
-    let counts = observer.counts();
-    assert_eq!(counts.direct_successes, 1);
-    assert_eq!(counts.relay_successes, 0);
-
-    // The carrier assertion refuses it: a direct success cannot be evidence of
-    // a relay-carried operation.
-    let failure = integration::carrier_path_failure(Carrier::Relay, counts)
-        .expect("a direct-path success must not pass a relay assertion");
-    assert_eq!(failure.exit_code(), EXIT_ASSERTION_FAILED);
+    assert_eq!(outcome.exit_code, EXIT_ASSERTION_FAILED);
+    assert_eq!(value["verdict"], "FAIL");
+    assert_eq!(value["reason"], "direct_path_success");
+    assert_eq!(value["evidence"]["requested_carrier"], "relay");
+    assert_eq!(value["evidence"]["observed_carrier"], "direct");
+    assert_eq!(value["evidence"]["confirmed"], true);
+    assert_eq!(value["evidence"]["server_submitted_name"], "payload.bin");
+    assert_eq!(value["evidence"]["server_size"], payload.len() as u64);
+    assert_eq!(
+        value["evidence"]["server_custody_status"], "present",
+        "custody succeeded before the carrier assertion"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

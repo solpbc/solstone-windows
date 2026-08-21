@@ -250,8 +250,8 @@ pub struct LocalFile<'a> {
     pub size: u64,
 }
 
-/// A completed server custody witness. The server key can only be obtained from
-/// a [`CustodyProof::Confirmed`] result.
+/// A completed server custody witness. The server segment key can only be
+/// obtained from a [`CustodyProof::Confirmed`] result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustodyWitness {
     server_segment: String,
@@ -335,7 +335,7 @@ pub enum CustodyFailure {
         expected: u64,
         actual: u64,
     },
-    FileNotHeld {
+    FileCustodyNotTerminal {
         source: CustodySource,
         name: String,
         status: SegmentFileStatus,
@@ -458,7 +458,7 @@ fn prove_files(
             });
         }
         if !file.status.is_terminal() {
-            return Err(CustodyFailure::FileNotHeld {
+            return Err(CustodyFailure::FileCustodyNotTerminal {
                 source,
                 name: local_file.name.to_owned(),
                 status: file.status,

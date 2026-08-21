@@ -12,78 +12,104 @@ enum CallerClass {
     Excluded,
 }
 
-const BASELINE_CALLERS: &[(&str, &str, CallerClass)] = &[
-    (
-        "src/client.rs",
-        "pub async fn ingest(",
-        CallerClass::Migrated,
-    ),
-    (
-        "src/client.rs",
-        "pub async fn ingest_manifest(",
-        CallerClass::Migrated,
-    ),
-    (
-        "src/client.rs",
-        "pub async fn ingest_manifest_day(",
-        CallerClass::Migrated,
-    ),
-    (
-        "src/client.rs",
-        "pub async fn list_segments(",
-        CallerClass::Migrated,
-    ),
-    (
-        "src/coordinator.rs",
-        "prove_custody(",
-        CallerClass::Migrated,
-    ),
-    ("src/service.rs", "run_uploader", CallerClass::Migrated),
-    (
-        "src/integration/ops.rs",
-        "async fn upload(",
-        CallerClass::Migrated,
-    ),
-    (
-        "../../src-tauri/src/ipc.rs",
-        "pl_transport_win::run_uploader",
-        CallerClass::Migrated,
-    ),
-    (
-        "../../src-tauri/src/app.rs",
-        "pl_transport_win::run_uploader",
-        CallerClass::Migrated,
-    ),
-    (
-        "src/client.rs",
-        "pub async fn register(",
-        CallerClass::Excluded,
-    ),
-    (
-        "src/pairing.rs",
-        "pub async fn pair(",
-        CallerClass::Excluded,
-    ),
-    (
-        "../../src-tauri/src/ipc.rs",
-        "pl_transport_win::service::pair_and_register",
-        CallerClass::Excluded,
-    ),
-    (
-        "src/client.rs",
-        "pub async fn heartbeat(",
-        CallerClass::Excluded,
-    ),
-    (
-        "src/journal_bridge.rs",
-        "pub async fn start_observed(",
-        CallerClass::Excluded,
-    ),
-    (
-        "../../src-tauri/src/windows.rs",
-        "pl_transport_win::journal_bridge::start(",
-        CallerClass::Excluded,
-    ),
+struct BaselineCaller {
+    relative: &'static str,
+    needle: &'static str,
+    class: CallerClass,
+    v3_surface: Option<&'static str>,
+}
+
+const BASELINE_CALLERS: &[BaselineCaller] = &[
+    BaselineCaller {
+        relative: "src/client.rs",
+        needle: "pub async fn ingest(",
+        class: CallerClass::Migrated,
+        v3_surface: Some("self.v3_headers()"),
+    },
+    BaselineCaller {
+        relative: "src/client.rs",
+        needle: "pub async fn ingest_manifest(",
+        class: CallerClass::Migrated,
+        v3_surface: Some("self.v3_headers()"),
+    },
+    BaselineCaller {
+        relative: "src/client.rs",
+        needle: "pub async fn ingest_manifest_day(",
+        class: CallerClass::Migrated,
+        v3_surface: Some("self.v3_headers()"),
+    },
+    BaselineCaller {
+        relative: "src/client.rs",
+        needle: "pub async fn list_segments(",
+        class: CallerClass::Migrated,
+        v3_surface: Some("self.v3_headers()"),
+    },
+    BaselineCaller {
+        relative: "src/coordinator.rs",
+        needle: "prove_custody(",
+        class: CallerClass::Migrated,
+        v3_surface: Some("self.client.ingest_manifest().await?"),
+    },
+    BaselineCaller {
+        relative: "src/service.rs",
+        needle: "run_uploader",
+        class: CallerClass::Migrated,
+        v3_surface: Some("setup_uploader("),
+    },
+    BaselineCaller {
+        relative: "src/integration/ops.rs",
+        needle: "async fn upload(",
+        class: CallerClass::Migrated,
+        v3_surface: Some("coordinator.tick_with_witness()"),
+    },
+    BaselineCaller {
+        relative: "../../src-tauri/src/ipc.rs",
+        needle: "pl_transport_win::run_uploader",
+        class: CallerClass::Migrated,
+        v3_surface: Some("pl_transport_win::run_uploader"),
+    },
+    BaselineCaller {
+        relative: "../../src-tauri/src/app.rs",
+        needle: "pl_transport_win::run_uploader",
+        class: CallerClass::Migrated,
+        v3_surface: Some("pl_transport_win::run_uploader"),
+    },
+    BaselineCaller {
+        relative: "src/client.rs",
+        needle: "pub async fn register(",
+        class: CallerClass::Excluded,
+        v3_surface: None,
+    },
+    BaselineCaller {
+        relative: "src/pairing.rs",
+        needle: "pub async fn pair(",
+        class: CallerClass::Excluded,
+        v3_surface: None,
+    },
+    BaselineCaller {
+        relative: "../../src-tauri/src/ipc.rs",
+        needle: "pl_transport_win::service::pair_and_register",
+        class: CallerClass::Excluded,
+        v3_surface: None,
+    },
+    BaselineCaller {
+        relative: "src/client.rs",
+        needle: "pub async fn heartbeat(",
+        class: CallerClass::Excluded,
+        v3_surface: None,
+    },
+    BaselineCaller {
+        relative: "src/journal_bridge.rs",
+        needle: "pub async fn start_observed(",
+        class: CallerClass::Excluded,
+        v3_surface: None,
+    },
+    BaselineCaller {
+        relative: "../../src-tauri/src/windows.rs",
+        needle: "pl_transport_win::journal_bridge::start(",
+        class: CallerClass::Excluded,
+        v3_surface: None,
+    },
 ];
 
 const FORBIDDEN_V2_TOKENS: &[&str] = &[
@@ -111,17 +137,79 @@ const EXCLUDED_TOKEN_ALLOWLIST: &[(&str, &str, usize)] = &[
     ),
 ];
 
+/// Every baseline caller deliberately left outside the v3 upload/reconciliation
+/// surface. A new exclusion must name its preserved operation here rather than
+/// silently reclassifying a linked-device caller.
+const EXCLUDED_CALLER_ALLOWLIST: &[(&str, &str)] = &[
+    ("src/client.rs", "pub async fn register("),
+    ("src/pairing.rs", "pub async fn pair("),
+    (
+        "../../src-tauri/src/ipc.rs",
+        "pl_transport_win::service::pair_and_register",
+    ),
+    ("src/client.rs", "pub async fn heartbeat("),
+    ("src/journal_bridge.rs", "pub async fn start_observed("),
+    (
+        "../../src-tauri/src/windows.rs",
+        "pl_transport_win::journal_bridge::start(",
+    ),
+];
+
 #[test]
 fn linked_device_v3_callers_are_migrated_or_explicitly_excluded() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for (relative, needle, class) in BASELINE_CALLERS {
-        let path = root.join(relative);
+    for caller in BASELINE_CALLERS {
+        let path = root.join(caller.relative);
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         assert!(
-            source.contains(needle),
-            "baseline {class:?} caller {relative} no longer contains {needle:?}; classify its replacement here before changing the linked-device boundary"
+            source.contains(caller.needle),
+            "baseline {:?} caller {} no longer contains {:?}; classify its replacement here before changing the linked-device boundary",
+            caller.class,
+            caller.relative,
+            caller.needle,
         );
+
+        match caller.class {
+            CallerClass::Migrated => {
+                let v3_surface = caller
+                    .v3_surface
+                    .expect("a migrated caller must name the v3 route/header surface it reaches");
+                assert!(
+                    source.contains(v3_surface),
+                    "migrated caller {} ({:?}) no longer reaches v3 surface {:?}; restore its v3 path or reclassify it explicitly",
+                    caller.relative,
+                    caller.needle,
+                    v3_surface,
+                );
+                let scope = caller_scope(&source, caller.needle);
+                for token in FORBIDDEN_V2_TOKENS {
+                    assert!(
+                        !scope.contains(token),
+                        "migrated caller {} ({:?}) retains forbidden v2 token {:?}; move it to an excluded operation or migrate the caller fully",
+                        caller.relative,
+                        caller.needle,
+                        token,
+                    );
+                }
+            }
+            CallerClass::Excluded => {
+                assert!(
+                    caller.v3_surface.is_none(),
+                    "excluded caller {} ({:?}) must not claim a v3 surface",
+                    caller.relative,
+                    caller.needle,
+                );
+                assert!(
+                    EXCLUDED_CALLER_ALLOWLIST
+                        .iter()
+                        .any(|(file, needle)| *file == caller.relative && *needle == caller.needle),
+                    "excluded caller {} ({:?}) is not in EXCLUDED_CALLER_ALLOWLIST; migrate it to v3 or add a narrowly named preserved-operation entry",
+                    caller.relative,
+                    caller.needle,
+                );
+            }
+        }
     }
 
     for (prefix, directory) in [
@@ -159,6 +247,29 @@ fn linked_device_v3_callers_are_migrated_or_explicitly_excluded() {
             }
         }
     }
+}
+
+fn caller_scope<'a>(source: &'a str, needle: &str) -> &'a str {
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("baseline caller no longer contains {needle:?}"));
+    let Some(open) = source[start..].find('{').map(|offset| start + offset) else {
+        return source;
+    };
+    let mut depth = 0usize;
+    for (offset, byte) in source[open..].bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[start..=open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("baseline caller {needle:?} has an unclosed item body")
 }
 
 fn rust_sources(directory: &Path) -> Vec<PathBuf> {

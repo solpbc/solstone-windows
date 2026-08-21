@@ -285,7 +285,7 @@ pub struct Evidence {
     pub day: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segment: Option<String>,
-    /// The key the journal reported, which may differ from `segment`.
+    /// The server segment key the journal reported, which may differ from `segment`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_segment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

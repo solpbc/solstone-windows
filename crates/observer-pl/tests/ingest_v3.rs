@@ -496,7 +496,7 @@ fn proof_fails_with_distinct_file_reasons() {
                     SegmentFileStatus::Processed,
                 ),
             ],
-            CustodyFailure::FileNotHeld {
+            CustodyFailure::FileCustodyNotTerminal {
                 source: CustodySource::DayManifest,
                 name: "screen-unique.mp4".into(),
                 status: SegmentFileStatus::Missing,

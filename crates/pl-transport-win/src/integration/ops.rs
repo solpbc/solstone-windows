@@ -1024,7 +1024,7 @@ async fn upload(
 }
 
 /// Populate pass-shaped upload evidence only after a complete coordinator
-/// witness exists. The coordinator's type makes an unproven server key
+/// witness exists. The coordinator's type makes an unproven server segment key
 /// unavailable here.
 fn record_custody_witness(
     evidence: &mut Evidence,
@@ -1066,25 +1066,95 @@ mod tests {
     use tokio_rustls::TlsAcceptor;
 
     #[test]
-    fn upload_evidence_cannot_become_pass_shaped_without_a_custody_witness() {
-        let mut evidence = Evidence {
-            confirmed: Some(false),
-            requested_carrier: Some(Carrier::Direct.as_str()),
-            ..Default::default()
-        };
-        let failure = record_custody_witness(&mut evidence, &[])
-            .expect_err("an empty coordinator result has no custody witness");
-        assert!(matches!(
-            failure,
-            Failure::Assertion { ref reason, .. } if reason == "custody_not_proven"
-        ));
-        assert_eq!(evidence.confirmed, Some(false));
-        assert!(evidence.observed_carrier.is_none());
-        assert!(evidence.server_segment.is_none());
-        assert!(evidence.server_submitted_name.is_none());
-        assert!(evidence.server_sha256.is_none());
-        assert!(evidence.server_size.is_none());
-        assert!(evidence.server_custody_status.is_none());
+    fn upload_without_a_custody_witness_has_no_pass_shaped_terminal_outcome() {
+        let root = temp_root("upload-unconfirmed");
+        let environment = environment(&root);
+        let payload = root.join("payload.bin");
+        std::fs::write(&payload, b"unconfirmed payload").unwrap();
+        let (server_config, pin) = roundtrip_server_config();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let listener = TcpListener::from_std(listener).unwrap();
+                let acceptor = TlsAcceptor::from(Arc::new(server_config));
+                for body in [
+                    r#"{"status":"ok","segment":"143000_300"}"#,
+                    r#"{"days":{"20260617":{"segments":1}}}"#,
+                    r#"{"version":1,"day":"20260617","segments":{}}"#,
+                    r#"{"items":[],"total":0,"protocol_version":3}"#,
+                ] {
+                    let (tcp, _) = listener.accept().await.unwrap();
+                    let mut tls = acceptor.accept(tcp).await.unwrap();
+                    let stream_id = read_closed_stream_id(&mut tls)
+                        .await
+                        .expect("the production uploader closes each request");
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let frame =
+                        Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
+                    tls.write_all(&frame.encode().unwrap()).await.unwrap();
+                    tls.flush().await.unwrap();
+                    let _ = tls.shutdown().await;
+                }
+            });
+        });
+        PairedState {
+            credential: Some(roundtrip_credential(pin, port)),
+            observer_key: None,
+            observer_name: None,
+        }
+        .save(&environment.state_path)
+        .unwrap();
+
+        let argv = vec![
+            "--integration".to_string(),
+            "upload".to_string(),
+            "--deadline-secs".to_string(),
+            "5".to_string(),
+            "--payload".to_string(),
+            payload.display().to_string(),
+            "--day".to_string(),
+            "20260617".to_string(),
+            "--segment".to_string(),
+            "143000_300".to_string(),
+            "--carrier".to_string(),
+            "direct".to_string(),
+        ];
+        let selection = super::super::selected(&argv).expect("the upload mode is selected");
+        let outcome = super::super::report_for(selection, &environment);
+        let json = outcome.json();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(
+            outcome.exit_code,
+            super::super::report::EXIT_ASSERTION_FAILED
+        );
+        assert_eq!(value["verdict"], "FAIL");
+        assert_eq!(value["reason"], "custody_not_proven");
+        assert_eq!(value["evidence"]["confirmed"], false);
+        for field in [
+            "observed_carrier",
+            "server_segment",
+            "server_submitted_name",
+            "server_sha256",
+            "server_size",
+            "server_custody_status",
+        ] {
+            assert!(
+                value["evidence"][field].is_null(),
+                "unproven upload must not emit pass-shaped {field} evidence"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn environment(root: &Path) -> Environment {

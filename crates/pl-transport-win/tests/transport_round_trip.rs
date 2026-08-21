@@ -1212,6 +1212,15 @@ async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_on
         .unwrap();
     let upload = server.await.unwrap();
     assert!(v3_upload_capture_matches(&upload, day, segment, &filenames));
+    let without_protocol_header = String::from_utf8(upload.clone()).unwrap().replacen(
+        "X-Solstone-Protocol-Version: 3\r\n",
+        "",
+        1,
+    );
+    assert!(
+        !v3_upload_capture_matches(without_protocol_header.as_bytes(), day, segment, &filenames),
+        "removing the v3 protocol header must invalidate the v3 upload assertion"
+    );
     for (from, to) in [
         (
             "X-Solstone-Protocol-Version: 3",

@@ -116,7 +116,7 @@ trait UploadClient: Send + Sync {
         files: Vec<FilePart>,
     ) -> IngestFuture<'a>;
 
-    fn ingest_manifest<'a>(&'a self, day: &'a str) -> ManifestFuture<'a>;
+    fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a>;
 
     fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a>;
 
@@ -133,7 +133,7 @@ impl UploadClient for ObserverClient {
         Box::pin(ObserverClient::ingest(self, segment, day, files))
     }
 
-    fn ingest_manifest<'a>(&'a self, _day: &'a str) -> ManifestFuture<'a> {
+    fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
         Box::pin(ObserverClient::ingest_manifest(self))
     }
 
@@ -394,8 +394,8 @@ impl UploadCoordinator {
     }
 
     /// One pass returning only custody witnesses earned by complete protocol-v3
-    /// reconciliation. Callers cannot obtain a server key or file facts from an
-    /// accepted-but-unconfirmed upload.
+    /// reconciliation. Callers cannot obtain a server segment key or file facts
+    /// from an accepted-but-unconfirmed upload.
     pub async fn tick_with_witness(&self) -> Result<Vec<ConfirmedUpload>, TransportError> {
         let (_tx, rx) = watch::channel(false);
         let result = self.tick_inner(&rx).await;
@@ -520,7 +520,7 @@ impl UploadCoordinator {
                         })
                         .collect::<Vec<_>>();
                     let reads = async {
-                        let (manifest, _) = self.client.ingest_manifest(&day).await?;
+                        let (manifest, _) = self.client.ingest_manifest().await?;
                         let (day_manifest, _) = self.client.ingest_manifest_day(&day).await?;
                         let (segments, _) = self.client.list_segments(&day).await?;
                         Ok::<_, TransportError>((manifest, day_manifest, segments))
@@ -564,9 +564,9 @@ impl UploadCoordinator {
                             // segment remains retry-eligible until a witness exists.
                         }
                         CustodyProof::Confirmed(witness) => {
-                            // The server key is only available through the proof
-                            // witness, so cleanup and publication cannot use an
-                            // unverified collision selector.
+                            // The server segment key is only available through the
+                            // proof witness, so cleanup and publication cannot use
+                            // an unverified collision selector.
                             let server_key = witness.server_segment();
                             self.clear_reject(segment.index);
                             UploadEvent::new(
@@ -1071,6 +1071,7 @@ mod tests {
     struct FakeClient {
         ingests: Mutex<VecDeque<Result<(IngestResponse, SendMetadata), TransportError>>>,
         lists: Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
+        submitted_day: Mutex<Option<String>>,
     }
 
     impl FakeClient {
@@ -1081,6 +1082,7 @@ mod tests {
             Arc::new(Self {
                 ingests: Mutex::new(VecDeque::from(ingests)),
                 lists: Mutex::new(VecDeque::from(lists)),
+                submitted_day: Mutex::new(None),
             })
         }
     }
@@ -1089,9 +1091,10 @@ mod tests {
         fn ingest<'a>(
             &'a self,
             _segment: &'a str,
-            _day: &'a str,
+            day: &'a str,
             _files: Vec<FilePart>,
         ) -> IngestFuture<'a> {
+            *self.submitted_day.lock().unwrap() = Some(day.to_owned());
             let result = self
                 .ingests
                 .lock()
@@ -1101,8 +1104,14 @@ mod tests {
             Box::pin(async move { result })
         }
 
-        fn ingest_manifest<'a>(&'a self, day: &'a str) -> ManifestFuture<'a> {
-            Box::pin(async move { Ok((manifest_for(day), test_metadata())) })
+        fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
+            let day = self
+                .submitted_day
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("ingest precedes its root manifest read");
+            Box::pin(async move { Ok((manifest_for(&day), test_metadata())) })
         }
 
         fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
@@ -1127,6 +1136,7 @@ mod tests {
         cancel: watch::Sender<bool>,
         ingest_count: Arc<AtomicUsize>,
         list_count: AtomicUsize,
+        submitted_day: Mutex<Option<String>>,
     }
 
     impl CancelAfterFirstListClient {
@@ -1141,6 +1151,7 @@ mod tests {
                 cancel,
                 ingest_count: Arc::new(AtomicUsize::new(0)),
                 list_count: AtomicUsize::new(0),
+                submitted_day: Mutex::new(None),
             })
         }
 
@@ -1153,9 +1164,10 @@ mod tests {
         fn ingest<'a>(
             &'a self,
             _segment: &'a str,
-            _day: &'a str,
+            day: &'a str,
             _files: Vec<FilePart>,
         ) -> IngestFuture<'a> {
+            *self.submitted_day.lock().unwrap() = Some(day.to_owned());
             let result = self
                 .ingests
                 .lock()
@@ -1170,8 +1182,14 @@ mod tests {
             })
         }
 
-        fn ingest_manifest<'a>(&'a self, day: &'a str) -> ManifestFuture<'a> {
-            Box::pin(async move { Ok((manifest_for(day), test_metadata())) })
+        fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
+            let day = self
+                .submitted_day
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("ingest precedes its root manifest read");
+            Box::pin(async move { Ok((manifest_for(&day), test_metadata())) })
         }
 
         fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
