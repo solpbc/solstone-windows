@@ -7,9 +7,12 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
+use jsonschema::Validator;
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{verify_contained_path, ContainedRoot, UnixModePolicy};
@@ -17,7 +20,8 @@ use crate::release_advisory::MIRROR_COHORT_ID;
 use crate::release_clock::UtcTimestamp;
 use crate::release_finalizer_fs::create_contained_directory;
 use crate::rust_release_manifest::{
-    companion_basename, render_canonical_json, PRODUCT, TARGET_TRIPLE,
+    companion_basename, compile_schema_value, render_canonical_json, Manifest, PRODUCT,
+    TARGET_TRIPLE,
 };
 
 pub const FINALIZATION_RECEIPT_SCHEMA: &str = "solstone.rust-release-finalization.v1";
@@ -31,6 +35,10 @@ pub const CANDIDATE_ROOT: &str = "target/release-candidate";
 pub(crate) const FINALIZATION_RECEIPT_TEMP: &str = ".rust-release-finalization.json.tmp";
 const WINDOWS_NATIVE_PROOF_TEMP: &str = ".windows-native-proof.json.tmp";
 const HISTORICAL_ADVISORY_SOURCE_ID_V1: &str = "https://github.com/RustSec/advisory-db";
+const FINALIZATION_RECEIPT_SCHEMA_SHA256: &str =
+    "f5a0824a1cbbe212a048173242359302f33b0a8900f3a1800c1b60b3a7f9493e";
+const FINALIZATION_RECEIPT_SCHEMA_BYTES: &[u8] =
+    include_bytes!("../../schemas/solstone-windows-finalization-receipt/v1.json");
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +52,13 @@ pub struct CompanionManifestReceipt {
 pub struct CandidateReceipt {
     pub relative_path: String,
     pub file_count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PackagedExecutableEvidence {
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -67,6 +82,7 @@ pub struct FinalizationReceipt {
     pub ui_package_lock_sha256: String,
     pub companion_manifest: CompanionManifestReceipt,
     pub candidate: CandidateReceipt,
+    pub packaged_executable: PackagedExecutableEvidence,
     pub selection_record_sha256: String,
     pub signing_mode: String,
     pub advisory_database: AdvisoryDatabaseReceipt,
@@ -84,6 +100,7 @@ pub struct WindowsNativeProofReceipt {
     pub companion_manifest: CompanionManifestReceipt,
     pub setup_sha256: String,
     pub packaged_executable_sha256: String,
+    pub packaged_executable_bytes: u64,
     pub installed_executable_sha256: String,
     pub install_mode: String,
     pub installer_success: bool,
@@ -114,6 +131,8 @@ struct ReceiptIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReceiptError {
     InvalidField { field: &'static str },
+    FinalizationSchemaViolation,
+    FinalizationSchemaCompile,
     SerializationFailed,
     CheckoutContainment,
     EvidenceDirectoryInvalid,
@@ -132,6 +151,14 @@ impl fmt::Display for ReceiptError {
             Self::InvalidField { field } => write!(
                 formatter,
                 "release receipt field `{field}` is not canonical or does not satisfy the receipt contract; rebuild the evidence from verified transaction inputs"
+            ),
+            Self::FinalizationSchemaViolation => write!(
+                formatter,
+                "release finalization receipt does not satisfy its product-local schema; rebuild the receipt from verified transaction inputs"
+            ),
+            Self::FinalizationSchemaCompile => write!(
+                formatter,
+                "embedded release finalization receipt schema failed to compile; restore the pinned product-local schema bytes"
             ),
             Self::SerializationFailed => write!(
                 formatter,
@@ -293,51 +320,51 @@ impl Drop for StagedReceipt {
 }
 
 fn validate_finalization_receipt(receipt: &FinalizationReceipt) -> Result<(), ReceiptError> {
+    validate_finalization_receipt_schema(receipt)?;
     let expected_source_id = match receipt.schema.as_str() {
         FINALIZATION_RECEIPT_SCHEMA => HISTORICAL_ADVISORY_SOURCE_ID_V1,
         FINALIZATION_RECEIPT_SCHEMA_V2 => MIRROR_COHORT_ID,
         _ => return invalid("schema"),
     };
-    validate_common(
-        &receipt.schema,
-        &receipt.schema,
-        &receipt.product,
-        &receipt.version,
-        &receipt.target,
-        &receipt.source_commit,
-    )?;
-    validate_sha256(&receipt.cargo_lock_sha256, "cargo_lock_sha256")?;
-    validate_sha256(&receipt.ui_package_lock_sha256, "ui_package_lock_sha256")?;
-    validate_companion(&receipt.companion_manifest)?;
+    canonical_version(&receipt.version)?;
+    validate_finalization_companion(&receipt.companion_manifest)?;
     if receipt.candidate.relative_path != candidate_relative_path(&receipt.version)? {
         return invalid("candidate.relative_path");
-    }
-    if !matches!(receipt.candidate.file_count, 7 | 8) {
-        return invalid("candidate.file_count");
-    }
-    validate_sha256(&receipt.selection_record_sha256, "selection_record_sha256")?;
-    if !matches!(
-        receipt.signing_mode.as_str(),
-        "unsigned" | "signed-verified"
-    ) {
-        return invalid("signing_mode");
     }
     if receipt.advisory_database.source_id != expected_source_id {
         return invalid("advisory_database.source_id");
     }
-    validate_commit(
-        &receipt.advisory_database.commit,
-        "advisory_database.commit",
-    )?;
-    validate_sha256(
-        &receipt.advisory_database.tree_sha256,
-        "advisory_database.tree_sha256",
-    )?;
     validate_timestamp(
         &receipt.advisory_database.acquired_at,
         "advisory_database.acquired_at",
     )?;
     validate_timestamp(&receipt.advisory_checked_at, "advisory_checked_at")
+}
+
+fn validate_finalization_receipt_schema(receipt: &FinalizationReceipt) -> Result<(), ReceiptError> {
+    let value = serde_json::to_value(receipt).map_err(|_| ReceiptError::SerializationFailed)?;
+    compiled_finalization_receipt_schema()?
+        .validate(&value)
+        .map_err(|_| ReceiptError::FinalizationSchemaViolation)
+}
+
+static COMPILED_FINALIZATION_RECEIPT_SCHEMA: OnceLock<Result<Validator, ReceiptError>> =
+    OnceLock::new();
+
+fn compiled_finalization_receipt_schema() -> Result<&'static Validator, ReceiptError> {
+    COMPILED_FINALIZATION_RECEIPT_SCHEMA
+        .get_or_init(compile_finalization_receipt_schema)
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn compile_finalization_receipt_schema() -> Result<Validator, ReceiptError> {
+    if sha256_hex(FINALIZATION_RECEIPT_SCHEMA_BYTES) != FINALIZATION_RECEIPT_SCHEMA_SHA256 {
+        return Err(ReceiptError::FinalizationSchemaCompile);
+    }
+    let schema: Value = serde_json::from_slice(FINALIZATION_RECEIPT_SCHEMA_BYTES)
+        .map_err(|_| ReceiptError::FinalizationSchemaCompile)?;
+    compile_schema_value(&schema).map_err(|_| ReceiptError::FinalizationSchemaCompile)
 }
 
 fn validate_windows_native_proof_receipt(
@@ -357,6 +384,9 @@ fn validate_windows_native_proof_receipt(
         &receipt.packaged_executable_sha256,
         "packaged_executable_sha256",
     )?;
+    if receipt.packaged_executable_bytes == 0 {
+        return invalid("packaged_executable_bytes");
+    }
     validate_sha256(
         &receipt.installed_executable_sha256,
         "installed_executable_sha256",
@@ -402,6 +432,61 @@ fn validate_companion(companion: &CompanionManifestReceipt) -> Result<(), Receip
         return invalid("companion_manifest.filename");
     }
     validate_sha256(&companion.sha256, "companion_manifest.sha256")
+}
+
+fn validate_finalization_companion(
+    companion: &CompanionManifestReceipt,
+) -> Result<(), ReceiptError> {
+    if companion.filename != companion_basename() {
+        return invalid("companion_manifest.filename");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CandidateBinding<'a> {
+    pub companion_filename: &'a str,
+    pub companion_sha256: &'a str,
+    pub relative_path: &'a str,
+    pub file_count: u64,
+}
+
+pub fn bind_finalization_receipt(
+    receipt: &FinalizationReceipt,
+    manifest: &Manifest,
+    candidate: &CandidateBinding<'_>,
+) -> Result<(), &'static str> {
+    if receipt.product != manifest.product {
+        return Err("product");
+    }
+    if receipt.version != manifest.version {
+        return Err("version");
+    }
+    if receipt.target != TARGET_TRIPLE {
+        return Err("target");
+    }
+    if receipt.source_commit != manifest.source_commit {
+        return Err("source_commit");
+    }
+    if receipt.cargo_lock_sha256 != manifest.cargo_lock_sha256 {
+        return Err("cargo_lock_sha256");
+    }
+    if receipt.companion_manifest.filename != candidate.companion_filename {
+        return Err("companion_manifest.filename");
+    }
+    if receipt.companion_manifest.sha256 != candidate.companion_sha256 {
+        return Err("companion_manifest.sha256");
+    }
+    if receipt.candidate.relative_path != candidate.relative_path {
+        return Err("candidate.relative_path");
+    }
+    if receipt.candidate.file_count != candidate.file_count {
+        return Err("candidate.file_count");
+    }
+    if receipt.advisory_checked_at != manifest.dependency_policy.advisory_checked_at {
+        return Err("advisory_checked_at");
+    }
+    Ok(())
 }
 
 fn canonical_version(version: &str) -> Result<Version, ReceiptError> {
@@ -466,6 +551,10 @@ fn is_lower_hex(value: &str, length: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn invalid<T>(field: &'static str) -> Result<T, ReceiptError> {

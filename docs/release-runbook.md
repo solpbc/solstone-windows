@@ -116,8 +116,9 @@ recheck, and atomic promotion. Direct `scripts/package.ps1` and
 `scripts/win-package.cmd` reach the same transaction; neither attests a
 pre-existing executable.
 
-The manifest executable authority is equality between the canonical full-nupkg
-and portable members. The pre-pack executable hash is diagnostic only on a
+The finalization receipt's packaged-executable authority is equality between
+the canonical full-nupkg and portable members. The pre-pack executable hash is
+diagnostic only on a
 container divergence: signed vpk operates on private copies, so signed container
 bytes legitimately differ from the unsigned stage. The stage remains
 transaction-bound structurally: `create_transaction_paths` creates and verifies
@@ -138,7 +139,8 @@ written last, making seven or eight files total.
 After candidate promotion, the finalizer promotes
 `target/release-evidence/<VERSION>/rust-release-finalization.json`. This receipt
 is outside the candidate and cross-binds its manifest filename and SHA-256,
-source commit, both lock digests, candidate path/count, selection-record hash,
+source commit, both lock digests, candidate path/count, packaged-executable
+SHA-256 and byte count, selection-record hash,
 signing mode, and isolated RustSec source/commit/archive digest/acquisition and
 check times. Receipt bytes are never candidate members.
 
@@ -328,8 +330,9 @@ bootstrap modes; there is no third resolution mechanism.
 The command installs only the candidate's canonical versioned setup into a newly
 empty proof-owned `LOCALAPPDATA` root outside `RELEASE_DIR`. The canonical app
 must be absent before setup and created afterward; no existing-install no-op or
-setup fallback is accepted. The installed app, both containers, and manifest
-baseline must agree by SHA-256 and byte count. The explicit installed binary must
+setup fallback is accepted. The installed app, both containers, and
+finalization-receipt packaged-executable evidence must agree by SHA-256 and byte
+count. The explicit installed binary must
 report the candidate version through STEP_8's direct `--dump-state` invocation.
 The selected smoke must run with fallback disabled, emit the load-bearing
 `SMOKE_OK` health/render evidence, and verify the launched Session-1 instance's

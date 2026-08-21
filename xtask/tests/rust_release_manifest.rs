@@ -8,10 +8,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
+use xtask::release_receipt::{
+    render_finalization_receipt, render_windows_native_proof_receipt, CompanionManifestReceipt,
+    FinalizationReceipt, WindowsNativeProofReceipt, WINDOWS_NATIVE_PROOF_SCHEMA,
+};
 use xtask::rust_release_manifest::{
-    self, companion_basename, CheckoutFacts, ClassificationMode, Manifest, ManifestError,
-    ReleaseEvidence, TargetEvidence, MANIFEST_DISCLAIMER, PRODUCT, SCHEMA_SHA256, TARGET_FEATURES,
-    TARGET_PROFILE, TARGET_TRIPLE,
+    self, companion_basename, BundleNames, CheckoutFacts, ClassificationMode, Manifest,
+    ManifestError, ReleaseEvidence, SharedSchemaImport, TargetEvidence, MANIFEST_DISCLAIMER,
+    PRODUCT, RUST_RELEASE_MANIFEST_V1_IMPORT, TARGET_FEATURES, TARGET_PROFILE, TARGET_TRIPLE,
 };
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -47,7 +51,7 @@ struct TempTree {
 impl TempTree {
     fn good() -> Self {
         let root = TempDir::new("rust-release-manifest");
-        copy_tree(&fixture_root().join("release-dir"), &root.0);
+        copy_tree(&fixture_root().join("release-candidate/0.2.11"), &root.0);
         // The fixture baseline is a fixed valid placeholder: these read-only
         // classifier tests verify artifact files, not container executable bytes.
         let manifest = read_manifest(&root.0.join(companion_basename()));
@@ -112,6 +116,29 @@ fn repo_root() -> PathBuf {
 
 fn fixture_root() -> PathBuf {
     repo_root().join("xtask/tests/fixtures/rust-release-manifest")
+}
+
+fn self_check_root(label: &str) -> TempDir {
+    let root = TempDir::new(label);
+    fs::create_dir_all(root.0.join("schemas/rust-release-manifest")).unwrap();
+    fs::create_dir_all(root.0.join("packaging")).unwrap();
+    fs::create_dir_all(root.0.join("xtask/tests/fixtures/rust-release-manifest")).unwrap();
+    fs::copy(
+        repo_root().join("schemas/rust-release-manifest/v1.json"),
+        root.0.join("schemas/rust-release-manifest/v1.json"),
+    )
+    .unwrap();
+    fs::copy(
+        repo_root().join("packaging/release-toolchain.json"),
+        root.0.join("packaging/release-toolchain.json"),
+    )
+    .unwrap();
+    fs::copy(repo_root().join("deny.toml"), root.0.join("deny.toml")).unwrap();
+    copy_tree(
+        &fixture_root(),
+        &root.0.join("xtask/tests/fixtures/rust-release-manifest"),
+    );
+    root
 }
 
 #[test]
@@ -229,7 +256,7 @@ where
     let mut manifest: Value = serde_json::from_slice(
         &fs::read(
             fixture_root()
-                .join("release-dir")
+                .join("release-candidate/0.2.11")
                 .join(companion_basename()),
         )
         .unwrap(),
@@ -243,22 +270,100 @@ where
 #[test]
 fn rust_release_manifest_schema_is_exact_and_compiles_unchanged() {
     let bytes = fs::read(repo_root().join("schemas/rust-release-manifest/v1.json")).unwrap();
-    assert_eq!(bytes.len(), 4_780);
+    assert_eq!(bytes.len(), 4_416);
     assert_eq!(
-        SCHEMA_SHA256,
-        "82b5233a26131d9f35beb8a94a02f686556cde2a977614a75d5a7866ace75080"
+        RUST_RELEASE_MANIFEST_V1_IMPORT.sha256,
+        "d4eabf52bcc68b56945912d351f818e5444fe8c6461cb5c48b096f87b17a875c"
     );
-    assert_eq!(lower_hex(&Sha256::digest(&bytes)), SCHEMA_SHA256);
-    rust_release_manifest::verify_vendored_schema(&repo_root()).unwrap();
+    assert_eq!(
+        lower_hex(&Sha256::digest(&bytes)),
+        RUST_RELEASE_MANIFEST_V1_IMPORT.sha256
+    );
+    rust_release_manifest::verify_schema_import(&repo_root(), &RUST_RELEASE_MANIFEST_V1_IMPORT)
+        .unwrap();
     rust_release_manifest::validate_manifest_bytes(
         &fs::read(
             fixture_root()
-                .join("release-dir")
+                .join("release-candidate/0.2.11")
                 .join(companion_basename()),
         )
         .unwrap(),
     )
     .unwrap();
+}
+
+#[test]
+fn rust_release_manifest_import_contract_rejects_each_coordinate_and_vendored_drift() {
+    let root = TempDir::new("shared-schema-import");
+    let vendor_root = root.0.join(RUST_RELEASE_MANIFEST_V1_IMPORT.vendor_root);
+    fs::create_dir_all(&vendor_root).unwrap();
+    fs::copy(
+        repo_root().join("schemas/rust-release-manifest/v1.json"),
+        vendor_root.join(RUST_RELEASE_MANIFEST_V1_IMPORT.schema_path),
+    )
+    .unwrap();
+
+    for (coordinate, contract) in [
+        (
+            "schema_id",
+            SharedSchemaImport {
+                schema_id: "https://example.invalid/wrong.json",
+                ..RUST_RELEASE_MANIFEST_V1_IMPORT
+            },
+        ),
+        (
+            "sha256",
+            SharedSchemaImport {
+                sha256: "0",
+                ..RUST_RELEASE_MANIFEST_V1_IMPORT
+            },
+        ),
+        (
+            "dialect",
+            SharedSchemaImport {
+                dialect: "https://example.invalid/draft",
+                ..RUST_RELEASE_MANIFEST_V1_IMPORT
+            },
+        ),
+        (
+            "schema_version",
+            SharedSchemaImport {
+                schema_version: 2,
+                ..RUST_RELEASE_MANIFEST_V1_IMPORT
+            },
+        ),
+        (
+            "schema_path",
+            SharedSchemaImport {
+                schema_path: "missing.json",
+                ..RUST_RELEASE_MANIFEST_V1_IMPORT
+            },
+        ),
+        (
+            "vendor_root",
+            SharedSchemaImport {
+                vendor_root: "schemas/missing-vendor-root",
+                ..RUST_RELEASE_MANIFEST_V1_IMPORT
+            },
+        ),
+    ] {
+        assert_eq!(
+            rust_release_manifest::verify_schema_import(&root.0, &contract),
+            Err(ManifestError::SchemaImportMismatch { coordinate })
+        );
+    }
+
+    fs::write(
+        vendor_root.join(RUST_RELEASE_MANIFEST_V1_IMPORT.schema_path),
+        b"mutated vendored bytes",
+    )
+    .unwrap();
+    assert_eq!(
+        rust_release_manifest::verify_schema_import(&root.0, &RUST_RELEASE_MANIFEST_V1_IMPORT),
+        Err(ManifestError::SchemaImportMismatch {
+            coordinate: "sha256"
+        })
+    );
 }
 
 #[test]
@@ -275,21 +380,19 @@ fn rust_release_manifest_schema_asserts_lookaheads_and_date_time() {
         }),
         ManifestError::SchemaViolation
     );
-    for mutation in 0..3 {
-        assert_eq!(
-            schema_mutation(|manifest| match mutation {
-                0 => manifest["packaged_executable"]["sha256"] = json!("A".repeat(64)),
-                1 => manifest["packaged_executable"]["sha256"] = json!("3".repeat(63)),
-                _ => manifest["packaged_executable"]["bytes"] = json!(0),
-            }),
-            ManifestError::SchemaViolation,
-            "packaged executable mutation {mutation}"
-        );
-    }
+    assert_eq!(
+        schema_mutation(|manifest| {
+            manifest["packaged_executable"] = json!({
+                "sha256": "3".repeat(64),
+                "bytes": 1,
+            });
+        }),
+        ManifestError::SchemaViolation
+    );
     let mut valid: Value = serde_json::from_slice(
         &fs::read(
             fixture_root()
-                .join("release-dir")
+                .join("release-candidate/0.2.11")
                 .join(companion_basename()),
         )
         .unwrap(),
@@ -313,7 +416,6 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
         "native_tools",
         "dependency_policy",
         "active_exceptions",
-        "packaged_executable",
         "artifacts",
     ] {
         assert_eq!(
@@ -324,7 +426,7 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
             "{field}"
         );
     }
-    for mutation in 0..20 {
+    for mutation in 0..17 {
         assert_eq!(
             schema_mutation(|manifest| match mutation {
                 0 => {
@@ -397,20 +499,7 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
                 13 => manifest["rust"]["unknown"] = json!(true),
                 14 => manifest["target"]["unknown"] = json!(true),
                 15 => manifest["dependency_policy"]["unknown"] = json!(true),
-                16 => manifest["artifacts"][0]["unknown"] = json!(true),
-                17 => {
-                    manifest["packaged_executable"]
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("sha256");
-                }
-                18 => {
-                    manifest["packaged_executable"]
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("bytes");
-                }
-                _ => manifest["packaged_executable"]["unknown"] = json!(true),
+                _ => manifest["artifacts"][0]["unknown"] = json!(true),
             }),
             ManifestError::SchemaViolation,
             "mutation {mutation}"
@@ -555,19 +644,6 @@ fn rust_release_manifest_rejects_checkout_binding_drift() {
             commit: dirty_commit
         })
     );
-
-    let mut manifest = read_manifest(&tree.manifest_path());
-    manifest.packaged_executable.bytes = 0;
-    assert_eq!(
-        rust_release_manifest::validate_semantic_binding(&manifest, &tree.facts),
-        Err(ManifestError::PackagedExecutableInvalid)
-    );
-    let mut manifest = read_manifest(&tree.manifest_path());
-    manifest.packaged_executable.sha256 = "A".repeat(64);
-    assert_eq!(
-        rust_release_manifest::validate_semantic_binding(&manifest, &tree.facts),
-        Err(ManifestError::PackagedExecutableInvalid)
-    );
 }
 
 #[test]
@@ -649,6 +725,13 @@ fn rust_release_manifest_diagnostics_do_not_echo_rejected_values() {
         }
         .to_string(),
         "release evidence is not canonical: field `active_exceptions`"
+    );
+    assert_eq!(
+        ManifestError::SchemaImportMismatch {
+            coordinate: "vendor_root"
+        }
+        .to_string(),
+        "release-manifest shared schema import does not match its frozen vendor_root coordinate; restore the vendored authority bytes and import contract"
     );
 }
 
@@ -1010,7 +1093,7 @@ fn rust_release_manifest_renderer_rejects_noncanonical_public_evidence() {
     fn evidence() -> ReleaseEvidence {
         ReleaseEvidence::from(read_manifest(
             &fixture_root()
-                .join("release-dir")
+                .join("release-candidate/0.2.11")
                 .join(companion_basename()),
         ))
     }
@@ -1059,20 +1142,6 @@ fn rust_release_manifest_renderer_rejects_noncanonical_public_evidence() {
                 field: "cargo_lock_sha256",
             },
             Box::new(|e| e.cargo_lock_sha256 = "A".repeat(64)),
-        ),
-        (
-            "packaged executable bytes",
-            ManifestError::EvidenceInvalid {
-                field: "packaged_executable.bytes",
-            },
-            Box::new(|e| e.packaged_executable.bytes = 0),
-        ),
-        (
-            "packaged executable hash",
-            ManifestError::EvidenceInvalid {
-                field: "packaged_executable.sha256",
-            },
-            Box::new(|e| e.packaged_executable.sha256 = "A".repeat(64)),
         ),
         (
             "wrong feature",
@@ -1250,7 +1319,7 @@ fn rust_release_manifest_renderer_rejects_noncanonical_public_evidence() {
 fn rust_release_manifest_renderer_is_cross_root_deterministic() {
     let evidence = ReleaseEvidence::from(read_manifest(
         &fixture_root()
-            .join("release-dir")
+            .join("release-candidate/0.2.11")
             .join(companion_basename()),
     ));
     let first_root = TempDir::new("render-one");
@@ -1268,30 +1337,12 @@ fn rust_release_manifest_renderer_is_cross_root_deterministic() {
 
 #[test]
 fn rust_release_manifest_self_check_binds_exceptions_to_deny_toml() {
-    let root = TempDir::new("self-check");
-    fs::create_dir_all(root.0.join("schemas/rust-release-manifest")).unwrap();
-    fs::create_dir_all(root.0.join("packaging")).unwrap();
-    fs::create_dir_all(root.0.join("xtask/tests/fixtures/rust-release-manifest")).unwrap();
-    fs::copy(
-        repo_root().join("schemas/rust-release-manifest/v1.json"),
-        root.0.join("schemas/rust-release-manifest/v1.json"),
-    )
-    .unwrap();
-    fs::copy(
-        repo_root().join("packaging/release-toolchain.json"),
-        root.0.join("packaging/release-toolchain.json"),
-    )
-    .unwrap();
-    fs::copy(repo_root().join("deny.toml"), root.0.join("deny.toml")).unwrap();
-    copy_tree(
-        &fixture_root(),
-        &root.0.join("xtask/tests/fixtures/rust-release-manifest"),
-    );
+    let root = self_check_root("self-check");
     rust_release_manifest::run_self_check(&root.0).unwrap();
 
     let manifest_path = root
         .0
-        .join("xtask/tests/fixtures/rust-release-manifest/release-dir")
+        .join("xtask/tests/fixtures/rust-release-manifest/release-candidate/0.2.11")
         .join(companion_basename());
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     manifest["active_exceptions"].as_array_mut().unwrap().pop();
@@ -1299,5 +1350,77 @@ fn rust_release_manifest_self_check_binds_exceptions_to_deny_toml() {
     assert_eq!(
         rust_release_manifest::run_self_check(&root.0),
         Err(ManifestError::ActiveExceptionsMismatch)
+    );
+}
+
+#[test]
+fn rust_release_manifest_self_check_requires_the_exact_finalization_receipt() {
+    let root = self_check_root("finalization-receipt");
+    let fixture = root.0.join("xtask/tests/fixtures/rust-release-manifest");
+    let candidate = fixture.join("release-candidate/0.2.11");
+    let evidence = fixture.join("release-evidence/0.2.11");
+    let manifest_bytes = fs::read(candidate.join(companion_basename())).unwrap();
+    let manifest = read_manifest(&candidate.join(companion_basename()));
+    let receipt_path = evidence.join("rust-release-finalization.json");
+    let original_receipt = fs::read(&receipt_path).unwrap();
+    let receipt: FinalizationReceipt = serde_json::from_slice(&original_receipt).unwrap();
+    let setup_sha256 = manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.path == BundleNames::for_version(&manifest.version).setup())
+        .unwrap()
+        .sha256
+        .clone();
+    let proof = WindowsNativeProofReceipt {
+        schema: WINDOWS_NATIVE_PROOF_SCHEMA.to_owned(),
+        product: manifest.product.clone(),
+        version: manifest.version.clone(),
+        target: TARGET_TRIPLE.to_owned(),
+        source_commit: manifest.source_commit.clone(),
+        companion_manifest: CompanionManifestReceipt {
+            filename: companion_basename(),
+            sha256: lower_hex(&Sha256::digest(&manifest_bytes)),
+        },
+        setup_sha256,
+        packaged_executable_sha256: receipt.packaged_executable.sha256.clone(),
+        packaged_executable_bytes: receipt.packaged_executable.bytes,
+        installed_executable_sha256: receipt.packaged_executable.sha256.clone(),
+        install_mode: "isolated-clean".to_owned(),
+        installer_success: true,
+        smoke_success: true,
+        proved_at: "2026-07-01T00:00:00Z".to_owned(),
+    };
+    fs::write(
+        evidence.join("windows-native-proof.json"),
+        render_windows_native_proof_receipt(&proof).unwrap(),
+    )
+    .unwrap();
+    rust_release_manifest::run_self_check(&root.0).unwrap();
+
+    fs::remove_file(&receipt_path).unwrap();
+    assert_eq!(
+        rust_release_manifest::run_self_check(&root.0),
+        Err(ManifestError::FinalizationReceiptBinding {
+            coordinate: "receipt"
+        })
+    );
+    fs::write(&receipt_path, &original_receipt).unwrap();
+
+    let mut swapped: FinalizationReceipt = serde_json::from_slice(&original_receipt).unwrap();
+    swapped.companion_manifest.sha256 = "0".repeat(64);
+    fs::write(
+        &receipt_path,
+        render_finalization_receipt(&swapped).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        rust_release_manifest::run_self_check(&root.0),
+        Err(ManifestError::FinalizationReceiptBinding {
+            coordinate: "companion_manifest.sha256"
+        })
+    );
+    assert_eq!(
+        fs::read(candidate.join(companion_basename())).unwrap(),
+        manifest_bytes
     );
 }

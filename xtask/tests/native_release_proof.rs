@@ -23,7 +23,8 @@ use xtask::native_release_proof::{
 use xtask::release_clock::FixedClock;
 use xtask::release_finalizer::finalize;
 use xtask::release_receipt::{
-    render_windows_native_proof_receipt, WindowsNativeProofReceipt, WINDOWS_NATIVE_PROOF_SCHEMA,
+    render_windows_native_proof_receipt, FinalizationReceipt, WindowsNativeProofReceipt,
+    WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use xtask::release_selection::SelectionMode;
 use xtask::rust_release_manifest::{companion_basename, validate_manifest_bytes};
@@ -69,7 +70,14 @@ fn signed_candidate_installs_smokes_and_writes_atomic_private_clean_proof() {
         .expect("candidate contains companion manifest")
         .clone();
     let manifest_sha256 = hex_sha256(&manifest_bytes);
-    let manifest = validate_manifest_bytes(&manifest_bytes).expect("parse signed manifest");
+    let _manifest = validate_manifest_bytes(&manifest_bytes).expect("parse signed manifest");
+    let finalization_receipt: FinalizationReceipt = serde_json::from_slice(
+        &fs::read(checkout.root().join(format!(
+            "target/release-evidence/{VERSION}/rust-release-finalization.json"
+        )))
+        .expect("read finalization receipt"),
+    )
+    .expect("parse finalization receipt");
     let facts = checkout_facts(&checkout);
     let proof_clock = FixedClock::new(PROVED_AT).expect("create proof clock");
     let result = prove_native(
@@ -120,7 +128,11 @@ fn signed_candidate_installs_smokes_and_writes_atomic_private_clean_proof() {
     );
     assert_eq!(
         receipt.packaged_executable_sha256,
-        manifest.packaged_executable.sha256
+        finalization_receipt.packaged_executable.sha256
+    );
+    assert_eq!(
+        receipt.packaged_executable_bytes,
+        finalization_receipt.packaged_executable.bytes
     );
     assert_eq!(
         receipt.installed_executable_sha256,

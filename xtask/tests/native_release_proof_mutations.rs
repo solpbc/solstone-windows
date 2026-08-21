@@ -244,41 +244,81 @@ fn isolated_install_root_and_installer_fail_closed() {
 fn every_executable_identity_source_is_bound_to_the_manifest() {
     // Pure ZIP-name, exact-duplicate, and member-kind rejection lives in
     // release_container_baseline.rs. These cases prove engine integration.
-    run_case(
-        "installed-app-diverges",
-        SelectionMode::Signed,
-        NativeProofMutation::InstalledAppDiverges,
-        |_| {},
-        NativeProofError::InstalledBaselineMismatch,
-        "installed app disagrees",
-        STEP_7_INSTALLED_IDENTITY,
-        SeamExpectation::installed_without_smoke(),
-    );
-    for (label, mutation) in [
-        ("nupkg-app-diverges", ContainerMutation::NupkgDiverges),
-        ("portable-app-diverges", ContainerMutation::PortableDiverges),
+    for (label, mutation, error, subject, step, seams) in [
         (
-            "nupkg-portable-differ",
-            ContainerMutation::BothContainersDiffer,
-        ),
-        (
-            "manifest-baseline-diverges",
-            ContainerMutation::ManifestBaselineDiverges,
-        ),
-    ] {
-        run_case(
-            label,
-            SelectionMode::Signed,
-            NativeProofMutation::None,
-            |prepared| mutate_container_identity(prepared, mutation),
+            "receipt-executable-hash-diverges",
+            ContainerMutation::ReceiptExecutableHashDiverges,
             NativeProofError::ContainerBaseline,
-            "manifest baseline",
+            "finalization receipt baseline",
             STEP_4_CONTAINERS,
             SeamExpectation {
                 resolver: true,
                 installer: false,
                 smoke: false,
             },
+        ),
+        (
+            "receipt-executable-bytes-diverge",
+            ContainerMutation::ReceiptExecutableBytesDiverge,
+            NativeProofError::ContainerBaseline,
+            "finalization receipt baseline",
+            STEP_4_CONTAINERS,
+            SeamExpectation {
+                resolver: true,
+                installer: false,
+                smoke: false,
+            },
+        ),
+        (
+            "receipt-manifest-binding-diverges",
+            ContainerMutation::ReceiptManifestBindingDiverges,
+            NativeProofError::FinalizationReceiptMismatch,
+            "does not identify this candidate",
+            STEP_2_IDENTITY,
+            SeamExpectation::none(),
+        ),
+        (
+            "nupkg-app-diverges",
+            ContainerMutation::NupkgDiverges,
+            NativeProofError::ContainerBaseline,
+            "finalization receipt baseline",
+            STEP_4_CONTAINERS,
+            SeamExpectation {
+                resolver: true,
+                installer: false,
+                smoke: false,
+            },
+        ),
+        (
+            "portable-app-diverges",
+            ContainerMutation::PortableDiverges,
+            NativeProofError::ContainerBaseline,
+            "finalization receipt baseline",
+            STEP_4_CONTAINERS,
+            SeamExpectation {
+                resolver: true,
+                installer: false,
+                smoke: false,
+            },
+        ),
+        (
+            "installed-app-diverges",
+            ContainerMutation::InstalledAppDiverges,
+            NativeProofError::InstalledBaselineMismatch,
+            "installed app disagrees",
+            STEP_7_INSTALLED_IDENTITY,
+            SeamExpectation::installed_without_smoke(),
+        ),
+    ] {
+        run_case(
+            label,
+            SelectionMode::Signed,
+            mutation.native_proof_mutation(),
+            |prepared| mutate_container_identity(prepared, mutation),
+            error,
+            subject,
+            step,
+            seams,
         );
     }
     for (label, mutation, error, subject) in [
@@ -819,16 +859,42 @@ fn mutate_finalization_receipt(
 
 #[derive(Clone, Copy)]
 enum ContainerMutation {
+    ReceiptExecutableHashDiverges,
+    ReceiptExecutableBytesDiverge,
+    ReceiptManifestBindingDiverges,
     NupkgDiverges,
     PortableDiverges,
-    BothContainersDiffer,
-    ManifestBaselineDiverges,
+    InstalledAppDiverges,
     NupkgMemberMissing,
     NupkgMemberCaseCollision,
 }
 
+impl ContainerMutation {
+    const fn native_proof_mutation(self) -> NativeProofMutation {
+        match self {
+            Self::InstalledAppDiverges => NativeProofMutation::InstalledAppDiverges,
+            _ => NativeProofMutation::None,
+        }
+    }
+}
+
 fn mutate_container_identity(prepared: &PreparedProof, mutation: ContainerMutation) {
     match mutation {
+        ContainerMutation::ReceiptExecutableHashDiverges => {
+            mutate_finalization_receipt(prepared, |receipt| {
+                receipt.packaged_executable.sha256 = "0".repeat(64);
+            });
+        }
+        ContainerMutation::ReceiptExecutableBytesDiverge => {
+            mutate_finalization_receipt(prepared, |receipt| {
+                receipt.packaged_executable.bytes += 1;
+            });
+        }
+        ContainerMutation::ReceiptManifestBindingDiverges => {
+            mutate_finalization_receipt(prepared, |receipt| {
+                receipt.companion_manifest.sha256 = "0".repeat(64);
+            });
+        }
         ContainerMutation::NupkgDiverges => replace_nupkg(
             prepared,
             build_velopack_nupkg(
@@ -840,18 +906,7 @@ fn mutate_container_identity(prepared: &PreparedProof, mutation: ContainerMutati
         ContainerMutation::PortableDiverges => {
             replace_portable(prepared, build_velopack_portable(b"divergent portable app"))
         }
-        ContainerMutation::BothContainersDiffer => {
-            replace_nupkg(
-                prepared,
-                build_velopack_nupkg("lib/app/solstone-windows-app.exe", b"nupkg app", false),
-            );
-            replace_portable(prepared, build_velopack_portable(b"portable different app"));
-        }
-        ContainerMutation::ManifestBaselineDiverges => {
-            rewrite_manifest_and_receipt(prepared, |evidence| {
-                evidence.packaged_executable.sha256 = "0".repeat(64);
-            });
-        }
+        ContainerMutation::InstalledAppDiverges => {}
         ContainerMutation::NupkgMemberMissing => replace_nupkg(
             prepared,
             build_velopack_nupkg("lib/app/other.exe", b"other", false),

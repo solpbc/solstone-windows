@@ -1,0 +1,30 @@
+{
+  "schema": "solstone.rust-release-finalization.v2",
+  "product": "solstone-windows",
+  "version": "0.2.11",
+  "target": "x86_64-pc-windows-msvc",
+  "source_commit": "1111111111111111111111111111111111111111",
+  "cargo_lock_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "ui_package_lock_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "companion_manifest": {
+    "filename": "solstone-windows-x86_64-pc-windows-msvc.rust-release-manifest.json",
+    "sha256": "3f4ceb1217b62973bdea1e7d82da2c842d0b01277921a6a202fc333872cfbd0d"
+  },
+  "candidate": {
+    "relative_path": "target/release-candidate/0.2.11",
+    "file_count": 7
+  },
+  "packaged_executable": {
+    "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "bytes": 1
+  },
+  "selection_record_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "signing_mode": "unsigned",
+  "advisory_database": {
+    "source_id": "sol-controlled-rustsec-mirror-v1",
+    "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "tree_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "acquired_at": "2026-07-01T00:00:00Z"
+  },
+  "advisory_checked_at": "2026-07-01T00:00:00Z"
+}

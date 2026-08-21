@@ -126,7 +126,7 @@ fn rust_release_manifest_public_surface_has_no_private_data_canaries() {
 fn rust_release_manifest_package_fixtures_exist_in_the_source_tree() {
     for relative in [
         "xtask/tests/fixtures/rust-release-manifest/manifest-mode/Solstone-0.2.11-full.nupkg",
-        "xtask/tests/fixtures/rust-release-manifest/release-dir/Solstone-0.2.11-full.nupkg",
+        "xtask/tests/fixtures/rust-release-manifest/release-candidate/0.2.11/Solstone-0.2.11-full.nupkg",
     ] {
         assert!(repo_root().join(relative).is_file(), "missing {relative}");
     }

@@ -27,15 +27,15 @@ use xtask::release_finalizer::{
     PHASE_6_BASELINE_CANDIDATE, PHASE_7_EVIDENCE, PHASE_8_PROMOTION,
 };
 use xtask::release_receipt::{
-    render_windows_native_proof_receipt, FinalizationReceipt, WindowsNativeProofReceipt,
-    FINALIZATION_RECEIPT_SCHEMA_V2, WINDOWS_NATIVE_PROOF_SCHEMA,
+    render_windows_native_proof_receipt, FinalizationReceipt, PackagedExecutableEvidence,
+    WindowsNativeProofReceipt, FINALIZATION_RECEIPT_SCHEMA_V2, WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use xtask::release_selection::{ReleaseToolSelection, SelectionMode};
 use xtask::release_signing::{SigningError, SigningGrammarStage};
 use xtask::release_source_binding::{LockFile, SourceBindingError};
 use xtask::rust_release_manifest::{
     companion_basename, expected_artifact_names, validate_manifest_bytes,
-    validate_release_dir_with_facts, PackagedExecutableEvidence, TARGET_TRIPLE,
+    validate_release_dir_with_facts, TARGET_TRIPLE,
 };
 
 #[test]
@@ -123,9 +123,16 @@ fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
     .expect("finalize signed release");
 
     assert_eq!(result.signing_mode, "signed-verified");
-    let manifest = assert_promoted_bundle(&checkout, false, "signed-verified");
+    assert_promoted_bundle(&checkout, false, "signed-verified");
+    let receipt: FinalizationReceipt = serde_json::from_slice(
+        &fs::read(checkout.root().join(format!(
+            "target/release-evidence/{VERSION}/rust-release-finalization.json"
+        )))
+        .expect("read finalization receipt"),
+    )
+    .expect("parse finalization receipt");
     assert_eq!(
-        manifest.packaged_executable.sha256,
+        receipt.packaged_executable.sha256,
         hex_sha256(SIGNED_APP_BYTES)
     );
     assert_eq!(
@@ -267,6 +274,13 @@ fn existing_native_proof_refuses_refinalization_before_deleting_prior_evidence()
         .join(format!("target/release-candidate/{VERSION}"));
     let manifest_bytes = fs::read(candidate.join(companion_basename())).expect("read manifest");
     let manifest = validate_manifest_bytes(&manifest_bytes).expect("parse manifest");
+    let finalization_receipt: FinalizationReceipt = serde_json::from_slice(
+        &fs::read(checkout.root().join(format!(
+            "target/release-evidence/{VERSION}/rust-release-finalization.json"
+        )))
+        .expect("read finalization receipt"),
+    )
+    .expect("parse finalization receipt");
     let setup_sha256 = hex_sha256(
         &fs::read(candidate.join(format!("solstone-setup-{VERSION}.exe"))).expect("read setup"),
     );
@@ -281,8 +295,9 @@ fn existing_native_proof_refuses_refinalization_before_deleting_prior_evidence()
             sha256: hex_sha256(&manifest_bytes),
         },
         setup_sha256,
-        packaged_executable_sha256: manifest.packaged_executable.sha256.clone(),
-        installed_executable_sha256: manifest.packaged_executable.sha256,
+        packaged_executable_sha256: finalization_receipt.packaged_executable.sha256.clone(),
+        packaged_executable_bytes: finalization_receipt.packaged_executable.bytes,
+        installed_executable_sha256: finalization_receipt.packaged_executable.sha256,
         install_mode: "isolated-clean".to_owned(),
         installer_success: true,
         smoke_success: true,

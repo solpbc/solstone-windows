@@ -150,7 +150,7 @@ fn transparency_entry_builder_rejects_dirty_sources_non_basename_artifacts_and_o
 
 fn fixture_manifest() -> Manifest {
     serde_json::from_slice(include_bytes!(
-        "fixtures/rust-release-manifest/release-dir/solstone-windows-x86_64-pc-windows-msvc.rust-release-manifest.json"
+        "fixtures/rust-release-manifest/release-candidate/0.2.11/solstone-windows-x86_64-pc-windows-msvc.rust-release-manifest.json"
     ))
     .unwrap()
 }

@@ -16,7 +16,7 @@ node_modules/
 /Releases/
 *.nupkg
 !xtask/tests/fixtures/rust-release-manifest/manifest-mode/Solstone-0.2.11-full.nupkg
-!xtask/tests/fixtures/rust-release-manifest/release-dir/Solstone-0.2.11-full.nupkg
+!xtask/tests/fixtures/rust-release-manifest/release-candidate/0.2.11/Solstone-0.2.11-full.nupkg
 *.Setup.exe
 
 # Captured media and segments (never committed)

@@ -26,7 +26,8 @@ use crate::release_finalizer_fs::{
 };
 use crate::release_receipt::{
     candidate_relative_path, stage_finalization_receipt, AdvisoryDatabaseReceipt, CandidateReceipt,
-    CompanionManifestReceipt, FinalizationReceipt, FINALIZATION_RECEIPT_SCHEMA_V2,
+    CompanionManifestReceipt, FinalizationReceipt, PackagedExecutableEvidence,
+    FINALIZATION_RECEIPT_SCHEMA_V2,
 };
 use crate::release_selection::{
     ManifestSafeToolProjection, ReleaseToolSelection, SelectedAction, SelectionMode,
@@ -36,9 +37,8 @@ use crate::release_signing::{
 };
 use crate::release_source_binding::{SourceBinding, SourceBindingError, SourceBindingVerifier};
 use crate::rust_release_manifest::{
-    self, companion_basename, ArtifactEvidence, BundleNames, DependencyPolicy,
-    PackagedExecutableEvidence, ReleaseEvidence, RustEvidence, TargetEvidence, PRODUCT,
-    TARGET_FEATURES, TARGET_PROFILE, TARGET_TRIPLE,
+    self, companion_basename, ArtifactEvidence, BundleNames, DependencyPolicy, ReleaseEvidence,
+    RustEvidence, TargetEvidence, PRODUCT, TARGET_FEATURES, TARGET_PROFILE, TARGET_TRIPLE,
 };
 use crate::version_gate;
 
@@ -652,7 +652,6 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             advisory_checked_at: advisory.checked_at.clone(),
         },
         active_exceptions: facts.active_exceptions.clone(),
-        packaged_executable,
         artifacts,
     };
     let manifest_bytes = rust_release_manifest::render_release_evidence(&evidence)
@@ -675,6 +674,7 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         &request.selection_record,
         signing_mode,
         &advisory,
+        packaged_executable,
     );
     let staged_receipt = stage_finalization_receipt(checkout.canonical_path(), &receipt)
         .map_err(|_| FinalizeError::ReceiptStaging)?;
@@ -1123,6 +1123,7 @@ fn finalization_receipt(
     selection_record: &[u8],
     signing_mode: &str,
     advisory: &AdvisoryProvenance,
+    packaged_executable: PackagedExecutableEvidence,
 ) -> FinalizationReceipt {
     FinalizationReceipt {
         schema: FINALIZATION_RECEIPT_SCHEMA_V2.to_owned(),
@@ -1141,6 +1142,7 @@ fn finalization_receipt(
                 .expect("finalizer version was already validated by cargo metadata"),
             file_count,
         },
+        packaged_executable,
         selection_record_sha256: sha256_hex(selection_record),
         signing_mode: signing_mode.to_owned(),
         advisory_database: AdvisoryDatabaseReceipt {

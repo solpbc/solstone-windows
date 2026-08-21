@@ -22,14 +22,14 @@ use crate::release_container::{ContainerKind, ExecutableContainerReader, Release
 use crate::release_exec::CommandRunner;
 use crate::release_finalizer_fs::create_contained_directory;
 use crate::release_receipt::{
-    candidate_relative_path, finalization_receipt_relative_path, render_finalization_receipt,
-    stage_windows_native_proof_receipt, CompanionManifestReceipt, FinalizationReceipt,
+    bind_finalization_receipt, candidate_relative_path, finalization_receipt_relative_path,
+    render_finalization_receipt, stage_windows_native_proof_receipt, CandidateBinding,
+    CompanionManifestReceipt, FinalizationReceipt, PackagedExecutableEvidence,
     WindowsNativeProofReceipt, WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use crate::release_selection::{ReleaseToolSelection, SelectedAction, SelectionMode};
 use crate::rust_release_manifest::{
-    self, companion_basename, BundleNames, CheckoutFacts, Manifest, PackagedExecutableEvidence,
-    PRODUCT, TARGET_TRIPLE,
+    self, companion_basename, BundleNames, CheckoutFacts, Manifest, PRODUCT, TARGET_TRIPLE,
 };
 
 const INSTALLED_EXECUTABLE: &str = "current/solstone-windows-app.exe";
@@ -167,7 +167,7 @@ impl fmt::Display for NativeProofError {
             },
             Self::ContainerBaseline => write!(
                 formatter,
-                "native proof nupkg or portable executable disagrees with the manifest baseline; restore both finalized containers and retry"
+                "native proof nupkg or portable executable disagrees with the finalization receipt baseline; restore both finalized containers and retry"
             ),
             Self::ProofRoot => write!(
                 formatter,
@@ -195,7 +195,7 @@ impl fmt::Display for NativeProofError {
             ),
             Self::InstalledBaselineMismatch => write!(
                 formatter,
-                "native proof installed app disagrees with the manifest and container baseline; rebuild and re-finalize both containers"
+                "native proof installed app disagrees with the finalization receipt and container baseline; rebuild and re-finalize both containers"
             ),
             Self::DumpStateInvocation => write!(
                 formatter,
@@ -336,7 +336,9 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             .map_err(|_| NativeProofError::ExecutableRead(ContainerKind::Portable))?,
     )
     .map_err(NativeProofError::ExecutableContainer)?;
-    if nupkg != manifest.packaged_executable || portable != manifest.packaged_executable {
+    if nupkg != finalization_receipt.packaged_executable
+        || portable != finalization_receipt.packaged_executable
+    {
         return Err(NativeProofError::ContainerBaseline);
     }
 
@@ -395,7 +397,7 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .read(INSTALLED_EXECUTABLE, "native proof installed executable")
         .map_err(|_| NativeProofError::InstalledAppInvalid)?;
     let installed_evidence = executable_evidence(&installed_bytes)?;
-    if installed_evidence != manifest.packaged_executable
+    if installed_evidence != finalization_receipt.packaged_executable
         || installed_evidence != nupkg
         || installed_evidence != portable
     {
@@ -429,7 +431,7 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             ("{expected_version}", manifest.version.clone()),
             (
                 "{expected_sha256}",
-                manifest.packaged_executable.sha256.clone(),
+                finalization_receipt.packaged_executable.sha256.clone(),
             ),
             (
                 "{dotnet_path}",
@@ -482,7 +484,8 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             sha256: manifest_sha256.clone(),
         },
         setup_sha256,
-        packaged_executable_sha256: manifest.packaged_executable.sha256.clone(),
+        packaged_executable_sha256: finalization_receipt.packaged_executable.sha256.clone(),
+        packaged_executable_bytes: finalization_receipt.packaged_executable.bytes,
         installed_executable_sha256: installed_evidence.sha256,
         install_mode: "isolated-clean".to_owned(),
         installer_success: true,
@@ -524,17 +527,14 @@ fn read_matching_finalization_receipt(
     let ui_lock = checkout
         .read("ui/package-lock.json", "native proof UI lock")
         .map_err(|_| NativeProofError::FinalizationReceiptMismatch)?;
-    if receipt.product != manifest.product
-        || receipt.version != manifest.version
-        || receipt.target != TARGET_TRIPLE
-        || receipt.source_commit != manifest.source_commit
-        || receipt.cargo_lock_sha256 != manifest.cargo_lock_sha256
+    let binding = CandidateBinding {
+        companion_filename: manifest_filename,
+        companion_sha256: manifest_sha256,
+        relative_path: candidate_relative,
+        file_count: candidate_file_count,
+    };
+    if bind_finalization_receipt(&receipt, manifest, &binding).is_err()
         || receipt.ui_package_lock_sha256 != sha256_hex(&ui_lock)
-        || receipt.companion_manifest.filename != manifest_filename
-        || receipt.companion_manifest.sha256 != manifest_sha256
-        || receipt.candidate.relative_path != candidate_relative
-        || receipt.candidate.file_count != candidate_file_count
-        || receipt.advisory_checked_at != manifest.dependency_policy.advisory_checked_at
         || candidate.canonical_path() != checkout.canonical_path().join(candidate_relative)
     {
         return Err(NativeProofError::FinalizationReceiptMismatch);

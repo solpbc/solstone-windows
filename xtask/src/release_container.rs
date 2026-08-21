@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::artifact_fs::{check_case_collision, validate_relative_path};
-use crate::rust_release_manifest::PackagedExecutableEvidence;
+use crate::release_receipt::PackagedExecutableEvidence;
 
 const NUPKG_EXECUTABLE: &str = "lib/app/solstone-windows-app.exe";
 const PORTABLE_EXECUTABLE: &str = "current/solstone-windows-app.exe";

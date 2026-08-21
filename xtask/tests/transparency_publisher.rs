@@ -1466,8 +1466,9 @@ fn transparency_proof_product_and_head_log_faults_fail_closed() {
             sha256: xtask::transparency_format::transparency_sha256_hex(&companion_bytes),
         },
         setup_sha256,
-        packaged_executable_sha256: manifest.packaged_executable.sha256.clone(),
-        installed_executable_sha256: manifest.packaged_executable.sha256.clone(),
+        packaged_executable_sha256: "3".repeat(64),
+        packaged_executable_bytes: 1,
+        installed_executable_sha256: "3".repeat(64),
         install_mode: "isolated-clean".to_owned(),
         installer_success: true,
         smoke_success: true,
@@ -2775,7 +2776,8 @@ fn repo_root() -> PathBuf {
 }
 
 fn fixture_release_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust-release-manifest/release-dir")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/rust-release-manifest/release-candidate/0.2.11")
 }
 
 fn temporary_root(label: &str) -> PathBuf {

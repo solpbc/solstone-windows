@@ -6,8 +6,8 @@ use std::io::{Cursor, Write};
 use xtask::release_container::{
     compare_executable_baseline, ContainerKind, ExecutableContainerReader, ReleaseContainerError,
 };
+use xtask::release_receipt::PackagedExecutableEvidence;
 use xtask::release_selection::PORTABLE_LAUNCHER;
-use xtask::rust_release_manifest::PackagedExecutableEvidence;
 use zip::write::{SimpleFileOptions, ZipWriter};
 use zip::{CompressionMethod, ZipArchive};
 

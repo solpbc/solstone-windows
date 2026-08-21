@@ -10,8 +10,9 @@ use xtask::release_clock::{Clock, FixedClock};
 use xtask::release_receipt::{
     render_finalization_receipt, render_windows_native_proof_receipt, stage_finalization_receipt,
     stage_windows_native_proof_receipt, AdvisoryDatabaseReceipt, CandidateReceipt,
-    CompanionManifestReceipt, FinalizationReceipt, ReceiptError, WindowsNativeProofReceipt,
-    FINALIZATION_RECEIPT_SCHEMA, FINALIZATION_RECEIPT_SCHEMA_V2, WINDOWS_NATIVE_PROOF_SCHEMA,
+    CompanionManifestReceipt, FinalizationReceipt, PackagedExecutableEvidence, ReceiptError,
+    WindowsNativeProofReceipt, FINALIZATION_RECEIPT_SCHEMA, FINALIZATION_RECEIPT_SCHEMA_V2,
+    WINDOWS_NATIVE_PROOF_SCHEMA,
 };
 use xtask::rust_release_manifest::{companion_basename, PRODUCT, TARGET_TRIPLE};
 
@@ -66,6 +67,10 @@ fn finalization_receipt_for(schema: &str, source_id: &str) -> FinalizationReceip
             relative_path: "target/release-candidate/0.2.11".to_owned(),
             file_count: 7,
         },
+        packaged_executable: PackagedExecutableEvidence {
+            sha256: "3".repeat(64),
+            bytes: 1,
+        },
         selection_record_sha256: "d".repeat(64),
         signing_mode: "signed-verified".to_owned(),
         advisory_database: AdvisoryDatabaseReceipt {
@@ -99,6 +104,7 @@ fn native_proof_receipt(proved_at: &str) -> WindowsNativeProofReceipt {
         companion_manifest: companion(),
         setup_sha256: "2".repeat(64),
         packaged_executable_sha256: "3".repeat(64),
+        packaged_executable_bytes: 1,
         installed_executable_sha256: "3".repeat(64),
         install_mode: "isolated-clean".to_owned(),
         installer_success: true,
@@ -129,6 +135,10 @@ fn finalization_receipt_render_is_byte_exact_and_canonical() {
         "  \"candidate\": {\n",
         "    \"relative_path\": \"target/release-candidate/0.2.11\",\n",
         "    \"file_count\": 7\n",
+        "  },\n",
+        "  \"packaged_executable\": {\n",
+        "    \"sha256\": \"3333333333333333333333333333333333333333333333333333333333333333\",\n",
+        "    \"bytes\": 1\n",
         "  },\n",
         "  \"selection_record_sha256\": \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\n",
         "  \"signing_mode\": \"signed-verified\",\n",
@@ -196,8 +206,42 @@ fn finalization_receipt_schema_selects_the_advisory_source_authority() {
         finalization_receipt_for("solstone.rust-release-finalization.v3", MIRROR_COHORT_ID);
     assert!(matches!(
         render_finalization_receipt(&unknown),
-        Err(ReceiptError::InvalidField { field: "schema" })
+        Err(ReceiptError::FinalizationSchemaViolation)
     ));
+}
+
+#[test]
+fn finalization_receipt_schema_rejects_zero_packaged_executable_bytes_before_typed_checks() {
+    let mut receipt = finalization_receipt();
+    receipt.packaged_executable.bytes = 0;
+    assert_eq!(
+        render_finalization_receipt(&receipt),
+        Err(ReceiptError::FinalizationSchemaViolation)
+    );
+}
+
+#[test]
+fn finalization_receipt_schema_rejects_malformed_packaged_executable_hash() {
+    let mut receipt = finalization_receipt();
+    receipt.packaged_executable.sha256 = "A".repeat(64);
+    assert_eq!(
+        render_finalization_receipt(&receipt),
+        Err(ReceiptError::FinalizationSchemaViolation)
+    );
+}
+
+#[test]
+fn finalization_receipt_type_rejects_missing_and_unknown_packaged_executable_fields() {
+    let mut missing = serde_json::to_value(finalization_receipt()).unwrap();
+    missing["packaged_executable"]
+        .as_object_mut()
+        .unwrap()
+        .remove("bytes");
+    assert!(serde_json::from_value::<FinalizationReceipt>(missing).is_err());
+
+    let mut unknown = serde_json::to_value(finalization_receipt()).unwrap();
+    unknown["packaged_executable"]["unknown"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<FinalizationReceipt>(unknown).is_err());
 }
 
 #[test]
@@ -218,6 +262,7 @@ fn native_proof_render_is_byte_exact_and_time_is_injected() {
         "  },\n",
         "  \"setup_sha256\": \"2222222222222222222222222222222222222222222222222222222222222222\",\n",
         "  \"packaged_executable_sha256\": \"3333333333333333333333333333333333333333333333333333333333333333\",\n",
+        "  \"packaged_executable_bytes\": 1,\n",
         "  \"installed_executable_sha256\": \"3333333333333333333333333333333333333333333333333333333333333333\",\n",
         "  \"install_mode\": \"isolated-clean\",\n",
         "  \"installer_success\": true,\n",

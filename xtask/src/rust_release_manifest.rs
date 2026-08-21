@@ -20,12 +20,31 @@ use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{self, ArtifactFsError, UnixModePolicy};
 use crate::release_exec::CommandRunner;
+use crate::release_receipt::{
+    bind_finalization_receipt, candidate_relative_path, render_finalization_receipt,
+    CandidateBinding, FinalizationReceipt, FINALIZATION_RECEIPT_FILENAME,
+};
 use crate::release_source_binding::SourceBinding;
 use crate::version_gate;
 
-pub const SCHEMA_SHA256: &str = "82b5233a26131d9f35beb8a94a02f686556cde2a977614a75d5a7866ace75080";
-pub const SCHEMA_ID: &str = "https://solpbc.org/schemas/rust-release-manifest/v1.json";
-pub const SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SharedSchemaImport {
+    pub schema_id: &'static str,
+    pub sha256: &'static str,
+    pub dialect: &'static str,
+    pub schema_version: u64,
+    pub schema_path: &'static str,
+    pub vendor_root: &'static str,
+}
+
+pub const RUST_RELEASE_MANIFEST_V1_IMPORT: SharedSchemaImport = SharedSchemaImport {
+    schema_id: "https://solpbc.org/schemas/rust-release-manifest/v1.json",
+    sha256: "d4eabf52bcc68b56945912d351f818e5444fe8c6461cb5c48b096f87b17a875c",
+    dialect: "https://json-schema.org/draft/2020-12/schema",
+    schema_version: 1,
+    schema_path: "v1.json",
+    vendor_root: "schemas/rust-release-manifest",
+};
 pub const PRODUCT: &str = "solstone-windows";
 pub const TARGET_TRIPLE: &str = "x86_64-pc-windows-msvc";
 pub const TARGET_PROFILE: &str = "release";
@@ -155,7 +174,6 @@ pub struct Manifest {
     pub native_tools: BTreeMap<String, String>,
     pub dependency_policy: DependencyPolicy,
     pub active_exceptions: Vec<String>,
-    pub packaged_executable: PackagedExecutableEvidence,
     pub artifacts: Vec<ArtifactEvidence>,
 }
 
@@ -191,13 +209,6 @@ pub struct DependencyPolicy {
 #[serde(deny_unknown_fields)]
 pub struct ArtifactEvidence {
     pub path: String,
-    pub sha256: String,
-    pub bytes: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct PackagedExecutableEvidence {
     pub sha256: String,
     pub bytes: u64,
 }
@@ -244,7 +255,6 @@ pub struct ReleaseEvidence {
     pub native_tools: BTreeMap<String, String>,
     pub dependency_policy: DependencyPolicy,
     pub active_exceptions: Vec<String>,
-    pub packaged_executable: PackagedExecutableEvidence,
     pub artifacts: Vec<ArtifactEvidence>,
 }
 
@@ -262,7 +272,6 @@ impl From<Manifest> for ReleaseEvidence {
             native_tools: manifest.native_tools,
             dependency_policy: manifest.dependency_policy,
             active_exceptions: manifest.active_exceptions,
-            packaged_executable: manifest.packaged_executable,
             artifacts: manifest.artifacts,
         }
     }
@@ -285,11 +294,14 @@ pub struct ClassifierReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ManifestError {
     Usage,
-    SchemaDigestMismatch,
-    SchemaIdentityMismatch,
+    SchemaImportMismatch {
+        coordinate: &'static str,
+    },
+    FinalizationReceiptBinding {
+        coordinate: &'static str,
+    },
     SchemaCompile,
     SchemaViolation,
-    SchemaFileMismatch,
     ManifestJsonMalformed,
     ProductMismatch,
     VersionMismatch,
@@ -298,7 +310,6 @@ pub enum ManifestError {
         commit: String,
     },
     CargoLockMismatch,
-    PackagedExecutableInvalid,
     RustcEvidenceMismatch,
     CargoVersionMismatch,
     TargetKindMismatch,
@@ -386,11 +397,14 @@ impl fmt::Display for ManifestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::Usage => "select exactly one rust-release-manifest check mode",
-            Self::SchemaDigestMismatch => "embedded release-manifest schema digest mismatch",
-            Self::SchemaIdentityMismatch => "embedded release-manifest schema identity mismatch",
+            Self::SchemaImportMismatch { coordinate } => {
+                return write!(f, "release-manifest shared schema import does not match its frozen {coordinate} coordinate; restore the vendored authority bytes and import contract");
+            }
+            Self::FinalizationReceiptBinding { coordinate } => {
+                return write!(f, "release finalization receipt does not bind this candidate at {coordinate}; restore the receipt emitted with the finalized candidate");
+            }
             Self::SchemaCompile => "embedded release-manifest schema failed to compile",
             Self::SchemaViolation => "candidate does not satisfy the release-manifest schema",
-            Self::SchemaFileMismatch => "vendored schema bytes differ from embedded schema bytes",
             Self::ManifestJsonMalformed => "candidate manifest is not valid JSON",
             Self::ProductMismatch => "manifest product does not match checkout authority",
             Self::VersionMismatch => "manifest version does not match checkout authority",
@@ -401,9 +415,6 @@ impl fmt::Display for ManifestError {
                 return write!(f, "checkout at commit {commit} has uncommitted source changes");
             }
             Self::CargoLockMismatch => "manifest lock digest does not match checkout authority",
-            Self::PackagedExecutableInvalid => {
-                "manifest packaged executable baseline is invalid; rebuild both containers and render evidence from the verified executable digest and positive byte count"
-            }
             Self::RustcEvidenceMismatch => {
                 "manifest rustc evidence does not match the canonical projection"
             }
@@ -523,20 +534,11 @@ fn compiled_schema() -> Result<&'static Validator, ManifestError> {
 }
 
 fn compile_schema() -> Result<Validator, ManifestError> {
-    if sha256_hex(SCHEMA_BYTES) != SCHEMA_SHA256 {
-        return Err(ManifestError::SchemaDigestMismatch);
-    }
-    let schema: Value =
-        serde_json::from_slice(SCHEMA_BYTES).map_err(|_| ManifestError::SchemaIdentityMismatch)?;
-    if schema.get("$id").and_then(Value::as_str) != Some(SCHEMA_ID)
-        || schema.get("$schema").and_then(Value::as_str) != Some(SCHEMA_DIALECT)
-    {
-        return Err(ManifestError::SchemaIdentityMismatch);
-    }
+    let schema = verify_schema_import_bytes(SCHEMA_BYTES, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
     compile_schema_value(&schema)
 }
 
-fn compile_schema_value(schema: &Value) -> Result<Validator, ManifestError> {
+pub(crate) fn compile_schema_value(schema: &Value) -> Result<Validator, ManifestError> {
     jsonschema::draft202012::options()
         .with_pattern_options(PatternOptions::fancy_regex())
         .should_validate_formats(true)
@@ -545,13 +547,78 @@ fn compile_schema_value(schema: &Value) -> Result<Validator, ManifestError> {
         .map_err(|_| ManifestError::SchemaCompile)
 }
 
-pub fn verify_vendored_schema(root: &Path) -> Result<(), ManifestError> {
-    let bytes = fs::read(root.join("schemas/rust-release-manifest/v1.json"))
-        .map_err(|_| ManifestError::SchemaFileMismatch)?;
-    if bytes != SCHEMA_BYTES || sha256_hex(&bytes) != SCHEMA_SHA256 {
-        return Err(ManifestError::SchemaFileMismatch);
+pub fn verify_schema_import(
+    root: &Path,
+    contract: &SharedSchemaImport,
+) -> Result<(), ManifestError> {
+    let vendor_root = Path::new(contract.vendor_root);
+    if !vendor_root.is_relative()
+        || vendor_root
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "vendor_root",
+        });
     }
+    let vendor_root = root.join(vendor_root);
+    if !vendor_root.is_dir() {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "vendor_root",
+        });
+    }
+    let schema_path = Path::new(contract.schema_path);
+    if !schema_path.is_relative()
+        || schema_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "schema_path",
+        });
+    }
+    let bytes = fs::read(vendor_root.join(schema_path)).map_err(|_| {
+        ManifestError::SchemaImportMismatch {
+            coordinate: "schema_path",
+        }
+    })?;
+    verify_schema_import_bytes(&bytes, contract)?;
     compiled_schema().map(|_| ())
+}
+
+fn verify_schema_import_bytes(
+    bytes: &[u8],
+    contract: &SharedSchemaImport,
+) -> Result<Value, ManifestError> {
+    if sha256_hex(bytes) != contract.sha256 {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "sha256",
+        });
+    }
+    let schema: Value =
+        serde_json::from_slice(bytes).map_err(|_| ManifestError::SchemaImportMismatch {
+            coordinate: "schema_id",
+        })?;
+    if schema.get("$id").and_then(Value::as_str) != Some(contract.schema_id) {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "schema_id",
+        });
+    }
+    if schema.get("$schema").and_then(Value::as_str) != Some(contract.dialect) {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "dialect",
+        });
+    }
+    if schema
+        .pointer("/properties/schema_version/const")
+        .and_then(Value::as_u64)
+        != Some(contract.schema_version)
+    {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "schema_version",
+        });
+    }
+    Ok(schema)
 }
 
 pub fn validate_manifest_bytes(bytes: &[u8]) -> Result<Manifest, ManifestError> {
@@ -973,12 +1040,6 @@ pub fn validate_semantic_binding(
     if manifest.cargo_lock_sha256 != facts.cargo_lock_sha256 {
         return Err(ManifestError::CargoLockMismatch);
     }
-    if manifest.packaged_executable.bytes == 0
-        || manifest.packaged_executable.sha256.len() != 64
-        || !is_lower_hex(&manifest.packaged_executable.sha256)
-    {
-        return Err(ManifestError::PackagedExecutableInvalid);
-    }
     if manifest.rust.rustc_verbose.as_bytes() != facts.rustc_verbose.as_bytes() {
         return Err(ManifestError::RustcEvidenceMismatch);
     }
@@ -1080,18 +1141,6 @@ pub fn render_release_evidence(evidence: &ReleaseEvidence) -> Result<Vec<u8>, Ma
     if evidence.cargo_lock_sha256.len() != 64 || !is_lower_hex(&evidence.cargo_lock_sha256) {
         return Err(ManifestError::EvidenceInvalid {
             field: "cargo_lock_sha256",
-        });
-    }
-    if evidence.packaged_executable.bytes == 0 {
-        return Err(ManifestError::EvidenceInvalid {
-            field: "packaged_executable.bytes",
-        });
-    }
-    if evidence.packaged_executable.sha256.len() != 64
-        || !is_lower_hex(&evidence.packaged_executable.sha256)
-    {
-        return Err(ManifestError::EvidenceInvalid {
-            field: "packaged_executable.sha256",
         });
     }
     if !features
@@ -1317,6 +1366,103 @@ pub fn validate_release_dir_with_facts_detailed(
         },
         manifest,
     ))
+}
+
+pub fn validate_release_dir_finalization_receipt_with_facts(
+    root: &Path,
+    release_dir: &Path,
+    facts: &CheckoutFacts,
+) -> Result<ClassifierReport, ManifestError> {
+    verify_schema_import(root, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
+    let (report, manifest) = validate_release_dir_with_facts_detailed(release_dir, facts)?;
+    let candidate = artifact_fs::ContainedRoot::new(
+        release_dir,
+        "release directory",
+        UnixModePolicy::AllowExecute,
+    )?;
+    let version_directory = candidate
+        .canonical_path()
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or(ManifestError::FinalizationReceiptBinding {
+            coordinate: "candidate.directory",
+        })?;
+    if version_directory != manifest.version {
+        return Err(ManifestError::FinalizationReceiptBinding {
+            coordinate: "candidate.directory",
+        });
+    }
+    let candidate_root =
+        candidate
+            .canonical_path()
+            .parent()
+            .ok_or(ManifestError::FinalizationReceiptBinding {
+                coordinate: "candidate.parent",
+            })?;
+    if candidate_root.file_name().and_then(OsStr::to_str) != Some("release-candidate") {
+        return Err(ManifestError::FinalizationReceiptBinding {
+            coordinate: "candidate.parent",
+        });
+    }
+    let layout_root = candidate_root
+        .parent()
+        .ok_or(ManifestError::FinalizationReceiptBinding {
+            coordinate: "candidate.parent",
+        })?;
+    let evidence_root = artifact_fs::ContainedRoot::new(
+        layout_root,
+        "release evidence layout root",
+        UnixModePolicy::AllowExecute,
+    )?;
+    let receipt_relative = format!(
+        "release-evidence/{}/{}",
+        manifest.version, FINALIZATION_RECEIPT_FILENAME
+    );
+    let receipt_bytes = evidence_root
+        .read(&receipt_relative, "release finalization receipt")
+        .map_err(|_| ManifestError::FinalizationReceiptBinding {
+            coordinate: "receipt",
+        })?;
+    let receipt: FinalizationReceipt = serde_json::from_slice(&receipt_bytes).map_err(|_| {
+        ManifestError::FinalizationReceiptBinding {
+            coordinate: "receipt",
+        }
+    })?;
+    if render_finalization_receipt(&receipt).map_err(|_| {
+        ManifestError::FinalizationReceiptBinding {
+            coordinate: "receipt",
+        }
+    })? != receipt_bytes
+    {
+        return Err(ManifestError::FinalizationReceiptBinding {
+            coordinate: "receipt",
+        });
+    }
+    let manifest_filename = companion_basename();
+    let manifest_bytes = candidate
+        .read(&manifest_filename, "release companion manifest")
+        .map_err(|_| ManifestError::FinalizationReceiptBinding {
+            coordinate: "companion_manifest.sha256",
+        })?;
+    let candidate_relative = candidate_relative_path(&manifest.version).map_err(|_| {
+        ManifestError::FinalizationReceiptBinding {
+            coordinate: "candidate.relative_path",
+        }
+    })?;
+    let manifest_sha256 = sha256_hex(&manifest_bytes);
+    let binding = CandidateBinding {
+        companion_filename: &manifest_filename,
+        companion_sha256: &manifest_sha256,
+        relative_path: &candidate_relative,
+        file_count: u64::try_from(report.artifact_count + 1).map_err(|_| {
+            ManifestError::FinalizationReceiptBinding {
+                coordinate: "candidate.file_count",
+            }
+        })?,
+    };
+    bind_finalization_receipt(&receipt, &manifest, &binding)
+        .map_err(|coordinate| ManifestError::FinalizationReceiptBinding { coordinate })?;
+    Ok(report)
 }
 
 fn read_manifest(
@@ -1729,20 +1875,21 @@ pub fn run_check(
         (None, None) => run_self_check(root),
         (Some(_), Some(_)) => Err(ManifestError::Usage),
         (Some(path), None) => {
+            verify_schema_import(root, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
             let facts = gather_checkout_facts(root, cargo, git)?;
             validate_manifest_with_facts(&PathBuf::from(path), &facts)
         }
         (None, Some(path)) => {
             let facts = gather_checkout_facts(root, cargo, git)?;
-            validate_release_dir_with_facts(&PathBuf::from(path), &facts)
+            validate_release_dir_finalization_receipt_with_facts(root, &PathBuf::from(path), &facts)
         }
     }
 }
 
 pub fn run_self_check(root: &Path) -> Result<ClassifierReport, ManifestError> {
-    verify_vendored_schema(root)?;
+    verify_schema_import(root, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
     let fixture = root.join(FIXTURE_ROOT);
-    let release_dir = fixture.join("release-dir");
+    let release_dir = fixture.join("release-candidate/0.2.11");
     let resolver = artifact_fs::ContainedRoot::new(
         &release_dir,
         "release directory",
@@ -1758,7 +1905,8 @@ pub fn run_self_check(root: &Path) -> Result<ClassifierReport, ManifestError> {
     )?;
     manifest_fixture.resolve(&names.full, "manifest fixture full package")?;
     let facts = fixture_facts(root, &manifest)?;
-    let release_report = validate_release_dir_with_facts(&release_dir, &facts)?;
+    let release_report =
+        validate_release_dir_finalization_receipt_with_facts(root, &release_dir, &facts)?;
     validate_manifest_with_facts(&fixture.join("manifest-mode/manifest.json"), &facts)?;
 
     let evidence = ReleaseEvidence::from(manifest.clone());

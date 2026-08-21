@@ -28,7 +28,7 @@ for tool in gh wrangler scp; do
   chmod +x "$fake"
 done
 
-release_dir="$repo_root/xtask/tests/fixtures/rust-release-manifest/release-dir"
+release_dir="$repo_root/xtask/tests/fixtures/rust-release-manifest/release-candidate/0.2.11"
 if output=$(PATH="$fake_bin:$PATH" \
   TRANSPARENCY_GUARD_WITNESS="$witness" \
   MAKEFLAGS= \
