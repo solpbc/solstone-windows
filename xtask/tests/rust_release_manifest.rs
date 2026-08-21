@@ -270,6 +270,8 @@ where
 #[test]
 fn rust_release_manifest_schema_is_exact_and_compiles_unchanged() {
     let bytes = fs::read(repo_root().join("schemas/rust-release-manifest/v1.json")).unwrap();
+    let import_contract =
+        fs::read(repo_root().join("contracts/rust-release-manifest-import.json")).unwrap();
     assert_eq!(bytes.len(), 4_416);
     assert_eq!(
         RUST_RELEASE_MANIFEST_V1_IMPORT.sha256,
@@ -278,6 +280,10 @@ fn rust_release_manifest_schema_is_exact_and_compiles_unchanged() {
     assert_eq!(
         lower_hex(&Sha256::digest(&bytes)),
         RUST_RELEASE_MANIFEST_V1_IMPORT.sha256
+    );
+    assert_eq!(
+        rust_release_manifest::parse_shared_schema_import_contract(&import_contract),
+        Ok(RUST_RELEASE_MANIFEST_V1_IMPORT)
     );
     rust_release_manifest::verify_schema_import(&repo_root(), &RUST_RELEASE_MANIFEST_V1_IMPORT)
         .unwrap();
@@ -302,6 +308,51 @@ fn rust_release_manifest_import_contract_rejects_each_coordinate_and_vendored_dr
         vendor_root.join(RUST_RELEASE_MANIFEST_V1_IMPORT.schema_path),
     )
     .unwrap();
+
+    let descriptor: Value = serde_json::from_slice(
+        &fs::read(repo_root().join("contracts/rust-release-manifest-import.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(descriptor.as_object().unwrap().len(), 6);
+    for (field, value, coordinate) in [
+        (
+            "schema_id",
+            json!("https://example.invalid/wrong.json"),
+            "schema_id",
+        ),
+        ("schema_sha256", json!("0"), "sha256"),
+        (
+            "schema_dialect",
+            json!("https://example.invalid/draft"),
+            "dialect",
+        ),
+        ("schema_version", json!(2), "schema_version"),
+        ("schema_path", json!("missing.json"), "schema_path"),
+        (
+            "vendored_root",
+            json!("schemas/missing-vendor-root"),
+            "vendor_root",
+        ),
+    ] {
+        let mut mutated = descriptor.clone();
+        mutated[field] = value;
+        assert_eq!(
+            rust_release_manifest::parse_shared_schema_import_contract(
+                &serde_json::to_vec(&mutated).unwrap()
+            ),
+            Err(ManifestError::SchemaImportMismatch { coordinate })
+        );
+    }
+    let mut extended = descriptor.clone();
+    extended["ignored"] = json!(true);
+    assert_eq!(
+        rust_release_manifest::parse_shared_schema_import_contract(
+            &serde_json::to_vec(&extended).unwrap()
+        ),
+        Err(ManifestError::SchemaImportMismatch {
+            coordinate: "schema_id"
+        })
+    );
 
     let cases = [
         (

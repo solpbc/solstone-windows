@@ -53,6 +53,8 @@ pub const MANIFEST_DISCLAIMER: &str =
     "MANIFEST mode verifies named sibling bytes; this is not a complete/publishable-directory classification.";
 
 const SCHEMA_BYTES: &[u8] = include_bytes!("../../schemas/rust-release-manifest/v1.json");
+const SHARED_SCHEMA_IMPORT_CONTRACT_BYTES: &[u8] =
+    include_bytes!("../../contracts/rust-release-manifest-import.json");
 const RELEASE_TOOLCHAIN_PATH: &str = "packaging/release-toolchain.json";
 const DENY_PATH: &str = "deny.toml";
 const CARGO_LOCK_PATH: &str = "Cargo.lock";
@@ -534,7 +536,44 @@ fn compiled_schema() -> Result<&'static Validator, ManifestError> {
 }
 
 fn compile_schema() -> Result<Validator, ManifestError> {
-    compile_schema_with_import(&RUST_RELEASE_MANIFEST_V1_IMPORT)
+    let contract = shared_schema_import()?;
+    compile_schema_with_import(&contract)
+}
+
+fn shared_schema_import() -> Result<SharedSchemaImport, ManifestError> {
+    parse_shared_schema_import_contract(SHARED_SCHEMA_IMPORT_CONTRACT_BYTES)
+}
+
+pub fn parse_shared_schema_import_contract(
+    bytes: &[u8],
+) -> Result<SharedSchemaImport, ManifestError> {
+    let descriptor: Map<String, Value> =
+        serde_json::from_slice(bytes).map_err(|_| ManifestError::SchemaImportMismatch {
+            coordinate: "schema_id",
+        })?;
+    if descriptor.len() != 6 {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "schema_id",
+        });
+    }
+    let expected = RUST_RELEASE_MANIFEST_V1_IMPORT;
+    for (field, value, coordinate) in [
+        ("schema_id", expected.schema_id, "schema_id"),
+        ("schema_sha256", expected.sha256, "sha256"),
+        ("schema_dialect", expected.dialect, "dialect"),
+        ("schema_path", expected.schema_path, "schema_path"),
+        ("vendored_root", expected.vendor_root, "vendor_root"),
+    ] {
+        if descriptor.get(field).and_then(Value::as_str) != Some(value) {
+            return Err(ManifestError::SchemaImportMismatch { coordinate });
+        }
+    }
+    if descriptor.get("schema_version").and_then(Value::as_u64) != Some(expected.schema_version) {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "schema_version",
+        });
+    }
+    Ok(expected)
 }
 
 pub fn compile_schema_with_import(
@@ -1392,7 +1431,8 @@ pub fn validate_release_dir_finalization_receipt_with_facts(
     release_dir: &Path,
     facts: &CheckoutFacts,
 ) -> Result<ClassifierReport, ManifestError> {
-    verify_schema_import(root, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
+    let contract = shared_schema_import()?;
+    verify_schema_import(root, &contract)?;
     let (report, manifest) = validate_release_dir_with_facts_detailed(release_dir, facts)?;
     let candidate = artifact_fs::ContainedRoot::new(
         release_dir,
@@ -1894,7 +1934,8 @@ pub fn run_check(
         (None, None) => run_self_check(root),
         (Some(_), Some(_)) => Err(ManifestError::Usage),
         (Some(path), None) => {
-            verify_schema_import(root, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
+            let contract = shared_schema_import()?;
+            verify_schema_import(root, &contract)?;
             let facts = gather_checkout_facts(root, cargo, git)?;
             validate_manifest_with_facts(&PathBuf::from(path), &facts)
         }
@@ -1906,7 +1947,8 @@ pub fn run_check(
 }
 
 pub fn run_self_check(root: &Path) -> Result<ClassifierReport, ManifestError> {
-    verify_schema_import(root, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
+    let contract = shared_schema_import()?;
+    verify_schema_import(root, &contract)?;
     let fixture = root.join(FIXTURE_ROOT);
     let release_dir = fixture.join("release-candidate/0.2.11");
     let resolver = artifact_fs::ContainedRoot::new(
