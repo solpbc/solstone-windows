@@ -30,7 +30,7 @@ use crate::observe::{DialCounts, OperationObserver};
 use args::{ArgError, Command};
 use report::{Artifact, Dials, Evidence, Failure, Outcome, Phase};
 
-pub use args::{is_selected, Operation, HELP, MODE_FLAG};
+pub use args::{is_selected, Carrier, Operation, HELP, MODE_FLAG};
 pub use report::SCHEMA_VERSION;
 
 /// Facts only the binary knows. The library never guesses at the executable, the
@@ -191,27 +191,33 @@ fn dial_maximum_failure(counts: DialCounts, max_dials: Option<u64>) -> Option<Fa
     })
 }
 
-/// The path assertion `roundtrip`, `fetch`, and `upload` all apply: the observed
-/// path must be the production relay, with zero direct-path successes.
-///
-/// Public because it is the single place that decides whether dial evidence
-/// counts as relay-carried, and that decision is worth asserting directly.
-pub fn relay_path_failure(counts: DialCounts) -> Option<Failure> {
-    if counts.direct_successes > 0 {
-        return Some(Failure::assertion(
+/// Check that the carrier requested by the operator, and only that carrier,
+/// produced a successful production dial.
+pub fn carrier_path_failure(requested: Carrier, counts: DialCounts) -> Option<Failure> {
+    match requested {
+        Carrier::Direct if counts.direct_successes > 0 && counts.relay_successes == 0 => None,
+        Carrier::Relay if counts.relay_successes > 0 && counts.direct_successes == 0 => None,
+        Carrier::Direct if counts.relay_successes > 0 => Some(Failure::assertion(
+            Phase::Assert,
+            "relay_path_success",
+            "a relay-path request succeeded; --carrier direct requires only direct-path success",
+        )),
+        Carrier::Relay if counts.direct_successes > 0 => Some(Failure::assertion(
             Phase::Assert,
             "direct_path_success",
-            "a direct-path request succeeded; this operation must exercise the relay, so make the journal unreachable on the LAN",
-        ));
-    }
-    if counts.relay_successes == 0 {
-        return Some(Failure::assertion(
+            "a direct-path request succeeded; --carrier relay requires only relay-path success",
+        )),
+        Carrier::Direct => Some(Failure::assertion(
+            Phase::Assert,
+            "direct_path_not_observed",
+            "no direct-path request succeeded, so there is no evidence direct carried this operation",
+        )),
+        Carrier::Relay => Some(Failure::assertion(
             Phase::Assert,
             "relay_path_not_observed",
-            "no relay-path request succeeded, so there is no evidence the relay carried this operation",
-        ));
+            "no relay-path request succeeded, so there is no evidence relay carried this operation",
+        )),
     }
-    None
 }
 
 pub(crate) fn elapsed_ms(started: Instant) -> u64 {
@@ -351,7 +357,7 @@ mod tests {
             request_bytes_sent: 0,
             close_completed: true,
         };
-        let failure = relay_path_failure(direct).unwrap();
+        let failure = carrier_path_failure(Carrier::Relay, direct).unwrap();
         assert_eq!(failure.exit_code(), report::EXIT_ASSERTION_FAILED);
 
         let nothing = DialCounts {
@@ -362,7 +368,7 @@ mod tests {
             close_completed: false,
         };
         assert!(
-            relay_path_failure(nothing).is_some(),
+            carrier_path_failure(Carrier::Relay, nothing).is_some(),
             "no relay success is not evidence of a relay path"
         );
 
@@ -373,7 +379,8 @@ mod tests {
             request_bytes_sent: 0,
             close_completed: true,
         };
-        assert!(relay_path_failure(relay).is_none());
+        assert!(carrier_path_failure(Carrier::Relay, relay).is_none());
+        assert!(carrier_path_failure(Carrier::Direct, direct).is_none());
     }
 
     #[test]

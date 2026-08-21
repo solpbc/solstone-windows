@@ -62,7 +62,24 @@ pub enum OperationArgs {
         payload: PathBuf,
         day: String,
         segment: String,
+        carrier: Carrier,
     },
+}
+
+/// The carrier an operator requires the upload gate to observe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carrier {
+    Direct,
+    Relay,
+}
+
+impl Carrier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Relay => "relay",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +207,25 @@ fn parse_segment(value: &str, operation: &'static str) -> Result<String, ArgErro
     Ok(value.to_string())
 }
 
+fn parse_carrier<S: AsRef<str>>(args: &[S], operation: &'static str) -> Result<Carrier, ArgError> {
+    let Some(value) = value_after(args, "--carrier") else {
+        return Err(ArgError::new(
+            "carrier_missing",
+            operation,
+            "upload requires --carrier direct or --carrier relay",
+        ));
+    };
+    match value {
+        "direct" => Ok(Carrier::Direct),
+        "relay" => Ok(Carrier::Relay),
+        _ => Err(ArgError::new(
+            "carrier_invalid",
+            operation,
+            "--carrier accepts exactly: direct, relay",
+        )),
+    }
+}
+
 /// Parse the whole mode invocation. `args` is the process argument list with the
 /// executable already stripped.
 pub fn parse<S: AsRef<str>>(args: &[S]) -> Result<Command, ArgError> {
@@ -297,6 +333,7 @@ pub fn parse<S: AsRef<str>>(args: &[S]) -> Result<Command, ArgError> {
             payload: PathBuf::from(required(args, "--payload", name)?),
             day: parse_day(required(args, "--day", name)?, name)?,
             segment: parse_segment(required(args, "--segment", name)?, name)?,
+            carrier: parse_carrier(args, name)?,
         },
     };
 
@@ -336,6 +373,7 @@ upload flags:
   --payload <path>         file to send as the segment's only member
   --day <YYYYMMDD>         caller-named day
   --segment <HHMMSS_LEN>   caller-named segment key
+  --carrier <direct|relay> required carrier the successful custody witness must show
 
 Exactly one JSON object is written to stdout; progress goes to stderr.
 Exit: 0 pass, 1 assertion failed, 2 error, 3 deadline exceeded.";
@@ -523,6 +561,8 @@ mod tests {
             "20260617",
             "--segment",
             "143000_300",
+            "--carrier",
+            "direct",
         ]))
         .unwrap();
         assert_eq!(
@@ -531,6 +571,7 @@ mod tests {
                 payload: PathBuf::from("/tmp/x.bin"),
                 day: "20260617".to_string(),
                 segment: "143000_300".to_string(),
+                carrier: Carrier::Direct,
             }
         );
 
@@ -554,10 +595,36 @@ mod tests {
                 day,
                 "--segment",
                 segment,
+                "--carrier",
+                "relay",
             ]))
             .unwrap_err();
             assert_eq!(error.reason, "arg_bad_value", "{day} {segment}");
         }
+    }
+
+    #[test]
+    fn upload_requires_a_named_valid_carrier() {
+        let base = [
+            "--integration",
+            "upload",
+            "--deadline-secs",
+            "60",
+            "--payload",
+            "/var/tmp/payload.bin",
+            "--day",
+            "20260617",
+            "--segment",
+            "143000_300",
+        ];
+        assert_eq!(parse(&args(&base)).unwrap_err().reason, "carrier_missing");
+        let mut invalid = base.to_vec();
+        invalid.extend(["--carrier", "lan"]);
+        assert_eq!(
+            parse(&args(&invalid)).unwrap_err().reason,
+            "carrier_invalid"
+        );
+        assert!(HELP.contains("--carrier <direct|relay>"));
     }
 
     #[test]

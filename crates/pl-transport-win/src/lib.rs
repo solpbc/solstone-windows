@@ -151,6 +151,8 @@ pub enum TransportError {
     PairLink(String),
     #[error("pairing failed: {0}")]
     Pairing(String),
+    #[error("ingest request invalid: {0}")]
+    Ingest(String),
     #[error("server rejected request: HTTP {status} {body}")]
     Rejected { status: u16, body: String },
     #[error("relay error: {0}")]
@@ -178,6 +180,7 @@ pub fn transport_error_code(err: &TransportError) -> String {
         TransportError::Json(_) => "json".to_string(),
         TransportError::PairLink(_) => "pair_link".to_string(),
         TransportError::Pairing(_) => "pairing".to_string(),
+        TransportError::Ingest(_) => "ingest".to_string(),
         TransportError::Rejected { status, body: _ } => format!("http_{status}"),
         TransportError::Relay(r) => match r {
             RelayError::HomeOffline => "relay_home_offline",
@@ -222,6 +225,10 @@ mod tests {
             (TransportError::Json(json_error), "json"),
             (TransportError::PairLink("token=abc".into()), "pair_link"),
             (TransportError::Pairing("sha256:abc".into()), "pairing"),
+            (
+                TransportError::Ingest("duplicate filename".into()),
+                "ingest",
+            ),
             (
                 TransportError::Rejected {
                     status: 503,

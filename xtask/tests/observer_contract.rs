@@ -92,9 +92,9 @@ fn manifest_path_mutation(path: &str) -> VerifyError {
 fn observer_contract_good_tree_verifies() {
     let tree = TempTree::good();
     let report = tree.verify().expect("known-good tree verifies");
-    assert_eq!(report.operation_count, 7);
-    assert_eq!(report.fixture_count, 29);
-    assert_eq!(report.vector_count, 17);
+    assert_eq!(report.operation_count, 4);
+    assert_eq!(report.fixture_count, 5);
+    assert_eq!(report.vector_count, 5);
 }
 
 #[test]
@@ -428,21 +428,23 @@ fn observer_contract_rejects_duplicate_unsorted_and_mismatched_coverage() {
 fn observer_contract_rejects_manifest_projection_and_adopted_set_mutations() {
     let tree = TempTree::good();
     let mut manifest = tree.json("bundle/manifest.json");
-    manifest["observer_protocol_version"] = json!(3);
+    manifest["observer_protocol_version"] = json!(2);
     tree.write_json("bundle/manifest.json", &manifest);
     let error = tree.verify().expect_err("mutated manifest pin must fail");
     assert!(matches!(
         &error,
         VerifyError::ManifestFieldMismatch { field, .. } if field == "observer_protocol_version"
     ));
-    assert!(error.to_string().contains("expected 2, got 3"));
+    assert!(error.to_string().contains("expected 3, got 2"));
 
     let tree = TempTree::good();
     let mut projection = tree.json("bundle/projection.openapi.json");
-    projection["paths"]["/sse/events"]
+    let upload = projection["paths"]
         .as_object_mut()
         .unwrap()
-        .remove("get");
+        .remove("/app/devices/ingest")
+        .unwrap();
+    projection["paths"]["/app/observer/ingest"] = upload;
     tree.write_json("bundle/projection.openapi.json", &projection);
     assert!(matches!(
         tree.verify(),
@@ -466,6 +468,55 @@ fn observer_contract_rejects_manifest_projection_and_adopted_set_mutations() {
         tree.verify(),
         Err(VerifyError::VectorSetMismatch { .. })
     ));
+}
+
+#[test]
+fn observer_contract_rejects_v2_and_all_v3_catalog_mutations() {
+    let tree = TempTree::good();
+    let mut manifest = tree.json("bundle/manifest.json");
+    manifest["bundle_semver"] = json!("8.0.0");
+    tree.write_json("bundle/manifest.json", &manifest);
+    assert!(matches!(
+        tree.verify(),
+        Err(VerifyError::ManifestFieldMismatch { field, .. }) if field == "bundle_semver"
+    ));
+
+    let tree = TempTree::good();
+    let projection = tree.bundle().join("projection.openapi.json");
+    let mut bytes = fs::read(&projection).unwrap();
+    bytes.push(b'\n');
+    fs::write(&projection, bytes).unwrap();
+    assert!(matches!(
+        tree.verify(),
+        Err(VerifyError::DigestMismatch { path, .. }) if path == "projection.openapi.json"
+    ));
+
+    let tree = TempTree::good();
+    let mut adoption = tree.json("adoption.json");
+    adoption["archive_size_bytes"] = json!(5_672);
+    tree.write_json("adoption.json", &adoption);
+    assert!(matches!(
+        tree.verify(),
+        Err(VerifyError::AdoptionFieldMismatch { field, .. }) if field == "archive_size_bytes"
+    ));
+
+    for (field, mutation) in [
+        ("scope_rationale", json!("wrong scope")),
+        ("vocabularies", json!([])),
+        (
+            "windows_linux_rollout_targets",
+            json!([{ "consumer_identifier": "solstone-linux", "adoption_blocker_ids": [] }]),
+        ),
+    ] {
+        let tree = TempTree::good();
+        let mut manifest = tree.json("bundle/manifest.json");
+        manifest[field] = mutation;
+        tree.write_json("bundle/manifest.json", &manifest);
+        assert!(matches!(
+            tree.verify(),
+            Err(VerifyError::ManifestFieldMismatch { field: actual, .. }) if actual == field
+        ));
+    }
 }
 
 fn committed_projection() -> PathBuf {
@@ -496,37 +547,13 @@ fn assert_projection_mismatch(mappings: &[OperationMapping]) {
 }
 
 #[test]
-fn observer_contract_devices_overlay_is_one_way_against_the_committed_projection() {
+fn observer_contract_rejects_stale_observer_routes_without_an_overlay() {
     observer_contract::verify_projection(&committed_projection(), WINDOWS_OPERATION_MAPPINGS)
-        .expect("devices pins overlay the untouched /app/observer projection");
-
-    for (operation_id, observer_path, wrong_devices_path) in [
-        (
-            "observer.ingestEvent",
-            "/app/observer/ingest/event",
-            "/app/devices/ingest/wrong",
-        ),
-        (
-            "observer.ingestSegments",
-            "/app/observer/ingest/segments/{day}",
-            "/app/devices/ingest/segments/wrong",
-        ),
-        (
-            "observer.ingestUpload",
-            "/app/observer/ingest",
-            "/app/devices/ingest/wrong",
-        ),
-        (
-            "observer.register",
-            "/app/observer/register",
-            "/app/devices/register/wrong",
-        ),
-    ] {
-        assert_projection_mismatch(&catalog_with(operation_id, observer_path));
-        assert_projection_mismatch(&catalog_with(operation_id, wrong_devices_path));
-    }
-
-    assert_projection_mismatch(&catalog_with("link.pair", "/app/network/wrong"));
+        .expect("committed v3 projection must match the direct devices routes");
+    assert_projection_mismatch(&catalog_with(
+        "observer.ingestUpload",
+        "/app/observer/ingest",
+    ));
 }
 
 #[test]

@@ -1,0 +1,33 @@
+{
+  "fixtures": {
+    "pair_request": {
+      "nonce": "5f0d8c8b9f1e48b0a5f80b98f3d5e9b0",
+      "device_label": "fixture device"
+    },
+    "pair_response": {
+      "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
+      "home_label": "fixture home",
+      "home_attestation": "fixture-attestation",
+      "local_endpoints": [{"ip": "192.0.2.10", "port": 7657, "scope": "lan"}]
+    },
+    "register_request": {
+      "platform": "linux",
+      "hostname": "fixture-host",
+      "stream_type": "desktop",
+      "version": "1.4.0",
+      "label": "fixture desktop"
+    },
+    "register_response": {
+      "key": "fixture-observer-handle",
+      "name": "fixture-host",
+      "prefix": "fixture-"
+    },
+    "heartbeat_request": {"tract": "observe", "event": "status"},
+    "heartbeat_response": {"status": "ok"},
+    "root_sse": {
+      "default": {"event": "status", "tract": "observe", "ts": 1781803200000},
+      "unknown": {"event": "unknown", "extra": "value", "tract": "future", "ts": 0},
+      "heartbeat": ": heartbeat\n\n"
+    }
+  }
+}

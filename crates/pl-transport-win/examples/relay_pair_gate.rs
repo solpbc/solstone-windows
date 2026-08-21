@@ -8,10 +8,9 @@
 //! tunnel → live-peer SPKI pin → enroll/device), register the
 //! observer, then persist the resulting [`PairedState`] (credential + observer
 //! handle) to a JSON file and print the relay env (`relay_origin`, `instance_id`,
-//! `device_token`) that [`relay_live_gate`](relay_live_gate.rs) consumes for a
-//! direct-relay ingest. Together the two gates prove off-LAN relay reach on real
-//! hardware without forcing any network topology — `relay_live_gate` dials the
-//! relay directly, never the LAN.
+//! `device_token`) that the `--integration upload --carrier relay` gate consumes
+//! for a relay upload. Together the pair ceremony and upload gate prove off-LAN
+//! relay reach on real hardware without forcing any network topology.
 //!
 //! Usage: `SOLSTONE_PAIR_LINK='https://go.solstone.app/p#…' (a 0x06 relay link)
 //! SOLSTONE_CREDENTIAL_FILE=/path/pairing.json cargo run -p pl-transport-win
@@ -74,7 +73,7 @@ async fn main() {
         &registration.key[..registration.key.len().min(8)],
     );
 
-    // 3. Persist the credential + handle for relay_live_gate to consume.
+    // 3. Persist the credential + handle for the integration gate to consume.
     let state = PairedState {
         credential: Some(credential),
         observer_key: Some(registration.key.clone()),
@@ -85,7 +84,7 @@ async fn main() {
         .expect("save credential file failed");
     println!("SAVED: {credential_file}");
 
-    // 4. Print the relay env relay_live_gate needs.
+    // 4. Print the relay values the integration gate needs.
     let instance_id = state
         .credential
         .as_ref()

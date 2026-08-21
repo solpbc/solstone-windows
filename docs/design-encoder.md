@@ -301,10 +301,8 @@ Migration list from the legacy raw screen filename to `display_1_screen.mp4`:
 - `crates/pl-transport-win/src/sealed.rs:146` sealed-store fixture
 - `crates/pl-transport-win/src/sealed.rs:158` expected file list
 - `crates/pl-transport-win/src/sealed.rs:159` read-file assertion
-- `crates/pl-transport-win/examples/live_gate.rs:63` fabricated sealed segment
-- `crates/observer-pl/src/wire.rs:217` segment-list fixture
-- `crates/observer-pl/src/multipart.rs:68` multipart fixture filename
-- `crates/observer-pl/src/multipart.rs:81` multipart expected body
+- `--integration upload --carrier direct|relay` operator gate
+- `crates/observer-pl/src/ingest.rs` protocol-v3 multipart and segment-list fixtures
 
 Scope note: prep confirmed `platform-win/src/lib.rs:503` and `:506` are audio filename assertions in this checkout, not legacy screen-file hits.
 
@@ -339,9 +337,8 @@ Update existing files in implementation stage:
 - `crates/capture-wgc/src/lib.rs`
 - `crates/platform-win/src/lib.rs`
 - `crates/pl-transport-win/src/sealed.rs`
-- `crates/pl-transport-win/examples/live_gate.rs`
-- `crates/observer-pl/src/multipart.rs`
-- `crates/observer-pl/src/wire.rs`
+- `crates/pl-transport-win/src/integration/ops.rs` (`--integration upload` gate)
+- `crates/observer-pl/src/ingest.rs`
 - `crates/observer-health/src/lib.rs`
 - `src-tauri/src/health.rs`
 - `ui/src/main.ts`

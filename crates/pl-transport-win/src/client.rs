@@ -3,13 +3,10 @@
 
 //! The observer client over established mTLS.
 //!
-//! Wraps a paired [`Credential`] and speaks the four observer endpoints:
-//! `register`, `ingest`, `ingest/event` (heartbeat), and `ingest/segments/<day>`
-//! (reconcile). Every authenticated request carries the observer handle in both
-//! `X-Solstone-Observer` (preferred; survives proxy stripping) and
-//! `Authorization: Bearer` (fallback), plus `X-Solstone-Protocol-Version: 2` —
-//! the journal accepts either auth header, and the two recent Android 401s were
-//! both *missing-header* bugs, so the client always sends the full set.
+//! Wraps a paired [`Credential`] and speaks the linked-device protocol-v3
+//! endpoints. Those endpoints authenticate exclusively with the mTLS peer and
+//! send only their protocol header. The excluded heartbeat and journal bridge
+//! retain their legacy observer-handle headers.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,11 +15,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use observer_model::TransportPath;
 use observer_pl::http::HttpResponse;
-use observer_pl::multipart::{self, FilePart};
-use observer_pl::wire::{
-    HeartbeatEvent, IngestResponse, RegisterRequest, RegisterResponse, SegmentsResponse,
-    ServerSegment,
+use observer_pl::ingest::{
+    DayManifest, FilePart, IngestManifest, IngestMultipart, IngestResponse, IngestStatus,
+    SegmentsEnvelope,
 };
+use observer_pl::wire::{HeartbeatEvent, RegisterRequest, RegisterResponse};
 use observer_pl::{
     paths, OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER,
 };
@@ -40,6 +37,8 @@ use crate::{tls, transport_error_code, RelayError, TransportError};
 
 /// Relay transient retry count. Mirrors the LAN connection/handshake retry bound.
 const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
+/// The unprojected heartbeat and bridge retain their exact v2 request bytes.
+const EXCLUDED_OPERATION_PROTOCOL_VERSION: u32 = 2;
 
 enum RefreshAction {
     Redial,
@@ -180,40 +179,32 @@ impl ObserverClient {
         Ok(parsed)
     }
 
-    /// Upload one segment's files. `segment` is `HHMMSS_LEN`, `day` is
-    /// `YYYYMMDD`.
+    /// Upload one segment's files with the protocol-v3 envelope. `segment` is
+    /// `HHMMSS_LEN`, `day` is `YYYYMMDD`.
     pub async fn ingest(
         &self,
         segment: &str,
         day: &str,
-        platform: &str,
-        files: &[FilePart],
+        files: Vec<FilePart>,
     ) -> Result<(IngestResponse, SendMetadata), TransportError> {
         let boundary = self.next_boundary();
-        let fields = [("segment", segment), ("day", day), ("platform", platform)];
-        let body = multipart::build(&boundary, &fields, files);
+        let request = IngestMultipart::new(boundary, day, segment, files)
+            .map_err(|error| TransportError::Ingest(error.to_string()))?;
+        let body = request.serialize()?;
 
-        let mut headers = self.auth_headers()?;
-        headers.push((
-            "Content-Type".to_string(),
-            multipart::content_type(&boundary),
-        ));
+        let mut headers = self.v3_headers();
+        headers.push(("Content-Type".to_string(), request.content_type()));
 
         let SendOutcome { response, metadata } =
             self.send("POST", paths::INGEST, &headers, &body).await?;
-        if !response.is_success() {
-            return Err(TransportError::Rejected {
-                status: response.status,
-                body: response.body_text(),
-            });
-        }
-        Ok((serde_json::from_slice(&response.body)?, metadata))
+        let parsed = self.parse_ingest_response(response)?;
+        Ok((parsed, metadata))
     }
 
     /// Post the `observe.status` heartbeat so the journal sees the observer live.
     pub async fn heartbeat(&self, event: &HeartbeatEvent) -> Result<(), TransportError> {
         let body = serde_json::to_vec(event)?;
-        let mut headers = self.auth_headers()?;
+        let mut headers = self.event_headers()?;
         headers.push(("Content-Type".to_string(), "application/json".to_string()));
         let SendOutcome { response, .. } = self
             .send("POST", paths::INGEST_EVENT, &headers, &body)
@@ -227,31 +218,46 @@ impl ObserverClient {
         Ok(())
     }
 
-    /// List the journal's recorded segments for a day (reconciliation source).
-    pub async fn list_segments(&self, day: &str) -> Result<SegmentsResponse, TransportError> {
-        let path = format!("{}/{}", paths::INGEST_SEGMENTS, day);
-        let headers = self.auth_headers()?;
-        let SendOutcome { response, .. } = self.send("GET", &path, &headers, b"").await?;
-        if !response.is_success() {
-            return Err(TransportError::Rejected {
-                status: response.status,
-                body: response.body_text(),
-            });
-        }
-        // v2 returns the {items,total,protocol_version} envelope; tolerate a bare
-        // array from a pre-v2 journal too.
-        if let Ok(envelope) = serde_json::from_slice::<SegmentsResponse>(&response.body) {
-            return Ok(envelope);
-        }
-        let items: Vec<ServerSegment> = serde_json::from_slice(&response.body)?;
-        Ok(SegmentsResponse {
-            total: Some(items.len() as u64),
-            items,
-            protocol_version: None,
-        })
+    /// Read the root manifest used by protocol-v3 custody proof.
+    pub async fn ingest_manifest(&self) -> Result<(IngestManifest, SendMetadata), TransportError> {
+        let headers = self.v3_headers();
+        let SendOutcome { response, metadata } = self
+            .send("GET", paths::INGEST_MANIFEST, &headers, b"")
+            .await?;
+        Ok((self.parse_v3_read(response)?, metadata))
     }
 
-    fn auth_headers(&self) -> Result<Vec<(String, String)>, TransportError> {
+    /// Read one day manifest used by protocol-v3 custody proof.
+    pub async fn ingest_manifest_day(
+        &self,
+        day: &str,
+    ) -> Result<(DayManifest, SendMetadata), TransportError> {
+        let path = format!("{}/{}", paths::INGEST_MANIFEST, day);
+        let headers = self.v3_headers();
+        let SendOutcome { response, metadata } = self.send("GET", &path, &headers, b"").await?;
+        Ok((self.parse_v3_read(response)?, metadata))
+    }
+
+    /// Read the protocol-v3 segments envelope for one day.
+    pub async fn list_segments(
+        &self,
+        day: &str,
+    ) -> Result<(SegmentsEnvelope, SendMetadata), TransportError> {
+        let path = format!("{}/{}", paths::INGEST_SEGMENTS, day);
+        let headers = self.v3_headers();
+        let SendOutcome { response, metadata } = self.send("GET", &path, &headers, b"").await?;
+        Ok((self.parse_v3_read(response)?, metadata))
+    }
+
+    fn v3_headers(&self) -> Vec<(String, String)> {
+        vec![(
+            PROTOCOL_VERSION_HEADER.to_string(),
+            OBSERVER_PROTOCOL_VERSION.to_string(),
+        )]
+    }
+
+    /// Legacy headers for the excluded heartbeat operation only.
+    fn event_headers(&self) -> Result<Vec<(String, String)>, TransportError> {
         let key = self
             .observer_key
             .as_ref()
@@ -261,16 +267,69 @@ impl ObserverClient {
             ("Authorization".to_string(), format!("Bearer {key}")),
             (
                 PROTOCOL_VERSION_HEADER.to_string(),
-                OBSERVER_PROTOCOL_VERSION.to_string(),
+                EXCLUDED_OPERATION_PROTOCOL_VERSION.to_string(),
             ),
         ])
+    }
+
+    fn parse_v3_read<T: serde::de::DeserializeOwned>(
+        &self,
+        response: HttpResponse,
+    ) -> Result<T, TransportError> {
+        if !response.is_success() {
+            return Err(TransportError::Rejected {
+                status: response.status,
+                body: response.body_text(),
+            });
+        }
+        Ok(serde_json::from_slice(&response.body)?)
+    }
+
+    fn parse_ingest_response(
+        &self,
+        response: HttpResponse,
+    ) -> Result<IngestResponse, TransportError> {
+        // The v3 status vocabulary is parsed only on its documented response
+        // statuses: accepted variants on 200, conflict on 409, and failed on
+        // 500. Every other HTTP status remains an attributable server rejection.
+        if !matches!(response.status, 200 | 409 | 500) {
+            return Err(TransportError::Rejected {
+                status: response.status,
+                body: response.body_text(),
+            });
+        }
+        let status = response.status;
+        let parsed: IngestResponse = serde_json::from_slice(&response.body)?;
+        let expected_status = match parsed.status {
+            IngestStatus::Ok | IngestStatus::Duplicate | IngestStatus::Collision => 200,
+            IngestStatus::Conflict => 409,
+            IngestStatus::Failed => 500,
+        };
+        if status != expected_status {
+            return Err(TransportError::Rejected {
+                status,
+                body: format!("ingest status does not match HTTP status {status}"),
+            });
+        }
+        Ok(parsed)
     }
 
     pub(crate) fn proxy_headers(
         &self,
         browser_headers: &[(String, String)],
     ) -> Result<Vec<(String, String)>, TransportError> {
-        let mut headers = self.auth_headers()?;
+        let key = self
+            .observer_key
+            .as_ref()
+            .ok_or(TransportError::NotPaired)?;
+        let mut headers = vec![
+            ("X-Solstone-Observer".to_string(), key.clone()),
+            ("Authorization".to_string(), format!("Bearer {key}")),
+            (
+                PROTOCOL_VERSION_HEADER.to_string(),
+                EXCLUDED_OPERATION_PROTOCOL_VERSION.to_string(),
+            ),
+        ];
         headers.extend(
             browser_headers
                 .iter()
@@ -675,7 +734,7 @@ fn now_secs() -> i64 {
 
 fn is_observer_auth_header(name: &str) -> bool {
     name.eq_ignore_ascii_case("authorization")
-        || name.eq_ignore_ascii_case(OBSERVER_HANDLE_HEADER)
+        || name.eq_ignore_ascii_case("X-Solstone-Observer")
         || name.eq_ignore_ascii_case(PROTOCOL_VERSION_HEADER)
 }
 

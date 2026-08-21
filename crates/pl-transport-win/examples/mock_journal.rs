@@ -13,7 +13,7 @@ use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_WINDOW};
 use observer_pl::mux::INITIAL_WINDOW;
@@ -43,6 +43,26 @@ struct RequestHead {
     path: String,
     has_observer_header: bool,
     has_authorization: bool,
+    body: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+struct MockCustody {
+    segment: Option<MockSegment>,
+}
+
+#[derive(Debug, Clone)]
+struct MockSegment {
+    day: String,
+    key: String,
+    files: Vec<MockFile>,
+}
+
+#[derive(Debug, Clone)]
+struct MockFile {
+    submitted_name: String,
+    size: u64,
+    sha256: String,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -82,14 +102,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     std::io::stdout().flush()?;
 
     let carrier_index = Arc::new(AtomicUsize::new(0));
+    let custody = Arc::new(StdMutex::new(MockCustody::default()));
     loop {
         let (tcp, _) = listener.accept().await?;
         let acceptor = acceptor.clone();
         let transcript = transcript.clone();
+        let custody = custody.clone();
         let marker = args.marker.clone();
         let index = carrier_index.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {
-            if let Err(error) = serve_carrier(index, tcp, acceptor, transcript, marker).await {
+            if let Err(error) =
+                serve_carrier(index, tcp, acceptor, transcript, custody, marker).await
+            {
                 eprintln!("mock carrier {index} exited: {error}");
             }
         });
@@ -101,6 +125,7 @@ async fn serve_carrier(
     tcp: tokio::net::TcpStream,
     acceptor: TlsAcceptor,
     transcript: Arc<Mutex<File>>,
+    custody: Arc<StdMutex<MockCustody>>,
     marker: String,
 ) -> Result<(), Box<dyn Error>> {
     let tls = acceptor.accept(tcp).await?;
@@ -134,7 +159,8 @@ async fn serve_carrier(
                 let bytes = requests.remove(&frame.stream_id).unwrap_or_default();
                 let request = parse_request(&bytes);
                 append_transcript(&transcript, carrier_index, frame.stream_id, &request).await?;
-                write_http_response(&mut write, frame.stream_id, &request.path, &marker).await?;
+                write_http_response(&mut write, frame.stream_id, &request, &custody, &marker)
+                    .await?;
             }
         }
     }
@@ -159,15 +185,16 @@ where
 async fn write_http_response<W>(
     write: &mut W,
     stream_id: u32,
-    path: &str,
+    request: &RequestHead,
+    custody: &Arc<StdMutex<MockCustody>>,
     marker: &str,
 ) -> Result<(), Box<dyn Error>>
 where
     W: AsyncWrite + Unpin,
 {
-    let (content_type, body) = response_body(path, marker);
+    let (status, content_type, body) = response_body(request, custody, marker);
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
         body.len()
     );
     let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
@@ -176,25 +203,169 @@ where
     Ok(())
 }
 
-fn response_body(path: &str, marker: &str) -> (&'static str, String) {
+fn response_body(
+    request: &RequestHead,
+    custody: &Arc<StdMutex<MockCustody>>,
+    marker: &str,
+) -> (&'static str, &'static str, String) {
+    let path = request.path.as_str();
     match path {
         "/" => (
+            "200 OK",
             "text/html; charset=utf-8",
             format!(
                 "<!doctype html><meta charset=\"utf-8\"><title>mock journal</title><link rel=\"stylesheet\" href=\"/asset-a\"><script src=\"/asset-b\"></script><main style=\"font: 28px sans-serif; padding: 48px\">{marker}</main>"
             ),
         ),
         "/asset-a" => (
+            "200 OK",
             "text/css; charset=utf-8",
             format!("body::after {{ content: \"{marker}\"; display: none; }}"),
         ),
         "/asset-b" => (
+            "200 OK",
             "application/javascript; charset=utf-8",
             format!("window.__SOLSTONE_MOCK_MARKER = {:?};", marker),
         ),
-        observer_pl::paths::INGEST_EVENT => ("text/plain; charset=utf-8", "ok".to_string()),
-        _ => ("text/plain; charset=utf-8", "ok".to_string()),
+        observer_pl::paths::INGEST_EVENT => ("200 OK", "text/plain; charset=utf-8", "ok".to_string()),
+        observer_pl::paths::INGEST => match parse_ingest_multipart(&request.body) {
+            Ok(segment) => {
+                custody.lock().expect("mock custody lock").segment = Some(segment.clone());
+                (
+                    "200 OK",
+                    "application/json",
+                    serde_json::json!({"status": "ok", "segment": segment.key}).to_string(),
+                )
+            }
+            Err(reason) => (
+                "400 Bad Request",
+                "application/json",
+                serde_json::json!({"reason_code": "multipart_malformed", "detail": reason}).to_string(),
+            ),
+        },
+        observer_pl::paths::INGEST_MANIFEST => {
+            let guard = custody.lock().expect("mock custody lock");
+            let days = guard.segment.as_ref().map_or_else(serde_json::Map::new, |segment| {
+                let mut days = serde_json::Map::new();
+                days.insert(segment.day.clone(), serde_json::json!({"segments": 1}));
+                days
+            });
+            ("200 OK", "application/json", serde_json::json!({"days": days}).to_string())
+        }
+        _ if path.starts_with(&format!("{}/", observer_pl::paths::INGEST_MANIFEST)) => {
+            let day = path.trim_start_matches(observer_pl::paths::INGEST_MANIFEST).trim_start_matches('/');
+            let guard = custody.lock().expect("mock custody lock");
+            let Some(segment) = guard.segment.as_ref().filter(|segment| segment.day == day) else {
+                return ("404 Not Found", "application/json", "{}".to_string());
+            };
+            let files = mock_files_json(&segment.files);
+            let mut segments = serde_json::Map::new();
+            segments.insert(segment.key.clone(), serde_json::json!({"files": files}));
+            (
+                "200 OK",
+                "application/json",
+                serde_json::json!({"version": 3, "day": day, "segments": segments}).to_string(),
+            )
+        }
+        _ if path.starts_with(&format!("{}/", observer_pl::paths::INGEST_SEGMENTS)) => {
+            let day = path.trim_start_matches(observer_pl::paths::INGEST_SEGMENTS).trim_start_matches('/');
+            let guard = custody.lock().expect("mock custody lock");
+            let items = guard.segment.as_ref().filter(|segment| segment.day == day).map_or_else(Vec::new, |segment| {
+                vec![serde_json::json!({"key": segment.key, "observed": true, "files": mock_files_json(&segment.files)})]
+            });
+            let total = items.len();
+            ("200 OK", "application/json", serde_json::json!({"items": items, "total": total, "protocol_version": 3}).to_string())
+        }
+        _ => ("200 OK", "text/plain; charset=utf-8", "ok".to_string()),
     }
+}
+
+fn mock_files_json(files: &[MockFile]) -> Vec<serde_json::Value> {
+    files
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "name": file.submitted_name.clone(),
+                "size": file.size,
+                "sha256": file.sha256.clone(),
+                "status": "present",
+            })
+        })
+        .collect()
+}
+
+#[derive(serde::Deserialize)]
+struct UploadEnvelope {
+    day: String,
+    segment: String,
+    files: Vec<UploadEnvelopeFile>,
+}
+
+#[derive(serde::Deserialize)]
+struct UploadEnvelopeFile {
+    submitted: String,
+}
+
+fn parse_ingest_multipart(bytes: &[u8]) -> Result<MockSegment, String> {
+    let (_, body) = split_once_bytes(bytes, b"\r\n\r\n").ok_or("missing HTTP body")?;
+    if !body.starts_with(b"--") {
+        return Err("missing multipart opening boundary".to_string());
+    }
+    let boundary_end = find_bytes(body, b"\r\n").ok_or("missing multipart boundary")?;
+    let boundary = body
+        .get(2..boundary_end)
+        .ok_or("malformed multipart boundary")?;
+    let envelope_marker = b"name=\"envelope\"";
+    let envelope_at = find_bytes(body, envelope_marker).ok_or("missing envelope part")?;
+    let envelope_headers = &body[envelope_at..];
+    let envelope_start = split_once_bytes(envelope_headers, b"\r\n\r\n")
+        .map(|(_, value)| value)
+        .ok_or("missing envelope body")?;
+    let next_part = boundary_marker(boundary);
+    let envelope_end = find_bytes(envelope_start, &next_part).ok_or("unterminated envelope")?;
+    let envelope: UploadEnvelope = serde_json::from_slice(&envelope_start[..envelope_end])
+        .map_err(|_| "invalid envelope JSON".to_string())?;
+    if envelope.files.is_empty() {
+        return Err("empty envelope files".to_string());
+    }
+    let mut files = Vec::with_capacity(envelope.files.len());
+    for declared in envelope.files {
+        let marker = format!("name=\"files\"; filename=\"{}\"", declared.submitted);
+        let file_at = find_bytes(body, marker.as_bytes()).ok_or("missing declared file")?;
+        let file_headers = &body[file_at..];
+        let file_start = split_once_bytes(file_headers, b"\r\n\r\n")
+            .map(|(_, value)| value)
+            .ok_or("missing file body")?;
+        let file_end = find_bytes(file_start, &next_part).ok_or("unterminated file")?;
+        let data = &file_start[..file_end];
+        files.push(MockFile {
+            submitted_name: declared.submitted,
+            size: data.len() as u64,
+            sha256: observer_pl::ca::sha256_hex(data),
+        });
+    }
+    Ok(MockSegment {
+        day: envelope.day,
+        key: envelope.segment,
+        files,
+    })
+}
+
+fn boundary_marker(boundary: &[u8]) -> Vec<u8> {
+    let mut marker = b"\r\n--".to_vec();
+    marker.extend_from_slice(boundary);
+    marker
+}
+
+fn split_once_bytes<'a>(bytes: &'a [u8], needle: &[u8]) -> Option<(&'a [u8], &'a [u8])> {
+    let index = find_bytes(bytes, needle)?;
+    Some((&bytes[..index], &bytes[index + needle.len()..]))
+}
+
+fn find_bytes(bytes: &[u8], needle: &[u8]) -> Option<usize> {
+    bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn parse_request(bytes: &[u8]) -> RequestHead {
@@ -231,6 +402,7 @@ fn parse_request(bytes: &[u8]) -> RequestHead {
         path,
         has_observer_header,
         has_authorization,
+        body: bytes.to_vec(),
     }
 }
 

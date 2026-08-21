@@ -180,7 +180,7 @@ only `windows-rs` / `unsafe` use is the target-gated DPAPI credential-wrap at re
 It sits in the platform tier because it owns the OS-adjacent transport (sockets,
 TLS, the network seam), but it compiles and tests on the Linux dev host too.
 That is deliberate: the live cross-repo pair+ingest gate can run off-Windows
-against a journal on the dev box (see `crates/pl-transport-win/examples/live_gate.rs`),
+against a journal on the dev box (`--integration upload --carrier direct|relay`),
 and the box's `win-host-ci` still builds + tests it on real MSVC alongside the
 windows-rs tier.
 

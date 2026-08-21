@@ -8,8 +8,9 @@ this repository's generated AutomationId and state-token contract described in
 `docs/automation-contract.md`.
 
 The adopted authority revision is
-`766021cd44d4a0a7ce471d2affb461bf3ce0fc39`, bundle version `8.0.0`. Its
-generator identity is `solstone.convey.contract.observer_bundle.v1`; its bundle
+`dd76c42a21a7892fccc1b0cfa790ce1ad31bf78b`, bundle version `9.0.0`. Its
+generator identity is
+`solstone.repository_contracts.observer_client_contract_bundle.v1`; its bundle
 schema identity is `solstone.observer-client-contract-bundle.schema.v1`.
 
 ## Repository layout and path basis
@@ -43,9 +44,9 @@ projection mappings, coverage sets, and focused behavior through the real Rust
 wire types and local transport seams. It does not contact a live journal, prove
 native packaging, or provide release or installed-artifact evidence.
 
-Windows pins for `/app/devices/…` are accepted against a projection that still
-publishes `/app/observer/…`; the overlay is one-way and the vendored export is
-not rewritten.
+The v9 projection publishes the four linked-device `/app/devices/ingest`
+operations directly. The retired observer-route overlay is not present in the
+vendored export or the client.
 
 ## Re-vendoring ceremony
 
@@ -84,6 +85,10 @@ not rewritten.
 11. Run `make check-observer-contract`, focused crate tests, the host checks,
     and the separately required native Windows evidence.
 
+The v9 bundle contains four declared payload files, four projected operations,
+and five fixtures and five vectors (the `ok`, `duplicate`, `collision`,
+`conflict`, and `failed` ingest statuses).
+
 ## Version policy
 
 - Patch releases may carry compatible authority corrections, but still require
@@ -100,3 +105,12 @@ cannot prove that an arbitrary directory came from a particular Git commit.
 Association with the authority commit is established by the clean detached
 checkout, verified export, deterministic archive, and review ceremony above;
 the digests then preserve the identity of those bytes.
+
+## Upstream follow-ups
+
+The v9 consumer audit still classifies `solstone-windows` at
+`19c972c4fea775176cea6421ac8b87f3bb20ab42` as
+`legacy_v2_unmigrated`; this consumer adoption does not rewrite the authority's
+audit history. Version 9 also no longer projects pair, register, ingestEvent,
+or callosum, so their preserved request-byte tests use local committed fixtures
+until the upstream projection scope changes.

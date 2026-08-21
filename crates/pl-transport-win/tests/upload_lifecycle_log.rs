@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use observer_model::TransportPath;
 use observer_pl::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
-use observer_pl::multipart::FilePart;
+use observer_pl::ingest::FilePart;
 use pl_transport_win::client::ObserverClient;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -15,7 +15,6 @@ use tokio_rustls::TlsAcceptor;
 
 use support::journal_fake::{direct_credential, read_framed_request, self_signed, server_config};
 use support::log_capture::CapturingSubscriber;
-use support::observer_contract::fixture as authority_fixture;
 
 async fn serve_one_ingest(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
@@ -48,14 +47,14 @@ async fn lan_ingest_lifecycle_logs_direct_path_without_secret_material() {
     let client = ObserverClient::new(direct_credential(pin, port))
         .unwrap()
         .with_observer_key(Some("observer-key".into()));
-    let files = [FilePart {
+    let files = vec![FilePart {
         filename: "display_1_screen.mp4".into(),
         content_type: "video/mp4".into(),
         bytes: b"segment bytes".to_vec(),
     }];
 
     let (_response, metadata) = client
-        .ingest("120000_300", "20260702", "windows", &files)
+        .ingest("120000_300", "20260702", files)
         .await
         .unwrap();
     let _request = server.await.unwrap();
@@ -75,9 +74,8 @@ async fn lan_ingest_lifecycle_logs_direct_path_without_secret_material() {
 
 #[tokio::test]
 async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
-    let fixture =
-        authority_fixture("example.observer.ingestUpload.request.body.multipart-form-data.default");
-    let payload = &fixture["payload"];
+    let day = "20260618";
+    let segment = "143022_300";
     let (cert, key) = self_signed();
     let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
@@ -87,40 +85,30 @@ async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
     let client = ObserverClient::new(direct_credential(pin, port))
         .unwrap()
         .with_observer_key(Some("authority-observer".into()));
-    let files: Vec<FilePart> = payload["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .enumerate()
-        .map(|(index, filename)| FilePart {
-            filename: filename.as_str().unwrap().to_owned(),
+    let files = vec![
+        FilePart {
+            filename: "screen.png".to_owned(),
             content_type: "application/octet-stream".to_owned(),
-            bytes: format!("test-owned-{index}").into_bytes(),
-        })
-        .collect();
+            bytes: b"test-owned-0".to_vec(),
+        },
+        FilePart {
+            filename: "audio.flac".to_owned(),
+            content_type: "application/octet-stream".to_owned(),
+            bytes: b"test-owned-1".to_vec(),
+        },
+    ];
 
-    client
-        .ingest(
-            payload["segment"].as_str().unwrap(),
-            payload["day"].as_str().unwrap(),
-            payload["platform"].as_str().unwrap(),
-            &files,
-        )
-        .await
-        .unwrap();
+    client.ingest(segment, day, files).await.unwrap();
     let request = String::from_utf8(server.await.unwrap()).unwrap();
     assert!(request.starts_with("POST /app/devices/ingest HTTP/1.1\r\n"));
-    assert!(request.contains("X-Solstone-Observer: authority-observer\r\n"));
-    assert!(request.contains("Authorization: Bearer authority-observer\r\n"));
+    assert!(!request.contains("X-Solstone-Observer:"));
+    assert!(!request.contains("Authorization:"));
     assert!(request.contains(&format!(
         "{}: {}\r\n",
         observer_pl::PROTOCOL_VERSION_HEADER,
         observer_pl::OBSERVER_PROTOCOL_VERSION
     )));
-    for filename in payload["files"].as_array().unwrap() {
-        assert!(request.contains(&format!(
-            "name=\"files\"; filename=\"{}\"",
-            filename.as_str().unwrap()
-        )));
+    for filename in ["screen.png", "audio.flac"] {
+        assert!(request.contains(&format!("name=\"files\"; filename=\"{}\"", filename)));
     }
 }

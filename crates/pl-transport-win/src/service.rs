@@ -27,7 +27,7 @@ use crate::{cancelled, pairing, transport_error_code, TransportError};
 /// Static identity + paths the sync layer needs.
 #[derive(Debug, Clone)]
 pub struct SyncConfig {
-    /// Observer platform string sent on register/ingest (`"windows"`).
+    /// Observer platform string sent on registration (`"windows"`).
     pub platform: String,
     /// Device hostname registered with the journal.
     pub hostname: String,
@@ -219,7 +219,6 @@ async fn setup_uploader(
         client.clone(),
         store,
         sync.clone(),
-        cfg.platform.clone(),
         cfg.period_secs,
         cfg.retention.clone(),
         cfg.local_offset.clone(),

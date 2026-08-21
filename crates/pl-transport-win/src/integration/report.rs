@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::observe::DialCounts;
 use crate::{transport_error_code, RelayError, TransportError};
+use observer_pl::ingest::SegmentFileStatus;
 
 /// The envelope's schema version. One constant, one place.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -197,6 +198,7 @@ fn transport_error_is_retryable(error: &TransportError) -> bool {
         | TransportError::Json(_)
         | TransportError::PairLink(_)
         | TransportError::Pairing(_)
+        | TransportError::Ingest(_)
         | TransportError::Rejected { .. }
         | TransportError::RelayControlRejected { .. }
         | TransportError::NotPaired
@@ -295,9 +297,19 @@ pub struct Evidence {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmed: Option<bool>,
 
-    // shared
+    // upload carrier and custody witness
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub observed_path: Option<&'static str>,
+    pub requested_carrier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_carrier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_submitted_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_custody_status: Option<SegmentFileStatus>,
 }
 
 /// What is known about state that exists off this machine.

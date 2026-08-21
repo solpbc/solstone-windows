@@ -24,8 +24,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use observer_model::{LocalOffset, SyncSnapshot, TransportPath};
 use observer_pl::ca;
 use observer_pl::civil;
-use observer_pl::multipart::FilePart;
-use observer_pl::wire::{IngestResponse, SegmentsResponse};
+use observer_pl::ingest::{
+    prove_custody, CustodyProof, CustodyWitness, DayManifest, FilePart, IngestManifest,
+    IngestResponse, IngestStatus, LocalFile, SegmentsEnvelope,
+};
 use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 
@@ -36,22 +38,43 @@ use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTE
 const MAX_BACKOFF_SECS: u64 = 300;
 const QUARANTINE_AFTER_REJECTS: u32 = 5;
 
-fn is_reject_class(err: &TransportError) -> bool {
+fn is_attributable_rejection(err: &TransportError) -> bool {
     match err {
-        TransportError::Io(_) => false,
-        TransportError::Tls(_) => false,
-        TransportError::Crypto(_) => false,
-        TransportError::Mux(_) => false,
-        TransportError::Http(_) => false,
-        TransportError::Json(_) => true,
-        TransportError::PairLink(_) => false,
-        TransportError::Pairing(_) => false,
-        TransportError::Rejected { .. } => true,
-        TransportError::Relay(_) => false,
-        TransportError::RelayControlRejected { .. } => true,
-        TransportError::NoEndpoint => false,
-        TransportError::NotPaired => false,
-        TransportError::LocalOffset => false,
+        TransportError::Rejected { status: 413, .. } => true,
+        TransportError::Rejected { status: 400, body } => {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|value| value.get("reason_code")?.as_str().map(str::to_owned))
+                .is_some_and(|reason| {
+                    matches!(
+                        reason.as_str(),
+                        "legacy_observer_field"
+                            | "legacy_stream_field"
+                            | "source_not_utf8"
+                            | "source_too_long"
+                            | "source_contains_nul"
+                            | "source_contains_path_separator"
+                            | "source_contains_dot"
+                            | "source_invalid_character"
+                            | "day_invalid"
+                            | "segment_invalid"
+                            | "field_missing"
+                            | "field_duplicate"
+                            | "envelope_invalid"
+                            | "file_metadata_invalid"
+                            | "file_name_mismatch"
+                            | "file_name_invalid"
+                            | "file_name_duplicate"
+                            | "multipart_malformed"
+                            | "multipart_part_too_large"
+                            | "multipart_too_many_parts"
+                            | "multipart_too_many_files"
+                            | "multipart_too_many_headers"
+                            | "multipart_filename_too_long"
+                    )
+                })
+        }
+        _ => false,
     }
 }
 
@@ -76,17 +99,26 @@ fn elapsed_ms(started: Instant) -> u64 {
 type IngestFuture<'a> = Pin<
     Box<dyn Future<Output = Result<(IngestResponse, SendMetadata), TransportError>> + Send + 'a>,
 >;
-type ListSegmentsFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<SegmentsResponse, TransportError>> + Send + 'a>>;
+type ListSegmentsFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), TransportError>> + Send + 'a>,
+>;
+type ManifestFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<(IngestManifest, SendMetadata), TransportError>> + Send + 'a>,
+>;
+type DayManifestFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(DayManifest, SendMetadata), TransportError>> + Send + 'a>>;
 
 trait UploadClient: Send + Sync {
     fn ingest<'a>(
         &'a self,
         segment: &'a str,
         day: &'a str,
-        platform: &'a str,
-        files: &'a [FilePart],
+        files: Vec<FilePart>,
     ) -> IngestFuture<'a>;
+
+    fn ingest_manifest<'a>(&'a self, day: &'a str) -> ManifestFuture<'a>;
+
+    fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a>;
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a>;
 }
@@ -96,10 +128,17 @@ impl UploadClient for ObserverClient {
         &'a self,
         segment: &'a str,
         day: &'a str,
-        platform: &'a str,
-        files: &'a [FilePart],
+        files: Vec<FilePart>,
     ) -> IngestFuture<'a> {
-        Box::pin(ObserverClient::ingest(self, segment, day, platform, files))
+        Box::pin(ObserverClient::ingest(self, segment, day, files))
+    }
+
+    fn ingest_manifest<'a>(&'a self, _day: &'a str) -> ManifestFuture<'a> {
+        Box::pin(ObserverClient::ingest_manifest(self))
+    }
+
+    fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
+        Box::pin(ObserverClient::ingest_manifest_day(self, day))
     }
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
@@ -218,7 +257,6 @@ pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
     store: Box<dyn SealedStore>,
     sync: Arc<Mutex<SyncSnapshot>>,
-    platform: String,
     period_secs: u64,
     /// Owner cache-retention policy (shared, edited over IPC). Decides whether a
     /// confirmed segment is deleted on confirmation (don't-keep) or retained and
@@ -228,32 +266,31 @@ pub struct UploadCoordinator {
     quarantine_counts: Mutex<HashMap<u64, u32>>,
 }
 
+/// An upload confirmed by all three v3 custody reads. This is the only
+/// coordinator output that carries both the proof witness and the observed
+/// transport path.
+#[derive(Debug, Clone)]
+pub struct ConfirmedUpload {
+    pub witness: CustodyWitness,
+    pub metadata: SendMetadata,
+}
+
 impl UploadCoordinator {
     pub fn new(
         client: Arc<ObserverClient>,
         store: Box<dyn SealedStore>,
         sync: Arc<Mutex<SyncSnapshot>>,
-        platform: impl Into<String>,
         period_secs: u64,
         retention: Arc<RwLock<RetentionConfig>>,
         local_offset: Arc<dyn LocalOffset>,
     ) -> Self {
-        Self::new_with_client(
-            client,
-            store,
-            sync,
-            platform,
-            period_secs,
-            retention,
-            local_offset,
-        )
+        Self::new_with_client(client, store, sync, period_secs, retention, local_offset)
     }
 
     fn new_with_client(
         client: Arc<dyn UploadClient>,
         store: Box<dyn SealedStore>,
         sync: Arc<Mutex<SyncSnapshot>>,
-        platform: impl Into<String>,
         period_secs: u64,
         retention: Arc<RwLock<RetentionConfig>>,
         local_offset: Arc<dyn LocalOffset>,
@@ -262,7 +299,6 @@ impl UploadCoordinator {
             client,
             store,
             sync,
-            platform: platform.into(),
             period_secs: period_secs.max(1),
             retention,
             local_offset,
@@ -357,11 +393,12 @@ impl UploadCoordinator {
         self.tick_with_cancel(&rx).await
     }
 
-    async fn tick_with_cancel(
-        &self,
-        cancel: &watch::Receiver<bool>,
-    ) -> Result<usize, TransportError> {
-        let result = self.tick_inner(cancel).await;
+    /// One pass returning only custody witnesses earned by complete protocol-v3
+    /// reconciliation. Callers cannot obtain a server key or file facts from an
+    /// accepted-but-unconfirmed upload.
+    pub async fn tick_with_witness(&self) -> Result<Vec<ConfirmedUpload>, TransportError> {
+        let (_tx, rx) = watch::channel(false);
+        let result = self.tick_inner(&rx).await;
         match &result {
             Ok(_) => self.note_tick_success(),
             Err(error) => self.note_tick_failure(error),
@@ -369,13 +406,31 @@ impl UploadCoordinator {
         result
     }
 
-    async fn tick_inner(&self, cancel: &watch::Receiver<bool>) -> Result<usize, TransportError> {
+    async fn tick_with_cancel(
+        &self,
+        cancel: &watch::Receiver<bool>,
+    ) -> Result<usize, TransportError> {
+        let result = self
+            .tick_inner(cancel)
+            .await
+            .map(|witnesses| witnesses.len());
+        match &result {
+            Ok(_) => self.note_tick_success(),
+            Err(error) => self.note_tick_failure(error),
+        }
+        result
+    }
+
+    async fn tick_inner(
+        &self,
+        cancel: &watch::Receiver<bool>,
+    ) -> Result<Vec<ConfirmedUpload>, TransportError> {
         // Prune retained-and-confirmed segments past the window first (cheap, local).
         self.prune_retained();
 
         let segments = self.store.scan()?;
         self.set_pending(segments.len() as u64);
-        let mut confirmed_now = 0usize;
+        let mut witnesses = Vec::new();
 
         'segments: for segment in segments {
             if *cancel.borrow() {
@@ -412,7 +467,7 @@ impl UploadCoordinator {
             // Read the per-source files + compute their sha256 for reconcile.
             let read_started = Instant::now();
             let mut parts = Vec::with_capacity(segment.files.len());
-            let mut shas = Vec::with_capacity(segment.files.len());
+            let mut local_files = Vec::with_capacity(segment.files.len());
             for name in &segment.files {
                 let bytes = match self.store.read_file(segment.index, name) {
                     Ok(bytes) => bytes,
@@ -431,7 +486,7 @@ impl UploadCoordinator {
                         continue 'segments;
                     }
                 };
-                shas.push((name.clone(), ca::sha256_hex(&bytes)));
+                local_files.push((name.clone(), ca::sha256_hex(&bytes), bytes.len() as u64));
                 parts.push(FilePart {
                     filename: name.clone(),
                     content_type: content_type_for(name),
@@ -446,55 +501,97 @@ impl UploadCoordinator {
             let bytes = parts.iter().map(|part| part.bytes.len() as u64).sum();
 
             let started = Instant::now();
-            match self
-                .client
-                .ingest(&segment_key, &day, &self.platform, &parts)
-                .await
-            {
-                Ok((response, metadata)) if response.is_accepted() => {
+            match self.client.ingest(&segment_key, &day, parts).await {
+                Ok((response, metadata)) if response.status.is_accepted() => {
                     let duration_ms = elapsed_ms(started);
-                    let server_key = response
+                    // A returned collision/duplicate key is an untrusted selector until
+                    // all three v3 custody documents agree on it.
+                    let proof_selector = response
                         .segment
-                        .clone()
-                        .or_else(|| response.existing_segment.clone())
-                        .unwrap_or_else(|| segment_key.clone());
-                    let listed = self.client.list_segments(&day).await;
-                    let confirmed = match &listed {
-                        Ok(listed) => shas
-                            .iter()
-                            .all(|(name, sha)| listed.proves_file_held(&server_key, name, sha)),
-                        Err(_) => false,
+                        .as_deref()
+                        .or(response.existing_segment.as_deref())
+                        .unwrap_or(&segment_key);
+                    let local = local_files
+                        .iter()
+                        .map(|(name, sha256, size)| LocalFile {
+                            name,
+                            sha256,
+                            size: *size,
+                        })
+                        .collect::<Vec<_>>();
+                    let reads = async {
+                        let (manifest, _) = self.client.ingest_manifest(&day).await?;
+                        let (day_manifest, _) = self.client.ingest_manifest_day(&day).await?;
+                        let (segments, _) = self.client.list_segments(&day).await?;
+                        Ok::<_, TransportError>((manifest, day_manifest, segments))
+                    }
+                    .await;
+                    let (manifest, day_manifest, segments) = match reads {
+                        Ok(reads) => reads,
+                        Err(error) => {
+                            UploadEvent::new(
+                                &segment_key,
+                                bytes,
+                                duration_ms,
+                                UploadOutcome::AcceptedUnconfirmed,
+                                Some(metadata.path),
+                                Some(transport_error_code(&error)),
+                            )
+                            .emit();
+                            self.on_error(&error);
+                            return Err(error);
+                        }
                     };
-                    self.clear_reject(segment.index);
-                    UploadEvent::new(
-                        &segment_key,
-                        bytes,
-                        duration_ms,
-                        if confirmed {
-                            UploadOutcome::Confirmed
-                        } else {
-                            UploadOutcome::AcceptedUnconfirmed
-                        },
-                        Some(metadata.path),
-                        None,
-                    )
-                    .emit();
-                    if confirmed {
-                        // Honor retention: delete the local copy now (don't-keep)
-                        // or retain it (mark confirmed so it isn't re-uploaded) for
-                        // the prune pass to remove once it's past the window.
-                        if self.retention().delete_on_confirm() {
-                            if let Err(error) = self.store.remove(segment.index) {
-                                tracing::warn!(
-                                    target: "pl_upload",
-                                    segment = segment_key.as_str(),
-                                    reason = "confirmed_remove_failed",
-                                    kind = ?error.kind(),
-                                    "confirmed cleanup failed"
-                                );
-                            }
-                        } else {
-                            if let Err(error) = self.store.mark_confirmed(segment.index) {
+                    match prove_custody(
+                        &manifest,
+                        &day_manifest,
+                        &segments,
+                        &day,
+                        proof_selector,
+                        &local,
+                    ) {
+                        CustodyProof::Unconfirmed(_) => {
+                            UploadEvent::new(
+                                &segment_key,
+                                bytes,
+                                duration_ms,
+                                UploadOutcome::AcceptedUnconfirmed,
+                                Some(metadata.path),
+                                None,
+                            )
+                            .emit();
+                            // No state is cleared or mutated: the original local
+                            // segment remains retry-eligible until a witness exists.
+                        }
+                        CustodyProof::Confirmed(witness) => {
+                            // The server key is only available through the proof
+                            // witness, so cleanup and publication cannot use an
+                            // unverified collision selector.
+                            let server_key = witness.server_segment();
+                            self.clear_reject(segment.index);
+                            UploadEvent::new(
+                                &segment_key,
+                                bytes,
+                                duration_ms,
+                                UploadOutcome::Confirmed,
+                                Some(metadata.path),
+                                None,
+                            )
+                            .emit();
+                            // Honor retention: delete the local copy now (don't-keep)
+                            // or retain it (mark confirmed so it isn't re-uploaded) for
+                            // the prune pass to remove once it's past the window.
+                            if self.retention().delete_on_confirm() {
+                                if let Err(error) = self.store.remove(segment.index) {
+                                    tracing::warn!(
+                                        target: "pl_upload",
+                                        segment = segment_key.as_str(),
+                                        reason = "confirmed_remove_failed",
+                                        kind = ?error.kind(),
+                                        "confirmed cleanup failed"
+                                    );
+                                }
+                            } else if let Err(error) = self.store.mark_confirmed(segment.index) {
                                 tracing::warn!(
                                     target: "pl_upload",
                                     segment = segment_key.as_str(),
@@ -503,33 +600,31 @@ impl UploadCoordinator {
                                     "confirmed cleanup failed"
                                 );
                             }
-                        }
-                        confirmed_now += 1;
-                        self.on_confirmed(
-                            &segment_key,
-                            &server_key,
-                            bytes,
-                            duration_ms,
-                            metadata.path,
-                            metadata.attempts,
-                        );
-                    }
-                    match listed {
-                        Ok(_) => {}
-                        Err(error) => {
-                            if is_reject_class(&error) {
-                                continue;
-                            }
-                            return Err(error);
+                            self.on_confirmed(
+                                &segment_key,
+                                server_key,
+                                bytes,
+                                duration_ms,
+                                metadata.path,
+                                metadata.attempts,
+                            );
+                            witnesses.push(ConfirmedUpload { witness, metadata });
                         }
                     }
-                    // If not yet confirmed, leave it on disk for the next tick.
                 }
                 Ok((response, metadata)) => {
                     let duration_ms = elapsed_ms(started);
                     let error = TransportError::Rejected {
-                        status: 200,
-                        body: format!("unexpected ingest status: {}", response.status),
+                        status: match response.status {
+                            IngestStatus::Conflict => 409,
+                            IngestStatus::Failed => 500,
+                            IngestStatus::Ok
+                            | IngestStatus::Duplicate
+                            | IngestStatus::Collision => {
+                                unreachable!("accepted statuses matched above")
+                            }
+                        },
+                        body: format!("ingest response: {:?}", response.status),
                     };
                     UploadEvent::new(
                         &segment_key,
@@ -541,7 +636,8 @@ impl UploadCoordinator {
                     )
                     .emit();
                     self.on_error(&error);
-                    self.register_reject(segment.index);
+                    // Failed/conflict upload responses are retry-eligible and do
+                    // not accumulate toward quarantine.
                     continue;
                 }
                 Err(e) => {
@@ -556,7 +652,7 @@ impl UploadCoordinator {
                     )
                     .emit();
                     self.on_error(&e);
-                    if is_reject_class(&e) {
+                    if is_attributable_rejection(&e) {
                         self.register_reject(segment.index);
                         continue;
                     }
@@ -566,7 +662,7 @@ impl UploadCoordinator {
         }
 
         self.set_pending(self.store.scan().map(|s| s.len() as u64).unwrap_or(0));
-        Ok(confirmed_now)
+        Ok(witnesses)
     }
 
     /// Run forever (until `cancel`), ticking with exponential backoff on error.
@@ -647,11 +743,11 @@ impl UploadCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::{BTreeMap, HashSet, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use observer_model::RECENT_ERROR_COUNT_MAX;
-    use observer_pl::wire::{ServerFile, ServerSegment};
+    use observer_pl::ingest::{DayManifestSegment, SegmentFile, SegmentFileStatus, SegmentItem};
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 
     use crate::credential::{Credential, EndpointAddr};
@@ -974,13 +1070,13 @@ mod tests {
 
     struct FakeClient {
         ingests: Mutex<VecDeque<Result<(IngestResponse, SendMetadata), TransportError>>>,
-        lists: Mutex<VecDeque<Result<SegmentsResponse, TransportError>>>,
+        lists: Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
     }
 
     impl FakeClient {
         fn new(
             ingests: Vec<Result<(IngestResponse, SendMetadata), TransportError>>,
-            lists: Vec<Result<SegmentsResponse, TransportError>>,
+            lists: Vec<Result<(SegmentsEnvelope, SendMetadata), TransportError>>,
         ) -> Arc<Self> {
             Arc::new(Self {
                 ingests: Mutex::new(VecDeque::from(ingests)),
@@ -994,8 +1090,7 @@ mod tests {
             &'a self,
             _segment: &'a str,
             _day: &'a str,
-            _platform: &'a str,
-            _files: &'a [FilePart],
+            _files: Vec<FilePart>,
         ) -> IngestFuture<'a> {
             let result = self
                 .ingests
@@ -1004,6 +1099,15 @@ mod tests {
                 .pop_front()
                 .expect("scripted ingest result");
             Box::pin(async move { result })
+        }
+
+        fn ingest_manifest<'a>(&'a self, day: &'a str) -> ManifestFuture<'a> {
+            Box::pin(async move { Ok((manifest_for(day), test_metadata())) })
+        }
+
+        fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
+            let day_manifest = day_manifest_for(day, &self.lists);
+            Box::pin(async move { Ok((day_manifest, test_metadata())) })
         }
 
         fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
@@ -1019,7 +1123,7 @@ mod tests {
 
     struct CancelAfterFirstListClient {
         ingests: Mutex<VecDeque<Result<(IngestResponse, SendMetadata), TransportError>>>,
-        lists: Mutex<VecDeque<Result<SegmentsResponse, TransportError>>>,
+        lists: Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
         cancel: watch::Sender<bool>,
         ingest_count: Arc<AtomicUsize>,
         list_count: AtomicUsize,
@@ -1028,7 +1132,7 @@ mod tests {
     impl CancelAfterFirstListClient {
         fn new(
             ingests: Vec<Result<(IngestResponse, SendMetadata), TransportError>>,
-            lists: Vec<Result<SegmentsResponse, TransportError>>,
+            lists: Vec<Result<(SegmentsEnvelope, SendMetadata), TransportError>>,
             cancel: watch::Sender<bool>,
         ) -> Arc<Self> {
             Arc::new(Self {
@@ -1050,8 +1154,7 @@ mod tests {
             &'a self,
             _segment: &'a str,
             _day: &'a str,
-            _platform: &'a str,
-            _files: &'a [FilePart],
+            _files: Vec<FilePart>,
         ) -> IngestFuture<'a> {
             let result = self
                 .ingests
@@ -1065,6 +1168,15 @@ mod tests {
                 ingest_count.fetch_add(1, Ordering::SeqCst);
                 result
             })
+        }
+
+        fn ingest_manifest<'a>(&'a self, day: &'a str) -> ManifestFuture<'a> {
+            Box::pin(async move { Ok((manifest_for(day), test_metadata())) })
+        }
+
+        fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
+            let day_manifest = day_manifest_for(day, &self.lists);
+            Box::pin(async move { Ok((day_manifest, test_metadata())) })
         }
 
         fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
@@ -1082,6 +1194,53 @@ mod tests {
                 }
                 result
             })
+        }
+    }
+
+    fn test_metadata() -> SendMetadata {
+        SendMetadata {
+            path: TransportPath::Direct,
+            attempts: 1,
+        }
+    }
+
+    fn manifest_for(day: &str) -> IngestManifest {
+        IngestManifest {
+            days: BTreeMap::from([(
+                day.to_owned(),
+                observer_pl::ingest::ManifestDay { segments: 1 },
+            )]),
+        }
+    }
+
+    fn day_manifest_for(
+        day: &str,
+        lists: &Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
+    ) -> DayManifest {
+        let segments = lists
+            .lock()
+            .unwrap()
+            .front()
+            .and_then(|result| result.as_ref().ok())
+            .map(|(envelope, _)| {
+                envelope
+                    .items
+                    .iter()
+                    .map(|item| {
+                        (
+                            item.key.clone(),
+                            DayManifestSegment {
+                                files: item.files.clone(),
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        DayManifest {
+            version: 1,
+            day: day.to_owned(),
+            segments,
         }
     }
 
@@ -1127,7 +1286,6 @@ mod tests {
             dummy_client(),
             store,
             sync,
-            "windows",
             300,
             Arc::new(RwLock::new(RetentionConfig::default())),
             local_offset,
@@ -1152,7 +1310,6 @@ mod tests {
             client,
             store,
             sync,
-            "windows",
             300,
             Arc::new(RwLock::new(retention)),
             Arc::new(FixedOffset(0)),
@@ -1169,7 +1326,6 @@ mod tests {
             client,
             store,
             sync,
-            "windows",
             300,
             Arc::new(RwLock::new(RetentionConfig::default())),
             local_offset,
@@ -1188,11 +1344,16 @@ mod tests {
     ) -> Result<(IngestResponse, SendMetadata), TransportError> {
         Ok((
             IngestResponse {
-                status: status.into(),
+                status: match status {
+                    "ok" => IngestStatus::Ok,
+                    "duplicate" => IngestStatus::Duplicate,
+                    "collision" => IngestStatus::Collision,
+                    "conflict" => IngestStatus::Conflict,
+                    "failed" => IngestStatus::Failed,
+                    other => panic!("unsupported ingest status {other}"),
+                },
                 segment: segment.map(ToOwned::to_owned),
                 existing_segment: existing_segment.map(ToOwned::to_owned),
-                files: None,
-                bytes: None,
             },
             SendMetadata {
                 path: TransportPath::Direct,
@@ -1201,12 +1362,15 @@ mod tests {
         ))
     }
 
-    fn empty_segments() -> Result<SegmentsResponse, TransportError> {
-        Ok(SegmentsResponse {
-            items: Vec::new(),
-            total: Some(0),
-            protocol_version: Some(2),
-        })
+    fn empty_segments() -> Result<(SegmentsEnvelope, SendMetadata), TransportError> {
+        Ok((
+            SegmentsEnvelope {
+                items: Vec::new(),
+                total: 0,
+                protocol_version: 3,
+            },
+            test_metadata(),
+        ))
     }
 
     fn confirmed_segments(
@@ -1214,7 +1378,7 @@ mod tests {
         file_name: &str,
         sha: String,
         size: u64,
-    ) -> Result<SegmentsResponse, TransportError> {
+    ) -> Result<(SegmentsEnvelope, SendMetadata), TransportError> {
         listed_segments(segment_key, file_name, sha, size, Some("present"))
     }
 
@@ -1224,29 +1388,44 @@ mod tests {
         sha: String,
         size: u64,
         status: Option<&str>,
-    ) -> Result<SegmentsResponse, TransportError> {
-        Ok(SegmentsResponse {
-            items: vec![ServerSegment {
-                key: segment_key,
-                files: vec![ServerFile {
-                    name: file_name.to_string(),
-                    sha256: Some(sha),
-                    size: Some(size),
-                    status: status.map(ToOwned::to_owned),
-                    submitted_name: None,
+    ) -> Result<(SegmentsEnvelope, SendMetadata), TransportError> {
+        Ok((
+            SegmentsEnvelope {
+                items: vec![SegmentItem {
+                    key: segment_key,
+                    observed: false,
+                    files: vec![SegmentFile {
+                        name: file_name.to_string(),
+                        sha256: sha,
+                        size,
+                        status: match status {
+                            Some("present") => SegmentFileStatus::Present,
+                            Some("missing") => SegmentFileStatus::Missing,
+                            Some("processed") => SegmentFileStatus::Processed,
+                            other => panic!("unsupported custody status {other:?}"),
+                        },
+                        submitted_name: None,
+                    }],
+                    original_key: None,
                 }],
-            }],
-            total: Some(1),
-            protocol_version: Some(2),
-        })
+                total: 1,
+                protocol_version: 3,
+            },
+            test_metadata(),
+        ))
     }
 
     fn adversarial_body() -> String {
         "SECRET https://10.0.0.5/y?token=abc C:\\Users\\me\\seg.mp4 sha256:abc".into()
     }
 
+    fn attributable_request_body() -> String {
+        r#"{"error":"Ingest request refused","reason_code":"envelope_invalid","detail":"test"}"#
+            .into()
+    }
+
     #[test]
-    fn is_reject_class_partitions_transport_errors() {
+    fn only_attributable_local_request_rejections_count() {
         let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
         let cases = [
             (
@@ -1265,12 +1444,34 @@ mod tests {
                 )),
                 false,
             ),
-            (TransportError::Json(json_error), true),
+            (TransportError::Json(json_error), false),
             (TransportError::PairLink("token=abc".into()), false),
             (TransportError::Pairing("sha256:abc".into()), false),
+            (TransportError::Ingest("duplicate filename".into()), false),
             (
                 TransportError::Rejected {
                     status: 503,
+                    body: adversarial_body(),
+                },
+                false,
+            ),
+            (
+                TransportError::Rejected {
+                    status: 400,
+                    body: r#"{"reason_code":"envelope_invalid"}"#.into(),
+                },
+                true,
+            ),
+            (
+                TransportError::Rejected {
+                    status: 400,
+                    body: r#"{"reason_code":"protocol_version_legacy"}"#.into(),
+                },
+                false,
+            ),
+            (
+                TransportError::Rejected {
+                    status: 413,
                     body: adversarial_body(),
                 },
                 true,
@@ -1281,7 +1482,7 @@ mod tests {
                     endpoint: crate::RelayControlEndpoint::EnrollDevice,
                     status: 409,
                 },
-                true,
+                false,
             ),
             (TransportError::NoEndpoint, false),
             (TransportError::NotPaired, false),
@@ -1289,7 +1490,7 @@ mod tests {
         ];
 
         for (error, expected) in cases {
-            assert_eq!(is_reject_class(&error), expected, "{error:?}");
+            assert_eq!(is_attributable_rejection(&error), expected, "{error:?}");
         }
     }
 
@@ -1311,8 +1512,8 @@ mod tests {
         let client = FakeClient::new(
             vec![
                 Err(TransportError::Rejected {
-                    status: 503,
-                    body: adversarial_body(),
+                    status: 400,
+                    body: attributable_request_body(),
                 }),
                 accepted_ingest(1),
             ],
@@ -1349,8 +1550,8 @@ mod tests {
             (0..QUARANTINE_AFTER_REJECTS)
                 .map(|_| {
                     Err(TransportError::Rejected {
-                        status: 422,
-                        body: adversarial_body(),
+                        status: 400,
+                        body: attributable_request_body(),
                     })
                 })
                 .collect(),
@@ -1373,7 +1574,7 @@ mod tests {
         assert_eq!(snapshot.upload.quarantined_segments, 1);
         assert_eq!(snapshot.upload.pending_segments, 0);
         assert_eq!(snapshot.upload.recent_error_count, 0);
-        assert_eq!(snapshot.upload.last_error.as_deref(), Some("http_422"));
+        assert_eq!(snapshot.upload.last_error.as_deref(), Some("http_400"));
         let last_error = snapshot.upload.last_error.unwrap();
         assert!(!last_error.contains("SECRET"));
         assert!(!last_error.contains("token"));
@@ -1466,8 +1667,8 @@ mod tests {
         let mut ingests = Vec::new();
         for _ in 0..(QUARANTINE_AFTER_REJECTS - 1) {
             ingests.push(Err(TransportError::Rejected {
-                status: 503,
-                body: adversarial_body(),
+                status: 400,
+                body: attributable_request_body(),
             }));
         }
         ingests.push(accepted_ingest(1));
@@ -1483,13 +1684,16 @@ mod tests {
         for _ in 0..(QUARANTINE_AFTER_REJECTS - 1) {
             assert_eq!(coordinator.tick().await.unwrap(), 0);
         }
-        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert!(matches!(
+            coordinator.tick().await,
+            Err(TransportError::Rejected { status: 403, .. })
+        ));
         let snapshot = sync.lock().unwrap().clone();
 
         assert_eq!(handle.pending_indices(), vec![1]);
         assert!(!handle.quarantined(1));
         assert_eq!(snapshot.upload.quarantined_segments, 0);
-        assert_eq!(snapshot.upload.recent_error_count, 0);
+        assert_eq!(snapshot.upload.recent_error_count, 1);
     }
 
     #[tokio::test]
@@ -1942,145 +2146,71 @@ mod tests {
         assert!(*removed.lock().unwrap());
     }
 
-    fn observer_contract_authority_record(
-        document: &str,
-        field: &str,
-        id: &str,
-    ) -> serde_json::Value {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contracts/observer-client/bundle")
-            .join(document);
-        let value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(root).expect("read authority bundle"))
-                .expect("parse authority bundle");
-        value[field]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|record| record["id"] == id)
-            .unwrap_or_else(|| panic!("missing authority record {id}"))
-            .clone()
-    }
-
     #[tokio::test]
-    async fn observer_contract_authority_coordinator_uses_pinned_stored_key_precedence() {
-        for vector_id in [
-            "observer.ingestUpload.status.collision",
-            "observer.ingestUpload.status.duplicate",
-            "observer.ingestUpload.status.ok",
-        ] {
-            assert!(xtask::observer_contract::ADOPTED_VECTOR_IDS.contains(&vector_id));
-            let vector = observer_contract_authority_record("vectors.json", "vectors", vector_id);
-            let fixture_id = vector["fixture_id"].as_str().unwrap();
-            let fixture = observer_contract_authority_record(
-                "fixtures/wire-behavior.json",
-                "fixtures",
-                fixture_id,
-            );
-            let response: IngestResponse =
-                serde_json::from_value(fixture["payload"].clone()).unwrap();
-            assert!(response.is_accepted());
-            let source = vector["decision"]["stored_key_source"].as_str().unwrap();
-            let selected = match source {
-                "segment" => response.segment.as_deref().unwrap(),
-                "existing_segment" => response.existing_segment.as_deref().unwrap(),
-                other => panic!("unsupported authority source {other}"),
-            }
-            .to_owned();
-            let file_name = "audio.flac";
-            let bytes = b"authority-coordinator".to_vec();
-            let sha = ca::sha256_hex(&bytes);
-            let store = OneSegmentStore::new(1_700_000_100, file_name, bytes.clone());
-            let removed = store.removed_handle();
-            let client = FakeClient::new(
-                vec![Ok((
-                    response,
-                    SendMetadata {
-                        path: TransportPath::Direct,
-                        attempts: 1,
-                    },
-                ))],
-                vec![confirmed_segments(
-                    selected,
-                    file_name,
-                    sha,
-                    bytes.len() as u64,
-                )],
-            );
-            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-            let coordinator = coordinator_with_client(client, Box::new(store), sync);
-
-            assert_eq!(coordinator.tick().await.unwrap(), 1, "{vector_id}");
-            assert!(*removed.lock().unwrap(), "{vector_id}");
-        }
-
+    async fn unknown_custody_status_is_retry_eligible_and_the_original_segment_confirms_later() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
         let file_name = "audio.flac";
-        let bytes = b"submitted-key-fallback".to_vec();
-        let local_key = civil::segment_key_string_local(boundary, 0, 300);
-        let sha = ca::sha256_hex(&bytes);
-        let store = OneSegmentStore::new(boundary, file_name, bytes.clone());
-        let removed = store.removed_handle();
+        let bytes = b"original bytes".to_vec();
+        let segment_key = civil::segment_key_string_local(boundary, 0, 300);
+        let unknown_status = || {
+            TransportError::Json(
+                serde_json::from_str::<SegmentsEnvelope>(
+                    r#"{"items":[{"key":"080000_600","observed":false,"files":[{"name":"audio.flac","size":91,"sha256":"abc","status":"quarantined"}]}],"total":1,"protocol_version":3}"#,
+                )
+                .unwrap_err(),
+            )
+        };
         let client = FakeClient::new(
-            vec![accepted_ingest(1)],
-            vec![confirmed_segments(
-                local_key,
-                file_name,
-                sha,
-                bytes.len() as u64,
-            )],
+            vec![accepted_ingest(1), accepted_ingest(2), accepted_ingest(3)],
+            vec![
+                Err(unknown_status()),
+                Err(unknown_status()),
+                confirmed_segments(
+                    segment_key,
+                    file_name,
+                    ca::sha256_hex(&bytes),
+                    bytes.len() as u64,
+                ),
+            ],
         );
-        let coordinator = coordinator_with_client(
-            client,
-            Box::new(store),
-            Arc::new(Mutex::new(SyncSnapshot::default())),
-        );
+        let store = OneSegmentStore::new(boundary, file_name, bytes);
+        let removed = store.removed_handle();
+        let coordinator = coordinator_with_client(client, Box::new(store), sync);
+
+        assert!(matches!(
+            coordinator.tick().await,
+            Err(TransportError::Json(_))
+        ));
+        assert!(matches!(
+            coordinator.tick().await,
+            Err(TransportError::Json(_))
+        ));
+        assert!(!*removed.lock().unwrap());
+        assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
+
         assert_eq!(coordinator.tick().await.unwrap(), 1);
         assert!(*removed.lock().unwrap());
+        assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn observer_contract_authority_coordinator_preserves_rejected_uploads() {
-        for vector_id in [
-            "observer.ingestUpload.status.conflict",
-            "observer.ingestUpload.status.failed",
-            "observer.ingestUpload.status_unknown_rejected",
-        ] {
-            let vector = observer_contract_authority_record("vectors.json", "vectors", vector_id);
-            let fixture = observer_contract_authority_record(
-                "fixtures/wire-behavior.json",
-                "fixtures",
-                vector["fixture_id"].as_str().unwrap(),
-            );
-            let ingest = if let Some(status) = vector["decision"]["http_status"].as_u64() {
-                if status != 200 {
-                    Err(TransportError::Rejected {
-                        status: status as u16,
-                        body: serde_json::to_string(&fixture["payload"]).unwrap(),
-                    })
-                } else {
-                    unreachable!()
-                }
-            } else {
-                Ok((
-                    serde_json::from_value(fixture["payload"].clone()).unwrap(),
-                    SendMetadata {
-                        path: TransportPath::Direct,
-                        attempts: 1,
-                    },
-                ))
-            };
-            let store = OneSegmentStore::new(1_700_000_100, "audio.flac", b"retained".to_vec());
-            let removed = store.removed_handle();
-            let client = FakeClient::new(vec![ingest], vec![]);
-            let coordinator = coordinator_with_client(
-                client,
-                Box::new(store),
-                Arc::new(Mutex::new(SyncSnapshot::default())),
-            );
+    async fn conflict_and_failed_statuses_do_not_accumulate_quarantine() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let store = OneSegmentStore::new(1_700_000_100, "audio.flac", b"retained".to_vec());
+        let removed = store.removed_handle();
+        let client = FakeClient::new(
+            vec![
+                scripted_ingest("conflict", None, None, 1),
+                scripted_ingest("failed", None, None, 2),
+            ],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync);
 
-            assert_eq!(coordinator.tick().await.unwrap(), 0, "{vector_id}");
-            assert!(!*removed.lock().unwrap(), "{vector_id}");
-        }
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert!(!*removed.lock().unwrap());
+        assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
     }
 }

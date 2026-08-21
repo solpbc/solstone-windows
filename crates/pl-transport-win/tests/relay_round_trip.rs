@@ -23,7 +23,7 @@ use observer_pl::frame::{
     Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RECOMMENDED_CHUNK,
 };
 use observer_pl::http::{self, HttpResponse};
-use observer_pl::multipart::FilePart;
+use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::mux::INITIAL_WINDOW;
 use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
@@ -49,6 +49,10 @@ use tokio_tungstenite::{accept_async, accept_hdr_async, WebSocketStream};
 
 use support::journal_fake::{self_signed, server_config};
 use support::log_capture::CapturingSubscriber;
+use support::observer_contract::{
+    fixture as authority_fixture, v3_read_capture_matches, v3_upload_capture_matches,
+    vector as authority_vector,
+};
 
 const RELAY_TOKEN: &str = "test-device-token";
 const INSTANCE_ID: &str = "12345678-1234-5678-1234-567812345678";
@@ -653,7 +657,7 @@ where
         }
     }
 
-    let body = b"{\"status\":\"accepted\"}";
+    let body = b"{\"status\":\"ok\"}";
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -1151,7 +1155,7 @@ fn full_request_len_from_captured_head(raw: &[u8]) -> usize {
 
 #[derive(Debug, PartialEq, Eq)]
 struct CompleteClientOutcome {
-    status: String,
+    status: IngestStatus,
     path: TransportPath,
     attempts: u32,
 }
@@ -1169,6 +1173,17 @@ fn production_ingest_files() -> Vec<FilePart> {
     }]
 }
 
+async fn relay_client_with_response(
+    status: &'static str,
+    body: &'static [u8],
+) -> (ObserverClient, JoinHandle<Vec<u8>>) {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let (origin, server) = spawn_response_relay(acceptor, status, body, None, 4096).await;
+    let token = mint_jwt(epoch_secs(), epoch_secs() + 10_000);
+    let client = ObserverClient::new(observer_relay_credential(pin, 9, origin, token)).unwrap();
+    (client, server)
+}
+
 async fn run_complete_observer_ingest(
     observer: Option<Arc<OperationObserver>>,
     token: String,
@@ -1178,12 +1193,7 @@ async fn run_complete_observer_ingest(
     let client =
         heartbeat_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
     let (response, metadata) = client
-        .ingest(
-            "143000_300",
-            "20260729",
-            "windows",
-            &production_ingest_files(),
-        )
+        .ingest("143000_300", "20260729", production_ingest_files())
         .await
         .unwrap();
     let artifacts = server.await.unwrap();
@@ -1206,12 +1216,7 @@ async fn run_interrupted_observer_ingest(
     let client =
         heartbeat_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
     let error = client
-        .ingest(
-            "143000_300",
-            "20260729",
-            "windows",
-            &production_ingest_files(),
-        )
+        .ingest("143000_300", "20260729", production_ingest_files())
         .await
         .unwrap_err();
     let outcome = match error {
@@ -1261,6 +1266,148 @@ async fn relay_round_trips_small_body() {
 }
 
 #[tokio::test]
+async fn observer_contract_authority_relay_v3_operations_have_identical_mtls_only_policy() {
+    let day = "20260820";
+    let segment = "080000_600";
+    let filenames = ["screen.mp4", "audio.flac"];
+    let (client, server) =
+        relay_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#).await;
+    client
+        .ingest(
+            segment,
+            day,
+            filenames
+                .iter()
+                .map(|filename| FilePart {
+                    filename: (*filename).to_owned(),
+                    content_type: "application/octet-stream".to_owned(),
+                    bytes: filename.as_bytes().to_vec(),
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let upload = server.await.unwrap();
+    assert!(v3_upload_capture_matches(&upload, day, segment, &filenames));
+
+    let (client, server) =
+        relay_client_with_response("200 OK", br#"{"days":{"20260820":{"segments":1}}}"#).await;
+    client.ingest_manifest().await.unwrap();
+    assert!(v3_read_capture_matches(
+        &server.await.unwrap(),
+        "GET",
+        "/app/devices/ingest/manifest"
+    ));
+
+    let (client, server) =
+        relay_client_with_response("200 OK", br#"{"version":1,"day":"20260820","segments":{}}"#)
+            .await;
+    client.ingest_manifest_day(day).await.unwrap();
+    assert!(v3_read_capture_matches(
+        &server.await.unwrap(),
+        "GET",
+        "/app/devices/ingest/manifest/20260820"
+    ));
+
+    let (client, server) =
+        relay_client_with_response("200 OK", br#"{"items":[],"total":0,"protocol_version":3}"#)
+            .await;
+    client.list_segments(day).await.unwrap();
+    assert!(v3_read_capture_matches(
+        &server.await.unwrap(),
+        "GET",
+        "/app/devices/ingest/segments/20260820"
+    ));
+}
+
+#[tokio::test]
+async fn observer_contract_authority_relay_status_vectors_use_documented_http_mapping() {
+    for vector_id in xtask::observer_contract::VECTOR_IDS {
+        let vector = authority_vector(vector_id);
+        let fixture = authority_fixture(vector["fixture_id"].as_str().unwrap());
+        let status = vector["decision"]["http_status"].as_u64().unwrap();
+        let reason = match status {
+            200 => "OK",
+            409 => "Conflict",
+            500 => "Internal Server Error",
+            _ => unreachable!("pinned status"),
+        };
+        let body: &'static [u8] = Box::leak(
+            serde_json::to_vec(&fixture["payload"])
+                .unwrap()
+                .into_boxed_slice(),
+        );
+        let (client, server) = relay_client_with_response(
+            Box::leak(format!("{status} {reason}").into_boxed_str()),
+            body,
+        )
+        .await;
+        let (response, _) = client
+            .ingest(
+                "080000_600",
+                "20260820",
+                vec![FilePart {
+                    filename: "status.wav".into(),
+                    content_type: "audio/wav".into(),
+                    bytes: vec![1],
+                }],
+            )
+            .await
+            .expect("documented status response parses");
+        assert_eq!(
+            response.status.is_accepted(),
+            vector["decision"]["accepted"].as_bool().unwrap(),
+            "{vector_id}"
+        );
+        assert!(v3_upload_capture_matches(
+            &server.await.unwrap(),
+            "20260820",
+            "080000_600",
+            &["status.wav"]
+        ));
+    }
+}
+
+#[tokio::test]
+async fn observer_contract_authority_relay_v3_reads_fail_closed_on_non_success() {
+    for status in [403, 500] {
+        let text: &'static str = Box::leak(format!("{status} Rejected").into_boxed_str());
+        let (client, server) = relay_client_with_response(text, br#"{}"#).await;
+        assert!(matches!(
+            client.ingest_manifest().await,
+            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+        ));
+        assert!(v3_read_capture_matches(
+            &server.await.unwrap(),
+            "GET",
+            "/app/devices/ingest/manifest"
+        ));
+
+        let (client, server) = relay_client_with_response(text, br#"{}"#).await;
+        assert!(matches!(
+            client.ingest_manifest_day("20260820").await,
+            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+        ));
+        assert!(v3_read_capture_matches(
+            &server.await.unwrap(),
+            "GET",
+            "/app/devices/ingest/manifest/20260820"
+        ));
+
+        let (client, server) = relay_client_with_response(text, br#"{}"#).await;
+        assert!(matches!(
+            client.list_segments("20260820").await,
+            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+        ));
+        assert!(v3_read_capture_matches(
+            &server.await.unwrap(),
+            "GET",
+            "/app/devices/ingest/segments/20260820"
+        ));
+    }
+}
+
+#[tokio::test]
 async fn relay_streams_multi_mib_body_under_flow_control() {
     let (config, acceptor) = tls_pair();
     let (origin, server) = spawn_flow_relay(acceptor).await;
@@ -1283,7 +1430,7 @@ async fn relay_streams_multi_mib_body_under_flow_control() {
     .expect("relay must preserve the windowed upload over partial byte reads");
 
     assert_eq!(response.status, 200);
-    assert_eq!(response.body_text(), "{\"status\":\"accepted\"}");
+    assert_eq!(response.body_text(), "{\"status\":\"ok\"}");
     let artifacts = server.await.unwrap();
     let received = artifacts.request_bytes;
     assert!(
@@ -1307,7 +1454,7 @@ async fn relay_reassembles_large_response_across_partial_frames() {
         "inst-large-response",
         RELAY_TOKEN,
         "GET",
-        "/app/observer/large-response",
+        "/large-response",
         &[],
         b"",
     )
@@ -1326,7 +1473,7 @@ async fn relay_reassembles_large_response_across_partial_frames() {
     );
     let received = server.await.unwrap();
     let received_text = String::from_utf8_lossy(&received);
-    assert!(received_text.starts_with("GET /app/observer/large-response HTTP/1.1\r\n"));
+    assert!(received_text.starts_with("GET /large-response HTTP/1.1\r\n"));
 }
 
 #[tokio::test]
@@ -1613,7 +1760,7 @@ async fn relay_observer_is_inert_and_reports_every_byte_of_a_complete_production
 
     assert_eq!(observed_artifacts, unobserved_artifacts);
     assert_eq!(observed_outcome, unobserved_outcome);
-    assert_eq!(observed_outcome.status, "accepted");
+    assert_eq!(observed_outcome.status, IngestStatus::Ok);
     assert_eq!(observed_outcome.path, TransportPath::Relay);
     assert_eq!(
         u64::from(observed_outcome.attempts),

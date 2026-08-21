@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use observer_model::{SyncSnapshot, TransportPath};
+use observer_model::SyncSnapshot;
 use observer_pl::civil;
 use observer_pl::pairlink::{self, ParsedPairLink};
 use observer_pl::wire::HeartbeatEvent;
@@ -24,10 +24,10 @@ use observer_retention::RetentionConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::args::{Command, OperationArgs};
+use super::args::{Carrier, Command, OperationArgs};
 use super::report::{Evidence, Failure, Phase, RemoteResidue, Residue};
 use super::{
-    progress, relay_path_failure, runtime, shared_observer, Environment, FixedOffset,
+    carrier_path_failure, progress, runtime, shared_observer, Environment, FixedOffset,
     OperationBudget,
 };
 use crate::client::ObserverClient;
@@ -138,6 +138,7 @@ fn execute_inner(
                 payload,
                 day,
                 segment,
+                carrier,
             } => {
                 upload(
                     command,
@@ -147,6 +148,7 @@ fn execute_inner(
                     payload,
                     day,
                     segment,
+                    *carrier,
                 )
                 .await
             }
@@ -385,19 +387,31 @@ async fn pair(
 
 // ── shared ───────────────────────────────────────────────────────────────────
 
-fn load_paired(environment: &Environment) -> Result<PairedState, Failure> {
-    let paired = PairedState::load(&environment.state_path).map_err(|error| {
-        Failure::transport(
+fn load_credential(environment: &Environment) -> Result<PairedState, Failure> {
+    let paired = PairedState::load(&environment.state_path).map_err(|_| {
+        Failure::error(
             Phase::Precondition,
-            &error,
-            "the profile's pairing state could not be read; it is absent, malformed, or unreadable",
+            "pairing_state_unavailable",
+            "the profile's pairing state could not be read",
         )
     })?;
-    if !paired.is_paired() || paired.observer_key.is_none() {
+    if !paired.is_paired() {
         return Err(Failure::error(
             Phase::Precondition,
-            "not_paired",
-            "this operation needs a paired profile; run --integration pair first",
+            "paired_credential_missing",
+            "this operation needs a paired credential; run --integration pair first",
+        ));
+    }
+    Ok(paired)
+}
+
+fn load_excluded_operation_pairing(environment: &Environment) -> Result<PairedState, Failure> {
+    let paired = load_credential(environment)?;
+    if paired.observer_key.is_none() {
+        return Err(Failure::error(
+            Phase::Precondition,
+            "observer_handle_missing",
+            "this excluded operation needs an observer handle; run --integration pair first",
         ));
     }
     Ok(paired)
@@ -408,10 +422,13 @@ fn client_for(
     paired: &PairedState,
     observer: ObserverHandle,
 ) -> Result<ObserverClient, Failure> {
-    let credential = paired
-        .credential
-        .clone()
-        .ok_or_else(|| Failure::error(Phase::Precondition, "not_paired", "no credential"))?;
+    let credential = paired.credential.clone().ok_or_else(|| {
+        Failure::error(
+            Phase::Precondition,
+            "paired_credential_missing",
+            "this operation needs a paired credential",
+        )
+    })?;
     ObserverClient::new(credential)
         .map(|client| {
             client
@@ -449,7 +466,7 @@ async fn roundtrip(
         ..Default::default()
     };
 
-    let paired = match load_paired(environment) {
+    let paired = match load_excluded_operation_pairing(environment) {
         Ok(paired) => paired,
         Err(failure) => return (Some(failure), evidence),
     };
@@ -495,7 +512,7 @@ async fn roundtrip(
                 evidence,
             )
         }
-        Ok(Ok(listed)) => {
+        Ok(Ok((listed, _))) => {
             evidence.segments_listed = Some(true);
             evidence.segment_count = Some(listed.items.len() as u64);
         }
@@ -509,8 +526,7 @@ async fn roundtrip(
     if let Some(deadline) = budget.checkpoint(Phase::Assert) {
         return (Some(deadline), evidence);
     }
-    evidence.observed_path = Some(TransportPath::Relay.as_str());
-    (relay_path_failure(counts), evidence)
+    (carrier_path_failure(Carrier::Relay, counts), evidence)
 }
 
 // ── fetch ────────────────────────────────────────────────────────────────────
@@ -601,7 +617,7 @@ async fn fetch(
         ..Default::default()
     };
 
-    let paired = match load_paired(environment) {
+    let paired = match load_excluded_operation_pairing(environment) {
         Ok(paired) => paired,
         Err(failure) => return (Some(failure), evidence),
     };
@@ -665,8 +681,7 @@ async fn fetch(
     if let Some(deadline) = budget.checkpoint(Phase::Assert) {
         return (Some(deadline), evidence);
     }
-    evidence.observed_path = Some(TransportPath::Relay.as_str());
-    (relay_path_failure(counts), evidence)
+    (carrier_path_failure(Carrier::Relay, counts), evidence)
 }
 
 async fn fetch_through_bridge(
@@ -878,15 +893,17 @@ async fn upload(
     payload: &Path,
     day: &str,
     segment: &str,
+    carrier: Carrier,
 ) -> OpResult {
     let mut evidence = Evidence {
         day: Some(day.to_string()),
         segment: Some(segment.to_string()),
         confirmed: Some(false),
+        requested_carrier: Some(carrier.as_str()),
         ..Default::default()
     };
 
-    let paired = match load_paired(environment) {
+    let paired = match load_credential(environment) {
         Ok(paired) => paired,
         Err(failure) => return (Some(failure), evidence),
     };
@@ -965,7 +982,6 @@ async fn upload(
         Arc::new(client),
         Box::new(store),
         sync.clone(),
-        environment.platform.clone(),
         environment.period_secs.max(1),
         Arc::new(RwLock::new(RetentionConfig::default())),
         Arc::new(FixedOffset(offset)),
@@ -973,18 +989,15 @@ async fn upload(
 
     progress("uploading through the production coordinator");
     let budget = OperationBudget::start(command.deadline);
-    let ticked = budget.run(Phase::Ingest, coordinator.tick()).await;
+    let ticked = budget
+        .run(Phase::Ingest, coordinator.tick_with_witness())
+        .await;
 
     // Progress evidence is read whether or not the tick succeeded: a bounded
     // interruption must be visible as bytes sent without a completed close.
     let counts = counts_source.counts();
     evidence.bytes_sent_before_close = Some(counts.request_bytes_sent);
     evidence.close_completed = Some(counts.close_completed);
-    if let Ok(snapshot) = sync.lock() {
-        evidence.server_segment = snapshot.upload.last_uploaded_server_segment.clone();
-        evidence.observed_path = snapshot.upload.last_upload_path.map(|path| path.as_str());
-    }
-
     let confirmed = match ticked {
         Err(deadline) => return (Some(deadline), evidence),
         Ok(Err(error)) => {
@@ -1000,23 +1013,45 @@ async fn upload(
         Ok(Ok(confirmed)) => confirmed,
     };
 
-    evidence.confirmed = Some(confirmed > 0);
-    if confirmed == 0 {
-        return (
-            Some(Failure::assertion(
-                Phase::Reconcile,
-                "custody_not_proven",
-                "the journal accepted the segment but custody of every submitted file was not proven by the segment listing",
-            )),
-            evidence,
-        );
+    if let Err(failure) = record_custody_witness(&mut evidence, &confirmed) {
+        return (Some(failure), evidence);
     }
 
     if let Some(deadline) = budget.checkpoint(Phase::Assert) {
         return (Some(deadline), evidence);
     }
-    evidence.observed_path = Some(TransportPath::Relay.as_str());
-    (relay_path_failure(counts), evidence)
+    (carrier_path_failure(carrier, counts), evidence)
+}
+
+/// Populate pass-shaped upload evidence only after a complete coordinator
+/// witness exists. The coordinator's type makes an unproven server key
+/// unavailable here.
+fn record_custody_witness(
+    evidence: &mut Evidence,
+    confirmed: &[crate::coordinator::ConfirmedUpload],
+) -> Result<(), Failure> {
+    let [confirmed] = confirmed else {
+        return Err(Failure::assertion(
+            Phase::Reconcile,
+            "custody_not_proven",
+            "the journal accepted the segment but custody of every submitted file was not proven by the segment listing",
+        ));
+    };
+    let [file] = confirmed.witness.files() else {
+        return Err(Failure::assertion(
+            Phase::Reconcile,
+            "custody_file_witness_missing",
+            "the custody witness did not contain the submitted file",
+        ));
+    };
+    evidence.confirmed = Some(true);
+    evidence.server_segment = Some(confirmed.witness.server_segment().to_owned());
+    evidence.observed_carrier = Some(confirmed.metadata.path.as_str());
+    evidence.server_submitted_name = Some(file.submitted_name.clone());
+    evidence.server_sha256 = Some(file.sha256.clone());
+    evidence.server_size = Some(file.size);
+    evidence.server_custody_status = Some(file.status);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1029,6 +1064,28 @@ mod tests {
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
+
+    #[test]
+    fn upload_evidence_cannot_become_pass_shaped_without_a_custody_witness() {
+        let mut evidence = Evidence {
+            confirmed: Some(false),
+            requested_carrier: Some(Carrier::Direct.as_str()),
+            ..Default::default()
+        };
+        let failure = record_custody_witness(&mut evidence, &[])
+            .expect_err("an empty coordinator result has no custody witness");
+        assert!(matches!(
+            failure,
+            Failure::Assertion { ref reason, .. } if reason == "custody_not_proven"
+        ));
+        assert_eq!(evidence.confirmed, Some(false));
+        assert!(evidence.observed_carrier.is_none());
+        assert!(evidence.server_segment.is_none());
+        assert!(evidence.server_submitted_name.is_none());
+        assert!(evidence.server_sha256.is_none());
+        assert!(evidence.server_size.is_none());
+        assert!(evidence.server_custody_status.is_none());
+    }
 
     fn environment(root: &Path) -> Environment {
         Environment {

@@ -14,12 +14,10 @@
 //!   CLOSE/PING/PONG) and the dialer-side request/response assembler.
 //! - [`http`] — HTTP/1.1 request build + response parse, exactly as the Android
 //!   `PlHttp` transport frames it (`host: spl.local`, framing-owned headers).
-//! - [`wire`] — the serde request/response shapes for `/app/network/pair`,
-//!   `/app/devices/register`, `/app/devices/ingest`, `/app/devices/ingest/event`
-//!   (heartbeat), and `/app/devices/ingest/segments/<day>` (reconcile).
-//! - [`multipart`] — the ingest multipart body, byte-identical to the macOS /
-//!   Android / iOS uploaders (`files` field name; the server reads
-//!   `request.files.getlist("files")`).
+//! - [`wire`] — the excluded pair, register, and heartbeat request/response
+//!   shapes.
+//! - [`ingest`] — the protocol-v3 ingest envelope, responses, and pure custody
+//!   proof.
 //! - [`ca`] — CA-fingerprint prefix pinning (SHA-256 of the cert DER, first 16
 //!   bytes), the constant the transport's TLS verifier enforces.
 //! - [`relay_window`] — relay pair-window RK and journal identity derivations.
@@ -38,8 +36,8 @@ pub mod civil;
 pub mod crockford;
 pub mod frame;
 pub mod http;
+pub mod ingest;
 pub mod jwt;
-pub mod multipart;
 pub mod mux;
 pub mod pairlink;
 pub mod relay;
@@ -50,9 +48,8 @@ pub mod wire;
 pub const DEFAULT_DIRECT_PORT: u16 = 7657;
 
 /// The observer protocol version this client speaks (sent as
-/// `X-Solstone-Protocol-Version`). v2 is the `{items,total,protocol_version}`
-/// reconcile envelope; v1 was a bare array.
-pub const OBSERVER_PROTOCOL_VERSION: u32 = 2;
+/// `X-Solstone-Protocol-Version`).
+pub const OBSERVER_PROTOCOL_VERSION: u32 = 3;
 
 /// Auth header carrying the observer handle. Preferred over `Authorization`
 /// because it survives proxy stripping; the journal checks it first
@@ -71,6 +68,8 @@ pub mod paths {
     pub const REGISTER: &str = "/app/devices/register";
     /// Segment upload (multipart).
     pub const INGEST: &str = "/app/devices/ingest";
+    /// Root ingest manifest used for protocol-v3 custody proof.
+    pub const INGEST_MANIFEST: &str = "/app/devices/ingest/manifest";
     /// Observer event relay; the heartbeat posts `observe.status` here.
     pub const INGEST_EVENT: &str = "/app/devices/ingest/event";
     /// Per-day segment list for reconciliation (append `/<YYYYMMDD>`).

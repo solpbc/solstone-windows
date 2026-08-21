@@ -11,14 +11,13 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use observer_model::TransportPath;
 use observer_pl::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
 use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::integration::report::{
     EXIT_ASSERTION_FAILED, EXIT_ERROR, EXIT_PASS, SCHEMA_VERSION,
 };
-use pl_transport_win::integration::{self, Environment};
+use pl_transport_win::integration::{self, Carrier, Environment};
 use pl_transport_win::observe::OperationObserver;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -198,7 +197,7 @@ fn the_large_fetch_precondition_is_enforced_before_any_network_work() {
         &root,
     );
     assert_eq!(value["phase"], "precondition");
-    assert_eq!(value["reason"], "not_paired");
+    assert_eq!(value["reason"], "paired_credential_missing");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -221,13 +220,15 @@ fn operations_needing_a_pairing_refuse_an_unpaired_profile() {
             "20260617",
             "--segment",
             "143000_300",
+            "--carrier",
+            "direct",
         ]),
     ];
     for argv in cases {
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
         let (value, code) = run(&borrowed, &root);
         assert_eq!(value["phase"], "precondition", "{argv:?}");
-        assert_eq!(value["reason"], "not_paired", "{argv:?}");
+        assert_eq!(value["reason"], "paired_credential_missing", "{argv:?}");
         assert_eq!(code, EXIT_ERROR, "{argv:?}");
     }
     let _ = std::fs::remove_dir_all(&root);
@@ -244,7 +245,7 @@ fn a_malformed_pairing_file_is_an_error_not_a_silent_unpaired_default() {
         &root,
     );
     assert_eq!(value["phase"], "precondition");
-    assert_eq!(value["reason"], "json");
+    assert_eq!(value["reason"], "pairing_state_unavailable");
     assert_eq!(code, EXIT_ERROR);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -330,8 +331,8 @@ fn a_dial_ceiling_is_reported_even_when_it_is_not_exceeded() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// A direct-path success must never read PASS for an operation that asserts the
-/// relay carried it.
+/// A direct-path success must never read PASS for an operation that requires a
+/// relay carrier.
 #[tokio::test]
 async fn a_direct_path_success_is_an_assertion_failure_not_a_pass() {
     let (cert, key) = self_signed();
@@ -372,16 +373,15 @@ async fn a_direct_path_success_is_an_assertion_failure_not_a_pass() {
     assert_eq!(counts.direct_successes, 1);
     assert_eq!(counts.relay_successes, 0);
 
-    // The relay assertion refuses it: a direct success cannot be evidence of a
-    // relay-carried operation.
-    let failure = integration::relay_path_failure(counts)
+    // The carrier assertion refuses it: a direct success cannot be evidence of
+    // a relay-carried operation.
+    let failure = integration::carrier_path_failure(Carrier::Relay, counts)
         .expect("a direct-path success must not pass a relay assertion");
     assert_eq!(failure.exit_code(), EXIT_ASSERTION_FAILED);
 }
 
 #[test]
-fn the_observed_path_token_reuses_the_transport_vocabulary() {
-    // No parallel dialect: the envelope's path values are TransportPath's own.
-    assert_eq!(TransportPath::Relay.as_str(), "relay");
-    assert_eq!(TransportPath::Direct.as_str(), "direct");
+fn requested_carrier_uses_the_operator_cli_vocabulary() {
+    assert_eq!(Carrier::Relay.as_str(), "relay");
+    assert_eq!(Carrier::Direct.as_str(), "direct");
 }

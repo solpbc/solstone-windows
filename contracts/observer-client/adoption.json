@@ -2,86 +2,48 @@
   "adoption_schema_version": 1,
   "consumer_identifier": "solstone-windows",
   "authority_repository": "https://github.com/solpbc/solstone-journal",
-  "authority_commit": "766021cd44d4a0a7ce471d2affb461bf3ce0fc39",
-  "bundle_semver": "8.0.0",
-  "archive_sha256": "6f182448bd66cd6a81b24a1715536f761ff94303e5404646125eb32172b91ed0",
-  "archive_size_bytes": 15755,
+  "authority_commit": "dd76c42a21a7892fccc1b0cfa790ce1ad31bf78b",
+  "bundle_semver": "9.0.0",
+  "archive_sha256": "8711c7e811cd83f0bdb38d4a8a525c0c40e9bccf96716e7b567829efe7b97a89",
+  "archive_size_bytes": 5671,
   "authority_manifest_path": "manifest.json",
-  "authority_manifest_sha256": "9b3bcd6b7f8a83adb9007e32501af44403cb93cfb8d80f256b6a7b5b9f93057e",
+  "authority_manifest_sha256": "93b2a5a1604f1ba6fad30624c00cac98ea3d04a80cb1718886cf665c16f58834",
   "bundle_files": [
     {
       "path": "consumer-audit.json",
-      "sha256": "3f9938b38994ea2a3a19ea154152e5dc8b3f24843e53eb1f14b6fb33d58e6ac9"
+      "sha256": "522a1d0417086a85d755e058b9043e519665c63eace50b146bab1f1157ff0cdf"
     },
     {
       "path": "fixtures/wire-behavior.json",
-      "sha256": "b9ed72f3c3de4a890978079fcf286ddad212c6ac99bd32d3e080afdd5a787dc4"
+      "sha256": "65917fe91620f517d9988664e24b559722acbd6fb798bc518d1e092ef8f8771c"
     },
     {
       "path": "projection.openapi.json",
-      "sha256": "46eb05e6889f9176446fb315585a0e15a57600aead9ed1aaf948a93eee596c35"
+      "sha256": "7780c76380ae59504c069e388042401b050c60caf9027e1cf22a4cce0c19103e"
     },
     {
       "path": "vectors.json",
-      "sha256": "a4cb9712bf5a6679a2fefc6b94f1618dfbd8e7f227364103d70095a8dd6bce1f"
+      "sha256": "fd99f21f225573cd2aead2217e9716237e7b4f66bd36a225d0e7019ded4a222b"
     }
   ],
   "adopted_operation_ids": [
-    "callosum.rootEvents",
-    "link.pair",
-    "observer.ingestEvent",
+    "observer.ingestManifest",
+    "observer.ingestManifestDay",
     "observer.ingestSegments",
-    "observer.ingestUpload",
-    "observer.register"
+    "observer.ingestUpload"
   ],
   "adopted_fixture_ids": [
-    "declared.observer.ingestSegments.custody_unknown_rejected",
-    "declared.observer.ingestSegments.envelope_total_mismatch",
-    "declared.observer.ingestUpload.status_unknown_rejected",
-    "example.callosum.rootEvents.response.200.text-event-stream.default",
-    "example.link.pair.request.body.application-json.default",
-    "example.link.pair.response.200.application-json.default",
-    "example.observer.ingestEvent.request.body.application-json.default",
-    "example.observer.ingestEvent.response.200.application-json.default",
-    "example.observer.ingestSegments.response.200.application-json.legacy",
-    "example.observer.ingestSegments.response.200.application-json.v2",
-    "example.observer.ingestUpload.request.body.multipart-form-data.default",
-    "example.observer.ingestUpload.response.200.application-json.duplicate",
-    "example.observer.ingestUpload.response.200.application-json.normal",
-    "example.observer.register.request.body.application-json.default",
-    "example.observer.register.response.200.application-json.default",
-    "recorded.auth.bearer.segments",
-    "recorded.auth.handle.segments",
-    "recorded.ingestUpload.collision",
-    "recorded.ingestUpload.conflict",
-    "recorded.ingestUpload.duplicate",
-    "recorded.ingestUpload.failed",
-    "recorded.ingestUpload.ok",
-    "recorded.segments.custody_statuses",
-    "recorded.segments.legacy.absent_header",
-    "recorded.segments.legacy.unparseable_header",
-    "recorded.segments.submitted_name_omitted",
-    "recorded.segments.v2.envelope",
-    "recorded.sse.root.data_unknown_event",
-    "recorded.sse.root.heartbeat"
+    "declared.observer.ingestUpload.status.collision",
+    "declared.observer.ingestUpload.status.conflict",
+    "declared.observer.ingestUpload.status.duplicate",
+    "declared.observer.ingestUpload.status.failed",
+    "declared.observer.ingestUpload.status.ok"
   ],
   "adopted_vector_ids": [
-    "callosum.rootEvents.sse.data_unknown_event",
-    "callosum.rootEvents.sse.heartbeat",
-    "observer.auth.bearer",
-    "observer.auth.handle",
-    "observer.ingestSegments.custody_statuses",
-    "observer.ingestSegments.custody_unknown_rejected",
-    "observer.ingestSegments.envelope_total_mismatch",
-    "observer.ingestSegments.legacy_array.absent_header",
-    "observer.ingestSegments.legacy_array.unparseable_header",
-    "observer.ingestSegments.submitted_name_fallback",
-    "observer.ingestSegments.v2_envelope",
     "observer.ingestUpload.status.collision",
     "observer.ingestUpload.status.conflict",
     "observer.ingestUpload.status.duplicate",
     "observer.ingestUpload.status.failed",
-    "observer.ingestUpload.status.ok",
-    "observer.ingestUpload.status_unknown_rejected"
+    "observer.ingestUpload.status.ok"
   ]
 }

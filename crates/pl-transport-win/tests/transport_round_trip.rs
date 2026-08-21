@@ -12,6 +12,8 @@
 
 mod support;
 
+const HEARTBEAT_PROTOCOL_VERSION: u32 = 2;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,10 +26,10 @@ use observer_model::{
 use observer_pl::frame::{
     Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RESET_CANCEL,
 };
-use observer_pl::multipart::FilePart;
+use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::mux::INITIAL_WINDOW;
 use observer_pl::wire::HeartbeatEvent;
-use observer_pl::{OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER};
+use observer_pl::PROTOCOL_VERSION_HEADER;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
@@ -46,8 +48,10 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
-use support::observer_contract::{fixture as authority_fixture, vector as authority_vector};
-use xtask::observer_contract::WINDOWS_OPERATION_MAPPINGS;
+use support::observer_contract::{
+    fixture as authority_fixture, v3_read_capture_matches, v3_upload_capture_matches,
+    vector as authority_vector,
+};
 
 fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -133,7 +137,7 @@ fn heartbeat_capture_matches(request: &[u8], fixture: &serde_json::Value) -> boo
         && text.contains("X-Solstone-Observer: authority-observer\r\n")
         && text.contains("Authorization: Bearer authority-observer\r\n")
         && text.contains(&format!(
-            "{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}\r\n"
+            "{PROTOCOL_VERSION_HEADER}: {HEARTBEAT_PROTOCOL_VERSION}\r\n"
         ))
         && text.contains("Content-Type: application/json\r\n")
         && body["tract"] == fixture["payload"]["tract"]
@@ -157,31 +161,6 @@ fn pair_capture_matches(request: &[u8], nonce: &str, label: &str) -> bool {
             .is_some_and(|csr| csr.contains("BEGIN CERTIFICATE REQUEST"))
         && body.get("nonce").is_none()
         && body.get("sender_instance_id").is_none()
-}
-
-fn ingest_capture_matches(request: &[u8], payload: &serde_json::Value, filenames: &[&str]) -> bool {
-    let text = String::from_utf8_lossy(request);
-    text.starts_with("POST /app/devices/ingest HTTP/1.1\r\n")
-        && text.contains("X-Solstone-Observer: authority-observer\r\n")
-        && text.contains("Authorization: Bearer authority-observer\r\n")
-        && text.contains(&format!(
-            "{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}\r\n"
-        ))
-        && text.contains("Content-Type: multipart/form-data; boundary=")
-        && text.contains("name=\"segment\"")
-        && text.contains("name=\"day\"")
-        && text.contains("name=\"platform\"")
-        && text.contains(&format!("\r\n\r\n{}", payload["segment"].as_str().unwrap()))
-        && text.contains(&format!("\r\n\r\n{}", payload["day"].as_str().unwrap()))
-        && text.contains(&format!(
-            "\r\n\r\n{}",
-            payload["platform"].as_str().unwrap()
-        ))
-        && filenames
-            .iter()
-            .all(|filename| text.contains(&format!("name=\"files\"; filename=\"{filename}\"")))
-        && !text.contains("name=\"host\"")
-        && !text.contains("name=\"meta\"")
 }
 
 async fn read_framed_request(
@@ -297,7 +276,8 @@ async fn serve_one_pair_response(
                 .unwrap()
         }
     };
-    let fixture = authority_fixture("example.link.pair.response.200.application-json.default");
+    // Upstream follow-up: v9 no longer projects pairing; use the committed local fixture.
+    let fixture = authority_fixture("pair_response");
     let payload = &fixture["payload"];
     let response_body = serde_json::to_vec(&serde_json::json!({
         "client_cert": client_cert.pem(),
@@ -447,37 +427,6 @@ async fn start_client_with_response(
         .unwrap()
         .with_observer_key(observer_key.map(str::to_owned));
     (client, server)
-}
-
-async fn start_client_with_response_header(
-    body: &'static [u8],
-    extra_header: Option<&'static str>,
-) -> (ObserverClient, JoinHandle<Vec<u8>>) {
-    let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve_one_response_with_header(
-        listener,
-        acceptor,
-        "200 OK",
-        body,
-        body.len(),
-        extra_header,
-    ));
-    let client = ObserverClient::new(observer_credential(pin, port))
-        .unwrap()
-        .with_observer_key(Some("authority-observer".to_owned()));
-    (client, server)
-}
-
-fn assert_authenticated_request(request: &str) {
-    assert!(request.contains("X-Solstone-Observer: authority-observer\r\n"));
-    assert!(request.contains("Authorization: Bearer authority-observer\r\n"));
-    assert!(request.contains(&format!(
-        "{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}\r\n"
-    )));
 }
 
 async fn start_bridge_with_response_content_length(
@@ -928,10 +877,9 @@ async fn round_trips_request_over_real_tls_and_framing() {
 
 #[tokio::test]
 async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request_path() {
-    let request_fixture =
-        authority_fixture("example.link.pair.request.body.application-json.default");
-    let response_fixture =
-        authority_fixture("example.link.pair.response.200.application-json.default");
+    // Upstream follow-up: v9 no longer projects pairing; use the committed local fixture.
+    let request_fixture = authority_fixture("pair_request");
+    let response_fixture = authority_fixture("pair_response");
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.key_usages.push(KeyUsagePurpose::DigitalSignature);
@@ -1061,12 +1009,10 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
 
 #[tokio::test]
 async fn observer_contract_authority_register_captures_real_request_and_response() {
-    let request_fixture =
-        authority_fixture("example.observer.register.request.body.application-json.default");
-    let response_fixture =
-        authority_fixture("example.observer.register.response.200.application-json.default");
-    let body =
-        leaked_authority_payload("example.observer.register.response.200.application-json.default");
+    // Upstream follow-up: v9 no longer projects register; use the committed local fixture.
+    let request_fixture = authority_fixture("register_request");
+    let response_fixture = authority_fixture("register_response");
+    let body = leaked_authority_payload("register_response");
     let (mut client, server) = start_client_with_response("200 OK", body, None).await;
     let request_payload = &request_fixture["payload"];
 
@@ -1097,11 +1043,9 @@ async fn observer_contract_authority_register_captures_real_request_and_response
 
 #[tokio::test]
 async fn observer_contract_authority_heartbeat_captures_production_subset() {
-    let request_fixture =
-        authority_fixture("example.observer.ingestEvent.request.body.application-json.default");
-    let body = leaked_authority_payload(
-        "example.observer.ingestEvent.response.200.application-json.default",
-    );
+    // Upstream follow-up: v9 no longer projects ingestEvent; use the committed local fixture.
+    let request_fixture = authority_fixture("heartbeat_request");
+    let body = leaked_authority_payload("heartbeat_response");
     let (client, server) =
         start_client_with_response("200 OK", body, Some("authority-observer")).await;
     let event = HeartbeatEvent::status(false);
@@ -1133,10 +1077,10 @@ async fn observer_contract_authority_heartbeat_captures_production_subset() {
             "capture mutation was not detected: {from}"
         );
     }
-    let protocol_header = format!("{PROTOCOL_VERSION_HEADER}: {OBSERVER_PROTOCOL_VERSION}");
+    let protocol_header = format!("{PROTOCOL_VERSION_HEADER}: {HEARTBEAT_PROTOCOL_VERSION}");
     let wrong_protocol_header = format!(
         "{PROTOCOL_VERSION_HEADER}: {}",
-        OBSERVER_PROTOCOL_VERSION + 1
+        HEARTBEAT_PROTOCOL_VERSION + 1
     );
     let mutated = String::from_utf8(request.clone()).unwrap().replacen(
         &protocol_header,
@@ -1150,164 +1094,269 @@ async fn observer_contract_authority_heartbeat_captures_production_subset() {
 }
 
 #[tokio::test]
-async fn observer_contract_authority_list_segments_drives_v2_and_legacy_branches() {
-    let day =
-        authority_fixture("example.observer.ingestUpload.request.body.multipart-form-data.default")
-            ["payload"]["day"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-    for (fixture_id, header, legacy) in [
+async fn protocol_v3_list_segments_is_strict_and_mtls_only() {
+    let day = "20260729";
+    let (client, server) = start_client_with_response(
+        "200 OK",
+        br#"{"items":[],"total":0,"protocol_version":3}"#,
+        None,
+    )
+    .await;
+    let (response, _) = client.list_segments(day).await.unwrap();
+    assert_eq!(response.protocol_version, 3);
+    let request = String::from_utf8(server.await.unwrap()).unwrap();
+    assert!(request.starts_with(&format!(
+        "GET /app/devices/ingest/segments/{day} HTTP/1.1\r\n"
+    )));
+    assert!(request.contains(&format!("{PROTOCOL_VERSION_HEADER}: 3\r\n")));
+    assert!(!request.contains("Authorization:"));
+    assert!(!request.contains("X-Solstone-Observer:"));
+}
+
+#[tokio::test]
+async fn protocol_v3_manifest_reads_do_not_require_an_observer_handle() {
+    let day = "20260730";
+    let (client, root_server) =
+        start_client_with_response("200 OK", br#"{"days":{"20260730":{"segments":1}}}"#, None)
+            .await;
+    let (manifest, _) = client.ingest_manifest().await.unwrap();
+    assert_eq!(manifest.days[day].segments, 1);
+    let root_request = String::from_utf8(root_server.await.unwrap()).unwrap();
+    assert!(root_request.starts_with("GET /app/devices/ingest/manifest HTTP/1.1\r\n"));
+    assert!(!root_request.contains("Authorization:"));
+
+    let (client, day_server) = start_client_with_response(
+        "200 OK",
+        br#"{"version":1,"day":"20260730","segments":{}}"#,
+        None,
+    )
+    .await;
+    let (day_manifest, _) = client.ingest_manifest_day(day).await.unwrap();
+    assert_eq!(day_manifest.day, day);
+    let day_request = String::from_utf8(day_server.await.unwrap()).unwrap();
+    assert!(day_request.starts_with(&format!(
+        "GET /app/devices/ingest/manifest/{day} HTTP/1.1\r\n"
+    )));
+    assert!(!day_request.contains("X-Solstone-Observer:"));
+}
+
+#[tokio::test]
+async fn protocol_v3_ingest_captures_envelope_and_conflict_status() {
+    let day = "20260729";
+    let segment = "080000_600";
+    let filenames = ["screen-unique.mp4", "audio-unique.flac"];
+    let files = filenames
+        .iter()
+        .map(|filename| FilePart {
+            filename: (*filename).into(),
+            content_type: "application/octet-stream".into(),
+            bytes: filename.as_bytes().to_vec(),
+        })
+        .collect();
+    let (client, server) =
+        start_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#, None)
+            .await;
+    let (response, _) = client.ingest(segment, day, files).await.unwrap();
+    assert_eq!(response.status, IngestStatus::Ok);
+    let request = server.await.unwrap();
+    assert!(v3_upload_capture_matches(
+        &request, day, segment, &filenames
+    ));
+
+    let (client, server) = start_client_with_response(
+        "409 Conflict",
+        br#"{"status":"conflict"}"#,
+        Some("authority-observer"),
+    )
+    .await;
+    let (response, _) = client
+        .ingest(
+            segment,
+            day,
+            vec![FilePart {
+                filename: "conflict.wav".into(),
+                content_type: "audio/wav".into(),
+                bytes: vec![9],
+            }],
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status, IngestStatus::Conflict);
+    let request = String::from_utf8(server.await.unwrap()).unwrap();
+    assert!(!request.contains("Authorization:"));
+}
+
+#[tokio::test]
+async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_only_policy() {
+    let day = "20260820";
+    let segment = "080000_600";
+    let filenames = ["screen.mp4", "audio.flac"];
+
+    let (client, server) =
+        start_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#, None)
+            .await;
+    client
+        .ingest(
+            segment,
+            day,
+            filenames
+                .iter()
+                .map(|filename| FilePart {
+                    filename: (*filename).to_owned(),
+                    content_type: "application/octet-stream".to_owned(),
+                    bytes: filename.as_bytes().to_vec(),
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let upload = server.await.unwrap();
+    assert!(v3_upload_capture_matches(&upload, day, segment, &filenames));
+    for (from, to) in [
         (
-            "example.observer.ingestSegments.response.200.application-json.legacy",
-            None,
-            true,
+            "X-Solstone-Protocol-Version: 3",
+            "X-Solstone-Protocol-Version: 2",
         ),
         (
-            "example.observer.ingestSegments.response.200.application-json.v2",
-            Some("X-Solstone-Protocol-Version: 2"),
-            false,
+            "\"submitted\":\"screen.mp4\"",
+            "\"submitted\":\"wrong.mp4\"",
         ),
-        ("recorded.auth.bearer.segments", None, false),
-        ("recorded.auth.handle.segments", None, false),
-        ("recorded.segments.legacy.absent_header", None, true),
-        (
-            "recorded.segments.legacy.unparseable_header",
-            Some("X-Solstone-Protocol-Version: not-a-version"),
-            true,
-        ),
-        (
-            "recorded.segments.v2.envelope",
-            Some("X-Solstone-Protocol-Version: 2"),
-            false,
-        ),
+        ("name=\"files\"", "name=\"segment\""),
+        ("name=\"files\"", "name=\"day\""),
+        ("name=\"files\"", "name=\"platform\""),
     ] {
-        let fixture = authority_fixture(fixture_id);
-        let body = leaked_authority_payload(fixture_id);
-        let (client, server) = start_client_with_response_header(body, header).await;
-        let response = client.list_segments(&day).await.unwrap();
+        let mutated = String::from_utf8(upload.clone())
+            .unwrap()
+            .replacen(from, to, 1);
+        assert!(
+            !v3_upload_capture_matches(mutated.as_bytes(), day, segment, &filenames),
+            "mutation must invalidate the v3 upload assertion: {from}"
+        );
+    }
+
+    let (client, server) =
+        start_client_with_response("200 OK", br#"{"days":{"20260820":{"segments":1}}}"#, None)
+            .await;
+    client.ingest_manifest().await.unwrap();
+    assert!(v3_read_capture_matches(
+        &server.await.unwrap(),
+        "GET",
+        "/app/devices/ingest/manifest"
+    ));
+
+    let (client, server) = start_client_with_response(
+        "200 OK",
+        br#"{"version":1,"day":"20260820","segments":{}}"#,
+        None,
+    )
+    .await;
+    client.ingest_manifest_day(day).await.unwrap();
+    assert!(v3_read_capture_matches(
+        &server.await.unwrap(),
+        "GET",
+        "/app/devices/ingest/manifest/20260820"
+    ));
+
+    let (client, server) = start_client_with_response(
+        "200 OK",
+        br#"{"items":[],"total":0,"protocol_version":3}"#,
+        None,
+    )
+    .await;
+    client.list_segments(day).await.unwrap();
+    assert!(v3_read_capture_matches(
+        &server.await.unwrap(),
+        "GET",
+        "/app/devices/ingest/segments/20260820"
+    ));
+}
+
+#[tokio::test]
+async fn observer_contract_authority_direct_status_vectors_use_documented_http_mapping() {
+    for vector_id in xtask::observer_contract::VECTOR_IDS {
+        let vector = authority_vector(vector_id);
+        let fixture = authority_fixture(vector["fixture_id"].as_str().unwrap());
+        let status = vector["decision"]["http_status"].as_u64().unwrap();
+        let reason = match status {
+            200 => "OK",
+            409 => "Conflict",
+            500 => "Internal Server Error",
+            _ => unreachable!("pinned status"),
+        };
+        let body: &'static [u8] = Box::leak(
+            serde_json::to_vec(&fixture["payload"])
+                .unwrap()
+                .into_boxed_slice(),
+        );
+        let (client, server) = start_client_with_response(
+            Box::leak(format!("{status} {reason}").into_boxed_str()),
+            body,
+            None,
+        )
+        .await;
+        let (response, _) = client
+            .ingest(
+                "080000_600",
+                "20260820",
+                vec![FilePart {
+                    filename: "status.wav".into(),
+                    content_type: "audio/wav".into(),
+                    bytes: vec![1],
+                }],
+            )
+            .await
+            .expect("documented status response parses");
+        assert_eq!(
+            response.status.is_accepted(),
+            vector["decision"]["accepted"].as_bool().unwrap(),
+            "{vector_id}"
+        );
         let request = server.await.unwrap();
-        let text = String::from_utf8_lossy(&request);
-        assert!(text.starts_with(&format!(
-            "GET /app/devices/ingest/segments/{day} HTTP/1.1\r\n"
-        )));
-        assert_authenticated_request(&text);
-        assert!(text.ends_with("\r\n\r\n"), "GET body must be empty");
-        if matches!(
-            fixture_id,
-            "recorded.segments.legacy.absent_header"
-                | "recorded.segments.legacy.unparseable_header"
-        ) {
-            // Authority pins only the raw legacy body (pointer ""): Windows
-            // accepts it without treating it as v2; its internal total is unpinned.
-            assert!(response.items.is_empty());
-            assert_eq!(response.protocol_version, None, "{fixture_id}");
-        } else if legacy {
-            let items = fixture["payload"].as_array().unwrap();
-            assert_eq!(response.items.len(), items.len());
-            assert_eq!(response.total, Some(items.len() as u64), "{fixture_id}");
-            assert_eq!(response.protocol_version, None, "{fixture_id}");
-        } else {
-            assert_eq!(
-                response.items.len(),
-                fixture["payload"]["items"].as_array().unwrap().len()
-            );
-            assert_eq!(response.total, fixture["payload"]["total"].as_u64());
-            assert_eq!(
-                response.protocol_version.map(u64::from),
-                fixture["payload"]["protocol_version"].as_u64()
-            );
-        }
+        assert!(v3_upload_capture_matches(
+            &request,
+            "20260820",
+            "080000_600",
+            &["status.wav"]
+        ));
     }
 }
 
 #[tokio::test]
-async fn observer_contract_authority_ingest_captures_multipart_and_status_paths() {
-    let request_fixture =
-        authority_fixture("example.observer.ingestUpload.request.body.multipart-form-data.default");
-    let payload = &request_fixture["payload"];
-    let filenames: Vec<&str> = payload["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|name| name.as_str().unwrap())
-        .collect();
-    let files: Vec<FilePart> = filenames
-        .iter()
-        .enumerate()
-        .map(|(index, filename)| FilePart {
-            filename: (*filename).to_owned(),
-            content_type: "application/octet-stream".to_owned(),
-            bytes: format!("authority-test-bytes-{index}").into_bytes(),
-        })
-        .collect();
+async fn observer_contract_authority_direct_v3_reads_fail_closed_on_non_success() {
+    for status in [403, 500] {
+        let text: &'static str = Box::leak(format!("{status} Rejected").into_boxed_str());
+        let (client, server) = start_client_with_response(text, br#"{}"#, None).await;
+        assert!(matches!(
+            client.ingest_manifest().await,
+            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+        ));
+        assert!(v3_read_capture_matches(
+            &server.await.unwrap(),
+            "GET",
+            "/app/devices/ingest/manifest"
+        ));
 
-    for fixture_id in [
-        "example.observer.ingestUpload.response.200.application-json.normal",
-        "example.observer.ingestUpload.response.200.application-json.duplicate",
-        "recorded.ingestUpload.collision",
-        "recorded.ingestUpload.duplicate",
-        "recorded.ingestUpload.ok",
-        "declared.observer.ingestUpload.status_unknown_rejected",
-    ] {
-        let response_fixture = authority_fixture(fixture_id);
-        let body = leaked_authority_payload(fixture_id);
-        let (client, server) =
-            start_client_with_response("200 OK", body, Some("authority-observer")).await;
-        let (response, _) = client
-            .ingest(
-                payload["segment"].as_str().unwrap(),
-                payload["day"].as_str().unwrap(),
-                payload["platform"].as_str().unwrap(),
-                &files,
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status, response_fixture["payload"]["status"]);
+        let (client, server) = start_client_with_response(text, br#"{}"#, None).await;
+        assert!(matches!(
+            client.ingest_manifest_day("20260820").await,
+            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+        ));
+        assert!(v3_read_capture_matches(
+            &server.await.unwrap(),
+            "GET",
+            "/app/devices/ingest/manifest/20260820"
+        ));
 
-        let request = server.await.unwrap();
-        assert!(ingest_capture_matches(&request, payload, &filenames));
-        if fixture_id == "example.observer.ingestUpload.response.200.application-json.normal" {
-            for (from, to) in [
-                ("name=\"segment\"", "name=\"wrong\""),
-                ("name=\"files\"", "name=\"wrong_files\""),
-            ] {
-                let mutated = String::from_utf8(request.clone())
-                    .unwrap()
-                    .replacen(from, to, 1);
-                assert!(
-                    !ingest_capture_matches(mutated.as_bytes(), payload, &filenames),
-                    "multipart mutation was not detected: {from}"
-                );
-            }
-        }
-    }
-
-    for (fixture_id, status) in [
-        ("recorded.ingestUpload.conflict", "409 Conflict"),
-        ("recorded.ingestUpload.failed", "422 Unprocessable Entity"),
-    ] {
-        let body = leaked_authority_payload(fixture_id);
-        let (client, server) =
-            start_client_with_response(status, body, Some("authority-observer")).await;
-        let error = client
-            .ingest(
-                payload["segment"].as_str().unwrap(),
-                payload["day"].as_str().unwrap(),
-                payload["platform"].as_str().unwrap(),
-                &files,
-            )
-            .await
-            .unwrap_err();
-        let expected = status
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse::<u16>()
-            .unwrap();
-        assert!(matches!(error, TransportError::Rejected { status, .. } if status == expected));
-        let request = server.await.unwrap();
-        assert_authenticated_request(&String::from_utf8_lossy(&request));
+        let (client, server) = start_client_with_response(text, br#"{}"#, None).await;
+        assert!(matches!(
+            client.list_segments("20260820").await,
+            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+        ));
+        assert!(v3_read_capture_matches(
+            &server.await.unwrap(),
+            "GET",
+            "/app/devices/ingest/segments/20260820"
+        ));
     }
 }
 
@@ -1610,34 +1659,17 @@ async fn journal_bridge_sse_fail_after_head_does_not_emit_502() {
 
 #[tokio::test]
 async fn observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes() {
-    let root_events = WINDOWS_OPERATION_MAPPINGS
-        .iter()
-        .find(|mapping| mapping.operation_id == "callosum.rootEvents")
-        .expect("root-events Windows mapping pin");
-    assert_eq!(root_events.method, "GET");
-    for (fixture_id, vector_id) in [
-        (
-            "example.callosum.rootEvents.response.200.text-event-stream.default",
-            None,
-        ),
-        (
-            "recorded.sse.root.data_unknown_event",
-            Some("callosum.rootEvents.sse.data_unknown_event"),
-        ),
-        (
-            "recorded.sse.root.heartbeat",
-            Some("callosum.rootEvents.sse.heartbeat"),
-        ),
+    // Upstream follow-up: v9 no longer projects callosum; use the committed local fixture.
+    let fixture = authority_fixture("root_sse");
+    for payload in [
+        fixture["payload"]["default"].clone(),
+        fixture["payload"]["unknown"].clone(),
+        fixture["payload"]["heartbeat"].clone(),
     ] {
-        let fixture = authority_fixture(fixture_id);
-        let expected = if fixture["payload"].is_string() {
-            fixture["payload"].as_str().unwrap().as_bytes().to_vec()
+        let expected = if payload.is_string() {
+            payload.as_str().unwrap().as_bytes().to_vec()
         } else {
-            format!(
-                "data: {}\n\n",
-                serde_json::to_string(&fixture["payload"]).unwrap()
-            )
-            .into_bytes()
+            format!("data: {}\n\n", serde_json::to_string(&payload).unwrap()).into_bytes()
         };
         let expected: &'static [u8] = Box::leak(expected.into_boxed_slice());
         let (handle, upstream) = start_bridge_with_sse(SseMode::Authority(expected)).await;
@@ -1645,8 +1677,8 @@ async fn observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes
         let cap = capability_from(&handle);
         let response = raw_bridge_request(
             port,
-            root_events.method,
-            root_events.path,
+            "GET",
+            "/sse/events",
             Some(loopback_host(port)),
             Some(cap_cookie(&cap)),
             &[],
@@ -1660,20 +1692,9 @@ async fn observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes
         assert!(head.contains("content-type: text/event-stream"));
         assert!(!head.contains("content-length"));
         assert!(!head.contains("transfer-encoding"));
-        if let Some(vector_id) = vector_id {
-            let decision = authority_vector(vector_id)["decision"].clone();
-            if fixture["payload"].is_string() {
-                assert_eq!(decision["action"], "ignore_keepalive");
-            } else {
-                assert_eq!(decision["action"], "pass_through");
-                assert_eq!(decision["unknown_event_behavior"], "preserve");
-            }
-        }
         let request = upstream.await.unwrap();
-        assert!(String::from_utf8_lossy(&request).starts_with(&format!(
-            "{} {} HTTP/1.1\r\n",
-            root_events.method, root_events.path
-        )));
+        assert!(String::from_utf8_lossy(&request)
+            .starts_with(&format!("{} {} HTTP/1.1\r\n", "GET", "/sse/events")));
         handle.shutdown_and_wait().await;
     }
 }

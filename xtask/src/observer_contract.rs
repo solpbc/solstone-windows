@@ -18,22 +18,24 @@ pub use crate::artifact_fs::{validate_relative_path, UnsafePathReason};
 pub const ADOPTION_SCHEMA_VERSION: u64 = 1;
 pub const CONSUMER_IDENTIFIER: &str = "solstone-windows";
 pub const AUTHORITY_REPOSITORY: &str = "https://github.com/solpbc/solstone-journal";
-pub const AUTHORITY_COMMIT: &str = "766021cd44d4a0a7ce471d2affb461bf3ce0fc39";
-pub const BUNDLE_SEMVER: &str = "8.0.0";
-pub const ARCHIVE_SHA256: &str = "6f182448bd66cd6a81b24a1715536f761ff94303e5404646125eb32172b91ed0";
-pub const ARCHIVE_SIZE_BYTES: u64 = 15_755;
+pub const AUTHORITY_COMMIT: &str = "dd76c42a21a7892fccc1b0cfa790ce1ad31bf78b";
+pub const BUNDLE_SEMVER: &str = "9.0.0";
+pub const ARCHIVE_SHA256: &str = "8711c7e811cd83f0bdb38d4a8a525c0c40e9bccf96716e7b567829efe7b97a89";
+pub const ARCHIVE_SIZE_BYTES: u64 = 5_671;
 /// All authority paths are relative to the explicit bundle directory.
 pub const AUTHORITY_MANIFEST_PATH: &str = "manifest.json";
 pub const AUTHORITY_MANIFEST_SHA256: &str =
-    "9b3bcd6b7f8a83adb9007e32501af44403cb93cfb8d80f256b6a7b5b9f93057e";
-pub const GENERATOR_IDENTITY: &str = "solstone.convey.contract.observer_bundle.v1";
+    "93b2a5a1604f1ba6fad30624c00cac98ea3d04a80cb1718886cf665c16f58834";
+pub const GENERATOR_IDENTITY: &str =
+    "solstone.repository_contracts.observer_client_contract_bundle.v1";
 pub const BUNDLE_SCHEMA_IDENTITY: &str = "solstone.observer-client-contract-bundle.schema.v1";
 pub const SCHEMA_DIALECT_URI: &str = "https://json-schema.org/draft/2020-12/schema";
 pub const OPENAPI_DOCUMENT_VERSION: &str = "1.0.0";
 pub const OPENAPI_SPEC_VERSION: &str = "3.1.0";
 pub const PROJECTION_PATH: &str = "projection.openapi.json";
-pub const OBSERVER_PROTOCOL_VERSION: u64 = 2;
-pub const SUPPORTED_RESPONSE_VARIANTS: &[u64] = &[1, 2];
+pub const OBSERVER_PROTOCOL_VERSION: u64 = 3;
+pub const SUPPORTED_RESPONSE_VARIANTS: &[u64] = &[3];
+pub const SCOPE_RATIONALE: &str = "This ingest-triad bundle projects only the four Rust-served linked-device devices/ingest operations. Pairing and root SSE are live but out of scope; deferred legacy observer operations are not projected.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FilePin {
@@ -44,59 +46,38 @@ pub struct FilePin {
 pub const BUNDLE_FILES: &[FilePin] = &[
     FilePin {
         path: "consumer-audit.json",
-        sha256: "3f9938b38994ea2a3a19ea154152e5dc8b3f24843e53eb1f14b6fb33d58e6ac9",
+        sha256: "522a1d0417086a85d755e058b9043e519665c63eace50b146bab1f1157ff0cdf",
     },
     FilePin {
         path: "fixtures/wire-behavior.json",
-        sha256: "b9ed72f3c3de4a890978079fcf286ddad212c6ac99bd32d3e080afdd5a787dc4",
+        sha256: "65917fe91620f517d9988664e24b559722acbd6fb798bc518d1e092ef8f8771c",
     },
     FilePin {
         path: "projection.openapi.json",
-        sha256: "46eb05e6889f9176446fb315585a0e15a57600aead9ed1aaf948a93eee596c35",
+        sha256: "7780c76380ae59504c069e388042401b050c60caf9027e1cf22a4cce0c19103e",
     },
     FilePin {
         path: "vectors.json",
-        sha256: "a4cb9712bf5a6679a2fefc6b94f1618dfbd8e7f227364103d70095a8dd6bce1f",
+        sha256: "fd99f21f225573cd2aead2217e9716237e7b4f66bd36a225d0e7019ded4a222b",
     },
 ];
 
-pub const COMPONENT_CLOSURE: &[&str] = &[
-    "CallosumEvent",
-    "Error",
-    "SegmentFile",
-    "SegmentItem",
-    "SegmentsEnvelope",
-];
-
-pub const CONSUMER_IDENTIFIERS: &[&str] = &[
-    "solstone-android",
-    "solstone-browser",
-    "solstone-linux",
-    "solstone-macos",
-    "solstone-swift",
-    "solstone-tmux",
-    "solstone-windows",
-];
-
-pub const INITIAL_TARGETS: &[&str] = &["solstone-linux", "solstone-windows"];
-
+pub const COMPONENT_CLOSURE: &[&str] = &["Error", "SegmentFile", "SegmentItem", "SegmentsEnvelope"];
+pub const CONSUMER_IDENTIFIERS: &[&str] =
+    &["solstone-browser", "solstone-linux", "solstone-windows"];
+/// This order is pinned to the authority manifest, which is intentionally not lexical.
 pub const OPERATION_IDS: &[&str] = &[
-    "callosum.rootEvents",
-    "link.pair",
-    "observer.callosumStream",
-    "observer.ingestEvent",
-    "observer.ingestSegments",
     "observer.ingestUpload",
-    "observer.register",
+    "observer.ingestManifest",
+    "observer.ingestManifestDay",
+    "observer.ingestSegments",
 ];
-
+/// Adoption coverage is sorted independently of the authority's manifest order.
 pub const ADOPTED_OPERATION_IDS: &[&str] = &[
-    "callosum.rootEvents",
-    "link.pair",
-    "observer.ingestEvent",
+    "observer.ingestManifest",
+    "observer.ingestManifestDay",
     "observer.ingestSegments",
     "observer.ingestUpload",
-    "observer.register",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -108,146 +89,40 @@ pub struct OperationMapping {
 
 pub const WINDOWS_OPERATION_MAPPINGS: &[OperationMapping] = &[
     OperationMapping {
-        operation_id: "callosum.rootEvents",
+        operation_id: "observer.ingestUpload",
+        method: "POST",
+        path: "/app/devices/ingest",
+    },
+    OperationMapping {
+        operation_id: "observer.ingestManifest",
         method: "GET",
-        path: "/sse/events",
+        path: "/app/devices/ingest/manifest",
     },
     OperationMapping {
-        operation_id: "link.pair",
-        method: "POST",
-        path: "/app/network/pair",
-    },
-    OperationMapping {
-        operation_id: "observer.ingestEvent",
-        method: "POST",
-        path: "/app/devices/ingest/event",
+        operation_id: "observer.ingestManifestDay",
+        method: "GET",
+        path: "/app/devices/ingest/manifest/{day}",
     },
     OperationMapping {
         operation_id: "observer.ingestSegments",
         method: "GET",
         path: "/app/devices/ingest/segments/{day}",
     },
-    OperationMapping {
-        operation_id: "observer.ingestUpload",
-        method: "POST",
-        path: "/app/devices/ingest",
-    },
-    OperationMapping {
-        operation_id: "observer.register",
-        method: "POST",
-        path: "/app/devices/register",
-    },
 ];
 
-pub const FULL_FIXTURE_IDS: &[&str] = &[
-    "declared.observer.ingestSegments.custody_unknown_rejected",
-    "declared.observer.ingestSegments.envelope_total_mismatch",
-    "declared.observer.ingestUpload.status_unknown_rejected",
-    "example.callosum.rootEvents.response.200.text-event-stream.default",
-    "example.link.pair.request.body.application-json.default",
-    "example.link.pair.response.200.application-json.default",
-    "example.observer.callosumStream.response.200.text-event-stream.default",
-    "example.observer.ingestEvent.request.body.application-json.default",
-    "example.observer.ingestEvent.response.200.application-json.default",
-    "example.observer.ingestSegments.response.200.application-json.legacy",
-    "example.observer.ingestSegments.response.200.application-json.v2",
-    "example.observer.ingestUpload.request.body.multipart-form-data.default",
-    "example.observer.ingestUpload.response.200.application-json.duplicate",
-    "example.observer.ingestUpload.response.200.application-json.normal",
-    "example.observer.register.request.body.application-json.default",
-    "example.observer.register.response.200.application-json.default",
-    "recorded.auth.bearer.segments",
-    "recorded.auth.handle.segments",
-    "recorded.ingestUpload.collision",
-    "recorded.ingestUpload.conflict",
-    "recorded.ingestUpload.duplicate",
-    "recorded.ingestUpload.failed",
-    "recorded.ingestUpload.ok",
-    "recorded.segments.custody_statuses",
-    "recorded.segments.legacy.absent_header",
-    "recorded.segments.legacy.unparseable_header",
-    "recorded.segments.submitted_name_omitted",
-    "recorded.segments.v2.envelope",
-    "recorded.sse.observer.data",
-    "recorded.sse.observer.error",
-    "recorded.sse.observer.heartbeat",
-    "recorded.sse.root.data_unknown_event",
-    "recorded.sse.root.heartbeat",
+pub const FIXTURE_IDS: &[&str] = &[
+    "declared.observer.ingestUpload.status.collision",
+    "declared.observer.ingestUpload.status.conflict",
+    "declared.observer.ingestUpload.status.duplicate",
+    "declared.observer.ingestUpload.status.failed",
+    "declared.observer.ingestUpload.status.ok",
 ];
-
-pub const ADOPTED_FIXTURE_IDS: &[&str] = &[
-    "declared.observer.ingestSegments.custody_unknown_rejected",
-    "declared.observer.ingestSegments.envelope_total_mismatch",
-    "declared.observer.ingestUpload.status_unknown_rejected",
-    "example.callosum.rootEvents.response.200.text-event-stream.default",
-    "example.link.pair.request.body.application-json.default",
-    "example.link.pair.response.200.application-json.default",
-    "example.observer.ingestEvent.request.body.application-json.default",
-    "example.observer.ingestEvent.response.200.application-json.default",
-    "example.observer.ingestSegments.response.200.application-json.legacy",
-    "example.observer.ingestSegments.response.200.application-json.v2",
-    "example.observer.ingestUpload.request.body.multipart-form-data.default",
-    "example.observer.ingestUpload.response.200.application-json.duplicate",
-    "example.observer.ingestUpload.response.200.application-json.normal",
-    "example.observer.register.request.body.application-json.default",
-    "example.observer.register.response.200.application-json.default",
-    "recorded.auth.bearer.segments",
-    "recorded.auth.handle.segments",
-    "recorded.ingestUpload.collision",
-    "recorded.ingestUpload.conflict",
-    "recorded.ingestUpload.duplicate",
-    "recorded.ingestUpload.failed",
-    "recorded.ingestUpload.ok",
-    "recorded.segments.custody_statuses",
-    "recorded.segments.legacy.absent_header",
-    "recorded.segments.legacy.unparseable_header",
-    "recorded.segments.submitted_name_omitted",
-    "recorded.segments.v2.envelope",
-    "recorded.sse.root.data_unknown_event",
-    "recorded.sse.root.heartbeat",
-];
-
-pub const FULL_VECTOR_IDS: &[&str] = &[
-    "callosum.rootEvents.sse.data_unknown_event",
-    "callosum.rootEvents.sse.heartbeat",
-    "observer.auth.bearer",
-    "observer.auth.handle",
-    "observer.callosumStream.sse.data",
-    "observer.callosumStream.sse.error",
-    "observer.callosumStream.sse.heartbeat",
-    "observer.ingestSegments.custody_statuses",
-    "observer.ingestSegments.custody_unknown_rejected",
-    "observer.ingestSegments.envelope_total_mismatch",
-    "observer.ingestSegments.legacy_array.absent_header",
-    "observer.ingestSegments.legacy_array.unparseable_header",
-    "observer.ingestSegments.submitted_name_fallback",
-    "observer.ingestSegments.v2_envelope",
+pub const VECTOR_IDS: &[&str] = &[
     "observer.ingestUpload.status.collision",
     "observer.ingestUpload.status.conflict",
     "observer.ingestUpload.status.duplicate",
     "observer.ingestUpload.status.failed",
     "observer.ingestUpload.status.ok",
-    "observer.ingestUpload.status_unknown_rejected",
-];
-
-pub const ADOPTED_VECTOR_IDS: &[&str] = &[
-    "callosum.rootEvents.sse.data_unknown_event",
-    "callosum.rootEvents.sse.heartbeat",
-    "observer.auth.bearer",
-    "observer.auth.handle",
-    "observer.ingestSegments.custody_statuses",
-    "observer.ingestSegments.custody_unknown_rejected",
-    "observer.ingestSegments.envelope_total_mismatch",
-    "observer.ingestSegments.legacy_array.absent_header",
-    "observer.ingestSegments.legacy_array.unparseable_header",
-    "observer.ingestSegments.submitted_name_fallback",
-    "observer.ingestSegments.v2_envelope",
-    "observer.ingestUpload.status.collision",
-    "observer.ingestUpload.status.conflict",
-    "observer.ingestUpload.status.duplicate",
-    "observer.ingestUpload.status.failed",
-    "observer.ingestUpload.status.ok",
-    "observer.ingestUpload.status_unknown_rejected",
 ];
 
 #[derive(Debug)]
@@ -545,16 +420,14 @@ pub fn verify(bundle_dir: &Path, adoption_path: &Path) -> Result<VerifyReport, V
         &bundle_dir.join("fixtures/wire-behavior.json"),
         "fixtures/wire-behavior.json",
         "fixtures",
-        FULL_FIXTURE_IDS,
-        ADOPTED_FIXTURE_IDS,
+        FIXTURE_IDS,
         true,
     )?;
     verify_id_document(
         &bundle_dir.join("vectors.json"),
         "vectors.json",
         "vectors",
-        FULL_VECTOR_IDS,
-        ADOPTED_VECTOR_IDS,
+        VECTOR_IDS,
         false,
     )?;
 
@@ -565,8 +438,8 @@ pub fn verify(bundle_dir: &Path, adoption_path: &Path) -> Result<VerifyReport, V
     Ok(VerifyReport {
         bundle_semver: BUNDLE_SEMVER,
         operation_count: OPERATION_IDS.len(),
-        fixture_count: ADOPTED_FIXTURE_IDS.len(),
-        vector_count: ADOPTED_VECTOR_IDS.len(),
+        fixture_count: FIXTURE_IDS.len(),
+        vector_count: VECTOR_IDS.len(),
     })
 }
 
@@ -659,13 +532,9 @@ fn verify_adoption(record: &AdoptionRecord) -> Result<(), VerifyError> {
     verify_coverage(
         "adopted_fixture_ids",
         &record.adopted_fixture_ids,
-        ADOPTED_FIXTURE_IDS,
+        FIXTURE_IDS,
     )?;
-    verify_coverage(
-        "adopted_vector_ids",
-        &record.adopted_vector_ids,
-        ADOPTED_VECTOR_IDS,
-    )
+    verify_coverage("adopted_vector_ids", &record.adopted_vector_ids, VECTOR_IDS)
 }
 
 fn verify_coverage(field: &str, actual: &[String], expected: &[&str]) -> Result<(), VerifyError> {
@@ -872,6 +741,59 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
             "supported_response_variants",
             serde_json::json!(SUPPORTED_RESPONSE_VARIANTS),
         ),
+        ("scope_rationale", serde_json::json!(SCOPE_RATIONALE)),
+        (
+            "generator_inputs",
+            serde_json::json!([{
+                "id": "openapi.convey_clients",
+                "path": "docs/openapi/convey-clients.json",
+                "role": "openapi_source",
+                "sha256": "434d103d7b2accc8d6244f9886884c6c05ce59096bd0b8ee9bfbc67d564f6563",
+            }]),
+        ),
+        (
+            "audited_consumer_revisions",
+            serde_json::json!([
+                { "consumer_identifier": "solstone-windows", "revision": "19c972c4fea775176cea6421ac8b87f3bb20ab42" },
+                { "consumer_identifier": "solstone-linux", "revision": "1c679db1ce6f9a65db70c5aae0ca2fad677416ef" },
+                { "consumer_identifier": "solstone-browser", "revision": "998c1095cd8f766dd188bece5ad6527444f8dfac" },
+            ]),
+        ),
+        (
+            "vocabularies",
+            serde_json::json!([
+                {
+                    "classification": "closed",
+                    "id": "SegmentFile.status",
+                    "source_pointer": "/components/schemas/SegmentFile/properties/status",
+                    "unknown_value_behavior": "reject",
+                    "values": ["present", "missing", "processed"],
+                },
+                {
+                    "classification": "closed",
+                    "id": "observer.ingestUpload.status",
+                    "source_pointers": [
+                        "/paths/~1app~1devices~1ingest/post/responses/200/content/application~1json/schema/properties/status",
+                        "/paths/~1app~1devices~1ingest/post/responses/409",
+                    ],
+                    "unknown_value_behavior": "reject",
+                    "values": ["ok", "duplicate", "collision", "conflict", "failed"],
+                },
+            ]),
+        ),
+        (
+            "windows_linux_rollout_targets",
+            serde_json::json!([
+                {
+                    "adoption_blocker_ids": ["solstone-linux-legacy-v2-unmigrated"],
+                    "consumer_identifier": "solstone-linux",
+                },
+                {
+                    "adoption_blocker_ids": ["solstone-windows-legacy-v2-unmigrated"],
+                    "consumer_identifier": "solstone-windows",
+                },
+            ]),
+        ),
     ];
     for (field, expected) in exact {
         if object.get(field) != Some(&expected) {
@@ -882,77 +804,7 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
             });
         }
     }
-    let target_field = "windows_linux_rollout_targets";
-    let targets = object
-        .get(target_field)
-        .and_then(Value::as_array)
-        .ok_or_else(|| VerifyError::ManifestFieldMismatch {
-            field: target_field.to_owned(),
-            expected: format!(
-                "array with consumer identifiers {}",
-                json_text(INITIAL_TARGETS)
-            ),
-            actual: optional_json_text(object.get(target_field)),
-        })?;
-    let target_ids: Option<Vec<&str>> = targets
-        .iter()
-        .map(|target| target.get("consumer_identifier").and_then(Value::as_str))
-        .collect();
-    if target_ids.as_deref() != Some(INITIAL_TARGETS) {
-        return Err(VerifyError::ManifestFieldMismatch {
-            field: target_field.to_owned(),
-            expected: json_text(INITIAL_TARGETS),
-            actual: json_text(&target_ids),
-        });
-    }
-    let input_field = "generator_inputs";
-    let inputs = object
-        .get(input_field)
-        .and_then(Value::as_array)
-        .ok_or_else(|| VerifyError::ManifestFieldMismatch {
-            field: input_field.to_owned(),
-            expected: "non-empty array of {id,path,role,sha256} objects".to_owned(),
-            actual: optional_json_text(object.get(input_field)),
-        })?;
-    if inputs.is_empty()
-        || inputs.iter().any(|entry| {
-            let Some(entry) = entry.as_object() else {
-                return true;
-            };
-            !matches!(entry.get("id"), Some(Value::String(_)))
-                || !matches!(entry.get("path"), Some(Value::String(_)))
-                || !matches!(entry.get("role"), Some(Value::String(_)))
-                || !entry
-                    .get("sha256")
-                    .and_then(Value::as_str)
-                    .is_some_and(is_sha256)
-        })
-    {
-        return Err(VerifyError::ManifestFieldMismatch {
-            field: input_field.to_owned(),
-            expected: "non-empty array of {id,path,role,sha256} objects".to_owned(),
-            actual: optional_json_text(object.get(input_field)),
-        });
-    }
-    for required in ["audited_consumer_revisions", "vocabularies"] {
-        if !object.get(required).is_some_and(Value::is_array) {
-            return Err(VerifyError::ManifestFieldMismatch {
-                field: required.to_owned(),
-                expected: "array".to_owned(),
-                actual: optional_json_text(object.get(required)),
-            });
-        }
-    }
     Ok(())
-}
-
-/// One-way consumer overlay: the vendored export still spells `/app/observer`;
-/// retire this when the journal re-exports `/app/devices`.
-fn overlay_projection_path(path: &str) -> String {
-    match path.strip_prefix("/app/observer/") {
-        Some(rest) => format!("/app/devices/{rest}"),
-        None => path.to_owned(),
-    }
 }
 
 pub fn verify_projection(path: &Path, mappings: &[OperationMapping]) -> Result<(), VerifyError> {
@@ -995,28 +847,25 @@ pub fn verify_projection(path: &Path, mappings: &[OperationMapping]) -> Result<(
             }
         }
     }
-    if operations
-        .keys()
-        .map(String::as_str)
-        .ne(OPERATION_IDS.iter().copied())
-    {
+    let actual_ids: BTreeSet<&str> = operations.keys().map(String::as_str).collect();
+    let expected_ids: BTreeSet<&str> = OPERATION_IDS.iter().copied().collect();
+    if actual_ids != expected_ids {
         return Err(VerifyError::ProjectionMismatch {
             message: "operation ID set differs from the authority pin".to_owned(),
         });
     }
-    for mapping in mappings {
-        let expected = (mapping.method.to_owned(), mapping.path.to_owned());
-        let Some((method, path)) = operations.get(mapping.operation_id) else {
-            return Err(VerifyError::ProjectionMismatch {
-                message: format!("mapping differs for {}", mapping.operation_id),
-            });
-        };
-        let compared = (method.clone(), overlay_projection_path(path));
-        if compared != expected {
-            return Err(VerifyError::ProjectionMismatch {
-                message: format!("mapping differs for {}", mapping.operation_id),
-            });
-        }
+    let actual_mappings: BTreeSet<(&str, &str, &str)> = operations
+        .iter()
+        .map(|(id, (method, path))| (id.as_str(), method.as_str(), path.as_str()))
+        .collect();
+    let expected_mappings: BTreeSet<(&str, &str, &str)> = mappings
+        .iter()
+        .map(|mapping| (mapping.operation_id, mapping.method, mapping.path))
+        .collect();
+    if actual_mappings != expected_mappings {
+        return Err(VerifyError::ProjectionMismatch {
+            message: "operation method/path set differs from the authority pin".to_owned(),
+        });
     }
     Ok(())
 }
@@ -1025,8 +874,7 @@ fn verify_id_document(
     path: &Path,
     label: &str,
     array_field: &str,
-    full: &[&str],
-    adopted: &[&str],
+    expected_ids: &[&str],
     fixture: bool,
 ) -> Result<(), VerifyError> {
     let bytes = read_file(path, label)?;
@@ -1044,30 +892,35 @@ fn verify_id_document(
         if !ids.insert(id) {
             return Err(id_error(fixture, format!("duplicate ID {id}")));
         }
+        if fixture {
+            let valid = record
+                .get("schema_validation")
+                .and_then(Value::as_object)
+                .and_then(|validation| validation.get("valid"))
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    id_error(
+                        true,
+                        format!("fixture {id} lacks boolean schema_validation.valid"),
+                    )
+                })?;
+            if id == "declared.observer.ingestUpload.status.failed" && valid {
+                return Err(id_error(
+                    true,
+                    "failed fixture must deliberately carry schema_validation.valid=false"
+                        .to_owned(),
+                ));
+            }
+        }
     }
     let actual_ids: Vec<&str> = ids.iter().copied().collect();
-    if actual_ids.iter().copied().ne(full.iter().copied()) {
+    if actual_ids.iter().copied().ne(expected_ids.iter().copied()) {
         return Err(id_error(
             fixture,
             format!(
-                "full ID set differs from the authority pin: expected {}, got {}",
-                json_text(full),
+                "ID set differs from the authority pin: expected {}, got {}",
+                json_text(expected_ids),
                 json_text(&actual_ids)
-            ),
-        ));
-    }
-    let missing_adopted: Vec<&str> = adopted
-        .iter()
-        .copied()
-        .filter(|id| !ids.contains(id))
-        .collect();
-    if !missing_adopted.is_empty() {
-        return Err(id_error(
-            fixture,
-            format!(
-                "adopted IDs absent from the full set: expected {}, missing {}",
-                json_text(adopted),
-                json_text(&missing_adopted)
             ),
         ));
     }

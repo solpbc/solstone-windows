@@ -80,9 +80,8 @@ Hardware/software MFT and D3D manager:
 - `crates/platform-win/src/lib.rs:499`, `:527`, `:535`, `:566` - test/fixture. These asserted/read/wrote the legacy screen segment file. The scope-listed `:503` and `:506` were not legacy-screen-file hits in this checkout; they asserted `system-audio.pcm` and `mic.pcm`.
 - `crates/pl-transport-win/src/sealed.rs:7` - doc/comment. Module comment lists per-source files.
 - `crates/pl-transport-win/src/sealed.rs:146`, `:158`, `:159` - test/fixture. Sealed-store scan/read fixture and expected file list.
-- `crates/pl-transport-win/examples/live_gate.rs:63` - fixture/example. Fabricates a sealed segment for live gate upload.
-- `crates/observer-pl/src/wire.rs:217` - test/fixture. Segment-list response fixture with uploaded file metadata.
-- `crates/observer-pl/src/multipart.rs:68`, `:81` - test/fixture. Multipart body fixture.
+- `--integration upload --carrier direct|relay` - operator gate. It uploads a real sealed segment through the production coordinator.
+- `crates/observer-pl/src/ingest.rs` - protocol-v3 envelope and custody fixtures.
 
 Coordinator check: `rg -n "screen\.bin" crates/pl-transport-win/src/coordinator.rs` returned no hits. The coordinator is filename-agnostic: it iterates `segment.files`, reads each name, uses `filename: name.clone()`, derives content type via `content_type_for(name)`, uploads all parts, and reconciles by sha (`crates/pl-transport-win/src/coordinator.rs:68-78`, `:86-99`).
 

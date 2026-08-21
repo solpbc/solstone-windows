@@ -44,7 +44,8 @@ async fn relay_pairing_full_ceremony_populates_credential() {
 
 #[tokio::test]
 async fn observer_contract_authority_relay_pairing_uses_real_ceremony() {
-    let fixture = authority_fixture("example.link.pair.request.body.application-json.default");
+    // Upstream follow-up: v9 no longer projects pairing; use the committed local fixture.
+    let fixture = authority_fixture("pair_request");
     let nonce = fixture["payload"]["nonce"].as_str().unwrap();
     let mut secret = [0u8; 8];
     for (index, byte) in secret.iter_mut().enumerate() {
@@ -70,7 +71,8 @@ async fn observer_contract_authority_relay_pairing_uses_real_ceremony() {
 
 #[tokio::test]
 async fn observer_contract_authority_pair_from_link_dispatches_relay_ceremony() {
-    let fixture = authority_fixture("example.link.pair.request.body.application-json.default");
+    // Upstream follow-up: v9 no longer projects pairing; use the committed local fixture.
+    let fixture = authority_fixture("pair_request");
     let nonce = fixture["payload"]["nonce"].as_str().unwrap();
     let mut secret = [0u8; 8];
     for (index, byte) in secret.iter_mut().enumerate() {
