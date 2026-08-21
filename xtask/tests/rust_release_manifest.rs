@@ -303,7 +303,7 @@ fn rust_release_manifest_import_contract_rejects_each_coordinate_and_vendored_dr
     )
     .unwrap();
 
-    for (coordinate, contract) in [
+    let cases = [
         (
             "schema_id",
             SharedSchemaImport {
@@ -346,11 +346,19 @@ fn rust_release_manifest_import_contract_rejects_each_coordinate_and_vendored_dr
                 ..RUST_RELEASE_MANIFEST_V1_IMPORT
             },
         ),
-    ] {
+    ];
+    for (coordinate, contract) in cases {
         assert_eq!(
             rust_release_manifest::verify_schema_import(&root.0, &contract),
             Err(ManifestError::SchemaImportMismatch { coordinate })
         );
+    }
+
+    for (coordinate, contract) in cases {
+        match rust_release_manifest::compile_schema_with_import(&contract) {
+            Err(error) => assert_eq!(error, ManifestError::SchemaImportMismatch { coordinate }),
+            Ok(_) => panic!("canonical compile path accepted wrong {coordinate} coordinate"),
+        }
     }
 
     fs::write(
@@ -1423,4 +1431,60 @@ fn rust_release_manifest_self_check_requires_the_exact_finalization_receipt() {
         fs::read(candidate.join(companion_basename())).unwrap(),
         manifest_bytes
     );
+}
+
+#[test]
+fn rust_release_manifest_release_dir_receipt_layout_rejects_wrong_locations() {
+    enum LayoutMutation {
+        AlternateReceipt,
+        CandidateDirectory,
+        CandidateParent,
+    }
+
+    for (label, mutation, coordinate) in [
+        (
+            "alternate-receipt",
+            LayoutMutation::AlternateReceipt,
+            "receipt",
+        ),
+        (
+            "candidate-directory",
+            LayoutMutation::CandidateDirectory,
+            "candidate.directory",
+        ),
+        (
+            "candidate-parent",
+            LayoutMutation::CandidateParent,
+            "candidate.parent",
+        ),
+    ] {
+        let root = self_check_root(label);
+        let fixture = root.0.join("xtask/tests/fixtures/rust-release-manifest");
+        let mut candidate = fixture.join("release-candidate/0.2.11");
+        let manifest = read_manifest(&candidate.join(companion_basename()));
+        let facts = facts_for(&manifest);
+        match mutation {
+            LayoutMutation::AlternateReceipt => fs::rename(
+                fixture.join("release-evidence/0.2.11/rust-release-finalization.json"),
+                fixture.join("release-evidence/0.2.11/alternate-finalization.json"),
+            )
+            .unwrap(),
+            LayoutMutation::CandidateDirectory => {
+                let renamed = fixture.join("release-candidate/0.2.12");
+                fs::rename(&candidate, &renamed).unwrap();
+                candidate = renamed;
+            }
+            LayoutMutation::CandidateParent => {
+                let renamed = fixture.join("not-release-candidate");
+                fs::rename(fixture.join("release-candidate"), &renamed).unwrap();
+                candidate = renamed.join("0.2.11");
+            }
+        }
+        assert_eq!(
+            rust_release_manifest::validate_release_dir_finalization_receipt_with_facts(
+                &root.0, &candidate, &facts,
+            ),
+            Err(ManifestError::FinalizationReceiptBinding { coordinate })
+        );
+    }
 }

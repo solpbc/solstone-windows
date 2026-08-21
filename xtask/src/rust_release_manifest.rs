@@ -534,7 +534,14 @@ fn compiled_schema() -> Result<&'static Validator, ManifestError> {
 }
 
 fn compile_schema() -> Result<Validator, ManifestError> {
-    let schema = verify_schema_import_bytes(SCHEMA_BYTES, &RUST_RELEASE_MANIFEST_V1_IMPORT)?;
+    compile_schema_with_import(&RUST_RELEASE_MANIFEST_V1_IMPORT)
+}
+
+pub fn compile_schema_with_import(
+    contract: &SharedSchemaImport,
+) -> Result<Validator, ManifestError> {
+    validate_schema_import_location(contract, Some(&RUST_RELEASE_MANIFEST_V1_IMPORT))?;
+    let schema = verify_schema_import_bytes(SCHEMA_BYTES, contract)?;
     compile_schema_value(&schema)
 }
 
@@ -551,18 +558,35 @@ pub fn verify_schema_import(
     root: &Path,
     contract: &SharedSchemaImport,
 ) -> Result<(), ManifestError> {
+    validate_schema_import_location(contract, None)?;
+    let vendor_root = Path::new(contract.vendor_root);
+    let vendor_root = root.join(vendor_root);
+    if !vendor_root.is_dir() {
+        return Err(ManifestError::SchemaImportMismatch {
+            coordinate: "vendor_root",
+        });
+    }
+    let schema_path = Path::new(contract.schema_path);
+    let bytes = fs::read(vendor_root.join(schema_path)).map_err(|_| {
+        ManifestError::SchemaImportMismatch {
+            coordinate: "schema_path",
+        }
+    })?;
+    verify_schema_import_bytes(&bytes, contract)?;
+    compiled_schema().map(|_| ())
+}
+
+fn validate_schema_import_location(
+    contract: &SharedSchemaImport,
+    embedded_contract: Option<&SharedSchemaImport>,
+) -> Result<(), ManifestError> {
     let vendor_root = Path::new(contract.vendor_root);
     if !vendor_root.is_relative()
         || vendor_root
             .components()
             .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || embedded_contract.is_some_and(|embedded| contract.vendor_root != embedded.vendor_root)
     {
-        return Err(ManifestError::SchemaImportMismatch {
-            coordinate: "vendor_root",
-        });
-    }
-    let vendor_root = root.join(vendor_root);
-    if !vendor_root.is_dir() {
         return Err(ManifestError::SchemaImportMismatch {
             coordinate: "vendor_root",
         });
@@ -572,18 +596,13 @@ pub fn verify_schema_import(
         || schema_path
             .components()
             .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || embedded_contract.is_some_and(|embedded| contract.schema_path != embedded.schema_path)
     {
         return Err(ManifestError::SchemaImportMismatch {
             coordinate: "schema_path",
         });
     }
-    let bytes = fs::read(vendor_root.join(schema_path)).map_err(|_| {
-        ManifestError::SchemaImportMismatch {
-            coordinate: "schema_path",
-        }
-    })?;
-    verify_schema_import_bytes(&bytes, contract)?;
-    compiled_schema().map(|_| ())
+    Ok(())
 }
 
 fn verify_schema_import_bytes(
