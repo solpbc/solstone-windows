@@ -15,17 +15,21 @@ mod support;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
+use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
 use observer_pl::frame::{
     Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RESET_CANCEL,
 };
 use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::mux::INITIAL_WINDOW;
 use observer_pl::PROTOCOL_VERSION_HEADER;
+use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
+use pl_transport_win::service::{self, SyncConfig};
 use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{journal_bridge, TransportError};
 use rcgen::{
@@ -217,7 +221,7 @@ enum PairCertificateMode {
 }
 
 async fn serve_one_pair_response(
-    listener: TcpListener,
+    listener: Arc<TcpListener>,
     acceptor: TlsAcceptor,
     signing_cert: rcgen::Certificate,
     signing_key: KeyPair,
@@ -266,6 +270,47 @@ async fn serve_one_pair_response(
     tls.flush().await.unwrap();
     let _ = tls.shutdown().await;
     request
+}
+
+fn signing_ca() -> (rcgen::Certificate, KeyPair) {
+    let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+    params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let cert = params.self_signed(&key).unwrap();
+    (cert, key)
+}
+
+#[derive(Debug)]
+struct TestOffset;
+
+impl LocalOffset for TestOffset {
+    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
+        Ok(0)
+    }
+}
+
+fn direct_pair_link(port: u16, ca_fp_prefix: &[u8]) -> String {
+    let mut blob = vec![0x04, 0x01, 127, 0, 0, 1];
+    blob.extend_from_slice(&port.to_be_bytes());
+    blob.extend(0u8..16);
+    blob.extend_from_slice(ca_fp_prefix);
+    format!(
+        "https://go.solstone.app/p#{}",
+        observer_pl::crockford::encode(&blob)
+    )
+}
+
+fn service_config(state_path: PathBuf) -> SyncConfig {
+    SyncConfig {
+        device_label: "service-pair-test".into(),
+        period_secs: 300,
+        segments_root: state_path.with_extension("segments"),
+        state_path,
+        retention: Arc::new(RwLock::new(RetentionConfig::default())),
+        local_offset: Arc::new(TestOffset),
+    }
 }
 
 async fn serve_drop_then_empty_segments(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
@@ -833,17 +878,12 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
     // Upstream follow-up: v9 no longer projects pairing; use the committed local fixture.
     let request_fixture = authority_fixture("pair_request");
     let response_fixture = authority_fixture("pair_response");
-    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    ca_params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-    let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-    let signing_cert = ca_params.self_signed(&signing_key).unwrap();
+    let (signing_cert, signing_key) = signing_ca();
 
     let (server_cert, server_key) = self_signed();
     let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_pair_response(
         listener,
@@ -891,17 +931,12 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
 
 #[tokio::test]
 async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
-    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    ca_params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-    let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-    let signing_cert = ca_params.self_signed(&signing_key).unwrap();
+    let (signing_cert, signing_key) = signing_ca();
 
     let (server_cert, server_key) = self_signed();
     let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
-    let first_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let first_port = first_listener.local_addr().unwrap().port();
     let first_server = tokio::spawn(serve_one_pair_response(
         first_listener,
@@ -958,6 +993,60 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
         .starts_with("POST /app/network/pair?token=00112233445566778899aabbccddeeff HTTP/1.1"));
     later_server.await.unwrap();
     assert_eq!(later_accepts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn service_pair_persists_credential_without_register_request() {
+    let (signing_cert, signing_key) = signing_ca();
+    let (server_cert, server_key) = self_signed();
+    let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+    let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_one_pair_response(
+        listener.clone(),
+        acceptor,
+        signing_cert,
+        signing_key,
+        PairCertificateMode::SubmittedCsr,
+    ));
+    let state_path = temp_state_path("service-pair");
+    let cfg = service_config(state_path.clone());
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let link = direct_pair_link(port, &server_pin);
+
+    let paired = service::pair(&link, &cfg, sync.clone())
+        .await
+        .expect("pair-only journal should persist a credential");
+
+    assert!(paired.credential.is_some());
+    assert!(PairedState::load(&state_path).unwrap().credential.is_some());
+    assert_eq!(
+        sync.lock().unwrap().pairing.phase,
+        observer_model::PairingPhase::Paired
+    );
+
+    let requests = [server.await.unwrap()];
+    assert!(
+        requests.iter().all(|request| {
+            let text = String::from_utf8_lossy(request);
+            !text.contains("/app/devices/register")
+        }),
+        "pair-only fixture received a register-shaped request"
+    );
+    assert!(pair_capture_matches(
+        &requests[0],
+        "000102030405060708090a0b0c0d0e0f",
+        "service-pair-test"
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "service::pair must not make a follow-up registration connection"
+    );
+
+    let _ = std::fs::remove_file(state_path);
 }
 
 #[tokio::test]

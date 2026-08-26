@@ -14,8 +14,9 @@ the existing request-per-carrier transport.
 - One mux stream per authorized loopback HTTP request.
 - `/sse/events` can stay open without blocking normal dashboard requests.
 - Concurrent first-load requests coalesce behind one carrier dial.
-- Local authorization, bootstrap, header transforms, redacted logs, and local
-  HTTP wire behavior stay byte-identical.
+- Local authorization, bootstrap, redacted logs, and local HTTP wire behavior
+  stay byte-identical; upstream proxy requests start with protocol-v3 headers
+  and strip caller-supplied legacy auth headers.
 - Pure mux state stays in `observer-pl`; socket, TLS, relay, and task topology
   stay in `pl-transport-win`.
 
