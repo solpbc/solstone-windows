@@ -90,11 +90,6 @@ pub async fn start_observed(
         .credential
         .clone()
         .ok_or(BridgeStartError::NotReady)?;
-    let observer_key = paired
-        .observer_key
-        .clone()
-        .ok_or(BridgeStartError::NotReady)?;
-
     let mut journal_hosts = Vec::with_capacity(credential.endpoints.len() + 1);
     journal_hosts.push("spl.local".to_string());
     journal_hosts.extend(
@@ -106,7 +101,6 @@ pub async fn start_observed(
 
     let client = ObserverClient::new(credential)
         .map_err(BridgeStartError::Client)?
-        .with_observer_key(Some(observer_key))
         .with_state_path(state_path)
         .with_observer(observer);
     let client = Arc::new(client);

@@ -11,7 +11,6 @@ mod support;
 
 use std::sync::Arc;
 
-use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::observe::OperationObserver;
 use tokio::net::TcpListener;
@@ -37,12 +36,8 @@ async fn observation_is_inert() {
         let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
         let client = ObserverClient::new(direct_credential(pin, port))
             .unwrap()
-            .with_observer_key(Some("observer-key".into()))
             .with_observer(observer.clone());
-        let error = client
-            .heartbeat(&HeartbeatEvent::status(false))
-            .await
-            .unwrap_err();
+        let error = client.list_segments("20260729").await.unwrap_err();
         assert!(matches!(
             error,
             pl_transport_win::TransportError::Io(_) | pl_transport_win::TransportError::Tls(_)

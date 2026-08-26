@@ -13,7 +13,7 @@
 //! full-duplex, so a multi-MiB segment streams correctly instead of stalling at
 //! the 1 MiB initial window. Connection-per-request keeps the mux trivially
 //! correct (no concurrent-stream bookkeeping); the cost is a handshake per call,
-//! fine at observer cadence (one ingest per segment, one heartbeat per 15s).
+//! fine at observer cadence (one ingest per segment).
 
 use std::io;
 use std::sync::Arc;

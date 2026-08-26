@@ -48,7 +48,7 @@ transitions, recovery scans, contract codegen — is tested off-Windows.
   the `NoInputDevice` determination.
 - **platform-win** — session/power notification pump, per-session named-mutex
   single-instance gate, `%LocalAppData%` paths, the real `SegmentFs`/`RecoveryFs`.
-- **pl-transport-win** — rustls-backed pair/register/upload/heartbeat transport;
+- **pl-transport-win** — rustls-backed pair/upload transport;
   host-testable despite living in the platform tier.
 - **capture-engine** — composition-tier orchestrator: sources → writer →
   rotation → state → recovery. Tauri-agnostic; host-testable with fake sources.
@@ -60,15 +60,9 @@ task in the same process. The separate capture-worker process is a **named,
 deferred escape hatch** — only if a soak shows WebView2 instability. The clean
 crate seam makes that flip a re-host of one crate, not a rewrite.
 
-## Sync transport + health beacon
+## Sync transport
 
-`observer-pl` and `pl-transport-win` now carry the Wave-2 pair/register/upload
-path. The heartbeat POST remains an `observe.status` event, with an additive
-diagnostics-only health beacon: observer name when known, stream type, version,
-uptime seconds, last successful sync epoch milliseconds, pending segment count,
-bounded consecutive error count, and a sanitized error code.
-
-The beacon never carries captured content, file paths, URLs, tokens, response
-bodies, host endpoints, or fingerprints. Journal-side `health.ingest_rejection`
-is a separate health source recorded by the journal when uploads fail ingest
-contract validation; the observer beacon does not duplicate that record.
+`observer-pl` and `pl-transport-win` carry the Wave-2 pair/upload path. The
+paired mTLS credential is the journal identity for every upload and bridge
+request. Journal-side `health.ingest_rejection` remains a separate health source
+recorded by the journal when uploads fail ingest contract validation.

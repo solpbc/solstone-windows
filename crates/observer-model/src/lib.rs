@@ -352,7 +352,7 @@ pub struct SegmentKey {
 
 /// The observer's pairing phase with its journal. Like [`AppPhase`], this is a
 /// *reported* fact — `Paired` is only ever set after a real pairing handshake
-/// and observer registration succeed, never asserted optimistically.
+/// and credential persistence succeed, never asserted optimistically.
 #[derive(
     Debug,
     Clone,
@@ -374,7 +374,7 @@ pub enum PairingPhase {
     NotPaired,
     /// A pairing handshake is in progress.
     Pairing,
-    /// Paired and registered: the observer can upload to the journal.
+    /// Paired with a credential: the observer can upload to the journal.
     Paired,
     /// The last pairing attempt failed; carries a detail in [`PairingState`].
     Failed,
@@ -442,8 +442,6 @@ pub struct PairingState {
     pub phase: PairingPhase,
     /// The paired journal's human label, when known.
     pub journal_label: Option<String>,
-    /// The registered observer's stream name, when known.
-    pub observer_name: Option<String>,
     /// A failure detail when `phase` is `Failed`.
     pub detail: Option<String>,
 }
@@ -500,8 +498,6 @@ pub struct UploadStatus {
     pub recent_error_count: u8,
     /// Sanitized, single-line sync error code for journal diagnostics.
     pub last_error_reason: Option<String>,
-    /// Whether the most recent heartbeat to the journal succeeded.
-    pub heartbeat_ok: bool,
     /// Duration in milliseconds of the last confirmed upload.
     pub last_upload_duration_ms: Option<u64>,
     /// Total bytes in the last confirmed upload.
@@ -826,7 +822,6 @@ mod tests {
                 pairing: PairingState {
                     phase: PairingPhase::Paired,
                     journal_label: Some("journal".into()),
-                    observer_name: Some("observer".into()),
                     detail: None,
                 },
                 upload: UploadStatus {
@@ -840,7 +835,6 @@ mod tests {
                     last_successful_sync: Some(1_700_000_000_000),
                     recent_error_count: 1,
                     last_error_reason: Some("retry".into()),
-                    heartbeat_ok: true,
                     last_upload_duration_ms: Some(42),
                     last_upload_bytes: Some(12_345),
                     last_upload_path: Some(TransportPath::Direct),
@@ -1148,7 +1142,6 @@ mod tests {
             last_successful_sync: Some(1_700_000_000_000),
             recent_error_count: 1,
             last_error_reason: Some("retry".into()),
-            heartbeat_ok: true,
             last_upload_duration_ms: Some(42),
             last_upload_bytes: Some(12_345),
             last_upload_path: Some(TransportPath::Direct),
@@ -1166,7 +1159,6 @@ mod tests {
         assert_eq!(value["last_successful_sync"], 1_700_000_000_000u64);
         assert_eq!(value["recent_error_count"], 1);
         assert_eq!(value["last_error_reason"], "retry");
-        assert_eq!(value["heartbeat_ok"], true);
         assert_eq!(value["last_upload_duration_ms"], 42);
         assert_eq!(value["last_upload_bytes"], 12_345);
         assert_eq!(value["last_upload_path"], "direct");

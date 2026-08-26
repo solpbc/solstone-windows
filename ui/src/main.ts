@@ -94,7 +94,6 @@ type PairingPhase = "not_paired" | "pairing" | "paired" | "failed";
 interface PairingState {
   phase: PairingPhase;
   journal_label: string | null;
-  observer_name: string | null;
   detail: string | null;
 }
 
@@ -108,7 +107,6 @@ interface UploadStatus {
   last_successful_sync?: number;
   recent_error_count?: number;
   last_error_reason?: string | null;
-  heartbeat_ok: boolean;
 }
 
 interface SyncSnapshot {

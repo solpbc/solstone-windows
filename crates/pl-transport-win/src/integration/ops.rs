@@ -18,7 +18,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use observer_model::SyncSnapshot;
 use observer_pl::civil;
 use observer_pl::pairlink::{self, ParsedPairLink};
-use observer_pl::wire::HeartbeatEvent;
 use observer_pl::{bridge, ca};
 use observer_retention::RetentionConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -225,7 +224,6 @@ async fn pair(
     link: String,
 ) -> OpResult {
     let mut evidence = Evidence {
-        registered: Some(false),
         state_written: Some(false),
         remote_residue: Some(RemoteResidue::default()),
         ..Default::default()
@@ -310,61 +308,8 @@ async fn pair(
     };
     evidence.remote_residue = Some(residue);
 
-    progress("registering the observer stream");
-    let mut client = match ObserverClient::new(credential.clone()) {
-        Ok(client) => client
-            .with_state_path(environment.state_path.clone())
-            .with_observer(observer.clone()),
-        Err(error) => {
-            evidence.local_residue_cleared = Some(clear_local_credential(environment));
-            return (
-                Some(Failure::transport(
-                    Phase::Register,
-                    &error,
-                    "the signed credential could not be loaded into a client",
-                )),
-                evidence,
-            );
-        }
-    };
-
-    let registration = budget
-        .run(
-            Phase::Register,
-            client.register(
-                &environment.platform,
-                &environment.device_label,
-                &environment.stream_type,
-                &environment.app_version,
-                None,
-            ),
-        )
-        .await;
-
-    let registration = match registration {
-        Err(deadline) => {
-            evidence.local_residue_cleared = Some(clear_local_credential(environment));
-            return (Some(deadline), evidence);
-        }
-        Ok(Err(error)) => {
-            evidence.local_residue_cleared = Some(clear_local_credential(environment));
-            return (
-                Some(Failure::transport(
-                    Phase::Register,
-                    &error,
-                    "the journal refused the observer registration",
-                )),
-                evidence,
-            );
-        }
-        Ok(Ok(registration)) => registration,
-    };
-    evidence.registered = Some(true);
-
     let paired = PairedState {
         credential: Some(credential),
-        observer_key: Some(registration.key.clone()),
-        observer_name: Some(registration.name.clone()),
     };
     if let Some(deadline) = budget.checkpoint(Phase::Persist) {
         evidence.local_residue_cleared = Some(clear_local_credential(environment));
@@ -405,18 +350,6 @@ fn load_credential(environment: &Environment) -> Result<PairedState, Failure> {
     Ok(paired)
 }
 
-fn load_excluded_operation_pairing(environment: &Environment) -> Result<PairedState, Failure> {
-    let paired = load_credential(environment)?;
-    if paired.observer_key.is_none() {
-        return Err(Failure::error(
-            Phase::Precondition,
-            "observer_handle_missing",
-            "this excluded operation needs an observer handle; run --integration pair first",
-        ));
-    }
-    Ok(paired)
-}
-
 fn client_for(
     environment: &Environment,
     paired: &PairedState,
@@ -432,7 +365,6 @@ fn client_for(
     ObserverClient::new(credential)
         .map(|client| {
             client
-                .with_observer_key(paired.observer_key.clone())
                 .with_state_path(environment.state_path.clone())
                 .with_observer(observer)
         })
@@ -461,12 +393,11 @@ async fn roundtrip(
     counts_source: &Arc<OperationObserver>,
 ) -> OpResult {
     let mut evidence = Evidence {
-        heartbeat_ok: Some(false),
         segments_listed: Some(false),
         ..Default::default()
     };
 
-    let paired = match load_excluded_operation_pairing(environment) {
+    let paired = match load_credential(environment) {
         Ok(paired) => paired,
         Err(failure) => return (Some(failure), evidence),
     };
@@ -475,24 +406,7 @@ async fn roundtrip(
         Err(failure) => return (Some(failure), evidence),
     };
 
-    progress("posting an authenticated heartbeat");
-    let event = HeartbeatEvent::status(false);
     let budget = OperationBudget::start(command.deadline);
-    match budget.run(Phase::Heartbeat, client.heartbeat(&event)).await {
-        Err(deadline) => return (Some(deadline), evidence),
-        Ok(Err(error)) => {
-            return (
-                Some(Failure::transport(
-                    Phase::Heartbeat,
-                    &error,
-                    "the authenticated heartbeat did not complete",
-                )),
-                evidence,
-            )
-        }
-        Ok(Ok(())) => evidence.heartbeat_ok = Some(true),
-    }
-
     // The day is named explicitly rather than inferred from a device timezone;
     // the request only has to be authenticated and answered.
     let day = civil::day_string_local(now_secs(), 0);
@@ -617,7 +531,7 @@ async fn fetch(
         ..Default::default()
     };
 
-    let paired = match load_excluded_operation_pairing(environment) {
+    let paired = match load_credential(environment) {
         Ok(paired) => paired,
         Err(failure) => return (Some(failure), evidence),
     };
@@ -648,7 +562,7 @@ async fn fetch(
                 journal_bridge::BridgeStartError::NotReady => Failure::error(
                     Phase::BridgeStart,
                     "not_paired",
-                    "the profile has no credential and observer handle for the bridge",
+                    "the profile has no credential for the bridge",
                 ),
             };
             return (Some(failure), evidence);
@@ -1108,8 +1022,6 @@ mod tests {
         });
         PairedState {
             credential: Some(roundtrip_credential(pin, port)),
-            observer_key: None,
-            observer_name: None,
         }
         .save(&environment.state_path)
         .unwrap();
@@ -1162,8 +1074,6 @@ mod tests {
             state_path: root.join("pairing.json"),
             segments_root: root.join("segments"),
             device_label: "box".into(),
-            platform: "windows".into(),
-            stream_type: "desktop".into(),
             app_version: "1.0.0".into(),
             period_secs: 300,
             executable: None,
@@ -1244,16 +1154,12 @@ mod tests {
     }
 
     async fn advance_past_roundtrip_budget() {
-        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::time::advance(Duration::from_secs(8)).await;
         tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(2)).await;
     }
 
-    async fn fault_past_roundtrip_budget(faulted: &AtomicBool, heartbeat_owed: bool) {
+    async fn fault_past_roundtrip_budget(faulted: &AtomicBool) {
         faulted.store(true, Ordering::SeqCst);
-        if heartbeat_owed {
-            tokio::time::advance(Duration::from_secs(6)).await;
-        }
         advance_past_roundtrip_budget().await;
     }
 
@@ -1266,54 +1172,22 @@ mod tests {
         // advance past the operation budget or production can wait forever on
         // a timer that automatic paused-time advancement cannot drive.
         let Ok((tcp, _)) = listener.accept().await else {
-            fault_past_roundtrip_budget(&faulted, true).await;
+            fault_past_roundtrip_budget(&faulted).await;
             return;
         };
         let Ok(mut tls) = acceptor.accept(tcp).await else {
-            fault_past_roundtrip_budget(&faulted, true).await;
+            fault_past_roundtrip_budget(&faulted).await;
             return;
         };
         let Some(stream_id) = read_closed_stream_id(&mut tls).await else {
-            fault_past_roundtrip_budget(&faulted, true).await;
+            fault_past_roundtrip_budget(&faulted).await;
             return;
         };
-        tokio::time::advance(Duration::from_secs(6)).await;
-        let heartbeat = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, heartbeat.to_vec());
-        let Ok(encoded) = frame.encode() else {
-            fault_past_roundtrip_budget(&faulted, false).await;
-            return;
-        };
-        if tls.write_all(&encoded).await.is_err() {
-            fault_past_roundtrip_budget(&faulted, false).await;
-            return;
-        }
-        if tls.flush().await.is_err() {
-            fault_past_roundtrip_budget(&faulted, false).await;
-            return;
-        }
-        let _ = tls.shutdown().await;
-
-        let Ok((tcp, _)) = listener.accept().await else {
-            fault_past_roundtrip_budget(&faulted, false).await;
-            return;
-        };
-        let Ok(mut tls) = acceptor.accept(tcp).await else {
-            fault_past_roundtrip_budget(&faulted, false).await;
-            return;
-        };
-        let Some(stream_id) = read_closed_stream_id(&mut tls).await else {
-            fault_past_roundtrip_budget(&faulted, false).await;
-            return;
-        };
-        // Split the unconditional 4s delay so the first advance reaches the
-        // operation's 8s deadline exactly, then let it observe exhaustion
-        // before advancing again. This keeps the pre-fix/post-fix difference
-        // solely in production budget arithmetic. The response remains
-        // unconditional and tolerates a peer that has already gone away,
-        // because post-fix the operation returns while this task is mid-flight.
+        // Let the one list-segments request consume its complete operation
+        // budget. The response remains unconditional and tolerates a peer that
+        // has already gone away after the deadline resolves.
         advance_past_roundtrip_budget().await;
-        let body = br#"{"items":[],"total":0,"protocol_version":2}"#;
+        let body = br#"{"items":[],"total":0,"protocol_version":3}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
@@ -1328,7 +1202,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn one_operation_budget_is_shared_across_roundtrip_phases() {
+    async fn roundtrip_budget_bounds_the_segment_list_request() {
         let root = temp_root("roundtrip-budget");
         let environment = environment(&root);
         let (server_config, pin) = roundtrip_server_config();
@@ -1336,8 +1210,6 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let paired = PairedState {
             credential: Some(roundtrip_credential(pin, port)),
-            observer_key: Some("observer-key".into()),
-            observer_name: Some("Test observer".into()),
         };
         paired.save(&environment.state_path).unwrap();
         let fixture_faulted = Arc::new(AtomicBool::new(false));
@@ -1368,7 +1240,7 @@ mod tests {
         };
         let counts_source = OperationObserver::new();
         let started = tokio::time::Instant::now();
-        let (failure, evidence) = roundtrip(
+        let (failure, _evidence) = roundtrip(
             &command,
             &environment,
             Some(counts_source.clone()),
@@ -1398,7 +1270,6 @@ mod tests {
             "expected list_segments deadline, got {failure:?}; virtual elapsed {elapsed:?}"
         );
         assert_eq!(elapsed, Duration::from_secs(8));
-        assert_eq!(evidence.heartbeat_ok, Some(true));
     }
 
     #[test]
@@ -1587,7 +1458,6 @@ mod tests {
             .unwrap()
             .is_paired());
         assert_eq!(evidence.local_residue_cleared, Some(true));
-        assert_eq!(evidence.registered, Some(false));
         assert_eq!(evidence.state_written, Some(false));
 
         // The ceremony began, so remote residue is honestly "possible" rather

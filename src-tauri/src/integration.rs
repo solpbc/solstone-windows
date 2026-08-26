@@ -25,8 +25,6 @@ fn environment() -> Environment {
         state_path: platform_win::local_data_root().join("pairing.json"),
         segments_root: platform_win::segments_dir(),
         device_label: host,
-        platform: "windows".to_string(),
-        stream_type: "desktop".to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         period_secs: capture_engine::EngineConfig::default().segment_secs,
         executable: std::env::current_exe().ok(),

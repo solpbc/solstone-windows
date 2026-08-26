@@ -47,7 +47,6 @@ function uploadStatus() {
     quarantined_segments: 0,
     last_uploaded_segment: null,
     last_error: null,
-    heartbeat_ok: true,
   };
 }
 
@@ -68,7 +67,6 @@ export function observingDump() {
       pairing: {
         phase: "paired",
         journal_label: "journal",
-        observer_name: "observer",
         detail: null,
       },
       upload: uploadStatus(),
@@ -98,7 +96,6 @@ export function notPairedDump() {
       pairing: {
         phase: "not_paired",
         journal_label: null,
-        observer_name: null,
         detail: null,
       },
       upload: {

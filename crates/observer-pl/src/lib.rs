@@ -14,8 +14,7 @@
 //!   CLOSE/PING/PONG) and the dialer-side request/response assembler.
 //! - [`http`] — HTTP/1.1 request build + response parse, exactly as the Android
 //!   `PlHttp` transport frames it (`host: spl.local`, framing-owned headers).
-//! - [`wire`] — the excluded pair, register, and heartbeat request/response
-//!   shapes.
+//! - [`wire`] — the pairing request/response shapes.
 //! - [`ingest`] — the protocol-v3 ingest envelope, responses, and pure custody
 //!   proof.
 //! - [`ca`] — CA-fingerprint prefix pinning (SHA-256 of the cert DER, first 16
@@ -51,27 +50,22 @@ pub const DEFAULT_DIRECT_PORT: u16 = 7657;
 /// `X-Solstone-Protocol-Version`).
 pub const OBSERVER_PROTOCOL_VERSION: u32 = 3;
 
-/// Auth header carrying the observer handle. Preferred over `Authorization`
-/// because it survives proxy stripping; the journal checks it first
-/// (`_get_auth_key`). Mirrors `OBSERVER_HANDLE_HEADER` in convey.
+/// Reserved caller-auth header. The bridge filters this and `Authorization` so
+/// local callers cannot override bridge-owned mTLS request identity.
 pub const OBSERVER_HANDLE_HEADER: &str = "X-Solstone-Observer";
 
 /// Protocol-version header name.
 pub const PROTOCOL_VERSION_HEADER: &str = "X-Solstone-Protocol-Version";
 
 /// Observer endpoint paths (relative to the journal origin). PAIR still matches
-/// the convey blueprint; the four journal endpoints use `/app/devices`.
+/// the convey blueprint; the journal ingest endpoints use `/app/devices`.
 pub mod paths {
     /// Mobile/observer pairing endpoint. Carries `?token=<pair-token-hex>`.
     pub const PAIR: &str = "/app/network/pair";
-    /// Self-register an observer after pairing.
-    pub const REGISTER: &str = "/app/devices/register";
     /// Segment upload (multipart).
     pub const INGEST: &str = "/app/devices/ingest";
     /// Root ingest manifest used for protocol-v3 custody proof.
     pub const INGEST_MANIFEST: &str = "/app/devices/ingest/manifest";
-    /// Observer event relay; the heartbeat posts `observe.status` here.
-    pub const INGEST_EVENT: &str = "/app/devices/ingest/event";
     /// Per-day segment list for reconciliation (append `/<YYYYMMDD>`).
     pub const INGEST_SEGMENTS: &str = "/app/devices/ingest/segments";
 }

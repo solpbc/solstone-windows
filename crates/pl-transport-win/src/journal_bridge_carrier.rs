@@ -58,7 +58,7 @@ impl MuxCarrier {
         upstream_headers: &[(String, String)],
         body: &[u8],
     ) -> Result<StreamRx, TransportError> {
-        let headers = self.client.proxy_headers(upstream_headers)?;
+        let headers = self.client.proxy_headers(upstream_headers);
         let command = OpenStreamInput {
             method: method.to_string(),
             target: target.to_string(),

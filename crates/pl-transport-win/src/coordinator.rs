@@ -1281,11 +1281,7 @@ mod tests {
             device_token: None,
             device_token_expires_at: None,
         };
-        Arc::new(
-            ObserverClient::new(credential)
-                .unwrap()
-                .with_observer_key(Some("observer-key".into())),
-        )
+        Arc::new(ObserverClient::new(credential).unwrap())
     }
 
     fn coordinator(

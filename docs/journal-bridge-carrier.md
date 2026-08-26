@@ -5,7 +5,7 @@ Status: implemented (2026-07-02).
 This note documents the local journal bridge rework: each bridge instance owns
 at most one live upstream PL/TLS carrier, and every authorized loopback browser
 request opens its own odd-numbered mux stream on that carrier. The observer
-cadence paths - pairing, register, ingest, heartbeat, and reconcile - stay on
+cadence paths - pairing, ingest, and reconcile - stay on
 the existing request-per-carrier transport.
 
 ## Goals
@@ -99,8 +99,7 @@ New or changed items:
   - Returns the already-handshaken inner mTLS byte stream for both LAN and relay.
 - `ObserverClient::proxy_headers(&self, browser_headers)`.
   - `pub(crate)` replacement for private `compose_proxy_headers`.
-  - Keeps auth injection exactly where it is today: observer handle,
-    `Authorization: Bearer`, and protocol version.
+  - Starts with the protocol-v3 header and filters caller-supplied auth headers.
 
 The existing `send`, `send_over_relay`, `request_once`, and
 `request_once_relay` paths stay intact for cadence and pairing.
@@ -472,7 +471,7 @@ Deleted in the clean break:
 Replacement coverage lands in pure `CarrierDemux`/`HttpStreamAssembler` tests
 and bridge-level persistent-carrier tests. `ResponseAssembler`,
 `WindowedUpload`, `request_once`, `run_request_over_stream`,
-`request_once_relay`, pairing, register, ingest, heartbeat, and reconcile stay.
+`request_once_relay`, pairing, ingest, and reconcile stay.
 
 ## Test Scaffolding Plan
 

@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Pure observer PL wire protocol: pair-link parse, spl mux framing, HTTP-over-PL, the observer register/ingest/heartbeat/reconcile wire types, multipart, and CA-fingerprint pinning logic. No platform dep, no I/O; host-testable. The faithful Rust port of the contract iOS/Android ship."
+description = "Pure observer PL wire protocol: pair-link parse, spl mux framing, HTTP-over-PL, pairing and protocol-v3 ingest/reconcile wire types, multipart, and CA-fingerprint pinning logic. No platform dep, no I/O; host-testable. The faithful Rust port of the contract iOS/Android ship."
 
 [lints]
 workspace = true

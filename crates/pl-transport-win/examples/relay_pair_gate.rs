@@ -5,9 +5,8 @@
 //!
 //! Runs the real relay-form (`0x06`) pairing ceremony against a live relay +
 //! home: parse a relay pair-link, pair over the relay (pair-dial → CSR over the
-//! tunnel → live-peer SPKI pin → enroll/device), register the
-//! observer, then persist the resulting [`PairedState`] (credential + observer
-//! handle) to a JSON file and print the relay env (`relay_origin`, `instance_id`,
+//! tunnel → live-peer SPKI pin → enroll/device), then persist the resulting
+//! [`PairedState`] credential to a JSON file and print the relay env (`relay_origin`, `instance_id`,
 //! `device_token`) that the `--integration upload --carrier relay` gate consumes
 //! for a relay upload. Together the pair ceremony and upload gate prove off-LAN
 //! relay reach on real hardware without forcing any network topology.
@@ -17,11 +16,8 @@
 //! --example relay_pair_gate`. Because rustls + tokio-tungstenite are
 //! cross-platform this runs on Linux or Windows alike.
 
-use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::pairing;
-
-const PLATFORM: &str = "windows";
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -55,36 +51,16 @@ async fn main() {
         credential.endpoints,
     );
 
-    // 2. Register the observer (over LAN-first/relay-fallback — either path is fine here).
-    let mut client = ObserverClient::new(credential.clone()).expect("client build failed");
-    let registration = client
-        .register(
-            PLATFORM,
-            &device_label,
-            "desktop",
-            env!("CARGO_PKG_VERSION"),
-            None,
-        )
-        .await
-        .expect("register failed");
-    println!(
-        "REGISTERED: stream='{}' key_prefix={}",
-        registration.name,
-        &registration.key[..registration.key.len().min(8)],
-    );
-
-    // 3. Persist the credential + handle for the integration gate to consume.
+    // 2. Persist the credential for the integration gate to consume.
     let state = PairedState {
         credential: Some(credential),
-        observer_key: Some(registration.key.clone()),
-        observer_name: Some(registration.name.clone()),
     };
     state
         .save(std::path::Path::new(&credential_file))
         .expect("save credential file failed");
     println!("SAVED: {credential_file}");
 
-    // 4. Print the relay values the integration gate needs.
+    // 3. Print the relay values the integration gate needs.
     let instance_id = state
         .credential
         .as_ref()

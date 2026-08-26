@@ -4,10 +4,9 @@
 //! The pairing credential and its persistence.
 //!
 //! Pairing mints a per-device EC P-256 key + CSR locally; the journal signs the
-//! CSR and returns the client cert + CA chain. That credential (plus the
-//! registered observer handle) is the durable identity, stored under the
-//! per-user data dir so the observer resumes uploading after a restart without
-//! re-pairing. The private key never leaves the machine.
+//! CSR and returns the client cert + CA chain. That credential is the durable
+//! identity, stored under the per-user data dir so the observer resumes uploading
+//! after a restart without re-pairing. The private key never leaves the machine.
 
 use std::path::Path;
 
@@ -199,14 +198,10 @@ pub struct Credential {
     pub device_token_expires_at: Option<i64>,
 }
 
-/// The full persisted sync identity: the credential plus the registered
-/// observer handle (minted by `/app/devices/register`).
+/// The full persisted sync identity: the paired mTLS credential.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PairedState {
     pub credential: Option<Credential>,
-    pub observer_key: Option<String>,
-    #[serde(default)]
-    pub observer_name: Option<String>,
 }
 
 impl PairedState {
@@ -399,8 +394,6 @@ mod tests {
                 device_token: device_token.map(str::to_string),
                 device_token_expires_at: None,
             }),
-            observer_key: Some("obs-handle".into()),
-            observer_name: Some("winbox".into()),
         }
     }
 
@@ -457,14 +450,10 @@ mod tests {
                 device_token: None,
                 device_token_expires_at: None,
             }),
-            observer_key: Some("obs-handle".into()),
-            observer_name: Some("winbox".into()),
         };
         state.save(&path).unwrap();
         let loaded = PairedState::load(&path).unwrap();
         assert!(loaded.is_paired());
-        assert_eq!(loaded.observer_key.as_deref(), Some("obs-handle"));
-        assert_eq!(loaded.observer_name.as_deref(), Some("winbox"));
         assert_eq!(loaded.credential.unwrap().endpoints[0].port, 7657);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -582,8 +571,6 @@ mod tests {
                 device_token: Some("token".into()),
                 device_token_expires_at: Some(123),
             }),
-            observer_key: Some("obs-handle".into()),
-            observer_name: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         let loaded: PairedState = serde_json::from_str(&json).unwrap();
@@ -613,6 +600,9 @@ mod tests {
         }"#;
         let loaded: PairedState = serde_json::from_str(json).unwrap();
         assert!(loaded.is_paired());
+        let normalized = serde_json::to_string(&loaded).unwrap();
+        assert!(!normalized.contains("observer_key"));
+        assert!(!normalized.contains("observer_name"));
         let credential = loaded.credential.unwrap();
         assert_eq!(credential.relay_origin, None);
         assert_eq!(credential.device_token, None);

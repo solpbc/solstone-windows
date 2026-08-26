@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use pl_transport_win::integration::report::{EXIT_DEADLINE, EXIT_ERROR, SCHEMA_VERSION};
+use pl_transport_win::integration::report::{EXIT_PASS, SCHEMA_VERSION};
 use pl_transport_win::integration::{self, Environment};
 
 use support::relay_pairing::{relay_form_link, spawn_mock_relay, MockState, PAIR_SECRET};
@@ -26,8 +26,6 @@ fn environment(root: &Path) -> Environment {
         state_path: root.join("pairing.json"),
         segments_root: root.join("segments"),
         device_label: "stack-test".into(),
-        platform: "windows".into(),
-        stream_type: "desktop".into(),
         app_version: "0.0.0".into(),
         period_secs: 300,
         executable: None,
@@ -66,9 +64,7 @@ fn assert_not_reflected(channel: &str, output: &str, secrets: &[&str]) {
     }
 }
 
-/// This cannot reach PASS: the fixture serves the pairing ceremony and
-/// `/enroll/device`, but not `/app/devices/register`. Exit 2 or 3 is therefore
-/// the expected completed-operation shape, not a weakened success oracle.
+/// The fixture serves the complete pairing ceremony and credential persistence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn integration_pair_emits_one_envelope_from_one_mib_caller_stack() {
     if std::env::var_os(CHILD_ENV).is_some() {
@@ -136,25 +132,14 @@ async fn integration_pair_emits_one_envelope_from_one_mib_caller_stack() {
             output.status
         )
     });
-    assert!(
-        matches!(exit_code, code if code == i32::from(EXIT_ERROR) || code == i32::from(EXIT_DEADLINE)),
-        "child exited outside the integration mapping: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        output.status
-    );
+    assert_eq!(exit_code, i32::from(EXIT_PASS));
 
     let envelope = &envelopes[0];
     assert_eq!(envelope["schema_version"], SCHEMA_VERSION);
     assert_eq!(envelope["operation"], "pair");
-    // The fixed Linux debug run observed phase=register, total=4, and
-    // relay_successes=2. The phase and relay successes are deterministic once
-    // the ceremony completes. Total can grow if the host rejects the unreachable
-    // LAN registration dial quickly enough for a retry before the deadline.
-    assert_eq!(envelope["phase"], "register");
-    assert_eq!(envelope["dials"]["relay_successes"], 2);
-    assert!(
-        envelope["dials"]["total"].as_u64().unwrap_or_default() >= 4,
-        "the run did not reach the post-ceremony registration dial: {envelope}"
-    );
+    assert_eq!(envelope["verdict"], "PASS");
+    assert_eq!(envelope["phase"], "complete");
+    assert_eq!(envelope["evidence"]["state_written"], true);
 
     println!(
         "child_status={} envelope={}",

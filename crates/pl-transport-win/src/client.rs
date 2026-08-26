@@ -5,8 +5,7 @@
 //!
 //! Wraps a paired [`Credential`] and speaks the linked-device protocol-v3
 //! endpoints. Those endpoints authenticate exclusively with the mTLS peer and
-//! send only their protocol header. The excluded heartbeat and journal bridge
-//! retain their legacy observer-handle headers.
+//! send only their protocol header.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +18,6 @@ use observer_pl::ingest::{
     DayManifest, FilePart, IngestManifest, IngestMultipart, IngestResponse, IngestStatus,
     SegmentsEnvelope,
 };
-use observer_pl::wire::{HeartbeatEvent, RegisterRequest, RegisterResponse};
 use observer_pl::{
     paths, OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER,
 };
@@ -37,8 +35,6 @@ use crate::{tls, transport_error_code, RelayError, TransportError};
 
 /// Relay transient retry count. Mirrors the LAN connection/handshake retry bound.
 const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
-/// The unprojected heartbeat and bridge retain their exact v2 request bytes.
-const EXCLUDED_OPERATION_PROTOCOL_VERSION: u32 = 2;
 
 enum RefreshAction {
     Redial,
@@ -84,7 +80,6 @@ struct SendOutcome {
 pub struct ObserverClient {
     credential: Credential,
     config: Arc<ClientConfig>,
-    observer_key: Option<String>,
     boundary_counter: AtomicU64,
     /// Live relay device-token used for dials; the mutex is the refresh single-flight gate.
     device_token: Option<tokio::sync::Mutex<String>>,
@@ -109,18 +104,11 @@ impl ObserverClient {
         Ok(Self {
             credential,
             config,
-            observer_key: None,
             boundary_counter: AtomicU64::new(1),
             device_token,
             state_path: None,
             observer: None,
         })
-    }
-
-    /// Attach a previously-registered observer handle (resumed from disk).
-    pub fn with_observer_key(mut self, key: Option<String>) -> Self {
-        self.observer_key = key;
-        self
     }
 
     /// Attach the persisted pairing state path for best-effort relay token refresh write-back.
@@ -138,45 +126,8 @@ impl ObserverClient {
         self
     }
 
-    pub fn observer_key(&self) -> Option<&str> {
-        self.observer_key.as_deref()
-    }
-
     pub fn home_label(&self) -> &str {
         &self.credential.home_label
-    }
-
-    /// Self-register and lock the observer stream. Stores the returned handle.
-    /// Register is authorized by the PL identity (the mTLS client cert), so it
-    /// carries no observer header.
-    pub async fn register(
-        &mut self,
-        platform: &str,
-        hostname: &str,
-        stream_type: &str,
-        version: &str,
-        label: Option<String>,
-    ) -> Result<RegisterResponse, TransportError> {
-        let request = RegisterRequest {
-            platform: platform.to_string(),
-            hostname: hostname.to_string(),
-            stream_type: stream_type.to_string(),
-            version: version.to_string(),
-            label,
-        };
-        let body = serde_json::to_vec(&request)?;
-        let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-        let SendOutcome { response, .. } =
-            self.send("POST", paths::REGISTER, &headers, &body).await?;
-        if !response.is_success() {
-            return Err(TransportError::Rejected {
-                status: response.status,
-                body: response.body_text(),
-            });
-        }
-        let parsed: RegisterResponse = serde_json::from_slice(&response.body)?;
-        self.observer_key = Some(parsed.key.clone());
-        Ok(parsed)
     }
 
     /// Upload one segment's files with the protocol-v3 envelope. `segment` is
@@ -199,23 +150,6 @@ impl ObserverClient {
             self.send("POST", paths::INGEST, &headers, &body).await?;
         let parsed = self.parse_ingest_response(response)?;
         Ok((parsed, metadata))
-    }
-
-    /// Post the `observe.status` heartbeat so the journal sees the observer live.
-    pub async fn heartbeat(&self, event: &HeartbeatEvent) -> Result<(), TransportError> {
-        let body = serde_json::to_vec(event)?;
-        let mut headers = self.event_headers()?;
-        headers.push(("Content-Type".to_string(), "application/json".to_string()));
-        let SendOutcome { response, .. } = self
-            .send("POST", paths::INGEST_EVENT, &headers, &body)
-            .await?;
-        if !response.is_success() {
-            return Err(TransportError::Rejected {
-                status: response.status,
-                body: response.body_text(),
-            });
-        }
-        Ok(())
     }
 
     /// Read the root manifest used by protocol-v3 custody proof.
@@ -254,22 +188,6 @@ impl ObserverClient {
             PROTOCOL_VERSION_HEADER.to_string(),
             OBSERVER_PROTOCOL_VERSION.to_string(),
         )]
-    }
-
-    /// Legacy headers for the excluded heartbeat operation only.
-    fn event_headers(&self) -> Result<Vec<(String, String)>, TransportError> {
-        let key = self
-            .observer_key
-            .as_ref()
-            .ok_or(TransportError::NotPaired)?;
-        Ok(vec![
-            (OBSERVER_HANDLE_HEADER.to_string(), key.clone()),
-            ("Authorization".to_string(), format!("Bearer {key}")),
-            (
-                PROTOCOL_VERSION_HEADER.to_string(),
-                EXCLUDED_OPERATION_PROTOCOL_VERSION.to_string(),
-            ),
-        ])
     }
 
     fn parse_v3_read<T: serde::de::DeserializeOwned>(
@@ -317,26 +235,15 @@ impl ObserverClient {
     pub(crate) fn proxy_headers(
         &self,
         browser_headers: &[(String, String)],
-    ) -> Result<Vec<(String, String)>, TransportError> {
-        let key = self
-            .observer_key
-            .as_ref()
-            .ok_or(TransportError::NotPaired)?;
-        let mut headers = vec![
-            ("X-Solstone-Observer".to_string(), key.clone()),
-            ("Authorization".to_string(), format!("Bearer {key}")),
-            (
-                PROTOCOL_VERSION_HEADER.to_string(),
-                EXCLUDED_OPERATION_PROTOCOL_VERSION.to_string(),
-            ),
-        ];
+    ) -> Vec<(String, String)> {
+        let mut headers = self.v3_headers();
         headers.extend(
             browser_headers
                 .iter()
                 .filter(|(name, _)| !is_observer_auth_header(name))
                 .cloned(),
         );
-        Ok(headers)
+        headers
     }
 
     pub(crate) async fn dial_carrier(&self) -> Result<DialedCarrier, TransportError> {
@@ -734,7 +641,7 @@ fn now_secs() -> i64 {
 
 fn is_observer_auth_header(name: &str) -> bool {
     name.eq_ignore_ascii_case("authorization")
-        || name.eq_ignore_ascii_case("X-Solstone-Observer")
+        || name.eq_ignore_ascii_case(OBSERVER_HANDLE_HEADER)
         || name.eq_ignore_ascii_case(PROTOCOL_VERSION_HEADER)
 }
 

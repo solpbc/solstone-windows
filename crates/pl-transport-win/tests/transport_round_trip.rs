@@ -12,28 +12,20 @@
 
 mod support;
 
-const HEARTBEAT_PROTOCOL_VERSION: u32 = 2;
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use observer_model::{
-    AppPhase, HealthDump, PairingPhase, PairingState, SyncSnapshot, UploadStatus,
-    LAST_ERROR_REASON_MAX_LEN,
-};
 use observer_pl::frame::{
     Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RESET_CANCEL,
 };
 use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::mux::INITIAL_WINDOW;
-use observer_pl::wire::HeartbeatEvent;
 use observer_pl::PROTOCOL_VERSION_HEADER;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
-use pl_transport_win::heartbeat::run_heartbeat;
 use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{journal_bridge, TransportError};
 use rcgen::{
@@ -44,7 +36,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
@@ -105,45 +97,10 @@ fn observer_relay_credential(
     credential
 }
 
-fn test_health(app_state: AppPhase) -> HealthDump {
-    HealthDump {
-        app_state,
-        sources: vec![],
-        frame_rate: None,
-        segment_dir: None,
-        segment_seconds_remaining: None,
-        engine_ready: true,
-        version: "0.3.1".into(),
-        sync: SyncSnapshot::default(),
-        screen_encoder: None,
-        exclusions: None,
-        storage: None,
-        pause: None,
-        views: Default::default(),
-        pump_degraded: false,
-    }
-}
-
 fn request_body(request: &[u8]) -> serde_json::Value {
     let request = String::from_utf8_lossy(request);
     let (_, body) = request.split_once("\r\n\r\n").unwrap();
     serde_json::from_str(body).unwrap()
-}
-
-fn heartbeat_capture_matches(request: &[u8], fixture: &serde_json::Value) -> bool {
-    let text = String::from_utf8_lossy(request);
-    let body = request_body(request);
-    text.starts_with("POST /app/devices/ingest/event HTTP/1.1\r\n")
-        && text.contains("X-Solstone-Observer: authority-observer\r\n")
-        && text.contains("Authorization: Bearer authority-observer\r\n")
-        && text.contains(&format!(
-            "{PROTOCOL_VERSION_HEADER}: {HEARTBEAT_PROTOCOL_VERSION}\r\n"
-        ))
-        && text.contains("Content-Type: application/json\r\n")
-        && body["tract"] == fixture["payload"]["tract"]
-        && body["event"] == fixture["payload"]["event"]
-        && body["paused"] == false
-        && body.get("state").is_none()
 }
 
 fn pair_capture_matches(request: &[u8], nonce: &str, label: &str) -> bool {
@@ -243,6 +200,16 @@ async fn serve_one(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     serve_one_response(listener, acceptor, "200 OK", b"{\"status\":\"ok\"}").await
 }
 
+async fn serve_empty_segments(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
+    serve_one_response(
+        listener,
+        acceptor,
+        "200 OK",
+        br#"{"items":[],"total":0,"protocol_version":3}"#,
+    )
+    .await
+}
+
 #[derive(Clone, Copy)]
 enum PairCertificateMode {
     SubmittedCsr,
@@ -301,10 +268,10 @@ async fn serve_one_pair_response(
     request
 }
 
-async fn serve_drop_then_one(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
+async fn serve_drop_then_empty_segments(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
     drop(tcp);
-    serve_one(listener, acceptor).await
+    serve_empty_segments(listener, acceptor).await
 }
 
 #[derive(Clone, Copy)]
@@ -373,8 +340,6 @@ fn temp_state_path(name: &str) -> PathBuf {
 fn paired_state(credential: Credential) -> PairedState {
     PairedState {
         credential: Some(credential),
-        observer_key: Some("obs-handle".to_string()),
-        observer_name: None,
     }
 }
 
@@ -403,19 +368,9 @@ async fn start_bridge_with_response(
     (handle, server)
 }
 
-fn leaked_authority_payload(fixture_id: &str) -> &'static [u8] {
-    let fixture = authority_fixture(fixture_id);
-    Box::leak(
-        serde_json::to_vec(&fixture["payload"])
-            .expect("serialize authority payload")
-            .into_boxed_slice(),
-    )
-}
-
 async fn start_client_with_response(
     status: &'static str,
     body: &'static [u8],
-    observer_key: Option<&str>,
 ) -> (ObserverClient, JoinHandle<Vec<u8>>) {
     let (cert, key) = self_signed();
     let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
@@ -423,9 +378,7 @@ async fn start_client_with_response(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
-    let client = ObserverClient::new(observer_credential(pin, port))
-        .unwrap()
-        .with_observer_key(observer_key.map(str::to_owned));
+    let client = ObserverClient::new(observer_credential(pin, port)).unwrap();
     (client, server)
 }
 
@@ -1008,100 +961,11 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
 }
 
 #[tokio::test]
-async fn observer_contract_authority_register_captures_real_request_and_response() {
-    // Upstream follow-up: v9 no longer projects register; use the committed local fixture.
-    let request_fixture = authority_fixture("register_request");
-    let response_fixture = authority_fixture("register_response");
-    let body = leaked_authority_payload("register_response");
-    let (mut client, server) = start_client_with_response("200 OK", body, None).await;
-    let request_payload = &request_fixture["payload"];
-
-    let response = client
-        .register(
-            request_payload["platform"].as_str().unwrap(),
-            request_payload["hostname"].as_str().unwrap(),
-            request_payload["stream_type"].as_str().unwrap(),
-            request_payload["version"].as_str().unwrap(),
-            request_payload["label"].as_str().map(str::to_owned),
-        )
-        .await
-        .unwrap();
-    let request = server.await.unwrap();
-    let text = String::from_utf8_lossy(&request);
-    assert!(text.starts_with("POST /app/devices/register HTTP/1.1\r\n"));
-    assert!(text.contains("Content-Type: application/json\r\n"));
-    assert!(!text.contains("X-Solstone-Observer:"));
-    assert!(!text.contains("Authorization:"));
-    assert!(!text.contains("X-Solstone-Protocol-Version:"));
-    assert_eq!(request_body(&request), request_payload.clone());
-    assert_eq!(response.key, response_fixture["payload"]["key"]);
-    assert_eq!(
-        client.observer_key(),
-        response_fixture["payload"]["key"].as_str()
-    );
-}
-
-#[tokio::test]
-async fn observer_contract_authority_heartbeat_captures_production_subset() {
-    // Upstream follow-up: v9 no longer projects ingestEvent; use the committed local fixture.
-    let request_fixture = authority_fixture("heartbeat_request");
-    let body = leaked_authority_payload("heartbeat_response");
-    let (client, server) =
-        start_client_with_response("200 OK", body, Some("authority-observer")).await;
-    let event = HeartbeatEvent::status(false);
-    client.heartbeat(&event).await.unwrap();
-
-    let request = server.await.unwrap();
-    assert!(heartbeat_capture_matches(&request, &request_fixture));
-    for (from, to) in [
-        (
-            "POST /app/devices/ingest/event",
-            "GET /app/devices/ingest/event",
-        ),
-        ("/app/devices/ingest/event", "/app/devices/ingest/wrong"),
-        ("X-Solstone-Observer:", "X-Wrong-Observer:"),
-        ("Bearer authority-observer", "Bearer wrong"),
-        ("Content-Type: application/json", "Content-Type: text/plain"),
-        ("\"event\":\"status\"", "\"event\":\"wrong\""),
-    ] {
-        let mutated = String::from_utf8(request.clone())
-            .unwrap()
-            .replacen(from, to, 1);
-        assert_ne!(
-            mutated.as_bytes(),
-            request,
-            "mutation must alter capture: {from}"
-        );
-        assert!(
-            !heartbeat_capture_matches(mutated.as_bytes(), &request_fixture),
-            "capture mutation was not detected: {from}"
-        );
-    }
-    let protocol_header = format!("{PROTOCOL_VERSION_HEADER}: {HEARTBEAT_PROTOCOL_VERSION}");
-    let wrong_protocol_header = format!(
-        "{PROTOCOL_VERSION_HEADER}: {}",
-        HEARTBEAT_PROTOCOL_VERSION + 1
-    );
-    let mutated = String::from_utf8(request.clone()).unwrap().replacen(
-        &protocol_header,
-        &wrong_protocol_header,
-        1,
-    );
-    assert!(
-        !heartbeat_capture_matches(mutated.as_bytes(), &request_fixture),
-        "capture protocol-version mutation was not detected"
-    );
-}
-
-#[tokio::test]
 async fn protocol_v3_list_segments_is_strict_and_mtls_only() {
     let day = "20260729";
-    let (client, server) = start_client_with_response(
-        "200 OK",
-        br#"{"items":[],"total":0,"protocol_version":3}"#,
-        None,
-    )
-    .await;
+    let (client, server) =
+        start_client_with_response("200 OK", br#"{"items":[],"total":0,"protocol_version":3}"#)
+            .await;
     let (response, _) = client.list_segments(day).await.unwrap();
     assert_eq!(response.protocol_version, 3);
     let request = String::from_utf8(server.await.unwrap()).unwrap();
@@ -1117,20 +981,16 @@ async fn protocol_v3_list_segments_is_strict_and_mtls_only() {
 async fn protocol_v3_manifest_reads_do_not_require_an_observer_handle() {
     let day = "20260730";
     let (client, root_server) =
-        start_client_with_response("200 OK", br#"{"days":{"20260730":{"segments":1}}}"#, None)
-            .await;
+        start_client_with_response("200 OK", br#"{"days":{"20260730":{"segments":1}}}"#).await;
     let (manifest, _) = client.ingest_manifest().await.unwrap();
     assert_eq!(manifest.days[day].segments, 1);
     let root_request = String::from_utf8(root_server.await.unwrap()).unwrap();
     assert!(root_request.starts_with("GET /app/devices/ingest/manifest HTTP/1.1\r\n"));
     assert!(!root_request.contains("Authorization:"));
 
-    let (client, day_server) = start_client_with_response(
-        "200 OK",
-        br#"{"version":1,"day":"20260730","segments":{}}"#,
-        None,
-    )
-    .await;
+    let (client, day_server) =
+        start_client_with_response("200 OK", br#"{"version":1,"day":"20260730","segments":{}}"#)
+            .await;
     let (day_manifest, _) = client.ingest_manifest_day(day).await.unwrap();
     assert_eq!(day_manifest.day, day);
     let day_request = String::from_utf8(day_server.await.unwrap()).unwrap();
@@ -1154,8 +1014,7 @@ async fn protocol_v3_ingest_captures_envelope_and_conflict_status() {
         })
         .collect();
     let (client, server) =
-        start_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#, None)
-            .await;
+        start_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#).await;
     let (response, _) = client.ingest(segment, day, files).await.unwrap();
     assert_eq!(response.status, IngestStatus::Ok);
     let request = server.await.unwrap();
@@ -1163,12 +1022,8 @@ async fn protocol_v3_ingest_captures_envelope_and_conflict_status() {
         &request, day, segment, &filenames
     ));
 
-    let (client, server) = start_client_with_response(
-        "409 Conflict",
-        br#"{"status":"conflict"}"#,
-        Some("authority-observer"),
-    )
-    .await;
+    let (client, server) =
+        start_client_with_response("409 Conflict", br#"{"status":"conflict"}"#).await;
     let (response, _) = client
         .ingest(
             segment,
@@ -1193,8 +1048,7 @@ async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_on
     let filenames = ["screen.mp4", "audio.flac"];
 
     let (client, server) =
-        start_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#, None)
-            .await;
+        start_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#).await;
     client
         .ingest(
             segment,
@@ -1244,8 +1098,7 @@ async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_on
     }
 
     let (client, server) =
-        start_client_with_response("200 OK", br#"{"days":{"20260820":{"segments":1}}}"#, None)
-            .await;
+        start_client_with_response("200 OK", br#"{"days":{"20260820":{"segments":1}}}"#).await;
     client.ingest_manifest().await.unwrap();
     assert!(v3_read_capture_matches(
         &server.await.unwrap(),
@@ -1253,12 +1106,9 @@ async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_on
         "/app/devices/ingest/manifest"
     ));
 
-    let (client, server) = start_client_with_response(
-        "200 OK",
-        br#"{"version":1,"day":"20260820","segments":{}}"#,
-        None,
-    )
-    .await;
+    let (client, server) =
+        start_client_with_response("200 OK", br#"{"version":1,"day":"20260820","segments":{}}"#)
+            .await;
     client.ingest_manifest_day(day).await.unwrap();
     assert!(v3_read_capture_matches(
         &server.await.unwrap(),
@@ -1266,12 +1116,9 @@ async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_on
         "/app/devices/ingest/manifest/20260820"
     ));
 
-    let (client, server) = start_client_with_response(
-        "200 OK",
-        br#"{"items":[],"total":0,"protocol_version":3}"#,
-        None,
-    )
-    .await;
+    let (client, server) =
+        start_client_with_response("200 OK", br#"{"items":[],"total":0,"protocol_version":3}"#)
+            .await;
     client.list_segments(day).await.unwrap();
     assert!(v3_read_capture_matches(
         &server.await.unwrap(),
@@ -1300,7 +1147,6 @@ async fn observer_contract_authority_direct_status_vectors_use_documented_http_m
         let (client, server) = start_client_with_response(
             Box::leak(format!("{status} {reason}").into_boxed_str()),
             body,
-            None,
         )
         .await;
         let (response, _) = client
@@ -1334,7 +1180,7 @@ async fn observer_contract_authority_direct_status_vectors_use_documented_http_m
 async fn observer_contract_authority_direct_v3_reads_fail_closed_on_non_success() {
     for status in [403, 500] {
         let text: &'static str = Box::leak(format!("{status} Rejected").into_boxed_str());
-        let (client, server) = start_client_with_response(text, br#"{}"#, None).await;
+        let (client, server) = start_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.ingest_manifest().await,
             Err(TransportError::Rejected { status: actual, .. }) if actual == status
@@ -1345,7 +1191,7 @@ async fn observer_contract_authority_direct_v3_reads_fail_closed_on_non_success(
             "/app/devices/ingest/manifest"
         ));
 
-        let (client, server) = start_client_with_response(text, br#"{}"#, None).await;
+        let (client, server) = start_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.ingest_manifest_day("20260820").await,
             Err(TransportError::Rejected { status: actual, .. }) if actual == status
@@ -1356,7 +1202,7 @@ async fn observer_contract_authority_direct_v3_reads_fail_closed_on_non_success(
             "/app/devices/ingest/manifest/20260820"
         ));
 
-        let (client, server) = start_client_with_response(text, br#"{}"#, None).await;
+        let (client, server) = start_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.list_segments("20260820").await,
             Err(TransportError::Rejected { status: actual, .. }) if actual == status
@@ -1497,7 +1343,7 @@ async fn journal_bridge_authority_rejects_before_upstream() {
 }
 
 #[tokio::test]
-async fn journal_bridge_buffered_pass_through_injects_auth_and_strips_local_headers() {
+async fn journal_bridge_buffered_pass_through_adds_v3_headers_and_strips_local_headers() {
     let (handle, upstream) = start_bridge_with_response("200 OK", b"bridge ok").await;
     let port = handle.port();
     let cap = capability_from(&handle);
@@ -1521,9 +1367,10 @@ async fn journal_bridge_buffered_pass_through_injects_auth_and_strips_local_head
 
     let request = upstream.await.unwrap();
     let request = String::from_utf8_lossy(&request);
-    assert!(request.contains("X-Solstone-Observer: obs-handle\r\n"));
-    assert!(request.contains("Authorization: Bearer obs-handle\r\n"));
-    assert!(request.contains("X-Solstone-Protocol-Version: 2\r\n"));
+    assert!(request.contains("X-Solstone-Protocol-Version: 3\r\n"));
+    assert!(!request.contains("X-Solstone-Observer:"));
+    assert!(!request.contains("Authorization:"));
+    assert!(!request.contains("X-Solstone-Protocol-Version: 2"));
     assert!(request.contains("accept: text/html\r\n"));
     let lower = request.to_ascii_lowercase();
     assert!(!lower.contains(observer_pl::bridge::CAP_COOKIE_NAME));
@@ -2390,156 +2237,18 @@ async fn wrong_pin_fails_the_handshake() {
 }
 
 #[tokio::test]
-async fn heartbeat_immediate_post_success_sets_heartbeat_ok_and_sends_safe_payload() {
-    let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve_one(listener, acceptor));
-
-    let client = Arc::new(
-        ObserverClient::new(observer_credential(pin, port))
-            .unwrap()
-            .with_observer_key(Some("observer-key".into())),
-    );
-    let health = Arc::new(Mutex::new(test_health(AppPhase::Idle)));
-    let mut upload = UploadStatus {
-        pending_segments: 7,
-        last_successful_sync: Some(1_700_000_000_000),
-        last_error: Some("SECRET https://x/y?token=abc C:\\Users\\me\\seg.mp4".into()),
-        ..UploadStatus::default()
-    };
-    upload.record_failure("http_503");
-    let sync = Arc::new(Mutex::new(SyncSnapshot {
-        pairing: PairingState {
-            phase: PairingPhase::Paired,
-            journal_label: Some("Home".into()),
-            observer_name: Some("fedora".into()),
-            detail: None,
-        },
-        upload,
-    }));
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(run_heartbeat(
-        client,
-        health,
-        sync.clone(),
-        "desktop".into(),
-        "0.3.1".into(),
-        shutdown_rx,
-    ));
-
-    let request = server.await.unwrap();
-    let _ = shutdown_tx.send(true);
-    task.await.unwrap();
-
-    assert!(sync.lock().unwrap().upload.heartbeat_ok);
-    let body = request_body(&request);
-    let object = body.as_object().unwrap();
-    let expected = [
-        "tract",
-        "event",
-        "paused",
-        "name",
-        "stream_type",
-        "version",
-        "uptime",
-        "last_successful_sync",
-        "pending_queue_depth",
-        "recent_error_count",
-        "last_error_reason",
-    ];
-    assert_eq!(object.len(), expected.len());
-    for key in expected {
-        assert!(object.contains_key(key), "missing key {key}");
-    }
-    assert_eq!(object["tract"], "observe");
-    assert_eq!(object["event"], "status");
-    assert_eq!(object["paused"], false);
-    assert_eq!(object["name"], "fedora");
-    assert_eq!(object["stream_type"], "desktop");
-    assert_eq!(object["version"], "0.3.1");
-    assert_eq!(object["last_successful_sync"], 1_700_000_000_000u64);
-    assert_eq!(object["pending_queue_depth"], 7);
-    assert_eq!(object["recent_error_count"], 1);
-    assert_eq!(object["last_error_reason"], "http_503");
-    assert!(
-        object["last_error_reason"]
-            .as_str()
-            .unwrap()
-            .chars()
-            .count()
-            <= LAST_ERROR_REASON_MAX_LEN
-    );
-
-    let body_text = body.to_string();
-    assert!(!object.contains_key("last_error"));
-    assert!(!body_text.contains("SECRET"));
-    assert!(!body_text.contains("token"));
-    assert!(!body_text.contains("Users"));
-    assert!(!body_text.contains("https://"));
-}
-
-#[tokio::test]
-async fn heartbeat_immediate_post_rejection_is_non_fatal_and_sets_heartbeat_not_ok() {
-    let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve_one_response(
-        listener,
-        acceptor,
-        "503 Service Unavailable",
-        b"SECRET https://x/y?token=abc C:\\Users\\me\\seg.mp4",
-    ));
-
-    let client = Arc::new(
-        ObserverClient::new(observer_credential(pin, port))
-            .unwrap()
-            .with_observer_key(Some("observer-key".into())),
-    );
-    let health = Arc::new(Mutex::new(test_health(AppPhase::Paused)));
-    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(run_heartbeat(
-        client,
-        health,
-        sync.clone(),
-        "desktop".into(),
-        "0.3.1".into(),
-        shutdown_rx,
-    ));
-
-    let request = server.await.unwrap();
-    let _ = shutdown_tx.send(true);
-    task.await.unwrap();
-
-    assert!(!sync.lock().unwrap().upload.heartbeat_ok);
-    let body = request_body(&request);
-    assert_eq!(body["tract"], "observe");
-    assert_eq!(body["event"], "status");
-    assert_eq!(body["paused"], true);
-}
-
-#[tokio::test]
 async fn reachable_lan_success_never_dials_relay() {
     let (cert, key) = self_signed();
     let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve_one(listener, acceptor));
+    let server = tokio::spawn(serve_empty_segments(listener, acceptor));
     let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
-    let client = ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token"))
-        .unwrap()
-        .with_observer_key(Some("observer-key".into()));
+    let client =
+        ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token")).unwrap();
 
-    client
-        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
-        .await
-        .unwrap();
+    client.list_segments("20260729").await.unwrap();
 
     let _ = server.await.unwrap();
     assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
@@ -2560,14 +2269,10 @@ async fn reachable_lan_rejection_never_dials_relay() {
         b"{\"error\":\"busy\"}",
     ));
     let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
-    let client = ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token"))
-        .unwrap()
-        .with_observer_key(Some("observer-key".into()));
+    let client =
+        ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token")).unwrap();
 
-    let err = client
-        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
-        .await
-        .unwrap_err();
+    let err = client.list_segments("20260729").await.unwrap_err();
 
     assert!(matches!(err, TransportError::Rejected { status: 503, .. }));
     let _ = server.await.unwrap();
@@ -2579,14 +2284,9 @@ async fn reachable_lan_rejection_never_dials_relay() {
 async fn lan_only_no_endpoint_still_returns_no_endpoint() {
     let mut credential = observer_credential(vec![0; 16], 7657);
     credential.endpoints.clear();
-    let client = ObserverClient::new(credential)
-        .unwrap()
-        .with_observer_key(Some("observer-key".into()));
+    let client = ObserverClient::new(credential).unwrap();
 
-    let err = client
-        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
-        .await
-        .unwrap_err();
+    let err = client.list_segments("20260729").await.unwrap_err();
 
     assert!(matches!(err, TransportError::NoEndpoint));
 }
@@ -2598,16 +2298,12 @@ async fn transient_lan_fault_then_success_absorbed_before_relay() {
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve_drop_then_one(listener, acceptor));
+    let server = tokio::spawn(serve_drop_then_empty_segments(listener, acceptor));
     let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
-    let client = ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token"))
-        .unwrap()
-        .with_observer_key(Some("observer-key".into()));
+    let client =
+        ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token")).unwrap();
 
-    client
-        .heartbeat(&observer_pl::wire::HeartbeatEvent::status(false))
-        .await
-        .unwrap();
+    client.list_segments("20260729").await.unwrap();
 
     let _ = server.await.unwrap();
     assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);

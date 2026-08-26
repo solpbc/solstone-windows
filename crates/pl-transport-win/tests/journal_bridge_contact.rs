@@ -27,8 +27,6 @@ fn paired_state() -> PairedState {
     };
     PairedState {
         credential: Some(credential),
-        observer_key: Some("observer-key".into()),
-        observer_name: None,
     }
 }
 

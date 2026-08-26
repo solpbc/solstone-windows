@@ -25,7 +25,6 @@ use observer_pl::frame::{
 use observer_pl::http::{self, HttpResponse};
 use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::mux::INITIAL_WINDOW;
-use observer_pl::wire::HeartbeatEvent;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::journal_bridge;
@@ -160,17 +159,28 @@ fn temp_pairing_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("plw-{name}-{}-{unique}.json", std::process::id()))
 }
 
-fn heartbeat_client(credential: Credential) -> ObserverClient {
-    ObserverClient::new(credential)
-        .unwrap()
-        .with_observer_key(Some("observer-key".into()))
+fn relay_client(credential: Credential) -> ObserverClient {
+    ObserverClient::new(credential).unwrap()
+}
+
+async fn relay_probe(client: &ObserverClient) -> Result<(), TransportError> {
+    client
+        .ingest(
+            "143000_300",
+            "20260729",
+            vec![FilePart {
+                filename: "probe.bin".into(),
+                content_type: "application/octet-stream".into(),
+                bytes: vec![1],
+            }],
+        )
+        .await
+        .map(|_| ())
 }
 
 fn relay_bridge_state(credential: Credential) -> PairedState {
     PairedState {
         credential: Some(credential),
-        observer_key: Some("observer-key".into()),
-        observer_name: None,
     }
 }
 
@@ -1191,7 +1201,7 @@ async fn run_complete_observer_ingest(
     let (pin, acceptor) = tls_pair_with_pin();
     let (origin, server) = spawn_flow_relay(acceptor).await;
     let client =
-        heartbeat_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
+        relay_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
     let (response, metadata) = client
         .ingest("143000_300", "20260729", production_ingest_files())
         .await
@@ -1214,7 +1224,7 @@ async fn run_interrupted_observer_ingest(
     let (pin, acceptor) = tls_pair_with_pin();
     let (origin, server) = spawn_interrupted_flow_relay(acceptor).await;
     let client =
-        heartbeat_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
+        relay_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
     let error = client
         .ingest("143000_300", "20260729", production_ingest_files())
         .await
@@ -1250,7 +1260,7 @@ async fn relay_round_trips_small_body() {
         "inst-small",
         RELAY_TOKEN,
         "POST",
-        "/app/devices/register",
+        "/transport/small",
         &[("Content-Type".to_string(), "application/json".to_string())],
         b"{\"device\":\"win\"}",
     )
@@ -1261,7 +1271,7 @@ async fn relay_round_trips_small_body() {
     assert_eq!(response.body_text(), "{\"status\":\"ok\"}");
     let received = server.await.unwrap();
     let received_text = String::from_utf8_lossy(&received);
-    assert!(received_text.starts_with("POST /app/devices/register HTTP/1.1\r\n"));
+    assert!(received_text.starts_with("POST /transport/small HTTP/1.1\r\n"));
     assert!(received_text.ends_with("{\"device\":\"win\"}"));
 }
 
@@ -1497,11 +1507,8 @@ async fn relay_is_blind_to_inner_http_and_tokens() {
         instance_id,
         token,
         "POST",
-        "/app/devices/register",
-        &[(
-            observer_pl::OBSERVER_HANDLE_HEADER.to_string(),
-            "observer-key".to_string(),
-        )],
+        "/transport/blind",
+        &[("X-Private-Probe".to_string(), "private-value".to_string())],
         b"{\"device\":\"win\"}",
     )
     .await
@@ -1521,10 +1528,7 @@ async fn relay_is_blind_to_inner_http_and_tokens() {
     );
     assert!(!contains_bytes(&captured, b"POST"));
     assert!(!contains_bytes(&captured, token.as_bytes()));
-    assert!(!contains_bytes(
-        &captured,
-        observer_pl::OBSERVER_HANDLE_HEADER.as_bytes()
-    ));
+    assert!(!contains_bytes(&captured, b"X-Private-Probe"));
     assert!(!contains_bytes(&captured, instance_id.as_bytes()));
 }
 
@@ -1726,22 +1730,19 @@ async fn relay_fallbacks_after_lan_unreachable() {
     let now = epoch_secs();
     let token = mint_jwt(now, now + 10_000);
     let relay = spawn_combined_relay(acceptor, CombinedWsMode::AcceptAny, token.clone()).await;
-    let client = heartbeat_client(observer_relay_credential(
+    let client = relay_client(observer_relay_credential(
         pin,
         9,
         relay.origin.clone(),
         token,
     ));
 
-    client
-        .heartbeat(&HeartbeatEvent::status(false))
-        .await
-        .unwrap();
+    relay_probe(&client).await.unwrap();
 
     let requests = relay.state.inner_requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     let request_text = String::from_utf8_lossy(&requests[0]);
-    assert!(request_text.starts_with("POST /app/devices/ingest/event HTTP/1.1\r\n"));
+    assert!(request_text.starts_with("POST /app/devices/ingest HTTP/1.1\r\n"));
     relay.abort();
 }
 
@@ -1897,17 +1898,14 @@ async fn relay_proactive_refresh_before_first_dial() {
     let fresh_token = mint_jwt(now, now + 10_000);
     let relay =
         spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
-    let client = heartbeat_client(observer_relay_credential(
+    let client = relay_client(observer_relay_credential(
         pin,
         9,
         relay.origin.clone(),
         old_token,
     ));
 
-    client
-        .heartbeat(&HeartbeatEvent::status(false))
-        .await
-        .unwrap();
+    relay_probe(&client).await.unwrap();
 
     assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
     assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 1);
@@ -1926,17 +1924,14 @@ async fn relay_unauthorized_refreshes_and_redials_once() {
     let fresh_token = mint_jwt(now, now + 20_000);
     let relay =
         spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
-    let client = heartbeat_client(observer_relay_credential(
+    let client = relay_client(observer_relay_credential(
         pin,
         9,
         relay.origin.clone(),
         old_token,
     ));
 
-    client
-        .heartbeat(&HeartbeatEvent::status(false))
-        .await
-        .unwrap();
+    relay_probe(&client).await.unwrap();
 
     assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 2);
     assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
@@ -2038,17 +2033,14 @@ async fn relay_unauthorized_persists_after_refresh_is_terminal_no_storm() {
     let fresh_token = mint_jwt(now, now + 20_000);
     let relay =
         spawn_combined_relay(acceptor, CombinedWsMode::AlwaysUnauthorized, fresh_token).await;
-    let client = heartbeat_client(observer_relay_credential(
+    let client = relay_client(observer_relay_credential(
         pin,
         9,
         relay.origin.clone(),
         old_token,
     ));
 
-    let err = client
-        .heartbeat(&HeartbeatEvent::status(false))
-        .await
-        .unwrap_err();
+    let err = relay_probe(&client).await.unwrap_err();
 
     assert_relay_error::<()>(Err(err), RelayError::Unauthorized);
     assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 2);
@@ -2068,17 +2060,12 @@ async fn relay_refresh_persists_token_for_restart() {
     let path = temp_pairing_path("refresh");
     PairedState {
         credential: Some(credential.clone()),
-        observer_key: Some("observer-key".into()),
-        observer_name: Some("fedora".into()),
     }
     .save(&path)
     .unwrap();
-    let client = heartbeat_client(credential).with_state_path(path.clone());
+    let client = relay_client(credential).with_state_path(path.clone());
 
-    client
-        .heartbeat(&HeartbeatEvent::status(false))
-        .await
-        .unwrap();
+    relay_probe(&client).await.unwrap();
 
     let loaded = PairedState::load(&path).unwrap();
     let loaded_credential = loaded.credential.unwrap();
@@ -2090,8 +2077,6 @@ async fn relay_refresh_persists_token_for_restart() {
         loaded_credential.device_token_expires_at,
         Some(now + 20_000)
     );
-    assert_eq!(loaded.observer_key.as_deref(), Some("observer-key"));
-    assert_eq!(loaded.observer_name.as_deref(), Some("fedora"));
     let _ = std::fs::remove_file(&path);
     relay.abort();
 }
@@ -2104,7 +2089,7 @@ async fn relay_refresh_single_flight_across_concurrent_sends() {
     let fresh_token = mint_jwt(now, now + 20_000);
     let relay =
         spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
-    let client = Arc::new(heartbeat_client(observer_relay_credential(
+    let client = Arc::new(relay_client(observer_relay_credential(
         pin,
         9,
         relay.origin.clone(),
@@ -2114,9 +2099,7 @@ async fn relay_refresh_single_flight_across_concurrent_sends() {
     let mut tasks = Vec::new();
     for _ in 0..3 {
         let client = client.clone();
-        tasks.push(tokio::spawn(async move {
-            client.heartbeat(&HeartbeatEvent::status(false)).await
-        }));
+        tasks.push(tokio::spawn(async move { relay_probe(&client).await }));
     }
     for task in tasks {
         task.await.unwrap().unwrap();
@@ -2143,17 +2126,14 @@ async fn relay_unpaid_is_terminal_bounded() {
     let now = epoch_secs();
     let token = mint_jwt(now, now + 10_000);
     let relay = spawn_combined_relay(acceptor, CombinedWsMode::Close(4402), token.clone()).await;
-    let client = heartbeat_client(observer_relay_credential(
+    let client = relay_client(observer_relay_credential(
         pin,
         9,
         relay.origin.clone(),
         token,
     ));
 
-    let err = client
-        .heartbeat(&HeartbeatEvent::status(false))
-        .await
-        .unwrap_err();
+    let err = relay_probe(&client).await.unwrap_err();
 
     assert_relay_error::<()>(Err(err), RelayError::Unpaid);
     assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 1);
@@ -2171,17 +2151,14 @@ async fn relay_reasons_map_verbatim_and_redacted() {
         let now = epoch_secs();
         let token = mint_jwt(now, now + 10_000);
         let relay = spawn_combined_relay(acceptor, mode, token.clone()).await;
-        let client = heartbeat_client(observer_relay_credential(
+        let client = relay_client(observer_relay_credential(
             pin,
             9,
             relay.origin.clone(),
             token.clone(),
         ));
 
-        let err = client
-            .heartbeat(&HeartbeatEvent::status(false))
-            .await
-            .unwrap_err();
+        let err = relay_probe(&client).await.unwrap_err();
         let code = transport_error_code(&err);
 
         assert_eq!(code, expected);

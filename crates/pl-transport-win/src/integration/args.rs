@@ -351,8 +351,8 @@ pub const HELP: &str = "\
 --integration <operation> — drive the app's production transport against a journal.
 
 Operations:
-  pair        pair and register from one relay-form link on stdin (requires an empty profile)
-  roundtrip   authenticated heartbeat + segment list over the production client
+  pair        pair from one relay-form link on stdin (requires an empty profile)
+  roundtrip   authenticated segment list over the production client
   fetch       retrieve a journal path through the production journal bridge
   upload      send one caller-named synthetic segment through the production uploader
 

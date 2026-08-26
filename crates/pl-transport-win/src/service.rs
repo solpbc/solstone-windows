@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! Sync orchestration: pair -> register -> upload + heartbeat.
+//! Sync orchestration: pair -> upload.
 //!
-//! This is the thin composition the binary drives. `pair_and_register` runs the
-//! one-shot handshake from a pasted link and persists the credential;
-//! `run_uploader` spins the upload coordinator and heartbeat for an already
-//! paired observer and runs until shutdown. Both publish honest pairing/upload
-//! state into the shared [`SyncSnapshot`] so the health dump reflects reality.
+//! This is the thin composition the binary drives. `pair` runs the one-shot
+//! handshake from a pasted link and persists the credential; `run_uploader` spins
+//! the upload coordinator for an already paired observer and runs until shutdown.
+//! Both publish honest pairing/upload state into the shared [`SyncSnapshot`] so
+//! the health dump reflects reality.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use observer_model::{HealthDump, LocalOffset, PairingPhase, PairingState, SyncSnapshot};
+use observer_model::{LocalOffset, PairingPhase, PairingState, SyncSnapshot};
 use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinHandle};
@@ -20,26 +20,17 @@ use tokio::task::{JoinError, JoinHandle};
 use crate::client::ObserverClient;
 use crate::coordinator::UploadCoordinator;
 use crate::credential::PairedState;
-use crate::heartbeat::run_heartbeat;
 use crate::sealed::{LocalSealedStore, SealedStore};
 use crate::{cancelled, pairing, transport_error_code, TransportError};
 
 /// Static identity + paths the sync layer needs.
 #[derive(Debug, Clone)]
 pub struct SyncConfig {
-    /// Observer platform string sent on registration (`"windows"`).
-    pub platform: String,
-    /// Device hostname registered with the journal.
-    pub hostname: String,
-    /// Observer build version.
-    pub version: String,
-    /// Observer stream type (`"desktop"`).
-    pub stream_type: String,
     /// CN to put on the pairing CSR.
     pub device_label: String,
     /// Segment rotation period (must match the capture engine's).
     pub period_secs: u64,
-    /// Where the paired credential + observer handle persist.
+    /// Where the paired credential persists.
     pub state_path: PathBuf,
     /// The sealed-segments root the uploader drains.
     pub segments_root: PathBuf,
@@ -64,9 +55,9 @@ fn failed_pairing_state(error: &TransportError) -> PairingState {
     }
 }
 
-/// Pair from a pasted/scanned link, register the observer, persist, and update
-/// the sync snapshot. Returns the persisted [`PairedState`].
-pub async fn pair_and_register(
+/// Pair from a pasted/scanned link, persist the credential, and update the sync
+/// snapshot. Returns the persisted [`PairedState`].
+pub async fn pair(
     link: &str,
     cfg: &SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
@@ -79,14 +70,13 @@ pub async fn pair_and_register(
         },
     );
 
-    match pair_and_register_inner(link, cfg).await {
-        Ok((paired, journal_label, observer_name)) => {
+    match pair_inner(link, cfg).await {
+        Ok((paired, journal_label)) => {
             set_pairing(
                 &sync,
                 PairingState {
                     phase: PairingPhase::Paired,
                     journal_label: Some(journal_label),
-                    observer_name: Some(observer_name),
                     detail: None,
                 },
             );
@@ -99,50 +89,26 @@ pub async fn pair_and_register(
     }
 }
 
-async fn pair_and_register_inner(
-    link: &str,
-    cfg: &SyncConfig,
-) -> Result<(PairedState, String, String), TransportError> {
+async fn pair_inner(link: &str, cfg: &SyncConfig) -> Result<(PairedState, String), TransportError> {
     let credential = pairing::pair_from_link(link, &cfg.device_label).await?;
     let journal_label = credential.home_label.clone();
-    let mut client =
-        ObserverClient::new(credential.clone())?.with_state_path(cfg.state_path.clone());
-    let registration = client
-        .register(
-            &cfg.platform,
-            &cfg.hostname,
-            &cfg.stream_type,
-            &cfg.version,
-            None,
-        )
-        .await?;
     let paired = PairedState {
         credential: Some(credential),
-        observer_key: Some(registration.key.clone()),
-        observer_name: Some(registration.name.clone()),
     };
     paired.save(&cfg.state_path)?;
-    Ok((paired, journal_label, registration.name))
+    Ok((paired, journal_label))
 }
 
-struct UploaderParts {
-    client: Arc<ObserverClient>,
-    coordinator: UploadCoordinator,
-    stream_type: String,
-    version: String,
-}
-
-/// Run the upload coordinator + heartbeat for an already-paired observer until
-/// `cancel` fires. Registers first if the stored state has no observer handle.
+/// Run the upload coordinator for an already-paired observer until `cancel`
+/// fires.
 pub async fn run_uploader(
     paired: PairedState,
     cfg: SyncConfig,
-    health: Arc<Mutex<HealthDump>>,
     sync: Arc<Mutex<SyncSnapshot>>,
     cancel: watch::Receiver<bool>,
 ) {
-    let parts = match setup_uploader(paired, cfg, sync.clone()).await {
-        Ok(parts) => parts,
+    let coordinator = match setup_uploader(paired, cfg, sync.clone()).await {
+        Ok(coordinator) => coordinator,
         Err(error) => {
             let code = transport_error_code(&error);
             mark_uploader_dead(&sync, "uploader_setup_failed");
@@ -155,59 +121,24 @@ pub async fn run_uploader(
         }
     };
 
-    let (inner_tx, inner_rx) = watch::channel(false);
-    let coordinator_task = tokio::spawn(parts.coordinator.run(inner_rx.clone()));
-    let heartbeat_task = tokio::spawn(run_heartbeat(
-        parts.client,
-        health,
-        sync.clone(),
-        parts.stream_type,
-        parts.version,
-        inner_rx.clone(),
-    ));
-    drop(inner_rx);
-
-    supervise(&sync, cancel, inner_tx, coordinator_task, heartbeat_task).await;
+    let coordinator_task = tokio::spawn(coordinator.run(cancel.clone()));
+    await_coordinator(&sync, cancel, coordinator_task).await;
 }
 
 async fn setup_uploader(
     paired: PairedState,
     cfg: SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
-) -> Result<UploaderParts, TransportError> {
-    let credential = paired.credential.clone().ok_or(TransportError::NotPaired)?;
+) -> Result<UploadCoordinator, TransportError> {
+    let credential = paired.credential.ok_or(TransportError::NotPaired)?;
     let journal_label = credential.home_label.clone();
-    let mut client =
-        ObserverClient::new(credential.clone())?.with_state_path(cfg.state_path.clone());
-
-    let observer_name = if let Some(key) = paired.observer_key.clone() {
-        client = client.with_observer_key(Some(key));
-        paired.observer_name.clone()
-    } else {
-        let registration = client
-            .register(
-                &cfg.platform,
-                &cfg.hostname,
-                &cfg.stream_type,
-                &cfg.version,
-                None,
-            )
-            .await?;
-        PairedState {
-            credential: Some(credential),
-            observer_key: Some(registration.key.clone()),
-            observer_name: Some(registration.name.clone()),
-        }
-        .save(&cfg.state_path)?;
-        Some(registration.name)
-    };
+    let client = ObserverClient::new(credential)?.with_state_path(cfg.state_path.clone());
 
     set_pairing(
         &sync,
         PairingState {
             phase: PairingPhase::Paired,
             journal_label: Some(journal_label),
-            observer_name,
             detail: None,
         },
     );
@@ -215,58 +146,30 @@ async fn setup_uploader(
     let client = Arc::new(client);
     let store: Box<dyn SealedStore> =
         Box::new(LocalSealedStore::new(&cfg.segments_root, cfg.period_secs));
-    let coordinator = UploadCoordinator::new(
-        client.clone(),
-        store,
-        sync.clone(),
-        cfg.period_secs,
-        cfg.retention.clone(),
-        cfg.local_offset.clone(),
-    );
-
-    Ok(UploaderParts {
+    Ok(UploadCoordinator::new(
         client,
-        coordinator,
-        stream_type: cfg.stream_type,
-        version: cfg.version,
-    })
+        store,
+        sync,
+        cfg.period_secs,
+        cfg.retention,
+        cfg.local_offset,
+    ))
 }
 
-enum Outcome {
-    Cancelled,
-    Coordinator(Result<(), JoinError>),
-    Heartbeat(Result<(), JoinError>),
-}
-
-pub(crate) async fn supervise(
+async fn await_coordinator(
     sync: &Arc<Mutex<SyncSnapshot>>,
     mut external_cancel: watch::Receiver<bool>,
-    inner_tx: watch::Sender<bool>,
     mut coordinator_task: JoinHandle<()>,
-    mut heartbeat_task: JoinHandle<()>,
 ) {
-    let outcome = tokio::select! {
-        _ = cancelled(&mut external_cancel) => Outcome::Cancelled,
-        res = &mut coordinator_task => Outcome::Coordinator(res),
-        res = &mut heartbeat_task => Outcome::Heartbeat(res),
-    };
-    let _ = inner_tx.send(true);
-    match outcome {
-        Outcome::Cancelled => {
+    tokio::select! {
+        biased;
+        _ = cancelled(&mut external_cancel) => {
             let _ = coordinator_task.await;
-            let _ = heartbeat_task.await;
         }
-        Outcome::Coordinator(res) => {
-            let code = dead_code(&res);
+        result = &mut coordinator_task => {
+            let code = dead_code(&result);
             mark_uploader_dead(sync, code);
             warn_dead("coordinator", code);
-            let _ = heartbeat_task.await;
-        }
-        Outcome::Heartbeat(res) => {
-            let code = dead_code(&res);
-            mark_uploader_dead(sync, code);
-            warn_dead("heartbeat", code);
-            let _ = coordinator_task.await;
         }
     }
 }
@@ -290,7 +193,6 @@ fn warn_dead(which: &'static str, code: &'static str) {
 fn mark_uploader_dead(sync: &Arc<Mutex<SyncSnapshot>>, code: &'static str) {
     if let Ok(mut snap) = sync.lock() {
         snap.upload.last_error = Some(code.to_string());
-        snap.upload.heartbeat_ok = false;
         snap.upload.record_failure(code);
     }
 }
@@ -298,7 +200,6 @@ fn mark_uploader_dead(sync: &Arc<Mutex<SyncSnapshot>>, code: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn failed_pairing_state_redacts_detail() {
@@ -321,71 +222,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supervise_marks_panicked_coordinator_dead_and_cancels_heartbeat() {
+    async fn await_coordinator_marks_panicked_task_dead() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let (_external_tx, external_rx) = watch::channel(false);
-        let (inner_tx, mut inner_rx) = watch::channel(false);
-        let heartbeat_cancelled = Arc::new(AtomicBool::new(false));
-        let heartbeat_cancelled_for_task = heartbeat_cancelled.clone();
 
         let coordinator_task = tokio::spawn(async {
             panic!("boom");
         });
-        let heartbeat_task = tokio::spawn(async move {
-            crate::cancelled(&mut inner_rx).await;
-            heartbeat_cancelled_for_task.store(true, Ordering::SeqCst);
-        });
-
-        supervise(
-            &sync,
-            external_rx,
-            inner_tx,
-            coordinator_task,
-            heartbeat_task,
-        )
-        .await;
+        await_coordinator(&sync, external_rx, coordinator_task).await;
 
         let snapshot = sync.lock().unwrap().clone();
         assert_eq!(
             snapshot.upload.last_error.as_deref(),
             Some("uploader_panicked")
         );
-        assert!(!snapshot.upload.heartbeat_ok);
         assert_eq!(snapshot.upload.recent_error_count, 1);
         let last_error = snapshot.upload.last_error.unwrap();
         assert_eq!(last_error, "uploader_panicked");
         assert!(!last_error.contains("SECRET"));
         assert!(!last_error.contains("token"));
         assert!(!last_error.contains("Users"));
-        assert!(heartbeat_cancelled.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
-    async fn supervise_marks_clean_early_coordinator_exit_as_stopped() {
+    async fn await_coordinator_marks_clean_early_exit_as_stopped() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let (_external_tx, external_rx) = watch::channel(false);
-        let (inner_tx, mut inner_rx) = watch::channel(false);
 
         let coordinator_task = tokio::spawn(async {});
-        let heartbeat_task = tokio::spawn(async move {
-            crate::cancelled(&mut inner_rx).await;
-        });
-
-        supervise(
-            &sync,
-            external_rx,
-            inner_tx,
-            coordinator_task,
-            heartbeat_task,
-        )
-        .await;
+        await_coordinator(&sync, external_rx, coordinator_task).await;
 
         let snapshot = sync.lock().unwrap().clone();
         assert_eq!(
             snapshot.upload.last_error.as_deref(),
             Some("uploader_stopped")
         );
-        assert!(!snapshot.upload.heartbeat_ok);
         assert_eq!(snapshot.upload.recent_error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn await_coordinator_does_not_mark_external_cancellation_dead() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let (external_tx, external_rx) = watch::channel(false);
+        let mut task_cancel = external_rx.clone();
+        let coordinator_task = tokio::spawn(async move {
+            crate::cancelled(&mut task_cancel).await;
+        });
+
+        external_tx.send(true).unwrap();
+        await_coordinator(&sync, external_rx, coordinator_task).await;
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.upload.last_error, None);
+        assert_eq!(snapshot.upload.recent_error_count, 0);
     }
 }

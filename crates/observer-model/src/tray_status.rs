@@ -69,31 +69,27 @@ pub fn classify_tray(
             Some(detail) => (TrayVisual::Error, detail.to_string()),
             None => (TrayVisual::Error, "needs a restart".to_string()),
         },
-        AppPhase::Observing => match (sync.pairing.phase, sync.upload.heartbeat_ok) {
-            (PairingPhase::Pairing, true) => (TrayVisual::Connecting, "connecting".to_string()),
-            (PairingPhase::Pairing, false) => (TrayVisual::Connecting, "connecting".to_string()),
-            (PairingPhase::NotPaired, true) => (
+        AppPhase::Observing => match sync.pairing.phase {
+            PairingPhase::Pairing => (TrayVisual::Connecting, "connecting".to_string()),
+            PairingPhase::NotPaired | PairingPhase::Failed => (
                 TrayVisual::Paused,
                 "on, not connected to a journal".to_string(),
             ),
-            (PairingPhase::NotPaired, false) => (
-                TrayVisual::Paused,
-                "on, not connected to a journal".to_string(),
-            ),
-            (PairingPhase::Failed, true) => (
-                TrayVisual::Paused,
-                "on, not connected to a journal".to_string(),
-            ),
-            (PairingPhase::Failed, false) => (
-                TrayVisual::Paused,
-                "on, not connected to a journal".to_string(),
-            ),
-            (PairingPhase::Paired, true) => (
-                TrayVisual::Healthy,
-                "on, connected to your journal".to_string(),
-            ),
-            (PairingPhase::Paired, false) => {
-                (TrayVisual::Offline, "on, saved on this PC".to_string())
+            PairingPhase::Paired => {
+                let upload = &sync.upload;
+                if upload.recent_error_count > 0
+                    || upload.last_error_reason.is_some()
+                    || upload.last_error.is_some()
+                {
+                    (TrayVisual::Offline, "on, saved on this PC".to_string())
+                } else if upload.uploaded_segments > 0 && upload.last_successful_sync.is_some() {
+                    (
+                        TrayVisual::Healthy,
+                        "on, connected to your journal".to_string(),
+                    )
+                } else {
+                    (TrayVisual::Connecting, "connecting".to_string())
+                }
             }
         },
     }
@@ -122,18 +118,14 @@ mod tests {
     use super::*;
     use crate::{ErrorReason, PairingState, PauseReason, SourceKind, UploadStatus};
 
-    fn sync(phase: PairingPhase, heartbeat_ok: bool) -> SyncSnapshot {
+    fn sync(phase: PairingPhase) -> SyncSnapshot {
         SyncSnapshot {
             pairing: PairingState {
                 phase,
                 journal_label: None,
-                observer_name: None,
                 detail: None,
             },
-            upload: UploadStatus {
-                heartbeat_ok,
-                ..UploadStatus::default()
-            },
+            upload: UploadStatus::default(),
         }
     }
 
@@ -171,16 +163,7 @@ mod tests {
         assert_eq!(
             tray_visual(
                 AppPhase::Observing,
-                &sync(PairingPhase::Pairing, false),
-                None,
-                None
-            ),
-            TrayVisual::Connecting
-        );
-        assert_eq!(
-            tray_visual(
-                AppPhase::Observing,
-                &sync(PairingPhase::Pairing, true),
+                &sync(PairingPhase::Pairing),
                 None,
                 None
             ),
@@ -212,80 +195,76 @@ mod tests {
         assert_eq!(
             tray_visual(
                 AppPhase::Observing,
-                &sync(PairingPhase::NotPaired, false),
+                &sync(PairingPhase::NotPaired),
                 None,
                 None
             ),
             TrayVisual::Paused
         );
         assert_eq!(
-            tray_visual(
-                AppPhase::Observing,
-                &sync(PairingPhase::NotPaired, true),
-                None,
-                None
-            ),
-            TrayVisual::Paused
-        );
-        assert_eq!(
-            tray_visual(
-                AppPhase::Observing,
-                &sync(PairingPhase::Failed, false),
-                None,
-                None
-            ),
-            TrayVisual::Paused
-        );
-        assert_eq!(
-            tray_visual(
-                AppPhase::Observing,
-                &sync(PairingPhase::Failed, true),
-                None,
-                None
-            ),
+            tray_visual(AppPhase::Observing, &sync(PairingPhase::Failed), None, None),
             TrayVisual::Paused
         );
     }
 
     #[test]
     fn classify_observing_paired_visuals() {
+        let mut clean_upload = sync(PairingPhase::Paired);
+        clean_upload.upload.uploaded_segments = 1;
+        clean_upload.upload.last_successful_sync = Some(1);
         assert_eq!(
-            tray_visual(
-                AppPhase::Observing,
-                &sync(PairingPhase::Paired, true),
-                None,
-                None
-            ),
+            tray_visual(AppPhase::Observing, &clean_upload, None, None),
             TrayVisual::Healthy
         );
-        assert_eq!(
-            tray_visual(
-                AppPhase::Observing,
-                &sync(PairingPhase::Paired, false),
-                None,
-                None
-            ),
-            TrayVisual::Offline
-        );
-    }
 
-    #[test]
-    fn paired_heartbeat_down_is_offline_not_paused() {
-        let visual = tray_visual(
-            AppPhase::Observing,
-            &sync(PairingPhase::Paired, false),
-            None,
-            None,
+        let empty_success = SyncSnapshot {
+            pairing: PairingState {
+                phase: PairingPhase::Paired,
+                ..Default::default()
+            },
+            upload: UploadStatus {
+                last_successful_sync: Some(1),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            tray_visual(AppPhase::Observing, &empty_success, None, None),
+            TrayVisual::Connecting
         );
-        assert_eq!(visual, TrayVisual::Offline);
-        assert_ne!(visual, TrayVisual::Paused);
+
+        for upload in [
+            UploadStatus {
+                recent_error_count: 1,
+                ..UploadStatus::default()
+            },
+            UploadStatus {
+                last_error_reason: Some("http_503".into()),
+                ..UploadStatus::default()
+            },
+            UploadStatus {
+                last_error: Some("uploader_stopped".into()),
+                ..UploadStatus::default()
+            },
+        ] {
+            let offline = SyncSnapshot {
+                pairing: PairingState {
+                    phase: PairingPhase::Paired,
+                    ..Default::default()
+                },
+                upload,
+            };
+            assert_eq!(
+                tray_visual(AppPhase::Observing, &offline, None, None),
+                TrayVisual::Offline
+            );
+        }
     }
 
     #[test]
     fn observing_not_paired_is_paused_not_offline() {
         let visual = tray_visual(
             AppPhase::Observing,
-            &sync(PairingPhase::NotPaired, false),
+            &sync(PairingPhase::NotPaired),
             None,
             None,
         );
@@ -295,12 +274,7 @@ mod tests {
 
     #[test]
     fn observing_failed_is_paused_not_error() {
-        let visual = tray_visual(
-            AppPhase::Observing,
-            &sync(PairingPhase::Failed, false),
-            None,
-            None,
-        );
+        let visual = tray_visual(AppPhase::Observing, &sync(PairingPhase::Failed), None, None);
         assert_eq!(visual, TrayVisual::Paused);
         assert_ne!(visual, TrayVisual::Error);
     }

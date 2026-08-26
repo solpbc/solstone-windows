@@ -152,8 +152,8 @@ pub fn view_rendered(window: tauri::WebviewWindow, state: tauri::State<'_, crate
 }
 
 /// Pair this observer to a journal from a scanned/pasted pair-link, then start
-/// uploading. The pairing handshake + registration run inline (so the UI sees
-/// success/failure), then the upload + heartbeat loop is spawned for the process
+/// uploading. The pairing handshake runs inline (so the UI sees success/failure),
+/// then the upload loop is spawned for the process
 /// lifetime. Outcome is also reflected through the health dump's pairing phase.
 #[tauri::command]
 pub async fn pair(
@@ -165,7 +165,6 @@ pub async fn pair(
     // spawn competing uploaders.
     let cfg = state.sync_config.clone();
     let sync = state.sync.clone();
-    let health = state.health.clone();
     let mut slot = state.uploader_slot.lock().await;
 
     tracing::info!(
@@ -173,8 +172,7 @@ pub async fn pair(
         pair_link = %observer_log::redact_pair_link(&link),
         "pairing attempt"
     );
-    let paired = match pl_transport_win::service::pair_and_register(&link, &cfg, sync.clone()).await
-    {
+    let paired = match pl_transport_win::service::pair(&link, &cfg, sync.clone()).await {
         Ok(paired) => {
             tracing::info!(target: "sync", outcome = "paired", "pairing result");
             paired
@@ -197,7 +195,7 @@ pub async fn pair(
         "uploader started"
     );
     slot.replace(move |rx| async move {
-        pl_transport_win::run_uploader(paired, cfg, health, sync, rx).await;
+        pl_transport_win::run_uploader(paired, cfg, sync, rx).await;
     })
     .await;
     Ok(())

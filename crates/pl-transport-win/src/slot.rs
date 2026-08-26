@@ -121,7 +121,7 @@ mod tests {
         .await;
 
         assert_eq!(tick_rx.recv().await, Some(7));
-        // Simulates pair_and_register failing before the app calls replace.
+        // Simulates pairing failing before the app calls replace.
         assert_eq!(tick_rx.recv().await, Some(7));
         assert!(slot.active.is_some());
 

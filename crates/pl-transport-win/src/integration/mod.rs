@@ -41,10 +41,8 @@ pub struct Environment {
     pub state_path: PathBuf,
     /// The sealed-segments root the production uploader drains.
     pub segments_root: PathBuf,
-    /// CN placed on the pairing CSR, and the registered device label.
+    /// CN placed on the pairing CSR.
     pub device_label: String,
-    pub platform: String,
-    pub stream_type: String,
     pub app_version: String,
     /// Segment rotation period, matching the capture engine's.
     pub period_secs: u64,
@@ -411,11 +409,11 @@ mod tests {
             std::task::Poll::<()>::Pending
         });
 
-        let failure = budget.run(Phase::Heartbeat, future).await.unwrap_err();
+        let failure = budget.run(Phase::ListSegments, future).await.unwrap_err();
         assert!(matches!(
             failure,
             Failure::Deadline {
-                phase: Phase::Heartbeat
+                phase: Phase::ListSegments
             }
         ));
         assert_eq!(polls.load(Ordering::SeqCst), 0);
@@ -479,8 +477,6 @@ mod tests {
             state_path: PathBuf::from("/profile/Solstone/pairing.json"),
             segments_root: PathBuf::from("/profile/Solstone/segments"),
             device_label: "box".into(),
-            platform: "windows".into(),
-            stream_type: "desktop".into(),
             app_version: "1.0.0".into(),
             period_secs: 300,
             executable: None,

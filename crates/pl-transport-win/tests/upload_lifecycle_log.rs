@@ -44,9 +44,7 @@ async fn lan_ingest_lifecycle_logs_direct_path_without_secret_material() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_ingest(listener, acceptor));
-    let client = ObserverClient::new(direct_credential(pin, port))
-        .unwrap()
-        .with_observer_key(Some("observer-key".into()));
+    let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
     let files = vec![FilePart {
         filename: "display_1_screen.mp4".into(),
         content_type: "video/mp4".into(),
@@ -82,9 +80,7 @@ async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_ingest(listener, acceptor));
-    let client = ObserverClient::new(direct_credential(pin, port))
-        .unwrap()
-        .with_observer_key(Some("authority-observer".into()));
+    let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
     let files = vec![
         FilePart {
             filename: "screen.png".to_owned(),

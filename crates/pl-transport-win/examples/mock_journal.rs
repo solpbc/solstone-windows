@@ -27,7 +27,6 @@ use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
 
 const DEFAULT_MARKER: &str = "SOLSTONE_JOURNAL_WINDOW_LIVE_MARKER";
-const OBSERVER_KEY: &str = "mock-observer-key";
 
 #[derive(Debug)]
 struct Args {
@@ -88,8 +87,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let paired = PairedState {
         credential: Some(observer_credential(pin, port)?),
-        observer_key: Some(OBSERVER_KEY.to_string()),
-        observer_name: Some("mock observer".to_string()),
     };
     paired.save(&args.pairing_out)?;
     write_ready_file(&args.ready_file, port, &args.marker)?;
@@ -227,7 +224,6 @@ fn response_body(
             "application/javascript; charset=utf-8",
             format!("window.__SOLSTONE_MOCK_MARKER = {:?};", marker),
         ),
-        observer_pl::paths::INGEST_EVENT => ("200 OK", "text/plain; charset=utf-8", "ok".to_string()),
         observer_pl::paths::INGEST => match parse_ingest_multipart(&request.body) {
             Ok(segment) => {
                 custody.lock().expect("mock custody lock").segment = Some(segment.clone());

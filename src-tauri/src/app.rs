@@ -43,7 +43,7 @@ pub struct AppState {
     pub exclusions: crate::exclusions::ExclusionController,
 }
 
-/// The observer's hostname for registration, best-effort.
+/// The observer's device label for the pairing CSR, best-effort.
 pub(crate) fn observer_hostname() -> String {
     std::env::var("COMPUTERNAME")
         .ok()
@@ -57,10 +57,6 @@ pub(crate) fn observer_hostname() -> String {
 fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
     let host = observer_hostname();
     SyncConfig {
-        platform: "windows".to_string(),
-        hostname: host.clone(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        stream_type: "desktop".to_string(),
         device_label: host,
         period_secs: EngineConfig::default().segment_secs,
         state_path: platform_win::local_data_root().join("pairing.json"),
@@ -304,14 +300,13 @@ pub fn run(
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
             // Resume an existing pairing: if a credential is on disk, start the
-            // upload + heartbeat loop now. A fresh pairing is started by the
+            // upload loop now. A fresh pairing is started by the
             // `pair` IPC command instead.
             let sync_config = build_sync_config(retention.config_handle());
             let mut slot = UploaderSlot::new();
             match PairedState::load(&sync_config.state_path) {
                 Ok(paired) if paired.is_paired() => {
                     let cfg = sync_config.clone();
-                    let health_for_sync = health.clone();
                     let sync_for_sync = sync.clone();
                     tracing::info!(
                         target: "sync",
@@ -322,7 +317,6 @@ pub fn run(
                         pl_transport_win::run_uploader(
                             paired,
                             cfg,
-                            health_for_sync,
                             sync_for_sync,
                             rx,
                         )

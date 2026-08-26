@@ -10,12 +10,8 @@
 //! 1. **Pair** ([`pairing`]) — certless TLS to the journal with CA-fp pinning,
 //!    POST a freshly-minted CSR to `/app/network/pair`, store the signed client
 //!    credential.
-//! 2. **Register** ([`client`]) — over mTLS, `/app/devices/register`, learn the
-//!    observer handle.
-//! 3. **Upload** ([`coordinator`]) — ship sealed segments to
+//! 2. **Upload** ([`coordinator`]) — ship sealed segments to
 //!    `/app/devices/ingest`, prove journal custody, retry with backoff.
-//! 4. **Heartbeat** ([`heartbeat`]) — periodic `observe.status` POST so the
-//!    journal sees the observer as live.
 //!
 //! The whole crate is built on rustls (ring) + std sockets, so it compiles and
 //! tests on the Linux dev host too — the live cross-repo pair+ingest gate can
@@ -29,7 +25,6 @@ pub mod client;
 pub mod connection;
 pub mod coordinator;
 pub mod credential;
-pub mod heartbeat;
 pub mod integration;
 pub mod journal_bridge;
 mod journal_bridge_carrier;
@@ -56,9 +51,6 @@ pub use slot::UploaderSlot;
 
 /// Default upload poll interval when there is nothing to do.
 pub const DEFAULT_UPLOAD_INTERVAL_SECS: u64 = 5;
-
-/// Heartbeat cadence — matches the macOS `HeartbeatService` (15s).
-pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 
 pub(crate) async fn cancelled(rx: &mut tokio::sync::watch::Receiver<bool>) {
     while !*rx.borrow() {

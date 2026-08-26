@@ -44,9 +44,7 @@ pub enum Phase {
     Validate,
     Precondition,
     Pair,
-    Register,
     Persist,
-    Heartbeat,
     ListSegments,
     BridgeStart,
     BridgeFetch,
@@ -62,9 +60,7 @@ impl Phase {
             Self::Validate => "validate",
             Self::Precondition => "precondition",
             Self::Pair => "pair",
-            Self::Register => "register",
             Self::Persist => "persist",
-            Self::Heartbeat => "heartbeat",
             Self::ListSegments => "list_segments",
             Self::BridgeStart => "bridge_start",
             Self::BridgeFetch => "bridge_fetch",
@@ -252,8 +248,6 @@ impl Dials {
 pub struct Evidence {
     // pair
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub registered: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub state_written: Option<bool>,
     /// Whether the local profile was left with no loadable credential.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,8 +257,6 @@ pub struct Evidence {
     pub remote_residue: Option<RemoteResidue>,
 
     // roundtrip
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub heartbeat_ok: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segments_listed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -481,7 +473,7 @@ mod tests {
         assert_eq!(error.exit_code(), EXIT_ERROR);
 
         let deadline = Failure::Deadline {
-            phase: Phase::Heartbeat,
+            phase: Phase::ListSegments,
         };
         assert_eq!(deadline.verdict(), Verdict::Fail);
         assert_eq!(deadline.exit_code(), EXIT_DEADLINE);
@@ -567,12 +559,12 @@ mod tests {
             artifact(),
             Dials::default(),
             Evidence {
-                registered: Some(true),
+                state_written: Some(true),
                 ..Default::default()
             },
         );
         let value: serde_json::Value = serde_json::from_str(&outcome.json()).unwrap();
-        assert_eq!(value["evidence"]["registered"], true);
+        assert_eq!(value["evidence"]["state_written"], true);
         assert!(value["evidence"].get("http_status").is_none());
         assert!(value["evidence"].get("day").is_none());
     }

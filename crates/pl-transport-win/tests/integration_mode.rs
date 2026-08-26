@@ -39,8 +39,6 @@ fn environment(root: &Path) -> Environment {
         state_path: root.join("pairing.json"),
         segments_root: root.join("segments"),
         device_label: "build-box".into(),
-        platform: "windows".into(),
-        stream_type: "desktop".into(),
         app_version: "9.9.9".into(),
         period_secs: 300,
         executable: None,
@@ -165,8 +163,6 @@ async fn serve_direct_upload_journal(
 fn save_direct_pairing(root: &Path, credential: Credential) {
     PairedState {
         credential: Some(credential),
-        observer_key: None,
-        observer_name: None,
     }
     .save(&environment(root).state_path)
     .unwrap();
