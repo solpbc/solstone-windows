@@ -188,7 +188,14 @@ fn every_attempted_operation_emits_one_schema_versioned_object() {
     for argv in [
         vec!["--integration"],
         vec!["--integration", "nonsense"],
-        vec!["--integration", "roundtrip", "--deadline-secs", "5"],
+        vec![
+            "--integration",
+            "roundtrip",
+            "--deadline-secs",
+            "5",
+            "--carrier",
+            "relay",
+        ],
     ] {
         let (value, code) = run(&argv, &root);
         assert_eq!(value["schema_version"], SCHEMA_VERSION);
@@ -270,6 +277,8 @@ fn the_large_fetch_precondition_is_enforced_before_any_network_work() {
                 SHA,
                 "--expected-status",
                 "200",
+                "--carrier",
+                "relay",
             ],
             &root,
         );
@@ -294,6 +303,8 @@ fn the_large_fetch_precondition_is_enforced_before_any_network_work() {
             SHA,
             "--expected-status",
             "200",
+            "--carrier",
+            "relay",
         ],
         &root,
     );
@@ -309,7 +320,14 @@ fn operations_needing_a_pairing_refuse_an_unpaired_profile() {
     std::fs::write(&payload, vec![7u8; 1024]).unwrap();
 
     let cases: Vec<Vec<String>> = vec![
-        args(&["--integration", "roundtrip", "--deadline-secs", "5"]),
+        args(&[
+            "--integration",
+            "roundtrip",
+            "--deadline-secs",
+            "5",
+            "--carrier",
+            "relay",
+        ]),
         args(&[
             "--integration",
             "upload",
@@ -342,7 +360,14 @@ fn a_malformed_pairing_file_is_an_error_not_a_silent_unpaired_default() {
     std::fs::write(&environment.state_path, b"{ this is not json").unwrap();
 
     let (value, code) = run(
-        &["--integration", "roundtrip", "--deadline-secs", "5"],
+        &[
+            "--integration",
+            "roundtrip",
+            "--deadline-secs",
+            "5",
+            "--carrier",
+            "relay",
+        ],
         &root,
     );
     assert_eq!(value["phase"], "precondition");
@@ -424,6 +449,8 @@ fn a_dial_ceiling_is_reported_even_when_it_is_not_exceeded() {
             "5",
             "--max-dials",
             "3",
+            "--carrier",
+            "relay",
         ],
         &root,
     );

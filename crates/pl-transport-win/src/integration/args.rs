@@ -50,13 +50,18 @@ impl Operation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationArgs {
-    Pair,
-    Roundtrip,
+    Pair {
+        carrier: Carrier,
+    },
+    Roundtrip {
+        carrier: Carrier,
+    },
     Fetch {
         journal_path: String,
         expected_bytes: u64,
         expected_sha256: String,
         expected_status: u16,
+        carrier: Carrier,
     },
     Upload {
         payload: PathBuf,
@@ -212,7 +217,7 @@ fn parse_carrier<S: AsRef<str>>(args: &[S], operation: &'static str) -> Result<C
         return Err(ArgError::new(
             "carrier_missing",
             operation,
-            "upload requires --carrier direct or --carrier relay",
+            format!("{operation} requires --carrier direct or --carrier relay"),
         ));
     };
     match value {
@@ -275,8 +280,12 @@ pub fn parse<S: AsRef<str>>(args: &[S]) -> Result<Command, ArgError> {
     };
 
     let args_for_operation = match operation {
-        Operation::Pair => OperationArgs::Pair,
-        Operation::Roundtrip => OperationArgs::Roundtrip,
+        Operation::Pair => OperationArgs::Pair {
+            carrier: parse_carrier(args, name)?,
+        },
+        Operation::Roundtrip => OperationArgs::Roundtrip {
+            carrier: parse_carrier(args, name)?,
+        },
         Operation::Fetch => {
             let journal_path = required(args, "--journal-path", name)?.to_string();
             if !journal_path.starts_with('/') {
@@ -327,6 +336,7 @@ pub fn parse<S: AsRef<str>>(args: &[S]) -> Result<Command, ArgError> {
                 expected_bytes,
                 expected_sha256,
                 expected_status,
+                carrier: parse_carrier(args, name)?,
             }
         }
         Operation::Upload => OperationArgs::Upload {
@@ -362,6 +372,7 @@ Common flags:
                            serialization stay outside it; use the caller's process
                            timeout to bound them
   --max-dials <n>          optional; exceeding it is an assertion failure, not a pass
+  --carrier <direct|relay> required carrier the successful operation must show
 
 fetch flags:
   --journal-path <path>    absolute journal path to retrieve
@@ -373,8 +384,6 @@ upload flags:
   --payload <path>         file to send as the segment's only member
   --day <YYYYMMDD>         caller-named day
   --segment <HHMMSS_LEN>   caller-named segment key
-  --carrier <direct|relay> required carrier the successful custody witness must show
-
 Exactly one JSON object is written to stdout; progress goes to stderr.
 Exit: 0 pass, 1 assertion failed, 2 error, 3 deadline exceeded.";
 
@@ -409,12 +418,19 @@ mod tests {
             "roundtrip",
             "--deadline-secs",
             "30",
+            "--carrier",
+            "relay",
         ]))
         .unwrap();
         assert_eq!(command.operation, Operation::Roundtrip);
         assert_eq!(command.deadline, Duration::from_secs(30));
         assert_eq!(command.max_dials, None);
-        assert_eq!(command.args, OperationArgs::Roundtrip);
+        assert_eq!(
+            command.args,
+            OperationArgs::Roundtrip {
+                carrier: Carrier::Relay
+            }
+        );
     }
 
     #[test]
@@ -459,6 +475,8 @@ mod tests {
                 SHA,
                 "--expected-status",
                 "200",
+                "--carrier",
+                "relay",
             ]))
             .unwrap_err();
             assert_eq!(error.reason, "expected_bytes_not_over_window");
@@ -477,6 +495,8 @@ mod tests {
             SHA,
             "--expected-status",
             "200",
+            "--carrier",
+            "direct",
         ]))
         .unwrap();
         assert!(matches!(ok.args, OperationArgs::Fetch { .. }));
@@ -636,6 +656,8 @@ mod tests {
             "30",
             "--max-dials",
             "4",
+            "--carrier",
+            "relay",
         ]))
         .unwrap();
         assert_eq!(with.max_dials, Some(4));

@@ -1,5 +1,5 @@
 {
-  "version": "0.2.11",
+  "version": "2.0.0",
   "description": "the solstone app for windows takes in what you share with it from your screen, system audio, and any microphone you choose. it prepares local, owner-controlled segments for your journal. no telemetry.",
   "homepage": "https://solstone.app",
   "license": "AGPL-3.0-only",
@@ -9,7 +9,7 @@
   ],
   "architecture": {
     "64bit": {
-      "url": "https://github.com/solpbc/solstone-windows/releases/download/v0.2.11/Solstone-win-Portable.zip",
+      "url": "https://github.com/solpbc/solstone-windows/releases/download/v2.0.0/Solstone-win-Portable.zip",
       "hash": "62dab6cab0764d7f724324570c51e79488c04350d01dbcedd8d0f674e52818be"
     }
   },

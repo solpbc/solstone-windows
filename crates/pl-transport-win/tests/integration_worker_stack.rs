@@ -42,6 +42,8 @@ fn run_child() -> ! {
         "pair".to_string(),
         "--deadline-secs".to_string(),
         "5".to_string(),
+        "--carrier".to_string(),
+        "relay".to_string(),
     ];
     let selection = integration::selected(&args).unwrap();
     let environment = environment(&root);

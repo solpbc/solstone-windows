@@ -87,7 +87,7 @@ fn execute_inner(
     // Read the pair link before the runtime exists, so a blocking stdin read can
     // never stall a scheduler that is also driving the bridge's spawned tasks.
     let link = match command.args {
-        OperationArgs::Pair => match read_link_from_stdin() {
+        OperationArgs::Pair { .. } => match read_link_from_stdin() {
             Ok(link) => Some(link),
             Err(failure) => return (Some(failure), Evidence::default()),
         },
@@ -111,15 +111,25 @@ fn execute_inner(
     let handle = shared_observer(&observer);
     runtime.block_on(async move {
         match &command.args {
-            OperationArgs::Pair => {
-                pair(command, environment, handle, link.unwrap_or_default()).await
+            OperationArgs::Pair { carrier } => {
+                pair(
+                    command,
+                    environment,
+                    handle,
+                    link.unwrap_or_default(),
+                    *carrier,
+                )
+                .await
             }
-            OperationArgs::Roundtrip => roundtrip(command, environment, handle, &observer).await,
+            OperationArgs::Roundtrip { carrier } => {
+                roundtrip(command, environment, handle, &observer, *carrier).await
+            }
             OperationArgs::Fetch {
                 journal_path,
                 expected_bytes,
                 expected_sha256,
                 expected_status,
+                carrier,
             } => {
                 fetch(
                     command,
@@ -130,6 +140,7 @@ fn execute_inner(
                     *expected_bytes,
                     expected_sha256,
                     *expected_status,
+                    *carrier,
                 )
                 .await
             }
@@ -217,11 +228,23 @@ fn clear_local_credential(environment: &Environment) -> bool {
     !environment.state_path.exists() && !environment.state_tmp_path().exists()
 }
 
+fn ceremony_residue(carrier: Carrier, journal: Residue) -> RemoteResidue {
+    RemoteResidue {
+        journal_pairing_identity: journal,
+        relay_device_enrollment: if carrier == Carrier::Relay {
+            journal
+        } else {
+            Residue::None
+        },
+    }
+}
+
 async fn pair(
     command: &Command,
     environment: &Environment,
     observer: ObserverHandle,
     link: String,
+    carrier: Carrier,
 ) -> OpResult {
     let mut evidence = Evidence {
         state_written: Some(false),
@@ -233,20 +256,11 @@ async fn pair(
         return (Some(failure), evidence);
     }
 
-    // The authoritative parser decides relay-form; never a hand-decode of byte 0,
-    // which would skip tag, length, origin, and address-policy validation.
-    match pairlink::parse(&link) {
-        Ok(ParsedPairLink::Relay(_)) => {}
-        Ok(_) => {
-            return (
-                Some(Failure::error(
-                    Phase::Validate,
-                    "link_not_relay_form",
-                    "pair requires a relay-form pair link; the supplied link is a direct-form link",
-                )),
-                evidence,
-            )
-        }
+    // The authoritative parser decides the link form; never a hand-decode of
+    // byte 0, which would skip tag, length, origin, and address-policy validation.
+    let observed_carrier = match pairlink::parse(&link) {
+        Ok(ParsedPairLink::Relay(_)) => Carrier::Relay,
+        Ok(ParsedPairLink::Direct(_)) => Carrier::Direct,
         Err(_) => {
             return (
                 Some(Failure::error(
@@ -257,9 +271,19 @@ async fn pair(
                 evidence,
             )
         }
+    };
+    if observed_carrier != carrier {
+        return (
+            Some(Failure::assertion(
+                Phase::Validate,
+                "carrier_mismatch",
+                "the pair link did not use the required carrier form",
+            )),
+            evidence,
+        );
     }
 
-    progress("pairing over the production relay ceremony");
+    progress("pairing over the production ceremony");
     let budget = OperationBudget::start(command.deadline);
     let ceremony = budget
         .run(
@@ -275,18 +299,12 @@ async fn pair(
             // `Possible` covers both mid-ceremony timeout and never-polled
             // exhaustion: uncertainty is safer than `None`, which could hide
             // remote residue.
-            evidence.remote_residue = Some(RemoteResidue {
-                journal_pairing_identity: Residue::Possible,
-                relay_device_enrollment: Residue::Possible,
-            });
+            evidence.remote_residue = Some(ceremony_residue(carrier, Residue::Possible));
             evidence.local_residue_cleared = Some(clear_local_credential(environment));
             return (Some(deadline), evidence);
         }
         Ok(Err(error)) => {
-            evidence.remote_residue = Some(RemoteResidue {
-                journal_pairing_identity: Residue::Possible,
-                relay_device_enrollment: Residue::Possible,
-            });
+            evidence.remote_residue = Some(ceremony_residue(carrier, Residue::Possible));
             evidence.local_residue_cleared = Some(clear_local_credential(environment));
             return (
                 Some(Failure::transport(
@@ -302,10 +320,7 @@ async fn pair(
 
     // The ceremony returns only after the journal signed an identity and the relay
     // enrolled the device, so both definitely exist now.
-    let residue = RemoteResidue {
-        journal_pairing_identity: Residue::Present,
-        relay_device_enrollment: Residue::Present,
-    };
+    let residue = ceremony_residue(carrier, Residue::Present);
     evidence.remote_residue = Some(residue);
 
     let paired = PairedState {
@@ -391,6 +406,7 @@ async fn roundtrip(
     environment: &Environment,
     observer: ObserverHandle,
     counts_source: &Arc<OperationObserver>,
+    carrier: Carrier,
 ) -> OpResult {
     let mut evidence = Evidence {
         segments_listed: Some(false),
@@ -440,7 +456,7 @@ async fn roundtrip(
     if let Some(deadline) = budget.checkpoint(Phase::Assert) {
         return (Some(deadline), evidence);
     }
-    (carrier_path_failure(Carrier::Relay, counts), evidence)
+    (carrier_path_failure(carrier, counts), evidence)
 }
 
 // ── fetch ────────────────────────────────────────────────────────────────────
@@ -525,6 +541,7 @@ async fn fetch(
     expected_bytes: u64,
     expected_sha256: &str,
     expected_status: u16,
+    carrier: Carrier,
 ) -> OpResult {
     let mut evidence = Evidence {
         bridge_contacted: Some(false),
@@ -595,7 +612,7 @@ async fn fetch(
     if let Some(deadline) = budget.checkpoint(Phase::Assert) {
         return (Some(deadline), evidence);
     }
-    (carrier_path_failure(Carrier::Relay, counts), evidence)
+    (carrier_path_failure(carrier, counts), evidence)
 }
 
 async fn fetch_through_bridge(
@@ -1236,7 +1253,9 @@ mod tests {
             operation: super::super::args::Operation::Roundtrip,
             deadline: Duration::from_secs(8),
             max_dials: None,
-            args: OperationArgs::Roundtrip,
+            args: OperationArgs::Roundtrip {
+                carrier: Carrier::Direct,
+            },
         };
         let counts_source = OperationObserver::new();
         let started = tokio::time::Instant::now();
@@ -1245,6 +1264,7 @@ mod tests {
             &environment,
             Some(counts_source.clone()),
             &counts_source,
+            Carrier::Direct,
         )
         .await;
         let elapsed = started.elapsed();
@@ -1422,7 +1442,9 @@ mod tests {
             operation: super::super::args::Operation::Pair,
             deadline: Duration::from_secs(deadline_secs),
             max_dials: None,
-            args: OperationArgs::Pair,
+            args: OperationArgs::Pair {
+                carrier: Carrier::Relay,
+            },
         }
     }
 
@@ -1432,6 +1454,17 @@ mod tests {
             pairlink::parse(&unreachable_relay_link()).unwrap(),
             ParsedPairLink::Relay(_)
         ));
+    }
+
+    #[test]
+    fn direct_pairing_never_claims_relay_enrollment_residue() {
+        let possible = ceremony_residue(Carrier::Direct, Residue::Possible);
+        assert_eq!(possible.journal_pairing_identity, Residue::Possible);
+        assert_eq!(possible.relay_device_enrollment, Residue::None);
+
+        let present = ceremony_residue(Carrier::Direct, Residue::Present);
+        assert_eq!(present.journal_pairing_identity, Residue::Present);
+        assert_eq!(present.relay_device_enrollment, Residue::None);
     }
 
     #[test]
@@ -1446,6 +1479,7 @@ mod tests {
             &environment,
             Some(OperationObserver::new()),
             link.clone(),
+            Carrier::Relay,
         ));
 
         let failure = failure.expect("an unreachable relay cannot pair");
@@ -1482,6 +1516,7 @@ mod tests {
             &environment,
             Some(OperationObserver::new()),
             link.clone(),
+            Carrier::Relay,
         ));
 
         let rendered = format!("{failure:?}{evidence:?}");
@@ -1493,13 +1528,13 @@ mod tests {
     }
 
     #[test]
-    fn a_direct_form_link_is_refused_before_any_network_work() {
-        let root = temp_root("direct-refused");
+    fn a_pair_link_carrier_mismatch_is_refused_before_any_network_work() {
+        let root = temp_root("pair-carrier-mismatch");
         let environment = environment(&root);
 
         let link = valid_direct_link();
         // The link really is a well-formed direct link, so this exercises the
-        // relay-form refusal and not an incidental parse failure.
+        // explicit carrier assertion and not an incidental parse failure.
         assert!(matches!(
             pairlink::parse(&link).unwrap(),
             ParsedPairLink::Direct(_)
@@ -1512,13 +1547,14 @@ mod tests {
             &environment,
             Some(observer.clone()),
             link,
+            Carrier::Relay,
         ));
 
-        let failure = failure.expect("a direct link is not a relay link");
+        let failure = failure.expect("a direct link cannot satisfy relay");
         assert_eq!(failure.phase(), Phase::Validate);
         assert!(
-            matches!(&failure, Failure::Error { reason, .. } if reason == "link_not_relay_form"),
-            "expected the relay-form refusal, got {failure:?}"
+            matches!(&failure, Failure::Assertion { reason, .. } if reason == "carrier_mismatch"),
+            "expected the carrier mismatch refusal, got {failure:?}"
         );
         assert_eq!(
             observer.counts().dial_attempts,
@@ -1550,6 +1586,7 @@ mod tests {
                 &environment,
                 Some(observer.clone()),
                 link.clone(),
+                Carrier::Relay,
             ));
             let failure = failure.expect("an unparseable link cannot pair");
             assert_eq!(failure.phase(), Phase::Validate);
@@ -1578,6 +1615,7 @@ mod tests {
             &environment,
             Some(observer.clone()),
             unreachable_relay_link(),
+            Carrier::Relay,
         ));
 
         let failure = failure.expect("a non-empty profile fails closed");

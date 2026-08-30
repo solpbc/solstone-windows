@@ -4,6 +4,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### changed
+
+- the solstone app on windows has moved to the 2.x version line.
+- what you share from windows now lands through the journal's current
+  linked-device connection.
+
 ## [0.2.11] - 2026-07-16
 
 ### Fixed
