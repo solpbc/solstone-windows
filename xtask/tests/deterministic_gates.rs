@@ -329,6 +329,8 @@ fn release_entrypoints_and_cross_file_gates_are_locked_out() {
     assert!(!package.to_ascii_lowercase().contains("signtool verify"));
     assert!(package.contains("$SelectionJson | & $CargoPath @FinalizeArgs"));
     assert!(package.contains("EXPECTED_RELEASE_COMMIT is required"));
+    assert!(package.contains("$env:SOLSTONE_SOURCE_COMMIT = $ExpectedCommit"));
+    assert!(package.contains("$env:SOLSTONE_SOURCE_COMMIT = $PreviousSourceCommit"));
     assert!(package.contains("packaging\\npm-cache-preflight.ps1"));
     assert!(package.contains("-NpmPath $NpmPath"));
     assert!(package.contains("\"rust-release-manifest\","));

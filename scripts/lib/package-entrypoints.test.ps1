@@ -73,6 +73,44 @@ function Run-Direct([switch]$Sign) {
     return Run-Process $PowerShellPath "-NoProfile -ExecutionPolicy Bypass -File `"$Temp\scripts\package.ps1`"$signArg"
 }
 
+function Run-DirectEnvironmentProbe([AllowNull()][string]$PriorValue, [switch]$ExpectFinalizeFailure) {
+    $probe = Join-Path $Temp "environment-probe.ps1"
+    $after = Join-Path $Temp "environment-after.txt"
+    $initial = if ($null -eq $PriorValue) {
+        "Remove-Item -Path Env:SOLSTONE_SOURCE_COMMIT -ErrorAction SilentlyContinue"
+    } else {
+        "`$env:SOLSTONE_SOURCE_COMMIT = '$PriorValue'"
+    }
+    $failureValue = if ($ExpectFinalizeFailure) { "finalize" } else { "" }
+    $expectedFailureLiteral = if ($ExpectFinalizeFailure) { "`$true" } else { "`$false" }
+    $probeSource = @"
+`$ErrorActionPreference = 'Stop'
+$initial
+`$env:PACKAGE_TEST_FAIL = '$failureValue'
+`$threw = `$false
+try {
+    & '$Temp\scripts\package.ps1'
+} catch {
+    `$threw = `$true
+}
+if (`$null -eq `$env:SOLSTONE_SOURCE_COMMIT) {
+    [IO.File]::WriteAllText('$after', '<absent>', [Text.Encoding]::ASCII)
+} else {
+    [IO.File]::WriteAllText('$after', `$env:SOLSTONE_SOURCE_COMMIT, [Text.Encoding]::ASCII)
+}
+if (`$threw -ne $expectedFailureLiteral) { exit 95 }
+"@
+    Write-Ascii $probe $probeSource
+    if (Test-Path -LiteralPath $after) { Remove-Item -LiteralPath $after -Force }
+    $result = Run-Process $PowerShellPath "-NoProfile -ExecutionPolicy Bypass -File `"$probe`""
+    return [pscustomobject]@{
+        status = $result.status
+        stdout = $result.stdout
+        stderr = $result.stderr
+        after = if (Test-Path -LiteralPath $after) { Get-Content -LiteralPath $after -Raw } else { $null }
+    }
+}
+
 function Run-Wrapper {
     return Run-Process $CmdPath "/d /c `"`"$Temp\scripts\win-package.cmd`"`""
 }
@@ -141,7 +179,7 @@ if not errorlevel 1 (
 echo %*| findstr /c:"-- rust-release-manifest finalize" >nul
 if not errorlevel 1 (
   set /p "SELECTION="
-  echo finalize^|git=%GIT%^|advisory=%SOLSTONE_ADVISORY_TREE_SHA256%^|%*>>"%PACKAGE_TEST_WITNESS%"
+  echo finalize^|git=%GIT%^|advisory=%SOLSTONE_ADVISORY_TREE_SHA256%^|source=%SOLSTONE_SOURCE_COMMIT%^|%*>>"%PACKAGE_TEST_WITNESS%"
   >"%PACKAGE_TEST_SELECTION_STDIN%" echo !SELECTION!
   if "%PACKAGE_TEST_FAIL%"=="finalize" exit /b 33
   exit /b 0
@@ -233,6 +271,24 @@ exit /b 0
     Assert-True ($result.status -eq 0) "direct unsigned delegation succeeds"
     Assert-True ((Witness-Text).StartsWith("preflight`r`nversion-gate`r`nlock-guard`r`nnpm-cache`r`nfinalize|")) "direct unsigned gate order"
     Assert-OneFinalizer "direct unsigned"
+
+    Reset-Case
+    $result = Run-DirectEnvironmentProbe "prior-source-value"
+    Assert-True ($result.status -eq 0) "source stamp probe with prior value succeeds"
+    Assert-True ($result.after -eq "prior-source-value") "source stamp restores a prior caller value"
+    Assert-True ((Witness-Text).Contains("source=$ExpectedCommit")) "finalizer receives the exact expected source stamp"
+
+    Reset-Case
+    $result = Run-DirectEnvironmentProbe $null
+    Assert-True ($result.status -eq 0) "source stamp probe with absent prior value succeeds"
+    Assert-True ($result.after -eq "<absent>") "source stamp restores an absent caller value"
+    Assert-True ((Witness-Text).Contains("source=$ExpectedCommit")) "finalizer receives the exact expected source stamp from an absent prior value"
+
+    Reset-Case
+    $result = Run-DirectEnvironmentProbe "prior-source-on-failure" -ExpectFinalizeFailure
+    Assert-True ($result.status -eq 0) "source stamp failure probe reaches the expected finalizer failure"
+    Assert-True ($result.after -eq "prior-source-on-failure") "source stamp restores a prior caller value after finalizer failure"
+    Assert-True ((Witness-Text).Contains("source=$ExpectedCommit")) "failing finalizer receives the exact expected source stamp"
 
     Reset-Case
     $result = Run-Direct -Sign

@@ -126,15 +126,21 @@ foreach ($basename in $DeltaBaseFull) {
     $FinalizeArgs += @("--delta-base-full", $basename)
 }
 
-Push-Location $Root
-$previousPreference = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
+$PreviousSourceCommit = $env:SOLSTONE_SOURCE_COMMIT
 try {
-    $SelectionJson | & $CargoPath @FinalizeArgs
-    $finalizeStatus = $LASTEXITCODE
+    $env:SOLSTONE_SOURCE_COMMIT = $ExpectedCommit
+    Push-Location $Root
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $SelectionJson | & $CargoPath @FinalizeArgs
+        $finalizeStatus = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+        Pop-Location
+    }
 } finally {
-    $ErrorActionPreference = $previousPreference
-    Pop-Location
+    $env:SOLSTONE_SOURCE_COMMIT = $PreviousSourceCommit
 }
 if ($finalizeStatus -ne 0) {
     throw "release finalization failed (exit $finalizeStatus); repair the reported transaction gate and rerun from the source-bound entry point."
