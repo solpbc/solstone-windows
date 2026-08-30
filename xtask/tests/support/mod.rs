@@ -778,13 +778,15 @@ impl FakeReleaseRunner {
                         b"false\n".to_vec()
                     },
                 )),
-                ["archive", "--format=tar", "HEAD"] => Ok(Self::output(
-                    if self.mutation == RunnerMutation::AdvisoryArchiveMismatch {
-                        b"swapped advisory archive".to_vec()
-                    } else {
-                        ADVISORY_ARCHIVE.to_vec()
-                    },
-                )),
+                ["-c", "core.autocrlf=false", "archive", "--format=tar", "HEAD"] => {
+                    Ok(Self::output(
+                        if self.mutation == RunnerMutation::AdvisoryArchiveMismatch {
+                            b"swapped advisory archive".to_vec()
+                        } else {
+                            ADVISORY_ARCHIVE.to_vec()
+                        },
+                    ))
+                }
                 _ => Err(CommandRunnerError::UnexpectedInvocation),
             }
         } else {

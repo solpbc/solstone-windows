@@ -1074,7 +1074,13 @@ impl AdvisorySnapshot {
             runner,
             git_program,
             &repository_arg,
-            &["archive", "--format=tar", "HEAD"],
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "archive",
+                "--format=tar",
+                "HEAD",
+            ],
             "archive",
         )?;
         if archive.status != 0 {

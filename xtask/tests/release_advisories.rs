@@ -248,7 +248,18 @@ fn snapshot_commands(checkout: &TestCheckout) -> Vec<FakeCommand> {
             0,
             b"false\n",
         ),
-        git_command(checkout, &["archive", "--format=tar", "HEAD"], 0, ARCHIVE),
+        git_command(
+            checkout,
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "archive",
+                "--format=tar",
+                "HEAD",
+            ],
+            0,
+            ARCHIVE,
+        ),
     ]
 }
 
