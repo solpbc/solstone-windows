@@ -87,48 +87,48 @@ if ([string]::IsNullOrWhiteSpace($ExpectedCommit)) {
 if ($ExpectedCommit -notmatch "^[0-9a-f]{40}$") {
     throw "EXPECTED_RELEASE_COMMIT is not a full lowercase 40-hex commit; correct it and retry."
 }
-$AdvisoryTreeSha256 = [string]$env:SOLSTONE_ADVISORY_TREE_SHA256
-if ($AdvisoryTreeSha256 -notmatch "^[0-9a-f]{64}$") {
-    throw "SOLSTONE_ADVISORY_TREE_SHA256 is required as 64 lowercase hex; supply the reviewed isolated RustSec archive digest and retry."
-}
-
-& (Join-Path $Root "packaging\npm-cache-preflight.ps1") -Root $Root -NpmPath $NpmPath
-
-$GitCommand = if ([string]::IsNullOrWhiteSpace($env:GIT)) { "git" } else { [string]$env:GIT }
-$GitSelection = Get-Command -Name $GitCommand -CommandType Application -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-if ($null -eq $GitSelection -or [string]::IsNullOrWhiteSpace($GitSelection.Source)) {
-    throw "Git executable selection failed; install Git or set GIT to its executable path and retry."
-}
-$GitPath = [System.IO.Path]::GetFullPath([string]$GitSelection.Source)
-if (-not [System.IO.Path]::IsPathRooted($GitPath) -or -not (Test-Path -LiteralPath $GitPath -PathType Leaf)) {
-    throw "Git executable selection is not one absolute regular file; set GIT to the exact executable and retry."
-}
-$env:GIT = $GitPath
-
-$FinalizeArgs = @(
-    "run",
-    "--locked",
-    "-q",
-    "-p",
-    "xtask",
-    "--",
-    "rust-release-manifest",
-    "finalize",
-    "--expected-release-commit",
-    $ExpectedCommit
-)
-if ($SignEnabled) { $FinalizeArgs += "--sign" }
-foreach ($basename in $DeltaBaseFull) {
-    if ([string]::IsNullOrWhiteSpace($basename)) {
-        throw "delta-base full basename is empty; pass a canonical historical full-package basename and retry."
-    }
-    $FinalizeArgs += @("--delta-base-full", $basename)
-}
-
 $PreviousSourceCommit = $env:SOLSTONE_SOURCE_COMMIT
 try {
     $env:SOLSTONE_SOURCE_COMMIT = $ExpectedCommit
+    $AdvisoryTreeSha256 = [string]$env:SOLSTONE_ADVISORY_TREE_SHA256
+    if ($AdvisoryTreeSha256 -notmatch "^[0-9a-f]{64}$") {
+        throw "SOLSTONE_ADVISORY_TREE_SHA256 is required as 64 lowercase hex; supply the reviewed isolated RustSec archive digest and retry."
+    }
+
+    & (Join-Path $Root "packaging\npm-cache-preflight.ps1") -Root $Root -NpmPath $NpmPath
+
+    $GitCommand = if ([string]::IsNullOrWhiteSpace($env:GIT)) { "git" } else { [string]$env:GIT }
+    $GitSelection = Get-Command -Name $GitCommand -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $GitSelection -or [string]::IsNullOrWhiteSpace($GitSelection.Source)) {
+        throw "Git executable selection failed; install Git or set GIT to its executable path and retry."
+    }
+    $GitPath = [System.IO.Path]::GetFullPath([string]$GitSelection.Source)
+    if (-not [System.IO.Path]::IsPathRooted($GitPath) -or -not (Test-Path -LiteralPath $GitPath -PathType Leaf)) {
+        throw "Git executable selection is not one absolute regular file; set GIT to the exact executable and retry."
+    }
+    $env:GIT = $GitPath
+
+    $FinalizeArgs = @(
+        "run",
+        "--locked",
+        "-q",
+        "-p",
+        "xtask",
+        "--",
+        "rust-release-manifest",
+        "finalize",
+        "--expected-release-commit",
+        $ExpectedCommit
+    )
+    if ($SignEnabled) { $FinalizeArgs += "--sign" }
+    foreach ($basename in $DeltaBaseFull) {
+        if ([string]::IsNullOrWhiteSpace($basename)) {
+            throw "delta-base full basename is empty; pass a canonical historical full-package basename and retry."
+        }
+        $FinalizeArgs += @("--delta-base-full", $basename)
+    }
+
     Push-Location $Root
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -139,9 +139,9 @@ try {
         $ErrorActionPreference = $previousPreference
         Pop-Location
     }
+    if ($finalizeStatus -ne 0) {
+        throw "release finalization failed (exit $finalizeStatus); repair the reported transaction gate and rerun from the source-bound entry point."
+    }
 } finally {
     $env:SOLSTONE_SOURCE_COMMIT = $PreviousSourceCommit
-}
-if ($finalizeStatus -ne 0) {
-    throw "release finalization failed (exit $finalizeStatus); repair the reported transaction gate and rerun from the source-bound entry point."
 }

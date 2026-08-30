@@ -73,7 +73,7 @@ function Run-Direct([switch]$Sign) {
     return Run-Process $PowerShellPath "-NoProfile -ExecutionPolicy Bypass -File `"$Temp\scripts\package.ps1`"$signArg"
 }
 
-function Run-DirectEnvironmentProbe([AllowNull()][string]$PriorValue, [switch]$ExpectFinalizeFailure) {
+function Run-DirectEnvironmentProbe([AllowNull()][string]$PriorValue, [switch]$ExpectFailure) {
     $probe = Join-Path $Temp "environment-probe.ps1"
     $after = Join-Path $Temp "environment-after.txt"
     $initial = if ($null -eq $PriorValue) {
@@ -81,15 +81,14 @@ function Run-DirectEnvironmentProbe([AllowNull()][string]$PriorValue, [switch]$E
     } else {
         "`$env:SOLSTONE_SOURCE_COMMIT = '$PriorValue'"
     }
-    $failureValue = if ($ExpectFinalizeFailure) { "finalize" } else { "" }
-    $expectedFailureLiteral = if ($ExpectFinalizeFailure) { "`$true" } else { "`$false" }
+    $packageArguments = if ($ExpectFailure) { " -DeltaBaseFull ''" } else { "" }
+    $expectedFailureLiteral = if ($ExpectFailure) { "`$true" } else { "`$false" }
     $probeSource = @"
 `$ErrorActionPreference = 'Stop'
 $initial
-`$env:PACKAGE_TEST_FAIL = '$failureValue'
 `$threw = `$false
 try {
-    & '$Temp\scripts\package.ps1'
+    & '$Temp\scripts\package.ps1'$packageArguments
 } catch {
     `$threw = `$true
 }
@@ -285,10 +284,10 @@ exit /b 0
     Assert-True ((Witness-Text).Contains("source=$ExpectedCommit")) "finalizer receives the exact expected source stamp from an absent prior value"
 
     Reset-Case
-    $result = Run-DirectEnvironmentProbe "prior-source-on-failure" -ExpectFinalizeFailure
-    Assert-True ($result.status -eq 0) "source stamp failure probe reaches the expected finalizer failure"
-    Assert-True ($result.after -eq "prior-source-on-failure") "source stamp restores a prior caller value after finalizer failure"
-    Assert-True ((Witness-Text).Contains("source=$ExpectedCommit")) "failing finalizer receives the exact expected source stamp"
+    $result = Run-DirectEnvironmentProbe "prior-source-on-failure" -ExpectFailure
+    Assert-True ($result.status -eq 0) "source stamp failure probe reaches the expected release-argument failure"
+    Assert-True ($result.after -eq "prior-source-on-failure") "source stamp restores a prior caller value after failure"
+    Assert-True (-not (Witness-Text).Contains("finalize|")) "invalid release arguments stop before finalization"
 
     Reset-Case
     $result = Run-Direct -Sign
