@@ -20,11 +20,12 @@ use tokio::task::{JoinError, JoinHandle};
 use crate::client::ObserverClient;
 use crate::coordinator::UploadCoordinator;
 use crate::credential::PairedState;
+use crate::journal_version::JournalVersionController;
 use crate::sealed::{LocalSealedStore, SealedStore};
 use crate::{cancelled, pairing, transport_error_code, TransportError};
 
 /// Static identity + paths the sync layer needs.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SyncConfig {
     /// CN to put on the pairing CSR.
     pub device_label: String,
@@ -39,6 +40,8 @@ pub struct SyncConfig {
     pub retention: Arc<RwLock<RetentionConfig>>,
     /// Device-local UTC-offset provider used to derive journal segment keys.
     pub local_offset: Arc<dyn LocalOffset>,
+    /// Journal version state owner.
+    pub journal_version: Arc<JournalVersionController>,
 }
 
 fn set_pairing(sync: &Arc<Mutex<SyncSnapshot>>, state: PairingState) {
@@ -132,6 +135,7 @@ async fn setup_uploader(
 ) -> Result<UploadCoordinator, TransportError> {
     let credential = paired.credential.ok_or(TransportError::NotPaired)?;
     let journal_label = credential.home_label.clone();
+    let _ = cfg.journal_version.begin_session(&credential, &sync);
     let client = ObserverClient::new(credential)?.with_state_path(cfg.state_path.clone());
 
     set_pairing(
@@ -144,6 +148,8 @@ async fn setup_uploader(
     );
 
     let client = Arc::new(client);
+    cfg.journal_version
+        .trigger_refresh(client.clone(), sync.clone());
     let store: Box<dyn SealedStore> =
         Box::new(LocalSealedStore::new(&cfg.segments_root, cfg.period_secs));
     Ok(UploadCoordinator::new(
@@ -153,6 +159,7 @@ async fn setup_uploader(
         cfg.period_secs,
         cfg.retention,
         cfg.local_offset,
+        cfg.journal_version,
     ))
 }
 

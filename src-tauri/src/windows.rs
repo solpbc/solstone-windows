@@ -97,7 +97,14 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     let paired = pl_transport_win::credential::PairedState::load(&state_path)
         .map_err(|_| OpenJournalError::Unpaired)?;
 
-    let handle = match pl_transport_win::journal_bridge::start(&paired, state_path).await {
+    let handle = match pl_transport_win::journal_bridge::start(
+        &paired,
+        state_path,
+        state.sync_config.journal_version.clone(),
+        state.sync.clone(),
+    )
+    .await
+    {
         Ok(handle) => handle,
         Err(pl_transport_win::journal_bridge::BridgeStartError::NotReady) => {
             return Err(OpenJournalError::Unpaired);

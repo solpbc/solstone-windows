@@ -117,6 +117,7 @@ pub mod settings {
 pub mod about {
     pub const WINDOW_ROOT: &str = "about.window.root";
     pub const VERSION: &str = "about.version";
+    pub const JOURNAL_VERSION: &str = "about.journalVersion";
 }
 
 /// Every AutomationId const, paired with a stable contract key. The contract key
@@ -218,6 +219,7 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.retention", settings::RETENTION),
         ("about.window.root", about::WINDOW_ROOT),
         ("about.version", about::VERSION),
+        ("about.journalVersion", about::JOURNAL_VERSION),
     ])
 }
 

@@ -12,7 +12,7 @@ use rustls::pki_types::CertificateDer;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::credential::{endpoint_addrs_from_local_endpoints, generate_csr, Credential};
+use crate::credential::{endpoint_addrs_from_local_endpoints, generate_csr, hex_lower, Credential};
 use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
 use crate::{relay, relay_http, spki_pin, tls, RelayControlEndpoint, TransportError};
 use observer_model::TransportPath;
@@ -161,14 +161,6 @@ async fn enroll_device(
         ));
     }
     Ok(parsed.device_token)
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
 }
 
 fn parse_ca_chain(chain: &[String]) -> Result<Vec<CertificateDer<'static>>, TransportError> {

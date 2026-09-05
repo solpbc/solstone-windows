@@ -37,7 +37,12 @@ async fn contacted_flips_on_first_accept_before_http_parse() {
         "journal-bridge-contact-{}.json",
         std::process::id()
     ));
-    let handle = pl_transport_win::journal_bridge::start(&paired, state_path)
+    let jv_path = state_path.with_file_name("journal-version.json");
+    let jv = std::sync::Arc::new(pl_transport_win::JournalVersionController::new(jv_path));
+    let sync = std::sync::Arc::new(std::sync::Mutex::new(
+        observer_model::SyncSnapshot::default(),
+    ));
+    let handle = pl_transport_win::journal_bridge::start(&paired, state_path, jv, sync)
         .await
         .expect("bridge start");
 

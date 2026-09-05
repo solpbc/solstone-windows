@@ -112,6 +112,8 @@ interface UploadStatus {
 interface SyncSnapshot {
   pairing: PairingState;
   upload: UploadStatus;
+  journal_version?: string | null;
+  journal_version_fresh?: boolean;
 }
 
 interface EncoderHealth {
@@ -2508,6 +2510,23 @@ function renderSettings(dump: HealthDump): void {
   }
 }
 
+function sanitizeJournalVersion(raw: unknown): string | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 128) {
+    return null;
+  }
+  for (let i = 0; i < trimmed.length; i++) {
+    const code = trimmed.charCodeAt(i);
+    if (code < 0x20 || code > 0x7e) {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
 function renderAbout(dump: HealthDump): void {
   resetRoot(ids["about.window.root"]);
   root.style.padding = "22px";
@@ -2535,6 +2554,16 @@ function renderAbout(dump: HealthDump): void {
   version.style.color = "var(--fg-subtle)";
 
   root.append(title, body1, body2, body3, version);
+
+  const raw = dump.sync.journal_version;
+  const sanitized = sanitizeJournalVersion(raw);
+  const jvText = sanitized
+    ? dump.sync.journal_version_fresh
+      ? sanitized
+      : `${sanitized} (last known)`
+    : "unknown";
+  const jvEl = selectable(automation(text("div", jvText), ids["about.journalVersion"]));
+  root.append(valueRow("journal version", jvEl));
 }
 
 function nowSecs(): number {
@@ -3328,6 +3357,7 @@ export const __test__ = {
   renderSettings,
   renderAbout,
   renderUnavailable,
+  sanitizeJournalVersion,
   rerender,
   reset() {
     latestHealth = null;

@@ -32,6 +32,7 @@ use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 
 use crate::client::{ObserverClient, SendMetadata};
+use crate::journal_version::JournalVersionController;
 use crate::sealed::{content_type_for, SealedStore};
 use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
@@ -255,6 +256,8 @@ impl UploadEvent {
 /// Drives sealed segments to the journal and reconciles them.
 pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
+    version_client: Option<Arc<ObserverClient>>,
+    journal_version: Option<Arc<JournalVersionController>>,
     store: Box<dyn SealedStore>,
     sync: Arc<Mutex<SyncSnapshot>>,
     period_secs: u64,
@@ -276,6 +279,7 @@ pub struct ConfirmedUpload {
 }
 
 impl UploadCoordinator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Arc<ObserverClient>,
         store: Box<dyn SealedStore>,
@@ -283,10 +287,22 @@ impl UploadCoordinator {
         period_secs: u64,
         retention: Arc<RwLock<RetentionConfig>>,
         local_offset: Arc<dyn LocalOffset>,
+        journal_version: Arc<JournalVersionController>,
     ) -> Self {
-        Self::new_with_client(client, store, sync, period_secs, retention, local_offset)
+        Self {
+            client: client.clone(),
+            version_client: Some(client),
+            journal_version: Some(journal_version),
+            store,
+            sync,
+            period_secs: period_secs.max(1),
+            retention,
+            local_offset,
+            quarantine_counts: Mutex::new(HashMap::new()),
+        }
     }
 
+    #[cfg(test)]
     fn new_with_client(
         client: Arc<dyn UploadClient>,
         store: Box<dyn SealedStore>,
@@ -297,6 +313,8 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client,
+            version_client: None,
+            journal_version: None,
             store,
             sync,
             period_secs: period_secs.max(1),
@@ -728,14 +746,32 @@ impl UploadCoordinator {
     }
 
     fn note_tick_success(&self) {
-        if let Ok(mut snapshot) = self.sync.lock() {
+        let is_recovery = if let Ok(mut snapshot) = self.sync.lock() {
+            let was_failing = snapshot.upload.recent_error_count > 0;
             snapshot.upload.record_success(now_epoch_millis());
+            was_failing
+        } else {
+            false
+        };
+        if is_recovery {
+            if let (Some(jv), Some(vc)) = (&self.journal_version, &self.version_client) {
+                jv.trigger_refresh(vc.clone(), self.sync.clone());
+            }
         }
     }
 
     fn note_tick_failure(&self, err: &TransportError) {
-        if let Ok(mut snapshot) = self.sync.lock() {
+        let was_healthy = if let Ok(mut snapshot) = self.sync.lock() {
+            let healthy = snapshot.upload.recent_error_count == 0;
             snapshot.upload.record_failure(&transport_error_code(err));
+            healthy
+        } else {
+            false
+        };
+        if was_healthy {
+            if let Some(jv) = &self.journal_version {
+                jv.mark_disconnected(&self.sync);
+            }
         }
     }
 }
@@ -1262,11 +1298,11 @@ mod tests {
         }
     }
 
-    fn dummy_client() -> Arc<ObserverClient> {
+    fn dummy_credential() -> Credential {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
         let cert = params.self_signed(&key).unwrap();
-        let credential = Credential {
+        Credential {
             client_key_pem: key.serialize_pem(),
             client_cert_pem: cert.pem(),
             ca_chain_pem: vec![cert.pem()],
@@ -1280,8 +1316,11 @@ mod tests {
             relay_origin: None,
             device_token: None,
             device_token_expires_at: None,
-        };
-        Arc::new(ObserverClient::new(credential).unwrap())
+        }
+    }
+
+    fn dummy_client() -> Arc<ObserverClient> {
+        Arc::new(ObserverClient::new(dummy_credential()).unwrap())
     }
 
     fn coordinator(
@@ -1303,6 +1342,9 @@ mod tests {
             300,
             Arc::new(RwLock::new(RetentionConfig::default())),
             local_offset,
+            Arc::new(crate::journal_version::JournalVersionController::new(
+                std::env::temp_dir().join(format!("test-jv-{}.json", std::process::id())),
+            )),
         )
     }
 
@@ -2226,5 +2268,83 @@ mod tests {
         assert_eq!(coordinator.tick().await.unwrap(), 0);
         assert!(!*removed.lock().unwrap());
         assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tick_failure_marks_disconnected_and_recovery_triggers_refresh() {
+        let jv_path = std::env::temp_dir().join(format!(
+            "journal-version-coord-test-{}.json",
+            std::process::id()
+        ));
+        let jv = Arc::new(crate::journal_version::JournalVersionController::new(
+            jv_path,
+        ));
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cred = dummy_credential();
+        let dummy = Arc::new(ObserverClient::new(cred.clone()).unwrap());
+        jv.begin_session(&cred, &sync);
+
+        // Simulate an already fresh version in sync snapshot.
+        {
+            let mut s = sync.lock().unwrap();
+            s.journal_version = Some("0.4.0".into());
+            s.journal_version_fresh = true;
+        }
+
+        let store = OneSegmentStore::new(1_700_000_100, "audio.flac", b"audio".to_vec());
+        let client = FakeClient::new(
+            vec![
+                Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "reset",
+                ))),
+                scripted_ingest("conflict", None, None, 1),
+                scripted_ingest("conflict", None, None, 1),
+            ],
+            vec![],
+        );
+
+        let coordinator = UploadCoordinator {
+            client,
+            store: Box::new(store),
+            sync: sync.clone(),
+            period_secs: 300,
+            retention: Arc::new(RwLock::new(RetentionConfig::default())),
+            local_offset: Arc::new(FixedOffset(0)),
+            quarantine_counts: Mutex::new(std::collections::HashMap::new()),
+            version_client: Some(dummy),
+            journal_version: Some(jv.clone()),
+        };
+
+        assert_eq!(jv.in_flight_token(), None);
+
+        // First tick fails: note_tick_failure should mark journal_version_fresh = false.
+        let res = coordinator.tick().await;
+        assert!(res.is_err());
+        {
+            let s = sync.lock().unwrap();
+            assert_eq!(s.journal_version.as_deref(), Some("0.4.0"));
+            assert!(!s.journal_version_fresh);
+            assert_eq!(s.upload.recent_error_count, 1);
+        }
+        assert_eq!(jv.in_flight_token(), None);
+
+        // Second tick succeeds (recovery from recent_error_count > 0) -> triggers refresh.
+        let res = coordinator.tick().await;
+        assert_eq!(res.unwrap(), 0);
+        {
+            let s = sync.lock().unwrap();
+            assert_eq!(s.upload.recent_error_count, 0);
+        }
+        // In-flight token is set synchronously upon recovery trigger.
+        assert_eq!(jv.in_flight_token(), Some((1, 1)));
+
+        // Third tick succeeds when already healthy (recent_error_count == 0) -> does NOT trigger a refresh.
+        // Clear in-flight token to observe whether healthy tick sets it.
+        jv.apply_result((1, 1), Ok("0.4.1".into()), &sync);
+        assert_eq!(jv.in_flight_token(), None);
+        let res = coordinator.tick().await;
+        assert_eq!(res.unwrap(), 0);
+        assert_eq!(jv.in_flight_token(), None);
     }
 }

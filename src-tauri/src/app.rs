@@ -56,6 +56,7 @@ pub(crate) fn observer_hostname() -> String {
 /// period (so the uploader derives the same segment keys the writer sealed).
 fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
     let host = observer_hostname();
+    let journal_version_path = platform_win::local_data_root().join("journal-version.json");
     SyncConfig {
         device_label: host,
         period_secs: EngineConfig::default().segment_secs,
@@ -63,6 +64,9 @@ fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
         segments_root: platform_win::segments_dir(),
         retention,
         local_offset: Arc::new(platform_win::WindowsLocalOffset),
+        journal_version: Arc::new(pl_transport_win::JournalVersionController::new(
+            journal_version_path,
+        )),
     }
 }
 

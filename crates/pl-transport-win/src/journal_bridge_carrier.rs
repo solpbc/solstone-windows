@@ -21,8 +21,12 @@ use tokio::io::{split, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{Instant, MissedTickBehavior};
 
+use std::sync::Mutex as StdMutex;
+
 use crate::client::{CarrierIo, CarrierKind, ObserverClient};
+use crate::journal_version::JournalVersionController;
 use crate::{transport_error_code, TransportError};
+use observer_model::SyncSnapshot;
 
 const READ_BUF_BYTES: usize = 64 * 1024;
 const COMMAND_QUEUE: usize = 64;
@@ -36,18 +40,31 @@ pub(crate) struct MuxCarrier {
     client: Arc<ObserverClient>,
     slot: Mutex<Option<Arc<CarrierHandle>>>,
     keepalive: KeepaliveConfig,
+    journal_version: Arc<JournalVersionController>,
+    sync: Arc<StdMutex<SyncSnapshot>>,
 }
 
 impl MuxCarrier {
-    pub(crate) fn new(client: Arc<ObserverClient>) -> Self {
-        Self::with_keepalive(client, KeepaliveConfig::default())
+    pub(crate) fn new(
+        client: Arc<ObserverClient>,
+        journal_version: Arc<JournalVersionController>,
+        sync: Arc<StdMutex<SyncSnapshot>>,
+    ) -> Self {
+        Self::with_keepalive(client, KeepaliveConfig::default(), journal_version, sync)
     }
 
-    pub(crate) fn with_keepalive(client: Arc<ObserverClient>, keepalive: KeepaliveConfig) -> Self {
+    pub(crate) fn with_keepalive(
+        client: Arc<ObserverClient>,
+        keepalive: KeepaliveConfig,
+        journal_version: Arc<JournalVersionController>,
+        sync: Arc<StdMutex<SyncSnapshot>>,
+    ) -> Self {
         Self {
             client,
             slot: Mutex::new(None),
             keepalive,
+            journal_version,
+            sync,
         }
     }
 
@@ -107,6 +124,8 @@ impl MuxCarrier {
         }
 
         let dialed = self.client.dial_carrier().await?;
+        self.journal_version
+            .trigger_refresh(self.client.clone(), self.sync.clone());
         let (read, write) = split(dialed.stream);
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_QUEUE);
         let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE);

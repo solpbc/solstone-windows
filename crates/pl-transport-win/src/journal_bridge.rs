@@ -5,8 +5,9 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use observer_model::SyncSnapshot;
 use observer_pl::bridge::{
     self, FailureCategory, RejectReason, RequestHead, BOOTSTRAP_ROUTE, CAP_COOKIE_NAME,
 };
@@ -17,8 +18,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::client::ObserverClient;
-use crate::credential::PairedState;
+use crate::credential::{hex_lower, PairedState};
 use crate::journal_bridge_carrier::MuxCarrier;
+use crate::journal_version::JournalVersionController;
 use crate::{transport_error_code, TransportError};
 
 const MAX_HEAD_BYTES: usize = 64 * 1024;
@@ -71,8 +73,10 @@ pub enum BridgeStartError {
 pub async fn start(
     paired: &PairedState,
     state_path: PathBuf,
+    journal_version: Arc<JournalVersionController>,
+    sync: Arc<Mutex<SyncSnapshot>>,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
-    start_observed(paired, state_path, None).await
+    start_observed(paired, state_path, None, journal_version, sync).await
 }
 
 /// [`start`] with an operation-scoped observation seam attached to the bridge's
@@ -85,6 +89,8 @@ pub async fn start_observed(
     paired: &PairedState,
     state_path: PathBuf,
     observer: crate::observe::ObserverHandle,
+    journal_version: Arc<JournalVersionController>,
+    sync: Arc<Mutex<SyncSnapshot>>,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
     let credential = paired
         .credential
@@ -104,7 +110,7 @@ pub async fn start_observed(
         .with_state_path(state_path)
         .with_observer(observer);
     let client = Arc::new(client);
-    let carrier = Arc::new(MuxCarrier::new(client));
+    let carrier = Arc::new(MuxCarrier::new(client, journal_version, sync));
 
     let capability = mint_capability()?;
     let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
@@ -158,17 +164,7 @@ fn mint_capability() -> Result<String, BridgeStartError> {
                 "journal bridge capability rng: {error:?}"
             )))
         })?;
-    Ok(hex_encode(&bytes))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
+    Ok(hex_lower(&bytes))
 }
 
 #[allow(clippy::too_many_arguments)]

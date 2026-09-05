@@ -1952,7 +1952,13 @@ async fn relay_bridge_carrier_refreshes_on_4401_then_succeeds() {
         spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
     let credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token);
     let paired = relay_bridge_state(credential);
-    let handle = journal_bridge::start(&paired, temp_pairing_path("bridge-refresh"))
+    let jv_1 = Arc::new(pl_transport_win::JournalVersionController::new(
+        temp_pairing_path("bridge-refresh-jv"),
+    ));
+    let sync_1 = Arc::new(std::sync::Mutex::new(
+        observer_model::SyncSnapshot::default(),
+    ));
+    let handle = journal_bridge::start(&paired, temp_pairing_path("bridge-refresh"), jv_1, sync_1)
         .await
         .unwrap();
     let cap = capability_from(&handle);
@@ -1993,9 +1999,20 @@ async fn relay_bridge_initial_dial_failure_returns_502_and_next_request_redials(
     let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber.clone()));
     let credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token.clone());
     let paired = relay_bridge_state(credential);
-    let handle = journal_bridge::start(&paired, temp_pairing_path("bridge-relay-fail"))
-        .await
-        .unwrap();
+    let jv_2 = Arc::new(pl_transport_win::JournalVersionController::new(
+        temp_pairing_path("bridge-relay-fail-jv"),
+    ));
+    let sync_2 = Arc::new(std::sync::Mutex::new(
+        observer_model::SyncSnapshot::default(),
+    ));
+    let handle = journal_bridge::start(
+        &paired,
+        temp_pairing_path("bridge-relay-fail"),
+        jv_2,
+        sync_2,
+    )
+    .await
+    .unwrap();
     let cap = capability_from(&handle);
 
     let first = raw_bridge_request(handle.port(), "/fail", &cap).await;

@@ -28,6 +28,7 @@ pub mod credential;
 pub mod integration;
 pub mod journal_bridge;
 mod journal_bridge_carrier;
+pub mod journal_version;
 pub mod observe;
 pub mod pairing;
 pub mod relay;
@@ -46,6 +47,7 @@ use observer_pl::http::HttpError;
 use observer_pl::mux::MuxError;
 use thiserror::Error;
 
+pub use journal_version::JournalVersionController;
 pub use service::run_uploader;
 pub use slot::UploaderSlot;
 

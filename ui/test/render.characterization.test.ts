@@ -303,5 +303,55 @@ describe("settings renderer characterization", () => {
 
     present(ids["about.window.root"]);
     expect(present(ids["about.version"]).textContent).toBe(dump.version);
+    expect(present(ids["about.journalVersion"]).textContent).toBe("unknown");
+  });
+
+  it("renders the about surface with fresh journal version", () => {
+    const dump = observingDump();
+    dump.sync.journal_version = "0.4.2";
+    dump.sync.journal_version_fresh = true;
+    resetRoot(ids["about.window.root"]);
+    app.__test__.setLabel("about");
+    app.__test__.setHealth(dump);
+
+    app.__test__.renderAbout(dump);
+
+    expect(present(ids["about.journalVersion"]).textContent).toBe("0.4.2");
+  });
+
+  it("renders the about surface with last known journal version", () => {
+    const dump = observingDump();
+    dump.sync.journal_version = "0.4.2";
+    dump.sync.journal_version_fresh = false;
+    resetRoot(ids["about.window.root"]);
+    app.__test__.setLabel("about");
+    app.__test__.setHealth(dump);
+
+    app.__test__.renderAbout(dump);
+
+    expect(present(ids["about.journalVersion"]).textContent).toBe("0.4.2 (last known)");
+  });
+
+  it("renders unknown journal version when unpaired", () => {
+    const dump = notPairedDump();
+    resetRoot(ids["about.window.root"]);
+    app.__test__.setLabel("about");
+    app.__test__.setHealth(dump);
+
+    app.__test__.renderAbout(dump);
+
+    expect(present(ids["about.journalVersion"]).textContent).toBe("unknown");
+  });
+
+  it("sanitizes journal version correctly", () => {
+    expect(app.__test__.sanitizeJournalVersion(null)).toBeNull();
+    expect(app.__test__.sanitizeJournalVersion("")).toBeNull();
+    expect(app.__test__.sanitizeJournalVersion("   ")).toBeNull();
+    expect(app.__test__.sanitizeJournalVersion("0.4.2")).toBe("0.4.2");
+    expect(app.__test__.sanitizeJournalVersion("v1.2.3-beta.1 (hash)")).toBe("v1.2.3-beta.1 (hash)");
+    expect(app.__test__.sanitizeJournalVersion("bad\x00version")).toBeNull();
+    expect(app.__test__.sanitizeJournalVersion("bad\nversion")).toBeNull();
+    expect(app.__test__.sanitizeJournalVersion("a".repeat(129))).toBeNull();
+    expect(app.__test__.sanitizeJournalVersion("a".repeat(128))).toBe("a".repeat(128));
   });
 });

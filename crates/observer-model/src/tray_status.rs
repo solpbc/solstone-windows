@@ -126,6 +126,7 @@ mod tests {
                 detail: None,
             },
             upload: UploadStatus::default(),
+            ..Default::default()
         }
     }
 
@@ -226,6 +227,7 @@ mod tests {
                 last_successful_sync: Some(1),
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(
             tray_visual(AppPhase::Observing, &empty_success, None, None),
@@ -252,6 +254,7 @@ mod tests {
                     ..Default::default()
                 },
                 upload,
+                ..Default::default()
             };
             assert_eq!(
                 tray_visual(AppPhase::Observing, &offline, None, None),

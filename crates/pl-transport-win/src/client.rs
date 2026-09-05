@@ -183,6 +183,42 @@ impl ObserverClient {
         Ok((self.parse_v3_read(response)?, metadata))
     }
 
+    /// Read the system status and extract the sanitized current journal version string.
+    pub async fn system_status(&self) -> Result<String, TransportError> {
+        let fetch = async {
+            let headers = self.v3_headers();
+            let SendOutcome { response, .. } = self
+                .send("GET", "/api/system/status", &headers, b"")
+                .await?;
+            if response.status != 200 {
+                return Err(TransportError::Rejected {
+                    status: response.status,
+                    body: response.body_text(),
+                });
+            }
+            let parsed: SystemStatusResponse = serde_json::from_slice(&response.body)?;
+            let version = parsed.version.current;
+            if version.is_empty()
+                || version.len() > 128
+                || version.bytes().any(|b| b < 0x20 || b == 0x7f)
+            {
+                return Err(TransportError::Rejected {
+                    status: response.status,
+                    body: "malformed version string".to_string(),
+                });
+            }
+            Ok(version)
+        };
+
+        match tokio::time::timeout(Duration::from_secs(5), fetch).await {
+            Ok(res) => res,
+            Err(_) => Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "system_status request timed out",
+            ))),
+        }
+    }
+
     fn v3_headers(&self) -> Vec<(String, String)> {
         vec![(
             PROTOCOL_VERSION_HEADER.to_string(),
@@ -656,6 +692,16 @@ fn relay_fault_is_transient(err: &RelayError) -> bool {
 /// Transport-level wrapper around the relay transient retry predicate.
 fn relay_fault_is_transient_err(err: &TransportError) -> bool {
     matches!(err, TransportError::Relay(relay) if relay_fault_is_transient(relay))
+}
+
+#[derive(serde::Deserialize)]
+struct SystemStatusResponse {
+    version: SystemStatusVersion,
+}
+
+#[derive(serde::Deserialize)]
+struct SystemStatusVersion {
+    current: String,
 }
 
 #[cfg(test)]

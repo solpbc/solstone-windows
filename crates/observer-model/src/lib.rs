@@ -540,6 +540,10 @@ fn bounded_single_line(input: &str, max_chars: usize) -> String {
 pub struct SyncSnapshot {
     pub pairing: PairingState,
     pub upload: UploadStatus,
+    #[serde(default)]
+    pub journal_version: Option<String>,
+    #[serde(default)]
+    pub journal_version_fresh: bool,
 }
 
 /// The honest pause detail surfaced in the health dump while the observer is
@@ -840,6 +844,7 @@ mod tests {
                     last_upload_path: Some(TransportPath::Direct),
                     last_upload_dial_attempts: Some(2),
                 },
+                ..Default::default()
             },
             screen_encoder: Some(EncoderHealth {
                 frames_consumed: 10,

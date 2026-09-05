@@ -7,6 +7,7 @@
 export const automationContract = {
   "_generated": "DO NOT EDIT — run make contract",
   "automation_ids": {
+    "about.journalVersion": "about.journalVersion",
     "about.version": "about.version",
     "about.window.root": "about.window.root",
     "settings.exclusions.activity": "settings.exclusions.activity",

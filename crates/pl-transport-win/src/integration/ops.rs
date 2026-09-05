@@ -553,12 +553,25 @@ async fn fetch(
         Err(failure) => return (Some(failure), evidence),
     };
 
-    progress("starting the production journal bridge");
     let budget = OperationBudget::start(command.deadline);
+    progress("starting the production journal bridge");
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv_path = environment
+        .state_path
+        .with_file_name("journal-version.json");
+    let jv = Arc::new(crate::journal_version::JournalVersionController::new(
+        jv_path,
+    ));
     let handle = match budget
         .run(
             Phase::BridgeStart,
-            journal_bridge::start_observed(&paired, environment.state_path.clone(), observer),
+            journal_bridge::start_observed(
+                &paired,
+                environment.state_path.clone(),
+                observer,
+                jv,
+                sync,
+            ),
         )
         .await
     {
@@ -909,6 +922,12 @@ async fn upload(
     };
 
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv_path = environment
+        .state_path
+        .with_file_name("journal-version.json");
+    let jv = Arc::new(crate::journal_version::JournalVersionController::new(
+        jv_path,
+    ));
     let coordinator = UploadCoordinator::new(
         Arc::new(client),
         Box::new(store),
@@ -916,6 +935,7 @@ async fn upload(
         environment.period_secs.max(1),
         Arc::new(RwLock::new(RetentionConfig::default())),
         Arc::new(FixedOffset(offset)),
+        jv,
     );
 
     progress("uploading through the production coordinator");

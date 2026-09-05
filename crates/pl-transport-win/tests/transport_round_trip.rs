@@ -303,6 +303,7 @@ fn direct_pair_link(port: u16, ca_fp_prefix: &[u8]) -> String {
 }
 
 fn service_config(state_path: PathBuf) -> SyncConfig {
+    let jv_path = state_path.with_file_name("journal-version.json");
     SyncConfig {
         device_label: "service-pair-test".into(),
         period_secs: 300,
@@ -310,6 +311,7 @@ fn service_config(state_path: PathBuf) -> SyncConfig {
         state_path,
         retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
+        journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
     }
 }
 
@@ -396,6 +398,20 @@ fn capability_from(handle: &journal_bridge::JournalBridgeHandle) -> String {
         .unwrap()
 }
 
+fn test_jv_and_sync(
+    name: &str,
+) -> (
+    Arc<pl_transport_win::JournalVersionController>,
+    Arc<Mutex<SyncSnapshot>>,
+) {
+    (
+        Arc::new(pl_transport_win::JournalVersionController::new(
+            temp_state_path(&format!("{name}-jv")),
+        )),
+        Arc::new(Mutex::new(SyncSnapshot::default())),
+    )
+}
+
 async fn start_bridge_with_response(
     status: &'static str,
     body: &'static [u8],
@@ -407,7 +423,8 @@ async fn start_bridge_with_response(
     let upstream_port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
     let paired = paired_state(observer_credential(pin, upstream_port));
-    let handle = journal_bridge::start(&paired, temp_state_path("response"))
+    let (jv, sync) = test_jv_and_sync("response");
+    let handle = journal_bridge::start(&paired, temp_state_path("response"), jv, sync)
         .await
         .unwrap();
     (handle, server)
@@ -445,7 +462,8 @@ async fn start_bridge_with_response_content_length(
         content_length,
     ));
     let paired = paired_state(observer_credential(pin, upstream_port));
-    let handle = journal_bridge::start(&paired, temp_state_path("response-length"))
+    let (jv, sync) = test_jv_and_sync("response-length");
+    let handle = journal_bridge::start(&paired, temp_state_path("response-length"), jv, sync)
         .await
         .unwrap();
     (handle, server)
@@ -461,7 +479,8 @@ async fn start_bridge_with_sse(
     let upstream_port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_sse_stream(listener, acceptor, mode));
     let paired = paired_state(observer_credential(pin, upstream_port));
-    let handle = journal_bridge::start(&paired, temp_state_path("sse"))
+    let (jv, sync) = test_jv_and_sync("sse");
+    let handle = journal_bridge::start(&paired, temp_state_path("sse"), jv, sync)
         .await
         .unwrap();
     (handle, server)
@@ -491,7 +510,8 @@ async fn start_bridge_with_counting_upstream() -> (
         }
     });
     let paired = paired_state(observer_credential(pin, upstream_port));
-    let handle = journal_bridge::start(&paired, temp_state_path("counting"))
+    let (jv, sync) = test_jv_and_sync("counting");
+    let handle = journal_bridge::start(&paired, temp_state_path("counting"), jv, sync)
         .await
         .unwrap();
     (handle, accepts, task)
@@ -651,7 +671,8 @@ async fn start_bridge_with_persistent_server(
         }
     });
     let paired = paired_state(observer_credential(pin, upstream_port));
-    let handle = journal_bridge::start(&paired, temp_state_path("persistent"))
+    let (jv, sync) = test_jv_and_sync("persistent");
+    let handle = journal_bridge::start(&paired, temp_state_path("persistent"), jv, sync)
         .await
         .unwrap();
     (
@@ -2152,7 +2173,8 @@ async fn journal_bridge_logs_redacted_failure_categories_only() {
     };
     tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber))
         .expect("install journal bridge log capture subscriber");
-    let handle = journal_bridge::start(&paired, temp_state_path("redaction"))
+    let (jv, sync) = test_jv_and_sync("redaction");
+    let handle = journal_bridge::start(&paired, temp_state_path("redaction"), jv, sync)
         .await
         .unwrap();
     let port = handle.port();
