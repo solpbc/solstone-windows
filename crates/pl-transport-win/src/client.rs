@@ -186,7 +186,8 @@ impl ObserverClient {
     /// Read the system status and extract the sanitized current journal version string.
     pub async fn system_status(&self) -> Result<String, TransportError> {
         let fetch = async {
-            let headers = self.v3_headers();
+            let mut headers = self.v3_headers();
+            headers.push(("Cache-Control".into(), "no-cache".into()));
             let SendOutcome { response, .. } = self
                 .send("GET", "/api/system/status", &headers, b"")
                 .await?;
@@ -198,9 +199,11 @@ impl ObserverClient {
             }
             let parsed: SystemStatusResponse = serde_json::from_slice(&response.body)?;
             let version = parsed.version.current;
-            if version.is_empty()
+            if version.trim().is_empty()
                 || version.len() > 128
-                || version.bytes().any(|b| b < 0x20 || b == 0x7f)
+                || version
+                    .chars()
+                    .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
             {
                 return Err(TransportError::Rejected {
                     status: response.status,

@@ -18,7 +18,11 @@ use crate::credential::{hex_lower, Credential};
 use crate::TransportError;
 
 fn is_sanitized_version(v: &str) -> bool {
-    !v.is_empty() && v.len() <= 128 && !v.bytes().any(|b| b < 0x20 || b == 0x7f)
+    !v.trim().is_empty()
+        && v.len() <= 128
+        && !v
+            .chars()
+            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -147,11 +151,48 @@ impl JournalVersionController {
     /// Mark the connection disconnected: sets freshness to false in snapshot and in-memory state,
     /// and bumps connection epoch to fence in-flight fetches.
     pub fn mark_disconnected(&self, sync: &Arc<Mutex<SyncSnapshot>>) {
-        if let Ok(mut state) = self.state.lock() {
-            state.connection_epoch += 1;
-            state.fresh = false;
+        self.mark_disconnected_if_token(self.current_token(), sync);
+    }
+
+    pub(crate) fn mark_disconnected_if_token(
+        &self,
+        token: (u64, u64),
+        sync: &Arc<Mutex<SyncSnapshot>>,
+    ) {
+        let mut state = self.state.lock().expect("journal_version lock");
+        if token != (state.session_generation, state.connection_epoch) {
+            return;
         }
+        state.connection_epoch += 1;
+        state.fresh = false;
         if let Ok(mut s) = sync.lock() {
+            s.journal_version_fresh = false;
+        }
+    }
+
+    pub(crate) fn mark_session_disconnected(
+        &self,
+        generation: u64,
+        sync: &Arc<Mutex<SyncSnapshot>>,
+    ) {
+        let token = self.current_token();
+        if token.0 == generation {
+            self.mark_disconnected_if_token(token, sync);
+        }
+    }
+
+    pub fn clear(&self, sync: &Arc<Mutex<SyncSnapshot>>) {
+        let mut state = self.state.lock().expect("journal_version lock");
+        state.session_generation += 1;
+        state.connection_epoch += 1;
+        state.instance_id = None;
+        state.ca_fp_prefix_hex = None;
+        state.version = None;
+        state.fresh = false;
+        state.in_flight_token = None;
+        let _ = std::fs::remove_file(&self.state_path);
+        if let Ok(mut s) = sync.lock() {
+            s.journal_version = None;
             s.journal_version_fresh = false;
         }
     }
@@ -162,10 +203,11 @@ impl JournalVersionController {
         self: &Arc<Self>,
         client: Arc<ObserverClient>,
         sync: Arc<Mutex<SyncSnapshot>>,
+        session_generation: u64,
     ) {
         let token = {
             let mut state = self.state.lock().expect("journal_version lock");
-            if state.session_generation == 0 {
+            if state.instance_id.is_none() || state.session_generation != session_generation {
                 return;
             }
             let token = (state.session_generation, state.connection_epoch);
@@ -190,46 +232,42 @@ impl JournalVersionController {
         result: Result<String, TransportError>,
         sync: &Arc<Mutex<SyncSnapshot>>,
     ) {
-        let (iid, fp, version_to_apply) = {
-            let mut state = self.state.lock().expect("journal_version lock");
-            if state.in_flight_token == Some(token) {
-                state.in_flight_token = None;
-            }
-            if token != (state.session_generation, state.connection_epoch) {
-                return;
-            }
-            match result {
-                Ok(v) if is_sanitized_version(&v) => {
-                    state.version = Some(v.clone());
-                    state.fresh = true;
-                    (
-                        state.instance_id.clone(),
-                        state.ca_fp_prefix_hex.clone(),
-                        Some(v),
-                    )
-                }
-                Ok(_) | Err(_) => (None, None, None),
-            }
+        let mut state = self.state.lock().expect("journal_version lock");
+        if state.in_flight_token == Some(token) {
+            state.in_flight_token = None;
+        }
+        if token != (state.session_generation, state.connection_epoch)
+            || state.instance_id.is_none()
+        {
+            return;
+        }
+        let Ok(version) = result else {
+            return;
         };
-
-        if let Some(version) = version_to_apply {
-            if let Ok(mut s) = sync.lock() {
-                s.journal_version = Some(version.clone());
-                s.journal_version_fresh = true;
-            }
-            if let (Some(instance_id), Some(ca_fp_prefix_hex)) = (iid, fp) {
-                let now_secs = SystemTime::now()
+        if !is_sanitized_version(&version) {
+            return;
+        }
+        state.version = Some(version.clone());
+        state.fresh = true;
+        if let Ok(mut s) = sync.lock() {
+            s.journal_version = Some(version.clone());
+            s.journal_version_fresh = true;
+        }
+        if let (Some(instance_id), Some(ca_fp_prefix_hex)) =
+            (&state.instance_id, &state.ca_fp_prefix_hex)
+        {
+            let persisted = PersistedJournalVersion {
+                instance_id: instance_id.clone(),
+                ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
+                version,
+                updated_at_epoch_secs: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let persisted = PersistedJournalVersion {
-                    instance_id,
-                    ca_fp_prefix_hex,
-                    version,
-                    updated_at_epoch_secs: now_secs,
-                };
-                let _ = save_persisted_atomic(&self.state_path, &persisted);
-            }
+                    .unwrap_or(0),
+            };
+            // Hold the same guard through persistence: disconnect and pairing clear
+            // cannot overtake validation and then be overwritten by this result.
+            let _ = save_persisted_atomic(&self.state_path, &persisted);
         }
     }
 
@@ -274,6 +312,36 @@ mod tests {
             device_token: None,
             device_token_expires_at: None,
         }
+    }
+
+    #[test]
+    fn same_identity_pairing_clears_and_rejects_old_completion_and_disconnect() {
+        let dir = temp_test_dir("same-identity-clear");
+        let path = dir.join("journal-version.json");
+        let ctrl = JournalVersionController::new(path.clone());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cred = make_credential("inst-1", &[1, 2]);
+        ctrl.begin_session(&cred, &sync);
+        let old = ctrl.current_token();
+        ctrl.apply_result(old, Ok("1.0.0".into()), &sync);
+        ctrl.clear(&sync);
+        ctrl.begin_session(&cred, &sync);
+        ctrl.apply_result(old, Ok("old".into()), &sync);
+        assert!(!path.exists());
+        assert!(sync.lock().unwrap().journal_version.is_none());
+        let current = ctrl.current_token();
+        ctrl.apply_result(current, Ok("2.0.0".into()), &sync);
+        ctrl.mark_disconnected_if_token(old, &sync);
+        assert!(sync.lock().unwrap().journal_version_fresh);
+        ctrl.mark_disconnected_if_token(current, &sync);
+        assert!(!sync.lock().unwrap().journal_version_fresh);
+        assert_eq!(
+            sync.lock().unwrap().journal_version.as_deref(),
+            Some("2.0.0")
+        );
+        assert!(!is_sanitized_version(" "));
+        assert!(!is_sanitized_version("2.0\u{2028}"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

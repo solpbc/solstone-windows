@@ -75,6 +75,7 @@ pub async fn pair(
 
     match pair_inner(link, cfg).await {
         Ok((paired, journal_label)) => {
+            cfg.journal_version.clear(&sync);
             set_pairing(
                 &sync,
                 PairingState {
@@ -135,7 +136,7 @@ async fn setup_uploader(
 ) -> Result<UploadCoordinator, TransportError> {
     let credential = paired.credential.ok_or(TransportError::NotPaired)?;
     let journal_label = credential.home_label.clone();
-    let _ = cfg.journal_version.begin_session(&credential, &sync);
+    let version_generation = cfg.journal_version.begin_session(&credential, &sync);
     let client = ObserverClient::new(credential)?.with_state_path(cfg.state_path.clone());
 
     set_pairing(
@@ -149,7 +150,7 @@ async fn setup_uploader(
 
     let client = Arc::new(client);
     cfg.journal_version
-        .trigger_refresh(client.clone(), sync.clone());
+        .trigger_refresh(client.clone(), sync.clone(), version_generation);
     let store: Box<dyn SealedStore> =
         Box::new(LocalSealedStore::new(&cfg.segments_root, cfg.period_secs));
     Ok(UploadCoordinator::new(

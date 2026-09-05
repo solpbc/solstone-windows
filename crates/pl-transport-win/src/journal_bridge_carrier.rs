@@ -41,6 +41,7 @@ pub(crate) struct MuxCarrier {
     slot: Mutex<Option<Arc<CarrierHandle>>>,
     keepalive: KeepaliveConfig,
     journal_version: Arc<JournalVersionController>,
+    version_generation: u64,
     sync: Arc<StdMutex<SyncSnapshot>>,
 }
 
@@ -63,6 +64,7 @@ impl MuxCarrier {
             client,
             slot: Mutex::new(None),
             keepalive,
+            version_generation: journal_version.current_token().0,
             journal_version,
             sync,
         }
@@ -108,6 +110,8 @@ impl MuxCarrier {
     }
 
     pub(crate) async fn shutdown(&self) {
+        self.journal_version
+            .mark_session_disconnected(self.version_generation, &self.sync);
         let handle = self.slot.lock().await.take();
         if let Some(handle) = handle {
             handle.alive.store(false, Ordering::SeqCst);
@@ -123,9 +127,14 @@ impl MuxCarrier {
             }
         }
 
-        let dialed = self.client.dial_carrier().await?;
         self.journal_version
-            .trigger_refresh(self.client.clone(), self.sync.clone());
+            .mark_session_disconnected(self.version_generation, &self.sync);
+        let dialed = self.client.dial_carrier().await?;
+        self.journal_version.trigger_refresh(
+            self.client.clone(),
+            self.sync.clone(),
+            self.version_generation,
+        );
         let (read, write) = split(dialed.stream);
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_QUEUE);
         let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE);
@@ -135,16 +144,34 @@ impl MuxCarrier {
             alive: alive.clone(),
         });
 
-        tokio::spawn(writer_task(write, writer_rx, alive.clone()));
-        tokio::spawn(coordinator_task(
-            read,
-            commands_rx,
-            handle.commands.clone(),
-            writer_tx,
-            alive,
-            dialed.kind,
-            self.keepalive,
-        ));
+        let token = (
+            self.version_generation,
+            self.journal_version.current_token().1,
+        );
+        let jv = self.journal_version.clone();
+        let sync = self.sync.clone();
+        let writer_alive = alive.clone();
+        tokio::spawn(async move {
+            writer_task(write, writer_rx, writer_alive).await;
+            jv.mark_disconnected_if_token(token, &sync);
+        });
+        let jv = self.journal_version.clone();
+        let sync = self.sync.clone();
+        let sender = handle.commands.clone();
+        let keepalive = self.keepalive;
+        tokio::spawn(async move {
+            coordinator_task(
+                read,
+                commands_rx,
+                sender,
+                writer_tx,
+                alive,
+                dialed.kind,
+                keepalive,
+            )
+            .await;
+            jv.mark_disconnected_if_token(token, &sync);
+        });
 
         *slot = Some(handle.clone());
         Ok(handle)

@@ -258,6 +258,7 @@ pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
     version_client: Option<Arc<ObserverClient>>,
     journal_version: Option<Arc<JournalVersionController>>,
+    version_generation: u64,
     store: Box<dyn SealedStore>,
     sync: Arc<Mutex<SyncSnapshot>>,
     period_secs: u64,
@@ -292,6 +293,7 @@ impl UploadCoordinator {
         Self {
             client: client.clone(),
             version_client: Some(client),
+            version_generation: journal_version.current_token().0,
             journal_version: Some(journal_version),
             store,
             sync,
@@ -315,6 +317,7 @@ impl UploadCoordinator {
             client,
             version_client: None,
             journal_version: None,
+            version_generation: 0,
             store,
             sync,
             period_secs: period_secs.max(1),
@@ -755,7 +758,7 @@ impl UploadCoordinator {
         };
         if is_recovery {
             if let (Some(jv), Some(vc)) = (&self.journal_version, &self.version_client) {
-                jv.trigger_refresh(vc.clone(), self.sync.clone());
+                jv.trigger_refresh(vc.clone(), self.sync.clone(), self.version_generation);
             }
         }
     }
@@ -770,7 +773,7 @@ impl UploadCoordinator {
         };
         if was_healthy {
             if let Some(jv) = &self.journal_version {
-                jv.mark_disconnected(&self.sync);
+                jv.mark_session_disconnected(self.version_generation, &self.sync);
             }
         }
     }
@@ -2313,6 +2316,7 @@ mod tests {
             local_offset: Arc::new(FixedOffset(0)),
             quarantine_counts: Mutex::new(std::collections::HashMap::new()),
             version_client: Some(dummy),
+            version_generation: jv.current_token().0,
             journal_version: Some(jv.clone()),
         };
 
