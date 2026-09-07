@@ -25,6 +25,8 @@ use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::connection::{dial_tls, request_once_observed_with_cap};
+#[cfg(test)]
+use crate::credential::FS_FAIL_POINT;
 use crate::credential::{pairing_generation, CasKey, Credential, PairedState, StorageError};
 use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
 use crate::relay::{
@@ -560,13 +562,21 @@ impl ObserverClient {
             return false;
         }
         let path = path.clone();
+        let reconcile_path = path.clone();
         let token_for_disk = token.clone();
+        #[cfg(test)]
+        let failpoint = FS_FAIL_POINT.with(|f| f.get());
         let res = tokio::task::spawn_blocking(move || {
-            PairedState::mutate(&path, expected_cas, |cred| {
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(failpoint));
+            let result = PairedState::mutate(&path, expected_cas, |cred| {
                 cred.device_token = Some(token_for_disk);
                 cred.device_token_expires_at = Some(expires_at);
                 Ok(())
-            })
+            });
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(0));
+            result
         })
         .await;
         let Ok(res) = res else {
@@ -591,14 +601,48 @@ impl ObserverClient {
                 false
             }
             Err(StorageError::DurabilityUncertain(_)) => {
-                tracing::warn!(target: "sync", reason = "durability_uncertain", "persist_token failed");
-                false
+                tracing::warn!(target: "sync", reason = "durability_uncertain", "persist_token reconciliation required");
+                self.reconcile_persisted_token(reconcile_path, expected_cas, &token)
+                    .await
             }
             Err(_) => {
                 tracing::warn!(target: "sync", reason = "storage", "persist_token failed");
                 false
             }
         }
+    }
+
+    /// Accept the generation published by a post-rename uncertain write without
+    /// publishing a token that disk did not retain.
+    async fn reconcile_persisted_token(
+        &self,
+        path: PathBuf,
+        expected_cas: CasKey,
+        persisted_token: &str,
+    ) -> bool {
+        let loaded = tokio::task::spawn_blocking(move || PairedState::load(&path)).await;
+        let Ok(Ok(state)) = loaded else {
+            tracing::warn!(target: "sync", reason = "reload", "persist_token reconciliation failed");
+            return false;
+        };
+        let Some(credential) = state.credential else {
+            return false;
+        };
+        if !self.is_current_incarnation()
+            || pairing_generation(&credential.client_cert_pem) != expected_cas.pairing_generation
+        {
+            return false;
+        }
+
+        let mut cas_key = self.cas_key.lock().unwrap();
+        if !self.is_current_incarnation() || *cas_key != Some(expected_cas) {
+            return false;
+        }
+        *cas_key = Some(CasKey {
+            pairing_generation: expected_cas.pairing_generation,
+            access_mutation_generation: state.access_mutation_generation,
+        });
+        credential.device_token.as_deref() == Some(persisted_token)
     }
 
     /// Refresh only if the live token still matches the caller's failed token.
@@ -624,6 +668,7 @@ impl ObserverClient {
                 if self
                     .persist_token(captured_cas, device_token.clone(), expires_at)
                     .await
+                    && self.is_current_incarnation()
                 {
                     *guard = device_token;
                     RefreshAction::Redial
@@ -979,6 +1024,42 @@ struct SystemStatusVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential::{EndpointAddr, FS_FAIL_POINT};
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+
+    fn relay_credential() -> Credential {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        Credential {
+            client_key_pem: key.serialize_pem(),
+            client_cert_pem: cert.pem(),
+            ca_chain_pem: vec![cert.pem()],
+            ca_fp_prefix: vec![0; 16],
+            instance_id: "test".into(),
+            home_label: "Home".into(),
+            endpoints: vec![EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: 9,
+            }],
+            relay_origin: Some("https://relay.example.com".into()),
+            device_token: Some("old-token".into()),
+            device_token_expires_at: Some(1_700_000_000),
+        }
+    }
+
+    fn temp_pairing_path() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "plw-client-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("pairing.json")
+    }
 
     #[test]
     fn carrier_kind_maps_to_transport_path() {
@@ -1011,5 +1092,48 @@ mod tests {
         ] {
             assert!(!relay_fault_is_transient(&err), "{err:?} should stop");
         }
+    }
+
+    #[tokio::test]
+    async fn persist_token_reconciles_post_rename_uncertainty() {
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        PairedState {
+            credential: Some(credential.clone()),
+            access_mutation_generation: 0,
+        }
+        .save(&path)
+        .unwrap();
+        let cas = CasKey {
+            pairing_generation: pairing_generation(&credential.client_cert_pem),
+            access_mutation_generation: 0,
+        };
+        let client = ObserverClient::new(credential)
+            .unwrap()
+            .with_state_path(path.clone())
+            .with_cas_key(cas);
+
+        FS_FAIL_POINT.with(|f| f.set(2));
+        assert!(
+            client
+                .persist_token(cas, "fresh-token".to_string(), 1_800_000_000)
+                .await
+        );
+        FS_FAIL_POINT.with(|f| f.set(0));
+
+        assert_eq!(
+            client.current_cas_key().unwrap().access_mutation_generation,
+            1
+        );
+        assert_eq!(
+            PairedState::load(&path)
+                .unwrap()
+                .credential
+                .unwrap()
+                .device_token
+                .as_deref(),
+            Some("fresh-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

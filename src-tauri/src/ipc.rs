@@ -157,6 +157,7 @@ pub fn view_rendered(window: tauri::WebviewWindow, state: tauri::State<'_, crate
 /// lifetime. Outcome is also reflected through the health dump's pairing phase.
 #[tauri::command]
 pub async fn pair(
+    app: tauri::AppHandle,
     state: tauri::State<'_, crate::app::AppState>,
     link: String,
 ) -> Result<(), String> {
@@ -191,6 +192,7 @@ pub async fn pair(
 
     let access = pl_transport_win::CredentialAccess::bind(&paired, &cfg, sync.clone(), None)
         .map_err(|error| error.to_string())?;
+    let _journal_open_guard = state.journal_open_lock.lock().await;
     {
         let mut current = state.credential_access.lock().await;
         if let Some(previous) = current.take() {
@@ -198,6 +200,18 @@ pub async fn pair(
         }
         *current = Some(access.clone());
     }
+    let bridge = state
+        .journal_bridge
+        .lock()
+        .ok()
+        .and_then(|mut bridge| bridge.take());
+    if let Some(bridge) = bridge {
+        bridge.shutdown_and_wait().await;
+    }
+    if let Some(window) = app.get_webview_window("journal") {
+        let _ = window.close();
+    }
+    drop(_journal_open_guard);
 
     tracing::info!(
         target: "sync",

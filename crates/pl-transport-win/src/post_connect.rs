@@ -126,6 +126,7 @@ enum BurstPhase {
 struct PassStart {
     token: (u64, u64, u64),
     paired_id: String,
+    journal_version_token: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -194,6 +195,12 @@ impl PostConnectController {
     /// Set a callback to be invoked when live relay is disabled on `not_configured`.
     pub fn set_relay_disconnect_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         *self.relay_disconnect_hook.lock().unwrap() = Some(hook);
+    }
+
+    pub(crate) fn disconnect_relay(&self) {
+        if let Some(hook) = self.relay_disconnect_hook.lock().unwrap().clone() {
+            hook();
+        }
     }
 
     pub(crate) fn set_journal_version_token(&self, token: JournalVersionSessionToken) {
@@ -311,7 +318,11 @@ impl PostConnectController {
                     state.pending_access_trigger = false;
                     state.in_flight_metadata = Some(token);
                     state.in_flight_access = Some(token);
-                    Some(PassStart { token, paired_id })
+                    Some(PassStart {
+                        token,
+                        paired_id,
+                        journal_version_token: self.journal_version_attempt_token(),
+                    })
                 }
                 BurstPhase::FirstPass | BurstPhase::FollowUp => {
                     // Inputs arriving during an active burst are retained for one
@@ -401,11 +412,15 @@ impl PostConnectController {
     fn start_pass(self: &Arc<Self>, start: PassStart) {
         let metadata = self.clone();
         let metadata_token = start.token;
+        let metadata_journal_version_token = start.journal_version_token;
         tokio::spawn(async move {
             let deadline = metadata.deadline;
-            if tokio::time::timeout(deadline, metadata.execute_metadata_job(metadata_token))
-                .await
-                .is_err()
+            if tokio::time::timeout(
+                deadline,
+                metadata.execute_metadata_job(metadata_token, metadata_journal_version_token),
+            )
+            .await
+            .is_err()
             {
                 tracing::warn!(target: "sync", "post-connect metadata job timed out after {:?}", deadline);
             }
@@ -479,6 +494,7 @@ impl PostConnectController {
                 Some(PassStart {
                     token: current_token,
                     paired_id,
+                    journal_version_token: self.journal_version_attempt_token(),
                 })
             }
             BurstPhase::FirstPass | BurstPhase::FollowUp => {
@@ -491,14 +507,39 @@ impl PostConnectController {
         }
     }
 
-    fn publish_journal_metadata(&self, resource: &MetadataGetResponse) {
+    fn attempt_is_current(&self, token: (u64, u64, u64)) -> bool {
+        let state = self.state.lock().unwrap();
+        (
+            state.session_generation,
+            state.connection_epoch,
+            state.pairing_generation,
+        ) == token
+    }
+
+    fn journal_version_attempt_token(&self) -> Option<(u64, u64)> {
+        let (Some(journal_version), Some(session_token)) = (
+            &self.journal_version,
+            *self.journal_version_token.lock().unwrap(),
+        ) else {
+            return None;
+        };
+        let token = journal_version.current_token();
+        (token.0 == session_token.0).then_some(token)
+    }
+
+    fn publish_journal_metadata(
+        &self,
+        resource: &MetadataGetResponse,
+        attempt: (u64, u64, u64),
+        journal_version_token: Option<(u64, u64)>,
+    ) {
+        if !self.attempt_is_current(attempt) {
+            return;
+        }
         let Some(journal) = &resource.journal else {
             return;
         };
-        if let (Some(jv), Some(version_token)) = (
-            &self.journal_version,
-            *self.journal_version_token.lock().unwrap(),
-        ) {
+        if let (Some(jv), Some(version_token)) = (&self.journal_version, journal_version_token) {
             jv.publish_journal_metadata(
                 journal.name.as_deref(),
                 journal.version.as_deref(),
@@ -512,6 +553,8 @@ impl PostConnectController {
         &self,
         client: &crate::ObserverClient,
         resource: &MetadataGetResponse,
+        attempt: (u64, u64, u64),
+        journal_version_token: Option<(u64, u64)>,
     ) {
         if resource
             .journal
@@ -521,21 +564,28 @@ impl PostConnectController {
         {
             return;
         }
-        let (Some(jv), Some(version_token)) = (
-            &self.journal_version,
-            *self.journal_version_token.lock().unwrap(),
-        ) else {
+        if !self.attempt_is_current(attempt) {
+            return;
+        }
+        let (Some(jv), Some(version_token)) = (&self.journal_version, journal_version_token) else {
             return;
         };
         match client.system_status().await {
-            Ok(version) => jv.publish_version(&version, version_token, &self.sync),
+            Ok(version) if self.attempt_is_current(attempt) => {
+                jv.publish_version(&version, version_token, &self.sync)
+            }
+            Ok(_) => {}
             Err(_) => {
                 tracing::debug!(target: "sync", reason = "transport", "journal version fallback failed")
             }
         }
     }
 
-    async fn execute_metadata_job(&self, token: (u64, u64, u64)) {
+    async fn execute_metadata_job(
+        &self,
+        token: (u64, u64, u64),
+        journal_version_token: Option<(u64, u64)>,
+    ) {
         let client = self.client_slot.load();
         let get_resp = match client.get_clients_self().await {
             Ok(resp) => resp,
@@ -569,31 +619,31 @@ impl PostConnectController {
             return;
         }
 
-        self.publish_journal_metadata(&parsed);
-        self.fallback_journal_version_if_needed(&client, &parsed)
+        if !self.attempt_is_current(token) {
+            return;
+        }
+        self.publish_journal_metadata(&parsed, token, journal_version_token);
+        self.fallback_journal_version_if_needed(&client, &parsed, token, journal_version_token)
             .await;
+
+        if !self.attempt_is_current(token) {
+            return;
+        }
 
         let current = sanitize_facts(&(self.facts_fn)());
 
         // Loop prevention: check if unchanged vs server reported
         if parsed.reported.as_ref() == Some(&current) {
-            let mut state = self.state.lock().unwrap();
-            state.last_published_metadata = Some(current.clone());
+            if self.attempt_is_current(token) {
+                self.state.lock().unwrap().last_published_metadata = Some(current.clone());
+            }
             return;
         }
 
         // Generation fence before PUT side-effect
-        {
-            let state = self.state.lock().unwrap();
-            let current_token = (
-                state.session_generation,
-                state.connection_epoch,
-                state.pairing_generation,
-            );
-            if current_token != token {
-                tracing::debug!(target: "sync", "metadata PUT skipped due to stale session token");
-                return;
-            }
+        if !self.attempt_is_current(token) {
+            tracing::debug!(target: "sync", "metadata PUT skipped due to stale session token");
+            return;
         }
 
         // Send PUT
@@ -622,7 +672,10 @@ impl PostConnectController {
                     return;
                 }
             };
-            self.publish_journal_metadata(parsed_put.resource());
+            if !self.attempt_is_current(token) {
+                return;
+            }
+            self.publish_journal_metadata(parsed_put.resource(), token, journal_version_token);
             let mut state = self.state.lock().unwrap();
             state.last_published_metadata = Some(current.clone());
             return;
@@ -643,16 +696,13 @@ impl PostConnectController {
             if retry_parsed.protocol_version != 1 {
                 return;
             }
-            self.publish_journal_metadata(&retry_parsed);
+            if !self.attempt_is_current(token) {
+                return;
+            }
+            self.publish_journal_metadata(&retry_parsed, token, journal_version_token);
 
             let newest_snapshot = {
-                let state = self.state.lock().unwrap();
-                let current_token = (
-                    state.session_generation,
-                    state.connection_epoch,
-                    state.pairing_generation,
-                );
-                if current_token != token {
+                if !self.attempt_is_current(token) {
                     return;
                 }
                 sanitize_facts(&(self.facts_fn)())
@@ -684,7 +734,14 @@ impl PostConnectController {
                             return;
                         }
                     };
-                    self.publish_journal_metadata(parsed_put.resource());
+                    if !self.attempt_is_current(token) {
+                        return;
+                    }
+                    self.publish_journal_metadata(
+                        parsed_put.resource(),
+                        token,
+                        journal_version_token,
+                    );
                     let mut state = self.state.lock().unwrap();
                     state.last_published_metadata = Some(newest_snapshot);
                 }
@@ -769,10 +826,7 @@ impl PostConnectController {
                     .client_slot
                     .replace_from_incumbent(lan_cred, captured_cas);
 
-                let hook = self.relay_disconnect_hook.lock().unwrap().clone();
-                if let Some(hook) = hook {
-                    hook();
-                }
+                self.disconnect_relay();
 
                 // Ordered durable clear
                 if let Some(path) = &self.state_path {
@@ -1036,6 +1090,52 @@ mod tests {
         controller.mark_session_disconnected(session_gen);
         assert_eq!(controller.state.lock().unwrap().connection_epoch, 2);
 
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn stale_metadata_get_does_not_publish_journal_cache() {
+        let (template, slot, path, _) = test_setup(false);
+        let sync = template.sync.clone();
+        let facts = template.facts_fn.clone();
+        let journal_path = path.parent().unwrap().join("journal-version.json");
+        let journal_version = Arc::new(JournalVersionController::new(journal_path.clone()));
+        let controller = PostConnectController::new(
+            slot.clone(),
+            Some(path.clone()),
+            Some(journal_version.clone()),
+            sync.clone(),
+            facts,
+        );
+        let credential = slot.load().credential().clone();
+        let journal_session = journal_version.begin_session(&credential, &sync);
+        controller.set_journal_version_token(journal_session);
+        let session = controller.begin_session(&credential);
+        let attempt = (
+            session.0,
+            controller.state.lock().unwrap().connection_epoch,
+            pairing_generation(&credential.client_cert_pem),
+        );
+        let journal_token = journal_version.current_token();
+        let resource = MetadataGetResponse {
+            protocol_version: 1,
+            revision: 0,
+            reported: None,
+            owner_label: None,
+            display_label: None,
+            updated_at: None,
+            journal: Some(crate::device_metadata::JournalInfo {
+                name: Some("Old Journal".into()),
+                version: Some("1.2.3".into()),
+            }),
+        };
+
+        controller.mark_session_disconnected(session);
+        controller.publish_journal_metadata(&resource, attempt, Some(journal_token));
+
+        assert!(!journal_path.exists());
+        assert!(sync.lock().unwrap().journal_version.is_none());
+        drop(template);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

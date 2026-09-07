@@ -133,7 +133,10 @@ impl JournalVersionController {
                         && p.ca_fp_prefix_hex == target_ca_fp_hex
                         && is_sanitized_version(&p.version)
                     {
-                        Some((p.version, p.journal_name))
+                        Some((
+                            p.version,
+                            p.journal_name.filter(|name| is_sanitized_name(name)),
+                        ))
                     } else {
                         None
                     }
@@ -228,11 +231,13 @@ impl JournalVersionController {
         &self,
         name: Option<&str>,
         version: Option<&str>,
-        session_generation: JournalVersionSessionToken,
+        token: (u64, u64),
         sync: &Arc<Mutex<SyncSnapshot>>,
     ) {
         let mut state = self.state.lock().expect("journal_version lock");
-        if state.session_generation != session_generation.0 || state.instance_id.is_none() {
+        if token != (state.session_generation, state.connection_epoch)
+            || state.instance_id.is_none()
+        {
             return;
         }
         if name.is_some_and(|name| !is_sanitized_name(name))
@@ -278,10 +283,10 @@ impl JournalVersionController {
     pub fn publish_version(
         &self,
         version: &str,
-        session_generation: JournalVersionSessionToken,
+        token: (u64, u64),
         sync: &Arc<Mutex<SyncSnapshot>>,
     ) {
-        self.publish_journal_metadata(None, Some(version), session_generation, sync);
+        self.publish_journal_metadata(None, Some(version), token, sync);
     }
 
     /// Trigger a background refresh of the journal version.
@@ -459,6 +464,30 @@ mod tests {
     }
 
     #[test]
+    fn begin_session_drops_invalid_persisted_journal_name() {
+        let dir = temp_test_dir("invalid-name");
+        let path = dir.join("journal-version.json");
+        let record = PersistedJournalVersion {
+            instance_id: "inst-1".to_string(),
+            ca_fp_prefix_hex: "0102".to_string(),
+            version: "0.9.5".to_string(),
+            journal_name: Some("invalid\nname".to_string()),
+            updated_at_epoch_secs: 100,
+        };
+        save_persisted_atomic(&path, &record).unwrap();
+
+        let ctrl = JournalVersionController::new(path);
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        ctrl.begin_session(&make_credential("inst-1", &[0x01, 0x02]), &sync);
+
+        let state = ctrl.state.lock().unwrap();
+        assert_eq!(state.version.as_deref(), Some("0.9.5"));
+        assert_eq!(state.journal_name, None);
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn different_identity_re_pair_clears_old_value_and_file() {
         let dir = temp_test_dir("different-identity");
         let path = dir.join("journal-version.json");
@@ -562,6 +591,29 @@ mod tests {
     }
 
     #[test]
+    fn metadata_publish_rejects_disconnected_epoch() {
+        let dir = temp_test_dir("metadata-disconnect-fence");
+        let path = dir.join("journal-version.json");
+        let ctrl = JournalVersionController::new(path.clone());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cred = make_credential("inst-1", &[0x01, 0x02]);
+
+        ctrl.begin_session(&cred, &sync);
+        let token_before = ctrl.current_token();
+        ctrl.mark_disconnected(&sync);
+
+        // A metadata GET started before disconnect completes after its epoch is stale.
+        ctrl.publish_journal_metadata(Some("Old Journal"), Some("1.2.3"), token_before, &sync);
+
+        let state = ctrl.state.lock().unwrap();
+        assert_eq!(state.journal_name, None);
+        assert_eq!(state.version, None);
+        drop(state);
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn malformed_or_failed_fetch_preserves_existing_cache() {
         let dir = temp_test_dir("malformed-failed-fetch");
         let path = dir.join("journal-version.json");
@@ -636,7 +688,8 @@ mod tests {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let cred = make_credential("inst-1", &[0x01, 0x02]);
 
-        let token = ctrl.begin_session(&cred, &sync);
+        ctrl.begin_session(&cred, &sync);
+        let token = ctrl.current_token();
         ctrl.publish_journal_metadata(Some("Home Journal"), Some("1.0.0"), token, &sync);
         ctrl.publish_version("1.0.1", token, &sync);
 
