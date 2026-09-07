@@ -228,11 +228,17 @@ fn clear_local_credential(environment: &Environment) -> bool {
     !environment.state_path.exists() && !environment.state_tmp_path().exists()
 }
 
-fn ceremony_residue(carrier: Carrier, journal: Residue) -> RemoteResidue {
+fn ceremony_residue(
+    carrier: Carrier,
+    observer: &ObserverHandle,
+    journal: Residue,
+) -> RemoteResidue {
     RemoteResidue {
         journal_pairing_identity: journal,
-        relay_device_enrollment: if carrier == Carrier::Relay {
-            journal
+        relay_device_enrollment: if observer.as_ref().map_or(carrier == Carrier::Relay, |o| {
+            o.legacy_enrollment_possible()
+        }) {
+            Residue::Possible
         } else {
             Residue::None
         },
@@ -299,12 +305,12 @@ async fn pair(
             // `Possible` covers both mid-ceremony timeout and never-polled
             // exhaustion: uncertainty is safer than `None`, which could hide
             // remote residue.
-            evidence.remote_residue = Some(ceremony_residue(carrier, Residue::Possible));
+            evidence.remote_residue = Some(ceremony_residue(carrier, &observer, Residue::Possible));
             evidence.local_residue_cleared = Some(clear_local_credential(environment));
             return (Some(deadline), evidence);
         }
         Ok(Err(error)) => {
-            evidence.remote_residue = Some(ceremony_residue(carrier, Residue::Possible));
+            evidence.remote_residue = Some(ceremony_residue(carrier, &observer, Residue::Possible));
             evidence.local_residue_cleared = Some(clear_local_credential(environment));
             return (
                 Some(Failure::transport(
@@ -318,9 +324,9 @@ async fn pair(
         Ok(Ok(credential)) => credential,
     };
 
-    // The ceremony returns only after the journal signed an identity and the relay
-    // enrolled the device, so both definitely exist now.
-    let residue = ceremony_residue(carrier, Residue::Present);
+    // Journal identity issuance succeeded. Enrollment is optional, and even a
+    // legacy token cannot prove whether an older relay retained a device row.
+    let residue = ceremony_residue(carrier, &observer, Residue::Present);
     evidence.remote_residue = Some(residue);
 
     let paired = PairedState {
@@ -1478,13 +1484,26 @@ mod tests {
 
     #[test]
     fn direct_pairing_never_claims_relay_enrollment_residue() {
-        let possible = ceremony_residue(Carrier::Direct, Residue::Possible);
+        let possible = ceremony_residue(Carrier::Direct, &None, Residue::Possible);
         assert_eq!(possible.journal_pairing_identity, Residue::Possible);
         assert_eq!(possible.relay_device_enrollment, Residue::None);
 
-        let present = ceremony_residue(Carrier::Direct, Residue::Present);
+        let present = ceremony_residue(Carrier::Direct, &None, Residue::Present);
         assert_eq!(present.journal_pairing_identity, Residue::Present);
         assert_eq!(present.relay_device_enrollment, Residue::None);
+    }
+
+    #[test]
+    fn relay_residue_tracks_enrollment_observation_independently_of_pairing() {
+        let observer = OperationObserver::new();
+        let handle = Some(observer.clone());
+        let report = || ceremony_residue(Carrier::Relay, &handle, Residue::Present);
+        assert_eq!(report().relay_device_enrollment, Residue::None);
+        observer.record_enrollment_started();
+        assert_eq!(report().relay_device_enrollment, Residue::Possible);
+        assert_eq!(report().journal_pairing_identity, Residue::Present);
+        observer.record_stateless_enrollment();
+        assert_eq!(report().relay_device_enrollment, Residue::None);
     }
 
     #[test]
@@ -1518,7 +1537,7 @@ mod tests {
         // than a fabricated "none".
         let residue = evidence.remote_residue.expect("residue is reported");
         assert_eq!(residue.journal_pairing_identity, Residue::Possible);
-        assert_eq!(residue.relay_device_enrollment, Residue::Possible);
+        assert_eq!(residue.relay_device_enrollment, Residue::None);
 
         let _ = std::fs::remove_dir_all(&root);
     }

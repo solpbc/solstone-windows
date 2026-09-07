@@ -341,7 +341,7 @@ impl Serialize for Residue {
 pub struct RemoteResidue {
     /// A pairing identity minted by the journal.
     pub journal_pairing_identity: Residue,
-    /// A device enrollment minted by the relay.
+    /// Possible legacy enrollment residue; a successful token alone does not prove a row exists.
     pub relay_device_enrollment: Residue,
 }
 

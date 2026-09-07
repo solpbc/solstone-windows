@@ -20,6 +20,9 @@ use observer_model::TransportPath;
 #[derive(Deserialize)]
 struct EnrollResponse {
     device_token: String,
+    #[serde(default, deserialize_with = "negotiated_version")]
+    protocol_version: Option<u8>,
+    expires_at: Option<String>,
 }
 
 pub async fn pair_over_relay(
@@ -71,11 +74,12 @@ pub async fn pair_over_relay_observed(
     if !response.is_success() {
         return Err(TransportError::Rejected {
             status: response.status,
-            body: response.body_text(),
+            body: "relay pairing rejected".into(),
         });
     }
 
-    let pair: PairResponse = serde_json::from_slice(&response.body)?;
+    let pair: PairResponse = serde_json::from_slice(&response.body)
+        .map_err(|_| TransportError::Pairing("relay pair response malformed".into()))?;
     let ca_chain_der = parse_ca_chain(&pair.ca_chain)?;
     let pinned_ca = ca_chain_der
         .iter()
@@ -104,19 +108,41 @@ pub async fn pair_over_relay_observed(
         ));
     }
 
-    let home_attestation = pair
-        .home_attestation
+    let cert_spki = ca::extract_spki_der(client_cert_der.as_ref())
+        .map_err(|_| TransportError::Pairing("client certificate public key malformed".into()))?;
+    if cert_spki != generated.public_key_spki_der {
+        return Err(TransportError::Pairing(
+            "client certificate public key does not match generated key".into(),
+        ));
+    }
+    let device_token = if let Some(raw) = pair.relay_access.as_ref() {
+        let access: observer_pl::relay_access::RelayAccess = serde_json::from_value(raw.clone())
+            .map_err(|_| TransportError::Pairing("relay bootstrap malformed".into()))?;
+        if !relay_http::same_relay_origin(&access.relay_origin, &link.relay_origin)?
+            || access.claims(&pair.instance_id, unix_now()).is_none()
+        {
+            return Err(TransportError::Pairing("relay bootstrap malformed".into()));
+        }
+        Some(access.device_token)
+    } else {
+        // An older home may omit bootstrap. Its committed pairing survives a
+        // failed optional enrollment and retains any supplied LAN endpoints.
+        match pair.home_attestation.as_deref() {
+            Some(attestation) => enroll_device(
+                &link.relay_origin,
+                &pair.instance_id,
+                attestation,
+                &observer,
+            )
+            .await
+            .ok(),
+            None => None,
+        }
+    };
+    let device_token_expires_at = device_token
         .as_deref()
-        .ok_or_else(|| TransportError::Pairing("relay response missing home attestation".into()))?;
-    let device_token = enroll_device(
-        &link.relay_origin,
-        &pair.instance_id,
-        home_attestation,
-        &observer,
-    )
-    .await?;
-    let device_token_expires_at =
-        observer_pl::jwt::decode_unverified_claims(&device_token).map(|c| c.exp);
+        .and_then(observer_pl::jwt::decode_unverified_claims)
+        .map(|claims| claims.exp);
     let ca_fp_prefix = ca::sha256(pinned_ca.as_ref())[..16].to_vec();
     let endpoints = endpoint_addrs_from_local_endpoints(pair.local_endpoints.as_ref());
 
@@ -128,8 +154,8 @@ pub async fn pair_over_relay_observed(
         instance_id: pair.instance_id,
         home_label: pair.home_label,
         endpoints,
-        relay_origin: Some(link.relay_origin.clone()),
-        device_token: Some(device_token),
+        relay_origin: device_token.as_ref().map(|_| link.relay_origin.clone()),
+        device_token,
         device_token_expires_at,
     })
 }
@@ -141,10 +167,14 @@ async fn enroll_device(
     observer: &ObserverHandle,
 ) -> Result<String, TransportError> {
     let body = serde_json::to_vec(&json!({
+        "protocol_version": 2,
         "instance_id": instance_id,
         "home_attestation": home_attestation,
     }))?;
     note_dial_attempt(observer);
+    if let Some(observer) = observer {
+        observer.record_enrollment_started();
+    }
     let response = relay_http::relay_https_post_json(relay_origin, "/enroll/device", &body).await?;
     note_dial_success(observer, TransportPath::Relay);
     if !response.is_success() {
@@ -155,10 +185,32 @@ async fn enroll_device(
     }
     let parsed: EnrollResponse = serde_json::from_slice(&response.body)
         .map_err(|_| TransportError::Pairing("relay enroll response malformed".into()))?;
-    if parsed.device_token.is_empty() {
+    let valid = match parsed.protocol_version {
+        Some(2) => parsed.expires_at.as_deref().is_some_and(|expiry| {
+            observer_pl::relay_access::negotiated_claims(
+                2,
+                &parsed.device_token,
+                expiry,
+                instance_id,
+                unix_now(),
+            )
+            .is_some()
+        }),
+        None => {
+            observer_pl::relay_access::legacy_claims(&parsed.device_token, instance_id, unix_now())
+                .is_some()
+        }
+        Some(_) => false,
+    };
+    if !valid {
         return Err(TransportError::Pairing(
             "relay enroll response malformed".into(),
         ));
+    }
+    if parsed.protocol_version == Some(2) {
+        if let Some(observer) = observer {
+            observer.record_stateless_enrollment();
+        }
     }
     Ok(parsed.device_token)
 }
@@ -175,4 +227,18 @@ fn parse_ca_chain(chain: &[String]) -> Result<Vec<CertificateDer<'static>>, Tran
     } else {
         Ok(out)
     }
+}
+
+pub(crate) fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
+fn negotiated_version<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u8>, D::Error> {
+    u8::deserialize(deserializer).map(Some)
 }

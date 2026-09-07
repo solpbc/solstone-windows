@@ -97,6 +97,10 @@ impl Default for ChunkedDecoder {
 }
 
 impl ChunkedDecoder {
+    pub fn is_complete(&self) -> bool {
+        matches!(self.state, ChunkState::Done)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

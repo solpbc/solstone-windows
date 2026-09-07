@@ -229,17 +229,17 @@ fn credential_from_direct_pair_response(
         });
     }
 
-    let pair: PairResponse = serde_json::from_slice(&response.body)?;
+    let pair: PairResponse = serde_json::from_slice(&response.body)
+        .map_err(|_| TransportError::Pairing("pair response malformed".into()))?;
     let cert_der = tls::parse_certs(&pair.client_cert)?
         .into_iter()
         .next()
         .ok_or_else(|| TransportError::Pairing("pair response carried no client cert".into()))?;
     let computed = format!("sha256:{}", ca::sha256_hex(cert_der.as_ref()));
     if pair.fingerprint != computed {
-        return Err(TransportError::Pairing(format!(
-            "client cert fingerprint mismatch (journal: {}, computed: {})",
-            pair.fingerprint, computed
-        )));
+        return Err(TransportError::Pairing(
+            "client cert fingerprint mismatch".into(),
+        ));
     }
     let cert_spki = ca::extract_spki_der(cert_der.as_ref()).map_err(|_| {
         TransportError::Pairing("client certificate public key is malformed".into())
@@ -250,6 +250,15 @@ fn credential_from_direct_pair_response(
         ));
     }
 
+    let access = pair.relay_access.as_ref().and_then(|raw| {
+        let access: observer_pl::relay_access::RelayAccess =
+            serde_json::from_value(raw.clone()).ok()?;
+        crate::relay_http::validate_relay_origin(&access.relay_origin).ok()?;
+        let expiry = access
+            .claims(&pair.instance_id, crate::relay_pairing::unix_now())?
+            .exp;
+        Some((access.relay_origin, access.device_token, expiry))
+    });
     Ok(Credential {
         client_key_pem: generated.key_pem,
         client_cert_pem: pair.client_cert,
@@ -258,9 +267,9 @@ fn credential_from_direct_pair_response(
         instance_id: pair.instance_id,
         home_label: pair.home_label,
         endpoints: all_endpoints.iter().map(EndpointAddr::from).collect(),
-        relay_origin: None,
-        device_token: None,
-        device_token_expires_at: None,
+        relay_origin: access.as_ref().map(|a| a.0.clone()),
+        device_token: access.as_ref().map(|a| a.1.clone()),
+        device_token_expires_at: access.map(|a| a.2),
     })
 }
 
@@ -409,7 +418,51 @@ mod tests {
             home_label: "Home".into(),
             fingerprint: format!("sha256:{}", ca::sha256_hex(client_cert.der())),
             home_attestation: None,
+            relay_access: None,
             local_endpoints: None,
+        }
+    }
+
+    #[test]
+    fn direct_bootstrap_is_optional_and_validated_without_control_io() {
+        use base64::Engine as _;
+        use serde_json::json;
+        let payload = json!({"iss":"independent-issuer","sub":"instance:test-instance",
+            "aud":"spl-relay","scope":"session.dial","ver":2,"instance_id":"test-instance",
+            "iat":100,"exp":4_102_444_800_i64,"jti":"fresh"});
+        let token = format!(
+            "e30.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
+        );
+        let valid = json!({"protocol_version":2,"status":"ready","instance_id":"test-instance","relay_origin":"https://relay.example",
+            "device_token":token,"expires_at":"2100-01-01T00:00:00Z"});
+        let mut wrong_origin = valid.clone();
+        wrong_origin["relay_origin"] = json!("https://relay.example/private");
+        let mut wrong_expiry = valid.clone();
+        wrong_expiry["expires_at"] = json!("2100-01-01T00:00:01Z");
+        for (access, accepted) in [
+            (None, false),
+            (Some(json!(null)), false),
+            (Some(json!({})), false),
+            (Some(wrong_origin), false),
+            (Some(wrong_expiry), false),
+            (Some(valid), true),
+        ] {
+            let material = generate_csr("test-device").unwrap();
+            let mut pair = pair_response(&material, TestCertificateMode::SubmittedCsr);
+            pair.relay_access = access;
+            let credential = credential_from_direct_pair_response(
+                http_response(200, serde_json::to_vec(&pair).unwrap()),
+                material,
+                &[0; 16],
+                &test_endpoints(),
+            )
+            .unwrap();
+            assert_eq!(credential.device_token.is_some(), accepted);
+            assert_eq!(credential.relay_origin.is_some(), accepted);
+            assert_eq!(credential.device_token_expires_at.is_some(), accepted);
+            assert_eq!(credential.endpoints.len(), test_endpoints().len());
+            assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
         }
     }
 
@@ -600,7 +653,6 @@ mod tests {
         Io(io::ErrorKind, &'static str),
         Mux(MuxError),
         Rejected(u16),
-        Json,
         TlsPrefix(&'static str),
         PairingExact(&'static str),
         PairingPrefix(&'static str),
@@ -655,9 +707,10 @@ mod tests {
                 Ok(http_response(500, b"server error".to_vec())),
                 ExpectedFailure::Rejected(500),
             ),
-            TerminalFailureKind::MalformedJson => {
-                (Ok(http_response(200, b"{".to_vec())), ExpectedFailure::Json)
-            }
+            TerminalFailureKind::MalformedJson => (
+                Ok(http_response(200, b"{".to_vec())),
+                ExpectedFailure::PairingExact("pair response malformed"),
+            ),
             TerminalFailureKind::NoClientCertificate => {
                 let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
                 response.client_cert.clear();
@@ -717,7 +770,6 @@ mod tests {
             (TransportError::Rejected { status, .. }, ExpectedFailure::Rejected(expected)) => {
                 assert_eq!(status, expected)
             }
-            (TransportError::Json(_), ExpectedFailure::Json) => {}
             (TransportError::Tls(actual), ExpectedFailure::TlsPrefix(expected)) => {
                 assert!(
                     actual.starts_with(expected),

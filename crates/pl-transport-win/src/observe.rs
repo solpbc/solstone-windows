@@ -40,6 +40,7 @@ pub struct OperationObserver {
     relay_successes: AtomicU64,
     request_bytes_sent: AtomicU64,
     close_completed: AtomicBool,
+    legacy_enrollment_possible: AtomicBool,
 }
 
 /// A consistent-enough read of an [`OperationObserver`] for reporting.
@@ -85,6 +86,21 @@ impl OperationObserver {
     /// observed. Emitting `CLOSE` alone is deliberately **not** enough.
     pub fn record_close_completed(&self) {
         self.close_completed.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_enrollment_started(&self) {
+        self.legacy_enrollment_possible
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_stateless_enrollment(&self) {
+        self.legacy_enrollment_possible
+            .store(false, Ordering::Relaxed);
+    }
+
+    /// Whether this operation contacted enrollment without confirming the stateless protocol.
+    pub fn legacy_enrollment_possible(&self) -> bool {
+        self.legacy_enrollment_possible.load(Ordering::Relaxed)
     }
 
     pub fn counts(&self) -> DialCounts {

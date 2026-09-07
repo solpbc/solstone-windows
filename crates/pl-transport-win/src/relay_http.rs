@@ -15,9 +15,14 @@ use tokio_rustls::TlsConnector;
 use crate::{relay, TransportError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Upper bound on the control-plane TLS handshake. This leg crosses the public
+/// internet rather than a LAN, so it carries the same budget as the relay carrier's
+/// inner handshake rather than the tighter direct-dial one.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_BUF: usize = 16 * 1024;
 
+#[derive(PartialEq, Eq)]
 enum RelayScheme {
     Http,
     Https,
@@ -35,6 +40,33 @@ pub(crate) async fn relay_https_post_json(
     path_and_query: &str,
     body: &[u8],
 ) -> Result<HttpResponse, TransportError> {
+    let response = control_deadline(
+        Duration::from_secs(15),
+        relay_https_post_json_inner(relay_origin, path_and_query, body),
+    )
+    .await;
+    response
+}
+
+async fn control_deadline<T>(
+    duration: Duration,
+    operation: impl std::future::Future<Output = Result<T, TransportError>>,
+) -> Result<T, TransportError> {
+    tokio::time::timeout(duration, operation)
+        .await
+        .map_err(|_| {
+            TransportError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "relay control deadline exceeded",
+            ))
+        })?
+}
+
+async fn relay_https_post_json_inner(
+    relay_origin: &str,
+    path_and_query: &str,
+    body: &[u8],
+) -> Result<HttpResponse, TransportError> {
     if !path_and_query.starts_with('/') {
         return Err(TransportError::PairLink("relay request path".into()));
     }
@@ -43,20 +75,49 @@ pub(crate) async fn relay_https_post_json(
     match origin.scheme {
         RelayScheme::Http => {
             let tcp = connect(&origin.host, origin.port).await?;
-            post_json_over_stream(tcp, &origin.authority, path_and_query, body).await
+            let response =
+                post_json_over_stream(tcp, &origin.authority, path_and_query, body).await;
+            response
         }
         RelayScheme::Https => {
             let tcp = connect(&origin.host, origin.port).await?;
             let server_name = ServerName::try_from(origin.host.clone())
                 .map_err(|_| TransportError::Tls("relay server name".into()))?;
             let connector = TlsConnector::from(relay::outer_config());
-            let tls = connector
-                .connect(server_name, tcp)
-                .await
-                .map_err(|e| TransportError::Tls(format!("relay control tls: {e}")))?;
-            post_json_over_stream(tls, &origin.authority, path_and_query, body).await
+            // Bounded for the same reason the carrier's handshake is: reaching the peer
+            // and completing a handshake with it are separate things, and a peer that
+            // accepts the connection then goes silent must not park a control request
+            // for longer than the request itself is allowed.
+            let tls =
+                match tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(server_name, tcp))
+                    .await
+                {
+                    Err(_) => {
+                        return Err(TransportError::Io(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "relay control tls handshake timed out",
+                        )));
+                    }
+                    Ok(result) => result
+                        .map_err(|e| TransportError::Tls(format!("relay control tls: {e}")))?,
+                };
+            let response =
+                post_json_over_stream(tls, &origin.authority, path_and_query, body).await;
+            response
         }
     }
+}
+
+pub(crate) fn validate_relay_origin(origin: &str) -> Result<(), TransportError> {
+    parse_relay_origin(origin).map(|_| ())
+}
+
+pub(crate) fn same_relay_origin(left: &str, right: &str) -> Result<bool, TransportError> {
+    let left = parse_relay_origin(left)?;
+    let right = parse_relay_origin(right)?;
+    Ok(left.scheme == right.scheme
+        && left.host.eq_ignore_ascii_case(&right.host)
+        && left.port == right.port)
 }
 
 fn parse_relay_origin(origin: &str) -> Result<RelayOrigin, TransportError> {
@@ -75,6 +136,10 @@ fn parse_relay_origin(origin: &str) -> Result<RelayOrigin, TransportError> {
         || authority.contains('/')
         || authority.contains('?')
         || authority.contains('#')
+        || authority.contains('@')
+        || authority
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
     {
         return Err(TransportError::PairLink("relay origin must be bare".into()));
     }
@@ -94,6 +159,9 @@ fn parse_authority(authority: &str, default_port: u16) -> Result<(String, u16), 
             .find(']')
             .ok_or_else(|| TransportError::PairLink("bad relay origin host".into()))?;
         let host = rest[..end].to_string();
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(TransportError::PairLink("bad relay origin host".into()));
+        }
         let after = &rest[end + 1..];
         let port = if let Some(port) = after.strip_prefix(':') {
             parse_port(port)?
@@ -109,9 +177,11 @@ fn parse_authority(authority: &str, default_port: u16) -> Result<(String, u16), 
         Some((host, port)) if !host.contains(':') => (host.to_string(), parse_port(port)?),
         _ => (authority.to_string(), default_port),
     };
-    if host.is_empty() {
+    if host.is_empty() || host.contains(':') || host.contains('[') || host.contains(']') {
         return Err(TransportError::PairLink("bad relay origin host".into()));
     }
+    ServerName::try_from(host.clone())
+        .map_err(|_| TransportError::PairLink("bad relay origin host".into()))?;
     Ok((host, port))
 }
 
@@ -164,10 +234,14 @@ where
             }
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
+                if raw.len().saturating_add(n) > 64 * 1024 {
+                    return Err(TransportError::Pairing(
+                        "relay control response too large".into(),
+                    ));
+                }
                 raw.extend_from_slice(&buf[..n]);
                 if let Ok(response) = http::parse_response(&raw) {
-                    if response_is_complete(&response) {
-                        let _ = stream.shutdown().await;
+                    if response_is_complete(&response, &raw) {
                         return Ok(response);
                     }
                 }
@@ -177,8 +251,17 @@ where
         }
     }
 
-    let response = http::parse_response(&raw)?;
-    let _ = stream.shutdown().await;
+    let response = http::parse_response(&raw)
+        .map_err(|_| TransportError::Pairing("relay control response malformed".into()))?;
+    if response
+        .header("transfer-encoding")
+        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
+        && !response_is_complete(&response, &raw)
+    {
+        return Err(TransportError::Pairing(
+            "relay control response malformed".into(),
+        ));
+    }
     Ok(response)
 }
 
@@ -197,7 +280,17 @@ fn build_request(authority: &str, path_and_query: &str, body: &[u8]) -> Vec<u8> 
     request
 }
 
-fn response_is_complete(response: &HttpResponse) -> bool {
+fn response_is_complete(response: &HttpResponse, raw: &[u8]) -> bool {
+    if response
+        .header("transfer-encoding")
+        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
+    {
+        let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+            return false;
+        };
+        let mut decoder = http::ChunkedDecoder::new();
+        return decoder.push(&raw[split + 4..]).is_ok() && decoder.is_complete();
+    }
     response
         .header("content-length")
         .and_then(|value| value.parse::<usize>().ok())
@@ -240,5 +333,105 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"Wikipedia");
         server_task.await.unwrap();
+    }
+    #[test]
+    fn origin_comparison_normalizes_default_ports_and_rejects_injection() {
+        assert!(same_relay_origin("https://Relay.Example/", "https://relay.example:443").unwrap());
+        assert!(!same_relay_origin("http://relay.example", "https://relay.example").unwrap());
+        for origin in [
+            "https://user@relay.example",
+            "https://relay.example/extra",
+            "https://relay.example\r\nx: y",
+            "https://[not-ipv6]",
+        ] {
+            assert!(validate_relay_origin(origin).is_err());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn total_deadline_cancels_blocked_write_and_progressing_reads() {
+        let (client, mut server) = duplex(1);
+        let result = Box::pin(control_deadline(
+            Duration::from_millis(40),
+            post_json_over_stream(client, "relay.test", "/x", b"{}"),
+        ))
+        .await;
+        assert!(
+            matches!(result, Err(TransportError::Io(e)) if e.kind() == io::ErrorKind::TimedOut)
+        );
+        let mut remainder = Vec::new();
+        server.read_to_end(&mut remainder).await.unwrap();
+        assert!(!remainder.is_empty());
+
+        let (client, mut server) = duplex(1024);
+        let sender = tokio::spawn(async move {
+            let mut request = vec![0; build_request("relay.test", "/x", b"{}").len()];
+            server.read_exact(&mut request).await.unwrap();
+            for byte in b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nslow" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if server.write_all(&[*byte]).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let started = tokio::time::Instant::now();
+        let result = Box::pin(control_deadline(
+            Duration::from_millis(40),
+            post_json_over_stream(client, "relay.test", "/x", b"{}"),
+        ))
+        .await;
+        assert!(
+            matches!(result, Err(TransportError::Io(e)) if e.kind() == io::ErrorKind::TimedOut)
+        );
+        assert_eq!(started.elapsed(), Duration::from_millis(40));
+        sender.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn complete_chunked_response_returns_without_eof() {
+        let (client, mut server) = duplex(1024);
+        let sender = tokio::spawn(async move {
+            let mut request = vec![0; build_request("relay.test", "/x", b"{}").len()];
+            server.read_exact(&mut request).await.unwrap();
+            server.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\nX-Trailer: ignored\r\n\r\n").await.unwrap();
+            let mut byte = [0];
+            assert_eq!(server.read(&mut byte).await.unwrap(), 0);
+        });
+        let response = Box::pin(control_deadline(
+            Duration::from_millis(40),
+            post_json_over_stream(client, "relay.test", "/x", b"{}"),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.body, b"{}");
+        sender.await.unwrap();
+    }
+    #[tokio::test]
+    async fn control_body_limit_and_framing_errors_return_fixed_classifications() {
+        for wire in [
+            b"HTTP/1.1 private-control-sentinel\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n".to_vec(),
+            {
+                let mut wire = b"HTTP/1.1 200 OK\r\nContent-Length: 70000\r\n\r\n".to_vec();
+                wire.extend(vec![b'x'; 70_000]);
+                wire
+            },
+        ] {
+            let (client, mut server) = duplex(1024);
+            let sender = tokio::spawn(async move {
+                let mut request = vec![0; build_request("relay.test", "/x", b"{}").len()];
+                server.read_exact(&mut request).await.unwrap();
+                let _ = server.write_all(&wire).await;
+            });
+            let error = Box::pin(control_deadline(
+                Duration::from_secs(1),
+                post_json_over_stream(client, "relay.test", "/x", b"{}"),
+            ))
+            .await
+            .unwrap_err();
+            assert!(matches!(error, TransportError::Pairing(_)));
+            assert!(!format!("{error:?} {error}").contains("private-control-sentinel"));
+            sender.await.unwrap();
+        }
     }
 }

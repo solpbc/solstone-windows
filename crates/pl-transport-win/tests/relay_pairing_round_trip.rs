@@ -9,12 +9,12 @@ use observer_pl::pairlink::RelayPairLink;
 use pl_transport_win::credential::EndpointAddr;
 use pl_transport_win::relay_pairing::pair_over_relay;
 use pl_transport_win::relay_token::{refresh_device_token, RefreshOutcome};
-use pl_transport_win::{transport_error_code, RelayControlEndpoint, TransportError};
+use pl_transport_win::{transport_error_code, TransportError};
 
 use support::observer_contract::fixture as authority_fixture;
 use support::relay_pairing::{
-    jid_for_ca, relay_form_link, relay_link, spawn_mock_relay, HomeMode, MockState, CURRENT_TOKEN,
-    ENROLL_TOKEN,
+    jid_for_ca, legacy_token, relay_form_link, relay_link, spawn_mock_relay, v2_token, HomeMode,
+    MockState, CURRENT_TOKEN,
 };
 
 #[tokio::test]
@@ -27,8 +27,11 @@ async fn relay_pairing_full_ceremony_populates_credential() {
 
     assert_eq!(credential.relay_origin.as_deref(), Some(origin.as_str()));
     assert_eq!(credential.instance_id, jid_for_ca(state.json_ca.as_ref()));
-    assert_eq!(credential.device_token.as_deref(), Some(ENROLL_TOKEN));
-    assert_eq!(credential.device_token_expires_at, Some(9_999_999_999));
+    assert_eq!(
+        credential.device_token.as_deref(),
+        Some(legacy_token(&jid_for_ca(&state.json_ca)).as_str())
+    );
+    assert_eq!(credential.device_token_expires_at, Some(4_102_444_800));
     assert!(credential.client_key_pem.contains("BEGIN PRIVATE KEY"));
     assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
     assert_eq!(credential.ca_chain_pem.len(), 1);
@@ -146,36 +149,23 @@ async fn relay_pairing_inner_410_maps_to_http_410() {
 }
 
 #[tokio::test]
-async fn relay_pairing_rejects_missing_home_attestation() {
-    let mut state = MockState::normal().with_same_tls_ca();
-    state.home_mode = HomeMode::MissingHomeAttestation;
-    let state = Arc::new(state);
-    let origin = spawn_mock_relay(state.clone()).await;
-    let link = relay_link(origin, state.json_ca.spki_pin());
-
-    let err = pair_over_relay(&link, "win-test").await.unwrap_err();
-    assert!(matches!(err, TransportError::Pairing(_)));
-}
-
-#[tokio::test]
-async fn relay_pairing_enroll_statuses_are_control_rejections() {
-    for status in [409, 401, 403, 404] {
-        let state = Arc::new(MockState::normal().with_same_tls_ca());
-        *state.enroll_status.lock().unwrap() = Some(status);
+async fn older_home_pairing_survives_unavailable_optional_enrollment() {
+    for status in [None, Some(409), Some(401), Some(403), Some(404), Some(503)] {
+        let mut setup = MockState::normal().with_same_tls_ca();
+        if status.is_none() {
+            setup.home_mode = HomeMode::MissingHomeAttestation;
+        }
+        let state = Arc::new(setup);
+        *state.enroll_status.lock().unwrap() = status;
         let origin = spawn_mock_relay(state.clone()).await;
         let link = relay_link(origin, state.json_ca.spki_pin());
-
-        let err = pair_over_relay(&link, "win-test").await.unwrap_err();
-        assert!(matches!(
-            err,
-            TransportError::RelayControlRejected {
-                endpoint: RelayControlEndpoint::EnrollDevice,
-                status: actual
-            } if actual == status
-        ));
-        let code = transport_error_code(&err);
-        assert_eq!(code, format!("relay_enroll_device_http_{status}"));
-        assert!(!code.contains("attestation"));
+        let credential = Box::pin(pair_over_relay(&link, "win-test")).await.unwrap();
+        assert!(credential.client_key_pem.contains("BEGIN PRIVATE KEY"));
+        assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(!credential.endpoints.is_empty());
+        assert!(credential.relay_origin.is_none());
+        assert!(credential.device_token.is_none());
+        assert!(credential.device_token_expires_at.is_none());
     }
 }
 
@@ -189,5 +179,122 @@ async fn forced_refresh_reconnect_statuses() {
             refresh_device_token(&origin, CURRENT_TOKEN).await,
             RefreshOutcome::ReconnectNeeded
         );
+    }
+}
+
+#[tokio::test]
+async fn protected_remote_bootstrap_skips_enrollment_and_invalid_present_access_cannot_fallback() {
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    for invalid in [false, true] {
+        let state = Arc::new(MockState::normal().with_same_tls_ca());
+        let origin = spawn_mock_relay(state.clone()).await;
+        let instance = jid_for_ca(&state.json_ca);
+        let token = v2_token(&instance);
+        let access = if invalid {
+            serde_json::Value::Null
+        } else {
+            json!({"protocol_version":2,"status":"ready","relay_origin":origin,
+                "instance_id":instance,"device_token":token,"expires_at":"2100-01-01T00:00:00Z"})
+        };
+        *state.pair_access.lock().unwrap() = Some(access);
+        let link = relay_link(origin, state.json_ca.spki_pin());
+        let result = pair_over_relay(&link, "win-test").await;
+        if invalid {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(
+                result.unwrap().device_token.as_deref(),
+                Some(token.as_str())
+            );
+        }
+        assert!(
+            state.pair_request.lock().unwrap().is_some(),
+            "ceremony actually ran"
+        );
+        assert_eq!(state.enroll_hits.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn refresh_negotiates_v2_rejects_null_and_downgrade_and_keeps_legacy_omission() {
+    use serde_json::json;
+    let state = Arc::new(MockState::normal().with_same_tls_ca());
+    let origin = spawn_mock_relay(state.clone()).await;
+    let legacy = legacy_token("home");
+    let v2 = v2_token("home");
+    *state.control_response.lock().unwrap() =
+        Some(json!({"protocol_version":2,"device_token":v2,"expires_at":"2100-01-01T00:00:00Z"}));
+    assert!(matches!(
+        refresh_device_token(&origin, CURRENT_TOKEN).await,
+        RefreshOutcome::Refreshed { .. }
+    ));
+    assert_eq!(
+        state.control_request.lock().unwrap().as_ref().unwrap()["protocol_version"],
+        2
+    );
+    *state.control_response.lock().unwrap() =
+        Some(json!({"protocol_version":null,"device_token":legacy}));
+    assert_eq!(
+        refresh_device_token(&origin, &legacy).await,
+        RefreshOutcome::TransientError
+    );
+    *state.control_response.lock().unwrap() = Some(json!({"device_token":legacy}));
+    assert!(matches!(
+        refresh_device_token(&origin, &legacy).await,
+        RefreshOutcome::Refreshed { .. }
+    ));
+    assert_eq!(
+        refresh_device_token(&origin, &v2).await,
+        RefreshOutcome::TransientError
+    );
+}
+
+#[tokio::test]
+async fn actual_optional_enrollment_reports_only_possible_legacy_residue() {
+    use pl_transport_win::observe::OperationObserver;
+    use pl_transport_win::relay_pairing::pair_over_relay_observed;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    // Missing attestation, protected bootstrap, rejection, legacy success, v2 success.
+    for mode in 0..5 {
+        let mut setup = MockState::normal().with_same_tls_ca();
+        if mode == 0 {
+            setup.home_mode = HomeMode::MissingHomeAttestation;
+        }
+        let state = Arc::new(setup);
+        let origin = spawn_mock_relay(state.clone()).await;
+        let instance = jid_for_ca(&state.json_ca);
+        let token = v2_token(&instance);
+        if mode == 1 {
+            *state.pair_access.lock().unwrap() = Some(json!({"protocol_version":2,
+                "status":"ready","relay_origin":origin,"instance_id":instance,
+                "device_token":token,"expires_at":"2100-01-01T00:00:00Z"}));
+        }
+        if mode == 2 {
+            *state.enroll_status.lock().unwrap() = Some(503);
+        }
+        if mode == 4 {
+            *state.control_response.lock().unwrap() = Some(json!({"protocol_version":2,
+                "device_token":token,"expires_at":"2100-01-01T00:00:00Z"}));
+        }
+        let observer = OperationObserver::new();
+        let credential = pair_over_relay_observed(
+            &relay_link(origin, state.json_ca.spki_pin()),
+            "win-test",
+            Some(observer.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
+        assert_eq!(
+            state.enroll_hits.load(Ordering::SeqCst),
+            usize::from(mode >= 2)
+        );
+        assert_eq!(
+            observer.legacy_enrollment_possible(),
+            mode == 2 || mode == 3
+        );
+        assert_eq!(credential.device_token.is_some(), mode == 1 || mode >= 3);
     }
 }

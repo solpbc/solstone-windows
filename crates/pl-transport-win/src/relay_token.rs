@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! Low-level relay device-token refresh helpers consumed by `ObserverClient`.
+//! Low-level relay device-token refresh helpers consumed by `TransportClient`.
 //!
-//! The refresh-once/redial-once policy lives in the client relay send path.
+//! The refresh-once/redial-once policy lives in the client relay dial path.
 
 use serde::Deserialize;
 use serde_json::json;
@@ -11,22 +11,35 @@ use serde_json::json;
 use crate::{relay_http, TransportError};
 
 #[derive(Debug, PartialEq, Eq)]
+/// Result of a best-effort relay device-token refresh.
 pub enum RefreshOutcome {
+    /// A replacement token and its Unix expiry were returned.
     Refreshed {
+        /// Replacement relay device token.
         device_token: String,
+        /// Replacement token expiry as Unix seconds.
         expires_at: i64,
     },
+    /// The device must repeat relay enrollment before dialing again. A stored
+    /// home attestation is bound to a pairing window of at most five minutes; once
+    /// that window has elapsed, enrollment requires a new pairing ceremony.
     ReconnectNeeded,
+    /// A transient control-plane failure left the current token unchanged.
     TransientError,
 }
 
 #[derive(Deserialize)]
 struct RefreshResponse {
     device_token: String,
+    #[serde(default, deserialize_with = "negotiated_version")]
+    protocol_version: Option<u8>,
+    expires_at: Option<String>,
 }
 
+/// Attempt one relay device-token refresh without exposing control-plane errors.
 pub async fn refresh_device_token(relay_origin: &str, current_token: &str) -> RefreshOutcome {
-    match refresh_device_token_inner(relay_origin, current_token).await {
+    let refresh = refresh_device_token_inner(relay_origin, current_token).await;
+    match refresh {
         Ok(outcome) => outcome,
         Err(_) => RefreshOutcome::TransientError,
     }
@@ -36,13 +49,35 @@ async fn refresh_device_token_inner(
     relay_origin: &str,
     current_token: &str,
 ) -> Result<RefreshOutcome, TransportError> {
-    let body = serde_json::to_vec(&json!({ "device_token": current_token }))?;
+    let (instance, current_is_v2) = observer_pl::relay_access::renewal_identity(
+        current_token,
+        crate::relay_pairing::unix_now(),
+    )
+    .ok_or_else(|| TransportError::Pairing("relay refresh input malformed".into()))?;
+    let body =
+        serde_json::to_vec(&json!({ "protocol_version": 2, "device_token": current_token }))?;
     let response = relay_http::relay_https_post_json(relay_origin, "/token/refresh", &body).await?;
     if response.is_success() {
         let parsed: RefreshResponse = serde_json::from_slice(&response.body)
             .map_err(|_| TransportError::Pairing("relay refresh response malformed".into()))?;
-        let claims = observer_pl::jwt::decode_unverified_claims(&parsed.device_token)
-            .ok_or_else(|| TransportError::Pairing("relay refresh response malformed".into()))?;
+        let claims = match parsed.protocol_version {
+            Some(2) => parsed.expires_at.as_deref().and_then(|expiry| {
+                observer_pl::relay_access::negotiated_claims(
+                    2,
+                    &parsed.device_token,
+                    expiry,
+                    &instance,
+                    crate::relay_pairing::unix_now(),
+                )
+            }),
+            None if !current_is_v2 => observer_pl::relay_access::legacy_claims(
+                &parsed.device_token,
+                &instance,
+                crate::relay_pairing::unix_now(),
+            ),
+            _ => None,
+        }
+        .ok_or_else(|| TransportError::Pairing("relay refresh response malformed".into()))?;
         return Ok(RefreshOutcome::Refreshed {
             device_token: parsed.device_token,
             expires_at: claims.exp,
@@ -66,4 +101,10 @@ fn expired_reason(body: &[u8]) -> bool {
                 .map(|reason| reason == "expired")
         })
         .unwrap_or(false)
+}
+
+fn negotiated_version<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u8>, D::Error> {
+    u8::deserialize(deserializer).map(Some)
 }

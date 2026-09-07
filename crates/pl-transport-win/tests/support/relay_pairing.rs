@@ -5,7 +5,9 @@
 
 #![allow(dead_code)] // Each integration-test binary compiles this shared helper independently.
 
+use base64::Engine as _;
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
@@ -27,8 +29,8 @@ use tokio_tungstenite::{accept_async, WebSocketStream};
 
 pub(crate) const PAIR_SECRET: [u8; 8] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
 const PAIR_SECRET_HEX: &str = "0123456789abcdef";
-pub(crate) const CURRENT_TOKEN: &str = "e30.eyJpYXQiOjEwMCwiZXhwIjoyMDB9.sig";
-const NEW_TOKEN: &str = "e30.eyJpYXQiOjMwMCwiZXhwIjo0MDB9.sig";
+pub(crate) const CURRENT_TOKEN: &str = "e30.eyJpc3MiOiJyZWxheS50ZXN0Iiwic3ViIjoiZGV2aWNlOmxlZ2FjeSIsImF1ZCI6InNwbC1yZWxheSIsInNjb3BlIjoic2Vzc2lvbi5kaWFsIiwiaW5zdGFuY2VfaWQiOiJob21lIiwiZGV2aWNlX2ZwIjoic2hhMjU2OmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJpYXQiOjEwMCwiZXhwIjoyMDAsImp0aSI6ImxlZ2FjeSJ9.sig";
+const NEW_TOKEN: &str = "e30.eyJpc3MiOiJyZWxheS50ZXN0Iiwic3ViIjoiZGV2aWNlOmxlZ2FjeSIsImF1ZCI6InNwbC1yZWxheSIsInNjb3BlIjoic2Vzc2lvbi5kaWFsIiwiaW5zdGFuY2VfaWQiOiJob21lIiwiZGV2aWNlX2ZwIjoic2hhMjU2OmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJpYXQiOjEwMCwiZXhwIjo0MTAyNDQ0ODAwLCJqdGkiOiJsZWdhY3kifQ.sig";
 pub(crate) const ENROLL_TOKEN: &str = "e30.eyJpYXQiOjEwMCwiZXhwIjo5OTk5OTk5OTk5fQ.sig";
 
 pub(crate) struct TestCa {
@@ -85,6 +87,10 @@ pub(crate) enum HomeMode {
 }
 
 pub(crate) struct MockState {
+    pub(crate) pair_access: Mutex<Option<serde_json::Value>>,
+    pub(crate) control_response: Mutex<Option<serde_json::Value>>,
+    pub(crate) control_request: Mutex<Option<serde_json::Value>>,
+    pub(crate) enroll_hits: AtomicUsize,
     pub(crate) json_ca: Arc<TestCa>,
     tls_signer: Arc<TestCa>,
     pub(crate) home_mode: HomeMode,
@@ -99,6 +105,10 @@ impl MockState {
     pub(crate) fn normal() -> Self {
         let ca = Arc::new(TestCa::new());
         Self {
+            pair_access: Mutex::new(None),
+            control_response: Mutex::new(None),
+            control_request: Mutex::new(None),
+            enroll_hits: AtomicUsize::new(0),
             json_ca: ca,
             tls_signer: Arc::new(TestCa::new()),
             home_mode: HomeMode::Ok,
@@ -233,18 +243,40 @@ async fn handle_http(mut tcp: TcpStream, state: Arc<MockState>) -> io::Result<()
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
 
+    if let Some(split) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        *state.control_request.lock().unwrap() = serde_json::from_slice(&raw[split + 4..]).ok();
+    }
     if path == "/enroll/device" {
+        state.enroll_hits.fetch_add(1, Ordering::SeqCst);
         let status = *state.enroll_status.lock().unwrap();
         match status {
             Some(status) => write_json(&mut tcp, status, json!({"error":"rejected"})).await?,
-            None => write_json(&mut tcp, 200, json!({"device_token":ENROLL_TOKEN})).await?,
+            None => {
+                let reply = state
+                    .control_response
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(
+                        || json!({"device_token":legacy_token(&jid_for_ca(&state.json_ca))}),
+                    );
+                write_json(&mut tcp, 200, reply).await?;
+            }
         }
     } else if path == "/token/refresh" {
         let status = *state.refresh_status.lock().unwrap();
         match status {
             Some(401) => write_json(&mut tcp, 401, json!({"reason":"expired"})).await?,
             Some(status) => write_json(&mut tcp, status, json!({"error":"rejected"})).await?,
-            None => write_json(&mut tcp, 200, json!({"device_token":NEW_TOKEN})).await?,
+            None => {
+                let reply = state
+                    .control_response
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| json!({"device_token":NEW_TOKEN}));
+                write_json(&mut tcp, 200, reply).await?;
+            }
         }
     } else {
         write_json(&mut tcp, 404, json!({"error":"not_found"})).await?;
@@ -347,6 +379,9 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
     if !matches!(state.home_mode, HomeMode::MissingHomeAttestation) {
         response["home_attestation"] = json!("attestation");
     }
+    if let Some(access) = state.pair_access.lock().unwrap().clone() {
+        response["relay_access"] = access;
+    }
     write_pl_response(&mut tls, 200, response).await
 }
 
@@ -389,4 +424,23 @@ where
     tls.flush().await?;
     let _ = tls.shutdown().await;
     Ok(())
+}
+
+pub(crate) fn legacy_token(instance: &str) -> String {
+    let mut payload = observer_pl::relay_access::unverified_payload(NEW_TOKEN).unwrap();
+    payload["instance_id"] = json!(instance);
+    format!(
+        "e30.{}.sig",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
+    )
+}
+
+pub(crate) fn v2_token(instance: &str) -> String {
+    let payload = json!({"iss":"independent-issuer","sub":format!("instance:{instance}"),
+        "aud":"spl-relay","scope":"session.dial","ver":2,"instance_id":instance,
+        "iat":100,"exp":4_102_444_800_i64,"jti":"fresh"});
+    format!(
+        "e30.{}.sig",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
+    )
 }

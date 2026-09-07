@@ -40,6 +40,7 @@ pub mod jwt;
 pub mod mux;
 pub mod pairlink;
 pub mod relay;
+pub mod relay_access;
 pub mod relay_window;
 pub mod wire;
 

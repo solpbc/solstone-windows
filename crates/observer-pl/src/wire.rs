@@ -22,7 +22,7 @@ pub struct PairRequest {
 
 /// Success response from `/app/network/pair`. The journal signs our CSR and returns
 /// the client cert plus the CA chain to trust.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PairResponse {
     pub client_cert: String,
     pub ca_chain: Vec<String>,
@@ -36,6 +36,26 @@ pub struct PairResponse {
     /// the pair-link candidates) but captured so deserialization never fails.
     #[serde(default)]
     pub local_endpoints: Option<serde_json::Value>,
+    #[serde(
+        default,
+        deserialize_with = "present_relay_access",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub relay_access: Option<serde_json::Value>,
+}
+
+fn present_relay_access<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+impl std::fmt::Debug for PairResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PairResponse")
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]
