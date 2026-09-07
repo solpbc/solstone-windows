@@ -325,6 +325,7 @@ async fn pair(
 
     let paired = PairedState {
         credential: Some(credential),
+        ..Default::default()
     };
     if let Some(deadline) = budget.checkpoint(Phase::Persist) {
         evidence.local_residue_cleared = Some(clear_local_credential(environment));
@@ -1059,6 +1060,7 @@ mod tests {
         });
         PairedState {
             credential: Some(roundtrip_credential(pin, port)),
+            ..Default::default()
         }
         .save(&environment.state_path)
         .unwrap();
@@ -1247,6 +1249,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let paired = PairedState {
             credential: Some(roundtrip_credential(pin, port)),
+            ..Default::default()
         };
         paired.save(&environment.state_path).unwrap();
         let fixture_faulted = Arc::new(AtomicBool::new(false));

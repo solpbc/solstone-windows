@@ -181,6 +181,7 @@ async fn relay_probe(client: &ObserverClient) -> Result<(), TransportError> {
 fn relay_bridge_state(credential: Credential) -> PairedState {
     PairedState {
         credential: Some(credential),
+        ..Default::default()
     }
 }
 
@@ -2077,6 +2078,7 @@ async fn relay_refresh_persists_token_for_restart() {
     let path = temp_pairing_path("refresh");
     PairedState {
         credential: Some(credential.clone()),
+        ..Default::default()
     }
     .save(&path)
     .unwrap();
@@ -2185,4 +2187,26 @@ async fn relay_reasons_map_verbatim_and_redacted() {
         assert!(!code.contains(INSTANCE_ID));
         relay.abort();
     }
+}
+
+#[tokio::test]
+async fn test_relay_adapter_get_clients_self_and_get_relay_access() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let token = mint_jwt(now, now + 10_000);
+    let relay = spawn_combined_relay(acceptor, CombinedWsMode::AcceptAny, token.clone()).await;
+    let client = relay_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        token.clone(),
+    ));
+
+    let res = client.get_clients_self().await.unwrap();
+    assert_eq!(res.status, 200);
+
+    let res2 = client.get_relay_access().await.unwrap();
+    assert_eq!(res2.status, 200);
+
+    relay.abort();
 }

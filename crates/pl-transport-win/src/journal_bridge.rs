@@ -17,10 +17,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::client::ObserverClient;
-use crate::credential::{hex_lower, PairedState};
+use crate::client::{ClientSlot, ObserverClient};
+use crate::credential::{hex_lower, pairing_generation, CasKey, PairedState};
+use crate::device_metadata::RawDeviceFacts;
 use crate::journal_bridge_carrier::MuxCarrier;
 use crate::journal_version::JournalVersionController;
+use crate::post_connect::PostConnectController;
 use crate::{transport_error_code, TransportError};
 
 const MAX_HEAD_BYTES: usize = 64 * 1024;
@@ -79,6 +81,16 @@ pub async fn start(
     start_observed(paired, state_path, None, journal_version, sync).await
 }
 
+pub async fn start_with_facts(
+    paired: &PairedState,
+    state_path: PathBuf,
+    journal_version: Arc<JournalVersionController>,
+    sync: Arc<Mutex<SyncSnapshot>>,
+    facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
+) -> Result<JournalBridgeHandle, BridgeStartError> {
+    start_observed_with_facts(paired, state_path, None, journal_version, sync, facts_fn).await
+}
+
 /// [`start`] with an operation-scoped observation seam attached to the bridge's
 /// client.
 ///
@@ -91,6 +103,26 @@ pub async fn start_observed(
     observer: crate::observe::ObserverHandle,
     journal_version: Arc<JournalVersionController>,
     sync: Arc<Mutex<SyncSnapshot>>,
+) -> Result<JournalBridgeHandle, BridgeStartError> {
+    let facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync> = Arc::new(RawDeviceFacts::default);
+    start_observed_with_facts(
+        paired,
+        state_path,
+        observer,
+        journal_version,
+        sync,
+        facts_fn,
+    )
+    .await
+}
+
+pub async fn start_observed_with_facts(
+    paired: &PairedState,
+    state_path: PathBuf,
+    observer: crate::observe::ObserverHandle,
+    journal_version: Arc<JournalVersionController>,
+    sync: Arc<Mutex<SyncSnapshot>>,
+    facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
     let credential = paired
         .credential
@@ -105,12 +137,41 @@ pub async fn start_observed(
             .map(|endpoint| endpoint.host.clone()),
     );
 
-    let client = ObserverClient::new(credential)
+    let client = ObserverClient::new(credential.clone())
         .map_err(BridgeStartError::Client)?
-        .with_state_path(state_path)
+        .with_state_path(state_path.clone())
+        .with_cas_key(CasKey {
+            pairing_generation: pairing_generation(&credential.client_cert_pem),
+            access_mutation_generation: paired.access_mutation_generation,
+        })
         .with_observer(observer);
-    let client = Arc::new(client);
-    let carrier = Arc::new(MuxCarrier::new(client, journal_version, sync));
+    let client_slot = ClientSlot::new(Arc::new(client));
+
+    let post_connect = Arc::new(PostConnectController::new(
+        client_slot.clone(),
+        Some(state_path),
+        Some(journal_version.clone()),
+        sync.clone(),
+        facts_fn,
+    ));
+    post_connect.begin_session(&credential);
+
+    let carrier = Arc::new(MuxCarrier::with_keepalive(
+        client_slot,
+        crate::journal_bridge_carrier::KeepaliveConfig::default(),
+        journal_version,
+        Some(post_connect.clone()),
+        sync,
+    ));
+
+    let carrier_weak = Arc::downgrade(&carrier);
+    post_connect.set_relay_disconnect_hook(Arc::new(move || {
+        if let Some(c) = carrier_weak.upgrade() {
+            tokio::spawn(async move {
+                c.disconnect_relay_if_active().await;
+            });
+        }
+    }));
 
     let capability = mint_capability()?;
     let listener = match TcpListener::bind(("127.0.0.1", 0)).await {

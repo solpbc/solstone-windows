@@ -97,11 +97,12 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     let paired = pl_transport_win::credential::PairedState::load(&state_path)
         .map_err(|_| OpenJournalError::Unpaired)?;
 
-    let handle = match pl_transport_win::journal_bridge::start(
+    let handle = match pl_transport_win::journal_bridge::start_with_facts(
         &paired,
         state_path,
         state.sync_config.journal_version.clone(),
         state.sync.clone(),
+        state.sync_config.facts_fn.clone(),
     )
     .await
     {

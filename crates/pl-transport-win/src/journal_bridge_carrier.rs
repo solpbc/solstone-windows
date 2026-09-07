@@ -23,8 +23,9 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use std::sync::Mutex as StdMutex;
 
-use crate::client::{CarrierIo, CarrierKind, ObserverClient};
+use crate::client::{CarrierIo, CarrierKind, ClientSlot};
 use crate::journal_version::JournalVersionController;
+use crate::post_connect::PostConnectController;
 use crate::{transport_error_code, TransportError};
 use observer_model::SyncSnapshot;
 
@@ -37,27 +38,36 @@ type CarrierRead = ReadHalf<Box<dyn CarrierIo>>;
 type CarrierWrite = WriteHalf<Box<dyn CarrierIo>>;
 
 pub(crate) struct MuxCarrier {
-    client: Arc<ObserverClient>,
+    client: ClientSlot,
     slot: Mutex<Option<Arc<CarrierHandle>>>,
     keepalive: KeepaliveConfig,
     journal_version: Arc<JournalVersionController>,
+    post_connect: Option<Arc<PostConnectController>>,
     version_generation: u64,
     sync: Arc<StdMutex<SyncSnapshot>>,
 }
 
 impl MuxCarrier {
+    #[allow(dead_code)]
     pub(crate) fn new(
-        client: Arc<ObserverClient>,
+        client: Arc<crate::ObserverClient>,
         journal_version: Arc<JournalVersionController>,
         sync: Arc<StdMutex<SyncSnapshot>>,
     ) -> Self {
-        Self::with_keepalive(client, KeepaliveConfig::default(), journal_version, sync)
+        Self::with_keepalive(
+            ClientSlot::new(client),
+            KeepaliveConfig::default(),
+            journal_version,
+            None,
+            sync,
+        )
     }
 
     pub(crate) fn with_keepalive(
-        client: Arc<ObserverClient>,
+        client: ClientSlot,
         keepalive: KeepaliveConfig,
         journal_version: Arc<JournalVersionController>,
+        post_connect: Option<Arc<PostConnectController>>,
         sync: Arc<StdMutex<SyncSnapshot>>,
     ) -> Self {
         Self {
@@ -66,7 +76,19 @@ impl MuxCarrier {
             keepalive,
             version_generation: journal_version.current_token().0,
             journal_version,
+            post_connect,
             sync,
+        }
+    }
+
+    pub(crate) async fn disconnect_relay_if_active(&self) {
+        let mut slot = self.slot.lock().await;
+        if let Some(handle) = slot.as_ref() {
+            if handle.is_relay {
+                let handle = slot.take().unwrap();
+                handle.alive.store(false, Ordering::SeqCst);
+                let _ = handle.commands.send(CarrierCommand::Shutdown).await;
+            }
         }
     }
 
@@ -112,6 +134,9 @@ impl MuxCarrier {
     pub(crate) async fn shutdown(&self) {
         self.journal_version
             .mark_session_disconnected(self.version_generation, &self.sync);
+        if let Some(pc) = &self.post_connect {
+            pc.mark_session_disconnected(self.version_generation);
+        }
         let handle = self.slot.lock().await.take();
         if let Some(handle) = handle {
             handle.alive.store(false, Ordering::SeqCst);
@@ -129,12 +154,17 @@ impl MuxCarrier {
 
         self.journal_version
             .mark_session_disconnected(self.version_generation, &self.sync);
-        let dialed = self.client.dial_carrier().await?;
-        self.journal_version.trigger_refresh(
-            self.client.clone(),
-            self.sync.clone(),
-            self.version_generation,
-        );
+        if let Some(pc) = &self.post_connect {
+            pc.mark_session_disconnected(self.version_generation);
+        }
+        let client = self.client.load();
+        let dialed = client.dial_carrier().await?;
+        self.journal_version
+            .trigger_refresh(client, self.sync.clone(), self.version_generation);
+        if let Some(pc) = &self.post_connect {
+            pc.trigger();
+        }
+        let is_relay = matches!(dialed.kind, CarrierKind::Relay { .. });
         let (read, write) = split(dialed.stream);
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_QUEUE);
         let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE);
@@ -142,6 +172,7 @@ impl MuxCarrier {
         let handle = Arc::new(CarrierHandle {
             commands: commands_tx,
             alive: alive.clone(),
+            is_relay,
         });
 
         let token = (
@@ -222,6 +253,7 @@ enum OpenFailure {
 pub(crate) struct CarrierHandle {
     commands: mpsc::Sender<CarrierCommand>,
     alive: Arc<AtomicBool>,
+    is_relay: bool,
 }
 
 pub(crate) struct StreamRx {

@@ -54,6 +54,7 @@ async fn main() {
     // 2. Persist the credential for the integration gate to consume.
     let state = PairedState {
         credential: Some(credential),
+        ..Default::default()
     };
     state
         .save(std::path::Path::new(&credential_file))
