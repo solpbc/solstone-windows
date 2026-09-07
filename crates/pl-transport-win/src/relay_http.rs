@@ -23,16 +23,16 @@ const READ_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_BUF: usize = 16 * 1024;
 
 #[derive(PartialEq, Eq)]
-enum RelayScheme {
+pub(crate) enum RelayScheme {
     Http,
     Https,
 }
 
-struct RelayOrigin {
-    scheme: RelayScheme,
-    host: String,
-    port: u16,
-    authority: String,
+pub(crate) struct RelayOrigin {
+    pub(crate) scheme: RelayScheme,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) authority: String,
 }
 
 pub(crate) async fn relay_https_post_json(
@@ -120,7 +120,7 @@ pub(crate) fn same_relay_origin(left: &str, right: &str) -> Result<bool, Transpo
         && left.port == right.port)
 }
 
-fn parse_relay_origin(origin: &str) -> Result<RelayOrigin, TransportError> {
+pub(crate) fn parse_relay_origin(origin: &str) -> Result<RelayOrigin, TransportError> {
     let (scheme, rest, default_port) = if let Some(rest) = origin.strip_prefix("https://") {
         (RelayScheme::Https, rest, 443)
     } else if let Some(rest) = origin.strip_prefix("http://") {

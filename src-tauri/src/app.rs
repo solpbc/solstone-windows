@@ -52,6 +52,17 @@ pub(crate) fn observer_hostname() -> String {
         .unwrap_or_else(|| "windows-observer".to_string())
 }
 
+// Hostname is resampled on each connection-lifecycle trigger; no OS hostname notification / polling exists.
+fn current_raw_facts() -> pl_transport_win::RawDeviceFacts {
+    pl_transport_win::RawDeviceFacts {
+        name: Some(observer_hostname()),
+        platform: Some("windows".to_string()),
+        device_type: None,
+        app_id: Some("app.solstone.windows".to_string()),
+        app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+    }
+}
+
 /// Build the sync config from the per-user data layout + the engine's rotation
 /// period (so the uploader derives the same segment keys the writer sealed).
 fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
@@ -67,6 +78,7 @@ fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(
             journal_version_path,
         )),
+        facts_fn: Arc::new(current_raw_facts),
     }
 }
 

@@ -163,6 +163,7 @@ async fn serve_direct_upload_journal(
 fn save_direct_pairing(root: &Path, credential: Credential) {
     PairedState {
         credential: Some(credential),
+        ..Default::default()
     }
     .save(&environment(root).state_path)
     .unwrap();

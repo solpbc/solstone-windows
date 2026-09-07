@@ -27,6 +27,7 @@ fn paired_state() -> PairedState {
     };
     PairedState {
         credential: Some(credential),
+        ..Default::default()
     }
 }
 

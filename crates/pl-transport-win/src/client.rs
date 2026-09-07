@@ -25,7 +25,7 @@ use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::connection::{dial_tls, request_once_observed};
-use crate::credential::{Credential, PairedState};
+use crate::credential::{pairing_generation, CasKey, Credential, PairedState, StorageError};
 use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
 use crate::relay::{
     dial_relay_carrier, request_once_relay_observed, RelayRequestSpec, RelayTerminationHandle,
@@ -35,6 +35,36 @@ use crate::{tls, transport_error_code, RelayError, TransportError};
 
 /// Relay transient retry count. Mirrors the LAN connection/handshake retry bound.
 const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
+
+/// Maximum allowed response bytes for post-connect metadata/access endpoints (64 KiB).
+pub(crate) const MAX_POST_CONNECT_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// A thread-safe container for the active `ObserverClient` allowing atomic live replacement.
+#[derive(Clone)]
+pub struct ClientSlot {
+    inner: Arc<std::sync::RwLock<Arc<ObserverClient>>>,
+}
+
+impl ClientSlot {
+    pub fn new(initial: Arc<ObserverClient>) -> Self {
+        Self {
+            inner: Arc::new(std::sync::RwLock::new(initial)),
+        }
+    }
+
+    pub fn load(&self) -> Arc<ObserverClient> {
+        self.inner.read().unwrap().clone()
+    }
+
+    pub fn replace(&self, new_client: Arc<ObserverClient>) {
+        let mut guard = self.inner.write().unwrap();
+        *guard = new_client;
+    }
+
+    pub fn proxy_headers(&self, upstream_headers: &[(String, String)]) -> Vec<(String, String)> {
+        self.load().proxy_headers(upstream_headers)
+    }
+}
 
 enum RefreshAction {
     Redial,
@@ -85,6 +115,8 @@ pub struct ObserverClient {
     device_token: Option<tokio::sync::Mutex<String>>,
     /// Optional persisted pairing state path for best-effort refreshed-token write-back.
     state_path: Option<PathBuf>,
+    /// CAS key tracking the pairing and access mutation generation.
+    cas_key: std::sync::Mutex<Option<CasKey>>,
     /// Optional operation-scoped observation seam. `None` in the GUI.
     observer: ObserverHandle,
 }
@@ -97,6 +129,7 @@ impl ObserverClient {
                 "relay credential has no LAN endpoints".into(),
             ));
         }
+        let pairing_gen = pairing_generation(&credential.client_cert_pem);
         let device_token = credential.device_token.clone().map(tokio::sync::Mutex::new);
         let chain = tls::parse_certs(&credential.client_cert_pem)?;
         let key = tls::parse_private_key(&credential.client_key_pem)?;
@@ -107,8 +140,79 @@ impl ObserverClient {
             boundary_counter: AtomicU64::new(1),
             device_token,
             state_path: None,
+            cas_key: std::sync::Mutex::new(Some(CasKey {
+                pairing_generation: pairing_gen,
+                access_mutation_generation: 0,
+            })),
             observer: None,
         })
+    }
+
+    /// Access the underlying credential.
+    pub fn credential(&self) -> &Credential {
+        &self.credential
+    }
+
+    /// Attach the initial CAS key to this client instance.
+    pub fn with_cas_key(self, cas_key: CasKey) -> Self {
+        *self.cas_key.lock().unwrap() = Some(cas_key);
+        self
+    }
+
+    /// Get the current CAS key known to this client.
+    pub fn current_cas_key(&self) -> Option<CasKey> {
+        *self.cas_key.lock().unwrap()
+    }
+
+    pub async fn get_clients_self(&self) -> Result<HttpResponse, TransportError> {
+        let outcome = self
+            .send(
+                "GET",
+                "/app/network/api/clients/self",
+                &self.v3_headers(),
+                &[],
+            )
+            .await?;
+        if outcome.response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
+            return Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "response body exceeds 64 KiB limit",
+            )));
+        }
+        Ok(outcome.response)
+    }
+
+    pub async fn put_clients_self(&self, body: &[u8]) -> Result<HttpResponse, TransportError> {
+        let mut headers = self.v3_headers();
+        headers.push(("content-type".to_string(), "application/json".to_string()));
+        let outcome = self
+            .send("PUT", "/app/network/api/clients/self", &headers, body)
+            .await?;
+        if outcome.response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
+            return Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "response body exceeds 64 KiB limit",
+            )));
+        }
+        Ok(outcome.response)
+    }
+
+    pub async fn get_relay_access(&self) -> Result<HttpResponse, TransportError> {
+        let outcome = self
+            .send(
+                "GET",
+                "/app/network/api/relay/access",
+                &self.v3_headers(),
+                &[],
+            )
+            .await?;
+        if outcome.response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
+            return Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "response body exceeds 64 KiB limit",
+            )));
+        }
+        Ok(outcome.response)
     }
 
     /// Attach the persisted pairing state path for best-effort relay token refresh write-back.
@@ -346,15 +450,36 @@ impl ObserverClient {
         let Some(path) = &self.state_path else {
             return;
         };
-        let Ok(mut state) = PairedState::load(path) else {
+        let expected_cas = {
+            let guard = self.cas_key.lock().unwrap();
+            *guard
+        };
+        let Some(expected_cas) = expected_cas else {
             return;
         };
-        let Some(credential) = state.credential.as_mut() else {
-            return;
-        };
-        credential.device_token = Some(token.to_string());
-        credential.device_token_expires_at = Some(expires_at);
-        let _ = state.save(path);
+        let token_str = token.to_string();
+        let res = PairedState::mutate(path, expected_cas, |cred| {
+            cred.device_token = Some(token_str);
+            cred.device_token_expires_at = Some(expires_at);
+            Ok(())
+        });
+        match res {
+            Ok(new_gen) => {
+                let mut guard = self.cas_key.lock().unwrap();
+                if let Some(key) = guard.as_mut() {
+                    key.access_mutation_generation = new_gen;
+                }
+            }
+            Err(StorageError::CasMismatch) => {
+                tracing::debug!(target: "sync", "persist_token skipped due to CAS mismatch");
+            }
+            Err(StorageError::WriteFailed(e)) | Err(StorageError::DurabilityUncertain(e)) => {
+                tracing::warn!(target: "sync", error = %e, "persist_token write failed");
+            }
+            Err(e) => {
+                tracing::warn!(target: "sync", error = %e, "persist_token error");
+            }
+        }
     }
 
     /// Refresh only if the live token still matches the caller's failed token.

@@ -87,6 +87,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let paired = PairedState {
         credential: Some(observer_credential(pin, port)?),
+        ..Default::default()
     };
     paired.save(&args.pairing_out)?;
     write_ready_file(&args.ready_file, port, &args.marker)?;

@@ -31,8 +31,9 @@ use observer_pl::ingest::{
 use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 
-use crate::client::{ObserverClient, SendMetadata};
+use crate::client::{ClientSlot, ObserverClient, SendMetadata};
 use crate::journal_version::JournalVersionController;
+use crate::post_connect::PostConnectController;
 use crate::sealed::{content_type_for, SealedStore};
 use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
@@ -147,6 +148,35 @@ impl UploadClient for ObserverClient {
     }
 }
 
+impl UploadClient for ClientSlot {
+    fn ingest<'a>(
+        &'a self,
+        segment: &'a str,
+        day: &'a str,
+        files: Vec<FilePart>,
+    ) -> IngestFuture<'a> {
+        let client = self.load();
+        Box::pin(async move { client.ingest(segment, day, files).await })
+    }
+
+    fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
+        let client = self.load();
+        Box::pin(async move { client.ingest_manifest().await })
+    }
+
+    fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
+        let client = self.load();
+        let day = day.to_string();
+        Box::pin(async move { client.ingest_manifest_day(&day).await })
+    }
+
+    fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
+        let client = self.load();
+        let day = day.to_string();
+        Box::pin(async move { client.list_segments(&day).await })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UploadOutcome {
     Confirmed,
@@ -256,8 +286,10 @@ impl UploadEvent {
 /// Drives sealed segments to the journal and reconciles them.
 pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
+    client_slot: Option<ClientSlot>,
     version_client: Option<Arc<ObserverClient>>,
     journal_version: Option<Arc<JournalVersionController>>,
+    post_connect: Option<Arc<PostConnectController>>,
     version_generation: u64,
     store: Box<dyn SealedStore>,
     sync: Arc<Mutex<SyncSnapshot>>,
@@ -292,9 +324,38 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client: client.clone(),
+            client_slot: None,
             version_client: Some(client),
             version_generation: journal_version.current_token().0,
             journal_version: Some(journal_version),
+            post_connect: None,
+            store,
+            sync,
+            period_secs: period_secs.max(1),
+            retention,
+            local_offset,
+            quarantine_counts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_slot(
+        client_slot: ClientSlot,
+        store: Box<dyn SealedStore>,
+        sync: Arc<Mutex<SyncSnapshot>>,
+        period_secs: u64,
+        retention: Arc<RwLock<RetentionConfig>>,
+        local_offset: Arc<dyn LocalOffset>,
+        journal_version: Arc<JournalVersionController>,
+        post_connect: Option<Arc<PostConnectController>>,
+    ) -> Self {
+        Self {
+            client: Arc::new(client_slot.clone()),
+            client_slot: Some(client_slot),
+            version_client: None,
+            version_generation: journal_version.current_token().0,
+            journal_version: Some(journal_version),
+            post_connect,
             store,
             sync,
             period_secs: period_secs.max(1),
@@ -315,6 +376,8 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client,
+            client_slot: None,
+            post_connect: None,
             version_client: None,
             journal_version: None,
             version_generation: 0,
@@ -757,8 +820,18 @@ impl UploadCoordinator {
             false
         };
         if is_recovery {
-            if let (Some(jv), Some(vc)) = (&self.journal_version, &self.version_client) {
-                jv.trigger_refresh(vc.clone(), self.sync.clone(), self.version_generation);
+            if let Some(jv) = &self.journal_version {
+                let client = if let Some(slot) = &self.client_slot {
+                    Some(slot.load())
+                } else {
+                    self.version_client.clone()
+                };
+                if let Some(client) = client {
+                    jv.trigger_refresh(client, self.sync.clone(), self.version_generation);
+                }
+            }
+            if let Some(pc) = &self.post_connect {
+                pc.trigger();
             }
         }
     }
@@ -774,6 +847,9 @@ impl UploadCoordinator {
         if was_healthy {
             if let Some(jv) = &self.journal_version {
                 jv.mark_session_disconnected(self.version_generation, &self.sync);
+            }
+            if let Some(pc) = &self.post_connect {
+                pc.mark_session_disconnected(self.version_generation);
             }
         }
     }
@@ -2309,6 +2385,8 @@ mod tests {
 
         let coordinator = UploadCoordinator {
             client,
+            client_slot: None,
+            post_connect: None,
             store: Box::new(store),
             sync: sync.clone(),
             period_secs: 300,

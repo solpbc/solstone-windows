@@ -312,6 +312,7 @@ fn service_config(state_path: PathBuf) -> SyncConfig {
         retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
     }
 }
 
@@ -378,15 +379,18 @@ static NEXT_TEMP_PATH: AtomicUsize = AtomicUsize::new(0);
 
 fn temp_state_path(name: &str) -> PathBuf {
     let n = NEXT_TEMP_PATH.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "journal-bridge-test-{}-{name}-{n}.json",
+    let root = std::env::temp_dir().join(format!(
+        "journal-bridge-test-{}-{name}-{n}",
         std::process::id()
-    ))
+    ));
+    std::fs::create_dir_all(&root).expect("create test-owned state directory");
+    root.join("state.json")
 }
 
 fn paired_state(credential: Credential) -> PairedState {
     PairedState {
         credential: Some(credential),
+        ..Default::default()
     }
 }
 
@@ -602,18 +606,86 @@ async fn start_bridge_with_persistent_server(
     let accepts = Arc::new(AtomicUsize::new(0));
     let (request_tx, request_rx) = mpsc::channel(16);
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<PersistentWrite>();
-    let task = tokio::spawn({
-        let accepts = accepts.clone();
+    let (carrier_tx, mut carrier_rx) = mpsc::channel::<(
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        [u8; 4096],
+        usize,
+    )>(4);
+    let listener_task = tokio::spawn({
+        let acceptor = acceptor.clone();
         async move {
             loop {
                 let Ok((tcp, _)) = listener.accept().await else {
                     break;
                 };
+                let acceptor = acceptor.clone();
+                let carrier_tx = carrier_tx.clone();
+                tokio::spawn(async move {
+                    let Ok(tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let (mut read, mut write) = tokio::io::split(tls);
+                    let mut buf = [0u8; 4096];
+                    let Ok(n) = read.read(&mut buf).await else {
+                        return;
+                    };
+                    let mut decoder = FrameDecoder::new();
+                    decoder.feed(&buf[..n]);
+                    if let Ok(Some(frame)) = decoder.next_frame() {
+                        let is_meta = frame.payload.starts_with(b"GET /app/")
+                            || frame.payload.starts_with(b"PUT /app/")
+                            || frame.payload.starts_with(b"GET /api/system/status");
+                        if is_meta {
+                            let resp = Frame::new(
+                                frame.stream_id,
+                                FLAG_DATA | FLAG_CLOSE,
+                                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                            );
+                            let _ = write.write_all(&resp.encode().unwrap()).await;
+                            let _ = write.flush().await;
+                            let _ = write.shutdown().await;
+                            return;
+                        }
+                    }
+                    let tls = read.unsplit(write);
+                    let _ = carrier_tx.send((tls, buf, n)).await;
+                });
+            }
+        }
+    });
+    let task = tokio::spawn({
+        let accepts = accepts.clone();
+        async move {
+            while let Some((tls, initial_buf, initial_n)) = carrier_rx.recv().await {
                 let carrier_index = accepts.fetch_add(1, Ordering::SeqCst) + 1;
-                let tls = acceptor.accept(tcp).await.unwrap();
                 let (mut read, mut write) = tokio::io::split(tls);
                 let mut decoder = FrameDecoder::new();
                 let mut requests: HashMap<u32, Vec<u8>> = HashMap::new();
+                decoder.feed(&initial_buf[..initial_n]);
+                for frame in decoder.drain().unwrap() {
+                    if let Some(pong) = frame.control_pong() {
+                        let bytes = pong.encode().unwrap();
+                        let _ = write.write_all(&bytes).await;
+                        let _ = write.flush().await;
+                        continue;
+                    }
+                    if frame.flags & FLAG_DATA != 0 {
+                        requests
+                            .entry(frame.stream_id)
+                            .or_default()
+                            .extend_from_slice(&frame.payload);
+                    }
+                    if frame.flags & FLAG_CLOSE != 0 {
+                        let bytes = requests.remove(&frame.stream_id).unwrap_or_default();
+                        let _ = request_tx
+                            .send(PersistentRequest {
+                                carrier_index,
+                                stream_id: frame.stream_id,
+                                bytes,
+                            })
+                            .await;
+                    }
+                }
                 let mut buf = [0u8; 4096];
                 loop {
                     tokio::select! {
@@ -662,12 +734,16 @@ async fn start_bridge_with_persistent_server(
                                     let _ = write.shutdown().await;
                                     break;
                                 }
-                                None => return,
+                                None => {
+                                    listener_task.abort();
+                                    return;
+                                }
                             }
                         }
                     }
                 }
             }
+            listener_task.abort();
         }
     });
     let paired = paired_state(observer_credential(pin, upstream_port));
@@ -2072,7 +2148,11 @@ async fn journal_bridge_carrier_death_redials_without_replaying_failed_stream() 
     });
     let ok_request = server.next_request().await;
     assert_eq!(ok_request.carrier_index, 1);
-    assert!(String::from_utf8_lossy(&ok_request.bytes).starts_with("GET /ok HTTP/1.1\r\n"));
+    assert!(
+        String::from_utf8_lossy(&ok_request.bytes).starts_with("GET /ok HTTP/1.1\r\n"),
+        "got: {:?}",
+        String::from_utf8_lossy(&ok_request.bytes)
+    );
     server.send_http(ok_request.stream_id, "200 OK", b"ok");
     assert_eq!(response_body(&ok.await.unwrap()), "ok");
 
@@ -2114,7 +2194,11 @@ async fn journal_bridge_carrier_death_redials_without_replaying_failed_stream() 
     });
     let after_request = server.next_request().await;
     assert_eq!(after_request.carrier_index, 2);
-    assert!(String::from_utf8_lossy(&after_request.bytes).starts_with("GET /after HTTP/1.1\r\n"));
+    assert!(
+        String::from_utf8_lossy(&after_request.bytes).starts_with("GET /after HTTP/1.1\r\n"),
+        "after_request: {:?}",
+        String::from_utf8_lossy(&after_request.bytes)
+    );
     assert!(
         !String::from_utf8_lossy(&after_request.bytes).starts_with("GET /dies HTTP/1.1\r\n"),
         "failed in-flight request must not be replayed on the new carrier"
@@ -2419,4 +2503,1025 @@ async fn transient_lan_fault_then_success_absorbed_before_relay() {
     let _ = server.await.unwrap();
     assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
     relay_task.abort();
+}
+
+struct ScriptedJournalServer {
+    port: u16,
+    pin: Vec<u8>,
+    requests: Arc<Mutex<Vec<RecordedJournalRequest>>>,
+    task: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone)]
+struct RecordedJournalRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+impl ScriptedJournalServer {
+    fn abort(self) {
+        self.task.abort();
+    }
+}
+
+fn parse_raw_http_request(bytes: &[u8]) -> (String, String, HashMap<String, String>, Vec<u8>) {
+    let header_end = bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(bytes.len());
+    let head_str = String::from_utf8_lossy(&bytes[..header_end]);
+    let body = if header_end + 4 <= bytes.len() {
+        bytes[header_end + 4..].to_vec()
+    } else {
+        Vec::new()
+    };
+    let mut lines = head_str.lines();
+    let req_line = lines.next().unwrap_or("");
+    let mut parts = req_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let mut headers = HashMap::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        }
+    }
+    (method, path, headers, body)
+}
+
+fn format_http_response(status_code: u16, headers: &[(String, String)], body: &[u8]) -> Vec<u8> {
+    let reason = match status_code {
+        200 => "OK",
+        302 => "Found",
+        404 => "Not Found",
+        409 => "Conflict",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Status",
+    };
+    let mut out = format!(
+        "HTTP/1.1 {status_code} {reason}\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    let mut has_ct = false;
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case("content-type") {
+            has_ct = true;
+        }
+        out.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if !has_ct {
+        out.push_str("Content-Type: application/json\r\n");
+    }
+    out.push_str("\r\n");
+    let mut resp_bytes = out.into_bytes();
+    resp_bytes.extend_from_slice(body);
+    resp_bytes
+}
+
+async fn spawn_scripted_journal_server<F>(handler: F) -> ScriptedJournalServer
+where
+    F: Fn(&str, &str, &HashMap<String, String>, &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>)
+        + Send
+        + Sync
+        + 'static,
+{
+    let (cert, key) = self_signed();
+    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let handler = Arc::new(handler);
+
+    let requests_clone = requests.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else {
+                break;
+            };
+            let acceptor = acceptor.clone();
+            let handler = handler.clone();
+            let requests = requests_clone.clone();
+
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let mut decoder = FrameDecoder::new();
+                let mut stream_buffers: HashMap<u32, Vec<u8>> = HashMap::new();
+                let mut buf = [0u8; 4096];
+
+                loop {
+                    let n = match tls.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    decoder.feed(&buf[..n]);
+
+                    let Ok(frames) = decoder.drain() else {
+                        break;
+                    };
+
+                    for frame in frames {
+                        let stream_id = frame.stream_id;
+                        if frame.flags & FLAG_DATA != 0 {
+                            stream_buffers
+                                .entry(stream_id)
+                                .or_default()
+                                .extend_from_slice(&frame.payload);
+                        }
+                        if frame.flags & FLAG_CLOSE != 0 {
+                            let req_bytes = stream_buffers.remove(&stream_id).unwrap_or_default();
+                            let (method, path, headers, body) = parse_raw_http_request(&req_bytes);
+                            requests.lock().unwrap().push(RecordedJournalRequest {
+                                method: method.clone(),
+                                path: path.clone(),
+                                body: body.clone(),
+                            });
+
+                            let (status, resp_headers, resp_body) =
+                                handler(&method, &path, &headers, &body);
+                            let resp_bytes =
+                                format_http_response(status, &resp_headers, &resp_body);
+
+                            let chunk_size = 16384;
+                            let total_chunks = resp_bytes.len().div_ceil(chunk_size);
+                            if total_chunks == 0 {
+                                let resp_frame =
+                                    Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, Vec::new());
+                                if let Ok(encoded) = resp_frame.encode() {
+                                    let _ = tls.write_all(&encoded).await;
+                                    let _ = tls.flush().await;
+                                }
+                            } else {
+                                for (i, chunk) in resp_bytes.chunks(chunk_size).enumerate() {
+                                    let is_last = i + 1 == total_chunks;
+                                    let flags = if is_last {
+                                        FLAG_DATA | FLAG_CLOSE
+                                    } else {
+                                        FLAG_DATA
+                                    };
+                                    let resp_frame = Frame::new(stream_id, flags, chunk.to_vec());
+                                    if let Ok(encoded) = resp_frame.encode() {
+                                        if tls.write_all(&encoded).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                let _ = tls.flush().await;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    ScriptedJournalServer {
+        port,
+        pin,
+        requests,
+        task,
+    }
+}
+
+fn epoch_to_rfc3339(ts: i64) -> String {
+    let sec = (ts % 60) as u32;
+    let rem = ts / 60;
+    let min = (rem % 60) as u32;
+    let rem = rem / 60;
+    let hour = (rem % 24) as u32;
+    let mut days = rem / 24;
+
+    let mut year = 1970i32;
+    loop {
+        let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let days_in_year = if leap { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1usize;
+    for (m, &md) in month_days.iter().enumerate() {
+        if days < md {
+            month = m + 1;
+            break;
+        }
+        days -= md;
+    }
+    let day = (days + 1) as u32;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+fn mint_test_jwt_v2(instance_id: &str, exp: i64) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"none\",\"typ\":\"JWT\"}");
+    let claims = serde_json::json!({
+        "iss": "https://relay.test.solstone.app",
+        "sub": format!("instance:{instance_id}"),
+        "aud": "spl-relay",
+        "scope": "session.dial",
+        "ver": 2,
+        "instance_id": instance_id,
+        "iat": exp - 3600,
+        "exp": exp,
+        "jti": "jti-test-123"
+    });
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+    format!("{header}.{payload}.testsig")
+}
+
+#[tokio::test]
+async fn test_adapter_metadata_get_put_on_first_send() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": 0,
+                "reported": null,
+                "owner_label": "Alice's Studio",
+                "display_label": "Studio PC",
+                "updated_at": "2026-09-07T12:00:00Z",
+                "journal": {
+                    "name": "Alice's Journal",
+                    "version": "1.0.0"
+                }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("PUT", "/app/network/api/clients/self") => {
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": 1
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("meta-first-send");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(cred.clone()).unwrap();
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
+        name: Some("Studio PC".into()),
+        platform: Some("windows".into()),
+        device_type: None,
+        app_id: Some("app.solstone.windows".into()),
+        app_version: Some("2.0.0".into()),
+    });
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot,
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if controller.last_published_metadata().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("metadata publication did not complete in time");
+
+    let requests = server.requests.lock().unwrap().clone();
+    let get_req = requests
+        .iter()
+        .find(|r| r.method == "GET" && r.path == "/app/network/api/clients/self");
+    let put_req = requests
+        .iter()
+        .find(|r| r.method == "PUT" && r.path == "/app/network/api/clients/self");
+
+    assert!(
+        get_req.is_some(),
+        "expected GET /app/network/api/clients/self"
+    );
+    assert!(
+        put_req.is_some(),
+        "expected PUT /app/network/api/clients/self"
+    );
+
+    let put_json: serde_json::Value = serde_json::from_slice(&put_req.unwrap().body).unwrap();
+    assert_eq!(put_json["protocol_version"], 1);
+    assert_eq!(put_json["expected_revision"], 0);
+    assert_eq!(put_json["reported"]["name"], "Studio PC");
+    assert_eq!(put_json["reported"]["platform"], "windows");
+    assert!(put_json["reported"]["device_type"].is_null());
+    assert_eq!(put_json["reported"]["app_id"], "app.solstone.windows");
+    assert_eq!(put_json["reported"]["app_version"], "2.0.0");
+    assert!(put_json.get("owner_label").is_none());
+    assert!(put_json.get("display_label").is_none());
+    assert!(put_json.get("journal").is_none());
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_clients_self_404_no_put() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            (404, vec![], b"{\"error\":\"not found\"}".to_vec())
+        }
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1}".to_vec(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("meta-404");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(cred.clone()).unwrap();
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
+        name: Some("Test PC".into()),
+        platform: Some("windows".into()),
+        device_type: None,
+        app_id: Some("app.solstone.windows".into()),
+        app_version: Some("2.0.0".into()),
+    });
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot,
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let requests = server.requests.lock().unwrap().clone();
+    let gets = requests
+        .iter()
+        .filter(|r| r.method == "GET" && r.path == "/app/network/api/clients/self")
+        .count();
+    let puts = requests
+        .iter()
+        .filter(|r| r.method == "PUT" && r.path == "/app/network/api/clients/self")
+        .count();
+
+    assert_eq!(gets, 1);
+    assert_eq!(puts, 0, "no PUT should be sent when GET returns 404");
+    assert!(controller.last_published_metadata().is_none());
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_3xx_redirect_on_get_clients_self_and_get_relay_access() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            302,
+            vec![(
+                "location".into(),
+                "http://192.168.1.99:9999/off-channel".into(),
+            )],
+            b"".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => (
+            302,
+            vec![(
+                "location".into(),
+                "http://192.168.1.99:9999/off-channel".into(),
+            )],
+            b"".to_vec(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let client = ObserverClient::new(cred).unwrap();
+
+    let meta_res = client.get_clients_self().await.unwrap();
+    assert_eq!(meta_res.status, 302);
+
+    let relay_res = client.get_relay_access().await.unwrap();
+    assert_eq!(relay_res.status, 302);
+
+    let requests = server.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests.len(),
+        2,
+        "exactly two requests sent, no redirect followed"
+    );
+    assert_eq!(requests[0].path, "/app/network/api/clients/self");
+    assert_eq!(requests[1].path, "/app/network/api/relay/access");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_adapter_metadata_409_conflict_retry() {
+    let put_attempts = Arc::new(AtomicUsize::new(0));
+    let get_attempts = Arc::new(AtomicUsize::new(0));
+    let pa = put_attempts.clone();
+    let ga = get_attempts.clone();
+
+    let server = spawn_scripted_journal_server(move |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            let g = ga.fetch_add(1, Ordering::SeqCst);
+            let rev = if g == 0 { 5 } else { 6 };
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": rev,
+                "reported": null,
+                "owner_label": "Owner",
+                "display_label": "Display",
+                "updated_at": "2026-09-07T12:00:00Z",
+                "journal": { "name": "J", "version": "1.0.0" }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("PUT", "/app/network/api/clients/self") => {
+            let p = pa.fetch_add(1, Ordering::SeqCst);
+            if p == 0 {
+                (409, vec![], b"{\"error\":\"conflict\"}".to_vec())
+            } else {
+                let body = serde_json::json!({
+                    "protocol_version": 1,
+                    "revision": 7
+                });
+                (200, vec![], serde_json::to_vec(&body).unwrap())
+            }
+        }
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("meta-409");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(cred.clone()).unwrap();
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
+        name: Some("Studio PC".into()),
+        platform: Some("windows".into()),
+        device_type: None,
+        app_id: Some("app.solstone.windows".into()),
+        app_version: Some("2.0.0".into()),
+    });
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot,
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if controller.last_published_metadata().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("409 retry did not succeed in time");
+
+    let requests = server.requests.lock().unwrap().clone();
+    let puts: Vec<_> = requests
+        .iter()
+        .filter(|r| r.method == "PUT" && r.path == "/app/network/api/clients/self")
+        .collect();
+    assert_eq!(
+        puts.len(),
+        2,
+        "exactly two PUTs (one initial + one 409 retry)"
+    );
+
+    let first_put: serde_json::Value = serde_json::from_slice(&puts[0].body).unwrap();
+    assert_eq!(first_put["expected_revision"], 5);
+
+    let second_put: serde_json::Value = serde_json::from_slice(&puts[1].body).unwrap();
+    assert_eq!(second_put["expected_revision"], 6);
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_corrupt_json_get_no_put() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            (200, vec![], b"{\"not\": \"metadata\"}".to_vec())
+        }
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1}".to_vec(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("meta-corrupt-json");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(cred.clone()).unwrap();
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
+        name: Some("Test PC".into()),
+        platform: Some("windows".into()),
+        device_type: None,
+        app_id: Some("app.solstone.windows".into()),
+        app_version: Some("2.0.0".into()),
+    });
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot,
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let requests = server.requests.lock().unwrap().clone();
+    let gets = requests
+        .iter()
+        .filter(|r| r.method == "GET" && r.path == "/app/network/api/clients/self")
+        .count();
+    let puts = requests
+        .iter()
+        .filter(|r| r.method == "PUT" && r.path == "/app/network/api/clients/self")
+        .count();
+
+    assert_eq!(gets, 1);
+    assert_eq!(
+        puts, 0,
+        "no PUT should be sent when GET response is corrupt JSON"
+    );
+    assert!(controller.last_published_metadata().is_none());
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_oversize_response_body_rejected() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            let oversize_body = vec![b'x'; 65 * 1024 + 1];
+            (200, vec![], oversize_body)
+        }
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let client = ObserverClient::new(cred).unwrap();
+
+    let err = client.get_clients_self().await.unwrap_err();
+    match err {
+        TransportError::Io(e) => {
+            assert!(e.to_string().contains("64 KiB"));
+        }
+        other => panic!(
+            "expected TransportError::Io for oversize response, got {:?}",
+            other
+        ),
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_adapter_relay_access_ready() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let valid_jwt = mint_test_jwt_v2("inst-test-123", now + 3600);
+    let valid_jwt_clone = valid_jwt.clone();
+
+    let server = spawn_scripted_journal_server(move |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/relay/access") => {
+            let body = serde_json::json!({
+                "status": "ready",
+                "protocol_version": 2,
+                "relay_origin": "https://relay.test.solstone.app",
+                "instance_id": "inst-test-123",
+                "device_token": valid_jwt_clone,
+                "expires_at": epoch_to_rfc3339(now + 3600)
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let mut cred = observer_credential(server.pin.clone(), server.port);
+    cred.instance_id = "inst-test-123".into();
+    cred.relay_origin = None;
+    cred.device_token = None;
+    cred.device_token_expires_at = None;
+
+    let state_path = temp_state_path("relay-ready");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(cred.clone())
+        .unwrap()
+        .with_state_path(state_path.clone());
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if slot.load().credential().relay_origin.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("relay access ready did not apply in time");
+
+    let loaded = PairedState::load(&state_path).unwrap();
+    assert_eq!(loaded.access_mutation_generation, 1);
+    let disk_cred = loaded.credential.unwrap();
+    assert_eq!(
+        disk_cred.relay_origin.as_deref(),
+        Some("https://relay.test.solstone.app")
+    );
+    assert_eq!(disk_cred.device_token.as_deref(), Some(valid_jwt.as_str()));
+
+    let active_cred = slot.load().credential().clone();
+    assert_eq!(
+        active_cred.relay_origin.as_deref(),
+        Some("https://relay.test.solstone.app")
+    );
+    assert_eq!(
+        active_cred.device_token.as_deref(),
+        Some(valid_jwt.as_str())
+    );
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_relay_access_404_503_and_not_configured() {
+    let mode = Arc::new(AtomicUsize::new(0)); // 0 = 404, 1 = 503, 2 = not_configured
+    let mode_clone = mode.clone();
+
+    let server = spawn_scripted_journal_server(move |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/relay/access") => match mode_clone.load(Ordering::SeqCst) {
+            0 => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+            1 => (503, vec![], b"{\"error\":\"unavailable\"}".to_vec()),
+            _ => {
+                let body = serde_json::json!({
+                    "status": "not_configured",
+                    "protocol_version": 2
+                });
+                (200, vec![], serde_json::to_vec(&body).unwrap())
+            }
+        },
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let mut cred = observer_credential(server.pin.clone(), server.port);
+    cred.instance_id = "inst-test-123".into();
+    cred.relay_origin = Some("https://relay.cached.app".into());
+    cred.device_token = Some("cached-token".into());
+    cred.device_token_expires_at = Some(1800000000);
+
+    let state_path = temp_state_path("relay-not-config");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(cred.clone())
+        .unwrap()
+        .with_state_path(state_path.clone());
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+
+    // 1. 404 response preserves cached credentials
+    mode.store(0, Ordering::SeqCst);
+    controller.trigger();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        slot.load().credential().relay_origin.as_deref(),
+        Some("https://relay.cached.app")
+    );
+    assert_eq!(
+        PairedState::load(&state_path)
+            .unwrap()
+            .credential
+            .unwrap()
+            .relay_origin
+            .as_deref(),
+        Some("https://relay.cached.app")
+    );
+
+    // 2. 503 response preserves cached credentials
+    mode.store(1, Ordering::SeqCst);
+    controller.trigger();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        slot.load().credential().relay_origin.as_deref(),
+        Some("https://relay.cached.app")
+    );
+    assert_eq!(
+        PairedState::load(&state_path)
+            .unwrap()
+            .credential
+            .unwrap()
+            .relay_origin
+            .as_deref(),
+        Some("https://relay.cached.app")
+    );
+
+    // 3. not_configured clears cached credentials in live slot and on disk
+    mode.store(2, Ordering::SeqCst);
+    controller.trigger();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if slot.load().credential().relay_origin.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("not_configured did not clear credentials in time");
+
+    assert!(slot.load().credential().relay_origin.is_none());
+    assert!(slot.load().credential().device_token.is_none());
+    assert!(PairedState::load(&state_path)
+        .unwrap()
+        .credential
+        .unwrap()
+        .relay_origin
+        .is_none());
+    assert!(PairedState::load(&state_path)
+        .unwrap()
+        .credential
+        .unwrap()
+        .device_token
+        .is_none());
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_unchanged_snapshot_no_second_put() {
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let pc = put_count.clone();
+
+    let server = spawn_scripted_journal_server(move |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            let count = pc.load(Ordering::SeqCst);
+            let reported = if count == 0 {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({
+                    "name": "Studio PC",
+                    "platform": "windows",
+                    "device_type": null,
+                    "app_id": "app.solstone.windows",
+                    "app_version": "2.0.0"
+                })
+            };
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": count as u64,
+                "reported": reported,
+                "owner_label": "Owner",
+                "display_label": "Display",
+                "updated_at": "2026-09-07T12:00:00Z",
+                "journal": { "name": "J", "version": "1.0.0" }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("PUT", "/app/network/api/clients/self") => {
+            let prev = pc.fetch_add(1, Ordering::SeqCst);
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": (prev + 1) as u64
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("meta-unchanged-noop");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(cred.clone()).unwrap();
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
+        name: Some("Studio PC".into()),
+        platform: Some("windows".into()),
+        device_type: None,
+        app_id: Some("app.solstone.windows".into()),
+        app_version: Some("2.0.0".into()),
+    });
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot,
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+
+    // 1st trigger sends PUT
+    controller.trigger();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if controller.last_published_metadata().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(put_count.load(Ordering::SeqCst), 1);
+
+    // 2nd trigger with unchanged facts issues GET, sees match, does NOT send 2nd PUT
+    controller.trigger();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        put_count.load(Ordering::SeqCst),
+        1,
+        "unchanged facts must not issue a second PUT"
+    );
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_service_and_carrier_trigger_post_connect() {
+    let facts_sampled = Arc::new(AtomicUsize::new(0));
+    let fs = facts_sampled.clone();
+
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1}".to_vec(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("carrier-trigger-evidence");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let (jv, sync) = test_jv_and_sync("carrier-trigger");
+    let facts_fn: Arc<dyn Fn() -> pl_transport_win::device_metadata::RawDeviceFacts + Send + Sync> =
+        Arc::new(move || {
+            fs.fetch_add(1, Ordering::SeqCst);
+            pl_transport_win::device_metadata::RawDeviceFacts {
+                name: Some("Trigger Test".into()),
+                platform: Some("windows".into()),
+                device_type: None,
+                app_id: Some("app.solstone.windows".into()),
+                app_version: Some("2.0.0".into()),
+            }
+        });
+
+    let handle = journal_bridge::start_observed_with_facts(
+        &paired,
+        state_path.clone(),
+        None,
+        jv,
+        sync,
+        facts_fn,
+    )
+    .await
+    .unwrap();
+
+    let cap = capability_from(&handle);
+    let _ = raw_bridge_request(
+        handle.port(),
+        "GET",
+        "/app/status",
+        Some(loopback_host(handle.port())),
+        Some(cap_cookie(&cap)),
+        &[],
+        b"",
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if facts_sampled.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("facts_fn should be called on post-connect trigger");
+
+    handle.shutdown_and_wait().await;
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
 }

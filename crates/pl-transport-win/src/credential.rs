@@ -19,7 +19,7 @@ use crate::TransportError;
 
 const CREDENTIAL_WRAP_MARKER: &str = "dpapi:v1:";
 
-trait Protector {
+pub(crate) trait Protector {
     fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, TransportError>;
     fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, TransportError>;
 }
@@ -208,10 +208,49 @@ pub struct Credential {
     pub device_token_expires_at: Option<i64>,
 }
 
+/// Derive the pairing generation from the SHA-256 of the client certificate PEM.
+///
+/// Same-home re-pair mints a new certificate, so this value changes on every re-pair.
+pub fn pairing_generation(client_cert_pem: &str) -> u64 {
+    let digest = observer_pl::ca::sha256(client_cert_pem.as_bytes());
+    u64::from_be_bytes(digest[..8].try_into().unwrap())
+}
+
+/// The CAS key for pairing state mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CasKey {
+    pub pairing_generation: u64,
+    pub access_mutation_generation: u64,
+}
+
+/// Storage error for pairing state mutations.
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    #[error("cas mismatch")]
+    CasMismatch,
+    #[error("write failed: {0}")]
+    WriteFailed(std::io::Error),
+    #[error("durability uncertain: {0}")]
+    DurabilityUncertain(std::io::Error),
+    #[error("transport error: {0}")]
+    Transport(#[from] TransportError),
+    #[error("crypto error: {0}")]
+    Crypto(String),
+}
+
+static PAIRING_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FS_FAIL_POINT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
 /// The full persisted sync identity: the paired mTLS credential.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PairedState {
     pub credential: Option<Credential>,
+    #[serde(default)]
+    pub access_mutation_generation: u64,
 }
 
 impl PairedState {
@@ -236,13 +275,35 @@ impl PairedState {
         Ok(state)
     }
 
-    /// Atomically persist to a JSON file (write-temp-then-rename).
+    /// Atomically persist to a JSON file (write-temp-then-rename) with parent directory sync.
     pub fn save(&self, path: &Path) -> Result<(), TransportError> {
         self.save_with(&platform_protector(), path)
     }
 
-    fn save_with(&self, protector: &dyn Protector, path: &Path) -> Result<(), TransportError> {
-        let mut state = self.clone();
+    pub(crate) fn save_with(
+        &self,
+        protector: &dyn Protector,
+        path: &Path,
+    ) -> Result<(), TransportError> {
+        let _guard = PAIRING_MUTEX.lock().unwrap();
+        match Self::save_inner(protector, path, self) {
+            Ok(_) => Ok(()),
+            Err(StorageError::Transport(e)) => Err(e),
+            Err(StorageError::WriteFailed(e)) => Err(TransportError::Io(e)),
+            Err(StorageError::DurabilityUncertain(e)) => Err(TransportError::Io(e)),
+            Err(StorageError::Crypto(msg)) => Err(TransportError::Crypto(msg)),
+            Err(StorageError::CasMismatch) => {
+                Err(TransportError::Io(std::io::Error::other("cas mismatch")))
+            }
+        }
+    }
+
+    fn save_inner(
+        protector: &dyn Protector,
+        path: &Path,
+        state: &PairedState,
+    ) -> Result<(), StorageError> {
+        let mut state = state.clone();
         if let Some(cred) = state.credential.as_mut() {
             cred.client_key_pem = wrap_secret(protector, &cred.client_key_pem)?;
             if let Some(token) = cred.device_token.take() {
@@ -250,12 +311,59 @@ impl PairedState {
             }
         }
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(StorageError::WriteFailed)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&state)?)?;
-        std::fs::rename(&tmp, path)?;
+        let bytes = serde_json::to_vec_pretty(&state)
+            .map_err(|e| StorageError::Transport(TransportError::from(e)))?;
+        std::fs::write(&tmp, bytes).map_err(StorageError::WriteFailed)?;
+
+        #[cfg(test)]
+        if FS_FAIL_POINT.with(|f| f.get()) == 1 {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(StorageError::WriteFailed(std::io::Error::other(
+                "simulated pre-rename write failure",
+            )));
+        }
+
+        std::fs::rename(&tmp, path).map_err(StorageError::WriteFailed)?;
+
+        #[cfg(test)]
+        if FS_FAIL_POINT.with(|f| f.get()) == 2 {
+            return Err(StorageError::DurabilityUncertain(std::io::Error::other(
+                "simulated post-rename dirsync failure",
+            )));
+        }
+
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                if let Err(e) = dir.sync_all() {
+                    return Err(StorageError::DurabilityUncertain(e));
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Mutate credential fields within an ordered process-wide CAS boundary.
+    pub fn mutate<F>(path: &Path, expected: CasKey, f: F) -> Result<u64, StorageError>
+    where
+        F: FnOnce(&mut Credential) -> Result<(), StorageError>,
+    {
+        let _guard = PAIRING_MUTEX.lock().unwrap();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let cred = state.credential.as_mut().ok_or(StorageError::CasMismatch)?;
+        let actual_pairing_gen = pairing_generation(&cred.client_cert_pem);
+        if actual_pairing_gen != expected.pairing_generation
+            || state.access_mutation_generation != expected.access_mutation_generation
+        {
+            return Err(StorageError::CasMismatch);
+        }
+        f(cred)?;
+        state.access_mutation_generation = state.access_mutation_generation.wrapping_add(1);
+        Self::save_inner(&protector, path, &state)?;
+        Ok(state.access_mutation_generation)
     }
 
     pub fn is_paired(&self) -> bool {
@@ -404,6 +512,7 @@ mod tests {
                 device_token: device_token.map(str::to_string),
                 device_token_expires_at: None,
             }),
+            ..Default::default()
         }
     }
 
@@ -460,6 +569,7 @@ mod tests {
                 device_token: None,
                 device_token_expires_at: None,
             }),
+            ..Default::default()
         };
         state.save(&path).unwrap();
         let loaded = PairedState::load(&path).unwrap();
@@ -581,6 +691,7 @@ mod tests {
                 device_token: Some("token".into()),
                 device_token_expires_at: Some(123),
             }),
+            ..Default::default()
         };
         let json = serde_json::to_string(&state).unwrap();
         let loaded: PairedState = serde_json::from_str(&json).unwrap();
@@ -641,6 +752,99 @@ mod tests {
             endpoint_addrs_from_local_endpoints(Some(&serde_json::json!({"ip": "10.0.0.2"})))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn test_paired_state_mutate_success() {
+        let path = temp_pairing_path("mutate-success");
+        let initial_state = paired_state_with("test-key", Some("token-1"));
+        initial_state.save(&path).unwrap();
+
+        let cert = &initial_state.credential.as_ref().unwrap().client_cert_pem;
+        let p_gen = pairing_generation(cert);
+        let cas = CasKey {
+            pairing_generation: p_gen,
+            access_mutation_generation: 0,
+        };
+
+        let new_gen = PairedState::mutate(&path, cas, |cred| {
+            cred.device_token = Some("token-2".into());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(new_gen, 1);
+        let loaded = PairedState::load(&path).unwrap();
+        assert_eq!(loaded.access_mutation_generation, 1);
+        assert_eq!(
+            loaded.credential.unwrap().device_token.as_deref(),
+            Some("token-2")
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_paired_state_mutate_cas_mismatch() {
+        let path = temp_pairing_path("mutate-cas-mismatch");
+        let initial_state = paired_state_with("test-key", Some("token-1"));
+        initial_state.save(&path).unwrap();
+
+        let wrong_cas = CasKey {
+            pairing_generation: 999999,
+            access_mutation_generation: 0,
+        };
+
+        let res = PairedState::mutate(&path, wrong_cas, |cred| {
+            cred.device_token = Some("token-2".into());
+            Ok(())
+        });
+        assert!(matches!(res, Err(StorageError::CasMismatch)));
+
+        let wrong_gen_cas = CasKey {
+            pairing_generation: pairing_generation(
+                &initial_state.credential.as_ref().unwrap().client_cert_pem,
+            ),
+            access_mutation_generation: 5,
+        };
+        let res2 = PairedState::mutate(&path, wrong_gen_cas, |cred| {
+            cred.device_token = Some("token-2".into());
+            Ok(())
+        });
+        assert!(matches!(res2, Err(StorageError::CasMismatch)));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_paired_state_mutate_fail_points() {
+        let path = temp_pairing_path("mutate-fail-points");
+        let initial_state = paired_state_with("test-key", Some("token-1"));
+        initial_state.save(&path).unwrap();
+
+        let cert = &initial_state.credential.as_ref().unwrap().client_cert_pem;
+        let cas = CasKey {
+            pairing_generation: pairing_generation(cert),
+            access_mutation_generation: 0,
+        };
+
+        FS_FAIL_POINT.with(|f| f.set(1));
+        let res_wf = PairedState::mutate(&path, cas, |cred| {
+            cred.device_token = Some("token-wf".into());
+            Ok(())
+        });
+        assert!(matches!(res_wf, Err(StorageError::WriteFailed(_))));
+
+        FS_FAIL_POINT.with(|f| f.set(2));
+        let res_du = PairedState::mutate(&path, cas, |cred| {
+            cred.device_token = Some("token-du".into());
+            Ok(())
+        });
+        assert!(matches!(res_du, Err(StorageError::DurabilityUncertain(_))));
+
+        FS_FAIL_POINT.with(|f| f.set(0));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[cfg(windows)]

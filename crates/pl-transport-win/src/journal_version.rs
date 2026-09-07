@@ -197,6 +197,45 @@ impl JournalVersionController {
         }
     }
 
+    /// Publish a valid journal version discovered out-of-band (e.g. from post-connect metadata GET)
+    /// without clobbering in-flight fetch tokens.
+    pub fn publish_version(
+        &self,
+        version: &str,
+        session_generation: u64,
+        sync: &Arc<Mutex<SyncSnapshot>>,
+    ) {
+        let mut state = self.state.lock().expect("journal_version lock");
+        if state.session_generation != session_generation || state.instance_id.is_none() {
+            return;
+        }
+        if !is_sanitized_version(version) {
+            return;
+        }
+        state.version = Some(version.to_string());
+        state.fresh = true;
+        if let (Some(instance_id), Some(ca_fp_prefix_hex)) =
+            (&state.instance_id, &state.ca_fp_prefix_hex)
+        {
+            let _ = save_persisted_atomic(
+                &self.state_path,
+                &PersistedJournalVersion {
+                    instance_id: instance_id.clone(),
+                    ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
+                    version: version.to_string(),
+                    updated_at_epoch_secs: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                },
+            );
+        }
+        if let Ok(mut s) = sync.lock() {
+            s.journal_version = Some(version.to_string());
+            s.journal_version_fresh = true;
+        }
+    }
+
     /// Trigger a background refresh of the journal version.
     /// Coalesces overlapping fetches within the exact current (session_generation, connection_epoch) token.
     pub fn trigger_refresh(
