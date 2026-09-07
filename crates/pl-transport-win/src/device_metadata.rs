@@ -41,6 +41,16 @@ fn required_nullable<T: serde::de::DeserializeOwned>(
     serde_json::from_value(value).map_err(|_| format!("invalid {field}"))
 }
 
+fn required<T: serde::de::DeserializeOwned>(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &'static str,
+) -> Result<T, String> {
+    let value = object
+        .remove(field)
+        .ok_or_else(|| format!("missing {field}"))?;
+    serde_json::from_value(value).map_err(|_| format!("invalid {field}"))
+}
+
 fn valid_value(value: &Option<String>, max: usize) -> bool {
     value
         .as_deref()
@@ -125,7 +135,7 @@ pub struct MetadataPutRequest<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct JournalInfo {
     pub name: Option<String>,
-    pub version: Option<String>,
+    pub version: String,
 }
 
 fn valid_journal_value(value: &Option<String>, max: usize) -> bool {
@@ -153,11 +163,11 @@ impl<'de> Deserialize<'de> for JournalInfo {
             .ok_or_else(|| serde::de::Error::custom("journal must be an object"))?;
         let journal = Self {
             name: required_nullable(&mut object, "name").map_err(serde::de::Error::custom)?,
-            version: required_nullable(&mut object, "version").map_err(serde::de::Error::custom)?,
+            version: required(&mut object, "version").map_err(serde::de::Error::custom)?,
         };
         if !object.is_empty()
             || !valid_journal_value(&journal.name, MAX_NAME_BYTES)
-            || !valid_journal_value(&journal.version, 128)
+            || !valid_journal_value(&Some(journal.version.clone()), 128)
         {
             return Err(serde::de::Error::custom("invalid journal"));
         }
@@ -172,9 +182,9 @@ pub struct MetadataGetResponse {
     pub revision: u64,
     pub reported: Option<ReportedMetadata>,
     pub owner_label: Option<String>,
-    pub display_label: Option<String>,
+    pub display_label: String,
     pub updated_at: Option<String>,
-    pub journal: Option<JournalInfo>,
+    pub journal: JournalInfo,
 }
 
 impl<'de> Deserialize<'de> for MetadataGetResponse {
@@ -204,11 +214,11 @@ impl<'de> Deserialize<'de> for MetadataGetResponse {
                 .map_err(serde::de::Error::custom)?,
             owner_label: required_nullable(&mut object, "owner_label")
                 .map_err(serde::de::Error::custom)?,
-            display_label: required_nullable(&mut object, "display_label")
+            display_label: required(&mut object, "display_label")
                 .map_err(serde::de::Error::custom)?,
             updated_at: required_nullable(&mut object, "updated_at")
                 .map_err(serde::de::Error::custom)?,
-            journal: required_nullable(&mut object, "journal").map_err(serde::de::Error::custom)?,
+            journal: required(&mut object, "journal").map_err(serde::de::Error::custom)?,
         };
         if !object.is_empty() {
             return Err(serde::de::Error::custom("unknown metadata response field"));
@@ -296,9 +306,9 @@ mod tests {
             "protocol_version": 1,
             "revision": 0,
             "reported": null,
-            "display_label": null,
+            "display_label": "Device",
             "updated_at": null,
-            "journal": null
+            "journal": {"name":null,"version":"1.0"}
         }"#;
         assert!(serde_json::from_str::<MetadataGetResponse>(omitted).is_err());
 
@@ -307,13 +317,25 @@ mod tests {
             "revision": 0,
             "reported": null,
             "owner_label": null,
-            "display_label": null,
+            "display_label": "Device",
             "updated_at": null,
-            "journal": null
+            "journal": {"name":null,"version":"1.0"}
         }"#;
         let parsed: MetadataGetResponse = serde_json::from_str(full_null).unwrap();
         assert_eq!(parsed.reported, None);
-        assert_eq!(parsed.journal, None);
+        assert_eq!(parsed.journal.name, None);
+        for (key, value) in [
+            ("display_label", serde_json::Value::Null),
+            ("journal", serde_json::Value::Null),
+            (
+                "journal",
+                serde_json::json!({"name": null, "version": null}),
+            ),
+        ] {
+            let mut invalid: serde_json::Value = serde_json::from_str(full_null).unwrap();
+            invalid[key] = value;
+            assert!(serde_json::from_value::<MetadataGetResponse>(invalid).is_err());
+        }
         assert!(serde_json::from_str::<MetadataPutResponse>(full_null).is_ok());
     }
 }

@@ -2801,9 +2801,9 @@ async fn test_adapter_metadata_get_put_on_first_send() {
                 "revision": 1,
                 "reported": null,
                 "owner_label": null,
-                "display_label": null,
+                "display_label": "Device",
                 "updated_at": null,
-                "journal": null
+                "journal": {"name":null,"version":"1.0.0"}
             });
             (200, vec![], serde_json::to_vec(&body).unwrap())
         }
@@ -2885,18 +2885,7 @@ async fn test_adapter_metadata_get_put_on_first_send() {
 #[tokio::test]
 async fn test_adapter_metadata_version_fallback_preserves_journal_name() {
     let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
-        ("GET", "/app/network/api/clients/self") => {
-            let body = serde_json::json!({
-                "protocol_version": 1,
-                "revision": 0,
-                "reported": null,
-                "owner_label": null,
-                "display_label": null,
-                "updated_at": null,
-                "journal": { "name": "Home Journal", "version": null }
-            });
-            (200, vec![], serde_json::to_vec(&body).unwrap())
-        }
+        ("GET", "/app/network/api/clients/self") => (404, vec![], b"{}".to_vec()),
         ("GET", "/api/system/status") => {
             let body = serde_json::json!({ "version": { "current": "9.9.9" } });
             (200, vec![], serde_json::to_vec(&body).unwrap())
@@ -2907,7 +2896,7 @@ async fn test_adapter_metadata_version_fallback_preserves_journal_name() {
                 "revision": 1,
                 "reported": null,
                 "owner_label": null,
-                "display_label": null,
+                "display_label": "Device",
                 "updated_at": null,
                 "journal": { "name": "Home Journal", "version": "9.9.9" }
             });
@@ -2927,8 +2916,14 @@ async fn test_adapter_metadata_version_fallback_preserves_journal_name() {
     ));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let mut cfg = service_config(state_path.clone());
-    cfg.journal_version = journal_version;
-    let access = CredentialAccess::bind(&paired, &cfg, sync, None).unwrap();
+    cfg.journal_version = journal_version.clone();
+    let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+    journal_version.publish_journal_metadata(
+        Some("Home Journal"),
+        Some("1.0.0"),
+        journal_version.current_token(),
+        &sync,
+    );
     let controller = access.post_connect();
     controller.trigger();
 
@@ -2960,7 +2955,7 @@ async fn test_adapter_malformed_put_keeps_validated_get_journal_cache() {
                 "revision": 0,
                 "reported": null,
                 "owner_label": null,
-                "display_label": null,
+                "display_label": "Device",
                 "updated_at": null,
                 "journal": { "name": "Home Journal", "version": "1.0.0" }
             });
@@ -3148,9 +3143,9 @@ async fn test_adapter_metadata_409_conflict_retry() {
                     "revision": 7,
                     "reported": null,
                     "owner_label": null,
-                    "display_label": null,
+                    "display_label": "Device",
                     "updated_at": null,
-                    "journal": null
+                    "journal": {"name":null,"version":"1.0.0"}
                 });
                 (200, vec![], serde_json::to_vec(&body).unwrap())
             }
@@ -3557,9 +3552,9 @@ async fn test_adapter_unchanged_snapshot_no_second_put() {
                 "revision": (prev + 1) as u64,
                 "reported": null,
                 "owner_label": null,
-                "display_label": null,
+                "display_label": "Device",
                 "updated_at": null,
-                "journal": null
+                "journal": {"name":null,"version":"1.0.0"}
             });
             (200, vec![], serde_json::to_vec(&body).unwrap())
         }

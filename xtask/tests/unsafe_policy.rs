@@ -62,6 +62,12 @@ struct ApprovedNode {
 
 const APPROVED_NODES: &[ApprovedNode] = &[
     ApprovedNode {
+        path: "crates/pl-transport-win/src/credential.rs",
+        kind: ApprovedKind::Fn,
+        name: "publish_staged_file",
+        owner: None,
+    },
+    ApprovedNode {
         path: "crates/capture-screen-encode/src/lib.rs",
         kind: ApprovedKind::Mod,
         name: "imp",

@@ -762,6 +762,9 @@ impl UploadCoordinator {
                 }
             }
         }
+        if let (Some(pc), Some(token)) = (&self.post_connect, self.post_connect_generation) {
+            pc.shutdown(token);
+        }
     }
 
     fn set_pending(&self, pending: u64) {

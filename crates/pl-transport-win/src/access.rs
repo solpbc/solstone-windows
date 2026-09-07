@@ -99,7 +99,7 @@ impl CredentialAccess {
 
     /// Retire this authority before publishing a same-home re-pair replacement.
     pub fn retire(&self) {
-        self.client_slot.disable_relay();
+        self.client_slot.retire();
         self.post_connect.disconnect_relay();
         self.post_connect
             .mark_session_disconnected(self.post_connect_token);

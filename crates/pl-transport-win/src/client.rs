@@ -48,19 +48,24 @@ pub(crate) const MAX_POST_CONNECT_RESPONSE_BYTES: usize = 64 * 1024;
 /// relay with credentials that no longer belong to the current slot.
 pub(crate) struct RelayFence {
     disabled: AtomicBool,
+    retired: AtomicBool,
     incarnation: AtomicU64,
+    publication: Arc<std::sync::Mutex<()>>,
 }
 
 impl RelayFence {
     fn new(enabled: bool) -> Self {
         Self {
             disabled: AtomicBool::new(!enabled),
+            retired: AtomicBool::new(false),
             incarnation: AtomicU64::new(1),
+            publication: Arc::new(std::sync::Mutex::new(())),
         }
     }
 
     fn allows(&self, incarnation: u64) -> bool {
-        !self.disabled.load(Ordering::Acquire)
+        !self.retired.load(Ordering::Acquire)
+            && !self.disabled.load(Ordering::Acquire)
             && self.incarnation.load(Ordering::Acquire) == incarnation
     }
 
@@ -90,6 +95,14 @@ impl ClientSlot {
         }
     }
 
+    pub(crate) fn is_retired(&self) -> bool {
+        self.relay_fence.retired.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn publication_owner(&self) -> Arc<std::sync::Mutex<()>> {
+        self.relay_fence.publication.clone()
+    }
+
     pub fn load(&self) -> Arc<ObserverClient> {
         self.inner.read().unwrap().clone()
     }
@@ -106,20 +119,27 @@ impl ClientSlot {
         credential: Credential,
         cas_key: CasKey,
     ) -> Result<Arc<ObserverClient>, TransportError> {
+        if self.relay_fence.retired.load(Ordering::Acquire) {
+            return Err(TransportError::NotPaired);
+        }
         let incumbent = self.load();
         let enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
-        let incarnation = self.relay_fence.advance(enabled);
-        let replacement = Arc::new(ObserverClient::rebuild_from(
-            &incumbent,
-            credential,
-            cas_key,
-            incarnation,
-        )?);
+        let mut replacement = ObserverClient::rebuild_from(&incumbent, credential, cas_key, 0)?;
+        if self.relay_fence.retired.load(Ordering::Acquire) {
+            return Err(TransportError::NotPaired);
+        }
+        replacement.incarnation = self.relay_fence.advance(enabled);
+        let replacement = Arc::new(replacement);
         self.replace(replacement.clone());
         Ok(replacement)
     }
 
     /// Make relay unavailable before any durable operation. LAN remains usable.
+    pub(crate) fn retire(&self) {
+        self.relay_fence.retired.store(true, Ordering::Release);
+        self.relay_fence.disable();
+    }
+
     pub fn disable_relay(&self) {
         self.relay_fence.disable();
     }
@@ -175,11 +195,12 @@ pub struct ObserverClient {
     config: Arc<ClientConfig>,
     boundary_counter: AtomicU64,
     /// Live relay device-token used for dials; the mutex is the refresh single-flight gate.
-    device_token: Option<tokio::sync::Mutex<String>>,
+    device_token: Option<Arc<tokio::sync::Mutex<String>>>,
+    refresh_gate: tokio::sync::Mutex<()>,
     /// Optional persisted pairing state path for best-effort refreshed-token write-back.
     state_path: Option<PathBuf>,
     /// CAS key tracking the pairing and access mutation generation.
-    cas_key: std::sync::Mutex<Option<CasKey>>,
+    cas_key: Arc<std::sync::Mutex<Option<CasKey>>>,
     /// Optional operation-scoped observation seam. `None` in the GUI.
     observer: ObserverHandle,
     relay_fence: Arc<RelayFence>,
@@ -189,13 +210,11 @@ pub struct ObserverClient {
 impl ObserverClient {
     /// Build the client and its mTLS config from a stored credential.
     pub fn new(credential: Credential) -> Result<Self, TransportError> {
-        if credential.relay_origin.is_some() && credential.endpoints.is_empty() {
-            return Err(TransportError::Pairing(
-                "relay credential has no LAN endpoints".into(),
-            ));
-        }
         let pairing_gen = pairing_generation(&credential.client_cert_pem);
-        let device_token = credential.device_token.clone().map(tokio::sync::Mutex::new);
+        let device_token = credential
+            .device_token
+            .clone()
+            .map(|token| Arc::new(tokio::sync::Mutex::new(token)));
         let chain = tls::parse_certs(&credential.client_cert_pem)?;
         let key = tls::parse_private_key(&credential.client_key_pem)?;
         let config = Arc::new(tls::mtls_config(&credential.ca_fp_prefix, chain, key)?);
@@ -205,11 +224,12 @@ impl ObserverClient {
             config,
             boundary_counter: AtomicU64::new(1),
             device_token,
+            refresh_gate: tokio::sync::Mutex::new(()),
             state_path: None,
-            cas_key: std::sync::Mutex::new(Some(CasKey {
+            cas_key: Arc::new(std::sync::Mutex::new(Some(CasKey {
                 pairing_generation: pairing_gen,
                 access_mutation_generation: 0,
-            })),
+            }))),
             observer: None,
             relay_fence: Arc::new(RelayFence::new(relay_enabled)),
             incarnation: 1,
@@ -233,7 +253,7 @@ impl ObserverClient {
         rebuilt.observer = incumbent.observer.clone();
         rebuilt.relay_fence = incumbent.relay_fence.clone();
         rebuilt.incarnation = incarnation;
-        rebuilt.cas_key = std::sync::Mutex::new(Some(cas_key));
+        rebuilt.cas_key = Arc::new(std::sync::Mutex::new(Some(cas_key)));
         Ok(rebuilt)
     }
 
@@ -329,9 +349,9 @@ impl ObserverClient {
 
     fn response_cap_for(&self, path: &str) -> usize {
         match path {
-            "/app/network/api/clients/self" | "/app/network/api/relay/access" => {
-                MAX_POST_CONNECT_RESPONSE_BYTES
-            }
+            "/app/network/api/clients/self"
+            | "/app/network/api/relay/access"
+            | "/api/system/status" => MAX_POST_CONNECT_RESPONSE_BYTES,
             _ => observer_pl::mux::MAX_ASSEMBLED_BYTES,
         }
     }
@@ -551,102 +571,62 @@ impl ObserverClient {
 
     /// Persist a refreshed relay token before publishing it to the live mutex.
     async fn persist_token(&self, expected_cas: CasKey, token: String, expires_at: i64) -> bool {
-        let Some(path) = &self.state_path else {
-            // Stateless operation clients (the integration command and direct
-            // transport tests) have no durable authority to update. They still
-            // use the single-flight mutex and incarnation fence, but production
-            // paired clients always take the persisted branch below.
-            return self.is_current_incarnation();
-        };
-        if !self.is_current_incarnation() {
+        let Some(live_token) = self.device_token.clone() else {
             return false;
-        }
-        let path = path.clone();
-        let reconcile_path = path.clone();
-        let token_for_disk = token.clone();
+        };
+        let path = self.state_path.clone();
+        let fence = self.relay_fence.clone();
+        let incarnation = self.incarnation;
+        let cas_key = self.cas_key.clone();
         #[cfg(test)]
         let failpoint = FS_FAIL_POINT.with(|f| f.get());
-        let res = tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            FS_FAIL_POINT.with(|f| f.set(failpoint));
-            let result = PairedState::mutate(&path, expected_cas, |cred| {
-                cred.device_token = Some(token_for_disk);
-                cred.device_token_expires_at = Some(expires_at);
-                Ok(())
-            });
-            #[cfg(test)]
-            FS_FAIL_POINT.with(|f| f.set(0));
-            result
-        })
-        .await;
-        let Ok(res) = res else {
-            tracing::warn!(target: "sync", reason = "join", "persist_token failed");
-            return false;
-        };
-        match res {
-            Ok(new_gen) if self.is_current_incarnation() => {
-                let mut guard = self.cas_key.lock().unwrap();
-                if *guard != Some(expected_cas) {
-                    return false;
-                }
-                *guard = Some(CasKey {
-                    pairing_generation: expected_cas.pairing_generation,
-                    access_mutation_generation: new_gen,
+        // All disk/CAS/live-token effects remain owned even if the request
+        // waiting for this worker is cancelled.
+        tokio::task::spawn_blocking(move || {
+            let _owner = fence.publication.lock().unwrap();
+            if expires_at <= now_secs() || !fence.allows(incarnation) || *cas_key.lock().unwrap() != Some(expected_cas) { return false; }
+            let mut next_generation = expected_cas.access_mutation_generation;
+            if let Some(path) = path {
+                #[cfg(test)]
+                FS_FAIL_POINT.with(|f| f.set(failpoint));
+                let result = PairedState::mutate(&path, expected_cas, |cred| {
+                    if expires_at <= now_secs() || !fence.allows(incarnation) { return Err(StorageError::CasMismatch); }
+                    cred.device_token = Some(token.clone());
+                    cred.device_token_expires_at = Some(expires_at);
+                    Ok(())
                 });
-                true
+                #[cfg(test)]
+                FS_FAIL_POINT.with(|f| f.set(0));
+                match result {
+                    Ok(generation) => next_generation = generation,
+                    Err(StorageError::DurabilityUncertain(_)) => {
+                        tracing::warn!(target: "sync", reason = "durability_uncertain", "token persistence uncertain");
+                        let Ok(state) = PairedState::load(&path) else { return false; };
+                        let Some(credential) = state.credential else { return false; };
+                        if pairing_generation(&credential.client_cert_pem) != expected_cas.pairing_generation
+                            || credential.device_token.as_deref() != Some(&token)
+                            || credential.device_token_expires_at != Some(expires_at) { return false; }
+                        next_generation = state.access_mutation_generation;
+                    }
+                    Err(_) => {
+                        tracing::warn!(target: "sync", reason = "publication_rejected", "token persistence rejected");
+                        return false;
+                    }
+                }
             }
-            Ok(_) | Err(StorageError::CasMismatch) => false,
-            Err(StorageError::WriteFailed(_)) => {
-                tracing::warn!(target: "sync", reason = "write_failed", "persist_token failed");
-                false
-            }
-            Err(StorageError::DurabilityUncertain(_)) => {
-                tracing::warn!(target: "sync", reason = "durability_uncertain", "persist_token reconciliation required");
-                self.reconcile_persisted_token(reconcile_path, expected_cas, &token)
-                    .await
-            }
-            Err(_) => {
-                tracing::warn!(target: "sync", reason = "storage", "persist_token failed");
-                false
-            }
-        }
-    }
-
-    /// Accept the generation published by a post-rename uncertain write without
-    /// publishing a token that disk did not retain.
-    async fn reconcile_persisted_token(
-        &self,
-        path: PathBuf,
-        expected_cas: CasKey,
-        persisted_token: &str,
-    ) -> bool {
-        let loaded = tokio::task::spawn_blocking(move || PairedState::load(&path)).await;
-        let Ok(Ok(state)) = loaded else {
-            tracing::warn!(target: "sync", reason = "reload", "persist_token reconciliation failed");
-            return false;
-        };
-        let Some(credential) = state.credential else {
-            return false;
-        };
-        if !self.is_current_incarnation()
-            || pairing_generation(&credential.client_cert_pem) != expected_cas.pairing_generation
-        {
-            return false;
-        }
-
-        let mut cas_key = self.cas_key.lock().unwrap();
-        if !self.is_current_incarnation() || *cas_key != Some(expected_cas) {
-            return false;
-        }
-        *cas_key = Some(CasKey {
-            pairing_generation: expected_cas.pairing_generation,
-            access_mutation_generation: state.access_mutation_generation,
-        });
-        credential.device_token.as_deref() == Some(persisted_token)
+            if !fence.allows(incarnation) { return false; }
+            *live_token.blocking_lock() = token;
+            *cas_key.lock().unwrap() = Some(CasKey {
+                pairing_generation: expected_cas.pairing_generation,
+                access_mutation_generation: next_generation,
+            });
+            true
+        }).await.unwrap_or(false)
     }
 
     /// Refresh only if the live token still matches the caller's failed token.
     async fn refresh_if_current(&self, origin: &str, expected: &str) -> RefreshAction {
+        let _refresh = self.refresh_gate.lock().await;
         let Some(captured_cas) = self.current_cas_key() else {
             return RefreshAction::Terminal;
         };
@@ -656,8 +636,7 @@ impl ObserverClient {
         let Some(token) = &self.device_token else {
             return RefreshAction::Terminal;
         };
-        let mut guard = token.lock().await;
-        if guard.as_str() != expected {
+        if token.lock().await.as_str() != expected {
             return RefreshAction::Redial;
         }
         match refresh_device_token(origin, expected).await {
@@ -670,7 +649,6 @@ impl ObserverClient {
                     .await
                     && self.is_current_incarnation()
                 {
-                    *guard = device_token;
                     RefreshAction::Redial
                 } else {
                     RefreshAction::Terminal
@@ -1133,6 +1111,87 @@ mod tests {
                 .device_token
                 .as_deref(),
             Some("fresh-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    #[tokio::test]
+    async fn retired_refresh_waiting_for_publication_cannot_change_disk() {
+        use std::future::Future;
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        PairedState {
+            credential: Some(credential.clone()),
+            access_mutation_generation: 0,
+        }
+        .save(&path)
+        .unwrap();
+        let client = Arc::new(
+            ObserverClient::new(credential)
+                .unwrap()
+                .with_state_path(path.clone()),
+        );
+        let slot = ClientSlot::new(client.clone());
+        let cas = client.current_cas_key().unwrap();
+        let owner = slot.publication_owner();
+        let mut pending = Box::pin(client.persist_token(cas, "stale-token".into(), 1_900_000_000));
+        {
+            let _guard = owner.lock().unwrap();
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(pending.as_mut().poll(&mut cx).is_pending());
+            // The worker exists and must recheck retirement when it gets ownership.
+            slot.disable_relay();
+        }
+        assert!(!pending.await);
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 0);
+        assert_ne!(
+            disk.credential.unwrap().device_token.as_deref(),
+            Some("stale-token")
+        );
+        assert!(!client.relay_eligible());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_refresh_waiter_keeps_disk_token_and_live_cas_publication_owned() {
+        use std::future::Future;
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        PairedState {
+            credential: Some(credential.clone()),
+            access_mutation_generation: 0,
+        }
+        .save(&path)
+        .unwrap();
+        let client = Arc::new(
+            ObserverClient::new(credential)
+                .unwrap()
+                .with_state_path(path.clone()),
+        );
+        let slot = ClientSlot::new(client.clone());
+        let cas = client.current_cas_key().unwrap();
+        let owner = slot.publication_owner();
+        {
+            let _guard = owner.lock().unwrap();
+            let mut pending =
+                Box::pin(client.persist_token(cas, "owned-token".into(), 1_900_000_000));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(pending.as_mut().poll(&mut cx).is_pending());
+            drop(pending);
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while client.current_cas_key().unwrap().access_mutation_generation == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owned worker did not complete");
+        assert_eq!(client.current_token().await, "owned-token");
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 1);
+        assert_eq!(
+            disk.credential.unwrap().device_token.as_deref(),
+            Some("owned-token")
         );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

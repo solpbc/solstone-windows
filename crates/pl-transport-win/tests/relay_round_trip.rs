@@ -1910,19 +1910,23 @@ async fn relay_observer_is_inert_and_reports_progress_for_the_only_one_attempt_c
 }
 
 #[tokio::test]
-async fn relay_credential_without_lan_endpoints_rejected_at_new() {
+async fn relay_only_credential_can_be_disabled_without_retaining_an_old_adapter() {
     let (pin, _acceptor) = tls_pair_with_pin();
     let mut credential =
         observer_relay_credential(pin, 7657, "http://127.0.0.1:1".into(), mint_jwt(100, 200));
     credential.endpoints.clear();
-
-    match ObserverClient::new(credential) {
-        Err(TransportError::Pairing(message)) => {
-            assert_eq!(message, "relay credential has no LAN endpoints");
-        }
-        Err(other) => panic!("expected Pairing error, got {other:?}"),
-        Ok(_) => panic!("relay credential without LAN endpoints should fail"),
-    }
+    let client = Arc::new(ObserverClient::new(credential.clone()).unwrap());
+    let slot = pl_transport_win::client::ClientSlot::new(client);
+    let cas = slot.load().current_cas_key().unwrap();
+    slot.disable_relay();
+    credential.relay_origin = None;
+    credential.device_token = None;
+    credential.device_token_expires_at = None;
+    slot.replace_from_incumbent(credential, cas).unwrap();
+    assert!(matches!(
+        slot.load().ingest_manifest().await,
+        Err(TransportError::NoEndpoint)
+    ));
 }
 
 #[tokio::test]

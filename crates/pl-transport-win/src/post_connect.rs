@@ -69,9 +69,9 @@ fn validate_relay_access_response(
     let envelope: RelayAccessEnvelope =
         serde_json::from_slice(body).map_err(|_| RelayAccessValidationError::Envelope)?;
     match envelope {
-        RelayAccessEnvelope::NotConfigured { protocol_version } if protocol_version == 2 => {
-            Ok(None)
-        }
+        RelayAccessEnvelope::NotConfigured {
+            protocol_version: 2,
+        } => Ok(None),
         RelayAccessEnvelope::NotConfigured { .. } => Err(RelayAccessValidationError::Protocol),
         RelayAccessEnvelope::Ready {
             protocol_version,
@@ -126,7 +126,7 @@ enum BurstPhase {
 struct PassStart {
     token: (u64, u64, u64),
     paired_id: String,
-    journal_version_token: Option<(u64, u64)>,
+    journal_version_token: Option<(u64, u64, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -235,6 +235,22 @@ impl PostConnectController {
         PostConnectSessionToken(state.session_generation)
     }
 
+    pub(crate) fn shutdown(&self, generation: PostConnectSessionToken) {
+        if self.state.lock().unwrap().session_generation != generation.0 {
+            return;
+        }
+        // A retired authority cannot be revived by an already-running disk worker.
+        self.client_slot.retire();
+        self.mark_session_disconnected(generation);
+        if let (Some(jv), Some(token)) = (
+            &self.journal_version,
+            *self.journal_version_token.lock().unwrap(),
+        ) {
+            jv.mark_session_disconnected(token, &self.sync);
+        }
+        self.state.lock().unwrap().paired_instance_id = None;
+    }
+
     /// Mark the connection disconnected for the given session generation, bumping epoch to fence in-flight jobs.
     pub fn mark_session_disconnected(&self, generation: PostConnectSessionToken) {
         let mut state = self.state.lock().unwrap();
@@ -308,6 +324,8 @@ impl PostConnectController {
             };
             match state.burst_phase {
                 BurstPhase::Idle | BurstPhase::Quiesced => {
+                    state.connection_epoch = state.connection_epoch.wrapping_add(1);
+                    state.last_connected_epoch = Some(state.connection_epoch);
                     let token = (
                         state.session_generation,
                         state.connection_epoch,
@@ -348,31 +366,35 @@ impl PostConnectController {
         tokio::spawn(async move { this.retry_pending_durable_clear().await });
     }
 
-    async fn retry_pending_durable_clear(&self) {
+    async fn retry_pending_durable_clear(self: &Arc<Self>) {
+        let this = self.clone();
+        #[cfg(test)]
+        let failpoint = FS_FAIL_POINT.with(|f| f.get());
+        let _ = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(failpoint));
+            let owner = this.client_slot.publication_owner();
+            let _guard = owner.lock().unwrap();
+            this.retry_pending_durable_clear_owned();
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(0));
+        })
+        .await;
+    }
+
+    fn retry_pending_durable_clear_owned(&self) {
         let pending_cas = {
             let state = self.state.lock().unwrap();
             state.pending_durable_clear
         };
 
         if let (Some(cas_key), Some(path)) = (pending_cas, &self.state_path) {
-            let path = path.clone();
-            #[cfg(test)]
-            let failpoint = FS_FAIL_POINT.with(|f| f.get());
-            let res = tokio::task::spawn_blocking(move || {
-                #[cfg(test)]
-                FS_FAIL_POINT.with(|f| f.set(failpoint));
-                let result = PairedState::mutate(&path, cas_key, |cred| {
-                    cred.relay_origin = None;
-                    cred.device_token = None;
-                    cred.device_token_expires_at = None;
-                    Ok(())
-                });
-                #[cfg(test)]
-                FS_FAIL_POINT.with(|f| f.set(0));
-                result
-            })
-            .await
-            .unwrap_or_else(|_| Err(StorageError::WriteFailed(std::io::Error::other("join"))));
+            let res = PairedState::mutate(path, cas_key, |cred| {
+                cred.relay_origin = None;
+                cred.device_token = None;
+                cred.device_token_expires_at = None;
+                Ok(())
+            });
             match res {
                 Ok(new_generation) => {
                     let mut state = self.state.lock().unwrap();
@@ -400,7 +422,7 @@ impl PostConnectController {
                 }
                 Err(StorageError::DurabilityUncertain(_)) => {
                     tracing::warn!(target: "sync", reason = "durability_uncertain", "durable clear retry uncertain");
-                    self.reconcile_from_disk().await;
+                    self.reconcile_from_disk();
                 }
                 Err(_) => {
                     tracing::warn!(target: "sync", reason = "storage", "durable clear retry failed");
@@ -433,21 +455,16 @@ impl PostConnectController {
         let access_token = start.token;
         tokio::spawn(async move {
             let deadline = access.deadline;
-            match tokio::time::timeout(deadline, access.fetch_access_outcome(&start.paired_id))
-                .await
-            {
-                Ok(Some((validated, cas))) => {
-                    // Durable publication deliberately sits outside the network
-                    // deadline: once started, its serialized filesystem mutation
-                    // owns completion.
+            let job = async {
+                if let Some((validated, cas)) = access.fetch_access_outcome(&start.paired_id).await
+                {
                     access
                         .apply_relay_access_outcome(validated, &access_token, cas)
                         .await;
                 }
-                Ok(None) => {}
-                Err(_) => {
-                    tracing::warn!(target: "sync", "post-connect relay access job timed out after {:?}", deadline);
-                }
+            };
+            if tokio::time::timeout(deadline, job).await.is_err() {
+                tracing::warn!(target: "sync", "post-connect relay access job timed out");
             }
             if let Some(next) = access.finish_pass_lane(access_token, false) {
                 access.start_pass(next);
@@ -486,6 +503,13 @@ impl PostConnectController {
                 if state.pending_metadata.is_some() || state.pending_access_trigger =>
             {
                 let paired_id = state.paired_instance_id.clone()?;
+                state.connection_epoch = state.connection_epoch.wrapping_add(1);
+                state.last_connected_epoch = Some(state.connection_epoch);
+                let current_token = (
+                    state.session_generation,
+                    state.connection_epoch,
+                    state.pairing_generation,
+                );
                 state.burst_phase = BurstPhase::FollowUp;
                 state.pending_metadata = None;
                 state.pending_access_trigger = false;
@@ -501,6 +525,9 @@ impl PostConnectController {
                 // Do not let internal activity schedule a third pass. Inputs
                 // recorded during the follow-up remain until an external event.
                 state.burst_phase = BurstPhase::Quiesced;
+                // Retire a timed-out worker that has not yet acquired publication.
+                state.connection_epoch = state.connection_epoch.wrapping_add(1);
+                state.last_connected_epoch = Some(state.connection_epoch);
                 None
             }
             BurstPhase::Idle | BurstPhase::Quiesced => None,
@@ -508,6 +535,9 @@ impl PostConnectController {
     }
 
     fn attempt_is_current(&self, token: (u64, u64, u64)) -> bool {
+        if self.client_slot.is_retired() {
+            return false;
+        }
         let state = self.state.lock().unwrap();
         (
             state.session_generation,
@@ -516,75 +546,68 @@ impl PostConnectController {
         ) == token
     }
 
-    fn journal_version_attempt_token(&self) -> Option<(u64, u64)> {
+    fn journal_version_attempt_token(&self) -> Option<(u64, u64, u64)> {
         let (Some(journal_version), Some(session_token)) = (
             &self.journal_version,
             *self.journal_version_token.lock().unwrap(),
         ) else {
             return None;
         };
-        let token = journal_version.current_token();
-        (token.0 == session_token.0).then_some(token)
+        journal_version.capture_metadata_attempt(session_token)
     }
 
-    fn publish_journal_metadata(
+    async fn publish_journal_metadata(
         &self,
         resource: &MetadataGetResponse,
         attempt: (u64, u64, u64),
-        journal_version_token: Option<(u64, u64)>,
+        journal_version_token: Option<(u64, u64, u64)>,
     ) {
         if !self.attempt_is_current(attempt) {
             return;
         }
-        let Some(journal) = &resource.journal else {
-            return;
-        };
+        let journal = &resource.journal;
         if let (Some(jv), Some(version_token)) = (&self.journal_version, journal_version_token) {
-            jv.publish_journal_metadata(
-                journal.name.as_deref(),
-                journal.version.as_deref(),
-                version_token,
-                &self.sync,
-            );
+            let jv = jv.clone();
+            let sync = self.sync.clone();
+            let name = journal.name.clone();
+            let version = journal.version.clone();
+            // The worker retains publication ownership if the network job expires.
+            let _ = tokio::task::spawn_blocking(move || {
+                jv.publish_info_for_attempt(Some(name.as_deref()), &version, version_token, &sync);
+            })
+            .await;
         }
     }
 
-    async fn fallback_journal_version_if_needed(
+    async fn fallback_journal_version(
         &self,
         client: &crate::ObserverClient,
-        resource: &MetadataGetResponse,
         attempt: (u64, u64, u64),
-        journal_version_token: Option<(u64, u64)>,
+        journal_version_token: Option<(u64, u64, u64)>,
     ) {
-        if resource
-            .journal
-            .as_ref()
-            .and_then(|journal| journal.version.as_deref())
-            .is_some()
-        {
-            return;
-        }
         if !self.attempt_is_current(attempt) {
             return;
         }
         let (Some(jv), Some(version_token)) = (&self.journal_version, journal_version_token) else {
             return;
         };
-        match client.system_status().await {
-            Ok(version) if self.attempt_is_current(attempt) => {
-                jv.publish_version(&version, version_token, &self.sync)
+        if let Ok(version) = client.system_status().await {
+            if !self.attempt_is_current(attempt) {
+                return;
             }
-            Ok(_) => {}
-            Err(_) => {
-                tracing::debug!(target: "sync", reason = "transport", "journal version fallback failed")
-            }
+            let jv = jv.clone();
+            let sync = self.sync.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                jv.publish_info_for_attempt(None, &version, version_token, &sync)
+            })
+            .await;
         }
     }
 
     async fn execute_metadata_job(
         &self,
         token: (u64, u64, u64),
-        journal_version_token: Option<(u64, u64)>,
+        journal_version_token: Option<(u64, u64, u64)>,
     ) {
         let client = self.client_slot.load();
         let get_resp = match client.get_clients_self().await {
@@ -597,11 +620,13 @@ impl PostConnectController {
 
         // Old home: 404 -> skip PUT
         if get_resp.status == 404 {
+            self.fallback_journal_version(&client, token, journal_version_token)
+                .await;
             tracing::debug!(target: "sync", "metadata GET returned 404 (old home); skipping PUT");
             return;
         }
 
-        if !get_resp.is_success() {
+        if get_resp.status != 200 {
             tracing::warn!(target: "sync", status = get_resp.status, "metadata GET non-success");
             return;
         }
@@ -622,8 +647,7 @@ impl PostConnectController {
         if !self.attempt_is_current(token) {
             return;
         }
-        self.publish_journal_metadata(&parsed, token, journal_version_token);
-        self.fallback_journal_version_if_needed(&client, &parsed, token, journal_version_token)
+        self.publish_journal_metadata(&parsed, token, journal_version_token)
             .await;
 
         if !self.attempt_is_current(token) {
@@ -664,7 +688,7 @@ impl PostConnectController {
             }
         };
 
-        if put_resp.is_success() {
+        if put_resp.status == 200 {
             let parsed_put: MetadataPutResponse = match serde_json::from_slice(&put_resp.body) {
                 Ok(response) => response,
                 Err(_) => {
@@ -675,7 +699,8 @@ impl PostConnectController {
             if !self.attempt_is_current(token) {
                 return;
             }
-            self.publish_journal_metadata(parsed_put.resource(), token, journal_version_token);
+            self.publish_journal_metadata(parsed_put.resource(), token, journal_version_token)
+                .await;
             let mut state = self.state.lock().unwrap();
             state.last_published_metadata = Some(current.clone());
             return;
@@ -685,7 +710,7 @@ impl PostConnectController {
         if put_resp.status == 409 {
             tracing::debug!(target: "sync", "metadata PUT 409 conflict, retrying with newest snapshot");
             let retry_get = match client.get_clients_self().await {
-                Ok(r) if r.is_success() => r,
+                Ok(r) if r.status == 200 => r,
                 _ => return,
             };
             let retry_parsed: MetadataGetResponse = match serde_json::from_slice(&retry_get.body) {
@@ -699,7 +724,8 @@ impl PostConnectController {
             if !self.attempt_is_current(token) {
                 return;
             }
-            self.publish_journal_metadata(&retry_parsed, token, journal_version_token);
+            self.publish_journal_metadata(&retry_parsed, token, journal_version_token)
+                .await;
 
             let newest_snapshot = {
                 if !self.attempt_is_current(token) {
@@ -724,7 +750,7 @@ impl PostConnectController {
             };
 
             if let Ok(retry_put_resp) = client.put_clients_self(&retry_put_body).await {
-                if retry_put_resp.is_success() {
+                if retry_put_resp.status == 200 {
                     let parsed_put: MetadataPutResponse = match serde_json::from_slice(
                         &retry_put_resp.body,
                     ) {
@@ -741,7 +767,8 @@ impl PostConnectController {
                         parsed_put.resource(),
                         token,
                         journal_version_token,
-                    );
+                    )
+                    .await;
                     let mut state = self.state.lock().unwrap();
                     state.last_published_metadata = Some(newest_snapshot);
                 }
@@ -754,9 +781,7 @@ impl PostConnectController {
         paired_instance_id: &str,
     ) -> Option<(Option<ValidatedReadyAccess>, CasKey)> {
         let client = self.client_slot.load();
-        let Some(captured_cas) = client.current_cas_key() else {
-            return None;
-        };
+        let captured_cas = client.current_cas_key()?;
         let resp = match client.get_relay_access().await {
             Ok(r) => r,
             Err(_) => {
@@ -766,7 +791,7 @@ impl PostConnectController {
         };
 
         // 404, 503, or other non-success -> preserve existing cache and LAN
-        if !resp.is_success() {
+        if resp.status != 200 {
             tracing::debug!(target: "sync", status = resp.status, "relay access GET returned non-success");
             return None;
         }
@@ -788,12 +813,37 @@ impl PostConnectController {
     }
 
     pub(crate) async fn apply_relay_access_outcome(
+        self: &Arc<Self>,
+        validated: Option<ValidatedReadyAccess>,
+        token: &(u64, u64, u64),
+        captured_cas: CasKey,
+    ) {
+        let this = self.clone();
+        let token = *token;
+        #[cfg(test)]
+        let failpoint = FS_FAIL_POINT.with(|f| f.get());
+        let _ = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(failpoint));
+            let owner = this.client_slot.publication_owner();
+            let _guard = owner.lock().unwrap();
+            this.apply_relay_access_outcome_owned(validated, &token, captured_cas);
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(0));
+        })
+        .await;
+    }
+
+    fn apply_relay_access_outcome_owned(
         &self,
         validated: Option<ValidatedReadyAccess>,
         token: &(u64, u64, u64),
         captured_cas: CasKey,
     ) {
         // Generation fence before side-effects
+        if self.client_slot.is_retired() {
+            return;
+        }
         {
             let state = self.state.lock().unwrap();
             let current_token = (
@@ -830,25 +880,11 @@ impl PostConnectController {
 
                 // Ordered durable clear
                 if let Some(path) = &self.state_path {
-                    let path = path.clone();
-                    #[cfg(test)]
-                    let failpoint = FS_FAIL_POINT.with(|f| f.get());
-                    let res = tokio::task::spawn_blocking(move || {
-                        #[cfg(test)]
-                        FS_FAIL_POINT.with(|f| f.set(failpoint));
-                        let result = PairedState::mutate(&path, captured_cas, |cred| {
-                            cred.relay_origin = None;
-                            cred.device_token = None;
-                            cred.device_token_expires_at = None;
-                            Ok(())
-                        });
-                        #[cfg(test)]
-                        FS_FAIL_POINT.with(|f| f.set(0));
-                        result
-                    })
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(StorageError::WriteFailed(std::io::Error::other("join")))
+                    let res = PairedState::mutate(path, captured_cas, |cred| {
+                        cred.relay_origin = None;
+                        cred.device_token = None;
+                        cred.device_token_expires_at = None;
+                        Ok(())
                     });
                     match res {
                         Ok(new_gen) => {
@@ -873,7 +909,8 @@ impl PostConnectController {
                         }
                         Err(StorageError::DurabilityUncertain(_)) => {
                             tracing::warn!(target: "sync", reason = "durability_uncertain", "durable clear uncertain");
-                            self.reconcile_from_disk().await;
+                            self.state.lock().unwrap().pending_durable_clear = Some(captured_cas);
+                            self.reconcile_from_disk();
                         }
                         Err(_) => {
                             tracing::warn!(target: "sync", reason = "storage", "durable clear failed");
@@ -882,6 +919,13 @@ impl PostConnectController {
                 }
             }
             Some(ready) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                if ready.expires_at <= now {
+                    return;
+                }
                 // Ready: check if unchanged vs current live credential
                 let current_cred = client.credential();
                 if current_cred.relay_origin.as_deref() == Some(&ready.relay_origin)
@@ -900,24 +944,20 @@ impl PostConnectController {
                 let token_to_save = ready.device_token.clone();
                 let exp_to_save = ready.expires_at;
 
-                let path = path.clone();
-                #[cfg(test)]
-                let failpoint = FS_FAIL_POINT.with(|f| f.get());
-                let mutate_res = tokio::task::spawn_blocking(move || {
-                    #[cfg(test)]
-                    FS_FAIL_POINT.with(|f| f.set(failpoint));
-                    let result = PairedState::mutate(&path, captured_cas, |cred| {
-                        cred.relay_origin = Some(origin_to_save);
-                        cred.device_token = Some(token_to_save);
-                        cred.device_token_expires_at = Some(exp_to_save);
-                        Ok(())
-                    });
-                    #[cfg(test)]
-                    FS_FAIL_POINT.with(|f| f.set(0));
-                    result
-                })
-                .await
-                .unwrap_or_else(|_| Err(StorageError::WriteFailed(std::io::Error::other("join"))));
+                let mutate_res = PairedState::mutate(path, captured_cas, |cred| {
+                    if !self.attempt_is_current(*token)
+                        || SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64 >= exp_to_save)
+                            .unwrap_or(true)
+                    {
+                        return Err(StorageError::CasMismatch);
+                    }
+                    cred.relay_origin = Some(origin_to_save);
+                    cred.device_token = Some(token_to_save);
+                    cred.device_token_expires_at = Some(exp_to_save);
+                    Ok(())
+                });
 
                 match mutate_res {
                     Ok(new_gen) => {
@@ -931,10 +971,14 @@ impl PostConnectController {
                             access_mutation_generation: new_gen,
                         };
                         let _ = self.client_slot.replace_from_incumbent(new_cred, new_cas);
+                        let mut state = self.state.lock().unwrap();
+                        if state.pending_durable_clear == Some(captured_cas) {
+                            state.pending_durable_clear = None;
+                        }
                     }
                     Err(StorageError::DurabilityUncertain(_)) => {
                         tracing::warn!(target: "sync", reason = "durability_uncertain", "ready persist uncertain");
-                        self.reconcile_from_disk().await;
+                        self.reconcile_from_disk();
                     }
                     Err(StorageError::WriteFailed(_)) => {
                         tracing::warn!(target: "sync", reason = "write_failed", "ready persist failed");
@@ -950,24 +994,39 @@ impl PostConnectController {
         }
     }
 
-    async fn reconcile_from_disk(&self) {
+    fn reconcile_from_disk(&self) {
         let Some(path) = &self.state_path else {
             return;
         };
-        let path = path.clone();
-        let loaded = tokio::task::spawn_blocking(move || PairedState::load(&path)).await;
-        let Ok(Ok(state)) = loaded else {
+        let Ok(state) = PairedState::load(path) else {
             tracing::warn!(target: "sync", reason = "reload", "pairing state reconciliation failed");
             return;
         };
         let Some(credential) = state.credential else {
             return;
         };
+        if pairing_generation(&credential.client_cert_pem)
+            != pairing_generation(&self.client_slot.load().credential().client_cert_pem)
+        {
+            return;
+        }
         let cas = CasKey {
             pairing_generation: pairing_generation(&credential.client_cert_pem),
             access_mutation_generation: state.access_mutation_generation,
         };
+        let is_clear = credential.relay_origin.is_none()
+            && credential.device_token.is_none()
+            && credential.device_token_expires_at.is_none();
         let _ = self.client_slot.replace_from_incumbent(credential, cas);
+        let mut controller = self.state.lock().unwrap();
+        if controller.pending_durable_clear.is_some_and(|pending| {
+            pending.pairing_generation == cas.pairing_generation
+                && pending.access_mutation_generation < cas.access_mutation_generation
+        }) {
+            // A visible clear still needs a confirmed durable retry. A newer
+            // Ready supersedes the old clear instead of erasing that Ready.
+            controller.pending_durable_clear = is_clear.then_some(cas);
+        }
     }
 }
 
@@ -1012,7 +1071,12 @@ mod tests {
 
     fn test_setup(
         with_relay: bool,
-    ) -> (PostConnectController, ClientSlot, PathBuf, Arc<AtomicBool>) {
+    ) -> (
+        Arc<PostConnectController>,
+        ClientSlot,
+        PathBuf,
+        Arc<AtomicBool>,
+    ) {
         let dir = std::env::temp_dir().join(format!(
             "solstone-pc-test-{}",
             std::time::SystemTime::now()
@@ -1058,7 +1122,7 @@ mod tests {
             dc.store(true, Ordering::SeqCst);
         }));
 
-        (controller, slot, path, disconnect_called)
+        (Arc::new(controller), slot, path, disconnect_called)
     }
 
     #[test]
@@ -1093,8 +1157,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn stale_metadata_get_does_not_publish_journal_cache() {
+    #[tokio::test]
+    async fn stale_metadata_get_does_not_publish_journal_cache() {
         let (template, slot, path, _) = test_setup(false);
         let sync = template.sync.clone();
         let facts = template.facts_fn.clone();
@@ -1116,22 +1180,26 @@ mod tests {
             controller.state.lock().unwrap().connection_epoch,
             pairing_generation(&credential.client_cert_pem),
         );
-        let journal_token = journal_version.current_token();
+        let journal_token = journal_version
+            .capture_metadata_attempt(journal_session)
+            .unwrap();
         let resource = MetadataGetResponse {
             protocol_version: 1,
             revision: 0,
             reported: None,
             owner_label: None,
-            display_label: None,
+            display_label: "Device".into(),
             updated_at: None,
-            journal: Some(crate::device_metadata::JournalInfo {
+            journal: crate::device_metadata::JournalInfo {
                 name: Some("Old Journal".into()),
-                version: Some("1.2.3".into()),
-            }),
+                version: "1.2.3".into(),
+            },
         };
 
         controller.mark_session_disconnected(session);
-        controller.publish_journal_metadata(&resource, attempt, Some(journal_token));
+        controller
+            .publish_journal_metadata(&resource, attempt, Some(journal_token))
+            .await;
 
         assert!(!journal_path.exists());
         assert!(sync.lock().unwrap().journal_version.is_none());
@@ -1359,7 +1427,19 @@ mod tests {
         assert_eq!(active_client.credential().relay_origin, None);
         assert!(disconnect_called.load(Ordering::SeqCst));
 
+        assert_eq!(
+            controller.pending_durable_clear(),
+            active_client.current_cas_key()
+        );
+        controller.retry_pending_durable_clear().await;
         assert_eq!(controller.pending_durable_clear(), None);
+        assert_eq!(
+            slot.load()
+                .current_cas_key()
+                .unwrap()
+                .access_mutation_generation,
+            2
+        );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
@@ -1441,12 +1521,11 @@ mod tests {
             Some("https://relay.new.org")
         );
 
-        // 3. Retry the pending durable clear (bound to gen 0) -> CasMismatch
+        // 3. A newer Ready supersedes only the matching pending clear.
         controller.retry_pending_durable_clear_if_needed();
         tokio::task::yield_now().await;
 
-        // A mismatch belongs to another committed update and remains pending.
-        assert_eq!(controller.pending_durable_clear(), Some(cas));
+        assert_eq!(controller.pending_durable_clear(), None);
 
         // Disk state is still ready (not wiped)
         let loaded_after = PairedState::load(&path).unwrap();
@@ -1493,7 +1572,7 @@ mod tests {
             "protocol_version": 1,
             "revision": 3,
             "owner_label": null,
-            "display_label": null,
+            "display_label": "Device",
             "updated_at": null,
             "journal": {
                 "name": "Home",
@@ -1510,10 +1589,7 @@ mod tests {
         let parsed: MetadataGetResponse = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.protocol_version, 1);
         assert_eq!(parsed.revision, 3);
-        assert_eq!(
-            parsed.journal.as_ref().unwrap().version.as_deref(),
-            Some("1.2.3")
-        );
+        assert_eq!(parsed.journal.version.as_str(), "1.2.3");
         assert_eq!(
             parsed.reported.as_ref().unwrap().name.as_deref(),
             Some("Host")
@@ -1645,7 +1721,10 @@ mod tests {
         let follow_up = controller
             .finish_pass_lane(claim, false)
             .expect("first-pass input must receive one common follow-up");
-        assert_eq!(follow_up.token, claim);
+        assert_ne!(follow_up.token, claim);
+        // A stale first-pass completion cannot release the successor lane.
+        assert!(controller.finish_pass_lane(claim, false).is_none());
+        let claim = follow_up.token;
         {
             let state = controller.state.lock().unwrap();
             assert_eq!(state.burst_phase, BurstPhase::FollowUp);

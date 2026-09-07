@@ -69,6 +69,7 @@ struct State {
     session_generation: u64,
     connection_epoch: u64,
     in_flight_token: Option<(u64, u64)>,
+    metadata_attempt: u64,
 }
 
 /// Single process-wide controller for the journal version fact.
@@ -234,19 +235,57 @@ impl JournalVersionController {
         token: (u64, u64),
         sync: &Arc<Mutex<SyncSnapshot>>,
     ) {
+        self.publish_info(Some(name), version, token, None, sync);
+    }
+
+    pub(crate) fn capture_metadata_attempt(
+        &self,
+        session: JournalVersionSessionToken,
+    ) -> Option<(u64, u64, u64)> {
+        let mut state = self.state.lock().expect("journal_version lock");
+        if state.session_generation != session.0 || state.instance_id.is_none() {
+            return None;
+        }
+        state.metadata_attempt = state.metadata_attempt.wrapping_add(1);
+        Some((
+            state.session_generation,
+            state.connection_epoch,
+            state.metadata_attempt,
+        ))
+    }
+
+    pub(crate) fn publish_info_for_attempt(
+        &self,
+        name: Option<Option<&str>>,
+        version: &str,
+        token: (u64, u64, u64),
+        sync: &Arc<Mutex<SyncSnapshot>>,
+    ) {
+        self.publish_info(name, Some(version), (token.0, token.1), Some(token.2), sync);
+    }
+
+    fn publish_info(
+        &self,
+        name: Option<Option<&str>>,
+        version: Option<&str>,
+        token: (u64, u64),
+        expected_attempt: Option<u64>,
+        sync: &Arc<Mutex<SyncSnapshot>>,
+    ) {
         let mut state = self.state.lock().expect("journal_version lock");
         if token != (state.session_generation, state.connection_epoch)
             || state.instance_id.is_none()
+            || expected_attempt.is_some_and(|attempt| attempt != state.metadata_attempt)
         {
             return;
         }
-        if name.is_some_and(|name| !is_sanitized_name(name))
+        if name.flatten().is_some_and(|name| !is_sanitized_name(name))
             || version.is_some_and(|version| !is_sanitized_version(version))
         {
             return;
         }
         if let Some(name) = name {
-            state.journal_name = Some(name.to_string());
+            state.journal_name = name.map(str::to_string);
         }
         if let Some(version) = version {
             state.version = Some(version.to_string());
@@ -286,7 +325,7 @@ impl JournalVersionController {
         token: (u64, u64),
         sync: &Arc<Mutex<SyncSnapshot>>,
     ) {
-        self.publish_journal_metadata(None, Some(version), token, sync);
+        self.publish_info(None, Some(version), token, None, sync);
     }
 
     /// Trigger a background refresh of the journal version.
@@ -704,5 +743,23 @@ mod tests {
         assert_eq!(restored_state.journal_name.as_deref(), Some("Home Journal"));
         drop(restored_state);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn full_null_name_clears_cache_but_older_attempt_cannot_restore_it() {
+        let path = temp_test_dir("null-name").join("journal-version.json");
+        let ctrl = JournalVersionController::new(path.clone());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let credential = make_credential("home", &[1, 2]);
+        let session = ctrl.begin_session(&credential, &sync);
+        let first = ctrl.capture_metadata_attempt(session).unwrap();
+        ctrl.publish_info_for_attempt(Some(Some("Home")), "1.0", first, &sync);
+        let next = ctrl.capture_metadata_attempt(session).unwrap();
+        ctrl.publish_info_for_attempt(Some(None), "1.1", next, &sync);
+        ctrl.publish_info_for_attempt(Some(Some("Old")), "0.9", first, &sync);
+        let persisted: PersistedJournalVersion =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.journal_name, None);
+        assert_eq!(persisted.version, "1.1");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

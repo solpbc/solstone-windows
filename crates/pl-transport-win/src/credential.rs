@@ -242,47 +242,56 @@ pub enum StorageError {
 static PAIRING_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(target_os = "linux")]
-fn sync_parent_directory(parent: &Path) -> Result<(), std::io::Error> {
+fn sync_published_path(path: &Path) -> Result<(), std::io::Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::File::open(parent)?.sync_all()
 }
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn sync_parent_directory(parent: &Path) -> Result<(), std::io::Error> {
+fn publish_staged_file(staged: &Path, destination: &Path) -> Result<(), StorageError> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FlushFileBuffers, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
-    let path: Vec<u16> = parent.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: `path` is NUL-terminated and remains live through CreateFileW.
-    // The returned directory handle is closed on both success and failure.
-    unsafe {
-        let handle = CreateFileW(
-            PCWSTR(path.as_ptr()),
-            FILE_GENERIC_READ.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            HANDLE::default(),
+    let source: Vec<u16> = staged.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: both paths are NUL-terminated and remain live through the call.
+    // The sibling staging file keeps the move on one volume; no copy fallback
+    // is allowed. WRITE_THROUGH waits until the file has been moved on disk.
+    let result = unsafe {
+        MoveFileExW(
+            PCWSTR(source.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let flush =
-            FlushFileBuffers(handle).map_err(|error| std::io::Error::other(error.to_string()));
-        let close = CloseHandle(handle).map_err(|error| std::io::Error::other(error.to_string()));
-        flush.and(close)
-    }
+    };
+    result.map_err(|error| {
+        let error = std::io::Error::other(error.to_string());
+        if staged.exists() {
+            StorageError::WriteFailed(error)
+        } else {
+            StorageError::DurabilityUncertain(error)
+        }
+    })
+}
+
+#[cfg(not(windows))]
+fn publish_staged_file(staged: &Path, destination: &Path) -> Result<(), StorageError> {
+    std::fs::rename(staged, destination).map_err(StorageError::WriteFailed)
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn sync_parent_directory(_parent: &Path) -> Result<(), std::io::Error> {
+fn sync_published_path(_path: &Path) -> Result<(), std::io::Error> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "durable directory sync is unsupported on this platform",
+        "durable publication sync is unsupported on this platform",
     ))
 }
 
@@ -374,7 +383,7 @@ impl PairedState {
             )));
         }
 
-        std::fs::rename(&tmp, path).map_err(StorageError::WriteFailed)?;
+        publish_staged_file(&tmp, path)?;
 
         #[cfg(test)]
         if FS_FAIL_POINT.with(|f| f.get()) == 2 {
@@ -383,7 +392,8 @@ impl PairedState {
             )));
         }
 
-        sync_parent_directory(parent).map_err(StorageError::DurabilityUncertain)?;
+        #[cfg(not(windows))]
+        sync_published_path(path).map_err(StorageError::DurabilityUncertain)?;
         Ok(())
     }
 
