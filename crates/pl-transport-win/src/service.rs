@@ -17,12 +17,11 @@ use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinHandle};
 
-use crate::client::{ClientSlot, ObserverClient};
+use crate::access::CredentialAccess;
 use crate::coordinator::UploadCoordinator;
-use crate::credential::{pairing_generation, CasKey, PairedState};
+use crate::credential::PairedState;
 use crate::device_metadata::RawDeviceFacts;
 use crate::journal_version::JournalVersionController;
-use crate::post_connect::PostConnectController;
 use crate::sealed::{LocalSealedStore, SealedStore};
 use crate::{cancelled, pairing, transport_error_code, TransportError};
 
@@ -111,12 +110,12 @@ async fn pair_inner(link: &str, cfg: &SyncConfig) -> Result<(PairedState, String
 /// Run the upload coordinator for an already-paired observer until `cancel`
 /// fires.
 pub async fn run_uploader(
-    paired: PairedState,
+    access: CredentialAccess,
     cfg: SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
     cancel: watch::Receiver<bool>,
 ) {
-    let coordinator = match setup_uploader(paired, cfg, sync.clone()).await {
+    let coordinator = match setup_uploader(access, cfg, sync.clone()).await {
         Ok(coordinator) => coordinator,
         Err(error) => {
             let code = transport_error_code(&error);
@@ -135,29 +134,13 @@ pub async fn run_uploader(
 }
 
 async fn setup_uploader(
-    paired: PairedState,
+    access: CredentialAccess,
     cfg: SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
 ) -> Result<UploadCoordinator, TransportError> {
-    let credential = paired.credential.ok_or(TransportError::NotPaired)?;
-    let journal_label = credential.home_label.clone();
-    let version_generation = cfg.journal_version.begin_session(&credential, &sync);
-    let client = ObserverClient::new(credential.clone())?
-        .with_state_path(cfg.state_path.clone())
-        .with_cas_key(CasKey {
-            pairing_generation: pairing_generation(&credential.client_cert_pem),
-            access_mutation_generation: paired.access_mutation_generation,
-        });
-    let client_slot = ClientSlot::new(Arc::new(client));
-
-    let post_connect = Arc::new(PostConnectController::new(
-        client_slot.clone(),
-        Some(cfg.state_path.clone()),
-        Some(cfg.journal_version.clone()),
-        sync.clone(),
-        cfg.facts_fn.clone(),
-    ));
-    post_connect.begin_session(&credential);
+    let client_slot = access.client_slot();
+    let post_connect = access.post_connect();
+    let journal_label = client_slot.load().home_label().to_string();
 
     set_pairing(
         &sync,
@@ -168,8 +151,6 @@ async fn setup_uploader(
         },
     );
 
-    cfg.journal_version
-        .trigger_refresh(client_slot.load(), sync.clone(), version_generation);
     post_connect.trigger();
 
     let store: Box<dyn SealedStore> =
@@ -183,6 +164,8 @@ async fn setup_uploader(
         cfg.local_offset,
         cfg.journal_version,
         Some(post_connect),
+        access.journal_version_token(),
+        Some(access.post_connect_token()),
     ))
 }
 

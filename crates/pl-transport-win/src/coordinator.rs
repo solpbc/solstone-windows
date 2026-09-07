@@ -32,7 +32,7 @@ use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 
 use crate::client::{ClientSlot, ObserverClient, SendMetadata};
-use crate::journal_version::JournalVersionController;
+use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
 use crate::post_connect::PostConnectController;
 use crate::sealed::{content_type_for, SealedStore};
 use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
@@ -286,11 +286,10 @@ impl UploadEvent {
 /// Drives sealed segments to the journal and reconciles them.
 pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
-    client_slot: Option<ClientSlot>,
-    version_client: Option<Arc<ObserverClient>>,
     journal_version: Option<Arc<JournalVersionController>>,
     post_connect: Option<Arc<PostConnectController>>,
-    version_generation: u64,
+    version_generation: JournalVersionSessionToken,
+    post_connect_generation: Option<crate::post_connect::PostConnectSessionToken>,
     store: Box<dyn SealedStore>,
     sync: Arc<Mutex<SyncSnapshot>>,
     period_secs: u64,
@@ -324,11 +323,10 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client: client.clone(),
-            client_slot: None,
-            version_client: Some(client),
-            version_generation: journal_version.current_token().0,
+            version_generation: JournalVersionSessionToken(journal_version.current_token().0),
             journal_version: Some(journal_version),
             post_connect: None,
+            post_connect_generation: None,
             store,
             sync,
             period_secs: period_secs.max(1),
@@ -348,14 +346,15 @@ impl UploadCoordinator {
         local_offset: Arc<dyn LocalOffset>,
         journal_version: Arc<JournalVersionController>,
         post_connect: Option<Arc<PostConnectController>>,
+        version_generation: JournalVersionSessionToken,
+        post_connect_generation: Option<crate::post_connect::PostConnectSessionToken>,
     ) -> Self {
         Self {
             client: Arc::new(client_slot.clone()),
-            client_slot: Some(client_slot),
-            version_client: None,
-            version_generation: journal_version.current_token().0,
+            version_generation,
             journal_version: Some(journal_version),
             post_connect,
+            post_connect_generation,
             store,
             sync,
             period_secs: period_secs.max(1),
@@ -376,11 +375,10 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client,
-            client_slot: None,
             post_connect: None,
-            version_client: None,
+            post_connect_generation: None,
             journal_version: None,
-            version_generation: 0,
+            version_generation: JournalVersionSessionToken(0),
             store,
             sync,
             period_secs: period_secs.max(1),
@@ -819,21 +817,7 @@ impl UploadCoordinator {
         } else {
             false
         };
-        if is_recovery {
-            if let Some(jv) = &self.journal_version {
-                let client = if let Some(slot) = &self.client_slot {
-                    Some(slot.load())
-                } else {
-                    self.version_client.clone()
-                };
-                if let Some(client) = client {
-                    jv.trigger_refresh(client, self.sync.clone(), self.version_generation);
-                }
-            }
-            if let Some(pc) = &self.post_connect {
-                pc.trigger();
-            }
-        }
+        let _ = is_recovery;
     }
 
     fn note_tick_failure(&self, err: &TransportError) {
@@ -848,8 +832,8 @@ impl UploadCoordinator {
             if let Some(jv) = &self.journal_version {
                 jv.mark_session_disconnected(self.version_generation, &self.sync);
             }
-            if let Some(pc) = &self.post_connect {
-                pc.mark_session_disconnected(self.version_generation);
+            if let (Some(pc), Some(token)) = (&self.post_connect, self.post_connect_generation) {
+                pc.mark_session_disconnected(token);
             }
         }
     }
@@ -2360,7 +2344,6 @@ mod tests {
         ));
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let cred = dummy_credential();
-        let dummy = Arc::new(ObserverClient::new(cred.clone()).unwrap());
         jv.begin_session(&cred, &sync);
 
         // Simulate an already fresh version in sync snapshot.
@@ -2385,16 +2368,15 @@ mod tests {
 
         let coordinator = UploadCoordinator {
             client,
-            client_slot: None,
             post_connect: None,
+            post_connect_generation: None,
             store: Box::new(store),
             sync: sync.clone(),
             period_secs: 300,
             retention: Arc::new(RwLock::new(RetentionConfig::default())),
             local_offset: Arc::new(FixedOffset(0)),
             quarantine_counts: Mutex::new(std::collections::HashMap::new()),
-            version_client: Some(dummy),
-            version_generation: jv.current_token().0,
+            version_generation: JournalVersionSessionToken(jv.current_token().0),
             journal_version: Some(jv.clone()),
         };
 
@@ -2411,15 +2393,14 @@ mod tests {
         }
         assert_eq!(jv.in_flight_token(), None);
 
-        // Second tick succeeds (recovery from recent_error_count > 0) -> triggers refresh.
+        // Recovery does not start an independent version-refresh burst.
         let res = coordinator.tick().await;
         assert_eq!(res.unwrap(), 0);
         {
             let s = sync.lock().unwrap();
             assert_eq!(s.upload.recent_error_count, 0);
         }
-        // In-flight token is set synchronously upon recovery trigger.
-        assert_eq!(jv.in_flight_token(), Some((1, 1)));
+        assert_eq!(jv.in_flight_token(), None);
 
         // Third tick succeeds when already healthy (recent_error_count == 0) -> does NOT trigger a refresh.
         // Clear in-flight token to observe whether healthy tick sets it.

@@ -32,10 +32,11 @@ use tokio_tungstenite::{
     connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
 };
 
-use crate::connection::run_request_over_stream_observed;
+use crate::connection::run_request_over_stream_observed_with_cap;
 use crate::observe::ObserverHandle;
 use crate::tls::pinned_server_name;
 use crate::{RelayError, TransportError};
+use observer_pl::mux::MAX_ASSEMBLED_BYTES;
 
 /// Inner mTLS progress bound for AC6. This is not a presence-hold wait; a live
 /// relay path should produce the journal's TLS response well before this.
@@ -53,6 +54,7 @@ pub(crate) struct RelayRequestSpec<'a> {
     headers: &'a [(String, String)],
     body: &'a [u8],
     observer: &'a ObserverHandle,
+    response_cap: usize,
 }
 
 impl<'a> RelayRequestSpec<'a> {
@@ -69,7 +71,13 @@ impl<'a> RelayRequestSpec<'a> {
             headers,
             body,
             observer,
+            response_cap: MAX_ASSEMBLED_BYTES,
         }
+    }
+
+    pub(crate) fn with_response_cap(mut self, response_cap: usize) -> Self {
+        self.response_cap = response_cap;
+        self
     }
 }
 
@@ -492,13 +500,14 @@ async fn request_once_over_ws_inner(
         .and_then(|certs| certs.first())
         .cloned();
 
-    match run_request_over_stream_observed(
+    match run_request_over_stream_observed_with_cap(
         tls,
         request.method,
         request.path,
         request.headers,
         request.body,
         request.observer,
+        request.response_cap,
     )
     .await
     {

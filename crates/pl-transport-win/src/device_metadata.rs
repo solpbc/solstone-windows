@@ -3,7 +3,7 @@
 
 //! Device metadata validation, sanitization, and request models.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Maximum UTF-8 byte length for the name field.
 pub const MAX_NAME_BYTES: usize = 80;
@@ -22,13 +22,63 @@ pub struct RawDeviceFacts {
 }
 
 /// The sanitized 5-tuple of reported device metadata.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ReportedMetadata {
     pub name: Option<String>,
     pub platform: Option<String>,
     pub device_type: Option<String>,
     pub app_id: Option<String>,
     pub app_version: Option<String>,
+}
+
+fn required_nullable<T: serde::de::DeserializeOwned>(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<T>, String> {
+    let value = object
+        .remove(field)
+        .ok_or_else(|| format!("missing {field}"))?;
+    serde_json::from_value(value).map_err(|_| format!("invalid {field}"))
+}
+
+fn valid_value(value: &Option<String>, max: usize) -> bool {
+    value
+        .as_deref()
+        .map(|value| sanitize_field(Some(value), max).as_deref() == Some(value))
+        .unwrap_or(true)
+}
+
+impl<'de> Deserialize<'de> for ReportedMetadata {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let mut object = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| serde::de::Error::custom("reported must be an object"))?;
+        let reported = Self {
+            name: required_nullable(&mut object, "name").map_err(serde::de::Error::custom)?,
+            platform: required_nullable(&mut object, "platform")
+                .map_err(serde::de::Error::custom)?,
+            device_type: required_nullable(&mut object, "device_type")
+                .map_err(serde::de::Error::custom)?,
+            app_id: required_nullable(&mut object, "app_id").map_err(serde::de::Error::custom)?,
+            app_version: required_nullable(&mut object, "app_version")
+                .map_err(serde::de::Error::custom)?,
+        };
+        if !object.is_empty()
+            || !valid_value(&reported.name, MAX_NAME_BYTES)
+            || !valid_value(&reported.platform, MAX_FIELD_BYTES)
+            || !valid_value(&reported.device_type, MAX_FIELD_BYTES)
+            || !valid_value(&reported.app_id, MAX_FIELD_BYTES)
+            || !valid_value(&reported.app_version, MAX_FIELD_BYTES)
+        {
+            return Err(serde::de::Error::custom("invalid reported metadata"));
+        }
+        Ok(reported)
+    }
 }
 
 /// Sanitize a single string field according to length and character rules.
@@ -72,29 +122,124 @@ pub struct MetadataPutRequest<'a> {
 }
 
 /// Journal details within the metadata GET response.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct JournalInfo {
-    #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
     pub version: Option<String>,
 }
 
+fn valid_journal_value(value: &Option<String>, max: usize) -> bool {
+    value
+        .as_deref()
+        .map(|value| {
+            !value.trim().is_empty()
+                && value.len() <= max
+                && !value.chars().any(|character| {
+                    character.is_control() || character == '\u{2028}' || character == '\u{2029}'
+                })
+        })
+        .unwrap_or(true)
+}
+
+impl<'de> Deserialize<'de> for JournalInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let mut object = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| serde::de::Error::custom("journal must be an object"))?;
+        let journal = Self {
+            name: required_nullable(&mut object, "name").map_err(serde::de::Error::custom)?,
+            version: required_nullable(&mut object, "version").map_err(serde::de::Error::custom)?,
+        };
+        if !object.is_empty()
+            || !valid_journal_value(&journal.name, MAX_NAME_BYTES)
+            || !valid_journal_value(&journal.version, 128)
+        {
+            return Err(serde::de::Error::custom("invalid journal"));
+        }
+        Ok(journal)
+    }
+}
+
 /// Response from `GET /app/network/api/clients/self`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MetadataGetResponse {
     pub protocol_version: u32,
     pub revision: u64,
-    #[serde(default)]
     pub reported: Option<ReportedMetadata>,
-    #[serde(default)]
     pub owner_label: Option<String>,
-    #[serde(default)]
     pub display_label: Option<String>,
-    #[serde(default)]
     pub updated_at: Option<String>,
-    #[serde(default)]
     pub journal: Option<JournalInfo>,
+}
+
+impl<'de> Deserialize<'de> for MetadataGetResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let mut object = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| serde::de::Error::custom("metadata response must be an object"))?;
+        let response = Self {
+            protocol_version: object
+                .remove("protocol_version")
+                .ok_or_else(|| serde::de::Error::custom("missing protocol_version"))
+                .and_then(|value| {
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)
+                })?,
+            revision: object
+                .remove("revision")
+                .ok_or_else(|| serde::de::Error::custom("missing revision"))
+                .and_then(|value| {
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)
+                })?,
+            reported: required_nullable(&mut object, "reported")
+                .map_err(serde::de::Error::custom)?,
+            owner_label: required_nullable(&mut object, "owner_label")
+                .map_err(serde::de::Error::custom)?,
+            display_label: required_nullable(&mut object, "display_label")
+                .map_err(serde::de::Error::custom)?,
+            updated_at: required_nullable(&mut object, "updated_at")
+                .map_err(serde::de::Error::custom)?,
+            journal: required_nullable(&mut object, "journal").map_err(serde::de::Error::custom)?,
+        };
+        if !object.is_empty() {
+            return Err(serde::de::Error::custom("unknown metadata response field"));
+        }
+        Ok(response)
+    }
+}
+
+/// Successful `PUT /clients/self` response. The journal returns the same
+/// complete protocol-1 resource as `GET`; accepting only a revision would
+/// silently trust a partial response.
+#[derive(Debug, Clone)]
+pub struct MetadataPutResponse(MetadataGetResponse);
+
+impl MetadataPutResponse {
+    pub fn resource(&self) -> &MetadataGetResponse {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for MetadataPutResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let resource = MetadataGetResponse::deserialize(deserializer)?;
+        if resource.protocol_version != 1 {
+            return Err(serde::de::Error::custom("unsupported metadata protocol"));
+        }
+        Ok(Self(resource))
+    }
 }
 
 #[cfg(test)]
@@ -143,5 +288,32 @@ mod tests {
         assert_eq!(sanitized.device_type, None);
         assert_eq!(sanitized.app_id.as_deref(), Some("app.solstone.windows"));
         assert_eq!(sanitized.app_version, None);
+    }
+
+    #[test]
+    fn metadata_resource_rejects_omitted_nullable_fields_and_accepts_full_null_snapshot() {
+        let omitted = r#"{
+            "protocol_version": 1,
+            "revision": 0,
+            "reported": null,
+            "display_label": null,
+            "updated_at": null,
+            "journal": null
+        }"#;
+        assert!(serde_json::from_str::<MetadataGetResponse>(omitted).is_err());
+
+        let full_null = r#"{
+            "protocol_version": 1,
+            "revision": 0,
+            "reported": null,
+            "owner_label": null,
+            "display_label": null,
+            "updated_at": null,
+            "journal": null
+        }"#;
+        let parsed: MetadataGetResponse = serde_json::from_str(full_null).unwrap();
+        assert_eq!(parsed.reported, None);
+        assert_eq!(parsed.journal, None);
+        assert!(serde_json::from_str::<MetadataPutResponse>(full_null).is_ok());
     }
 }

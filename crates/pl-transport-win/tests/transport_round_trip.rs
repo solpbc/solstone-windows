@@ -31,7 +31,7 @@ use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::service::{self, SyncConfig};
 use pl_transport_win::tls::pairing_config;
-use pl_transport_win::{journal_bridge, TransportError};
+use pl_transport_win::{journal_bridge, CredentialAccess, TransportError};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, IsCa, KeyPair,
     KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
@@ -40,7 +40,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
@@ -416,6 +416,18 @@ fn test_jv_and_sync(
     )
 }
 
+async fn start_test_bridge(
+    paired: &PairedState,
+    state_path: PathBuf,
+    journal_version: Arc<pl_transport_win::JournalVersionController>,
+    sync: Arc<Mutex<SyncSnapshot>>,
+) -> journal_bridge::JournalBridgeHandle {
+    let mut cfg = service_config(state_path);
+    cfg.journal_version = journal_version;
+    let access = CredentialAccess::bind(paired, &cfg, sync, None).unwrap();
+    journal_bridge::start(access).await.unwrap()
+}
+
 async fn start_bridge_with_response(
     status: &'static str,
     body: &'static [u8],
@@ -428,9 +440,7 @@ async fn start_bridge_with_response(
     let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
     let paired = paired_state(observer_credential(pin, upstream_port));
     let (jv, sync) = test_jv_and_sync("response");
-    let handle = journal_bridge::start(&paired, temp_state_path("response"), jv, sync)
-        .await
-        .unwrap();
+    let handle = start_test_bridge(&paired, temp_state_path("response"), jv, sync).await;
     (handle, server)
 }
 
@@ -467,9 +477,7 @@ async fn start_bridge_with_response_content_length(
     ));
     let paired = paired_state(observer_credential(pin, upstream_port));
     let (jv, sync) = test_jv_and_sync("response-length");
-    let handle = journal_bridge::start(&paired, temp_state_path("response-length"), jv, sync)
-        .await
-        .unwrap();
+    let handle = start_test_bridge(&paired, temp_state_path("response-length"), jv, sync).await;
     (handle, server)
 }
 
@@ -484,9 +492,7 @@ async fn start_bridge_with_sse(
     let server = tokio::spawn(serve_sse_stream(listener, acceptor, mode));
     let paired = paired_state(observer_credential(pin, upstream_port));
     let (jv, sync) = test_jv_and_sync("sse");
-    let handle = journal_bridge::start(&paired, temp_state_path("sse"), jv, sync)
-        .await
-        .unwrap();
+    let handle = start_test_bridge(&paired, temp_state_path("sse"), jv, sync).await;
     (handle, server)
 }
 
@@ -515,9 +521,7 @@ async fn start_bridge_with_counting_upstream() -> (
     });
     let paired = paired_state(observer_credential(pin, upstream_port));
     let (jv, sync) = test_jv_and_sync("counting");
-    let handle = journal_bridge::start(&paired, temp_state_path("counting"), jv, sync)
-        .await
-        .unwrap();
+    let handle = start_test_bridge(&paired, temp_state_path("counting"), jv, sync).await;
     (handle, accepts, task)
 }
 
@@ -748,9 +752,7 @@ async fn start_bridge_with_persistent_server(
     });
     let paired = paired_state(observer_credential(pin, upstream_port));
     let (jv, sync) = test_jv_and_sync("persistent");
-    let handle = journal_bridge::start(&paired, temp_state_path("persistent"), jv, sync)
-        .await
-        .unwrap();
+    let handle = start_test_bridge(&paired, temp_state_path("persistent"), jv, sync).await;
     (
         handle,
         PersistentBridgeServer {
@@ -2258,9 +2260,7 @@ async fn journal_bridge_logs_redacted_failure_categories_only() {
     tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber))
         .expect("install journal bridge log capture subscriber");
     let (jv, sync) = test_jv_and_sync("redaction");
-    let handle = journal_bridge::start(&paired, temp_state_path("redaction"), jv, sync)
-        .await
-        .unwrap();
+    let handle = start_test_bridge(&paired, temp_state_path("redaction"), jv, sync).await;
     let port = handle.port();
     let cap = capability_from(&handle);
 
@@ -2525,6 +2525,31 @@ impl ScriptedJournalServer {
     }
 }
 
+async fn wait_for_journal_requests(
+    server: &ScriptedJournalServer,
+    method: &str,
+    path: &str,
+    count: usize,
+) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let seen = server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == method && request.path == path)
+                .count();
+            if seen >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("expected scripted journal request");
+}
+
 fn parse_raw_http_request(bytes: &[u8]) -> (String, String, HashMap<String, String>, Vec<u8>) {
     let header_end = bytes
         .windows(4)
@@ -2773,7 +2798,12 @@ async fn test_adapter_metadata_get_put_on_first_send() {
         ("PUT", "/app/network/api/clients/self") => {
             let body = serde_json::json!({
                 "protocol_version": 1,
-                "revision": 1
+                "revision": 1,
+                "reported": null,
+                "owner_label": null,
+                "display_label": null,
+                "updated_at": null,
+                "journal": null
             });
             (200, vec![], serde_json::to_vec(&body).unwrap())
         }
@@ -2853,6 +2883,134 @@ async fn test_adapter_metadata_get_put_on_first_send() {
 }
 
 #[tokio::test]
+async fn test_adapter_metadata_version_fallback_preserves_journal_name() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": 0,
+                "reported": null,
+                "owner_label": null,
+                "display_label": null,
+                "updated_at": null,
+                "journal": { "name": "Home Journal", "version": null }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("GET", "/api/system/status") => {
+            let body = serde_json::json!({ "version": { "current": "9.9.9" } });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("PUT", "/app/network/api/clients/self") => {
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": 1,
+                "reported": null,
+                "owner_label": null,
+                "display_label": null,
+                "updated_at": null,
+                "journal": { "name": "Home Journal", "version": "9.9.9" }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("metadata-version-fallback");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+    let jv_path = state_path.with_file_name("journal-version.json");
+    let journal_version = Arc::new(pl_transport_win::JournalVersionController::new(
+        jv_path.clone(),
+    ));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let mut cfg = service_config(state_path.clone());
+    cfg.journal_version = journal_version;
+    let access = CredentialAccess::bind(&paired, &cfg, sync, None).unwrap();
+    let controller = access.post_connect();
+    controller.trigger();
+
+    wait_for_journal_requests(&server, "GET", "/api/system/status", 1).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let persisted = std::fs::read_to_string(&jv_path).unwrap_or_default();
+            if persisted.contains("\"version\": \"9.9.9\"")
+                && persisted.contains("\"journal_name\": \"Home Journal\"")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("version fallback did not persist the journal name and version");
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_malformed_put_keeps_validated_get_journal_cache() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": 0,
+                "reported": null,
+                "owner_label": null,
+                "display_label": null,
+                "updated_at": null,
+                "journal": { "name": "Home Journal", "version": "1.0.0" }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1}".to_vec(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let cred = observer_credential(server.pin.clone(), server.port);
+    let state_path = temp_state_path("metadata-malformed-put");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+    let jv_path = state_path.with_file_name("journal-version.json");
+    let journal_version = Arc::new(pl_transport_win::JournalVersionController::new(
+        jv_path.clone(),
+    ));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let mut cfg = service_config(state_path.clone());
+    cfg.journal_version = journal_version;
+    let access = CredentialAccess::bind(&paired, &cfg, sync, None).unwrap();
+    let controller = access.post_connect();
+    controller.trigger();
+
+    wait_for_journal_requests(&server, "PUT", "/app/network/api/clients/self", 1).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let persisted = std::fs::read_to_string(&jv_path).unwrap_or_default();
+            if persisted.contains("\"version\": \"1.0.0\"")
+                && persisted.contains("\"journal_name\": \"Home Journal\"")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("validated GET journal metadata was not retained");
+    assert!(controller.last_published_metadata().is_none());
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
 async fn test_adapter_clients_self_404_no_put() {
     let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
         ("GET", "/app/network/api/clients/self") => {
@@ -2894,7 +3052,7 @@ async fn test_adapter_clients_self_404_no_put() {
     controller.begin_session(&cred);
     controller.trigger();
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_journal_requests(&server, "GET", "/app/network/api/clients/self", 1).await;
 
     let requests = server.requests.lock().unwrap().clone();
     let gets = requests
@@ -2987,7 +3145,12 @@ async fn test_adapter_metadata_409_conflict_retry() {
             } else {
                 let body = serde_json::json!({
                     "protocol_version": 1,
-                    "revision": 7
+                    "revision": 7,
+                    "reported": null,
+                    "owner_label": null,
+                    "display_label": null,
+                    "updated_at": null,
+                    "journal": null
                 });
                 (200, vec![], serde_json::to_vec(&body).unwrap())
             }
@@ -3097,7 +3260,7 @@ async fn test_adapter_corrupt_json_get_no_put() {
     controller.begin_session(&cred);
     controller.trigger();
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_journal_requests(&server, "GET", "/app/network/api/clients/self", 1).await;
 
     let requests = server.requests.lock().unwrap().clone();
     let gets = requests
@@ -3135,15 +3298,10 @@ async fn test_adapter_oversize_response_body_rejected() {
     let client = ObserverClient::new(cred).unwrap();
 
     let err = client.get_clients_self().await.unwrap_err();
-    match err {
-        TransportError::Io(e) => {
-            assert!(e.to_string().contains("64 KiB"));
-        }
-        other => panic!(
-            "expected TransportError::Io for oversize response, got {:?}",
-            other
-        ),
-    }
+    assert!(matches!(
+        err,
+        TransportError::Mux(observer_pl::mux::MuxError::CapExceeded)
+    ));
 
     server.abort();
 }
@@ -3281,12 +3439,12 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
         facts,
     ));
 
-    controller.begin_session(&cred);
+    let session = controller.begin_session(&cred);
 
     // 1. 404 response preserves cached credentials
     mode.store(0, Ordering::SeqCst);
     controller.trigger();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 1).await;
     assert_eq!(
         slot.load().credential().relay_origin.as_deref(),
         Some("https://relay.cached.app")
@@ -3301,10 +3459,12 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
         Some("https://relay.cached.app")
     );
 
-    // 2. 503 response preserves cached credentials
+    // 2. A new connection epoch starts the next bounded burst. Its 503
+    // response preserves cached credentials.
     mode.store(1, Ordering::SeqCst);
-    controller.trigger();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    controller.mark_session_disconnected(session);
+    controller.note_connected(session);
+    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 2).await;
     assert_eq!(
         slot.load().credential().relay_origin.as_deref(),
         Some("https://relay.cached.app")
@@ -3319,12 +3479,20 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
         Some("https://relay.cached.app")
     );
 
-    // 3. not_configured clears cached credentials in live slot and on disk
+    // 3. The next successful dial has another epoch and may start its one
+    // bounded burst; not_configured clears cached credentials in live slot and on disk.
     mode.store(2, Ordering::SeqCst);
-    controller.trigger();
+    controller.mark_session_disconnected(session);
+    controller.note_connected(session);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if slot.load().credential().relay_origin.is_none() {
+            let disk_cleared = PairedState::load(&state_path)
+                .ok()
+                .and_then(|state| state.credential)
+                .is_some_and(|credential| {
+                    credential.relay_origin.is_none() && credential.device_token.is_none()
+                });
+            if slot.load().credential().relay_origin.is_none() && disk_cleared {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3386,7 +3554,12 @@ async fn test_adapter_unchanged_snapshot_no_second_put() {
             let prev = pc.fetch_add(1, Ordering::SeqCst);
             let body = serde_json::json!({
                 "protocol_version": 1,
-                "revision": (prev + 1) as u64
+                "revision": (prev + 1) as u64,
+                "reported": null,
+                "owner_label": null,
+                "display_label": null,
+                "updated_at": null,
+                "journal": null
             });
             (200, vec![], serde_json::to_vec(&body).unwrap())
         }
@@ -3437,7 +3610,7 @@ async fn test_adapter_unchanged_snapshot_no_second_put() {
 
     // 2nd trigger with unchanged facts issues GET, sees match, does NOT send 2nd PUT
     controller.trigger();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_journal_requests(&server, "GET", "/app/network/api/clients/self", 2).await;
 
     assert_eq!(
         put_count.load(Ordering::SeqCst),
@@ -3450,55 +3623,93 @@ async fn test_adapter_unchanged_snapshot_no_second_put() {
 }
 
 #[tokio::test]
-async fn test_adapter_service_and_carrier_trigger_post_connect() {
-    let facts_sampled = Arc::new(AtomicUsize::new(0));
-    let fs = facts_sampled.clone();
+async fn test_adapter_service_and_carrier_share_post_connect_authority() {
+    let mode = Arc::new(AtomicUsize::new(0));
+    let mode_for_server = mode.clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let token = mint_test_jwt_v2("inst-test-123", now + 3600);
+    let token_for_server = token.clone();
 
-    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+    let server = spawn_scripted_journal_server(move |method, path, _, _| match (method, path) {
         ("GET", "/app/network/api/clients/self") => (
             200,
             vec![],
-            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null}".to_vec(),
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":null,\"updated_at\":null,\"journal\":null}".to_vec(),
         ),
         ("PUT", "/app/network/api/clients/self") => (
             200,
             vec![],
-            b"{\"protocol_version\":1,\"revision\":1}".to_vec(),
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":null,\"updated_at\":null,\"journal\":null}".to_vec(),
         ),
+        ("GET", "/app/network/api/relay/access") => {
+            let body = if mode_for_server.load(Ordering::SeqCst) == 0 {
+                serde_json::json!({
+                    "status": "ready",
+                    "protocol_version": 2,
+                    "relay_origin": "https://relay.test.solstone.app",
+                    "instance_id": "inst-test-123",
+                    "device_token": token_for_server.clone(),
+                    "expires_at": epoch_to_rfc3339(now + 3600),
+                })
+            } else {
+                serde_json::json!({ "status": "not_configured", "protocol_version": 2 })
+            };
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
         _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
     })
     .await;
 
-    let cred = observer_credential(server.pin.clone(), server.port);
-    let state_path = temp_state_path("carrier-trigger-evidence");
+    let mut cred = observer_credential(server.pin.clone(), server.port);
+    cred.instance_id = "inst-test-123".into();
+    let state_path = temp_state_path("shared-post-connect-authority");
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
     let (jv, sync) = test_jv_and_sync("carrier-trigger");
-    let facts_fn: Arc<dyn Fn() -> pl_transport_win::device_metadata::RawDeviceFacts + Send + Sync> =
-        Arc::new(move || {
-            fs.fetch_add(1, Ordering::SeqCst);
-            pl_transport_win::device_metadata::RawDeviceFacts {
-                name: Some("Trigger Test".into()),
-                platform: Some("windows".into()),
-                device_type: None,
-                app_id: Some("app.solstone.windows".into()),
-                app_version: Some("2.0.0".into()),
-            }
-        });
+    let mut cfg = service_config(state_path.clone());
+    cfg.journal_version = jv;
+    let observer = pl_transport_win::observe::OperationObserver::new();
+    let access =
+        CredentialAccess::bind(&paired, &cfg, sync.clone(), Some(observer.clone())).unwrap();
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let uploader = tokio::spawn(service::run_uploader(
+        access.clone(),
+        cfg.clone(),
+        sync.clone(),
+        cancel_rx,
+    ));
+    let handle = journal_bridge::start_observed_with_facts(access.clone())
+        .await
+        .unwrap();
 
-    let handle = journal_bridge::start_observed_with_facts(
-        &paired,
-        state_path.clone(),
-        None,
-        jv,
-        sync,
-        facts_fn,
-    )
+    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 1).await;
+    let slot = access.client_slot();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if slot.load().credential().device_token.as_deref() == Some(token.as_str()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
     .await
-    .unwrap();
+    .expect("ready access did not replace the shared slot");
+    assert_eq!(
+        PairedState::load(&state_path)
+            .unwrap()
+            .credential
+            .unwrap()
+            .device_token
+            .as_deref(),
+        Some(token.as_str())
+    );
 
     let cap = capability_from(&handle);
+    let counts_before_bridge = observer.counts();
     let _ = raw_bridge_request(
         handle.port(),
         "GET",
@@ -3510,18 +3721,45 @@ async fn test_adapter_service_and_carrier_trigger_post_connect() {
     )
     .await;
 
+    wait_for_journal_requests(&server, "GET", "/app/status", 1).await;
+    assert!(
+        observer.counts().direct_successes > counts_before_bridge.direct_successes,
+        "the bridge must use the observer retained across the ready replacement"
+    );
+
+    mode.store(1, Ordering::SeqCst);
+    access.post_connect().trigger();
+    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 2).await;
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if facts_sampled.load(Ordering::SeqCst) >= 1 {
+            if slot.load().credential().relay_origin.is_none() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("facts_fn should be called on post-connect trigger");
+    .expect("not_configured did not disable the shared relay slot");
+
+    // The same replacement authority now refuses relay credentials while its
+    // LAN adapter continues serving requests with the attached observer.
+    assert!(slot.load().credential().device_token.is_none());
+    let lan_counts = observer.counts();
+    slot.load().get_clients_self().await.unwrap();
+    assert!(observer.counts().direct_successes > lan_counts.direct_successes);
+    assert!(PairedState::load(&state_path)
+        .unwrap()
+        .credential
+        .unwrap()
+        .relay_origin
+        .is_none());
 
     handle.shutdown_and_wait().await;
+    let _ = cancel_tx.send(true);
+    tokio::time::timeout(Duration::from_secs(3), uploader)
+        .await
+        .expect("uploader should stop")
+        .unwrap();
     server.abort();
     let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
 }

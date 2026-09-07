@@ -24,8 +24,8 @@ use tokio::time::{Instant, MissedTickBehavior};
 use std::sync::Mutex as StdMutex;
 
 use crate::client::{CarrierIo, CarrierKind, ClientSlot};
-use crate::journal_version::JournalVersionController;
-use crate::post_connect::PostConnectController;
+use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
+use crate::post_connect::{PostConnectController, PostConnectSessionToken};
 use crate::{transport_error_code, TransportError};
 use observer_model::SyncSnapshot;
 
@@ -43,38 +43,27 @@ pub(crate) struct MuxCarrier {
     keepalive: KeepaliveConfig,
     journal_version: Arc<JournalVersionController>,
     post_connect: Option<Arc<PostConnectController>>,
-    version_generation: u64,
+    version_generation: JournalVersionSessionToken,
+    post_connect_generation: Option<PostConnectSessionToken>,
     sync: Arc<StdMutex<SyncSnapshot>>,
 }
 
 impl MuxCarrier {
-    #[allow(dead_code)]
-    pub(crate) fn new(
-        client: Arc<crate::ObserverClient>,
-        journal_version: Arc<JournalVersionController>,
-        sync: Arc<StdMutex<SyncSnapshot>>,
-    ) -> Self {
-        Self::with_keepalive(
-            ClientSlot::new(client),
-            KeepaliveConfig::default(),
-            journal_version,
-            None,
-            sync,
-        )
-    }
-
     pub(crate) fn with_keepalive(
         client: ClientSlot,
         keepalive: KeepaliveConfig,
         journal_version: Arc<JournalVersionController>,
         post_connect: Option<Arc<PostConnectController>>,
+        version_generation: JournalVersionSessionToken,
+        post_connect_generation: Option<PostConnectSessionToken>,
         sync: Arc<StdMutex<SyncSnapshot>>,
     ) -> Self {
         Self {
             client,
             slot: Mutex::new(None),
             keepalive,
-            version_generation: journal_version.current_token().0,
+            version_generation,
+            post_connect_generation,
             journal_version,
             post_connect,
             sync,
@@ -135,7 +124,9 @@ impl MuxCarrier {
         self.journal_version
             .mark_session_disconnected(self.version_generation, &self.sync);
         if let Some(pc) = &self.post_connect {
-            pc.mark_session_disconnected(self.version_generation);
+            if let Some(token) = self.post_connect_generation {
+                pc.mark_session_disconnected(token);
+            }
         }
         let handle = self.slot.lock().await.take();
         if let Some(handle) = handle {
@@ -152,17 +143,21 @@ impl MuxCarrier {
             }
         }
 
-        self.journal_version
-            .mark_session_disconnected(self.version_generation, &self.sync);
-        if let Some(pc) = &self.post_connect {
-            pc.mark_session_disconnected(self.version_generation);
+        if slot.is_some() {
+            self.journal_version
+                .mark_session_disconnected(self.version_generation, &self.sync);
+            if let Some(pc) = &self.post_connect {
+                if let Some(token) = self.post_connect_generation {
+                    pc.mark_session_disconnected(token);
+                }
+            }
         }
         let client = self.client.load();
         let dialed = client.dial_carrier().await?;
-        self.journal_version
-            .trigger_refresh(client, self.sync.clone(), self.version_generation);
         if let Some(pc) = &self.post_connect {
-            pc.trigger();
+            if let Some(token) = self.post_connect_generation {
+                pc.note_connected(token);
+            }
         }
         let is_relay = matches!(dialed.kind, CarrierKind::Relay { .. });
         let (read, write) = split(dialed.stream);
@@ -176,7 +171,7 @@ impl MuxCarrier {
         });
 
         let token = (
-            self.version_generation,
+            self.version_generation.0,
             self.journal_version.current_token().1,
         );
         let jv = self.journal_version.clone();

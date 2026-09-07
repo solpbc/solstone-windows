@@ -10,30 +10,137 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use observer_model::SyncSnapshot;
 
 use crate::client::ClientSlot;
+#[cfg(test)]
+use crate::credential::FS_FAIL_POINT;
 use crate::credential::{pairing_generation, CasKey, Credential, PairedState, StorageError};
 use crate::device_metadata::{
-    sanitize_facts, MetadataGetResponse, MetadataPutRequest, RawDeviceFacts, ReportedMetadata,
+    sanitize_facts, MetadataGetResponse, MetadataPutRequest, MetadataPutResponse, RawDeviceFacts,
+    ReportedMetadata,
 };
-use crate::journal_version::JournalVersionController;
-use crate::relay_access::{
-    validate_relay_access_response, RelayAccessResponse, ValidatedReadyAccess,
-};
-use crate::ObserverClient;
+use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
+
+/// Session identity for post-connect work. It is intentionally not
+/// interchangeable with journal-version sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostConnectSessionToken(pub(crate) u64);
+
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+enum RelayAccessValidationError {
+    #[error("envelope")]
+    Envelope,
+    #[error("protocol")]
+    Protocol,
+    #[error("identity")]
+    Identity,
+    #[error("origin")]
+    Origin,
+    #[error("claims")]
+    Claims,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValidatedReadyAccess {
+    pub(crate) relay_origin: String,
+    pub(crate) instance_id: String,
+    pub(crate) device_token: String,
+    pub(crate) expires_at: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "status", deny_unknown_fields)]
+enum RelayAccessEnvelope {
+    #[serde(rename = "ready")]
+    Ready {
+        protocol_version: u8,
+        relay_origin: String,
+        instance_id: String,
+        device_token: String,
+        expires_at: String,
+    },
+    #[serde(rename = "not_configured")]
+    NotConfigured { protocol_version: u8 },
+}
+
+fn validate_relay_access_response(
+    body: &[u8],
+    paired_instance_id: &str,
+    now_secs: i64,
+) -> Result<Option<ValidatedReadyAccess>, RelayAccessValidationError> {
+    let envelope: RelayAccessEnvelope =
+        serde_json::from_slice(body).map_err(|_| RelayAccessValidationError::Envelope)?;
+    match envelope {
+        RelayAccessEnvelope::NotConfigured { protocol_version } if protocol_version == 2 => {
+            Ok(None)
+        }
+        RelayAccessEnvelope::NotConfigured { .. } => Err(RelayAccessValidationError::Protocol),
+        RelayAccessEnvelope::Ready {
+            protocol_version,
+            relay_origin,
+            instance_id,
+            device_token,
+            expires_at,
+        } => {
+            if protocol_version != 2 {
+                return Err(RelayAccessValidationError::Protocol);
+            }
+            if instance_id != paired_instance_id {
+                return Err(RelayAccessValidationError::Identity);
+            }
+            if crate::relay_http::parse_relay_origin(&relay_origin).is_err() {
+                return Err(RelayAccessValidationError::Origin);
+            }
+            let access = observer_pl::relay_access::RelayAccess {
+                protocol_version,
+                status: "ready".to_string(),
+                relay_origin: relay_origin.clone(),
+                instance_id,
+                device_token: device_token.clone(),
+                expires_at,
+            };
+            let claims = access
+                .claims(paired_instance_id, now_secs)
+                .ok_or(RelayAccessValidationError::Claims)?;
+            Ok(Some(ValidatedReadyAccess {
+                relay_origin,
+                instance_id: paired_instance_id.to_string(),
+                device_token,
+                expires_at: claims.exp,
+            }))
+        }
+    }
+}
 
 /// Default overall timeout for a post-connect job (requests + body reads).
 pub const DEFAULT_POST_CONNECT_DEADLINE: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum BurstPhase {
+    #[default]
+    Idle,
+    FirstPass,
+    FollowUp,
+    Quiesced,
+}
+
+#[derive(Debug, Clone)]
+struct PassStart {
+    token: (u64, u64, u64),
+    paired_id: String,
+}
 
 #[derive(Debug, Default)]
 struct PostConnectState {
     session_generation: u64,
     connection_epoch: u64,
+    last_connected_epoch: Option<u64>,
     pairing_generation: u64,
     paired_instance_id: Option<String>,
-    in_flight_metadata: bool,
+    in_flight_metadata: Option<(u64, u64, u64)>,
     pending_metadata: Option<ReportedMetadata>,
     last_published_metadata: Option<ReportedMetadata>,
-    in_flight_access: bool,
+    in_flight_access: Option<(u64, u64, u64)>,
     pending_access_trigger: bool,
+    burst_phase: BurstPhase,
     pending_durable_clear: Option<CasKey>,
 }
 
@@ -42,6 +149,7 @@ pub struct PostConnectController {
     client_slot: ClientSlot,
     state_path: Option<PathBuf>,
     journal_version: Option<Arc<JournalVersionController>>,
+    journal_version_token: Mutex<Option<JournalVersionSessionToken>>,
     sync: Arc<Mutex<SyncSnapshot>>,
     facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
     deadline: Duration,
@@ -62,6 +170,7 @@ impl PostConnectController {
             client_slot,
             state_path,
             journal_version,
+            journal_version_token: Mutex::new(None),
             sync,
             facts_fn,
             deadline: DEFAULT_POST_CONNECT_DEADLINE,
@@ -87,6 +196,10 @@ impl PostConnectController {
         *self.relay_disconnect_hook.lock().unwrap() = Some(hook);
     }
 
+    pub(crate) fn set_journal_version_token(&self, token: JournalVersionSessionToken) {
+        *self.journal_version_token.lock().unwrap() = Some(token);
+    }
+
     /// Read the current pending durable clear CAS key (test inspection only).
     pub fn pending_durable_clear(&self) -> Option<CasKey> {
         self.state.lock().unwrap().pending_durable_clear
@@ -98,28 +211,60 @@ impl PostConnectController {
     }
 
     /// Begin a new session with the given paired credential.
-    pub fn begin_session(&self, credential: &Credential) -> u64 {
+    pub fn begin_session(&self, credential: &Credential) -> PostConnectSessionToken {
         let mut state = self.state.lock().unwrap();
         state.session_generation += 1;
         state.connection_epoch += 1;
+        state.last_connected_epoch = None;
         state.pairing_generation = pairing_generation(&credential.client_cert_pem);
         state.paired_instance_id = Some(credential.instance_id.clone());
-        state.in_flight_metadata = false;
+        state.in_flight_metadata = None;
         state.pending_metadata = None;
         state.last_published_metadata = None;
-        state.in_flight_access = false;
+        state.in_flight_access = None;
         state.pending_access_trigger = false;
+        state.burst_phase = BurstPhase::Idle;
         state.pending_durable_clear = None;
-        state.session_generation
+        PostConnectSessionToken(state.session_generation)
     }
 
     /// Mark the connection disconnected for the given session generation, bumping epoch to fence in-flight jobs.
-    pub fn mark_session_disconnected(&self, generation: u64) {
+    pub fn mark_session_disconnected(&self, generation: PostConnectSessionToken) {
         let mut state = self.state.lock().unwrap();
-        if state.session_generation == generation {
+        if state.session_generation == generation.0 {
             state.connection_epoch += 1;
-            state.in_flight_metadata = false;
-            state.in_flight_access = false;
+            state.last_connected_epoch = None;
+            if state
+                .in_flight_metadata
+                .is_some_and(|claim| claim.0 == generation.0)
+            {
+                state.in_flight_metadata = None;
+            }
+            if state
+                .in_flight_access
+                .is_some_and(|claim| claim.0 == generation.0)
+            {
+                state.in_flight_access = None;
+            }
+            state.burst_phase = BurstPhase::Quiesced;
+        }
+    }
+
+    /// Arm one post-connect burst for the first successful dial in an epoch.
+    pub fn note_connected(self: &Arc<Self>, generation: PostConnectSessionToken) {
+        let should_trigger = {
+            let mut state = self.state.lock().unwrap();
+            if state.session_generation != generation.0
+                || state.last_connected_epoch == Some(state.connection_epoch)
+            {
+                false
+            } else {
+                state.last_connected_epoch = Some(state.connection_epoch);
+                true
+            }
+        };
+        if should_trigger {
+            self.trigger();
         }
     }
 
@@ -128,137 +273,274 @@ impl PostConnectController {
         let mut state = self.state.lock().unwrap();
         state.session_generation += 1;
         state.connection_epoch += 1;
+        state.last_connected_epoch = None;
         state.pairing_generation = 0;
         state.paired_instance_id = None;
-        state.in_flight_metadata = false;
+        state.in_flight_metadata = None;
         state.pending_metadata = None;
         state.last_published_metadata = None;
-        state.in_flight_access = false;
+        state.in_flight_access = None;
         state.pending_access_trigger = false;
+        state.burst_phase = BurstPhase::Idle;
         state.pending_durable_clear = None;
     }
 
     /// Trigger post-connect metadata publication and relay access acquisition.
     ///
-    /// Resamples facts dynamically per trigger. Coalesces in-flight jobs using pending-latest-snapshot.
+    /// Resamples facts dynamically per trigger and starts no more than two shared passes.
     pub fn trigger(self: &Arc<Self>) {
         self.retry_pending_durable_clear_if_needed();
 
         let raw_facts = (self.facts_fn)();
         let sanitized = sanitize_facts(&raw_facts);
 
-        self.trigger_metadata(sanitized);
-        self.trigger_access();
+        let start = {
+            let mut state = self.state.lock().unwrap();
+            let Some(paired_id) = state.paired_instance_id.clone() else {
+                return;
+            };
+            match state.burst_phase {
+                BurstPhase::Idle | BurstPhase::Quiesced => {
+                    let token = (
+                        state.session_generation,
+                        state.connection_epoch,
+                        state.pairing_generation,
+                    );
+                    state.burst_phase = BurstPhase::FirstPass;
+                    state.pending_metadata = None;
+                    state.pending_access_trigger = false;
+                    state.in_flight_metadata = Some(token);
+                    state.in_flight_access = Some(token);
+                    Some(PassStart { token, paired_id })
+                }
+                BurstPhase::FirstPass | BurstPhase::FollowUp => {
+                    // Inputs arriving during an active burst are retained for one
+                    // common follow-up pass. Inputs during that follow-up remain
+                    // pending for the next external trigger.
+                    state.pending_metadata = Some(sanitized);
+                    state.pending_access_trigger = true;
+                    None
+                }
+            }
+        };
+
+        if let Some(start) = start {
+            self.start_pass(start);
+        }
     }
 
-    fn retry_pending_durable_clear_if_needed(&self) {
+    fn retry_pending_durable_clear_if_needed(self: &Arc<Self>) {
+        if self.state.lock().unwrap().pending_durable_clear.is_none() {
+            return;
+        }
+        let this = self.clone();
+        tokio::spawn(async move { this.retry_pending_durable_clear().await });
+    }
+
+    async fn retry_pending_durable_clear(&self) {
         let pending_cas = {
             let state = self.state.lock().unwrap();
             state.pending_durable_clear
         };
 
         if let (Some(cas_key), Some(path)) = (pending_cas, &self.state_path) {
-            let res = PairedState::mutate(path, cas_key, |cred| {
-                cred.relay_origin = None;
-                cred.device_token = None;
-                cred.device_token_expires_at = None;
-                Ok(())
-            });
+            let path = path.clone();
+            #[cfg(test)]
+            let failpoint = FS_FAIL_POINT.with(|f| f.get());
+            let res = tokio::task::spawn_blocking(move || {
+                #[cfg(test)]
+                FS_FAIL_POINT.with(|f| f.set(failpoint));
+                let result = PairedState::mutate(&path, cas_key, |cred| {
+                    cred.relay_origin = None;
+                    cred.device_token = None;
+                    cred.device_token_expires_at = None;
+                    Ok(())
+                });
+                #[cfg(test)]
+                FS_FAIL_POINT.with(|f| f.set(0));
+                result
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::WriteFailed(std::io::Error::other("join"))));
             match res {
-                Ok(_) | Err(StorageError::CasMismatch) => {
+                Ok(new_generation) => {
                     let mut state = self.state.lock().unwrap();
                     if state.pending_durable_clear == Some(cas_key) {
                         state.pending_durable_clear = None;
+                        drop(state);
+                        let mut credential = self.client_slot.load().credential().clone();
+                        credential.relay_origin = None;
+                        credential.device_token = None;
+                        credential.device_token_expires_at = None;
+                        let _ = self.client_slot.replace_from_incumbent(
+                            credential,
+                            CasKey {
+                                pairing_generation: cas_key.pairing_generation,
+                                access_mutation_generation: new_generation,
+                            },
+                        );
                     }
                 }
-                Err(StorageError::WriteFailed(e)) | Err(StorageError::DurabilityUncertain(e)) => {
-                    tracing::warn!(target: "sync", error = %e, "retry of durable clear failed");
+                Err(StorageError::CasMismatch) => {
+                    tracing::debug!(target: "sync", reason = "cas_mismatch", "durable clear retry deferred");
                 }
-                Err(e) => {
-                    tracing::warn!(target: "sync", error = %e, "retry of durable clear error");
+                Err(StorageError::WriteFailed(_)) => {
+                    tracing::warn!(target: "sync", reason = "write_failed", "durable clear retry failed");
+                }
+                Err(StorageError::DurabilityUncertain(_)) => {
+                    tracing::warn!(target: "sync", reason = "durability_uncertain", "durable clear retry uncertain");
+                    self.reconcile_from_disk().await;
+                }
+                Err(_) => {
+                    tracing::warn!(target: "sync", reason = "storage", "durable clear retry failed");
                 }
             }
         }
     }
 
-    fn trigger_metadata(self: &Arc<Self>, snapshot: ReportedMetadata) {
-        let token = {
-            let mut state = self.state.lock().unwrap();
-            if state.paired_instance_id.is_none() {
-                return;
-            }
-            let token = (
-                state.session_generation,
-                state.connection_epoch,
-                state.pairing_generation,
-            );
-            if state.in_flight_metadata {
-                state.pending_metadata = Some(snapshot);
-                return;
-            } else {
-                state.in_flight_metadata = true;
-                token
-            }
-        };
-
-        let this = self.clone();
+    fn start_pass(self: &Arc<Self>, start: PassStart) {
+        let metadata = self.clone();
+        let metadata_token = start.token;
         tokio::spawn(async move {
-            this.run_metadata_loop(token, snapshot).await;
+            let deadline = metadata.deadline;
+            if tokio::time::timeout(deadline, metadata.execute_metadata_job(metadata_token))
+                .await
+                .is_err()
+            {
+                tracing::warn!(target: "sync", "post-connect metadata job timed out after {:?}", deadline);
+            }
+            if let Some(next) = metadata.finish_pass_lane(metadata_token, true) {
+                metadata.start_pass(next);
+            }
+        });
+
+        let access = self.clone();
+        let access_token = start.token;
+        tokio::spawn(async move {
+            let deadline = access.deadline;
+            match tokio::time::timeout(deadline, access.fetch_access_outcome(&start.paired_id))
+                .await
+            {
+                Ok(Some((validated, cas))) => {
+                    // Durable publication deliberately sits outside the network
+                    // deadline: once started, its serialized filesystem mutation
+                    // owns completion.
+                    access
+                        .apply_relay_access_outcome(validated, &access_token, cas)
+                        .await;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    tracing::warn!(target: "sync", "post-connect relay access job timed out after {:?}", deadline);
+                }
+            }
+            if let Some(next) = access.finish_pass_lane(access_token, false) {
+                access.start_pass(next);
+            }
         });
     }
 
-    async fn run_metadata_loop(
-        self: Arc<Self>,
-        mut token: (u64, u64, u64),
-        mut current: ReportedMetadata,
-    ) {
-        loop {
-            let deadline = self.deadline;
-            let result =
-                tokio::time::timeout(deadline, self.execute_metadata_job(token, &current)).await;
+    /// Release a lane only when this completion owns its exact claim. The
+    /// final first-pass completion alone may start one common follow-up.
+    fn finish_pass_lane(&self, token: (u64, u64, u64), metadata: bool) -> Option<PassStart> {
+        let mut state = self.state.lock().unwrap();
+        let current_token = (
+            state.session_generation,
+            state.connection_epoch,
+            state.pairing_generation,
+        );
+        if current_token != token {
+            return None;
+        }
+        let claim = if metadata {
+            &mut state.in_flight_metadata
+        } else {
+            &mut state.in_flight_access
+        };
+        if *claim != Some(token) {
+            return None;
+        }
+        *claim = None;
 
-            // Handle timeout / result
-            if let Err(_timed_out) = result {
-                tracing::warn!(target: "sync", "post-connect metadata job timed out after {:?}", deadline);
+        if state.in_flight_metadata.is_some() || state.in_flight_access.is_some() {
+            return None;
+        }
+
+        match state.burst_phase {
+            BurstPhase::FirstPass
+                if state.pending_metadata.is_some() || state.pending_access_trigger =>
+            {
+                let paired_id = state.paired_instance_id.clone()?;
+                state.burst_phase = BurstPhase::FollowUp;
+                state.pending_metadata = None;
+                state.pending_access_trigger = false;
+                state.in_flight_metadata = Some(current_token);
+                state.in_flight_access = Some(current_token);
+                Some(PassStart {
+                    token: current_token,
+                    paired_id,
+                })
             }
+            BurstPhase::FirstPass | BurstPhase::FollowUp => {
+                // Do not let internal activity schedule a third pass. Inputs
+                // recorded during the follow-up remain until an external event.
+                state.burst_phase = BurstPhase::Quiesced;
+                None
+            }
+            BurstPhase::Idle | BurstPhase::Quiesced => None,
+        }
+    }
 
-            // In-flight release and pending check
-            let next = {
-                let mut state = self.state.lock().unwrap();
-                state.in_flight_metadata = false;
-                let current_token = (
-                    state.session_generation,
-                    state.connection_epoch,
-                    state.pairing_generation,
-                );
-                if current_token == token {
-                    if let Some(pending) = state.pending_metadata.take() {
-                        state.in_flight_metadata = true;
-                        Some((current_token, pending))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
+    fn publish_journal_metadata(&self, resource: &MetadataGetResponse) {
+        let Some(journal) = &resource.journal else {
+            return;
+        };
+        if let (Some(jv), Some(version_token)) = (
+            &self.journal_version,
+            *self.journal_version_token.lock().unwrap(),
+        ) {
+            jv.publish_journal_metadata(
+                journal.name.as_deref(),
+                journal.version.as_deref(),
+                version_token,
+                &self.sync,
+            );
+        }
+    }
 
-            match next {
-                Some((new_token, pending_snapshot)) => {
-                    token = new_token;
-                    current = pending_snapshot;
-                }
-                None => break,
+    async fn fallback_journal_version_if_needed(
+        &self,
+        client: &crate::ObserverClient,
+        resource: &MetadataGetResponse,
+    ) {
+        if resource
+            .journal
+            .as_ref()
+            .and_then(|journal| journal.version.as_deref())
+            .is_some()
+        {
+            return;
+        }
+        let (Some(jv), Some(version_token)) = (
+            &self.journal_version,
+            *self.journal_version_token.lock().unwrap(),
+        ) else {
+            return;
+        };
+        match client.system_status().await {
+            Ok(version) => jv.publish_version(&version, version_token, &self.sync),
+            Err(_) => {
+                tracing::debug!(target: "sync", reason = "transport", "journal version fallback failed")
             }
         }
     }
 
-    async fn execute_metadata_job(&self, token: (u64, u64, u64), current: &ReportedMetadata) {
+    async fn execute_metadata_job(&self, token: (u64, u64, u64)) {
         let client = self.client_slot.load();
         let get_resp = match client.get_clients_self().await {
             Ok(resp) => resp,
-            Err(e) => {
-                tracing::debug!(target: "sync", error = %e, "metadata GET failed");
+            Err(_) => {
+                tracing::debug!(target: "sync", reason = "transport", "metadata GET failed");
                 return;
             }
         };
@@ -276,8 +558,8 @@ impl PostConnectController {
 
         let parsed: MetadataGetResponse = match serde_json::from_slice(&get_resp.body) {
             Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(target: "sync", error = %e, "failed to parse metadata GET response");
+            Err(_) => {
+                tracing::warn!(target: "sync", reason = "invalid_response", "metadata GET rejected");
                 return;
             }
         };
@@ -287,17 +569,14 @@ impl PostConnectController {
             return;
         }
 
-        // Publish journal version out-of-band if present
-        if let Some(journal) = &parsed.journal {
-            if let Some(v) = &journal.version {
-                if let Some(jv) = &self.journal_version {
-                    jv.publish_version(v, token.0, &self.sync);
-                }
-            }
-        }
+        self.publish_journal_metadata(&parsed);
+        self.fallback_journal_version_if_needed(&client, &parsed)
+            .await;
+
+        let current = sanitize_facts(&(self.facts_fn)());
 
         // Loop prevention: check if unchanged vs server reported
-        if parsed.reported.as_ref() == Some(current) {
+        if parsed.reported.as_ref() == Some(&current) {
             let mut state = self.state.lock().unwrap();
             state.last_published_metadata = Some(current.clone());
             return;
@@ -321,7 +600,7 @@ impl PostConnectController {
         let put_body = match serde_json::to_vec(&MetadataPutRequest {
             protocol_version: 1,
             expected_revision: parsed.revision,
-            reported: current,
+            reported: &current,
         }) {
             Ok(b) => b,
             Err(_) => return,
@@ -329,13 +608,21 @@ impl PostConnectController {
 
         let put_resp = match client.put_clients_self(&put_body).await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(target: "sync", error = %e, "metadata PUT failed");
+            Err(_) => {
+                tracing::warn!(target: "sync", reason = "transport", "metadata PUT failed");
                 return;
             }
         };
 
         if put_resp.is_success() {
+            let parsed_put: MetadataPutResponse = match serde_json::from_slice(&put_resp.body) {
+                Ok(response) => response,
+                Err(_) => {
+                    tracing::warn!(target: "sync", reason = "invalid_response", "metadata PUT rejected");
+                    return;
+                }
+            };
+            self.publish_journal_metadata(parsed_put.resource());
             let mut state = self.state.lock().unwrap();
             state.last_published_metadata = Some(current.clone());
             return;
@@ -353,8 +640,13 @@ impl PostConnectController {
                 Err(_) => return,
             };
 
+            if retry_parsed.protocol_version != 1 {
+                return;
+            }
+            self.publish_journal_metadata(&retry_parsed);
+
             let newest_snapshot = {
-                let mut state = self.state.lock().unwrap();
+                let state = self.state.lock().unwrap();
                 let current_token = (
                     state.session_generation,
                     state.connection_epoch,
@@ -363,10 +655,7 @@ impl PostConnectController {
                 if current_token != token {
                     return;
                 }
-                state
-                    .pending_metadata
-                    .take()
-                    .unwrap_or_else(|| current.clone())
+                sanitize_facts(&(self.facts_fn)())
             };
 
             if retry_parsed.reported.as_ref() == Some(&newest_snapshot) {
@@ -386,6 +675,16 @@ impl PostConnectController {
 
             if let Ok(retry_put_resp) = client.put_clients_self(&retry_put_body).await {
                 if retry_put_resp.is_success() {
+                    let parsed_put: MetadataPutResponse = match serde_json::from_slice(
+                        &retry_put_resp.body,
+                    ) {
+                        Ok(response) => response,
+                        Err(_) => {
+                            tracing::warn!(target: "sync", reason = "invalid_response", "metadata retry PUT rejected");
+                            return;
+                        }
+                    };
+                    self.publish_journal_metadata(parsed_put.resource());
                     let mut state = self.state.lock().unwrap();
                     state.last_published_metadata = Some(newest_snapshot);
                 }
@@ -393,117 +692,49 @@ impl PostConnectController {
         }
     }
 
-    fn trigger_access(self: &Arc<Self>) {
-        let (token, paired_id, should_spawn) = {
-            let mut state = self.state.lock().unwrap();
-            let paired_id = match &state.paired_instance_id {
-                Some(id) => id.clone(),
-                None => return,
-            };
-            let token = (
-                state.session_generation,
-                state.connection_epoch,
-                state.pairing_generation,
-            );
-            if state.in_flight_access {
-                state.pending_access_trigger = true;
-                (token, paired_id, false)
-            } else {
-                state.in_flight_access = true;
-                (token, paired_id, true)
-            }
-        };
-
-        if should_spawn {
-            let this = self.clone();
-            tokio::spawn(async move {
-                this.run_access_loop(token, paired_id).await;
-            });
-        }
-    }
-
-    async fn run_access_loop(self: Arc<Self>, mut token: (u64, u64, u64), paired_id: String) {
-        loop {
-            let deadline = self.deadline;
-            let result =
-                tokio::time::timeout(deadline, self.execute_access_job(token, &paired_id)).await;
-
-            if let Err(_timed_out) = result {
-                tracing::warn!(target: "sync", "post-connect relay access job timed out after {:?}", deadline);
-            }
-
-            // In-flight release and pending check
-            let next = {
-                let mut state = self.state.lock().unwrap();
-                state.in_flight_access = false;
-                let current_token = (
-                    state.session_generation,
-                    state.connection_epoch,
-                    state.pairing_generation,
-                );
-                if current_token == token && state.pending_access_trigger {
-                    state.pending_access_trigger = false;
-                    state.in_flight_access = true;
-                    Some(current_token)
-                } else {
-                    None
-                }
-            };
-
-            match next {
-                Some(new_token) => {
-                    token = new_token;
-                }
-                None => break,
-            }
-        }
-    }
-
-    async fn execute_access_job(&self, token: (u64, u64, u64), paired_instance_id: &str) {
+    async fn fetch_access_outcome(
+        &self,
+        paired_instance_id: &str,
+    ) -> Option<(Option<ValidatedReadyAccess>, CasKey)> {
         let client = self.client_slot.load();
+        let Some(captured_cas) = client.current_cas_key() else {
+            return None;
+        };
         let resp = match client.get_relay_access().await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(target: "sync", error = %e, "relay access GET failed");
-                return;
+            Err(_) => {
+                tracing::debug!(target: "sync", reason = "transport", "relay access GET failed");
+                return None;
             }
         };
 
         // 404, 503, or other non-success -> preserve existing cache and LAN
         if !resp.is_success() {
             tracing::debug!(target: "sync", status = resp.status, "relay access GET returned non-success");
-            return;
+            return None;
         }
-
-        let parsed: RelayAccessResponse = match serde_json::from_slice(&resp.body) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(target: "sync", error = %e, "failed to parse relay access response");
-                return;
-            }
-        };
 
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let validated = match validate_relay_access_response(&parsed, paired_instance_id, now_secs)
-        {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(target: "sync", error = %e, "relay access validation failed");
-                return;
-            }
-        };
-
-        self.apply_relay_access_outcome(validated, &token);
+        let validated =
+            match validate_relay_access_response(&resp.body, paired_instance_id, now_secs) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(target: "sync", reason = ?e, "relay access validation failed");
+                    return None;
+                }
+            };
+        Some((validated, captured_cas))
     }
 
-    pub(crate) fn apply_relay_access_outcome(
+    pub(crate) async fn apply_relay_access_outcome(
         &self,
         validated: Option<ValidatedReadyAccess>,
         token: &(u64, u64, u64),
+        captured_cas: CasKey,
     ) {
         // Generation fence before side-effects
         {
@@ -520,26 +751,23 @@ impl PostConnectController {
         }
 
         let client = self.client_slot.load();
-        let current_cas = client.current_cas_key().unwrap_or(CasKey {
-            pairing_generation: token.2,
-            access_mutation_generation: 0,
-        });
+        if client.current_cas_key() != Some(captured_cas) {
+            tracing::debug!(target: "sync", reason = "cas_changed", "relay access outcome skipped");
+            return;
+        }
 
         match validated {
             None => {
-                // not_configured: immediately replace with LAN-only client
+                // Fence first: a failed rebuild or disk write must never leave
+                // a retired relay adapter usable.
+                self.client_slot.disable_relay();
                 let mut lan_cred = client.credential().clone();
                 lan_cred.relay_origin = None;
                 lan_cred.device_token = None;
                 lan_cred.device_token_expires_at = None;
-
-                if let Ok(lan_client) = ObserverClient::new(lan_cred) {
-                    let mut configured_client = lan_client.with_cas_key(current_cas);
-                    if let Some(path) = &self.state_path {
-                        configured_client = configured_client.with_state_path(path.clone());
-                    }
-                    self.client_slot.replace(Arc::new(configured_client));
-                }
+                let _ = self
+                    .client_slot
+                    .replace_from_incumbent(lan_cred, captured_cas);
 
                 let hook = self.relay_disconnect_hook.lock().unwrap().clone();
                 if let Some(hook) = hook {
@@ -548,45 +776,53 @@ impl PostConnectController {
 
                 // Ordered durable clear
                 if let Some(path) = &self.state_path {
-                    let res = PairedState::mutate(path, current_cas, |cred| {
-                        cred.relay_origin = None;
-                        cred.device_token = None;
-                        cred.device_token_expires_at = None;
-                        Ok(())
+                    let path = path.clone();
+                    #[cfg(test)]
+                    let failpoint = FS_FAIL_POINT.with(|f| f.get());
+                    let res = tokio::task::spawn_blocking(move || {
+                        #[cfg(test)]
+                        FS_FAIL_POINT.with(|f| f.set(failpoint));
+                        let result = PairedState::mutate(&path, captured_cas, |cred| {
+                            cred.relay_origin = None;
+                            cred.device_token = None;
+                            cred.device_token_expires_at = None;
+                            Ok(())
+                        });
+                        #[cfg(test)]
+                        FS_FAIL_POINT.with(|f| f.set(0));
+                        result
+                    })
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(StorageError::WriteFailed(std::io::Error::other("join")))
                     });
                     match res {
                         Ok(new_gen) => {
                             let mut state = self.state.lock().unwrap();
                             state.pending_durable_clear = None;
                             let new_cas = CasKey {
-                                pairing_generation: token.2,
+                                pairing_generation: captured_cas.pairing_generation,
                                 access_mutation_generation: new_gen,
                             };
-                            let client = self.client_slot.load();
-                            let updated_cred = client.credential().clone();
-                            if let Ok(c) = ObserverClient::new(updated_cred) {
-                                let mut cc = c.with_cas_key(new_cas);
-                                if let Some(path) = &self.state_path {
-                                    cc = cc.with_state_path(path.clone());
-                                }
-                                self.client_slot.replace(Arc::new(cc));
-                            }
+                            let updated_cred = self.client_slot.load().credential().clone();
+                            let _ = self
+                                .client_slot
+                                .replace_from_incumbent(updated_cred, new_cas);
                         }
                         Err(StorageError::CasMismatch) => {
-                            tracing::debug!(target: "sync", "durable clear skipped due to CAS mismatch");
-                            let mut state = self.state.lock().unwrap();
-                            if state.pending_durable_clear == Some(current_cas) {
-                                state.pending_durable_clear = None;
-                            }
+                            tracing::debug!(target: "sync", reason = "cas_mismatch", "durable clear deferred");
                         }
-                        Err(StorageError::WriteFailed(e))
-                        | Err(StorageError::DurabilityUncertain(e)) => {
-                            tracing::warn!(target: "sync", error = %e, "durable clear write failed");
+                        Err(StorageError::WriteFailed(_)) => {
+                            tracing::warn!(target: "sync", reason = "write_failed", "durable clear failed");
                             let mut state = self.state.lock().unwrap();
-                            state.pending_durable_clear = Some(current_cas);
+                            state.pending_durable_clear = Some(captured_cas);
                         }
-                        Err(e) => {
-                            tracing::warn!(target: "sync", error = %e, "durable clear error");
+                        Err(StorageError::DurabilityUncertain(_)) => {
+                            tracing::warn!(target: "sync", reason = "durability_uncertain", "durable clear uncertain");
+                            self.reconcile_from_disk().await;
+                        }
+                        Err(_) => {
+                            tracing::warn!(target: "sync", reason = "storage", "durable clear failed");
                         }
                     }
                 }
@@ -610,12 +846,24 @@ impl PostConnectController {
                 let token_to_save = ready.device_token.clone();
                 let exp_to_save = ready.expires_at;
 
-                let mutate_res = PairedState::mutate(path, current_cas, |cred| {
-                    cred.relay_origin = Some(origin_to_save);
-                    cred.device_token = Some(token_to_save);
-                    cred.device_token_expires_at = Some(exp_to_save);
-                    Ok(())
-                });
+                let path = path.clone();
+                #[cfg(test)]
+                let failpoint = FS_FAIL_POINT.with(|f| f.get());
+                let mutate_res = tokio::task::spawn_blocking(move || {
+                    #[cfg(test)]
+                    FS_FAIL_POINT.with(|f| f.set(failpoint));
+                    let result = PairedState::mutate(&path, captured_cas, |cred| {
+                        cred.relay_origin = Some(origin_to_save);
+                        cred.device_token = Some(token_to_save);
+                        cred.device_token_expires_at = Some(exp_to_save);
+                        Ok(())
+                    });
+                    #[cfg(test)]
+                    FS_FAIL_POINT.with(|f| f.set(0));
+                    result
+                })
+                .await
+                .unwrap_or_else(|_| Err(StorageError::WriteFailed(std::io::Error::other("join"))));
 
                 match mutate_res {
                     Ok(new_gen) => {
@@ -624,32 +872,48 @@ impl PostConnectController {
                         new_cred.device_token = Some(ready.device_token);
                         new_cred.device_token_expires_at = Some(ready.expires_at);
 
-                        if let Ok(new_client) = ObserverClient::new(new_cred) {
-                            let new_cas = CasKey {
-                                pairing_generation: token.2,
-                                access_mutation_generation: new_gen,
-                            };
-                            let configured_client = new_client
-                                .with_state_path(path.clone())
-                                .with_cas_key(new_cas);
-                            self.client_slot.replace(Arc::new(configured_client));
-                        }
+                        let new_cas = CasKey {
+                            pairing_generation: captured_cas.pairing_generation,
+                            access_mutation_generation: new_gen,
+                        };
+                        let _ = self.client_slot.replace_from_incumbent(new_cred, new_cas);
                     }
-                    Err(StorageError::DurabilityUncertain(e)) => {
-                        tracing::warn!(target: "sync", error = %e, "durability uncertain on ready persist; no live replace");
+                    Err(StorageError::DurabilityUncertain(_)) => {
+                        tracing::warn!(target: "sync", reason = "durability_uncertain", "ready persist uncertain");
+                        self.reconcile_from_disk().await;
                     }
-                    Err(StorageError::WriteFailed(e)) => {
-                        tracing::warn!(target: "sync", error = %e, "write failed on ready persist; no live replace");
+                    Err(StorageError::WriteFailed(_)) => {
+                        tracing::warn!(target: "sync", reason = "write_failed", "ready persist failed");
                     }
                     Err(StorageError::CasMismatch) => {
                         tracing::debug!(target: "sync", "ready persist skipped due to CAS mismatch");
                     }
-                    Err(e) => {
-                        tracing::warn!(target: "sync", error = %e, "ready persist error");
+                    Err(_) => {
+                        tracing::warn!(target: "sync", reason = "storage", "ready persist failed");
                     }
                 }
             }
         }
+    }
+
+    async fn reconcile_from_disk(&self) {
+        let Some(path) = &self.state_path else {
+            return;
+        };
+        let path = path.clone();
+        let loaded = tokio::task::spawn_blocking(move || PairedState::load(&path)).await;
+        let Ok(Ok(state)) = loaded else {
+            tracing::warn!(target: "sync", reason = "reload", "pairing state reconciliation failed");
+            return;
+        };
+        let Some(credential) = state.credential else {
+            return;
+        };
+        let cas = CasKey {
+            pairing_generation: pairing_generation(&credential.client_cert_pem),
+            access_mutation_generation: state.access_mutation_generation,
+        };
+        let _ = self.client_slot.replace_from_incumbent(credential, cas);
     }
 }
 
@@ -658,8 +922,7 @@ mod tests {
     use super::*;
     use crate::credential::{pairing_generation, EndpointAddr, PairedState, FS_FAIL_POINT};
     use crate::device_metadata::RawDeviceFacts;
-    use crate::relay_access::ValidatedReadyAccess;
-    use crate::{CasKey, Credential};
+    use crate::{CasKey, Credential, ObserverClient};
     use observer_model::SyncSnapshot;
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -756,7 +1019,7 @@ mod tests {
 
         // Begin session
         let session_gen = controller.begin_session(&cred);
-        assert_eq!(session_gen, 1);
+        assert_eq!(session_gen.0, 1);
 
         let state = controller.state.lock().unwrap();
         assert_eq!(state.session_generation, 1);
@@ -766,18 +1029,18 @@ mod tests {
         drop(state);
 
         // Disconnect wrong generation ignored
-        controller.mark_session_disconnected(99);
+        controller.mark_session_disconnected(PostConnectSessionToken(99));
         assert_eq!(controller.state.lock().unwrap().connection_epoch, 1);
 
         // Disconnect matching generation bumps epoch
-        controller.mark_session_disconnected(1);
+        controller.mark_session_disconnected(session_gen);
         assert_eq!(controller.state.lock().unwrap().connection_epoch, 2);
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn test_apply_relay_access_ready() {
+    #[tokio::test]
+    async fn test_apply_relay_access_ready() {
         let (controller, slot, path, _) = test_setup(false);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
@@ -791,7 +1054,10 @@ mod tests {
             expires_at: 1800000000,
         };
 
-        controller.apply_relay_access_outcome(Some(ready), &token);
+        let cas = slot.load().current_cas_key().unwrap();
+        controller
+            .apply_relay_access_outcome(Some(ready), &token, cas)
+            .await;
 
         // Client slot replaced with updated cred
         let active_client = slot.load();
@@ -822,15 +1088,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn test_apply_relay_access_not_configured() {
+    #[tokio::test]
+    async fn test_ready_write_failed_keeps_old_tuple_until_current_retry() {
+        let (controller, slot, path, _) = test_setup(false);
+        let cred = slot.load().credential().clone();
+        let pairing = pairing_generation(&cred.client_cert_pem);
+        controller.begin_session(&cred);
+        let token = (1, 1, pairing);
+        let cas = slot.load().current_cas_key().unwrap();
+        let ready = ValidatedReadyAccess {
+            relay_origin: "https://relay.new.org".into(),
+            instance_id: "test".into(),
+            device_token: "jwt-token-new".into(),
+            expires_at: 1_800_000_000,
+        };
+
+        FS_FAIL_POINT.with(|f| f.set(1));
+        controller
+            .apply_relay_access_outcome(Some(ready.clone()), &token, cas)
+            .await;
+        FS_FAIL_POINT.with(|f| f.set(0));
+
+        assert!(slot.load().credential().relay_origin.is_none());
+        assert_eq!(slot.load().current_cas_key(), Some(cas));
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 0);
+        assert!(disk.credential.unwrap().relay_origin.is_none());
+
+        controller
+            .apply_relay_access_outcome(Some(ready), &token, cas)
+            .await;
+        assert_eq!(
+            slot.load().credential().relay_origin.as_deref(),
+            Some("https://relay.new.org")
+        );
+        assert_eq!(
+            slot.load()
+                .current_cas_key()
+                .unwrap()
+                .access_mutation_generation,
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_apply_relay_access_not_configured() {
         let (controller, slot, path, disconnect_called) = test_setup(true);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
         controller.begin_session(&cred);
         let token = (1, 1, p_gen);
 
-        controller.apply_relay_access_outcome(None, &token);
+        let cas = slot.load().current_cas_key().unwrap();
+        controller
+            .apply_relay_access_outcome(None, &token, cas)
+            .await;
 
         // Client slot immediately swapped to LAN-only
         let active_client = slot.load();
@@ -851,8 +1165,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn test_apply_relay_access_durability_uncertain_ready_no_live_replace() {
+    #[tokio::test]
+    async fn test_clear_write_failed_fence_retries_the_same_current_clear() {
+        let (controller, slot, path, _) = test_setup(true);
+        let controller = Arc::new(controller);
+        let cred = slot.load().credential().clone();
+        let pairing = pairing_generation(&cred.client_cert_pem);
+        controller.begin_session(&cred);
+        let token = (1, 1, pairing);
+        let cas = slot.load().current_cas_key().unwrap();
+
+        FS_FAIL_POINT.with(|f| f.set(1));
+        controller
+            .apply_relay_access_outcome(None, &token, cas)
+            .await;
+        FS_FAIL_POINT.with(|f| f.set(0));
+
+        assert!(!slot.load().is_current_incarnation());
+        assert_eq!(controller.pending_durable_clear(), Some(cas));
+        assert_eq!(
+            PairedState::load(&path).unwrap().access_mutation_generation,
+            0
+        );
+
+        controller.retry_pending_durable_clear().await;
+
+        assert_eq!(controller.pending_durable_clear(), None);
+        assert_eq!(
+            slot.load()
+                .current_cas_key()
+                .unwrap()
+                .access_mutation_generation,
+            1
+        );
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 1);
+        assert!(disk.credential.unwrap().relay_origin.is_none());
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_apply_relay_access_durability_uncertain_ready_reconciles_live_state() {
         let (controller, slot, path, _) = test_setup(false);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
@@ -868,18 +1222,24 @@ mod tests {
             expires_at: 1800000000,
         };
 
-        controller.apply_relay_access_outcome(Some(ready), &token);
+        let cas = slot.load().current_cas_key().unwrap();
+        controller
+            .apply_relay_access_outcome(Some(ready), &token, cas)
+            .await;
         FS_FAIL_POINT.with(|f| f.set(0));
 
-        // No live replace
+        // The published rename is reconciled from disk.
         let active_client = slot.load();
-        assert_eq!(active_client.credential().relay_origin, None);
+        assert_eq!(
+            active_client.credential().relay_origin.as_deref(),
+            Some("https://relay.new.org")
+        );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn test_apply_relay_access_durability_uncertain_not_configured_records_pending_clear() {
+    #[tokio::test]
+    async fn test_apply_relay_access_durability_uncertain_not_configured_reconciles_clear() {
         let (controller, slot, path, disconnect_called) = test_setup(true);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
@@ -888,7 +1248,10 @@ mod tests {
 
         FS_FAIL_POINT.with(|f| f.set(2));
 
-        controller.apply_relay_access_outcome(None, &token);
+        let cas = slot.load().current_cas_key().unwrap();
+        controller
+            .apply_relay_access_outcome(None, &token, cas)
+            .await;
         FS_FAIL_POINT.with(|f| f.set(0));
 
         // Live replace still occurred for LAN safety
@@ -896,15 +1259,13 @@ mod tests {
         assert_eq!(active_client.credential().relay_origin, None);
         assert!(disconnect_called.load(Ordering::SeqCst));
 
-        // Pending durable clear was recorded
-        let state = controller.state.lock().unwrap();
-        assert!(state.pending_durable_clear.is_some());
+        assert_eq!(controller.pending_durable_clear(), None);
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn test_stale_token_fenced_from_applying_ready_or_not_configured() {
+    #[tokio::test]
+    async fn test_stale_token_fenced_from_applying_ready_or_not_configured() {
         let (controller, slot, path, disconnect_called) = test_setup(false);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
@@ -912,7 +1273,7 @@ mod tests {
         let stale_token = (1, 1, p_gen);
 
         // Disconnect bumps epoch to 2
-        controller.mark_session_disconnected(1);
+        controller.mark_session_disconnected(PostConnectSessionToken(1));
 
         let ready = ValidatedReadyAccess {
             relay_origin: "https://relay.stale.org".into(),
@@ -922,19 +1283,25 @@ mod tests {
         };
 
         // Stale apply ready is a no-op
-        controller.apply_relay_access_outcome(Some(ready), &stale_token);
+        let cas = slot.load().current_cas_key().unwrap();
+        controller
+            .apply_relay_access_outcome(Some(ready), &stale_token, cas)
+            .await;
         assert_eq!(slot.load().credential().relay_origin, None);
 
         // Stale apply not_configured is a no-op
-        controller.apply_relay_access_outcome(None, &stale_token);
+        controller
+            .apply_relay_access_outcome(None, &stale_token, cas)
+            .await;
         assert!(!disconnect_called.load(Ordering::SeqCst));
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[test]
-    fn test_durable_clear_retry_cas_mismatch_does_not_clear_newer_ready() {
+    #[tokio::test]
+    async fn test_durable_clear_retry_cas_mismatch_does_not_clear_newer_ready() {
         let (controller, slot, path, _) = test_setup(true);
+        let controller = Arc::new(controller);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
         controller.begin_session(&cred);
@@ -942,7 +1309,10 @@ mod tests {
 
         // 1. Simulate pre-rename write failure on not_configured at gen 0
         FS_FAIL_POINT.with(|f| f.set(1));
-        controller.apply_relay_access_outcome(None, &token);
+        let cas = slot.load().current_cas_key().unwrap();
+        controller
+            .apply_relay_access_outcome(None, &token, cas)
+            .await;
         FS_FAIL_POINT.with(|f| f.set(0));
 
         assert_eq!(
@@ -960,7 +1330,9 @@ mod tests {
             device_token: "jwt-token-new".into(),
             expires_at: 1900000000,
         };
-        controller.apply_relay_access_outcome(Some(ready), &token);
+        controller
+            .apply_relay_access_outcome(Some(ready), &token, cas)
+            .await;
 
         let loaded = PairedState::load(&path).unwrap();
         assert_eq!(loaded.access_mutation_generation, 1);
@@ -971,9 +1343,10 @@ mod tests {
 
         // 3. Retry the pending durable clear (bound to gen 0) -> CasMismatch
         controller.retry_pending_durable_clear_if_needed();
+        tokio::task::yield_now().await;
 
-        // Pending clear is dropped on CasMismatch
-        assert_eq!(controller.pending_durable_clear(), None);
+        // A mismatch belongs to another committed update and remains pending.
+        assert_eq!(controller.pending_durable_clear(), Some(cas));
 
         // Disk state is still ready (not wiped)
         let loaded_after = PairedState::load(&path).unwrap();
@@ -1019,7 +1392,11 @@ mod tests {
         let raw = r#"{
             "protocol_version": 1,
             "revision": 3,
+            "owner_label": null,
+            "display_label": null,
+            "updated_at": null,
             "journal": {
+                "name": "Home",
                 "version": "1.2.3"
             },
             "reported": {
@@ -1043,8 +1420,84 @@ mod tests {
         );
     }
 
+    fn relay_access_body(token: String, expires_at: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "status": "ready",
+            "protocol_version": 2,
+            "relay_origin": "https://relay.example.com",
+            "instance_id": "test",
+            "device_token": token,
+            "expires_at": expires_at,
+        }))
+        .unwrap()
+    }
+
+    fn relay_access_token(iat: i64, exp: i64, jti: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let claims = serde_json::json!({
+            "iss": "https://relay.example.com",
+            "sub": "instance:test",
+            "aud": "spl-relay",
+            "scope": "session.dial",
+            "ver": 2,
+            "instance_id": "test",
+            "iat": iat,
+            "exp": exp,
+            "jti": jti,
+        });
+        format!(
+            "e30.{}.sig",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+        )
+    }
+
     #[test]
-    fn test_trigger_coalesces_when_in_flight() {
+    fn test_relay_access_validator_rejects_strict_invalid_envelopes_without_replacing_live_access()
+    {
+        let (controller, slot, path, _) = test_setup(true);
+        let original = slot.load().credential().clone();
+        let valid_token = relay_access_token(100, 200, "jti");
+
+        let extra_not_configured =
+            br#"{"status":"not_configured","protocol_version":2,"extra":true}"#;
+        assert_eq!(
+            validate_relay_access_response(extra_not_configured, "test", 150),
+            Err(RelayAccessValidationError::Envelope)
+        );
+        assert_eq!(
+            validate_relay_access_response(
+                &relay_access_body(relay_access_token(100, 200, ""), "1970-01-01T00:03:20Z"),
+                "test",
+                150,
+            ),
+            Err(RelayAccessValidationError::Claims)
+        );
+        assert_eq!(
+            validate_relay_access_response(
+                &relay_access_body(valid_token.clone(), "1970-01-01T00:03:20.001Z"),
+                "test",
+                150,
+            ),
+            Err(RelayAccessValidationError::Claims)
+        );
+        assert_eq!(
+            validate_relay_access_response(
+                &relay_access_body(relay_access_token(211, 300, "jti"), "1970-01-01T00:05:00Z"),
+                "test",
+                150,
+            ),
+            Err(RelayAccessValidationError::Claims)
+        );
+
+        // Validation failures never reach apply, so the usable live access stays intact.
+        assert_eq!(slot.load().credential(), &original);
+        drop(controller);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_trigger_coalesces_when_in_flight() {
         let (controller, slot, path, _) = test_setup(false);
         let cred = slot.load().credential().clone();
         controller.begin_session(&cred);
@@ -1052,8 +1505,10 @@ mod tests {
 
         {
             let mut state = controller.state.lock().unwrap();
-            state.in_flight_metadata = true;
-            state.in_flight_access = true;
+            let claim = (1, 1, pairing_generation(&cred.client_cert_pem));
+            state.in_flight_metadata = Some(claim);
+            state.in_flight_access = Some(claim);
+            state.burst_phase = BurstPhase::FirstPass;
         }
 
         controller.trigger();
@@ -1065,6 +1520,74 @@ mod tests {
             Some("test-device")
         );
         assert!(state.pending_access_trigger);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_shared_burst_allows_one_follow_up_then_requires_external_trigger() {
+        let (controller, slot, path, _) = test_setup(false);
+        let cred = slot.load().credential().clone();
+        let session = controller.begin_session(&cred);
+        let controller = Arc::new(controller);
+        let claim = (1, 1, pairing_generation(&cred.client_cert_pem));
+
+        {
+            let mut state = controller.state.lock().unwrap();
+            state.burst_phase = BurstPhase::FirstPass;
+            state.in_flight_metadata = Some(claim);
+            state.in_flight_access = Some(claim);
+            // Access work arrives while metadata is still in the first pass.
+            state.pending_access_trigger = true;
+        }
+
+        assert!(controller.finish_pass_lane(claim, true).is_none());
+        let follow_up = controller
+            .finish_pass_lane(claim, false)
+            .expect("first-pass input must receive one common follow-up");
+        assert_eq!(follow_up.token, claim);
+        {
+            let state = controller.state.lock().unwrap();
+            assert_eq!(state.burst_phase, BurstPhase::FollowUp);
+            assert_eq!(state.in_flight_metadata, Some(claim));
+            assert_eq!(state.in_flight_access, Some(claim));
+            // A finished access lane cannot skip its still-running metadata peer.
+        }
+
+        {
+            let mut state = controller.state.lock().unwrap();
+            state.pending_metadata = Some(ReportedMetadata::default());
+        }
+        assert!(controller.finish_pass_lane(claim, false).is_none());
+        assert_eq!(
+            controller.state.lock().unwrap().in_flight_metadata,
+            Some(claim)
+        );
+        assert!(controller.finish_pass_lane(claim, true).is_none());
+        {
+            let state = controller.state.lock().unwrap();
+            assert_eq!(state.burst_phase, BurstPhase::Quiesced);
+            assert!(state.pending_metadata.is_some());
+            assert!(state.in_flight_metadata.is_none());
+            assert!(state.in_flight_access.is_none());
+        }
+
+        // A duplicate successful dial in the already-noted epoch cannot start
+        // another burst, while an explicit trigger after quiescence can.
+        {
+            let mut state = controller.state.lock().unwrap();
+            state.last_connected_epoch = Some(state.connection_epoch);
+        }
+        controller.note_connected(session);
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::Quiesced
+        );
+        controller.trigger();
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::FirstPass
+        );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

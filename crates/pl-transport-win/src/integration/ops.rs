@@ -29,6 +29,7 @@ use super::{
     carrier_path_failure, progress, runtime, shared_observer, Environment, FixedOffset,
     OperationBudget,
 };
+use crate::access::CredentialAccess;
 use crate::client::ObserverClient;
 use crate::coordinator::UploadCoordinator;
 use crate::credential::PairedState;
@@ -36,6 +37,8 @@ use crate::journal_bridge;
 use crate::observe::{ObserverHandle, OperationObserver};
 use crate::pairing;
 use crate::sealed::{SealedSegment, SealedStore};
+use crate::service::SyncConfig;
+use crate::RawDeviceFacts;
 use crate::TransportError;
 
 /// The result of one operation: how it failed (if it did) and what it earned.
@@ -569,17 +572,31 @@ async fn fetch(
     let jv = Arc::new(crate::journal_version::JournalVersionController::new(
         jv_path,
     ));
+    let cfg = SyncConfig {
+        device_label: environment.device_label.clone(),
+        period_secs: environment.period_secs,
+        state_path: environment.state_path.clone(),
+        segments_root: environment.segments_root.clone(),
+        retention: Arc::new(RwLock::new(RetentionConfig::default())),
+        local_offset: Arc::new(FixedOffset(0)),
+        journal_version: jv,
+        facts_fn: Arc::new(RawDeviceFacts::default),
+    };
+    let access = match CredentialAccess::bind(&paired, &cfg, sync.clone(), observer) {
+        Ok(access) => access,
+        Err(error) => {
+            return (
+                Some(Failure::transport(
+                    Phase::BridgeStart,
+                    &error,
+                    "the journal bridge could not bind stored credentials",
+                )),
+                evidence,
+            );
+        }
+    };
     let handle = match budget
-        .run(
-            Phase::BridgeStart,
-            journal_bridge::start_observed(
-                &paired,
-                environment.state_path.clone(),
-                observer,
-                jv,
-                sync,
-            ),
-        )
+        .run(Phase::BridgeStart, journal_bridge::start_observed(access))
         .await
     {
         Err(deadline) => return (Some(deadline), evidence),

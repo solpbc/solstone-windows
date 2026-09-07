@@ -3,7 +3,13 @@
 
 use std::time::Duration;
 
+use std::sync::{Arc, Mutex, RwLock};
+
+use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
+use observer_retention::RetentionConfig;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
+use pl_transport_win::service::SyncConfig;
+use pl_transport_win::CredentialAccess;
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 
 fn paired_state() -> PairedState {
@@ -31,6 +37,15 @@ fn paired_state() -> PairedState {
     }
 }
 
+#[derive(Debug)]
+struct TestOffset;
+
+impl LocalOffset for TestOffset {
+    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
+        Ok(0)
+    }
+}
+
 #[tokio::test]
 async fn contacted_flips_on_first_accept_before_http_parse() {
     let paired = paired_state();
@@ -39,11 +54,20 @@ async fn contacted_flips_on_first_accept_before_http_parse() {
         std::process::id()
     ));
     let jv_path = state_path.with_file_name("journal-version.json");
-    let jv = std::sync::Arc::new(pl_transport_win::JournalVersionController::new(jv_path));
-    let sync = std::sync::Arc::new(std::sync::Mutex::new(
-        observer_model::SyncSnapshot::default(),
-    ));
-    let handle = pl_transport_win::journal_bridge::start(&paired, state_path, jv, sync)
+    let jv = Arc::new(pl_transport_win::JournalVersionController::new(jv_path));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let cfg = SyncConfig {
+        device_label: "bridge-contact-test".into(),
+        period_secs: 300,
+        segments_root: state_path.with_extension("segments"),
+        state_path,
+        retention: Arc::new(RwLock::new(RetentionConfig::default())),
+        local_offset: Arc::new(TestOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+    };
+    let access = CredentialAccess::bind(&paired, &cfg, sync, None).expect("access bind");
+    let handle = pl_transport_win::journal_bridge::start(access)
         .await
         .expect("bridge start");
 

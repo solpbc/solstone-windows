@@ -20,7 +20,7 @@ use observer_model::{
 use observer_retention::RetentionConfig;
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::SyncConfig;
-use pl_transport_win::UploaderSlot;
+use pl_transport_win::{CredentialAccess, UploaderSlot};
 use tauri::{Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
@@ -34,6 +34,8 @@ pub struct AppState {
     pub _shutdown: Mutex<Option<oneshot::Sender<()>>>,
     /// Single uploader lifecycle slot; also serializes pair/replace requests.
     pub uploader_slot: tokio::sync::Mutex<UploaderSlot>,
+    /// The sole paired credential transport authority shared by upload and bridge.
+    pub credential_access: tokio::sync::Mutex<Option<CredentialAccess>>,
     /// Serializes journal opens so parallel user triggers do not race the single
     /// Tauri window label and surface a spurious duplicate-label failure.
     pub journal_open_lock: tokio::sync::Mutex<()>,
@@ -320,24 +322,38 @@ pub fn run(
             // `pair` IPC command instead.
             let sync_config = build_sync_config(retention.config_handle());
             let mut slot = UploaderSlot::new();
+            let mut credential_access = None;
             match PairedState::load(&sync_config.state_path) {
                 Ok(paired) if paired.is_paired() => {
                     let cfg = sync_config.clone();
                     let sync_for_sync = sync.clone();
-                    tracing::info!(
-                        target: "sync",
-                        source = "resume",
-                        "uploader started"
-                    );
-                    tauri::async_runtime::block_on(slot.replace(move |rx| async move {
-                        pl_transport_win::run_uploader(
-                            paired,
-                            cfg,
-                            sync_for_sync,
-                            rx,
-                        )
-                        .await;
-                    }));
+                    match CredentialAccess::bind(&paired, &cfg, sync.clone(), None) {
+                        Ok(access) => {
+                            credential_access = Some(access.clone());
+                            tracing::info!(
+                                target: "sync",
+                                source = "resume",
+                                "uploader started"
+                            );
+                            tauri::async_runtime::block_on(slot.replace(move |rx| async move {
+                                pl_transport_win::run_uploader(
+                                    access,
+                                    cfg,
+                                    sync_for_sync,
+                                    rx,
+                                )
+                                .await;
+                            }));
+                        }
+                        Err(error) => {
+                            let error = error.to_string();
+                            tracing::warn!(
+                                target: "sync",
+                                error = %observer_log::redact_secret("pairing-load-error", &error),
+                                "pairing state load failed"
+                            );
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -357,6 +373,7 @@ pub fn run(
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
                 uploader_slot: tokio::sync::Mutex::new(slot),
+                credential_access: tokio::sync::Mutex::new(credential_access),
                 journal_open_lock: tokio::sync::Mutex::new(()),
                 journal_bridge: Mutex::new(None),
                 exclusions,

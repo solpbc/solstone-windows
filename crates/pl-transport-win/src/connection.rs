@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use observer_pl::frame::{Frame, FrameDialer, RESET_FLOW_CONTROL_ERROR};
 use observer_pl::http::{self, HttpResponse};
-use observer_pl::mux::{MuxError, ResponseAssembler, WindowedUpload};
+use observer_pl::mux::{MuxError, ResponseAssembler, WindowedUpload, MAX_ASSEMBLED_BYTES};
 use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -69,8 +69,43 @@ pub(crate) async fn request_once_observed(
     body: &[u8],
     observer: &ObserverHandle,
 ) -> Result<HttpResponse, TransportError> {
+    request_once_observed_with_cap(
+        config,
+        host,
+        port,
+        method,
+        path,
+        headers,
+        body,
+        observer,
+        MAX_ASSEMBLED_BYTES,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn request_once_observed_with_cap(
+    config: Arc<ClientConfig>,
+    host: &str,
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    observer: &ObserverHandle,
+    response_cap: usize,
+) -> Result<HttpResponse, TransportError> {
     let tls = dial_tls(config, host, port).await?;
-    run_request_over_stream_observed(tls, method, path, headers, body, observer).await
+    run_request_over_stream_observed_with_cap(
+        tls,
+        method,
+        path,
+        headers,
+        body,
+        observer,
+        response_cap,
+    )
+    .await
 }
 
 pub(crate) async fn dial_tls(
@@ -109,7 +144,7 @@ where
 }
 
 pub(crate) async fn run_request_over_stream_observed<S>(
-    mut stream: S,
+    stream: S,
     method: &str,
     path: &str,
     headers: &[(String, String)],
@@ -119,11 +154,35 @@ pub(crate) async fn run_request_over_stream_observed<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    run_request_over_stream_observed_with_cap(
+        stream,
+        method,
+        path,
+        headers,
+        body,
+        observer,
+        MAX_ASSEMBLED_BYTES,
+    )
+    .await
+}
+
+pub(crate) async fn run_request_over_stream_observed_with_cap<S>(
+    mut stream: S,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    observer: &ObserverHandle,
+    response_cap: usize,
+) -> Result<HttpResponse, TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut dialer = FrameDialer::default();
     let stream_id = dialer.allocate();
     let request_bytes = http::build_request(method, path, headers, body);
     let mut upload = WindowedUpload::new(stream_id, &request_bytes);
-    let mut assembler = ResponseAssembler::new(stream_id);
+    let mut assembler = ResponseAssembler::with_cap(stream_id, response_cap);
 
     let mut buf = vec![0u8; READ_BUF];
     loop {

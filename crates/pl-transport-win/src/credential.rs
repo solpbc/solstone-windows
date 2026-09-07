@@ -8,6 +8,7 @@
 //! identity, stored under the per-user data dir so the observer resumes uploading
 //! after a restart without re-pairing. The private key never leaves the machine.
 
+use std::io::Write;
 use std::path::Path;
 
 use base64::Engine as _;
@@ -240,6 +241,51 @@ pub enum StorageError {
 
 static PAIRING_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(target_os = "linux")]
+fn sync_parent_directory(parent: &Path) -> Result<(), std::io::Error> {
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn sync_parent_directory(parent: &Path) -> Result<(), std::io::Error> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FlushFileBuffers, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let path: Vec<u16> = parent.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `path` is NUL-terminated and remains live through CreateFileW.
+    // The returned directory handle is closed on both success and failure.
+    unsafe {
+        let handle = CreateFileW(
+            PCWSTR(path.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            HANDLE::default(),
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let flush =
+            FlushFileBuffers(handle).map_err(|error| std::io::Error::other(error.to_string()));
+        let close = CloseHandle(handle).map_err(|error| std::io::Error::other(error.to_string()));
+        flush.and(close)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn sync_parent_directory(_parent: &Path) -> Result<(), std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "durable directory sync is unsupported on this platform",
+    ))
+}
+
 #[cfg(test)]
 thread_local! {
     pub(crate) static FS_FAIL_POINT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
@@ -310,13 +356,15 @@ impl PairedState {
                 cred.device_token = Some(wrap_secret(protector, &token)?);
             }
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(StorageError::WriteFailed)?;
-        }
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(StorageError::WriteFailed)?;
         let tmp = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(&state)
             .map_err(|e| StorageError::Transport(TransportError::from(e)))?;
-        std::fs::write(&tmp, bytes).map_err(StorageError::WriteFailed)?;
+        let mut file = std::fs::File::create(&tmp).map_err(StorageError::WriteFailed)?;
+        file.write_all(&bytes).map_err(StorageError::WriteFailed)?;
+        file.sync_all().map_err(StorageError::WriteFailed)?;
+        drop(file);
 
         #[cfg(test)]
         if FS_FAIL_POINT.with(|f| f.get()) == 1 {
@@ -335,13 +383,7 @@ impl PairedState {
             )));
         }
 
-        if let Some(parent) = path.parent() {
-            if let Ok(dir) = std::fs::File::open(parent) {
-                if let Err(e) = dir.sync_all() {
-                    return Err(StorageError::DurabilityUncertain(e));
-                }
-            }
-        }
+        sync_parent_directory(parent).map_err(StorageError::DurabilityUncertain)?;
         Ok(())
     }
 

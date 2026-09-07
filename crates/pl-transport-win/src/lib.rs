@@ -21,6 +21,7 @@
 
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
+pub mod access;
 pub mod client;
 pub mod connection;
 pub mod coordinator;
@@ -34,7 +35,6 @@ pub mod observe;
 pub mod pairing;
 pub mod post_connect;
 pub mod relay;
-pub mod relay_access;
 pub(crate) mod relay_http;
 pub mod relay_pairing;
 pub mod relay_token;
@@ -50,11 +50,12 @@ use observer_pl::http::HttpError;
 use observer_pl::mux::MuxError;
 use thiserror::Error;
 
+pub use access::CredentialAccess;
 pub use client::{ClientSlot, ObserverClient};
 pub use credential::{CasKey, Credential, PairedState, StorageError};
 pub use device_metadata::{RawDeviceFacts, ReportedMetadata};
-pub use journal_version::JournalVersionController;
-pub use post_connect::PostConnectController;
+pub use journal_version::{JournalVersionController, JournalVersionSessionToken};
+pub use post_connect::{PostConnectController, PostConnectSessionToken};
 pub use service::run_uploader;
 pub use slot::UploaderSlot;
 

@@ -17,9 +17,22 @@ use crate::client::ObserverClient;
 use crate::credential::{hex_lower, Credential};
 use crate::TransportError;
 
+/// Session identity for journal-version work. It is intentionally not
+/// interchangeable with post-connect session identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JournalVersionSessionToken(pub(crate) u64);
+
 fn is_sanitized_version(v: &str) -> bool {
     !v.trim().is_empty()
         && v.len() <= 128
+        && !v
+            .chars()
+            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+}
+
+fn is_sanitized_name(v: &str) -> bool {
+    !v.trim().is_empty()
+        && v.len() <= 80
         && !v
             .chars()
             .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
@@ -30,6 +43,8 @@ struct PersistedJournalVersion {
     instance_id: String,
     ca_fp_prefix_hex: String,
     version: String,
+    #[serde(default)]
+    journal_name: Option<String>,
     updated_at_epoch_secs: u64,
 }
 
@@ -49,6 +64,7 @@ struct State {
     instance_id: Option<String>,
     ca_fp_prefix_hex: Option<String>,
     version: Option<String>,
+    journal_name: Option<String>,
     fresh: bool,
     session_generation: u64,
     connection_epoch: u64,
@@ -67,10 +83,13 @@ impl JournalVersionController {
         let mut state = State::default();
         if let Ok(text) = std::fs::read_to_string(&state_path) {
             if let Ok(p) = serde_json::from_str::<PersistedJournalVersion>(&text) {
-                if is_sanitized_version(&p.version) {
+                if is_sanitized_version(&p.version)
+                    && p.journal_name.as_deref().is_none_or(is_sanitized_name)
+                {
                     state.instance_id = Some(p.instance_id);
                     state.ca_fp_prefix_hex = Some(p.ca_fp_prefix_hex);
                     state.version = Some(p.version);
+                    state.journal_name = p.journal_name;
                     state.fresh = false;
                 }
             }
@@ -89,7 +108,11 @@ impl JournalVersionController {
 
     /// Bind the identity for a new uploader session, advance the generation counter,
     /// and synchronize the snapshot.
-    pub fn begin_session(&self, credential: &Credential, sync: &Arc<Mutex<SyncSnapshot>>) -> u64 {
+    pub fn begin_session(
+        &self,
+        credential: &Credential,
+        sync: &Arc<Mutex<SyncSnapshot>>,
+    ) -> JournalVersionSessionToken {
         let target_instance_id = credential.instance_id.clone();
         let target_ca_fp_hex = hex_lower(&credential.ca_fp_prefix);
 
@@ -110,7 +133,7 @@ impl JournalVersionController {
                         && p.ca_fp_prefix_hex == target_ca_fp_hex
                         && is_sanitized_version(&p.version)
                     {
-                        Some(p.version)
+                        Some((p.version, p.journal_name))
                     } else {
                         None
                     }
@@ -121,10 +144,11 @@ impl JournalVersionController {
                 None
             };
 
-            if let Some(cached_version) = disk_match {
+            if let Some((cached_version, cached_name)) = disk_match {
                 state.instance_id = Some(target_instance_id);
                 state.ca_fp_prefix_hex = Some(target_ca_fp_hex);
                 state.version = Some(cached_version);
+                state.journal_name = cached_name;
                 state.fresh = false;
             } else {
                 // Wipe cache and delete persisted file to prevent resurrecting old identity's version.
@@ -132,6 +156,7 @@ impl JournalVersionController {
                 state.instance_id = Some(target_instance_id);
                 state.ca_fp_prefix_hex = Some(target_ca_fp_hex);
                 state.version = None;
+                state.journal_name = None;
                 state.fresh = false;
             }
         }
@@ -145,7 +170,7 @@ impl JournalVersionController {
             s.journal_version_fresh = state.fresh;
         }
 
-        gen
+        JournalVersionSessionToken(gen)
     }
 
     /// Mark the connection disconnected: sets freshness to false in snapshot and in-memory state,
@@ -172,11 +197,11 @@ impl JournalVersionController {
 
     pub(crate) fn mark_session_disconnected(
         &self,
-        generation: u64,
+        generation: JournalVersionSessionToken,
         sync: &Arc<Mutex<SyncSnapshot>>,
     ) {
         let token = self.current_token();
-        if token.0 == generation {
+        if token.0 == generation.0 {
             self.mark_disconnected_if_token(token, sync);
         }
     }
@@ -188,6 +213,7 @@ impl JournalVersionController {
         state.instance_id = None;
         state.ca_fp_prefix_hex = None;
         state.version = None;
+        state.journal_name = None;
         state.fresh = false;
         state.in_flight_token = None;
         let _ = std::fs::remove_file(&self.state_path);
@@ -197,43 +223,65 @@ impl JournalVersionController {
         }
     }
 
-    /// Publish a valid journal version discovered out-of-band (e.g. from post-connect metadata GET)
-    /// without clobbering in-flight fetch tokens.
-    pub fn publish_version(
+    /// Publish validated journal metadata without clobbering in-flight tokens.
+    pub fn publish_journal_metadata(
         &self,
-        version: &str,
-        session_generation: u64,
+        name: Option<&str>,
+        version: Option<&str>,
+        session_generation: JournalVersionSessionToken,
         sync: &Arc<Mutex<SyncSnapshot>>,
     ) {
         let mut state = self.state.lock().expect("journal_version lock");
-        if state.session_generation != session_generation || state.instance_id.is_none() {
+        if state.session_generation != session_generation.0 || state.instance_id.is_none() {
             return;
         }
-        if !is_sanitized_version(version) {
+        if name.is_some_and(|name| !is_sanitized_name(name))
+            || version.is_some_and(|version| !is_sanitized_version(version))
+        {
             return;
         }
-        state.version = Some(version.to_string());
-        state.fresh = true;
+        if let Some(name) = name {
+            state.journal_name = Some(name.to_string());
+        }
+        if let Some(version) = version {
+            state.version = Some(version.to_string());
+            state.fresh = true;
+        }
         if let (Some(instance_id), Some(ca_fp_prefix_hex)) =
             (&state.instance_id, &state.ca_fp_prefix_hex)
         {
-            let _ = save_persisted_atomic(
-                &self.state_path,
-                &PersistedJournalVersion {
-                    instance_id: instance_id.clone(),
-                    ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
-                    version: version.to_string(),
-                    updated_at_epoch_secs: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
-                },
-            );
+            if let Some(version) = &state.version {
+                let _ = save_persisted_atomic(
+                    &self.state_path,
+                    &PersistedJournalVersion {
+                        instance_id: instance_id.clone(),
+                        ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
+                        version: version.clone(),
+                        journal_name: state.journal_name.clone(),
+                        updated_at_epoch_secs: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                    },
+                );
+            }
         }
         if let Ok(mut s) = sync.lock() {
-            s.journal_version = Some(version.to_string());
-            s.journal_version_fresh = true;
+            if let Some(version) = &state.version {
+                s.journal_version = Some(version.clone());
+                s.journal_version_fresh = state.fresh;
+            }
         }
+    }
+
+    /// Publish a version without erasing a cached journal name.
+    pub fn publish_version(
+        &self,
+        version: &str,
+        session_generation: JournalVersionSessionToken,
+        sync: &Arc<Mutex<SyncSnapshot>>,
+    ) {
+        self.publish_journal_metadata(None, Some(version), session_generation, sync);
     }
 
     /// Trigger a background refresh of the journal version.
@@ -242,11 +290,11 @@ impl JournalVersionController {
         self: &Arc<Self>,
         client: Arc<ObserverClient>,
         sync: Arc<Mutex<SyncSnapshot>>,
-        session_generation: u64,
+        session_generation: JournalVersionSessionToken,
     ) {
         let token = {
             let mut state = self.state.lock().expect("journal_version lock");
-            if state.instance_id.is_none() || state.session_generation != session_generation {
+            if state.instance_id.is_none() || state.session_generation != session_generation.0 {
                 return;
             }
             let token = (state.session_generation, state.connection_epoch);
@@ -299,6 +347,7 @@ impl JournalVersionController {
                 instance_id: instance_id.clone(),
                 ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
                 version,
+                journal_name: state.journal_name.clone(),
                 updated_at_epoch_secs: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -392,6 +441,7 @@ mod tests {
             instance_id: "inst-1".to_string(),
             ca_fp_prefix_hex: "0102".to_string(),
             version: "0.9.5".to_string(),
+            journal_name: None,
             updated_at_epoch_secs: 100,
         };
         save_persisted_atomic(&path, &initial_record).unwrap();
@@ -401,7 +451,7 @@ mod tests {
         let cred = make_credential("inst-1", &[0x01, 0x02]);
 
         let gen = ctrl.begin_session(&cred, &sync);
-        assert_eq!(gen, 1);
+        assert_eq!(gen.0, 1);
 
         let snap = sync.lock().unwrap().clone();
         assert_eq!(snap.journal_version.as_deref(), Some("0.9.5"));
@@ -417,6 +467,7 @@ mod tests {
             instance_id: "inst-1".to_string(),
             ca_fp_prefix_hex: "0102".to_string(),
             version: "0.9.5".to_string(),
+            journal_name: None,
             updated_at_epoch_secs: 100,
         };
         save_persisted_atomic(&path, &initial_record).unwrap();
@@ -427,7 +478,7 @@ mod tests {
         // Pair with DIFFERENT identity
         let cred2 = make_credential("inst-2", &[0xaa, 0xbb]);
         let gen = ctrl.begin_session(&cred2, &sync);
-        assert_eq!(gen, 1);
+        assert_eq!(gen.0, 1);
 
         let snap = sync.lock().unwrap().clone();
         assert_eq!(snap.journal_version, None);
@@ -575,5 +626,30 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let persisted: PersistedJournalVersion = serde_json::from_str(&text).unwrap();
         assert_eq!(persisted.version, "2.0.0");
+    }
+
+    #[test]
+    fn version_only_publish_preserves_journal_name_across_reconstruction() {
+        let dir = temp_test_dir("version-keeps-name");
+        let path = dir.join("journal-version.json");
+        let ctrl = JournalVersionController::new(path.clone());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cred = make_credential("inst-1", &[0x01, 0x02]);
+
+        let token = ctrl.begin_session(&cred, &sync);
+        ctrl.publish_journal_metadata(Some("Home Journal"), Some("1.0.0"), token, &sync);
+        ctrl.publish_version("1.0.1", token, &sync);
+
+        let persisted: PersistedJournalVersion =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.version, "1.0.1");
+        assert_eq!(persisted.journal_name.as_deref(), Some("Home Journal"));
+
+        let restored = JournalVersionController::new(path);
+        let restored_state = restored.state.lock().unwrap();
+        assert_eq!(restored_state.version.as_deref(), Some("1.0.1"));
+        assert_eq!(restored_state.journal_name.as_deref(), Some("Home Journal"));
+        drop(restored_state);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

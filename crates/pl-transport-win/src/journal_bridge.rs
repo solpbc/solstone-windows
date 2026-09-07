@@ -3,11 +3,9 @@
 
 //! Hand-rolled loopback proxy for the paired journal dashboard.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use observer_model::SyncSnapshot;
 use observer_pl::bridge::{
     self, FailureCategory, RejectReason, RequestHead, BOOTSTRAP_ROUTE, CAP_COOKIE_NAME,
 };
@@ -17,12 +15,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::client::{ClientSlot, ObserverClient};
-use crate::credential::{hex_lower, pairing_generation, CasKey, PairedState};
-use crate::device_metadata::RawDeviceFacts;
+use crate::access::CredentialAccess;
+use crate::credential::hex_lower;
 use crate::journal_bridge_carrier::MuxCarrier;
-use crate::journal_version::JournalVersionController;
-use crate::post_connect::PostConnectController;
 use crate::{transport_error_code, TransportError};
 
 const MAX_HEAD_BYTES: usize = 64 * 1024;
@@ -72,23 +67,14 @@ pub enum BridgeStartError {
     Bind(std::io::Error),
 }
 
-pub async fn start(
-    paired: &PairedState,
-    state_path: PathBuf,
-    journal_version: Arc<JournalVersionController>,
-    sync: Arc<Mutex<SyncSnapshot>>,
-) -> Result<JournalBridgeHandle, BridgeStartError> {
-    start_observed(paired, state_path, None, journal_version, sync).await
+pub async fn start(access: CredentialAccess) -> Result<JournalBridgeHandle, BridgeStartError> {
+    start_observed(access).await
 }
 
 pub async fn start_with_facts(
-    paired: &PairedState,
-    state_path: PathBuf,
-    journal_version: Arc<JournalVersionController>,
-    sync: Arc<Mutex<SyncSnapshot>>,
-    facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
+    access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
-    start_observed_with_facts(paired, state_path, None, journal_version, sync, facts_fn).await
+    start_observed(access).await
 }
 
 /// [`start`] with an operation-scoped observation seam attached to the bridge's
@@ -98,36 +84,16 @@ pub async fn start_with_facts(
 /// dead; because those redials go through this client's `dial_carrier`, attaching
 /// the handle here is what makes them countable.
 pub async fn start_observed(
-    paired: &PairedState,
-    state_path: PathBuf,
-    observer: crate::observe::ObserverHandle,
-    journal_version: Arc<JournalVersionController>,
-    sync: Arc<Mutex<SyncSnapshot>>,
+    access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
-    let facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync> = Arc::new(RawDeviceFacts::default);
-    start_observed_with_facts(
-        paired,
-        state_path,
-        observer,
-        journal_version,
-        sync,
-        facts_fn,
-    )
-    .await
+    start_observed_with_facts(access).await
 }
 
 pub async fn start_observed_with_facts(
-    paired: &PairedState,
-    state_path: PathBuf,
-    observer: crate::observe::ObserverHandle,
-    journal_version: Arc<JournalVersionController>,
-    sync: Arc<Mutex<SyncSnapshot>>,
-    facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
+    access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
-    let credential = paired
-        .credential
-        .clone()
-        .ok_or(BridgeStartError::NotReady)?;
+    let client_slot = access.client_slot();
+    let credential = client_slot.load().credential().clone();
     let mut journal_hosts = Vec::with_capacity(credential.endpoints.len() + 1);
     journal_hosts.push("spl.local".to_string());
     journal_hosts.extend(
@@ -137,31 +103,16 @@ pub async fn start_observed_with_facts(
             .map(|endpoint| endpoint.host.clone()),
     );
 
-    let client = ObserverClient::new(credential.clone())
-        .map_err(BridgeStartError::Client)?
-        .with_state_path(state_path.clone())
-        .with_cas_key(CasKey {
-            pairing_generation: pairing_generation(&credential.client_cert_pem),
-            access_mutation_generation: paired.access_mutation_generation,
-        })
-        .with_observer(observer);
-    let client_slot = ClientSlot::new(Arc::new(client));
-
-    let post_connect = Arc::new(PostConnectController::new(
-        client_slot.clone(),
-        Some(state_path),
-        Some(journal_version.clone()),
-        sync.clone(),
-        facts_fn,
-    ));
-    post_connect.begin_session(&credential);
+    let post_connect = access.post_connect();
 
     let carrier = Arc::new(MuxCarrier::with_keepalive(
         client_slot,
         crate::journal_bridge_carrier::KeepaliveConfig::default(),
-        journal_version,
+        access.journal_version(),
         Some(post_connect.clone()),
-        sync,
+        access.journal_version_token(),
+        Some(access.post_connect_token()),
+        access.sync(),
     ));
 
     let carrier_weak = Arc::downgrade(&carrier);

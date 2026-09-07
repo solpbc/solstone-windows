@@ -14,24 +14,26 @@ mod support;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use observer_model::TransportPath;
+use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot, TransportPath};
 use observer_pl::frame::{
     Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RECOMMENDED_CHUNK,
 };
 use observer_pl::http::{self, HttpResponse};
 use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::mux::INITIAL_WINDOW;
+use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::journal_bridge;
 use pl_transport_win::observe::{DialCounts, OperationObserver};
 use pl_transport_win::relay::{dial_relay_ws, request_once_over_ws, request_once_relay};
+use pl_transport_win::service::SyncConfig;
 use pl_transport_win::tls::pairing_config;
-use pl_transport_win::{transport_error_code, RelayError, TransportError};
+use pl_transport_win::{transport_error_code, CredentialAccess, RelayError, TransportError};
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::ClientConfig;
 use serde_json::json;
@@ -159,6 +161,36 @@ fn observer_relay_credential(
 fn temp_pairing_path(name: &str) -> PathBuf {
     let unique = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!("plw-{name}-{}-{unique}.json", std::process::id()))
+}
+
+#[derive(Debug)]
+struct TestOffset;
+
+impl LocalOffset for TestOffset {
+    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
+        Ok(0)
+    }
+}
+
+async fn start_test_bridge(
+    paired: &PairedState,
+    state_path: PathBuf,
+    journal_version: Arc<pl_transport_win::JournalVersionController>,
+    sync: Arc<Mutex<SyncSnapshot>>,
+) -> journal_bridge::JournalBridgeHandle {
+    paired.save(&state_path).unwrap();
+    let cfg = SyncConfig {
+        device_label: "relay-test".into(),
+        period_secs: 300,
+        segments_root: state_path.with_extension("segments"),
+        state_path,
+        retention: Arc::new(RwLock::new(RetentionConfig::default())),
+        local_offset: Arc::new(TestOffset),
+        journal_version,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+    };
+    let access = CredentialAccess::bind(paired, &cfg, sync, None).unwrap();
+    journal_bridge::start(access).await.unwrap()
 }
 
 fn relay_client(credential: Credential) -> ObserverClient {
@@ -866,6 +898,7 @@ enum CombinedWsMode {
     AlwaysUnauthorized,
     Close(u16),
     UpgradeReject(u16),
+    OversizeResponse,
 }
 
 struct CombinedRelayState {
@@ -988,7 +1021,7 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
         Err(_) => return Ok(()),
     };
     match mode {
-        CombinedWsMode::AcceptAny => {}
+        CombinedWsMode::AcceptAny | CombinedWsMode::OversizeResponse => {}
         CombinedWsMode::FreshOnly => {
             let expected = format!("Bearer {}", state.fresh_token);
             if *seen_auth.lock().unwrap() != expected {
@@ -1026,13 +1059,12 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
     tokio::spawn(async move {
         let _ = pump_ws(ws, relay_side, None).await;
     });
-    let request = serve_stream_response(
-        server_side,
-        state.acceptor.clone(),
-        "200 OK",
-        b"{\"status\":\"ok\"}",
-    )
-    .await;
+    let body = if matches!(mode, CombinedWsMode::OversizeResponse) {
+        Box::leak(vec![b'x'; 64 * 1024 + 1].into_boxed_slice()) as &'static [u8]
+    } else {
+        b"{\"status\":\"ok\"}"
+    };
+    let request = serve_stream_response(server_side, state.acceptor.clone(), "200 OK", body).await;
     state.inner_requests.lock().unwrap().push(request);
     Ok(())
 }
@@ -1961,9 +1993,8 @@ async fn relay_bridge_carrier_refreshes_on_4401_then_succeeds() {
     let sync_1 = Arc::new(std::sync::Mutex::new(
         observer_model::SyncSnapshot::default(),
     ));
-    let handle = journal_bridge::start(&paired, temp_pairing_path("bridge-refresh"), jv_1, sync_1)
-        .await
-        .unwrap();
+    let handle =
+        start_test_bridge(&paired, temp_pairing_path("bridge-refresh"), jv_1, sync_1).await;
     let cap = capability_from(&handle);
 
     let response = raw_bridge_request(handle.port(), "/journal", &cap).await;
@@ -2008,14 +2039,13 @@ async fn relay_bridge_initial_dial_failure_returns_502_and_next_request_redials(
     let sync_2 = Arc::new(std::sync::Mutex::new(
         observer_model::SyncSnapshot::default(),
     ));
-    let handle = journal_bridge::start(
+    let handle = start_test_bridge(
         &paired,
         temp_pairing_path("bridge-relay-fail"),
         jv_2,
         sync_2,
     )
-    .await
-    .unwrap();
+    .await;
     let cap = capability_from(&handle);
 
     let first = raw_bridge_request(handle.port(), "/fail", &cap).await;
@@ -2210,5 +2240,27 @@ async fn test_relay_adapter_get_clients_self_and_get_relay_access() {
     let res2 = client.get_relay_access().await.unwrap();
     assert_eq!(res2.status, 200);
 
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_adapter_stops_post_connect_response_at_64_kib() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let token = mint_jwt(now, now + 10_000);
+    let relay =
+        spawn_combined_relay(acceptor, CombinedWsMode::OversizeResponse, token.clone()).await;
+    let client = relay_client(observer_relay_credential(
+        pin,
+        9,
+        relay.origin.clone(),
+        token,
+    ));
+
+    let err = client.get_clients_self().await.unwrap_err();
+    assert!(matches!(
+        err,
+        TransportError::Mux(observer_pl::mux::MuxError::CapExceeded)
+    ));
     relay.abort();
 }

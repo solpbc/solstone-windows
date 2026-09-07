@@ -8,7 +8,7 @@
 //! send only their protocol header.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,7 +24,7 @@ use observer_pl::{
 use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::connection::{dial_tls, request_once_observed};
+use crate::connection::{dial_tls, request_once_observed_with_cap};
 use crate::credential::{pairing_generation, CasKey, Credential, PairedState, StorageError};
 use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
 use crate::relay::{
@@ -39,15 +39,51 @@ const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
 /// Maximum allowed response bytes for post-connect metadata/access endpoints (64 KiB).
 pub(crate) const MAX_POST_CONNECT_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// Process-local relay authority shared by every incarnation in one client slot.
+///
+/// A stale `Arc<ObserverClient>` can still be held by a request after a live
+/// replacement. The incarnation check keeps that retired client from dialing
+/// relay with credentials that no longer belong to the current slot.
+pub(crate) struct RelayFence {
+    disabled: AtomicBool,
+    incarnation: AtomicU64,
+}
+
+impl RelayFence {
+    fn new(enabled: bool) -> Self {
+        Self {
+            disabled: AtomicBool::new(!enabled),
+            incarnation: AtomicU64::new(1),
+        }
+    }
+
+    fn allows(&self, incarnation: u64) -> bool {
+        !self.disabled.load(Ordering::Acquire)
+            && self.incarnation.load(Ordering::Acquire) == incarnation
+    }
+
+    fn advance(&self, enabled: bool) -> u64 {
+        self.disabled.store(!enabled, Ordering::Release);
+        self.incarnation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub(crate) fn disable(&self) {
+        self.disabled.store(true, Ordering::Release);
+        self.incarnation.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 /// A thread-safe container for the active `ObserverClient` allowing atomic live replacement.
 #[derive(Clone)]
 pub struct ClientSlot {
     inner: Arc<std::sync::RwLock<Arc<ObserverClient>>>,
+    relay_fence: Arc<RelayFence>,
 }
 
 impl ClientSlot {
     pub fn new(initial: Arc<ObserverClient>) -> Self {
         Self {
+            relay_fence: initial.relay_fence.clone(),
             inner: Arc::new(std::sync::RwLock::new(initial)),
         }
     }
@@ -59,6 +95,31 @@ impl ClientSlot {
     pub fn replace(&self, new_client: Arc<ObserverClient>) {
         let mut guard = self.inner.write().unwrap();
         *guard = new_client;
+    }
+
+    /// Rebuild the sole live client from its incumbent while retaining the
+    /// observer seam, state path, pairing identity, and shared relay fence.
+    pub fn replace_from_incumbent(
+        &self,
+        credential: Credential,
+        cas_key: CasKey,
+    ) -> Result<Arc<ObserverClient>, TransportError> {
+        let incumbent = self.load();
+        let enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
+        let incarnation = self.relay_fence.advance(enabled);
+        let replacement = Arc::new(ObserverClient::rebuild_from(
+            &incumbent,
+            credential,
+            cas_key,
+            incarnation,
+        )?);
+        self.replace(replacement.clone());
+        Ok(replacement)
+    }
+
+    /// Make relay unavailable before any durable operation. LAN remains usable.
+    pub fn disable_relay(&self) {
+        self.relay_fence.disable();
     }
 
     pub fn proxy_headers(&self, upstream_headers: &[(String, String)]) -> Vec<(String, String)> {
@@ -119,6 +180,8 @@ pub struct ObserverClient {
     cas_key: std::sync::Mutex<Option<CasKey>>,
     /// Optional operation-scoped observation seam. `None` in the GUI.
     observer: ObserverHandle,
+    relay_fence: Arc<RelayFence>,
+    incarnation: u64,
 }
 
 impl ObserverClient {
@@ -134,6 +197,7 @@ impl ObserverClient {
         let chain = tls::parse_certs(&credential.client_cert_pem)?;
         let key = tls::parse_private_key(&credential.client_key_pem)?;
         let config = Arc::new(tls::mtls_config(&credential.ca_fp_prefix, chain, key)?);
+        let relay_enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
         Ok(Self {
             credential,
             config,
@@ -145,7 +209,30 @@ impl ObserverClient {
                 access_mutation_generation: 0,
             })),
             observer: None,
+            relay_fence: Arc::new(RelayFence::new(relay_enabled)),
+            incarnation: 1,
         })
+    }
+
+    fn rebuild_from(
+        incumbent: &ObserverClient,
+        access_credential: Credential,
+        cas_key: CasKey,
+        incarnation: u64,
+    ) -> Result<Self, TransportError> {
+        // Access updates must not replace pairing material. This is also what
+        // makes a held pre-replacement client unambiguously retired.
+        let mut credential = incumbent.credential.clone();
+        credential.relay_origin = access_credential.relay_origin;
+        credential.device_token = access_credential.device_token;
+        credential.device_token_expires_at = access_credential.device_token_expires_at;
+        let mut rebuilt = Self::new(credential)?;
+        rebuilt.state_path = incumbent.state_path.clone();
+        rebuilt.observer = incumbent.observer.clone();
+        rebuilt.relay_fence = incumbent.relay_fence.clone();
+        rebuilt.incarnation = incarnation;
+        rebuilt.cas_key = std::sync::Mutex::new(Some(cas_key));
+        Ok(rebuilt)
     }
 
     /// Access the underlying credential.
@@ -162,6 +249,10 @@ impl ObserverClient {
     /// Get the current CAS key known to this client.
     pub fn current_cas_key(&self) -> Option<CasKey> {
         *self.cas_key.lock().unwrap()
+    }
+
+    pub(crate) fn is_current_incarnation(&self) -> bool {
+        self.relay_fence.allows(self.incarnation)
     }
 
     pub async fn get_clients_self(&self) -> Result<HttpResponse, TransportError> {
@@ -232,6 +323,15 @@ impl ObserverClient {
 
     pub fn home_label(&self) -> &str {
         &self.credential.home_label
+    }
+
+    fn response_cap_for(&self, path: &str) -> usize {
+        match path {
+            "/app/network/api/clients/self" | "/app/network/api/relay/access" => {
+                MAX_POST_CONNECT_RESPONSE_BYTES
+            }
+            _ => observer_pl::mux::MAX_ASSEMBLED_BYTES,
+        }
     }
 
     /// Upload one segment's files with the protocol-v3 envelope. `segment` is
@@ -432,7 +532,9 @@ impl ObserverClient {
 
     /// True when the stored credential has relay coordinates and a live token.
     fn relay_eligible(&self) -> bool {
-        self.credential.relay_origin.is_some() && self.device_token.is_some()
+        self.is_current_incarnation()
+            && self.credential.relay_origin.is_some()
+            && self.device_token.is_some()
     }
 
     /// Clone the current live relay token under the single-flight mutex.
@@ -445,45 +547,68 @@ impl ObserverClient {
             .clone()
     }
 
-    /// Best-effort write-back of a refreshed relay token into the persisted pairing state.
-    async fn persist_token(&self, token: &str, expires_at: i64) {
+    /// Persist a refreshed relay token before publishing it to the live mutex.
+    async fn persist_token(&self, expected_cas: CasKey, token: String, expires_at: i64) -> bool {
         let Some(path) = &self.state_path else {
-            return;
+            // Stateless operation clients (the integration command and direct
+            // transport tests) have no durable authority to update. They still
+            // use the single-flight mutex and incarnation fence, but production
+            // paired clients always take the persisted branch below.
+            return self.is_current_incarnation();
         };
-        let expected_cas = {
-            let guard = self.cas_key.lock().unwrap();
-            *guard
+        if !self.is_current_incarnation() {
+            return false;
+        }
+        let path = path.clone();
+        let token_for_disk = token.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            PairedState::mutate(&path, expected_cas, |cred| {
+                cred.device_token = Some(token_for_disk);
+                cred.device_token_expires_at = Some(expires_at);
+                Ok(())
+            })
+        })
+        .await;
+        let Ok(res) = res else {
+            tracing::warn!(target: "sync", reason = "join", "persist_token failed");
+            return false;
         };
-        let Some(expected_cas) = expected_cas else {
-            return;
-        };
-        let token_str = token.to_string();
-        let res = PairedState::mutate(path, expected_cas, |cred| {
-            cred.device_token = Some(token_str);
-            cred.device_token_expires_at = Some(expires_at);
-            Ok(())
-        });
         match res {
-            Ok(new_gen) => {
+            Ok(new_gen) if self.is_current_incarnation() => {
                 let mut guard = self.cas_key.lock().unwrap();
-                if let Some(key) = guard.as_mut() {
-                    key.access_mutation_generation = new_gen;
+                if *guard != Some(expected_cas) {
+                    return false;
                 }
+                *guard = Some(CasKey {
+                    pairing_generation: expected_cas.pairing_generation,
+                    access_mutation_generation: new_gen,
+                });
+                true
             }
-            Err(StorageError::CasMismatch) => {
-                tracing::debug!(target: "sync", "persist_token skipped due to CAS mismatch");
+            Ok(_) | Err(StorageError::CasMismatch) => false,
+            Err(StorageError::WriteFailed(_)) => {
+                tracing::warn!(target: "sync", reason = "write_failed", "persist_token failed");
+                false
             }
-            Err(StorageError::WriteFailed(e)) | Err(StorageError::DurabilityUncertain(e)) => {
-                tracing::warn!(target: "sync", error = %e, "persist_token write failed");
+            Err(StorageError::DurabilityUncertain(_)) => {
+                tracing::warn!(target: "sync", reason = "durability_uncertain", "persist_token failed");
+                false
             }
-            Err(e) => {
-                tracing::warn!(target: "sync", error = %e, "persist_token error");
+            Err(_) => {
+                tracing::warn!(target: "sync", reason = "storage", "persist_token failed");
+                false
             }
         }
     }
 
     /// Refresh only if the live token still matches the caller's failed token.
     async fn refresh_if_current(&self, origin: &str, expected: &str) -> RefreshAction {
+        let Some(captured_cas) = self.current_cas_key() else {
+            return RefreshAction::Terminal;
+        };
+        if !self.is_current_incarnation() {
+            return RefreshAction::Terminal;
+        }
         let Some(token) = &self.device_token else {
             return RefreshAction::Terminal;
         };
@@ -496,10 +621,15 @@ impl ObserverClient {
                 device_token,
                 expires_at,
             } => {
-                *guard = device_token.clone();
-                drop(guard);
-                self.persist_token(&device_token, expires_at).await;
-                RefreshAction::Redial
+                if self
+                    .persist_token(captured_cas, device_token.clone(), expires_at)
+                    .await
+                {
+                    *guard = device_token;
+                    RefreshAction::Redial
+                } else {
+                    RefreshAction::Terminal
+                }
             }
             RefreshOutcome::ReconnectNeeded => RefreshAction::Terminal,
             RefreshOutcome::TransientError => RefreshAction::Transient,
@@ -514,6 +644,9 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, u32), TransportError> {
+        if !self.is_current_incarnation() {
+            return Err(TransportError::Relay(RelayError::Unauthorized));
+        }
         let Some(origin) = self.credential.relay_origin.as_deref() else {
             let err = TransportError::NoEndpoint;
             log_dial_failed(path, 0, &err);
@@ -533,12 +666,16 @@ impl ObserverClient {
         let mut transient_attempt = 0usize;
         let mut attempts = 0u32;
         loop {
+            if !self.is_current_incarnation() {
+                return Err(TransportError::Relay(RelayError::Unauthorized));
+            }
             let token = self.current_token().await;
             attempts = attempts.saturating_add(1);
             note_dial_attempt(&self.observer);
             log_dial_start(path, attempts);
             let started = Instant::now();
-            let request = RelayRequestSpec::new(method, path, headers, body, &self.observer);
+            let request = RelayRequestSpec::new(method, path, headers, body, &self.observer)
+                .with_response_cap(self.response_cap_for(path));
             match request_once_relay_observed(
                 self.config.clone(),
                 origin,
@@ -590,6 +727,9 @@ impl ObserverClient {
 
     /// Dial a persistent carrier through the relay after the direct LAN loop has exhausted.
     async fn dial_carrier_over_relay(&self) -> Result<DialedCarrier, TransportError> {
+        if !self.is_current_incarnation() {
+            return Err(TransportError::Relay(RelayError::Unauthorized));
+        }
         let origin = self
             .credential
             .relay_origin
@@ -606,6 +746,9 @@ impl ObserverClient {
         let mut reactive_refreshed = false;
         let mut transient_attempt = 0usize;
         loop {
+            if !self.is_current_incarnation() {
+                return Err(TransportError::Relay(RelayError::Unauthorized));
+            }
             let token = self.current_token().await;
             note_dial_attempt(&self.observer);
             match dial_relay_carrier(self.config.clone(), origin, instance_id, &token).await {
@@ -664,7 +807,7 @@ impl ObserverClient {
                 note_dial_attempt(&self.observer);
                 log_dial_start(path, attempts);
                 let started = Instant::now();
-                match request_once_observed(
+                match request_once_observed_with_cap(
                     self.config.clone(),
                     &endpoint.host,
                     endpoint.port,
@@ -673,6 +816,7 @@ impl ObserverClient {
                     headers,
                     body,
                     &self.observer,
+                    self.response_cap_for(path),
                 )
                 .await
                 {

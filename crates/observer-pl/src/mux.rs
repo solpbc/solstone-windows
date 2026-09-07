@@ -38,7 +38,7 @@ pub const INITIAL_WINDOW: usize = 1 << 20;
 const RECEIVE_GRANT_THRESHOLD: u64 = (INITIAL_WINDOW / 2) as u64;
 /// Robustness cap for assembled response bytes. Only the pinned journal can send
 /// these bytes, but a bad peer must not grow memory without bound.
-const MAX_ASSEMBLED_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_ASSEMBLED_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MuxError {
@@ -327,6 +327,7 @@ pub struct DemuxOutput {
 /// Re-assembles response frames for one dialer stream into the HTTP body.
 pub struct ResponseAssembler {
     stream_id: u32,
+    cap: usize,
     decoder: FrameDecoder,
     body: Vec<u8>,
     recv_window: RecvWindow,
@@ -337,8 +338,16 @@ pub struct ResponseAssembler {
 
 impl ResponseAssembler {
     pub fn new(stream_id: u32) -> Self {
+        Self::with_cap(stream_id, MAX_ASSEMBLED_BYTES)
+    }
+
+    /// Creates an assembler with a bounded response body.
+    ///
+    /// The cap is checked before an inbound DATA payload is appended.
+    pub fn with_cap(stream_id: u32, cap: usize) -> Self {
         Self {
             stream_id,
+            cap,
             decoder: FrameDecoder::new(),
             body: Vec::new(),
             recv_window: RecvWindow::new(),
@@ -381,7 +390,7 @@ impl ResponseAssembler {
                     .len()
                     .checked_add(frame.payload.len())
                     .ok_or(MuxError::CapExceeded)?;
-                if assembled_len > MAX_ASSEMBLED_BYTES {
+                if assembled_len > self.cap {
                     return Err(MuxError::CapExceeded);
                 }
                 if self.recv_window.debit(frame.payload.len()).is_err() {
@@ -1052,6 +1061,19 @@ mod tests {
 
         assert_eq!(
             asm.feed(&Frame::new(1, FLAG_DATA, vec![b'x']).encode().unwrap())
+                .unwrap_err(),
+            MuxError::CapExceeded
+        );
+    }
+
+    #[test]
+    fn response_assembler_honors_custom_cap_before_append() {
+        let mut asm = ResponseAssembler::with_cap(1, 3);
+        asm.feed(&Frame::new(1, FLAG_DATA, b"abc".to_vec()).encode().unwrap())
+            .unwrap();
+
+        assert_eq!(
+            asm.feed(&Frame::new(1, FLAG_DATA, b"d".to_vec()).encode().unwrap())
                 .unwrap_err(),
             MuxError::CapExceeded
         );

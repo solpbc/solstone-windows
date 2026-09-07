@@ -189,13 +189,23 @@ pub async fn pair(
         }
     };
 
+    let access = pl_transport_win::CredentialAccess::bind(&paired, &cfg, sync.clone(), None)
+        .map_err(|error| error.to_string())?;
+    {
+        let mut current = state.credential_access.lock().await;
+        if let Some(previous) = current.take() {
+            previous.retire();
+        }
+        *current = Some(access.clone());
+    }
+
     tracing::info!(
         target: "sync",
         source = "fresh_pair",
         "uploader started"
     );
     slot.replace(move |rx| async move {
-        pl_transport_win::run_uploader(paired, cfg, sync, rx).await;
+        pl_transport_win::run_uploader(access, cfg, sync, rx).await;
     })
     .await;
     Ok(())
