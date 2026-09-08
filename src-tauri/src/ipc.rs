@@ -12,6 +12,7 @@
 use capture_engine::EngineCommand;
 use observer_model::HealthDump;
 use observer_model::PauseReason;
+use tauri::Manager;
 
 /// Ask the engine to pause. `reason` is an owner-meaningful token;
 /// `duration_secs` bounds an operator pause (auto-resume after it elapses) and is
