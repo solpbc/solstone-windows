@@ -36,7 +36,7 @@ TRANSPARENCY_ACTIVATED ?= 0
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny preflight-release-tools build test ui-test \
-	        test-scripts gate-minisign ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish publish-r2 \
+	        test-scripts gate-minisign ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live brand-sync help
@@ -45,6 +45,7 @@ help:
 	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
 	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT, SOLSTONE_ADVISORY_TREE_SHA256, and the signed mirror packet environment)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
+	@echo "delivery: publish-origin CANDIDATE_DIR=<candidate> FINALIZATION_RECEIPT=<json> SOURCE_CHECKOUT=<exact-source-tree> CLEARANCE=<json> PUBLICATION_RECEIPT=<json>"
 	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
@@ -109,6 +110,7 @@ test: preflight-toolchain
 test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
+	bash scripts/lib/publish-origin.test.sh
 	sh scripts/lib/make-audit-ordering.test.sh
 	sh scripts/lib/advisory-audit-real-tool.test.sh
 	sh scripts/lib/make-package-ordering.test.sh
@@ -362,8 +364,17 @@ resign-transparency-pointer:
 gate-minisign:
 	sh scripts/gate-minisign.sh
 
+# The aggregate publisher is separate from the fail-closed direct entry points.
+publish-origin:
+	@test -n "$(strip $(CANDIDATE_DIR))" || { echo "ERROR: CANDIDATE_DIR is required" >&2; exit 2; }
+	@test -n "$(strip $(FINALIZATION_RECEIPT))" || { echo "ERROR: FINALIZATION_RECEIPT is required" >&2; exit 2; }
+	@test -n "$(strip $(SOURCE_CHECKOUT))" || { echo "ERROR: SOURCE_CHECKOUT is required" >&2; exit 2; }
+	@test -n "$(strip $(CLEARANCE))" || { echo "ERROR: CLEARANCE is required" >&2; exit 2; }
+	@test -n "$(strip $(PUBLICATION_RECEIPT))" || { echo "ERROR: PUBLICATION_RECEIPT is required" >&2; exit 2; }
+	bash scripts/publish-origin.sh --candidate-dir "$(CANDIDATE_DIR)" --finalization-receipt "$(FINALIZATION_RECEIPT)" --source-checkout "$(SOURCE_CHECKOUT)" --clearance "$(CLEARANCE)" --receipt "$(PUBLICATION_RECEIPT)"
+
 # Direct publication is fail-closed. These entry points remain visible while
-# publication ownership moves to the aggregate provenance publisher.
+# publication ownership stays at the aggregate provenance boundary above.
 publish:
 	sh scripts/publish-gh.sh
 

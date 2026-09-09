@@ -72,6 +72,7 @@ charter and license.
 | `make check-release-advisory-config` | materialize the isolated release advisory config and prove the real pinned cargo-deny accepts it offline |
 | `make package` | source-bound build-to-finalize transaction → `target/release-candidate/<VERSION>/`; requires full lowercase `EXPECTED_RELEASE_COMMIT`, reviewed `SOLSTONE_ADVISORY_TREE_SHA256`, and the signed mirror packet environment documented in the release runbook (unsigned unless `SOLSTONE_SIGN=1`) |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | strict signed-candidate install and explicit-binary smoke → `target/release-evidence/<VERSION>/windows-native-proof.json` |
+| `make publish-origin CANDIDATE_DIR=<candidate> FINALIZATION_RECEIPT=<json> SOURCE_CHECKOUT=<exact-source-tree> CLEARANCE=<json> PUBLICATION_RECEIPT=<json>` | validate the retained signed candidate, exact clean source, and clearance document bound to the candidate/channel; publish immutable archive/versioned bytes before mutable Velopack metadata, write `releases.win.json` last, GET/compare every public byte, and emit a receipt; does not publish to GitHub |
 | `make publish-transparency RELEASE_DIR=<candidate>` | archive complete retained release bytes, then publish only signed transparency evidence; runs after delivery and never gates it |
 | `make resign-transparency-pointer` | refresh the latest-pointer signature and validity without changing the chain tip; no candidate input |
 | `make publish-r2` | fail-closed direct-publication guard; R2 publication belongs to the aggregate provenance publisher |
@@ -94,6 +95,7 @@ charter and license.
 | `scripts/win-app-build.cmd` | Native app-build evidence | Builds the UI and Windows app binary; no package, install, sign, or smoke |
 | `make package` / `scripts/win-package.cmd` | Package-finalization evidence | One source-bound transaction builds, packs, optionally signs and verifies, renders evidence, and atomically promotes the exact current-only candidate; it does not install, smoke, or publish |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | Native-proof orchestration | Strictly classifies one signed candidate before resolving native action tools, then installs and explicitly smokes its bytes; read-only checkout-fact acquisition precedes classification, fake action seams are host-tested, and a green real receipt is box evidence |
+| `make publish-origin ...` | Host-orchestrated release-origin publication | Re-validates the exact eight-file candidate, signed-verification finalization receipt, packaged executable digest, and exact clean source commit, then validates a clearance document bound to the candidate/channel; versioned archive/live objects refuse byte changes, mutable metadata follows artifacts, `releases.win.json` is last, and every live public GET is byte-compared before an atomic receipt. CI exercises ordering, interruption/retry, immutability and refusal paths against fakes; only an approved live run proves R2 |
 
 Linux has no compiling cross-target MSVC check because it cannot link the
 Windows MSVC target. `make ci` is a composite gate and still needs npm plus

@@ -199,11 +199,15 @@ the custom local Velopack `UpdateSource`; package downloads still request the
 package files by filename from the same first-party feed host. R2 is the
 authoritative update feed. A GitHub Releases mirror is optional and
 non-authoritative; its success cannot gate authoritative publication, update
-delivery, or release evidence. Direct publication scripts are disabled; release
-publication belongs to the aggregate provenance publisher. That future component
-publishes each finalized signed release to R2 and may optionally mirror it to
-GitHub. No GitHub mirror is required, and a missing or failed mirror never blocks
-a release.
+delivery, or release evidence. Direct publication scripts remain disabled. The
+aggregate boundary is `make publish-origin`: it accepts only one exact finalized
+signed candidate, its finalization receipt, a clean checkout at the candidate's
+source commit, and a recorded clearance document for that exact release/channel.
+It writes an immutable versioned archive and flat version-named update artifacts
+before mutable Velopack metadata, writes `releases.win.json` last, then downloads
+and byte-compares every public archive and live update-feed object before emitting
+a publication receipt. It does not publish to GitHub. A GitHub mirror is optional,
+and a missing or failed mirror never blocks a release.
 
 **Flow** (keeps publication credentials out of package construction):
 
@@ -220,15 +224,48 @@ a release.
    RELEASE_DIR=target/release-candidate/<VERSION>`. A green proof atomically adds
    `target/release-evidence/<VERSION>/windows-native-proof.json` outside the
    candidate.
-4. `make pull-releases` may pull the box's accumulated `Releases/` into a
-   controlled aggregate workflow. It does not authorize publication and is not a
-   substitute for the finalized candidate and receipts. The direct R2 target is a
-   fail-closed guard.
-5. Publication of finalized bytes and provenance to R2 and secondary channels
-   belongs to the aggregate provenance publisher. It must upload immutable artifacts
-   before mutable feed metadata. Any GitHub mirror is optional, non-authoritative,
-   and never a release gate. It is a future component, not a runnable command
-   documented here.
+4. Retain the exact candidate and
+   `target/release-evidence/<VERSION>/rust-release-finalization.json`. Keep a
+   separate clean source checkout at the manifest's full source commit; the
+   publisher refuses a dirty or different checkout. The publisher itself may run
+   from a later tooling commit, so delivery-only tooling does not force already
+   qualified application bytes to be rebuilt.
+5. After the release operator records clearance for the named candidate and
+   release channel, create (do not infer) a JSON clearance document:
+
+   ```json
+   {
+     "schema": "solstone.windows.origin-clearance.v1",
+     "decision": "publish",
+     "product": "solstone-windows",
+     "channel": "release",
+     "version": "<VERSION>",
+     "source_commit": "<40-hex candidate source>",
+     "companion_manifest_sha256": "<64-hex manifest digest>",
+     "recorded_founder_clearance": "<durable decision/request reference>"
+   }
+   ```
+
+6. Run the single aggregate command from a clean publisher checkout:
+
+   ```bash
+   make publish-origin \
+     CANDIDATE_DIR=/absolute/path/to/target/release-candidate/<VERSION> \
+     FINALIZATION_RECEIPT=/absolute/path/to/rust-release-finalization.json \
+     SOURCE_CHECKOUT=/absolute/path/to/clean/candidate-source \
+     CLEARANCE=/absolute/path/to/windows-origin-clearance.json \
+     PUBLICATION_RECEIPT=/absolute/path/to/windows-origin-publication.json
+   ```
+
+   `scripts/publish-r2.sh` and `make publish-r2` remain fail-closed bypass guards.
+   The aggregate command is idempotent: retry after a failure. It accepts already
+   present equal bytes, refuses any different byte at an immutable versioned key,
+   refuses to move the live feed backward, and does not write the feed until all
+   preceding objects have succeeded. If it fails after the feed write but before
+   verification/receipt, rerun the same command; do not alter the candidate or
+   clearance.
+7. Preserve the emitted publication receipt with the finalization/native receipts.
+   Any GitHub mirror is optional, non-authoritative, and never a release gate.
 
 The aggregate publication layout accumulates version-named nupkgs, while the setup
 installer is versioned per release, giving each release a never-reused URL. The
