@@ -16,6 +16,8 @@ BUCKET="${SOLSTONE_ORIGIN_BUCKET:-solstone-updates}"
 PREFIX="$PRODUCT"
 ORIGIN_URL="https://updates.solstone.app"
 FEED="releases.win.json"
+R2_ACCOUNT_ID="${SOLSTONE_R2_ACCOUNT_ID:-}"
+R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 die() {
     printf 'windows release origin publisher: %s\n' "$1" >&2
@@ -70,10 +72,16 @@ done
 [[ -n "$candidate_directory" && -n "$finalization_receipt" && -n "$source_checkout" && -n "$clearance" && -n "$publication_receipt" ]] || usage
 
 required_tools=(awk cargo cat cmp curl date dirname find git grep jq mkdir mktemp mv realpath rm sha1sum sha256sum sort tr unzip wc)
-$dry_run || required_tools+=(wrangler)
+$dry_run || required_tools+=(aws)
 for tool in "${required_tools[@]}"; do
     command -v "$tool" >/dev/null 2>&1 || die "required release tool is unavailable: $tool"
 done
+if ! $dry_run; then
+    [[ "$R2_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]] || die "origin-auth-missing: SOLSTONE_R2_ACCOUNT_ID must be lowercase 32-hex"
+    [[ -n "${AWS_ACCESS_KEY_ID:-}" ]] || die "origin-auth-missing: AWS_ACCESS_KEY_ID is required"
+    [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || die "origin-auth-missing: AWS_SECRET_ACCESS_KEY is required"
+    export AWS_EC2_METADATA_DISABLED=true
+fi
 
 script_directory="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 tooling_root="$(git -C "$script_directory" rev-parse --show-toplevel 2>/dev/null)" ||
@@ -240,13 +248,12 @@ content_type_for() {
 }
 
 remote_get() {
-    local key="$1" destination="$2" log="$stage_root/wrangler.log" status
-    set +e
-    wrangler r2 object get "$BUCKET/$key" --remote --file "$destination" >"$log" 2>&1
-    status=$?
-    set -e
-    if ((status == 0)); then return 0; fi
-    if grep -qF 'The specified key does not exist' "$log"; then
+    local key="$1" destination="$2" log="$stage_root/r2-get.log"
+    if aws s3api get-object --endpoint-url "$R2_ENDPOINT" --region auto \
+        --bucket "$BUCKET" --key "$key" "$destination" >"$log" 2>&1; then
+        return 0
+    fi
+    if grep -qF 'NoSuchKey' "$log"; then
         rm -f "$destination"
         return 1
     fi
@@ -256,9 +263,26 @@ remote_get() {
 
 remote_put() {
     local key="$1" file="$2" cache_control="$3"
-    wrangler r2 object put "$BUCKET/$key" --remote --file "$file" \
+    aws s3api put-object --endpoint-url "$R2_ENDPOINT" --region auto \
+        --bucket "$BUCKET" --key "$key" --body "$file" \
         --content-type "$(content_type_for "${key##*/}")" --cache-control "$cache_control" >/dev/null ||
         die "origin-unreachable: could not write $key"
+}
+
+# A successful If-None-Match:* PUT is the create-only boundary. Exit 3 means a
+# concurrent writer won; callers must fetch and compare the committed bytes.
+remote_put_create_only() {
+    local key="$1" file="$2" cache_control="$3" log="$stage_root/r2-create.log"
+    if aws s3api put-object --endpoint-url "$R2_ENDPOINT" --region auto \
+        --bucket "$BUCKET" --key "$key" --body "$file" --if-none-match '*' \
+        --content-type "$(content_type_for "${key##*/}")" --cache-control "$cache_control" >"$log" 2>&1; then
+        return 0
+    fi
+    if grep -Eq 'PreconditionFailed|ConditionalRequestConflict|status code: (409|412)' "$log"; then
+        return 3
+    fi
+    cat "$log" >&2
+    die "origin-unreachable: could not create $key"
 }
 
 checkpoint() {
@@ -280,12 +304,24 @@ version_is_not_older() {
 }
 
 put_immutable() {
-    local key="$1" file="$2" remote="$stage_root/remote-object"
+    local key="$1" file="$2" remote="$stage_root/remote-object" create_status
     if remote_get "$key" "$remote"; then
         cmp -s "$remote" "$file" || die "object-immutable: $key already exists with different bytes"
         printf '  present  %s\n' "$key"
     else
-        remote_put "$key" "$file" "public, max-age=31536000, immutable"
+        if remote_put_create_only "$key" "$file" "public, max-age=31536000, immutable"; then
+            create_status=0
+        else
+            create_status=$?
+        fi
+        if ((create_status == 3)); then
+            remote_get "$key" "$remote" || die "origin-conflict: $key disappeared after a concurrent create"
+            cmp -s "$remote" "$file" || die "object-immutable: concurrent create committed different bytes at $key"
+            printf '  present  %s (concurrent equal create)\n' "$key"
+            rm -f "$remote"
+            return 0
+        fi
+        ((create_status == 0)) || die "origin-unreachable: create-only PUT failed for $key"
         remote_get "$key" "$remote" || die "origin-unreachable: $key was absent after upload"
         cmp -s "$remote" "$file" || die "digest-mismatch: $key differs after upload"
         printf '  put      %s\n' "$key"

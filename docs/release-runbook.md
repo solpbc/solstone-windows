@@ -249,6 +249,9 @@ and a missing or failed mirror never blocks a release.
 6. Run the single aggregate command from a clean publisher checkout:
 
    ```bash
+   export SOLSTONE_R2_ACCOUNT_ID=<Cloudflare-account-id>
+   export AWS_ACCESS_KEY_ID=<R2-S3-access-key-id>
+   export AWS_SECRET_ACCESS_KEY=<R2-S3-secret-access-key>
    make publish-origin \
      CANDIDATE_DIR=/absolute/path/to/target/release-candidate/<VERSION> \
      FINALIZATION_RECEIPT=/absolute/path/to/rust-release-finalization.json \
@@ -257,9 +260,15 @@ and a missing or failed mirror never blocks a release.
      PUBLICATION_RECEIPT=/absolute/path/to/windows-origin-publication.json
    ```
 
+   Use the release operator's R2 S3-compatible credential; do not place it in
+   the repository or candidate directory. The conditional S3 `PutObject` call is
+   the create-only enforcement for immutable keys. A concurrent winner is fetched
+   and accepted only when its bytes equal the candidate.
+
    `scripts/publish-r2.sh` and `make publish-r2` remain fail-closed bypass guards.
    The aggregate command is idempotent: retry after a failure. It accepts already
-   present equal bytes, refuses any different byte at an immutable versioned key,
+   present equal bytes, uses R2's atomic `If-None-Match: *` create condition for
+   absent immutable keys, refuses a concurrently-created different byte,
    refuses to move the live feed backward, and does not write the feed until all
    preceding objects have succeeded. If it fails after the feed write but before
    verification/receipt, rerun the same command; do not alter the candidate or
