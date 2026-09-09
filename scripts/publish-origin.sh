@@ -16,6 +16,7 @@ BUCKET="${SOLSTONE_ORIGIN_BUCKET:-solstone-updates}"
 PREFIX="$PRODUCT"
 ORIGIN_URL="https://updates.solstone.app"
 FEED="releases.win.json"
+PUBLICATION_LOCK_KEY="$PREFIX/.publication-lock.json"
 R2_ACCOUNT_ID="${SOLSTONE_R2_ACCOUNT_ID:-}"
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
@@ -183,8 +184,28 @@ while IFS=$'\t' read -r name expected_sha expected_bytes; do
 done < <(jq -r '.artifacts[] | [.path, .sha256, (.bytes | tostring)] | @tsv' "$manifest")
 
 stage_root="$(mktemp -d "${TMPDIR:-/tmp}/$PRODUCT-publish-origin.XXXXXX")"
-cleanup() { rm -rf -- "$stage_root"; }
-trap cleanup EXIT HUP INT TERM
+lock_held=false
+lock_etag=""
+lock_available_file="$stage_root/publication-lock-available.json"
+cleanup() {
+    local status=$?
+    trap - EXIT HUP INT TERM
+    if $lock_held && [[ -s "$lock_available_file" && -n "$lock_etag" ]]; then
+        lock_held=false
+        if ! aws s3api put-object --endpoint-url "$R2_ENDPOINT" --region auto \
+            --bucket "$BUCKET" --key "$PUBLICATION_LOCK_KEY" --body "$lock_available_file" \
+            --if-match "$lock_etag" --content-type "application/json" --cache-control "no-cache" >/dev/null 2>&1; then
+            printf 'windows release origin publisher: publication lock retained after failure; inspect %s before recovery\n' \
+                "$PUBLICATION_LOCK_KEY" >&2
+        fi
+    fi
+    rm -rf -- "$stage_root"
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 expected_executable_sha="$(jq -er '.packaged_executable.sha256' "$finalization_receipt")" ||
     die "candidate-set-invalid: packaged executable digest is unavailable"
@@ -249,8 +270,11 @@ content_type_for() {
 
 remote_get() {
     local key="$1" destination="$2" log="$stage_root/r2-get.log"
+    REMOTE_GET_ETAG=""
     if aws s3api get-object --endpoint-url "$R2_ENDPOINT" --region auto \
         --bucket "$BUCKET" --key "$key" "$destination" >"$log" 2>&1; then
+        REMOTE_GET_ETAG="$(jq -er '.ETag | select(type == "string" and length > 0)' "$log")" ||
+            die "origin-unreachable: $key did not return an ETag"
         return 0
     fi
     if grep -qF 'NoSuchKey' "$log"; then
@@ -259,14 +283,6 @@ remote_get() {
     fi
     cat "$log" >&2
     die "origin-unreachable: could not read $key"
-}
-
-remote_put() {
-    local key="$1" file="$2" cache_control="$3"
-    aws s3api put-object --endpoint-url "$R2_ENDPOINT" --region auto \
-        --bucket "$BUCKET" --key "$key" --body "$file" \
-        --content-type "$(content_type_for "${key##*/}")" --cache-control "$cache_control" >/dev/null ||
-        die "origin-unreachable: could not write $key"
 }
 
 # A successful If-None-Match:* PUT is the create-only boundary. Exit 3 means a
@@ -283,6 +299,87 @@ remote_put_create_only() {
     fi
     cat "$log" >&2
     die "origin-unreachable: could not create $key"
+}
+
+# Mutable promotion is compare-and-swap against the ETag (or absence) captured
+# before any upload. Exit 3 means another publisher changed the channel after
+# this process validated it; the caller must abort and restart from a new
+# snapshot rather than overwrite that winner.
+remote_put_if_snapshot() {
+    local key="$1" file="$2" present="$3" etag="$4" log="$stage_root/r2-promote.log"
+    local -a condition
+    if [[ "$present" == 1 ]]; then
+        condition=(--if-match "$etag")
+    else
+        condition=(--if-none-match '*')
+    fi
+    if aws s3api put-object --endpoint-url "$R2_ENDPOINT" --region auto \
+        --bucket "$BUCKET" --key "$key" --body "$file" "${condition[@]}" \
+        --content-type "$(content_type_for "${key##*/}")" --cache-control "no-cache" >"$log" 2>&1; then
+        return 0
+    fi
+    if grep -Eq 'PreconditionFailed|ConditionalRequestConflict|status code: (409|412)' "$log"; then
+        return 3
+    fi
+    cat "$log" >&2
+    die "origin-unreachable: could not promote $key"
+}
+
+acquire_publication_lock() {
+    local existing="$stage_root/publication-lock-existing.json"
+    local held="$stage_root/publication-lock-held.json"
+    local present etag put_status operation_id acquired_at
+    operation_id="$(printf '%s\n' "$tooling_commit" "$source_commit" "$manifest_sha256" "$$" "$stage_root" | sha256sum | awk '{print $1}')"
+    acquired_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    jq -n --arg product "$PRODUCT" --arg operation "$operation_id" --arg version "$version" \
+        --arg source "$source_commit" --arg tooling "$tooling_commit" --arg acquired "$acquired_at" \
+        '{schema:"solstone.origin-publication-lock.v1",state:"held",product:$product,
+          operation_id:$operation,version:$version,source_commit:$source,tooling_commit:$tooling,
+          acquired_at:$acquired}' > "$held" || die "publication-lock-invalid: could not render lock"
+    jq -n --arg product "$PRODUCT" --arg operation "$operation_id" \
+        '{schema:"solstone.origin-publication-lock.v1",state:"available",product:$product,
+          released_operation_id:$operation}' > "$lock_available_file" ||
+        die "publication-lock-invalid: could not render release state"
+
+    if remote_get "$PUBLICATION_LOCK_KEY" "$existing"; then
+        present=1
+        etag="$REMOTE_GET_ETAG"
+        jq -e --arg product "$PRODUCT" '
+            .schema == "solstone.origin-publication-lock.v1" and .product == $product and
+            .state == "available"
+        ' "$existing" >/dev/null ||
+            die "publication-lock-held: another publication owns $PUBLICATION_LOCK_KEY; do not clear it while that process may run"
+    else
+        present=0
+        etag=""
+    fi
+    if remote_put_if_snapshot "$PUBLICATION_LOCK_KEY" "$held" "$present" "$etag"; then
+        put_status=0
+    else
+        put_status=$?
+    fi
+    ((put_status != 3)) || die "publication-lock-raced: another publisher acquired the channel; rerun after it finishes"
+    ((put_status == 0)) || die "publication-lock-unreachable: could not acquire publication lock"
+    remote_get "$PUBLICATION_LOCK_KEY" "$existing" || die "publication-lock-lost: lock disappeared after acquisition"
+    cmp -s "$existing" "$held" || die "publication-lock-lost: lock bytes changed after acquisition"
+    lock_etag="$REMOTE_GET_ETAG"
+    lock_held=true
+    printf '  locked   %s\n' "$PUBLICATION_LOCK_KEY"
+}
+
+release_publication_lock() {
+    local put_status remote="$stage_root/publication-lock-released.json"
+    lock_held=false
+    if remote_put_if_snapshot "$PUBLICATION_LOCK_KEY" "$lock_available_file" 1 "$lock_etag"; then
+        put_status=0
+    else
+        put_status=$?
+    fi
+    ((put_status != 3)) || die "publication-lock-lost: lock changed before release; manual inspection required"
+    ((put_status == 0)) || die "publication-lock-unreachable: could not release publication lock"
+    remote_get "$PUBLICATION_LOCK_KEY" "$remote" || die "publication-lock-lost: release state is absent"
+    cmp -s "$remote" "$lock_available_file" || die "publication-lock-lost: release state differs after write"
+    printf '  unlocked %s\n' "$PUBLICATION_LOCK_KEY"
 }
 
 checkpoint() {
@@ -330,11 +427,18 @@ put_immutable() {
 }
 
 put_mutable() {
-    local key="$1" file="$2" remote="$stage_root/remote-object"
-    if remote_get "$key" "$remote" && cmp -s "$remote" "$file"; then
+    local key="$1" file="$2" remote="$stage_root/remote-object" promote_status
+    if [[ "${MUTABLE_PRESENT[$key]}" == 1 ]] && cmp -s "${MUTABLE_SNAPSHOT[$key]}" "$file"; then
         printf '  present  %s\n' "$key"
     else
-        remote_put "$key" "$file" "no-cache"
+        if remote_put_if_snapshot "$key" "$file" "${MUTABLE_PRESENT[$key]}" "${MUTABLE_ETAG[$key]}"; then
+            promote_status=0
+        else
+            promote_status=$?
+        fi
+        ((promote_status != 3)) ||
+            die "origin-conflict: mutable promotion lost snapshot at $key; rerun from a fresh channel snapshot"
+        ((promote_status == 0)) || die "origin-unreachable: conditional promotion failed for $key"
         remote_get "$key" "$remote" || die "origin-unreachable: $key was absent after upload"
         cmp -s "$remote" "$file" || die "digest-mismatch: $key differs after upload"
         printf '  put      %s\n' "$key"
@@ -354,8 +458,24 @@ if $dry_run; then
     exit 0
 fi
 
-current_feed="$stage_root/current-feed.json"
-if remote_get "$PREFIX/$FEED" "$current_feed"; then
+acquire_publication_lock
+
+declare -A MUTABLE_PRESENT MUTABLE_ETAG MUTABLE_SNAPSHOT
+for name in "${flat_mutable[@]}" "$FEED"; do
+    key="$PREFIX/$name"
+    snapshot="$stage_root/snapshot-$name"
+    MUTABLE_SNAPSHOT["$key"]="$snapshot"
+    if remote_get "$key" "$snapshot"; then
+        MUTABLE_PRESENT["$key"]=1
+        MUTABLE_ETAG["$key"]="$REMOTE_GET_ETAG"
+    else
+        MUTABLE_PRESENT["$key"]=0
+        MUTABLE_ETAG["$key"]=""
+    fi
+done
+
+current_feed="${MUTABLE_SNAPSHOT["$PREFIX/$FEED"]}"
+if [[ "${MUTABLE_PRESENT["$PREFIX/$FEED"]}" == 1 ]]; then
     current_versions_file="$stage_root/current-versions"
     jq -er '.Assets | if type == "array" and length > 0 then .[].Version else error("invalid feed") end' "$current_feed" > "$current_versions_file" ||
         die "latest-invalid: current releases.win.json is malformed"
@@ -371,7 +491,6 @@ if remote_get "$PREFIX/$FEED" "$current_feed"; then
     version_is_not_older "$version" "$highest_current" ||
         die "latest-refused: candidate $version is older than live $highest_current"
 fi
-rm -f "$current_feed"
 
 for name in "${archive_names[@]}"; do
     file="$candidate_directory/$name"
@@ -436,7 +555,9 @@ jq -n --arg product "$PRODUCT" --arg version "$version" --arg source "$source_co
     '{schema:"solstone.windows.origin-publication.v1", product:$product, version:$version,
       source_commit:$source, tooling_commit:$tooling, companion_manifest_sha256:$manifest,
       origin:$origin, ordering:"immutable archive, flat versioned artifacts, mutable metadata, releases.win.json last",
+      mutable_promotion:"snapshot ETag compare-and-swap; stale writers abort",
       clearance_sha256:$clearance_sha, public_byte_verification:true, published_at:$published}' > "$receipt_temp" ||
     die "receipt-write-failed: could not render publication receipt"
 mv "$receipt_temp" "$publication_receipt" || die "receipt-write-failed: could not promote publication receipt"
+release_publication_lock
 printf 'published and verified %s %s; receipt: %s\n' "$PRODUCT" "$version" "$publication_receipt"

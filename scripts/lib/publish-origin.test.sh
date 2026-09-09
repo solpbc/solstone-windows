@@ -94,11 +94,13 @@ key=""
 file=""
 destination=""
 if_none_match=""
+if_match=""
 while (($#)); do
   case "$1" in
     --key) key=$2; shift 2;;
     --body) file=$2; shift 2;;
     --if-none-match) if_none_match=$2; shift 2;;
+    --if-match) if_match=$2; shift 2;;
     --endpoint-url|--region|--bucket|--content-type|--cache-control) shift 2;;
     --*) shift;;
     *) destination=$1; shift;;
@@ -111,17 +113,32 @@ if [[ "$operation" == get-object ]]; then
   if [[ ! -f "$target" ]]; then echo 'An error occurred (NoSuchKey)' >&2; exit 254; fi
   mkdir -p "$(dirname "$destination")"
   cp "$target" "$destination"
+  etag=$(sha256sum "$target" | awk '{print $1}')
+  printf '{"ETag":"\\"%s\\""}\n' "$etag"
 else
   mkdir -p "$(dirname "$target")"
   if [[ "${FAKE_RACE_KEY:-}" == "$key" && ! -e "$FAKE_R2/.race-fired" ]]; then
     cp "$FAKE_RACE_SOURCE" "$target"
     : > "$FAKE_R2/.race-fired"
   fi
+  if [[ "${FAKE_MUTATE_BEFORE_KEY:-}" == "$key" && ! -e "$FAKE_R2/.mutation-fired" ]]; then
+    cp "$FAKE_MUTATE_SOURCE" "$target"
+    : > "$FAKE_R2/.mutation-fired"
+  fi
   if [[ "$if_none_match" == '*' && -f "$target" ]]; then
     echo 'An error occurred (PreconditionFailed): status code: 412' >&2
     exit 255
   fi
+  if [[ -n "$if_match" ]]; then
+    current_etag='"'$(sha256sum "$target" | awk '{print $1}')'"'
+    if [[ "$if_match" != "$current_etag" ]]; then
+      echo 'An error occurred (PreconditionFailed): status code: 412' >&2
+      exit 255
+    fi
+  fi
   cp "$file" "$target"
+  etag=$(sha256sum "$target" | awk '{print $1}')
+  printf '{"ETag":"\\"%s\\""}\n' "$etag"
 fi
 EOF
 cat > "$FAKE_BIN/curl" <<'EOF'
@@ -163,7 +180,7 @@ rm "$TOOL_REPO/uncommitted"
 
 run_publish >/dev/null
 assert jq -e '.schema == "solstone.windows.origin-publication.v1" and .public_byte_verification == true' "$TMP_ROOT/publication.json" >/dev/null
-last_put="$(awk '$1 == "put" {value=$2} END {print value}' "$WITNESS")"
+last_put="$(awk '$1 == "put" && $2 != "solstone-windows/.publication-lock.json" {value=$2} END {print value}' "$WITNESS")"
 assert test "$last_put" = "solstone-windows/releases.win.json"
 assert test -f "$FAKE_R2/solstone-windows/v/$VERSION/rust-release-finalization.json"
 assert cmp -s "$FAKE_R2/solstone-windows/$FULL" "$CANDIDATE/$FULL"
@@ -191,7 +208,19 @@ rm "$FAKE_R2/.race-fired"
 
 : > "$WITNESS"
 run_publish >/dev/null
+assert test -z "$(awk '$1 == "put" && $2 != "solstone-windows/.publication-lock.json" {print}' "$WITNESS")"
+
+jq -n '{schema:"solstone.origin-publication-lock.v1",state:"held",product:"solstone-windows",
+  operation_id:"other-publisher",version:"9.9.9",source_commit:"0000000000000000000000000000000000000000",
+  tooling_commit:"0000000000000000000000000000000000000000",acquired_at:"2026-09-09T00:00:00Z"}' \
+  > "$FAKE_R2/solstone-windows/.publication-lock.json"
+: > "$WITNESS"
+if run_publish >"$TMP_ROOT/lock-held.out" 2>&1; then fail "held publication lock must block another publisher"; fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert grep -Fq 'publication-lock-held' "$TMP_ROOT/lock-held.out"
 assert test -z "$(awk '$1 == "put" {print}' "$WITNESS")"
+jq -n '{schema:"solstone.origin-publication-lock.v1",state:"available",product:"solstone-windows",
+  released_operation_id:"test-reset"}' > "$FAKE_R2/solstone-windows/.publication-lock.json"
 
 mkdir -p "$FAKE_R2/solstone-windows"
 printf collision > "$FAKE_R2/solstone-windows/$FULL"
@@ -210,7 +239,23 @@ assert test ! -f "$FAKE_R2/solstone-windows/releases.win.json"
 run_publish >/dev/null
 assert cmp -s "$FAKE_R2/solstone-windows/releases.win.json" "$CANDIDATE/releases.win.json"
 
-rm "$TMP_ROOT/publication.json"
+jq '(.Assets[].Version) = "1.9.9"' "$CANDIDATE/releases.win.json" > "$FAKE_R2/solstone-windows/releases.win.json"
+jq '(.Assets[].Version) = "9.9.9"' "$CANDIDATE/releases.win.json" > "$TMP_ROOT/concurrent-newer-feed.json"
+rm -f "$TMP_ROOT/publication.json" "$FAKE_R2/.mutation-fired"
+: > "$WITNESS"
+if FAKE_MUTATE_BEFORE_KEY="solstone-windows/releases.win.json" \
+    FAKE_MUTATE_SOURCE="$TMP_ROOT/concurrent-newer-feed.json" \
+    run_publish >"$TMP_ROOT/stale-feed.out" 2>&1; then
+    fail "stale concurrent publisher must not regress the feed"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert grep -Fq 'origin-conflict: mutable promotion lost snapshot at solstone-windows/releases.win.json' "$TMP_ROOT/stale-feed.out"
+assert cmp -s "$FAKE_R2/solstone-windows/releases.win.json" "$TMP_ROOT/concurrent-newer-feed.json"
+assert test ! -f "$TMP_ROOT/publication.json"
+cp "$CANDIDATE/releases.win.json" "$FAKE_R2/solstone-windows/releases.win.json"
+rm -f "$FAKE_R2/.mutation-fired"
+
+rm -f "$TMP_ROOT/publication.json"
 if CORRUPT_PUBLIC_KEY="solstone-windows/v/$VERSION/$FULL" run_publish >"$TMP_ROOT/public-mismatch.out" 2>&1; then
     fail "public archive byte mismatch must fail"
 fi
@@ -242,7 +287,7 @@ jq '(.Assets[].Version) = "9.9.9"' "$CANDIDATE/releases.win.json" > "$FAKE_R2/so
 if run_publish >"$TMP_ROOT/downgrade.out" 2>&1; then fail "live feed downgrade must fail"; fi
 ASSERTIONS=$((ASSERTIONS + 1))
 assert grep -Fq 'latest-refused: candidate 2.0.0 is older than live 9.9.9' "$TMP_ROOT/downgrade.out"
-assert test -z "$(awk '$1 == "put" {print}' "$WITNESS")"
+assert test -z "$(awk '$1 == "put" && $2 != "solstone-windows/.publication-lock.json" {print}' "$WITNESS")"
 
 printf mismatch > "$SOURCE/clean-mismatch"
 git -C "$SOURCE" add clean-mismatch

@@ -203,8 +203,11 @@ delivery, or release evidence. Direct publication scripts remain disabled. The
 aggregate boundary is `make publish-origin`: it accepts only one exact finalized
 signed candidate, its finalization receipt, a clean checkout at the candidate's
 source commit, and a recorded clearance document for that exact release/channel.
-It writes an immutable versioned archive and flat version-named update artifacts
-before mutable Velopack metadata, writes `releases.win.json` last, then downloads
+It acquires a fail-closed R2 publication mutex before reading channel state,
+writes an immutable versioned archive and flat version-named update artifacts,
+then handles mutable Velopack metadata. It snapshots every mutable object's ETag
+(or absence), conditionally promotes each object against that snapshot, writes
+`releases.win.json` last under the same compare-and-swap rule, then downloads
 and byte-compares every public archive and live update-feed object before emitting
 a publication receipt. It does not publish to GitHub. A GitHub mirror is optional,
 and a missing or failed mirror never blocks a release.
@@ -265,12 +268,27 @@ and a missing or failed mirror never blocks a release.
    the create-only enforcement for immutable keys. A concurrent winner is fetched
    and accepted only when its bytes equal the candidate.
 
+   Before uploading, the publisher also snapshots every mutable object's ETag or
+   absence while holding `solstone-windows/.publication-lock.json`. Lock acquisition
+   itself uses `If-Match` or `If-None-Match: *`; a held or concurrently acquired
+   lock aborts the second publisher before its channel snapshot. Each mutable
+   write also uses `If-Match` or `If-None-Match: *` against that snapshot. The feed
+   is conditionally promoted last. Together, the mutex and per-object conditions
+   prevent a stale publisher from regressing metadata or the feed after its
+   initial version check.
+
    `scripts/publish-r2.sh` and `make publish-r2` remain fail-closed bypass guards.
    The aggregate command is idempotent: retry after a failure. It accepts already
    present equal bytes, uses R2's atomic `If-None-Match: *` create condition for
    absent immutable keys, refuses a concurrently-created different byte,
-   refuses to move the live feed backward, and does not write the feed until all
-   preceding objects have succeeded. If it fails after the feed write but before
+   refuses to move the live feed backward, aborts if any mutable object changed
+   after its initial snapshot, and holds the cross-object mutex until all public
+   byte checks and the receipt succeed. If an ordinary failure occurs, cleanup
+   conditionally releases the lock. A killed process can leave it held; this is
+   deliberately fail-closed. Verify that no publisher process remains before a
+   conditional operator reset, and never delete or overwrite a held lock
+   unconditionally. The publisher does not write the feed until all preceding
+   objects have succeeded. If it fails after the feed write but before
    verification/receipt, rerun the same command; do not alter the candidate or
    clearance.
 7. Preserve the emitted publication receipt with the finalization/native receipts.
