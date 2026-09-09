@@ -368,7 +368,7 @@ acquire_publication_lock() {
 }
 
 release_publication_lock() {
-    local put_status remote="$stage_root/publication-lock-released.json"
+    local put_status
     lock_held=false
     if remote_put_if_snapshot "$PUBLICATION_LOCK_KEY" "$lock_available_file" 1 "$lock_etag"; then
         put_status=0
@@ -377,8 +377,6 @@ release_publication_lock() {
     fi
     ((put_status != 3)) || die "publication-lock-lost: lock changed before release; manual inspection required"
     ((put_status == 0)) || die "publication-lock-unreachable: could not release publication lock"
-    remote_get "$PUBLICATION_LOCK_KEY" "$remote" || die "publication-lock-lost: release state is absent"
-    cmp -s "$remote" "$lock_available_file" || die "publication-lock-lost: release state differs after write"
     printf '  unlocked %s\n' "$PUBLICATION_LOCK_KEY"
 }
 

@@ -137,6 +137,10 @@ else
     fi
   fi
   cp "$file" "$target"
+  if [[ "${FAKE_NEXT_OWNER_AFTER_RELEASE:-}" == 1 && "$key" == "solstone-windows/.publication-lock.json" ]] &&
+      jq -e '.state == "available"' "$file" >/dev/null; then
+    cp "$FAKE_NEXT_OWNER_SOURCE" "$target"
+  fi
   etag=$(sha256sum "$target" | awk '{print $1}')
   printf '{"ETag":"\\"%s\\""}\n' "$etag"
 fi
@@ -184,6 +188,21 @@ last_put="$(awk '$1 == "put" && $2 != "solstone-windows/.publication-lock.json" 
 assert test "$last_put" = "solstone-windows/releases.win.json"
 assert test -f "$FAKE_R2/solstone-windows/v/$VERSION/rust-release-finalization.json"
 assert cmp -s "$FAKE_R2/solstone-windows/$FULL" "$CANDIDATE/$FULL"
+
+jq -n '{schema:"solstone.origin-publication-lock.v1",state:"held",product:"solstone-windows",
+  operation_id:"immediate-next-owner",version:"2.0.1",source_commit:"0000000000000000000000000000000000000000",
+  tooling_commit:"0000000000000000000000000000000000000000",acquired_at:"2026-09-09T01:50:00Z"}' \
+  > "$TMP_ROOT/immediate-next-owner.json"
+rm -f "$TMP_ROOT/publication.json"
+: > "$WITNESS"
+FAKE_NEXT_OWNER_AFTER_RELEASE=1 FAKE_NEXT_OWNER_SOURCE="$TMP_ROOT/immediate-next-owner.json" \
+  run_publish > "$TMP_ROOT/immediate-next-owner.out"
+assert test -f "$TMP_ROOT/publication.json"
+assert cmp -s "$FAKE_R2/solstone-windows/.publication-lock.json" "$TMP_ROOT/immediate-next-owner.json"
+assert grep -Fq 'unlocked solstone-windows/.publication-lock.json' "$TMP_ROOT/immediate-next-owner.out"
+assert grep -Fq 'published and verified solstone-windows 2.0.0' "$TMP_ROOT/immediate-next-owner.out"
+jq -n '{schema:"solstone.origin-publication-lock.v1",state:"available",product:"solstone-windows",
+  released_operation_id:"test-reset"}' > "$FAKE_R2/solstone-windows/.publication-lock.json"
 
 race_equal_key="solstone-windows/v/$VERSION/$SETUP"
 rm "$FAKE_R2/$race_equal_key" "$FAKE_R2/.race-fired" 2>/dev/null || true
