@@ -53,6 +53,7 @@ export const automationContract = {
     "settings.updates.state": "settings.updates.state",
     "settings.window.root": "settings.window.root",
     "tray.menu.about": "tray.menu.about",
+    "tray.menu.getHelp": "tray.menu.getHelp",
     "tray.menu.openJournal": "tray.menu.openJournal",
     "tray.menu.openSettings": "tray.menu.openSettings",
     "tray.menu.pause": "tray.menu.pause",
@@ -61,6 +62,7 @@ export const automationContract = {
     "tray.menu.pause30m": "tray.menu.pause30m",
     "tray.menu.pauseIndefinite": "tray.menu.pauseIndefinite",
     "tray.menu.quit": "tray.menu.quit",
+    "tray.menu.reportProblem": "tray.menu.reportProblem",
     "tray.menu.restartObserving": "tray.menu.restartObserving",
     "tray.menu.resume": "tray.menu.resume",
     "tray.root": "tray.root"

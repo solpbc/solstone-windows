@@ -22,6 +22,7 @@ mod ipc;
 mod lifecycle;
 mod mic;
 mod retention;
+mod support;
 mod tray;
 mod update;
 mod update_feed;

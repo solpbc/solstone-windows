@@ -82,6 +82,13 @@ pub fn init(
     let mi_open_settings =
         MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_SETTINGS, "Open Settings")
             .build(app)?;
+    let mi_get_help =
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_GET_HELP, "get help").build(app)?;
+    let mi_report_problem = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_REPORT_PROBLEM,
+        "report a problem",
+    )
+    .build(app)?;
     let mi_about =
         MenuItemBuilder::with_id(observer_contract::tray::MENU_ABOUT, "About").build(app)?;
     let mi_quit =
@@ -96,6 +103,8 @@ pub fn init(
         .item(&sep_one)
         .item(&mi_open_journal)
         .item(&mi_open_settings)
+        .item(&mi_get_help)
+        .item(&mi_report_problem)
         .item(&mi_about)
         .item(&sep_two)
         .item(&mi_quit)
@@ -137,6 +146,22 @@ pub fn init(
                 std::thread::spawn(move || {
                     let _ = crate::windows::open_settings(&app);
                 });
+            }
+            observer_contract::tray::MENU_GET_HELP => {
+                use tauri_plugin_opener::OpenerExt;
+                let _ = app
+                    .opener()
+                    .open_url(crate::support::HELP_URL, None::<&str>);
+            }
+            observer_contract::tray::MENU_REPORT_PROBLEM => {
+                use tauri::Manager;
+                use tauri_plugin_opener::OpenerExt;
+                let state = app.state::<crate::app::AppState>();
+                if let Ok(dump) = state.health.lock().map(|health| health.clone()) {
+                    let _ = app
+                        .opener()
+                        .open_url(crate::support::report_url(&dump), None::<&str>);
+                };
             }
             observer_contract::tray::MENU_ABOUT => {
                 let app = app.clone();
