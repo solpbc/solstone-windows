@@ -40,7 +40,7 @@ fn pause_for(duration_secs: Option<u64>) -> EngineCommand {
 }
 
 /// Install the tray icon + menu. Returns the handles `apply_state` re-renders:
-/// the Pause submenu (enabled/disabled as a whole), Resume, and Restart observing.
+/// the Pause submenu (enabled/disabled as a whole), Resume, and Restart intake.
 pub fn init(
     app: &mut App,
     cmd_tx: mpsc::UnboundedSender<EngineCommand>,
@@ -72,7 +72,7 @@ pub fn init(
         .build(app)?;
     let mi_restart = MenuItemBuilder::with_id(
         observer_contract::tray::MENU_RESTART_OBSERVING,
-        "Restart observing",
+        "Restart intake",
     )
     .enabled(false)
     .build(app)?;

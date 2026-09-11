@@ -2300,7 +2300,7 @@ function renderPauseCard(dump: HealthDump): HTMLElement {
       void invoke("resume").then(() => retryHealth());
     });
   } else if (phase === "error") {
-    action = actionButton("restart observing", undefined, true, () => {
+    action = actionButton("restart intake", undefined, true, () => {
       void invoke("resume").then(() => retryHealth());
     });
   } else {
