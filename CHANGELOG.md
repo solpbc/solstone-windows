@@ -4,6 +4,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-09-11
+
+### changed
+
+- pairing errors now explain what went wrong and what to try next.
+- the recovery action in settings and the tray menu is now called "restart intake".
+- you can open a support report from the tray menu with app version and status details filled in.
+
 ## [2.0.0]
 
 ### changed
