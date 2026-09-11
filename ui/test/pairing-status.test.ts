@@ -17,6 +17,8 @@ const NO_NETWORK =
   "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
 const GENERIC =
   "pairing didn't go through. show a new pairing code on your journal and try again.";
+const PRIVATE_NETWORK_UNAVAILABLE =
+  "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing code on your journal.";
 
 const byId = (id: string): HTMLElement | null =>
   document.querySelector(`[data-automation-id="${id}"]`);
@@ -93,12 +95,16 @@ describe("failed pairing status sentences", () => {
   });
 
   it("discriminates named classes and generic on the pairing pane", () => {
-    expect(new Set([PAIR_LINK, WINDOW_CLOSED, NO_NETWORK, GENERIC]).size).toBe(4);
+    expect(
+      new Set([PAIR_LINK, WINDOW_CLOSED, NO_NETWORK, PRIVATE_NETWORK_UNAVAILABLE, GENERIC])
+        .size,
+    ).toBe(5);
 
     const cases = [
       { detail: "pair_link", expected: PAIR_LINK },
       { detail: "relay_pair_window_closed", expected: WINDOW_CLOSED },
       { detail: "io", expected: NO_NETWORK },
+      { detail: "relay_unpaid", expected: PRIVATE_NETWORK_UNAVAILABLE },
       { detail: "http_403", expected: GENERIC },
     ];
 
@@ -127,7 +133,6 @@ describe("failed pairing status sentences", () => {
       "http_503",
       "relay_home_offline",
       "relay_unauthorized",
-      "relay_unpaid",
       "relay_unknown_instance",
       "relay_overflow",
       "relay_abnormal",
@@ -174,6 +179,7 @@ describe("failed pairing status sentences", () => {
     const namedCases = [
       { detail: "io", expected: NO_NETWORK },
       { detail: "pair_link", expected: PAIR_LINK },
+      { detail: "relay_unpaid", expected: PRIVATE_NETWORK_UNAVAILABLE },
     ];
 
     for (const { detail, expected } of namedCases) {
@@ -259,7 +265,13 @@ describe("failed pairing status sentences", () => {
     app.__test__.setHealth(dump);
     app.__test__.renderSettings(dump);
 
-    const lockedSentences = [PAIR_LINK, WINDOW_CLOSED, NO_NETWORK, GENERIC];
+    const lockedSentences = [
+      PAIR_LINK,
+      WINDOW_CLOSED,
+      NO_NETWORK,
+      PRIVATE_NETWORK_UNAVAILABLE,
+      GENERIC,
+    ];
 
     const journalLabelText = present(ids["settings.pairing.journal"]).textContent ?? "";
     for (const s of lockedSentences) {
@@ -276,29 +288,30 @@ describe("failed pairing status sentences", () => {
     expect(unavailableText).not.toBe("pairing failed: http_403");
   });
 
-  it("failed pairing keeps one pair control per route", () => {
-    // Home route
-    resetRoot();
-    const dumpHome = failedDump("http_403");
-    app.__test__.setRoute("home");
-    app.__test__.setHealth(dumpHome);
-    app.__test__.renderSettings(dumpHome);
+  it.each(["http_403", "relay_unpaid"] as const)(
+    "failed pairing keeps one pair control per route for %s",
+    (detail) => {
+      resetRoot();
+      const dumpHome = failedDump(detail);
+      app.__test__.setRoute("home");
+      app.__test__.setHealth(dumpHome);
+      app.__test__.renderSettings(dumpHome);
 
-    const homeButtons = Array.from(document.querySelectorAll("button"));
-    const homePairButtons = homeButtons.filter((b) => b.textContent === "pair");
-    expect(homePairButtons.length).toBe(1);
+      const homeButtons = Array.from(document.querySelectorAll("button"));
+      const homePairButtons = homeButtons.filter((b) => b.textContent === "pair");
+      expect(homePairButtons.length).toBe(1);
 
-    // Journal route
-    resetRoot();
-    const dumpJournal = failedDump("http_403");
-    app.__test__.setRoute("journal");
-    app.__test__.setHealth(dumpJournal);
-    app.__test__.renderSettings(dumpJournal);
+      resetRoot();
+      const dumpJournal = failedDump(detail);
+      app.__test__.setRoute("journal");
+      app.__test__.setHealth(dumpJournal);
+      app.__test__.renderSettings(dumpJournal);
 
-    const journalButtons = Array.from(document.querySelectorAll("button"));
-    const journalPairButtons = journalButtons.filter((b) => b.textContent === "pair");
-    expect(journalPairButtons.length).toBe(1);
-    expect(present(ids["settings.pairing.submit"])).not.toBeNull();
-    expect(present(ids["settings.pairing.input"])).not.toBeNull();
-  });
+      const journalButtons = Array.from(document.querySelectorAll("button"));
+      const journalPairButtons = journalButtons.filter((b) => b.textContent === "pair");
+      expect(journalPairButtons.length).toBe(1);
+      expect(present(ids["settings.pairing.submit"])).not.toBeNull();
+      expect(present(ids["settings.pairing.input"])).not.toBeNull();
+    },
+  );
 });

@@ -981,6 +981,8 @@ function failedPairingLabel(detail: string | null | undefined): string {
       return "the pairing window closed. show a new pairing code on your journal, then try again.";
     case "io":
       return "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
+    case "relay_unpaid":
+      return "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing code on your journal.";
     default:
       return "pairing didn't go through. show a new pairing code on your journal and try again.";
   }
@@ -999,6 +1001,14 @@ function pairingPhaseLabel(pairing: PairingState): string {
   }
 }
 
+function quarantinedCount(upload: UploadStatus): number {
+  return upload.quarantined_segments ?? 0;
+}
+
+function needsAttentionLabel(count: number): string {
+  return count === 1 ? "1 needs attention" : `${count} need attention`;
+}
+
 function uploadLabel(upload: UploadStatus): string {
   const parts = [
     `${upload.uploaded_segments} delivered`,
@@ -1007,8 +1017,9 @@ function uploadLabel(upload: UploadStatus): string {
   if (upload.failed_segments > 0) {
     parts.push(`${upload.failed_segments} retrying`);
   }
-  if (upload.last_error) {
-    parts.push(`last error: ${upload.last_error}`);
+  const quarantined = quarantinedCount(upload);
+  if (quarantined > 0) {
+    parts.push(needsAttentionLabel(quarantined));
   }
   return parts.join(" · ");
 }
@@ -2179,10 +2190,12 @@ function syncSummary(sync: SyncSnapshot): string {
       return pairingPhaseLabel(sync.pairing);
     case "paired": {
       const upload = sync.upload;
-      if (upload.last_error || upload.failed_segments > 0) {
-        return upload.failed_segments > 0
-          ? `${upload.failed_segments} retrying`
-          : "sync needs attention";
+      const quarantined = quarantinedCount(upload);
+      if (quarantined > 0) {
+        return needsAttentionLabel(quarantined);
+      }
+      if (upload.failed_segments > 0) {
+        return "waiting to sync";
       }
       return `${upload.uploaded_segments} delivered · ${upload.pending_segments} pending`;
     }

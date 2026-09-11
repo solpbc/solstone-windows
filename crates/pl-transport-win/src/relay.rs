@@ -128,6 +128,7 @@ fn relay_error_from_upgrade_status(status: u16) -> RelayError {
 fn relay_error_from_pair_upgrade_status(status: u16) -> RelayError {
     match status {
         401 => RelayError::PairWindowClosed,
+        402 => RelayError::Unpaid,
         _ => RelayError::UpgradeRejected,
     }
 }
@@ -583,6 +584,14 @@ mod tests {
         assert_eq!(
             relay_error_from_pair_upgrade_status(401),
             RelayError::PairWindowClosed
+        );
+    }
+
+    #[test]
+    fn pair_upgrade_402_maps_to_unpaid() {
+        assert_eq!(
+            relay_error_from_pair_upgrade_status(402),
+            RelayError::Unpaid
         );
     }
 }

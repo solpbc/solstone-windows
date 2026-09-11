@@ -40,7 +40,7 @@ spikes/                reference-only code (excluded from the build)
 
 The observer writes local, owner-controlled data for the owner's journal. There
 is no analytics, telemetry, tracking, or crash reporting, and nothing phones
-home. State is always earned: the app never shows "observing" unless it truly is.
+home. State is always earned: the app never shows "on" unless it truly is.
 
 ## Build & test
 
