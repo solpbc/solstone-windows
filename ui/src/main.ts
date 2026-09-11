@@ -973,6 +973,19 @@ function sourceByKind(dump: HealthDump, kind: SourceKind): SourceReport | undefi
   return dump.sources.find((source) => source.kind === kind);
 }
 
+function failedPairingLabel(detail: string | null | undefined): string {
+  switch (detail) {
+    case "pair_link":
+      return "that pairing link isn't one the solstone app can read. show a new pairing code on your journal and try again.";
+    case "relay_pair_window_closed":
+      return "the pairing window closed. show a new pairing code on your journal, then try again.";
+    case "io":
+      return "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
+    default:
+      return "pairing didn't go through. show a new pairing code on your journal and try again.";
+  }
+}
+
 function pairingPhaseLabel(pairing: PairingState): string {
   switch (pairing.phase) {
     case "not_paired":
@@ -982,7 +995,7 @@ function pairingPhaseLabel(pairing: PairingState): string {
     case "paired":
       return pairing.journal_label ? `paired with ${pairing.journal_label}` : "paired";
     case "failed":
-      return pairing.detail ? `pairing failed: ${pairing.detail}` : "pairing failed";
+      return failedPairingLabel(pairing.detail);
   }
 }
 

@@ -143,7 +143,7 @@ describe("settings renderer characterization", () => {
     expect(present(ids["settings.status.upload.state"]).textContent).toContain("not paired");
   });
 
-  it("renders failed pairing diagnostic detail", () => {
+  it("renders the generic failed-pairing sentence for http_403", () => {
     const base = notPairedDump();
     const dump = {
       ...base,
@@ -162,7 +162,7 @@ describe("settings renderer characterization", () => {
     app.__test__.renderSettings(dump);
 
     expect(present(ids["settings.pairing.state"]).textContent).toBe(
-      "pairing failed: http_403",
+      "pairing didn't go through. show a new pairing code on your journal and try again.",
     );
   });
 
