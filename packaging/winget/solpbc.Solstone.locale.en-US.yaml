@@ -7,7 +7,7 @@
 # not authored in this static input.
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.0
+PackageVersion: 2.0.1
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
