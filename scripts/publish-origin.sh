@@ -237,9 +237,9 @@ jq -e --arg version "$version" --arg full "$full" --arg delta "$delta" \
     die "candidate-set-invalid: releases.win.json does not bind the exact current packages"
 
 jq -e --arg version "$version" --arg full "$full" --arg delta "$delta" --arg portable "$portable" --arg setup "$setup" '
-    (map([.RelativeFileName, .Type])) == [
+    (map([.RelativeFileName, .Type]) | sort) == ([
         [$delta, "Delta"], [$portable, "Portable"], [$setup, "Installer"], [$full, "Full"]
-    ]
+    ] | sort)
 ' "$candidate_directory/$assets" >/dev/null ||
     die "candidate-set-invalid: assets.win.json does not name the exact current artifacts"
 

@@ -52,7 +52,7 @@ printf full > "$CANDIDATE/$FULL"
 printf delta > "$CANDIDATE/$DELTA"
 printf setup > "$CANDIDATE/$SETUP"
 printf portable > "$CANDIDATE/$PORTABLE"
-printf '[{"RelativeFileName":"%s","Type":"Delta"},{"RelativeFileName":"%s","Type":"Portable"},{"RelativeFileName":"%s","Type":"Installer"},{"RelativeFileName":"%s","Type":"Full"}]\n' "$DELTA" "$PORTABLE" "$SETUP" "$FULL" > "$CANDIDATE/assets.win.json"
+printf '[{"RelativeFileName":"%s","Type":"Installer"},{"RelativeFileName":"%s","Type":"Portable"},{"RelativeFileName":"%s","Type":"Delta"},{"RelativeFileName":"%s","Type":"Full"}]\n' "$SETUP" "$PORTABLE" "$DELTA" "$FULL" > "$CANDIDATE/assets.win.json"
 FULL_SHA="$(sha256sum "$CANDIDATE/$FULL" | awk '{print $1}')"
 DELTA_SHA="$(sha256sum "$CANDIDATE/$DELTA" | awk '{print $1}')"
 FULL_SHA1="$(sha1sum "$CANDIDATE/$FULL" | awk '{print toupper($1)}')"
@@ -181,6 +181,31 @@ ASSERTIONS=$((ASSERTIONS + 1))
 assert grep -Fq 'tooling-unbound' "$TMP_ROOT/tooling-dirty.out"
 assert test ! -s "$WITNESS"
 rm "$TOOL_REPO/uncommitted"
+
+# Rebind fixture digests so malformed metadata reaches semantic validation.
+cp "$CANDIDATE/assets.win.json" "$TMP_ROOT/assets.original"
+cp "$CANDIDATE/$MANIFEST_NAME" "$TMP_ROOT/manifest.original"
+cp "$TMP_ROOT/finalization.json" "$TMP_ROOT/finalization.original"
+cp "$TMP_ROOT/clearance.json" "$TMP_ROOT/clearance.original"
+for mutation in '.[2] = .[0]' '.[0].Type = "Full"' '.[0].RelativeFileName = "unexpected.exe"' '.[0:3]' '. + [.[0]]'; do
+    jq "$mutation" "$TMP_ROOT/assets.original" > "$CANDIDATE/assets.win.json"
+    jq --arg sha "$(sha256sum "$CANDIDATE/assets.win.json" | awk '{print $1}')" \
+        --argjson bytes "$(wc -c < "$CANDIDATE/assets.win.json")" \
+        '(.artifacts[] | select(.path == "assets.win.json")) |= (.sha256=$sha | .bytes=$bytes)' \
+        "$TMP_ROOT/manifest.original" > "$CANDIDATE/$MANIFEST_NAME"
+    changed_sha="$(sha256sum "$CANDIDATE/$MANIFEST_NAME" | awk '{print $1}')"
+    jq --arg sha "$changed_sha" '.companion_manifest.sha256=$sha' "$TMP_ROOT/finalization.original" > "$TMP_ROOT/finalization.json"
+    jq --arg sha "$changed_sha" '.companion_manifest_sha256=$sha' "$TMP_ROOT/clearance.original" > "$TMP_ROOT/clearance.json"
+    : > "$WITNESS"
+    if run_publish >"$TMP_ROOT/assets-invalid.out" 2>&1; then fail "invalid asset membership must fail: $mutation"; fi
+    ASSERTIONS=$((ASSERTIONS + 1))
+    assert grep -Fq 'assets.win.json does not name the exact current artifacts' "$TMP_ROOT/assets-invalid.out"
+    assert test ! -s "$WITNESS"
+done
+cp "$TMP_ROOT/assets.original" "$CANDIDATE/assets.win.json"
+cp "$TMP_ROOT/manifest.original" "$CANDIDATE/$MANIFEST_NAME"
+cp "$TMP_ROOT/finalization.original" "$TMP_ROOT/finalization.json"
+cp "$TMP_ROOT/clearance.original" "$TMP_ROOT/clearance.json"
 
 run_publish >/dev/null
 assert jq -e '.schema == "solstone.windows.origin-publication.v1" and .public_byte_verification == true' "$TMP_ROOT/publication.json" >/dev/null
