@@ -32,10 +32,11 @@ coexistence model. winget manifest reference: [`winget/`](winget/).
 - `../THIRD_PARTY_NOTICES.md`: the third-party notice copied unchanged beside
   the app executable. It installs at
   `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
-- `../RUST_DEPENDENCY_NOTICES.txt`: lock-bound license texts for statically
-  linked Rust crates. It installs at
+- `../RUST_DEPENDENCY_NOTICES.txt`: lock-bound crate license texts for
+  statically linked Rust crates. It installs at
   `%LocalAppData%\Solstone\current\RUST_DEPENDENCY_NOTICES.txt`. See
-  `rust-notices/`.
+  `rust-notices/`. Vendored prebuilts are listed in
+  `rust-notices/prebuilt-artifacts.json` as detection, not clearance.
 
 ## Build
 

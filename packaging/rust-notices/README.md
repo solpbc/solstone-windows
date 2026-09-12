@@ -28,3 +28,20 @@ license file in the crate archive. Do not replace those texts with SPDX
 templates. `realfft` 3.5.0 is the one exception: upstream publishes no LICENSE
 file at the crate or repository tag, so the override is the MIT text with the
 crate's Cargo.toml authors.
+
+## Prebuilt binaries
+
+`cargo deny`, `cargo metadata`, and this notices file cannot stand in for
+vendored prebuilt binaries (`.lib`, `.a`, `.dll`, `.so`, `.dylib`,
+pregenerated `.o` / `.obj`, or weight files). Those need the artifact's own
+primary license text. A crate SPDX field is visibility, not that
+determination.
+
+`prebuilt-artifacts.json` lists the prebuilts currently in the shipped
+closure. Regeneration fails if that set changes. A row on that list is
+detection, not clearance. If the crate does not carry the artifact's primary
+license text, do not treat the crate license as covering it.
+
+The Microsoft WebView2 loader inside `webview2-com-sys` is the measured case:
+crate SPDX is MIT, the loader is not, and its terms are in
+`THIRD_PARTY_NOTICES.md`.

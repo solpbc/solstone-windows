@@ -39,7 +39,10 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
   `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
 - `RUST_DEPENDENCY_NOTICES.txt` is packed beside the app and installed at
   `%LocalAppData%\Solstone\current\RUST_DEPENDENCY_NOTICES.txt`. `cargo xtask
-  rust-notices check` binds that file to `Cargo.lock`.
+  rust-notices check` binds that file to `Cargo.lock`. The file reproduces crate
+  license texts; it cannot stand in for vendored prebuilt binaries.
+  `packaging/rust-notices/prebuilt-artifacts.json` is the detection list and is
+  not clearance.
 
 ## Source-bound finalization
 

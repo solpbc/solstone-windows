@@ -1,0 +1,35 @@
+{
+  "schema": "solstone.windows-app-prebuilt-artifacts.v1",
+  "bound": "This list is detection only. It is not a license determination. cargo deny, cargo metadata, and RUST_DEPENDENCY_NOTICES.txt reproduce crate license files; they cannot stand in for the primary license text of a vendored prebuilt binary.",
+  "scan": "non-test members whose suffix is .lib, .a, .dll, .so, .dylib, .o, .obj, or a common weight suffix (.onnx, .pt, .pth, .safetensors, .gguf, .npz, .tflite, .weights), from the same solstone-windows-app non-dev closure as index.json",
+  "packages": [
+    {
+      "name": "ring",
+      "version": "0.17.14",
+      "suffixes": [".o"],
+      "primary_license_files_in_crate": [
+        "LICENSE",
+        "LICENSE-BoringSSL",
+        "LICENSE-other-bits"
+      ],
+      "note": "pregenerated assembler objects; crate license files are reproduced in RUST_DEPENDENCY_NOTICES.txt"
+    },
+    {
+      "name": "webview2-com-sys",
+      "version": "0.38.2",
+      "suffixes": [".dll", ".lib"],
+      "primary_license_files_in_crate": [],
+      "note": "Microsoft WebView2 loader binaries; crate SPDX is MIT and is not that artifact's licence. Loader terms are in THIRD_PARTY_NOTICES.md."
+    },
+    {
+      "name": "windows_x86_64_msvc",
+      "version": "0.52.6",
+      "suffixes": [".lib"],
+      "primary_license_files_in_crate": [
+        "license-mit",
+        "license-apache-2.0"
+      ],
+      "note": "import lib crate; crate license files are reproduced in RUST_DEPENDENCY_NOTICES.txt"
+    }
+  ]
+}

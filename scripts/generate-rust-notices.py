@@ -10,6 +10,11 @@ AGPL-3.0-only and are not reproduced here.
 Crate-shipped LICENSE/COPYING/NOTICE files are preferred. packaging/rust-notices/overrides
 covers crates that publish no license file. Regeneration is offline after `cargo fetch
 --locked --target x86_64-pc-windows-msvc`.
+
+This script does not determine the license of vendored prebuilt binaries
+(.lib, .a, .dll, .so, .dylib, .o, .obj, or weight files). It fails if the
+shipped closure gains an unlisted prebuilt; packaging/rust-notices/prebuilt-artifacts.json
+is detection only.
 """
 from __future__ import annotations
 
@@ -26,7 +31,26 @@ TARGET = "x86_64-pc-windows-msvc"
 ROOT_PACKAGE = "solstone-windows-app"
 NOTICES_PATH = ROOT / "RUST_DEPENDENCY_NOTICES.txt"
 INDEX_PATH = ROOT / "packaging/rust-notices/index.json"
+PREBUILT_PATH = ROOT / "packaging/rust-notices/prebuilt-artifacts.json"
 OVERRIDES = ROOT / "packaging/rust-notices/overrides"
+PREBUILT_SUFFIXES = {
+    ".lib",
+    ".a",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".o",
+    ".obj",
+    ".onnx",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".gguf",
+    ".npz",
+    ".tflite",
+    ".weights",
+}
+SKIP_PREBUILT_PREFIXES = ("tests/", "benches/", "examples/")
 LICENSE_NAME = re.compile(
     r"^(licen[cs]e|copying|copyright|notice)([._-].*)?$",
     re.I,
@@ -108,6 +132,37 @@ def crate_license_files(pkg: dict) -> list[tuple[str, bytes]]:
     return found
 
 
+def crate_prebuilt_members(pkg: dict) -> list[str]:
+    crate_root = Path(pkg["manifest_path"]).parent
+    found: list[str] = []
+    if not crate_root.is_dir():
+        return found
+    for path in crate_root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(crate_root).as_posix()
+        if any(part.startswith(".") for part in Path(rel).parts):
+            continue
+        if rel.startswith(SKIP_PREBUILT_PREFIXES) or "/tests/" in rel:
+            continue
+        if path.suffix.lower() in PREBUILT_SUFFIXES:
+            found.append(rel)
+    found.sort()
+    return found
+
+
+def load_prebuilt_allowlist() -> dict[tuple[str, str], set[str]]:
+    allowed = json.loads(PREBUILT_PATH.read_text())
+    if allowed.get("schema") != "solstone.windows-app-prebuilt-artifacts.v1":
+        raise SystemExit("prebuilt-artifacts.json has an unexpected schema")
+    mapping: dict[tuple[str, str], set[str]] = {}
+    for row in allowed["packages"]:
+        mapping[(row["name"], row["version"])] = {
+            suffix.lower() for suffix in row["suffixes"]
+        }
+    return mapping
+
+
 def override_files(name: str, version: str) -> list[tuple[str, bytes]]:
     directory = OVERRIDES / f"{name}-{version}"
     if not directory.is_dir():
@@ -129,11 +184,17 @@ def main() -> int:
     rows = []
     missing = []
     workspace = []
+    detected_prebuilts: dict[tuple[str, str], set[str]] = {}
     for pid in sorted(seen):
         pkg = packages[pid]
         if pkg.get("source") is None:
             workspace.append(pkg["name"])
             continue
+        prebuilt = crate_prebuilt_members(pkg)
+        if prebuilt:
+            detected_prebuilts[(pkg["name"], pkg["version"])] = {
+                Path(member).suffix.lower() for member in prebuilt
+            }
         files = crate_license_files(pkg)
         source_kind = "crate-archive"
         if not files:
@@ -167,6 +228,31 @@ def main() -> int:
         sys.stderr.write("missing licence bodies:\n")
         for identity in missing:
             sys.stderr.write(f"  {identity}\n")
+        return 1
+    allowed_prebuilts = load_prebuilt_allowlist()
+    unexpected = sorted(set(detected_prebuilts) - set(allowed_prebuilts))
+    stale = sorted(set(allowed_prebuilts) - set(detected_prebuilts))
+    suffix_mismatch = []
+    for key in sorted(set(detected_prebuilts) & set(allowed_prebuilts)):
+        if detected_prebuilts[key] != allowed_prebuilts[key]:
+            suffix_mismatch.append(
+                f"{key[0]}@{key[1]} detected={sorted(detected_prebuilts[key])} "
+                f"allowlist={sorted(allowed_prebuilts[key])}"
+            )
+    if unexpected or stale or suffix_mismatch:
+        sys.stderr.write(
+            "prebuilt artifacts changed; this generator cannot determine their license.\n"
+            "update packaging/rust-notices/prebuilt-artifacts.json after a legal read "
+            "of each artifact's own primary license text.\n"
+        )
+        for name, version in unexpected:
+            sys.stderr.write(
+                f"  unexpected {name}@{version} suffixes={sorted(detected_prebuilts[(name, version)])}\n"
+            )
+        for name, version in stale:
+            sys.stderr.write(f"  stale allowlist row {name}@{version}\n")
+        for line in suffix_mismatch:
+            sys.stderr.write(f"  {line}\n")
         return 1
     notice = bytearray(HEADER.encode())
     text_records = []
