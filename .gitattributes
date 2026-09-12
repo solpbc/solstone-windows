@@ -1,0 +1,3 @@
+RUST_DEPENDENCY_NOTICES.txt -text -whitespace
+packaging/rust-notices/index.json -text -whitespace
+packaging/rust-notices/overrides/** -text -whitespace

@@ -14,13 +14,13 @@ use sha2::{Digest, Sha256};
 use support::{
     checkout_facts, request, selection_record, FakeReleaseCheckout, FakeReleaseRunner,
     RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT, MINISIGN,
-    MIRROR_ADVISORY_REPOSITORY, SIGNED_APP_BYTES, SIGNTOOL, SMCTL, THIRD_PARTY_NOTICE_BYTES,
-    UNSIGNED_APP_BYTES, VERSION, VPK,
+    MIRROR_ADVISORY_REPOSITORY, RUST_DEPENDENCY_NOTICE_BYTES, SIGNED_APP_BYTES, SIGNTOOL, SMCTL,
+    THIRD_PARTY_NOTICE_BYTES, UNSIGNED_APP_BYTES, VERSION, VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
 use xtask::release_advisory::{AdvisoryError, MIRROR_COHORT_ID};
 use xtask::release_clock::FixedClock;
-use xtask::release_container::{ContainerKind, ReleaseContainerError};
+use xtask::release_container::{ContainerKind, ContainerMemberReader, ReleaseContainerError};
 use xtask::release_finalizer::{
     finalize, ExecutableReadSource, FinalizeError, FinalizeRequest, PHASE_1_REQUEST_SOURCE,
     PHASE_2_CLEANUP, PHASE_3_ADVISORY_PREFLIGHT, PHASE_4_BUILD, PHASE_5_VELOPACK,
@@ -148,6 +148,33 @@ fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
         )))
         .expect("read transaction-bound staged third-party notice"),
         THIRD_PARTY_NOTICE_BYTES
+    );
+    assert_eq!(
+        fs::read(checkout.root().join(format!(
+            "target/release-finalizer/{VERSION}/vpk-stage/RUST_DEPENDENCY_NOTICES.txt"
+        )))
+        .expect("read transaction-bound staged Rust dependency notices"),
+        RUST_DEPENDENCY_NOTICE_BYTES
+    );
+    let candidate = checkout
+        .root()
+        .join(format!("target/release-candidate/{VERSION}"));
+    let nupkg_bytes = fs::read(candidate.join(format!("Solstone-{VERSION}-full.nupkg")))
+        .expect("read promoted full nupkg");
+    let portable_bytes =
+        fs::read(candidate.join("Solstone-win-Portable.zip")).expect("read promoted portable ZIP");
+    let nupkg_rust =
+        ContainerMemberReader::read_nupkg(&nupkg_bytes, "lib/app/RUST_DEPENDENCY_NOTICES.txt")
+            .expect("read nupkg Rust dependency notices");
+    let portable_rust = ContainerMemberReader::read_portable(
+        &portable_bytes,
+        "current/RUST_DEPENDENCY_NOTICES.txt",
+    )
+    .expect("read portable Rust dependency notices");
+    assert_eq!(nupkg_rust.sha256, hex_sha256(RUST_DEPENDENCY_NOTICE_BYTES));
+    assert_eq!(
+        portable_rust.sha256,
+        hex_sha256(RUST_DEPENDENCY_NOTICE_BYTES)
     );
     let events = runner.events();
     assert_witness_order(&events);
@@ -983,6 +1010,22 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
         ),
         ("both-notices-changed", RunnerMutation::BothNoticesChanged),
         (
+            "nupkg-rust-notice-missing",
+            RunnerMutation::NupkgRustNoticeMissing,
+        ),
+        (
+            "nupkg-rust-notice-changed",
+            RunnerMutation::NupkgRustNoticeChanged,
+        ),
+        (
+            "portable-rust-notice-missing",
+            RunnerMutation::PortableRustNoticeMissing,
+        ),
+        (
+            "portable-rust-notice-changed",
+            RunnerMutation::PortableRustNoticeChanged,
+        ),
+        (
             "nupkg-stable-read",
             RunnerMutation::Phase6ContainerReadFailure,
         ),
@@ -1026,13 +1069,13 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
                 }),
             ) => {}
             (
-                RunnerMutation::NupkgNoticeMissing,
+                RunnerMutation::NupkgNoticeMissing | RunnerMutation::NupkgRustNoticeMissing,
                 FinalizeError::NoticeContainer(ReleaseContainerError::MissingCanonicalMember {
                     container: ContainerKind::Nupkg,
                 }),
             ) => {}
             (
-                RunnerMutation::PortableNoticeMissing,
+                RunnerMutation::PortableNoticeMissing | RunnerMutation::PortableRustNoticeMissing,
                 FinalizeError::NoticeContainer(ReleaseContainerError::MissingCanonicalMember {
                     container: ContainerKind::Portable,
                 }),
@@ -1053,6 +1096,20 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
                 } else {
                     assert_ne!(nupkg, portable);
                 }
+                assert!(diagnostic.contains(&expected.sha256));
+                assert!(diagnostic.contains(&nupkg.sha256));
+                assert!(diagnostic.contains(&portable.sha256));
+            }
+            (
+                RunnerMutation::NupkgRustNoticeChanged | RunnerMutation::PortableRustNoticeChanged,
+                FinalizeError::RustNoticeDivergence {
+                    expected,
+                    nupkg,
+                    portable,
+                },
+            ) => {
+                assert_eq!(expected.sha256, hex_sha256(RUST_DEPENDENCY_NOTICE_BYTES));
+                assert_ne!(nupkg, portable);
                 assert!(diagnostic.contains(&expected.sha256));
                 assert!(diagnostic.contains(&nupkg.sha256));
                 assert!(diagnostic.contains(&portable.sha256));

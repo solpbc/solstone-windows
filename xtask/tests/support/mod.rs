@@ -77,7 +77,9 @@ pub const SIGNTOOL: &str = r"C:\fake-tools\signtool.exe";
 pub const UNSIGNED_APP_BYTES: &[u8] = b"inert unsigned release executable";
 pub const SIGNED_APP_BYTES: &[u8] = b"inert signed release executable";
 pub const THIRD_PARTY_NOTICE_BYTES: &[u8] = include_bytes!("../../../THIRD_PARTY_NOTICES.md");
-pub const VELOPACK_NUPKG_ENTRY_NAMES: [&str; 9] = [
+pub const RUST_DEPENDENCY_NOTICE_BYTES: &[u8] =
+    include_bytes!("../../../RUST_DEPENDENCY_NOTICES.txt");
+pub const VELOPACK_NUPKG_ENTRY_NAMES: [&str; 10] = [
     "[Content_Types].xml",
     "setup.ico",
     "Solstone.nuspec",
@@ -87,14 +89,16 @@ pub const VELOPACK_NUPKG_ENTRY_NAMES: [&str; 9] = [
     "lib/app/solstone-windows-app_ExecutionStub.exe",
     "lib/app/sq.version",
     "lib/app/Squirrel.exe",
+    "lib/app/RUST_DEPENDENCY_NOTICES.txt",
 ];
-pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 6] = [
+pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 7] = [
     ".portable",
     PORTABLE_LAUNCHER,
     "Update.exe",
     "current/solstone-windows-app.exe",
     "current/THIRD_PARTY_NOTICES.md",
     "current/sq.version",
+    "current/RUST_DEPENDENCY_NOTICES.txt",
 ];
 
 pub const ADVISORY_MIRROR_LOCATOR: &str =
@@ -286,6 +290,10 @@ pub enum RunnerMutation {
     PortableNoticeMissing,
     PortableNoticeChanged,
     BothNoticesChanged,
+    NupkgRustNoticeMissing,
+    NupkgRustNoticeChanged,
+    PortableRustNoticeMissing,
+    PortableRustNoticeChanged,
     Phase6ContainerReadFailure,
     SignToolFailure,
     SignToolGrammarDrift,
@@ -369,6 +377,8 @@ impl FakeReleaseCheckout {
         copy_workspace_file(&root, "packaging/release-toolchain.json");
         copy_workspace_file(&root, "packaging/signing-policy.json");
         copy_workspace_file(&root, "THIRD_PARTY_NOTICES.md");
+        copy_workspace_file(&root, "RUST_DEPENDENCY_NOTICES.txt");
+        copy_workspace_file(&root, "packaging/rust-notices/index.json");
         fs::write(
             root.join("CHANGELOG.md"),
             b"# Changelog\n\n## [0.2.11] - 2026-07-21\n\n- Deterministic inert release fixture.\n\n## [0.2.10] - 2026-07-01\n\n- Older.\n",
@@ -896,6 +906,8 @@ impl FakeReleaseRunner {
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
         let notice_bytes = fs::read(Path::new(stage).join("THIRD_PARTY_NOTICES.md"))
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        let rust_notice_bytes = fs::read(Path::new(stage).join("RUST_DEPENDENCY_NOTICES.txt"))
+            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
         let app_bytes = if signed {
             SIGNED_APP_BYTES
         } else {
@@ -905,6 +917,7 @@ impl FakeReleaseRunner {
             Path::new(output),
             app_bytes,
             &notice_bytes,
+            &rust_notice_bytes,
             signed,
             self.reverse_output_order,
             self.mutation,
@@ -1237,6 +1250,11 @@ impl FakeReleaseRunner {
             )
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
         }
+        fs::write(
+            install_root.join("current/RUST_DEPENDENCY_NOTICES.txt"),
+            RUST_DEPENDENCY_NOTICE_BYTES,
+        )
+        .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
         Ok(Self::output(Vec::new()))
     }
 
@@ -1544,6 +1562,7 @@ fn emit_velopack_output(
     output: &Path,
     app_bytes: &[u8],
     notice_bytes: &[u8],
+    rust_notice_bytes: &[u8],
     signed: bool,
     reverse_order: bool,
     mutation: RunnerMutation,
@@ -1574,25 +1593,32 @@ fn emit_velopack_output(
         }
         _ => Some(notice_bytes),
     };
+    let nupkg_rust_notice = match mutation {
+        RunnerMutation::NupkgRustNoticeMissing => None,
+        RunnerMutation::NupkgRustNoticeChanged => Some(b"changed rust notices".as_slice()),
+        _ => Some(rust_notice_bytes),
+    };
     let full = match mutation {
         RunnerMutation::NupkgExecutableDiverges => build_velopack_nupkg(
             "lib/app/solstone-windows-app.exe",
             b"divergent nupkg executable",
             false,
         ),
-        RunnerMutation::NupkgMemberMissing => build_velopack_nupkg_with_notice(
+        RunnerMutation::NupkgMemberMissing => build_velopack_nupkg_with_notices(
             "lib/app/not-the-app.exe",
             app_bytes,
             nupkg_notice,
+            nupkg_rust_notice,
             false,
         ),
         RunnerMutation::NupkgMemberCaseCollision => {
             build_velopack_nupkg("lib/app/solstone-windows-app.exe", app_bytes, true)
         }
-        _ => build_velopack_nupkg_with_notice(
+        _ => build_velopack_nupkg_with_notices(
             "lib/app/solstone-windows-app.exe",
             app_bytes,
             nupkg_notice,
+            nupkg_rust_notice,
             false,
         ),
     };
@@ -1603,11 +1629,18 @@ fn emit_velopack_output(
         }
         _ => Some(notice_bytes),
     };
+    let portable_rust_notice = match mutation {
+        RunnerMutation::PortableRustNoticeMissing => None,
+        RunnerMutation::PortableRustNoticeChanged => Some(b"changed rust notices".as_slice()),
+        _ => Some(rust_notice_bytes),
+    };
     let portable = match mutation {
-        RunnerMutation::PortableExecutableDiverges => {
-            build_velopack_portable_with_notice(b"divergent portable executable", portable_notice)
-        }
-        _ => build_velopack_portable_with_notice(app_bytes, portable_notice),
+        RunnerMutation::PortableExecutableDiverges => build_velopack_portable_with_notices(
+            b"divergent portable executable",
+            portable_notice,
+            portable_rust_notice,
+        ),
+        _ => build_velopack_portable_with_notices(app_bytes, portable_notice, portable_rust_notice),
     };
     let delta = format!("inert delta for {VERSION}").into_bytes();
     let setup = if signed {
@@ -1720,18 +1753,36 @@ pub fn build_velopack_nupkg(
     app_bytes: &[u8],
     add_case_colliding_canonical: bool,
 ) -> Vec<u8> {
-    build_velopack_nupkg_with_notice(
+    build_velopack_nupkg_with_notices(
         app_name,
         app_bytes,
         Some(THIRD_PARTY_NOTICE_BYTES),
+        Some(RUST_DEPENDENCY_NOTICE_BYTES),
         add_case_colliding_canonical,
     )
 }
 
+#[allow(dead_code)]
 pub fn build_velopack_nupkg_with_notice(
     app_name: &str,
     app_bytes: &[u8],
     notice_bytes: Option<&[u8]>,
+    add_case_colliding_canonical: bool,
+) -> Vec<u8> {
+    build_velopack_nupkg_with_notices(
+        app_name,
+        app_bytes,
+        notice_bytes,
+        Some(RUST_DEPENDENCY_NOTICE_BYTES),
+        add_case_colliding_canonical,
+    )
+}
+
+pub fn build_velopack_nupkg_with_notices(
+    app_name: &str,
+    app_bytes: &[u8],
+    notice_bytes: Option<&[u8]>,
+    rust_notice_bytes: Option<&[u8]>,
     add_case_colliding_canonical: bool,
 ) -> Vec<u8> {
     let mut members: Vec<(&str, &[u8])> = vec![
@@ -1747,6 +1798,9 @@ pub fn build_velopack_nupkg_with_notice(
     if let Some(notice_bytes) = notice_bytes {
         members.insert(5, (VELOPACK_NUPKG_ENTRY_NAMES[5], notice_bytes));
     }
+    if let Some(rust_notice_bytes) = rust_notice_bytes {
+        members.push((VELOPACK_NUPKG_ENTRY_NAMES[9], rust_notice_bytes));
+    }
     if add_case_colliding_canonical {
         members.push(("LIB/APP/SOLSTONE-WINDOWS-APP.EXE", app_bytes));
     }
@@ -1755,12 +1809,29 @@ pub fn build_velopack_nupkg_with_notice(
 
 #[allow(dead_code)]
 pub fn build_velopack_portable(app_bytes: &[u8]) -> Vec<u8> {
-    build_velopack_portable_with_notice(app_bytes, Some(THIRD_PARTY_NOTICE_BYTES))
+    build_velopack_portable_with_notices(
+        app_bytes,
+        Some(THIRD_PARTY_NOTICE_BYTES),
+        Some(RUST_DEPENDENCY_NOTICE_BYTES),
+    )
 }
 
+#[allow(dead_code)]
 pub fn build_velopack_portable_with_notice(
     app_bytes: &[u8],
     notice_bytes: Option<&[u8]>,
+) -> Vec<u8> {
+    build_velopack_portable_with_notices(
+        app_bytes,
+        notice_bytes,
+        Some(RUST_DEPENDENCY_NOTICE_BYTES),
+    )
+}
+
+pub fn build_velopack_portable_with_notices(
+    app_bytes: &[u8],
+    notice_bytes: Option<&[u8]>,
+    rust_notice_bytes: Option<&[u8]>,
 ) -> Vec<u8> {
     let mut members: Vec<(&str, &[u8])> = vec![
         (VELOPACK_PORTABLE_ENTRY_NAMES[0], b""),
@@ -1771,6 +1842,9 @@ pub fn build_velopack_portable_with_notice(
     ];
     if let Some(notice_bytes) = notice_bytes {
         members.insert(4, (VELOPACK_PORTABLE_ENTRY_NAMES[4], notice_bytes));
+    }
+    if let Some(rust_notice_bytes) = rust_notice_bytes {
+        members.push((VELOPACK_PORTABLE_ENTRY_NAMES[6], rust_notice_bytes));
     }
     build_zip_members(&members)
 }

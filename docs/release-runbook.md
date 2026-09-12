@@ -37,6 +37,9 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
   registers the per-user autostart login item.
 - `THIRD_PARTY_NOTICES.md` is packed beside the app and installed at
   `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
+- `RUST_DEPENDENCY_NOTICES.txt` is packed beside the app and installed at
+  `%LocalAppData%\Solstone\current\RUST_DEPENDENCY_NOTICES.txt`. `cargo xtask
+  rust-notices check` binds that file to `Cargo.lock`.
 
 ## Source-bound finalization
 
@@ -126,11 +129,12 @@ container divergence: signed vpk operates on private copies, so signed container
 bytes legitimately differ from the unsigned stage. The stage remains
 transaction-bound structurally: `create_transaction_paths` creates and verifies
 it new and empty after cleanup, the build uses a transaction-local
-`CARGO_TARGET_DIR`, exactly one executable and the tracked third-party notice
-are copied into the stage, and vpk packs only that directory. The finalizer
-requires the notice at `lib/app/THIRD_PARTY_NOTICES.md` in the full nupkg and at
-`current/THIRD_PARTY_NOTICES.md` in the portable ZIP, with the source file's
-exact SHA-256 and byte count. A missing pre-pack executable diagnostic does not
+`CARGO_TARGET_DIR`, exactly one executable, the tracked third-party notice, and
+the Rust dependency notices are copied into the stage, and vpk packs only that
+directory. The finalizer requires the notice at `lib/app/THIRD_PARTY_NOTICES.md`
+and `lib/app/RUST_DEPENDENCY_NOTICES.txt` in the full nupkg and at
+`current/THIRD_PARTY_NOTICES.md` and `current/RUST_DEPENDENCY_NOTICES.txt` in
+the portable ZIP, each matching the source file's exact SHA-256 and byte count. A missing pre-pack executable diagnostic does not
 weaken or fail the two-container equality gate.
 
 The finalizer assembles the candidate in a newly empty sibling temporary and

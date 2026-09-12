@@ -67,11 +67,16 @@ fn main() -> ExitCode {
             cmd_transparency_resign_pointer()
         }
         Some("purity-check") => cmd_purity_check(),
+        Some("rust-notices")
+            if args.get(1).map(String::as_str) == Some("check") && args.len() == 2 =>
+        {
+            cmd_rust_notices_check()
+        }
         Some("version-gate") => cmd_version_gate(&args),
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <advisory-audit | contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | transparency <publish --release-dir <candidate> | resign-pointer> | purity-check | version-gate [--root <path>] | dev>\n  advisory-audit: verify the signed advisory packet and bundle, then check the locked graph offline\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  transparency publish: archive and publish evidence for one validated candidate\n  transparency resign-pointer: refresh the signed latest pointer without a candidate\n  version-gate [--root <path>]: verify every committed release version surface"
+                "usage: cargo xtask <advisory-audit | contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | transparency <publish --release-dir <candidate> | resign-pointer> | purity-check | rust-notices check | version-gate [--root <path>] | dev>\n  advisory-audit: verify the signed advisory packet and bundle, then check the locked graph offline\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  transparency publish: archive and publish evidence for one validated candidate\n  transparency resign-pointer: refresh the signed latest pointer without a candidate\n  rust-notices check: verify committed Rust dependency notices match Cargo.lock\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
         }
@@ -967,6 +972,19 @@ fn generate_ts_binding(contract_json: &str) -> String {
     out.push_str(" as const;\n\n");
     out.push_str("export type AutomationContract = typeof automationContract;\n");
     out
+}
+
+fn cmd_rust_notices_check() -> ExitCode {
+    match xtask::rust_notices::check_repo(&repo_root()) {
+        Ok(()) => {
+            println!("rust-notices: committed notices match Cargo.lock");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_purity_check() -> ExitCode {

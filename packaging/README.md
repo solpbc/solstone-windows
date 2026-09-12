@@ -32,6 +32,10 @@ coexistence model. winget manifest reference: [`winget/`](winget/).
 - `../THIRD_PARTY_NOTICES.md`: the third-party notice copied unchanged beside
   the app executable. It installs at
   `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
+- `../RUST_DEPENDENCY_NOTICES.txt`: lock-bound license texts for statically
+  linked Rust crates. It installs at
+  `%LocalAppData%\Solstone\current\RUST_DEPENDENCY_NOTICES.txt`. See
+  `rust-notices/`.
 
 ## Build
 
@@ -46,4 +50,5 @@ paths are git-ignored build evidence. The sole tool contract is
 `release-toolchain.json`, and every direct publication entry point remains
 fail-closed because publication belongs to the aggregate provenance publisher.
 The finalizer also requires both the full nupkg and portable ZIP to contain the
-exact bytes from `THIRD_PARTY_NOTICES.md`; omission or change aborts promotion.
+exact bytes from `THIRD_PARTY_NOTICES.md` and `RUST_DEPENDENCY_NOTICES.txt`;
+omission or change of either aborts promotion.

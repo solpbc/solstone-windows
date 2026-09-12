@@ -36,13 +36,13 @@ TRANSPARENCY_ACTIVATED ?= 0
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny preflight-release-tools build test ui-test \
-	        test-scripts gate-minisign ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
+	        test-scripts gate-minisign ci audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live brand-sync help
 
 help:
-	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
+	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
 	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT, SOLSTONE_ADVISORY_TREE_SHA256, and the signed mirror packet environment)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "delivery: publish-origin CANDIDATE_DIR=<candidate> FINALIZATION_RECEIPT=<json> SOURCE_CHECKOUT=<exact-source-tree> CLEARANCE=<json> PUBLICATION_RECEIPT=<json>"
@@ -133,6 +133,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
 	$(CARGO) run --locked -q -p xtask -- contract --check
 	$(CARGO) run --locked -q -p xtask -- purity-check
+	$(CARGO) run --locked -q -p xtask -- rust-notices check
 	$(MAKE) check-observer-contract
 	MANIFEST= RELEASE_DIR= $(MAKE) check-rust-release-manifest
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES) -- --skip transparency
@@ -158,6 +159,10 @@ contract: preflight-toolchain
 # normal+build graph. Dev-only reachability never ships; `xtask` is reviewed tooling.
 purity-check: preflight-toolchain
 	$(CARGO) run --locked -q -p xtask -- purity-check
+
+# Lock-bound check: committed Rust crate license bodies match Cargo.lock.
+rust-notices-check: preflight-toolchain
+	$(CARGO) run --locked -q -p xtask -- rust-notices check
 
 # Local offline observer-client contract structural/behavioral evidence only.
 check-observer-contract: preflight-toolchain

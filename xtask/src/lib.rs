@@ -16,6 +16,7 @@ pub mod release_receipt;
 pub mod release_selection;
 pub mod release_signing;
 pub mod release_source_binding;
+pub mod rust_notices;
 pub mod rust_release_manifest;
 pub mod transparency_format;
 pub mod transparency_publisher;

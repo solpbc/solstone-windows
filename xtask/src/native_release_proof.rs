@@ -38,6 +38,9 @@ const INSTALLED_EXECUTABLE: &str = "current/solstone-windows-app.exe";
 const SOURCE_NOTICE: &str = "THIRD_PARTY_NOTICES.md";
 const NUPKG_NOTICE: &str = "lib/app/THIRD_PARTY_NOTICES.md";
 const INSTALLED_NOTICE: &str = "current/THIRD_PARTY_NOTICES.md";
+const SOURCE_RUST_NOTICES: &str = "RUST_DEPENDENCY_NOTICES.txt";
+const NUPKG_RUST_NOTICES: &str = "lib/app/RUST_DEPENDENCY_NOTICES.txt";
+const INSTALLED_RUST_NOTICES: &str = "current/RUST_DEPENDENCY_NOTICES.txt";
 const PROOF_ROOT: &str = "target/release-native-proof";
 const PROOF_TEMP_ATTEMPTS: usize = 16;
 
@@ -89,8 +92,10 @@ pub enum NativeProofError {
     ExecutableRead(ContainerKind),
     ContainerBaseline,
     ThirdPartyNotice,
+    RustDependencyNotice,
     NoticeContainer(ReleaseContainerError),
     NoticeContainerBaseline,
+    RustNoticeContainerBaseline,
     ProofRoot,
     PreexistingInstalledApp,
     SetupInvocation,
@@ -100,6 +105,8 @@ pub enum NativeProofError {
     InstalledBaselineMismatch,
     InstalledNoticeInvalid,
     InstalledNoticeBaselineMismatch,
+    InstalledRustNoticeInvalid,
+    InstalledRustNoticeBaselineMismatch,
     DumpStateInvocation,
     DumpStateFailed,
     DumpStateMalformed,
@@ -184,10 +191,18 @@ impl fmt::Display for NativeProofError {
                 formatter,
                 "native proof could not stable-read one nonempty source third-party notice; restore THIRD_PARTY_NOTICES.md at the proved source commit and retry"
             ),
+            Self::RustDependencyNotice => write!(
+                formatter,
+                "native proof could not stable-read one nonempty source Rust dependency notices file; restore RUST_DEPENDENCY_NOTICES.txt at the proved source commit and retry"
+            ),
             Self::NoticeContainer(cause) => fmt_notice_container_error(cause, formatter),
             Self::NoticeContainerBaseline => write!(
                 formatter,
                 "native proof nupkg or portable third-party notice disagrees with the source notice; rebuild and re-finalize both containers"
+            ),
+            Self::RustNoticeContainerBaseline => write!(
+                formatter,
+                "native proof nupkg or portable Rust dependency notices disagree with the source notices; rebuild and re-finalize both containers"
             ),
             Self::ProofRoot => write!(
                 formatter,
@@ -224,6 +239,14 @@ impl fmt::Display for NativeProofError {
             Self::InstalledNoticeBaselineMismatch => write!(
                 formatter,
                 "native proof installed third-party notice disagrees with the source and package copies; rebuild and re-finalize both containers"
+            ),
+            Self::InstalledRustNoticeInvalid => write!(
+                formatter,
+                "native proof installed Rust dependency notices are missing, empty, or not one stable regular file; rebuild the installer and retry a clean install"
+            ),
+            Self::InstalledRustNoticeBaselineMismatch => write!(
+                formatter,
+                "native proof installed Rust dependency notices disagree with the source and package copies; rebuild and re-finalize both containers"
             ),
             Self::DumpStateInvocation => write!(
                 formatter,
@@ -415,6 +438,22 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     if nupkg_notice != source_notice || portable_notice != source_notice {
         return Err(NativeProofError::NoticeContainerBaseline);
     }
+    let source_rust_notice_bytes = checkout
+        .read(
+            SOURCE_RUST_NOTICES,
+            "native proof source Rust dependency notices",
+        )
+        .map_err(|_| NativeProofError::RustDependencyNotice)?;
+    let source_rust_notice =
+        byte_evidence(&source_rust_notice_bytes).ok_or(NativeProofError::RustDependencyNotice)?;
+    let nupkg_rust_notice = ContainerMemberReader::read_nupkg(&nupkg_bytes, NUPKG_RUST_NOTICES)
+        .map_err(NativeProofError::NoticeContainer)?;
+    let portable_rust_notice =
+        ContainerMemberReader::read_portable(&portable_bytes, INSTALLED_RUST_NOTICES)
+            .map_err(NativeProofError::NoticeContainer)?;
+    if nupkg_rust_notice != source_rust_notice || portable_rust_notice != source_rust_notice {
+        return Err(NativeProofError::RustNoticeContainerBaseline);
+    }
 
     record_step(runner, STEP_5_INSTALL_ROOT)?;
     let local_app_data = create_proof_root(&checkout, &manifest.version)?;
@@ -491,6 +530,20 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     {
         return Err(NativeProofError::InstalledNoticeBaselineMismatch);
     }
+    let installed_rust_notice_bytes = installed_root
+        .read(
+            INSTALLED_RUST_NOTICES,
+            "native proof installed Rust dependency notices",
+        )
+        .map_err(|_| NativeProofError::InstalledRustNoticeInvalid)?;
+    let installed_rust_notice = byte_evidence(&installed_rust_notice_bytes)
+        .ok_or(NativeProofError::InstalledRustNoticeInvalid)?;
+    if installed_rust_notice != source_rust_notice
+        || installed_rust_notice != nupkg_rust_notice
+        || installed_rust_notice != portable_rust_notice
+    {
+        return Err(NativeProofError::InstalledRustNoticeBaselineMismatch);
+    }
 
     record_step(runner, STEP_8_DUMP_STATE)?;
     let installed_app_program =
@@ -558,6 +611,15 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .read(SOURCE_NOTICE, "native proof source third-party notice")
         .map_err(|_| NativeProofError::NoticeSourceChanged)?;
     if final_source_notice != source_notice_bytes {
+        return Err(NativeProofError::NoticeSourceChanged);
+    }
+    let final_source_rust_notice = checkout
+        .read(
+            SOURCE_RUST_NOTICES,
+            "native proof source Rust dependency notices",
+        )
+        .map_err(|_| NativeProofError::NoticeSourceChanged)?;
+    if final_source_rust_notice != source_rust_notice_bytes {
         return Err(NativeProofError::NoticeSourceChanged);
     }
 

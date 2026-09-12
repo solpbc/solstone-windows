@@ -1,5 +1,8 @@
 # third-party notices
 
+license texts for the statically linked Rust crates are in
+`RUST_DEPENDENCY_NOTICES.txt`, installed beside this file.
+
 ## Microsoft Visual C++ runtime and Universal CRT components
 
 the solstone app for windows embeds Microsoft Visual C++ runtime and Universal

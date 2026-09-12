@@ -47,6 +47,9 @@ const STAGED_EXECUTABLE: &str = "solstone-windows-app.exe";
 const STAGED_NOTICE: &str = "THIRD_PARTY_NOTICES.md";
 const NUPKG_NOTICE: &str = "lib/app/THIRD_PARTY_NOTICES.md";
 const PORTABLE_NOTICE: &str = "current/THIRD_PARTY_NOTICES.md";
+const STAGED_RUST_NOTICES: &str = "RUST_DEPENDENCY_NOTICES.txt";
+const NUPKG_RUST_NOTICES: &str = "lib/app/RUST_DEPENDENCY_NOTICES.txt";
+const PORTABLE_RUST_NOTICES: &str = "current/RUST_DEPENDENCY_NOTICES.txt";
 const SIGNING_POLICY: &str = "packaging/signing-policy.json";
 const ACTION_OUTPUT_TAIL_BYTES: usize = 512;
 
@@ -116,6 +119,7 @@ pub enum FinalizeError {
     },
     BuildArtifact,
     ThirdPartyNotice,
+    RustDependencyNotice,
     DeltaSeed,
     VelopackInventory,
     DeltaSeedChanged,
@@ -131,6 +135,11 @@ pub enum FinalizeError {
     ExecutableRead(ExecutableReadSource),
     NoticeContainer(ReleaseContainerError),
     NoticeDivergence {
+        expected: PackagedExecutableEvidence,
+        nupkg: PackagedExecutableEvidence,
+        portable: PackagedExecutableEvidence,
+    },
+    RustNoticeDivergence {
         expected: PackagedExecutableEvidence,
         nupkg: PackagedExecutableEvidence,
         portable: PackagedExecutableEvidence,
@@ -220,6 +229,10 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "the third-party notice is missing, empty, or changed before packaging; restore THIRD_PARTY_NOTICES.md and restart"
             ),
+            Self::RustDependencyNotice => write!(
+                formatter,
+                "the Rust dependency notices are missing, empty, or changed before packaging; restore RUST_DEPENDENCY_NOTICES.txt and restart"
+            ),
             Self::DeltaSeed => write!(
                 formatter,
                 "an explicit delta-base full package could not be copied exactly; restore the allowlisted historical package and restart"
@@ -293,6 +306,20 @@ impl fmt::Display for FinalizeError {
             } => write!(
                 formatter,
                 "packaged third-party notice differs from THIRD_PARTY_NOTICES.md (source sha256={}, bytes={}; full nupkg sha256={}, bytes={}; portable ZIP sha256={}, bytes={}); rebuild both containers in this transaction and retry",
+                expected.sha256,
+                expected.bytes,
+                nupkg.sha256,
+                nupkg.bytes,
+                portable.sha256,
+                portable.bytes
+            ),
+            Self::RustNoticeDivergence {
+                expected,
+                nupkg,
+                portable,
+            } => write!(
+                formatter,
+                "packaged Rust dependency notices differ from RUST_DEPENDENCY_NOTICES.txt (source sha256={}, bytes={}; full nupkg sha256={}, bytes={}; portable ZIP sha256={}, bytes={}); rebuild both containers in this transaction and retry",
                 expected.sha256,
                 expected.bytes,
                 nupkg.sha256,
@@ -573,6 +600,18 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         &notice_bytes,
         FinalizeError::ThirdPartyNotice,
     )?;
+    let rust_notice_bytes = checkout
+        .read(STAGED_RUST_NOTICES, "Rust dependency notices")
+        .map_err(|_| FinalizeError::RustDependencyNotice)?;
+    let expected_rust_notice =
+        nonempty_evidence(&rust_notice_bytes).ok_or(FinalizeError::RustDependencyNotice)?;
+    write_new_synced(
+        &paths.stage.join(STAGED_RUST_NOTICES),
+        &rust_notice_bytes,
+        FinalizeError::RustDependencyNotice,
+    )?;
+    crate::rust_notices::check_repo(checkout.canonical_path())
+        .map_err(|_| FinalizeError::RustDependencyNotice)?;
 
     record_phase(runner, PHASE_5_VELOPACK)?;
     let seed_digests = seed_delta_bases(checkout, &paths.output, &request.delta_base_fulls)?;
@@ -682,6 +721,18 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             expected: expected_notice,
             nupkg: nupkg_notice,
             portable: portable_notice,
+        });
+    }
+    let nupkg_rust_notice = ContainerMemberReader::read_nupkg(&nupkg_bytes, NUPKG_RUST_NOTICES)
+        .map_err(FinalizeError::NoticeContainer)?;
+    let portable_rust_notice =
+        ContainerMemberReader::read_portable(&portable_bytes, PORTABLE_RUST_NOTICES)
+            .map_err(FinalizeError::NoticeContainer)?;
+    if nupkg_rust_notice != expected_rust_notice || portable_rust_notice != expected_rust_notice {
+        return Err(FinalizeError::RustNoticeDivergence {
+            expected: expected_rust_notice,
+            nupkg: nupkg_rust_notice,
+            portable: portable_rust_notice,
         });
     }
 

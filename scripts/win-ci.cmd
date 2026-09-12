@@ -76,6 +76,8 @@ echo === cargo xtask contract --locked --check ===
 cargo run --locked -q -p xtask -- contract --check || exit /b 1
 echo === cargo xtask purity-check --locked ===
 cargo run --locked -q -p xtask -- purity-check || exit /b 1
+echo === cargo xtask rust-notices check --locked ===
+cargo run --locked -q -p xtask -- rust-notices check || exit /b 1
 
 echo WIN_CI_HEAD=%WIN_CI_HEAD%
 echo WIN_CI_CARGO_LOCK_SHA256=%WIN_CI_CARGO_LOCK_SHA256%
