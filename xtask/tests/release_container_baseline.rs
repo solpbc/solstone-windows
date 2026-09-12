@@ -4,7 +4,8 @@
 use std::io::{Cursor, Write};
 
 use xtask::release_container::{
-    compare_executable_baseline, ContainerKind, ExecutableContainerReader, ReleaseContainerError,
+    compare_executable_baseline, ContainerKind, ContainerMemberReader, ExecutableContainerReader,
+    ReleaseContainerError,
 };
 use xtask::release_receipt::PackagedExecutableEvidence;
 use xtask::release_selection::PORTABLE_LAUNCHER;
@@ -13,6 +14,8 @@ use zip::{CompressionMethod, ZipArchive};
 
 const NUPKG_MEMBER: &str = "lib/app/solstone-windows-app.exe";
 const PORTABLE_MEMBER: &str = "current/solstone-windows-app.exe";
+const NUPKG_NOTICE: &str = "lib/app/THIRD_PARTY_NOTICES.md";
+const PORTABLE_NOTICE: &str = "current/THIRD_PARTY_NOTICES.md";
 const OPC_CONTENT_TYPES: &str = "[Content_Types].xml";
 const UPPER_NUPKG_MEMBER: &str = "LIB/APP/SOLSTONE-WINDOWS-APP.EXE";
 const CENTRAL_HEADER_SIGNATURE: u32 = 0x0201_4b50;
@@ -35,6 +38,7 @@ fn measured_velopack_shapes_produce_the_expected_evidence() {
         );
         add_file(writer, "_rels/.rels", b"rels", CompressionMethod::Stored);
         add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
+        add_file(writer, NUPKG_NOTICE, b"notice", CompressionMethod::Stored);
         add_file(
             writer,
             "lib/app/solstone-windows-app_ExecutionStub.exe",
@@ -66,6 +70,12 @@ fn measured_velopack_shapes_produce_the_expected_evidence() {
         add_file(writer, PORTABLE_MEMBER, b"abc", CompressionMethod::Deflated);
         add_file(
             writer,
+            PORTABLE_NOTICE,
+            b"notice",
+            CompressionMethod::Deflated,
+        );
+        add_file(
+            writer,
             "current/sq.version",
             b"0.2.11",
             CompressionMethod::Stored,
@@ -84,6 +94,37 @@ fn measured_velopack_shapes_produce_the_expected_evidence() {
         ExecutableContainerReader::read_portable(&portable).expect("read exact portable member"),
         expected
     );
+    let expected_notice = evidence(
+        "9368a7d21e018f64ae3327d2f25cd4d7693b2d85328e4bb680bcfcbd4c26b90e",
+        6,
+    );
+    assert_eq!(
+        ContainerMemberReader::read_nupkg(&nupkg, NUPKG_NOTICE).expect("read exact nupkg notice"),
+        expected_notice
+    );
+    assert_eq!(
+        ContainerMemberReader::read_portable(&portable, PORTABLE_NOTICE)
+            .expect("read exact portable notice"),
+        expected_notice
+    );
+}
+
+#[test]
+fn caller_supplied_member_path_must_be_safe_and_relative() {
+    let archive = build_zip(|writer| {
+        add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
+    });
+
+    for unsafe_member in ["../notice", "/notice", "C:/notice", "notice\\file"] {
+        assert_eq!(
+            ContainerMemberReader::read_nupkg(&archive, unsafe_member)
+                .expect_err("unsafe requested member must fail"),
+            ReleaseContainerError::InvalidEntryName {
+                container: ContainerKind::Nupkg,
+            },
+            "unsafe requested member {unsafe_member} was accepted"
+        );
+    }
 }
 
 #[test]

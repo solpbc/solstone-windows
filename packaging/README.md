@@ -14,21 +14,24 @@ Velopack release packaging for the observer.
 
 ## Distribution
 
-[`DISTRIBUTION.md`](DISTRIBUTION.md) — the channels (direct download, **winget**,
+[`DISTRIBUTION.md`](DISTRIBUTION.md): the channels (direct download, **winget**,
 **scoop**), the aggregate publication boundary, and the update-ownership /
 coexistence model. winget manifest reference: [`winget/`](winget/).
 
 ## Layout
 
-- `hooks/` — the Velopack lifecycle handlers the app must be aware of
+- `hooks/`: the Velopack lifecycle handlers the app must be aware of
   (`--veloapp-install`, `--veloapp-update`, `--veloapp-obsolete`, `--veloapp-firstrun`).
   First-run registers the per-user autostart login item; the app being
   Velopack-aware is what makes the install hooks exit 0.
-- `signing/` — release-artifact code signing (DigiCert KeyLocker / `smctl` via
+- `signing/`: release-artifact code signing (DigiCert KeyLocker / `smctl` via
   Velopack's `--signTemplate`). `SOLSTONE_SIGN=1` selects the signed finalizer
   transaction; its resolver-selected authentication and signing actions use the
   selected absolute tool paths. Credentials are env-supplied, never committed.
   Signing covers release artifacts only.
+- `../THIRD_PARTY_NOTICES.md`: the third-party notice copied unchanged beside
+  the app executable. It installs at
+  `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
 
 ## Build
 
@@ -42,3 +45,5 @@ outside the candidate under `target/release-evidence/<VERSION>/`. All of these
 paths are git-ignored build evidence. The sole tool contract is
 `release-toolchain.json`, and every direct publication entry point remains
 fail-closed because publication belongs to the aggregate provenance publisher.
+The finalizer also requires both the full nupkg and portable ZIP to contain the
+exact bytes from `THIRD_PARTY_NOTICES.md`; omission or change aborts promotion.

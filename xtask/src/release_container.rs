@@ -115,7 +115,7 @@ impl fmt::Display for ReleaseContainerError {
 impl std::error::Error for ReleaseContainerError {}
 
 impl ContainerKind {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Nupkg => "full nupkg",
             Self::Portable => "portable ZIP",
@@ -136,27 +136,50 @@ impl ExecutableContainerReader {
     pub fn read_nupkg(
         archive_bytes: &[u8],
     ) -> Result<PackagedExecutableEvidence, ReleaseContainerError> {
-        Self::read(archive_bytes, ContainerKind::Nupkg)
+        ContainerMemberReader::read_nupkg(archive_bytes, ContainerKind::Nupkg.canonical_member())
     }
 
     pub fn read_portable(
         archive_bytes: &[u8],
     ) -> Result<PackagedExecutableEvidence, ReleaseContainerError> {
-        Self::read(archive_bytes, ContainerKind::Portable)
+        ContainerMemberReader::read_portable(
+            archive_bytes,
+            ContainerKind::Portable.canonical_member(),
+        )
+    }
+}
+
+pub struct ContainerMemberReader;
+
+impl ContainerMemberReader {
+    pub fn read_nupkg(
+        archive_bytes: &[u8],
+        canonical_member: &str,
+    ) -> Result<PackagedExecutableEvidence, ReleaseContainerError> {
+        Self::read(archive_bytes, ContainerKind::Nupkg, canonical_member)
+    }
+
+    pub fn read_portable(
+        archive_bytes: &[u8],
+        canonical_member: &str,
+    ) -> Result<PackagedExecutableEvidence, ReleaseContainerError> {
+        Self::read(archive_bytes, ContainerKind::Portable, canonical_member)
     }
 
     fn read(
         archive_bytes: &[u8],
         container: ContainerKind,
+        canonical_member: &str,
     ) -> Result<PackagedExecutableEvidence, ReleaseContainerError> {
+        validate_relative_path(canonical_member)
+            .map_err(|_| ReleaseContainerError::InvalidEntryName { container })?;
         let mut archive = ZipArchive::new(Cursor::new(archive_bytes))
             .map_err(|_| ReleaseContainerError::InvalidArchive { container })?;
         let names =
             central_directory_names(archive_bytes, archive.central_directory_start(), container)?;
-        let canonical = container.canonical_member();
         let canonical_count = names
             .iter()
-            .filter(|name| name.as_str() == canonical)
+            .filter(|name| name.as_str() == canonical_member)
             .count();
         if canonical_count > 1 {
             return Err(ReleaseContainerError::DuplicateCanonicalMember { container });
@@ -185,7 +208,7 @@ impl ExecutableContainerReader {
                 mode.is_some_and(|mode| mode & UNIX_TYPE_MASK == UNIX_DIRECTORY);
             let is_directory = entry.is_dir() || directory_by_mode;
             let is_target_directory =
-                central_name.trim_end_matches('/') == canonical && is_directory;
+                central_name.trim_end_matches('/') == canonical_member && is_directory;
             if is_target_directory {
                 target_is_directory = true;
             }
@@ -195,7 +218,7 @@ impl ExecutableContainerReader {
                 }
                 return Err(ReleaseContainerError::UnsafeUnixMode { container });
             }
-            if central_name == canonical {
+            if central_name == canonical_member {
                 target_index = Some(index);
             }
         }

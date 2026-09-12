@@ -18,7 +18,8 @@ use crate::release_advisory::{
 };
 use crate::release_clock::Clock;
 use crate::release_container::{
-    compare_executable_baseline, ExecutableContainerReader, ReleaseContainerError,
+    compare_executable_baseline, ContainerMemberReader, ExecutableContainerReader,
+    ReleaseContainerError,
 };
 use crate::release_exec::{CommandOutput, CommandRunner};
 use crate::release_finalizer_fs::{
@@ -43,6 +44,9 @@ use crate::rust_release_manifest::{
 use crate::version_gate;
 
 const STAGED_EXECUTABLE: &str = "solstone-windows-app.exe";
+const STAGED_NOTICE: &str = "THIRD_PARTY_NOTICES.md";
+const NUPKG_NOTICE: &str = "lib/app/THIRD_PARTY_NOTICES.md";
+const PORTABLE_NOTICE: &str = "current/THIRD_PARTY_NOTICES.md";
 const SIGNING_POLICY: &str = "packaging/signing-policy.json";
 const ACTION_OUTPUT_TAIL_BYTES: usize = 512;
 
@@ -111,6 +115,7 @@ pub enum FinalizeError {
         output_truncated: bool,
     },
     BuildArtifact,
+    ThirdPartyNotice,
     DeltaSeed,
     VelopackInventory,
     DeltaSeedChanged,
@@ -124,6 +129,12 @@ pub enum FinalizeError {
     },
     ExecutableContainer(ReleaseContainerError),
     ExecutableRead(ExecutableReadSource),
+    NoticeContainer(ReleaseContainerError),
+    NoticeDivergence {
+        expected: PackagedExecutableEvidence,
+        nupkg: PackagedExecutableEvidence,
+        portable: PackagedExecutableEvidence,
+    },
     CandidateAssembly,
     EvidenceConstruction,
     ManifestValidation,
@@ -205,6 +216,10 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "the release build did not produce one stable contained app executable; repair the selected Cargo build and restart"
             ),
+            Self::ThirdPartyNotice => write!(
+                formatter,
+                "the third-party notice is missing, empty, or changed before packaging; restore THIRD_PARTY_NOTICES.md and restart"
+            ),
             Self::DeltaSeed => write!(
                 formatter,
                 "an explicit delta-base full package could not be copied exactly; restore the allowlisted historical package and restart"
@@ -270,6 +285,21 @@ impl fmt::Display for FinalizeError {
                     "portable ZIP could not be stable-read for executable comparison; restore one regular contained portable package and restart the transaction"
                 ),
             },
+            Self::NoticeContainer(cause) => fmt_notice_container_error(cause, formatter),
+            Self::NoticeDivergence {
+                expected,
+                nupkg,
+                portable,
+            } => write!(
+                formatter,
+                "packaged third-party notice differs from THIRD_PARTY_NOTICES.md (source sha256={}, bytes={}; full nupkg sha256={}, bytes={}; portable ZIP sha256={}, bytes={}); rebuild both containers in this transaction and retry",
+                expected.sha256,
+                expected.bytes,
+                nupkg.sha256,
+                nupkg.bytes,
+                portable.sha256,
+                portable.bytes
+            ),
             Self::CandidateAssembly => write!(
                 formatter,
                 "candidate assembly failed before evidence rendering; discard the temporary candidate and restart"
@@ -306,6 +336,45 @@ impl fmt::Display for FinalizeError {
 }
 
 impl std::error::Error for FinalizeError {}
+
+fn fmt_notice_container_error(
+    cause: &ReleaseContainerError,
+    formatter: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    match cause {
+        ReleaseContainerError::CanonicalMemberIsDirectory { container } => write!(
+            formatter,
+            "{} stores the third-party notice as a directory; rebuild it with the notice as one regular file",
+            container.label()
+        ),
+        ReleaseContainerError::MissingCanonicalMember { container } => write!(
+            formatter,
+            "{} is missing the exact third-party notice member; rebuild that container in this transaction",
+            container.label()
+        ),
+        ReleaseContainerError::DuplicateCanonicalMember { container } => write!(
+            formatter,
+            "{} contains the third-party notice more than once; rebuild it with exactly one notice member",
+            container.label()
+        ),
+        ReleaseContainerError::EmptyCanonicalMember { container } => write!(
+            formatter,
+            "{} contains an empty third-party notice; rebuild that container in this transaction",
+            container.label()
+        ),
+        ReleaseContainerError::CanonicalMemberSizeMismatch { container } => write!(
+            formatter,
+            "{} third-party notice size disagrees with its streamed bytes; rebuild that container in this transaction",
+            container.label()
+        ),
+        ReleaseContainerError::CanonicalMemberReadFailed { container } => write!(
+            formatter,
+            "{} third-party notice could not be streamed and verified; rebuild that container in this transaction",
+            container.label()
+        ),
+        _ => write!(formatter, "third-party notice verification failed: {cause}"),
+    }
+}
 
 #[derive(Clone, Debug)]
 struct TransactionPaths {
@@ -494,6 +563,16 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         STAGED_EXECUTABLE,
         FinalizeError::BuildArtifact,
     )?;
+    let notice_bytes = checkout
+        .read(STAGED_NOTICE, "third-party notice")
+        .map_err(|_| FinalizeError::ThirdPartyNotice)?;
+    let expected_notice =
+        nonempty_evidence(&notice_bytes).ok_or(FinalizeError::ThirdPartyNotice)?;
+    write_new_synced(
+        &paths.stage.join(STAGED_NOTICE),
+        &notice_bytes,
+        FinalizeError::ThirdPartyNotice,
+    )?;
 
     record_phase(runner, PHASE_5_VELOPACK)?;
     let seed_digests = seed_delta_bases(checkout, &paths.output, &request.delta_base_fulls)?;
@@ -594,17 +673,29 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         .map_err(FinalizeError::ExecutableContainer)?;
     let portable = ExecutableContainerReader::read_portable(&portable_bytes)
         .map_err(FinalizeError::ExecutableContainer)?;
+    let nupkg_notice = ContainerMemberReader::read_nupkg(&nupkg_bytes, NUPKG_NOTICE)
+        .map_err(FinalizeError::NoticeContainer)?;
+    let portable_notice = ContainerMemberReader::read_portable(&portable_bytes, PORTABLE_NOTICE)
+        .map_err(FinalizeError::NoticeContainer)?;
+    if nupkg_notice != expected_notice || portable_notice != expected_notice {
+        return Err(FinalizeError::NoticeDivergence {
+            expected: expected_notice,
+            nupkg: nupkg_notice,
+            portable: portable_notice,
+        });
+    }
 
     // The packaged equality authority is deliberately container-only. create_transaction_paths
     // creates and verifies a new, empty stage, the build uses a transaction-local CARGO_TARGET_DIR,
-    // exactly one executable is copied into that stage, and the selected vpk action packs only that
-    // directory. Those structural bindings make the pre-pack executable transaction-bound without
+    // exactly one executable and the tracked third-party notice are copied into that stage, and the
+    // selected vpk action packs only that directory. Those structural bindings make the pre-pack
+    // executable transaction-bound without
     // requiring signed container bytes to equal it; vpk signs private copies and leaves the stage
     // unsigned.
     let pre_pack = ContainedRoot::new(&paths.stage, "Velopack stage", UnixModePolicy::AllowExecute)
         .ok()
         .and_then(|stage| stage.read(STAGED_EXECUTABLE, "staged app executable").ok())
-        .and_then(|bytes| executable_evidence(&bytes));
+        .and_then(|bytes| nonempty_evidence(&bytes));
     let packaged_executable = compare_executable_baseline(&nupkg, &portable).ok_or_else(|| {
         FinalizeError::ExecutableDivergence {
             nupkg: nupkg.clone(),
@@ -1059,7 +1150,7 @@ fn rewrite_assets_installer(
         .map_err(|_| FinalizeError::AssetsReconciliation)
 }
 
-fn executable_evidence(bytes: &[u8]) -> Option<PackagedExecutableEvidence> {
+fn nonempty_evidence(bytes: &[u8]) -> Option<PackagedExecutableEvidence> {
     let count = u64::try_from(bytes.len()).ok()?;
     if count == 0 {
         return None;

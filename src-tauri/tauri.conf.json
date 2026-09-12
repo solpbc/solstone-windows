@@ -21,6 +21,7 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "category": "Utility",
+    "copyright": "Copyright (c) 2026 sol pbc",
     "shortDescription": "the solstone app for windows",
     "longDescription": "the solstone app for windows takes in what you share with it from your screen, system audio, and any microphone you choose. it prepares local, owner-controlled segments for your journal. the solstone app runs on windows; your journal runs on a mac or linux computer. no telemetry."
   },

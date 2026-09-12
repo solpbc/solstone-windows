@@ -76,21 +76,24 @@ pub const SIGNTOOL: &str = "/fake-tools/signtool";
 pub const SIGNTOOL: &str = r"C:\fake-tools\signtool.exe";
 pub const UNSIGNED_APP_BYTES: &[u8] = b"inert unsigned release executable";
 pub const SIGNED_APP_BYTES: &[u8] = b"inert signed release executable";
-pub const VELOPACK_NUPKG_ENTRY_NAMES: [&str; 8] = [
+pub const THIRD_PARTY_NOTICE_BYTES: &[u8] = include_bytes!("../../../THIRD_PARTY_NOTICES.md");
+pub const VELOPACK_NUPKG_ENTRY_NAMES: [&str; 9] = [
     "[Content_Types].xml",
     "setup.ico",
     "Solstone.nuspec",
     "_rels/.rels",
     "lib/app/solstone-windows-app.exe",
+    "lib/app/THIRD_PARTY_NOTICES.md",
     "lib/app/solstone-windows-app_ExecutionStub.exe",
     "lib/app/sq.version",
     "lib/app/Squirrel.exe",
 ];
-pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 5] = [
+pub const VELOPACK_PORTABLE_ENTRY_NAMES: [&str; 6] = [
     ".portable",
     PORTABLE_LAUNCHER,
     "Update.exe",
     "current/solstone-windows-app.exe",
+    "current/THIRD_PARTY_NOTICES.md",
     "current/sq.version",
 ];
 
@@ -278,6 +281,11 @@ pub enum RunnerMutation {
     PortableExecutableDiverges,
     NupkgMemberMissing,
     NupkgMemberCaseCollision,
+    NupkgNoticeMissing,
+    NupkgNoticeChanged,
+    PortableNoticeMissing,
+    PortableNoticeChanged,
+    BothNoticesChanged,
     Phase6ContainerReadFailure,
     SignToolFailure,
     SignToolGrammarDrift,
@@ -307,6 +315,8 @@ pub enum NativeProofMutation {
     InstallerSkipped,
     InstallerMissingApp,
     InstalledAppDiverges,
+    InstallerMissingNotice,
+    InstalledNoticeDiverges,
     DumpStateWrongVersion,
     DumpStateMalformed,
     SmokeMissingAppArgument,
@@ -319,6 +329,7 @@ pub enum NativeProofMutation {
     SmokeMissingOk,
     SmokeMutatesArtifact,
     SmokeMutatesManifest,
+    SmokeMutatesSourceNotice,
     ReceiptPromotionRace,
 }
 
@@ -357,6 +368,7 @@ impl FakeReleaseCheckout {
         copy_workspace_file(&root, "deny.toml");
         copy_workspace_file(&root, "packaging/release-toolchain.json");
         copy_workspace_file(&root, "packaging/signing-policy.json");
+        copy_workspace_file(&root, "THIRD_PARTY_NOTICES.md");
         fs::write(
             root.join("CHANGELOG.md"),
             b"# Changelog\n\n## [0.2.11] - 2026-07-21\n\n- Deterministic inert release fixture.\n\n## [0.2.10] - 2026-07-01\n\n- Older.\n",
@@ -882,6 +894,8 @@ impl FakeReleaseRunner {
         }
         let staged_bytes = fs::read(Path::new(stage).join("solstone-windows-app.exe"))
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        let notice_bytes = fs::read(Path::new(stage).join("THIRD_PARTY_NOTICES.md"))
+            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
         let app_bytes = if signed {
             SIGNED_APP_BYTES
         } else {
@@ -890,6 +904,7 @@ impl FakeReleaseRunner {
         emit_velopack_output(
             Path::new(output),
             app_bytes,
+            &notice_bytes,
             signed,
             self.reverse_output_order,
             self.mutation,
@@ -1209,6 +1224,19 @@ impl FakeReleaseRunner {
             SIGNED_APP_BYTES
         };
         fs::write(installed, app_bytes).map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        if self.native_proof_mutation != NativeProofMutation::InstallerMissingNotice {
+            let notice_bytes =
+                if self.native_proof_mutation == NativeProofMutation::InstalledNoticeDiverges {
+                    b"divergent installed notice".as_slice()
+                } else {
+                    THIRD_PARTY_NOTICE_BYTES
+                };
+            fs::write(
+                install_root.join("current/THIRD_PARTY_NOTICES.md"),
+                notice_bytes,
+            )
+            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        }
         Ok(Self::output(Vec::new()))
     }
 
@@ -1263,6 +1291,14 @@ impl FakeReleaseRunner {
             }
             NativeProofMutation::SmokeMutatesManifest => {
                 mutate_companion_after_smoke(&self.checkout)?;
+                Ok(Self::output(b"SMOKE_OK\n".to_vec()))
+            }
+            NativeProofMutation::SmokeMutatesSourceNotice => {
+                fs::write(
+                    self.checkout.join("THIRD_PARTY_NOTICES.md"),
+                    b"mutated source notice",
+                )
+                .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
                 Ok(Self::output(b"SMOKE_OK\n".to_vec()))
             }
             _ => Ok(Self::output(
@@ -1507,6 +1543,7 @@ fn argument_after<'a>(args: &'a [String], name: &str) -> Result<&'a str, Command
 fn emit_velopack_output(
     output: &Path,
     app_bytes: &[u8],
+    notice_bytes: &[u8],
     signed: bool,
     reverse_order: bool,
     mutation: RunnerMutation,
@@ -1530,24 +1567,47 @@ fn emit_velopack_output(
     let releases_name = canonical_names.releases().to_owned();
     let feed_name = canonical_names.release_feed().to_owned();
     let default_setup_name = default_velopack_setup_basename();
+    let nupkg_notice = match mutation {
+        RunnerMutation::NupkgNoticeMissing => None,
+        RunnerMutation::NupkgNoticeChanged | RunnerMutation::BothNoticesChanged => {
+            Some(b"changed notice".as_slice())
+        }
+        _ => Some(notice_bytes),
+    };
     let full = match mutation {
         RunnerMutation::NupkgExecutableDiverges => build_velopack_nupkg(
             "lib/app/solstone-windows-app.exe",
             b"divergent nupkg executable",
             false,
         ),
-        RunnerMutation::NupkgMemberMissing => {
-            build_velopack_nupkg("lib/app/not-the-app.exe", app_bytes, false)
-        }
+        RunnerMutation::NupkgMemberMissing => build_velopack_nupkg_with_notice(
+            "lib/app/not-the-app.exe",
+            app_bytes,
+            nupkg_notice,
+            false,
+        ),
         RunnerMutation::NupkgMemberCaseCollision => {
             build_velopack_nupkg("lib/app/solstone-windows-app.exe", app_bytes, true)
         }
-        _ => build_velopack_nupkg("lib/app/solstone-windows-app.exe", app_bytes, false),
+        _ => build_velopack_nupkg_with_notice(
+            "lib/app/solstone-windows-app.exe",
+            app_bytes,
+            nupkg_notice,
+            false,
+        ),
     };
-    let portable = if mutation == RunnerMutation::PortableExecutableDiverges {
-        build_velopack_portable(b"divergent portable executable")
-    } else {
-        build_velopack_portable(app_bytes)
+    let portable_notice = match mutation {
+        RunnerMutation::PortableNoticeMissing => None,
+        RunnerMutation::PortableNoticeChanged | RunnerMutation::BothNoticesChanged => {
+            Some(b"changed notice".as_slice())
+        }
+        _ => Some(notice_bytes),
+    };
+    let portable = match mutation {
+        RunnerMutation::PortableExecutableDiverges => {
+            build_velopack_portable_with_notice(b"divergent portable executable", portable_notice)
+        }
+        _ => build_velopack_portable_with_notice(app_bytes, portable_notice),
     };
     let delta = format!("inert delta for {VERSION}").into_bytes();
     let setup = if signed {
@@ -1660,30 +1720,59 @@ pub fn build_velopack_nupkg(
     app_bytes: &[u8],
     add_case_colliding_canonical: bool,
 ) -> Vec<u8> {
+    build_velopack_nupkg_with_notice(
+        app_name,
+        app_bytes,
+        Some(THIRD_PARTY_NOTICE_BYTES),
+        add_case_colliding_canonical,
+    )
+}
+
+pub fn build_velopack_nupkg_with_notice(
+    app_name: &str,
+    app_bytes: &[u8],
+    notice_bytes: Option<&[u8]>,
+    add_case_colliding_canonical: bool,
+) -> Vec<u8> {
     let mut members: Vec<(&str, &[u8])> = vec![
         (VELOPACK_NUPKG_ENTRY_NAMES[0], b"inert content types"),
         (VELOPACK_NUPKG_ENTRY_NAMES[1], b"inert icon"),
         (VELOPACK_NUPKG_ENTRY_NAMES[2], b"inert nuspec"),
         (VELOPACK_NUPKG_ENTRY_NAMES[3], b"inert relationships"),
         (app_name, app_bytes),
-        (VELOPACK_NUPKG_ENTRY_NAMES[5], b"inert execution stub"),
-        (VELOPACK_NUPKG_ENTRY_NAMES[6], VERSION.as_bytes()),
-        (VELOPACK_NUPKG_ENTRY_NAMES[7], b"inert squirrel executable"),
+        (VELOPACK_NUPKG_ENTRY_NAMES[6], b"inert execution stub"),
+        (VELOPACK_NUPKG_ENTRY_NAMES[7], VERSION.as_bytes()),
+        (VELOPACK_NUPKG_ENTRY_NAMES[8], b"inert squirrel executable"),
     ];
+    if let Some(notice_bytes) = notice_bytes {
+        members.insert(5, (VELOPACK_NUPKG_ENTRY_NAMES[5], notice_bytes));
+    }
     if add_case_colliding_canonical {
         members.push(("LIB/APP/SOLSTONE-WINDOWS-APP.EXE", app_bytes));
     }
     build_zip_members(&members)
 }
 
+#[allow(dead_code)]
 pub fn build_velopack_portable(app_bytes: &[u8]) -> Vec<u8> {
-    build_zip_members(&[
+    build_velopack_portable_with_notice(app_bytes, Some(THIRD_PARTY_NOTICE_BYTES))
+}
+
+pub fn build_velopack_portable_with_notice(
+    app_bytes: &[u8],
+    notice_bytes: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut members: Vec<(&str, &[u8])> = vec![
         (VELOPACK_PORTABLE_ENTRY_NAMES[0], b""),
         (VELOPACK_PORTABLE_ENTRY_NAMES[1], b"inert portable launcher"),
         (VELOPACK_PORTABLE_ENTRY_NAMES[2], b"inert portable updater"),
         (VELOPACK_PORTABLE_ENTRY_NAMES[3], app_bytes),
-        (VELOPACK_PORTABLE_ENTRY_NAMES[4], VERSION.as_bytes()),
-    ])
+        (VELOPACK_PORTABLE_ENTRY_NAMES[5], VERSION.as_bytes()),
+    ];
+    if let Some(notice_bytes) = notice_bytes {
+        members.insert(4, (VELOPACK_PORTABLE_ENTRY_NAMES[4], notice_bytes));
+    }
+    build_zip_members(&members)
 }
 
 fn build_zip_members(members: &[(&str, &[u8])]) -> Vec<u8> {

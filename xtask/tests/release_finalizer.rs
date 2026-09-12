@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use support::{
     checkout_facts, request, selection_record, FakeReleaseCheckout, FakeReleaseRunner,
     RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT, MINISIGN,
-    MIRROR_ADVISORY_REPOSITORY, SIGNED_APP_BYTES, SIGNTOOL, SMCTL, UNSIGNED_APP_BYTES, VERSION,
-    VPK,
+    MIRROR_ADVISORY_REPOSITORY, SIGNED_APP_BYTES, SIGNTOOL, SMCTL, THIRD_PARTY_NOTICE_BYTES,
+    UNSIGNED_APP_BYTES, VERSION, VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
 use xtask::release_advisory::{AdvisoryError, MIRROR_COHORT_ID};
@@ -141,6 +141,13 @@ fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
         )))
         .expect("read transaction-bound staged executable"),
         UNSIGNED_APP_BYTES
+    );
+    assert_eq!(
+        fs::read(checkout.root().join(format!(
+            "target/release-finalizer/{VERSION}/vpk-stage/THIRD_PARTY_NOTICES.md"
+        )))
+        .expect("read transaction-bound staged third-party notice"),
+        THIRD_PARTY_NOTICE_BYTES
     );
     let events = runner.events();
     assert_witness_order(&events);
@@ -964,6 +971,17 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
             "nupkg-member-case-collision",
             RunnerMutation::NupkgMemberCaseCollision,
         ),
+        ("nupkg-notice-missing", RunnerMutation::NupkgNoticeMissing),
+        ("nupkg-notice-changed", RunnerMutation::NupkgNoticeChanged),
+        (
+            "portable-notice-missing",
+            RunnerMutation::PortableNoticeMissing,
+        ),
+        (
+            "portable-notice-changed",
+            RunnerMutation::PortableNoticeChanged,
+        ),
+        ("both-notices-changed", RunnerMutation::BothNoticesChanged),
         (
             "nupkg-stable-read",
             RunnerMutation::Phase6ContainerReadFailure,
@@ -1007,6 +1025,38 @@ fn archive_and_cross_container_mutations_fail_before_manifest_render() {
                     container: ContainerKind::Nupkg,
                 }),
             ) => {}
+            (
+                RunnerMutation::NupkgNoticeMissing,
+                FinalizeError::NoticeContainer(ReleaseContainerError::MissingCanonicalMember {
+                    container: ContainerKind::Nupkg,
+                }),
+            ) => {}
+            (
+                RunnerMutation::PortableNoticeMissing,
+                FinalizeError::NoticeContainer(ReleaseContainerError::MissingCanonicalMember {
+                    container: ContainerKind::Portable,
+                }),
+            ) => {}
+            (
+                RunnerMutation::NupkgNoticeChanged
+                | RunnerMutation::PortableNoticeChanged
+                | RunnerMutation::BothNoticesChanged,
+                FinalizeError::NoticeDivergence {
+                    expected,
+                    nupkg,
+                    portable,
+                },
+            ) => {
+                assert_eq!(expected.sha256, hex_sha256(THIRD_PARTY_NOTICE_BYTES));
+                if mutation == RunnerMutation::BothNoticesChanged {
+                    assert_eq!(nupkg, portable);
+                } else {
+                    assert_ne!(nupkg, portable);
+                }
+                assert!(diagnostic.contains(&expected.sha256));
+                assert!(diagnostic.contains(&nupkg.sha256));
+                assert!(diagnostic.contains(&portable.sha256));
+            }
             (
                 RunnerMutation::Phase6ContainerReadFailure,
                 FinalizeError::ExecutableRead(ExecutableReadSource::FullNupkg),

@@ -18,7 +18,9 @@ use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{child_process_path_text, ContainedRoot, UnixModePolicy};
 use crate::release_clock::Clock;
-use crate::release_container::{ContainerKind, ExecutableContainerReader, ReleaseContainerError};
+use crate::release_container::{
+    ContainerKind, ContainerMemberReader, ExecutableContainerReader, ReleaseContainerError,
+};
 use crate::release_exec::CommandRunner;
 use crate::release_finalizer_fs::create_contained_directory;
 use crate::release_receipt::{
@@ -33,6 +35,9 @@ use crate::rust_release_manifest::{
 };
 
 const INSTALLED_EXECUTABLE: &str = "current/solstone-windows-app.exe";
+const SOURCE_NOTICE: &str = "THIRD_PARTY_NOTICES.md";
+const NUPKG_NOTICE: &str = "lib/app/THIRD_PARTY_NOTICES.md";
+const INSTALLED_NOTICE: &str = "current/THIRD_PARTY_NOTICES.md";
 const PROOF_ROOT: &str = "target/release-native-proof";
 const PROOF_TEMP_ATTEMPTS: usize = 16;
 
@@ -83,6 +88,9 @@ pub enum NativeProofError {
     ExecutableContainer(ReleaseContainerError),
     ExecutableRead(ContainerKind),
     ContainerBaseline,
+    ThirdPartyNotice,
+    NoticeContainer(ReleaseContainerError),
+    NoticeContainerBaseline,
     ProofRoot,
     PreexistingInstalledApp,
     SetupInvocation,
@@ -90,6 +98,8 @@ pub enum NativeProofError {
     InstalledAppMissing,
     InstalledAppInvalid,
     InstalledBaselineMismatch,
+    InstalledNoticeInvalid,
+    InstalledNoticeBaselineMismatch,
     DumpStateInvocation,
     DumpStateFailed,
     DumpStateMalformed,
@@ -99,6 +109,7 @@ pub enum NativeProofError {
     SmokeEvidenceMissing,
     PostSmokeClassification,
     CandidateMutated,
+    NoticeSourceChanged,
     Clock,
     Receipt,
 }
@@ -169,6 +180,15 @@ impl fmt::Display for NativeProofError {
                 formatter,
                 "native proof nupkg or portable executable disagrees with the finalization receipt baseline; restore both finalized containers and retry"
             ),
+            Self::ThirdPartyNotice => write!(
+                formatter,
+                "native proof could not stable-read one nonempty source third-party notice; restore THIRD_PARTY_NOTICES.md at the proved source commit and retry"
+            ),
+            Self::NoticeContainer(cause) => fmt_notice_container_error(cause, formatter),
+            Self::NoticeContainerBaseline => write!(
+                formatter,
+                "native proof nupkg or portable third-party notice disagrees with the source notice; rebuild and re-finalize both containers"
+            ),
             Self::ProofRoot => write!(
                 formatter,
                 "native proof could not create one newly empty isolated install root; remove unsafe links or stale permissions beneath target and retry"
@@ -196,6 +216,14 @@ impl fmt::Display for NativeProofError {
             Self::InstalledBaselineMismatch => write!(
                 formatter,
                 "native proof installed app disagrees with the finalization receipt and container baseline; rebuild and re-finalize both containers"
+            ),
+            Self::InstalledNoticeInvalid => write!(
+                formatter,
+                "native proof installed third-party notice is missing, empty, or not one stable regular file; rebuild the installer and retry a clean install"
+            ),
+            Self::InstalledNoticeBaselineMismatch => write!(
+                formatter,
+                "native proof installed third-party notice disagrees with the source and package copies; rebuild and re-finalize both containers"
             ),
             Self::DumpStateInvocation => write!(
                 formatter,
@@ -233,6 +261,10 @@ impl fmt::Display for NativeProofError {
                 formatter,
                 "native proof companion manifest changed during install or smoke; discard the mutated candidate and re-finalize"
             ),
+            Self::NoticeSourceChanged => write!(
+                formatter,
+                "native proof source third-party notice changed during install or smoke; restore the proved source commit and retry"
+            ),
             Self::Clock => write!(
                 formatter,
                 "native proof UTC proof time could not be obtained; restore the system clock and retry"
@@ -246,6 +278,38 @@ impl fmt::Display for NativeProofError {
 }
 
 impl std::error::Error for NativeProofError {}
+
+fn fmt_notice_container_error(
+    cause: &ReleaseContainerError,
+    formatter: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    match cause {
+        ReleaseContainerError::MissingCanonicalMember { container } => write!(
+            formatter,
+            "{} is missing the exact third-party notice member; rebuild and re-finalize that container",
+            container.label()
+        ),
+        ReleaseContainerError::CanonicalMemberIsDirectory { container } => write!(
+            formatter,
+            "{} stores the third-party notice as a directory; rebuild and re-finalize that container",
+            container.label()
+        ),
+        ReleaseContainerError::DuplicateCanonicalMember { container } => write!(
+            formatter,
+            "{} contains the third-party notice more than once; rebuild and re-finalize that container",
+            container.label()
+        ),
+        ReleaseContainerError::EmptyCanonicalMember { container } => write!(
+            formatter,
+            "{} contains an empty third-party notice; rebuild and re-finalize that container",
+            container.label()
+        ),
+        _ => write!(
+            formatter,
+            "native proof package third-party notice verification failed: {cause}"
+        ),
+    }
+}
 
 pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     runtime: NativeProofRuntime<'_>,
@@ -324,22 +388,32 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
 
     record_step(runner, STEP_4_CONTAINERS)?;
     let names = BundleNames::for_version(&manifest.version);
-    let nupkg = ExecutableContainerReader::read_nupkg(
-        &candidate
-            .read(names.full_package(), "native proof full nupkg")
-            .map_err(|_| NativeProofError::ExecutableRead(ContainerKind::Nupkg))?,
-    )
-    .map_err(NativeProofError::ExecutableContainer)?;
-    let portable = ExecutableContainerReader::read_portable(
-        &candidate
-            .read(names.portable(), "native proof portable ZIP")
-            .map_err(|_| NativeProofError::ExecutableRead(ContainerKind::Portable))?,
-    )
-    .map_err(NativeProofError::ExecutableContainer)?;
+    let source_notice_bytes = checkout
+        .read(SOURCE_NOTICE, "native proof source third-party notice")
+        .map_err(|_| NativeProofError::ThirdPartyNotice)?;
+    let source_notice =
+        byte_evidence(&source_notice_bytes).ok_or(NativeProofError::ThirdPartyNotice)?;
+    let nupkg_bytes = candidate
+        .read(names.full_package(), "native proof full nupkg")
+        .map_err(|_| NativeProofError::ExecutableRead(ContainerKind::Nupkg))?;
+    let portable_bytes = candidate
+        .read(names.portable(), "native proof portable ZIP")
+        .map_err(|_| NativeProofError::ExecutableRead(ContainerKind::Portable))?;
+    let nupkg = ExecutableContainerReader::read_nupkg(&nupkg_bytes)
+        .map_err(NativeProofError::ExecutableContainer)?;
+    let portable = ExecutableContainerReader::read_portable(&portable_bytes)
+        .map_err(NativeProofError::ExecutableContainer)?;
     if nupkg != finalization_receipt.packaged_executable
         || portable != finalization_receipt.packaged_executable
     {
         return Err(NativeProofError::ContainerBaseline);
+    }
+    let nupkg_notice = ContainerMemberReader::read_nupkg(&nupkg_bytes, NUPKG_NOTICE)
+        .map_err(NativeProofError::NoticeContainer)?;
+    let portable_notice = ContainerMemberReader::read_portable(&portable_bytes, INSTALLED_NOTICE)
+        .map_err(NativeProofError::NoticeContainer)?;
+    if nupkg_notice != source_notice || portable_notice != source_notice {
+        return Err(NativeProofError::NoticeContainerBaseline);
     }
 
     record_step(runner, STEP_5_INSTALL_ROOT)?;
@@ -403,6 +477,20 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     {
         return Err(NativeProofError::InstalledBaselineMismatch);
     }
+    let installed_notice_bytes = installed_root
+        .read(
+            INSTALLED_NOTICE,
+            "native proof installed third-party notice",
+        )
+        .map_err(|_| NativeProofError::InstalledNoticeInvalid)?;
+    let installed_notice =
+        byte_evidence(&installed_notice_bytes).ok_or(NativeProofError::InstalledNoticeInvalid)?;
+    if installed_notice != source_notice
+        || installed_notice != nupkg_notice
+        || installed_notice != portable_notice
+    {
+        return Err(NativeProofError::InstalledNoticeBaselineMismatch);
+    }
 
     record_step(runner, STEP_8_DUMP_STATE)?;
     let installed_app_program =
@@ -465,6 +553,12 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         || sha256_hex(&final_manifest_bytes) != manifest_sha256
     {
         return Err(NativeProofError::CandidateMutated);
+    }
+    let final_source_notice = checkout
+        .read(SOURCE_NOTICE, "native proof source third-party notice")
+        .map_err(|_| NativeProofError::NoticeSourceChanged)?;
+    if final_source_notice != source_notice_bytes {
+        return Err(NativeProofError::NoticeSourceChanged);
     }
 
     record_step(runner, STEP_11_RECEIPT)?;
@@ -668,12 +762,15 @@ fn require_empty_proof_root(path: &Path) -> Result<(), NativeProofError> {
 }
 
 fn executable_evidence(bytes: &[u8]) -> Result<PackagedExecutableEvidence, NativeProofError> {
-    let bytes_count =
-        u64::try_from(bytes.len()).map_err(|_| NativeProofError::InstalledAppInvalid)?;
+    byte_evidence(bytes).ok_or(NativeProofError::InstalledAppInvalid)
+}
+
+fn byte_evidence(bytes: &[u8]) -> Option<PackagedExecutableEvidence> {
+    let bytes_count = u64::try_from(bytes.len()).ok()?;
     if bytes_count == 0 {
-        return Err(NativeProofError::InstalledAppInvalid);
+        return None;
     }
-    Ok(PackagedExecutableEvidence {
+    Some(PackagedExecutableEvidence {
         sha256: sha256_hex(bytes),
         bytes: bytes_count,
     })

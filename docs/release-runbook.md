@@ -1,7 +1,7 @@
 # Release runbook
 
 Releases are **operator-driven, by hand, from a known Windows build box.** There
-is no GitHub Actions release path — `.github/workflows/` does not exist by policy.
+is no GitHub Actions release path: `.github/workflows/` does not exist by policy.
 
 ## Verbs (never hand-chain the underlying tools)
 
@@ -35,6 +35,8 @@ is no GitHub Actions release path — `.github/workflows/` does not exist by pol
   `Cargo.lock` and `ui/package-lock.json`.
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
   registers the per-user autostart login item.
+- `THIRD_PARTY_NOTICES.md` is packed beside the app and installed at
+  `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
 
 ## Source-bound finalization
 
@@ -111,8 +113,9 @@ delegates through
 `scripts/package.ps1` to the single xtask finalizer. That transaction owns npm
 materialization/build, the locked release build, Velopack packing, optional
 KeyLocker signing, selected SignTool verification, executable cross-container
-identity, manifest rendering, strict classification, the final source/lock
-recheck, and atomic promotion. Direct `scripts/package.ps1` and
+identity, byte-identical third-party notice verification in both packages,
+manifest rendering, strict classification, the final source/lock recheck, and
+atomic promotion. Direct `scripts/package.ps1` and
 `scripts/win-package.cmd` reach the same transaction; neither attests a
 pre-existing executable.
 
@@ -123,9 +126,12 @@ container divergence: signed vpk operates on private copies, so signed container
 bytes legitimately differ from the unsigned stage. The stage remains
 transaction-bound structurally: `create_transaction_paths` creates and verifies
 it new and empty after cleanup, the build uses a transaction-local
-`CARGO_TARGET_DIR`, exactly one executable is copied into the stage, and vpk
-packs only that directory. A missing pre-pack diagnostic does not weaken or fail
-the two-container equality gate.
+`CARGO_TARGET_DIR`, exactly one executable and the tracked third-party notice
+are copied into the stage, and vpk packs only that directory. The finalizer
+requires the notice at `lib/app/THIRD_PARTY_NOTICES.md` in the full nupkg and at
+`current/THIRD_PARTY_NOTICES.md` in the portable ZIP, with the source file's
+exact SHA-256 and byte count. A missing pre-pack executable diagnostic does not
+weaken or fail the two-container equality gate.
 
 The finalizer assembles the candidate in a newly empty sibling temporary and
 atomically renames the whole directory to
@@ -177,12 +183,12 @@ full-package ledger; `releases.win.json` uses the raw `NotesHTML` key. This gate
 does not construct, sign, authenticate, or publish a release. Direct publication
 commands remain fail-closed.
 
-## Release notes — cut the CHANGELOG section before finalization
+## Release notes: cut the CHANGELOG section before finalization
 
 Per-release notes ship **inside the update feed**: `make package` extracts the
 `CHANGELOG.md` `## [<version>]` section and threads it into `vpk pack` via
 `--releaseNotes`, so `releases.win.json` carries `NotesMarkdown`/`NotesHTML`. The
-in-app Updates pane and `solstone.app/releases/windows` render those notes — the
+in-app Updates pane and `solstone.app/releases/windows` render those notes, the
 Windows analog of the macOS appcast `<description>`.
 
 **Before a signed release pack, cut the CHANGELOG:** rename `## [Unreleased]` to
@@ -190,10 +196,10 @@ Windows analog of the macOS appcast `<description>`.
 exists. Every finalization, signed or unsigned, fails closed when the section is
 missing; cut and review it before starting the transaction.
 
-## Update feed — R2 authoritative, optional GitHub mirror
+## Update feed: R2 authoritative, optional GitHub mirror
 
 The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows/`
-— a privacy-clean static surface (no analytics, GET-only). The in-app updater
+is a privacy-clean static surface (no analytics, GET-only). The in-app updater
 fetches `releases.win.json` from there with a bare, query-free manifest GET via
 the custom local Velopack `UpdateSource`; package downloads still request the
 package files by filename from the same first-party feed host. R2 is the
@@ -299,7 +305,7 @@ installer is versioned per release, giving each release a never-reused URL. The
 `solstone.app/download/windows` permalink points at the current release's versioned
 installer.
 
-## Package-manager channels (winget / scoop) — submission timing
+## Package-manager channels (winget / scoop): submission timing
 
 These are secondary discovery surfaces; R2 remains authoritative, and any GitHub
 mirror is optional and non-authoritative. They are **community-moderated**, so factor
@@ -310,23 +316,23 @@ the wait into release planning, don't block on it.
   `Azure-Pipeline-Passed`/`Validation-Completed`, it sits on a **human (volunteer)
   moderator** approval (`REVIEW_REQUIRED` → `Moderator-Approved` → auto-merge). Empirical
   (gh, June 2026): new-package merges run a **median ~3.7 days, p90 ~6 days, tail to
-  1-2 weeks** (weekends slow it). **Subsequent version-update PRs are the fast path** —
+  1-2 weeks** (weekends slow it). **Subsequent version-update PRs are the fast path**:
   median **~2 hours**, frequently auto-merged with no human (a "verified developer"
   self-serve path is in development). So: land the first package once, then version bumps
   are near-instant (build a little slack for the occasional one that hits the manual
   queue). Don't close/reopen or push empty commits to "nudge" (resets validation); for
   genuinely urgent items moderators watch the community Discord.
-- **scoop** — bucket PR, lighter process.
-- **After aggregate publication, run `make check-channels`** — it derives the
+- **scoop**: bucket PR, lighter process.
+- **After aggregate publication, run `make check-channels`**: it derives the
   expected version from Cargo metadata, reads the live channels, and exits non-zero
   on drift. It does not repair drift; release publication belongs to the aggregate
   provenance publisher. winget once sat **ten releases stale** (0.2.0 while we
   shipped 0.2.10) before anyone noticed. Manifest inputs remain in-repo
-  (`packaging/winget/`, `packaging/scoop/`) — see `packaging/DISTRIBUTION.md`.
-- **Chocolatey** — a third channel (enterprise/IT-admin reach) we have **not** adopted;
+  (`packaging/winget/`, `packaging/scoop/`); see `packaging/DISTRIBUTION.md`.
+- **Chocolatey**: a third channel (enterprise/IT-admin reach) we have **not** adopted;
   its community repo is also human-moderated. Evaluate deliberately, below winget/scoop.
 
-## Signing (wired — opt-in, release-only)
+## Signing (wired; opt-in, release-only)
 
 Release artifacts are signed with the sol pbc code-signing certificate via
 Velopack's `--signTemplate` (DigiCert KeyLocker / `smctl`). Signing is **opt-in

@@ -13,9 +13,10 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use support::{
-    action_uses_script, build_velopack_nupkg, build_velopack_portable, checkout_facts, request,
+    action_uses_script, build_velopack_nupkg, build_velopack_nupkg_with_notice,
+    build_velopack_portable, build_velopack_portable_with_notice, checkout_facts, request,
     FakeReleaseCheckout, FakeReleaseRunner, NativeProofMutation, WitnessEvent, CHECKED_AT,
-    POWERSHELL, VERSION,
+    POWERSHELL, SIGNED_APP_BYTES, VERSION,
 };
 use xtask::native_release_proof::{
     prove_native, NativeProofError, NativeProofRuntime, STEP_10_REVALIDATE, STEP_11_RECEIPT,
@@ -241,6 +242,35 @@ fn isolated_install_root_and_installer_fail_closed() {
 }
 
 #[test]
+fn installed_notice_must_match_the_source_and_packages() {
+    for (label, mutation, error, subject) in [
+        (
+            "missing-installed-notice",
+            NativeProofMutation::InstallerMissingNotice,
+            NativeProofError::InstalledNoticeInvalid,
+            "installed third-party notice is missing",
+        ),
+        (
+            "divergent-installed-notice",
+            NativeProofMutation::InstalledNoticeDiverges,
+            NativeProofError::InstalledNoticeBaselineMismatch,
+            "installed third-party notice disagrees",
+        ),
+    ] {
+        run_case(
+            label,
+            SelectionMode::Signed,
+            mutation,
+            |_| {},
+            error,
+            subject,
+            STEP_7_INSTALLED_IDENTITY,
+            SeamExpectation::installed_without_smoke(),
+        );
+    }
+}
+
+#[test]
 fn every_executable_identity_source_is_bound_to_the_manifest() {
     // Pure ZIP-name, exact-duplicate, and member-kind rejection lives in
     // release_container_baseline.rs. These cases prove engine integration.
@@ -302,6 +332,30 @@ fn every_executable_identity_source_is_bound_to_the_manifest() {
             },
         ),
         (
+            "nupkg-notice-diverges",
+            ContainerMutation::NupkgNoticeDiverges,
+            NativeProofError::NoticeContainerBaseline,
+            "third-party notice disagrees with the source notice",
+            STEP_4_CONTAINERS,
+            SeamExpectation {
+                resolver: true,
+                installer: false,
+                smoke: false,
+            },
+        ),
+        (
+            "portable-notice-diverges",
+            ContainerMutation::PortableNoticeDiverges,
+            NativeProofError::NoticeContainerBaseline,
+            "third-party notice disagrees with the source notice",
+            STEP_4_CONTAINERS,
+            SeamExpectation {
+                resolver: true,
+                installer: false,
+                smoke: false,
+            },
+        ),
+        (
             "installed-app-diverges",
             ContainerMutation::InstalledAppDiverges,
             NativeProofError::InstalledBaselineMismatch,
@@ -337,6 +391,14 @@ fn every_executable_identity_source_is_bound_to_the_manifest() {
                 container: ContainerKind::Nupkg,
             }),
             "ASCII case-folding entry collisions",
+        ),
+        (
+            "nupkg-notice-missing",
+            ContainerMutation::NupkgNoticeMissing,
+            NativeProofError::NoticeContainer(ReleaseContainerError::MissingCanonicalMember {
+                container: ContainerKind::Nupkg,
+            }),
+            "missing the exact third-party notice member",
         ),
     ] {
         run_case(
@@ -505,6 +567,16 @@ fn candidate_mutation_during_smoke_invalidates_proof() {
         |_| {},
         NativeProofError::CandidateMutated,
         "companion manifest changed",
+        STEP_10_REVALIDATE,
+        SeamExpectation::all(),
+    );
+    run_case(
+        "smoke-mutates-source-notice",
+        SelectionMode::Signed,
+        NativeProofMutation::SmokeMutatesSourceNotice,
+        |_| {},
+        NativeProofError::NoticeSourceChanged,
+        "source third-party notice changed",
         STEP_10_REVALIDATE,
         SeamExpectation::all(),
     );
@@ -864,6 +936,9 @@ enum ContainerMutation {
     ReceiptManifestBindingDiverges,
     NupkgDiverges,
     PortableDiverges,
+    NupkgNoticeDiverges,
+    PortableNoticeDiverges,
+    NupkgNoticeMissing,
     InstalledAppDiverges,
     NupkgMemberMissing,
     NupkgMemberCaseCollision,
@@ -906,6 +981,31 @@ fn mutate_container_identity(prepared: &PreparedProof, mutation: ContainerMutati
         ContainerMutation::PortableDiverges => {
             replace_portable(prepared, build_velopack_portable(b"divergent portable app"))
         }
+        ContainerMutation::NupkgNoticeDiverges => replace_nupkg(
+            prepared,
+            build_velopack_nupkg_with_notice(
+                "lib/app/solstone-windows-app.exe",
+                SIGNED_APP_BYTES,
+                Some(b"divergent nupkg notice"),
+                false,
+            ),
+        ),
+        ContainerMutation::PortableNoticeDiverges => replace_portable(
+            prepared,
+            build_velopack_portable_with_notice(
+                SIGNED_APP_BYTES,
+                Some(b"divergent portable notice"),
+            ),
+        ),
+        ContainerMutation::NupkgNoticeMissing => replace_nupkg(
+            prepared,
+            build_velopack_nupkg_with_notice(
+                "lib/app/solstone-windows-app.exe",
+                SIGNED_APP_BYTES,
+                None,
+                false,
+            ),
+        ),
         ContainerMutation::InstalledAppDiverges => {}
         ContainerMutation::NupkgMemberMissing => replace_nupkg(
             prepared,
