@@ -184,9 +184,45 @@ rm "$TOOL_REPO/uncommitted"
 
 # Rebind fixture digests so malformed metadata reaches semantic validation.
 cp "$CANDIDATE/assets.win.json" "$TMP_ROOT/assets.original"
+cp "$CANDIDATE/releases.win.json" "$TMP_ROOT/releases.original"
 cp "$CANDIDATE/$MANIFEST_NAME" "$TMP_ROOT/manifest.original"
 cp "$TMP_ROOT/finalization.json" "$TMP_ROOT/finalization.original"
 cp "$TMP_ROOT/clearance.json" "$TMP_ROOT/clearance.original"
+
+# Delta production is conditional in the finalizer and public release
+# contract. Prove the publisher accepts the exact signed no-delta shape too.
+mv "$CANDIDATE/$DELTA" "$TMP_ROOT/$DELTA"
+jq --arg version "$VERSION" '.Assets |= map(select(.Version != $version or .Type != "Delta"))' \
+    "$TMP_ROOT/releases.original" > "$CANDIDATE/releases.win.json"
+jq 'map(select(.Type != "Delta"))' "$TMP_ROOT/assets.original" > "$CANDIDATE/assets.win.json"
+jq --arg delta "$DELTA" \
+    --arg assets_sha "$(sha256sum "$CANDIDATE/assets.win.json" | awk '{print $1}')" \
+    --argjson assets_bytes "$(wc -c < "$CANDIDATE/assets.win.json")" \
+    --arg releases_sha "$(sha256sum "$CANDIDATE/releases.win.json" | awk '{print $1}')" \
+    --argjson releases_bytes "$(wc -c < "$CANDIDATE/releases.win.json")" '
+    .artifacts |= map(select(.path != $delta)) |
+    (.artifacts[] | select(.path == "assets.win.json")) |= (.sha256=$assets_sha | .bytes=$assets_bytes) |
+    (.artifacts[] | select(.path == "releases.win.json")) |= (.sha256=$releases_sha | .bytes=$releases_bytes)
+' "$TMP_ROOT/manifest.original" > "$CANDIDATE/$MANIFEST_NAME"
+no_delta_manifest_sha="$(sha256sum "$CANDIDATE/$MANIFEST_NAME" | awk '{print $1}')"
+jq --arg sha "$no_delta_manifest_sha" '.candidate.file_count=7 | .companion_manifest.sha256=$sha' \
+    "$TMP_ROOT/finalization.original" > "$TMP_ROOT/finalization.json"
+jq --arg sha "$no_delta_manifest_sha" '.companion_manifest_sha256=$sha' \
+    "$TMP_ROOT/clearance.original" > "$TMP_ROOT/clearance.json"
+PATH="$FAKE_BIN:$PATH" "$PUBLISHER" --candidate-dir "$CANDIDATE" \
+    --finalization-receipt "$TMP_ROOT/finalization.json" --source-checkout "$SOURCE" \
+    --clearance "$TMP_ROOT/clearance.json" --receipt "$TMP_ROOT/no-delta-publication.json" \
+    --dry-run > "$TMP_ROOT/no-delta.out"
+assert grep -Fq 'dry-run complete; no origin calls and no receipt written' "$TMP_ROOT/no-delta.out"
+assert test "$(grep -Fc "$DELTA" "$TMP_ROOT/no-delta.out")" = 0
+assert test ! -e "$TMP_ROOT/no-delta-publication.json"
+mv "$TMP_ROOT/$DELTA" "$CANDIDATE/$DELTA"
+cp "$TMP_ROOT/releases.original" "$CANDIDATE/releases.win.json"
+cp "$TMP_ROOT/assets.original" "$CANDIDATE/assets.win.json"
+cp "$TMP_ROOT/manifest.original" "$CANDIDATE/$MANIFEST_NAME"
+cp "$TMP_ROOT/finalization.original" "$TMP_ROOT/finalization.json"
+cp "$TMP_ROOT/clearance.original" "$TMP_ROOT/clearance.json"
+
 for mutation in '.[2] = .[0]' '.[0].Type = "Full"' '.[0].RelativeFileName = "unexpected.exe"' '.[0:3]' '. + [.[0]]'; do
     jq "$mutation" "$TMP_ROOT/assets.original" > "$CANDIDATE/assets.win.json"
     jq --arg sha "$(sha256sum "$CANDIDATE/assets.win.json" | awk '{print $1}')" \

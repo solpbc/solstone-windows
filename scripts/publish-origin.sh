@@ -137,7 +137,12 @@ setup="solstone-setup-$version.exe"
 assets="assets.win.json"
 releases="releases.win.json"
 release_index="RELEASES"
-expected_names=("$assets" "$release_index" "$releases" "$delta" "$full" "$setup" "$portable" "$manifest_name")
+has_delta=false
+if [[ -f "$candidate_directory/$delta" && ! -L "$candidate_directory/$delta" ]]; then
+    has_delta=true
+fi
+expected_names=("$assets" "$release_index" "$releases" "$full" "$setup" "$portable" "$manifest_name")
+$has_delta && expected_names+=("$delta")
 mapfile -t expected_names < <(printf '%s\n' "${expected_names[@]}" | sort)
 
 actual_names=()
@@ -152,25 +157,35 @@ for index in "${!expected_names[@]}"; do
         die "candidate-set-invalid: candidate file set is incomplete or unlisted"
 done
 
-jq -e --arg version "$version" --arg source "$source_commit" '
+expected_artifact_count=6
+expected_candidate_count=7
+if $has_delta; then
+    expected_artifact_count=7
+    expected_candidate_count=8
+fi
+jq -e --arg version "$version" --arg source "$source_commit" \
+    --argjson expected_artifact_count "$expected_artifact_count" '
     .schema_version == 1 and .product == "solstone-windows" and
     .version == $version and .source_commit == $source and .source_dirty == false and
     .target.triple == "x86_64-pc-windows-msvc" and
     .native_tools.signing_mode == "signed-verified" and
-    (.artifacts | type) == "array" and (.artifacts | length) == 7
+    (.artifacts | type) == "array" and (.artifacts | length) == $expected_artifact_count
 ' "$manifest" >/dev/null || die "candidate-set-invalid: companion manifest does not describe one signed Windows candidate"
 
 manifest_sha256="$(sha256sum "$manifest" | awk '{print $1}')"
-jq -e --arg version "$version" --arg source "$source_commit" --arg manifest_name "$manifest_name" --arg manifest_sha "$manifest_sha256" '
+jq -e --arg version "$version" --arg source "$source_commit" --arg manifest_name "$manifest_name" \
+    --arg manifest_sha "$manifest_sha256" --argjson expected_candidate_count "$expected_candidate_count" '
     .schema == "solstone.rust-release-finalization.v2" and
     .product == "solstone-windows" and .version == $version and .target == "x86_64-pc-windows-msvc" and
-    .source_commit == $source and .candidate.file_count == 8 and .signing_mode == "signed-verified" and
+    .source_commit == $source and .candidate.file_count == $expected_candidate_count and .signing_mode == "signed-verified" and
     .companion_manifest.filename == $manifest_name and .companion_manifest.sha256 == $manifest_sha
 ' "$finalization_receipt" >/dev/null || die "candidate-set-invalid: finalization receipt does not bind this signed candidate"
 
 manifest_artifact_names="$(jq -er '.artifacts[].path' "$manifest" | sort)" ||
     die "candidate-set-invalid: manifest artifact names are unavailable"
-expected_artifact_names="$(printf '%s\n' "$assets" "$release_index" "$releases" "$delta" "$full" "$setup" "$portable" | sort)"
+expected_artifact_name_array=("$assets" "$release_index" "$releases" "$full" "$setup" "$portable")
+$has_delta && expected_artifact_name_array+=("$delta")
+expected_artifact_names="$(printf '%s\n' "${expected_artifact_name_array[@]}" | sort)"
 [[ "$manifest_artifact_names" == "$expected_artifact_names" ]] ||
     die "candidate-set-invalid: manifest artifact set is incomplete or unlisted"
 
@@ -227,19 +242,25 @@ grep -Fqx "$release_full_sha1 $full $release_full_bytes" "$candidate_directory/$
     die "candidate-set-invalid: RELEASES does not name the exact current full package"
 
 jq -e --arg version "$version" --arg full "$full" --arg delta "$delta" \
+    --argjson has_delta "$has_delta" \
     --arg full_sha "$(sha256sum "$candidate_directory/$full" | awk '{print toupper($1)}')" \
-    --arg delta_sha "$(sha256sum "$candidate_directory/$delta" | awk '{print toupper($1)}')" \
+    --arg delta_sha "$(if $has_delta; then sha256sum "$candidate_directory/$delta" | awk '{print toupper($1)}'; fi)" \
     --argjson full_bytes "$(wc -c < "$candidate_directory/$full")" \
-    --argjson delta_bytes "$(wc -c < "$candidate_directory/$delta")" '
+    --argjson delta_bytes "$(if $has_delta; then wc -c < "$candidate_directory/$delta"; else printf 0; fi)" '
     ([.Assets[] | select(.Version == $version and .Type == "Full" and .FileName == $full and .SHA256 == $full_sha and .Size == $full_bytes)] | length) == 1 and
-    ([.Assets[] | select(.Version == $version and .Type == "Delta" and .FileName == $delta and .SHA256 == $delta_sha and .Size == $delta_bytes)] | length) == 1
+    (if $has_delta then
+        ([.Assets[] | select(.Version == $version and .Type == "Delta" and .FileName == $delta and .SHA256 == $delta_sha and .Size == $delta_bytes)] | length) == 1
+     else
+        ([.Assets[] | select(.Version == $version and .Type == "Delta")] | length) == 0
+     end)
 ' "$candidate_directory/$releases" >/dev/null ||
     die "candidate-set-invalid: releases.win.json does not bind the exact current packages"
 
-jq -e --arg version "$version" --arg full "$full" --arg delta "$delta" --arg portable "$portable" --arg setup "$setup" '
-    (map([.RelativeFileName, .Type]) | sort) == ([
-        [$delta, "Delta"], [$portable, "Portable"], [$setup, "Installer"], [$full, "Full"]
-    ] | sort)
+jq -e --arg version "$version" --arg full "$full" --arg delta "$delta" --arg portable "$portable" --arg setup "$setup" \
+    --argjson has_delta "$has_delta" '
+    (map([.RelativeFileName, .Type]) | sort) == (([
+        [$portable, "Portable"], [$setup, "Installer"], [$full, "Full"]
+    ] + (if $has_delta then [[$delta, "Delta"]] else [] end)) | sort)
 ' "$candidate_directory/$assets" >/dev/null ||
     die "candidate-set-invalid: assets.win.json does not name the exact current artifacts"
 
@@ -445,7 +466,8 @@ put_mutable() {
 }
 
 archive_names=("${expected_names[@]}" "rust-release-finalization.json")
-flat_immutable=("$delta" "$full" "$setup")
+flat_immutable=("$full" "$setup")
+$has_delta && flat_immutable+=("$delta")
 flat_mutable=("$portable" "$manifest_name" "$assets" "$release_index")
 
 printf 'validated %s %s from source %s with tooling %s\n' "$PRODUCT" "$version" "$source_commit" "$tooling_commit"
