@@ -4,6 +4,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-09-13
+
+### Changed
+
+- the tray now uses the held-dash mark while intake is paused.
+
+### Fixed
+
+- a retrying backlog now reads "waiting to sync" instead of "needs attention." the attention state is reserved for material that has been set aside.
+- when pairing cannot reach your journal over your private network, the app now asks you to join the same wi-fi and try a fresh pairing code instead of showing a generic failure.
+
 ## [2.0.1] - 2026-09-11
 
 ### changed
