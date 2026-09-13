@@ -238,8 +238,14 @@ done
 
 release_full_sha1="$(sha1sum "$candidate_directory/$full" | awk '{print toupper($1)}')"
 release_full_bytes="$(wc -c < "$candidate_directory/$full" | tr -d ' ')"
-grep -Fqx "$release_full_sha1 $full $release_full_bytes" "$candidate_directory/$release_index" ||
-    die "candidate-set-invalid: RELEASES does not name the exact current full package"
+release_entry_found=false
+while IFS= read -r release_entry || [[ -n "$release_entry" ]]; do
+    release_entry="${release_entry#$'\xef\xbb\xbf'}"
+    if [[ "$release_entry" == "$release_full_sha1 $full $release_full_bytes" ]]; then
+        release_entry_found=true
+    fi
+done < "$candidate_directory/$release_index"
+$release_entry_found || die "candidate-set-invalid: RELEASES does not name the exact current full package"
 
 jq -e --arg version "$version" --arg full "$full" --arg delta "$delta" \
     --argjson has_delta "$has_delta" \

@@ -56,7 +56,7 @@ printf '[{"RelativeFileName":"%s","Type":"Installer"},{"RelativeFileName":"%s","
 FULL_SHA="$(sha256sum "$CANDIDATE/$FULL" | awk '{print $1}')"
 DELTA_SHA="$(sha256sum "$CANDIDATE/$DELTA" | awk '{print $1}')"
 FULL_SHA1="$(sha1sum "$CANDIDATE/$FULL" | awk '{print toupper($1)}')"
-printf '%s %s %s\n' "$FULL_SHA1" "$FULL" "$(wc -c < "$CANDIDATE/$FULL")" > "$CANDIDATE/RELEASES"
+printf '\357\273\277%s %s %s\n' "$FULL_SHA1" "$FULL" "$(wc -c < "$CANDIDATE/$FULL")" > "$CANDIDATE/RELEASES"
 jq -n --arg version "$VERSION" --arg full "$FULL" --arg delta "$DELTA" \
     --arg full_sha "${FULL_SHA^^}" --arg delta_sha "${DELTA_SHA^^}" \
     --argjson full_bytes "$(wc -c < "$CANDIDATE/$FULL")" --argjson delta_bytes "$(wc -c < "$CANDIDATE/$DELTA")" \
