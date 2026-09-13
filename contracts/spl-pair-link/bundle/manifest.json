@@ -1,0 +1,62 @@
+{
+  "bundle_schema_identity": "spl.pair-link-definition-bundle.schema.v1",
+  "bundle_semver": "7.0.0",
+  "files": [
+    {
+      "path": "definition.json",
+      "sha256": "ef77f81ef7f74d2225935885d682457b8b9c9af9e61f67477ac6e4dfc93363ad"
+    },
+    {
+      "path": "definition.schema.json",
+      "sha256": "e52b0fa33e732de6a48336571e541c6fb4d6551de047c3b4e037323e0fe5f69a"
+    },
+    {
+      "path": "vectors.json",
+      "sha256": "edebc1cfde34cf379e4dc16fcf43eda9254da7141bdce4f7a9d85991f9b6d270"
+    },
+    {
+      "path": "vectors.schema.json",
+      "sha256": "4ca9793cb383c5b393f232b63d83814c12e20c33e047ae6053800dd80e78a364"
+    }
+  ],
+  "generator_identity": "spl.proto.definition.generate.v1",
+  "generator_inputs": [
+    {
+      "id": "definition.authored_source",
+      "path": "proto/definition/definition.toml",
+      "role": "authored_source",
+      "sha256": "cfd7f31e55e14d591795d790757348a287d57a4fc257350d72a276134bd32652"
+    },
+    {
+      "id": "definition.conformance_corpus",
+      "path": "proto/definition/vectors.json",
+      "role": "conformance_corpus",
+      "sha256": "edebc1cfde34cf379e4dc16fcf43eda9254da7141bdce4f7a9d85991f9b6d270"
+    },
+    {
+      "id": "definition.generator",
+      "path": "proto/definition/generate.py",
+      "role": "generator",
+      "sha256": "58a6c3ad93c7f0f72b8ef62adff6a2cb9312f6c06df92833d401f17233b7b513"
+    },
+    {
+      "id": "source.identity",
+      "path": "proto/identity.md",
+      "role": "normative_source_document",
+      "sha256": "49e5495a233f34466776cc1d2e295342b8bb1c18329d199436884b9ba42cb9fb"
+    },
+    {
+      "id": "source.pair_window",
+      "path": "proto/pair-window.md",
+      "role": "normative_source_document",
+      "sha256": "df2e60fd3e579081ea0b2673591f540cbfd0c39717bd2cfdbb05231a3c27072e"
+    },
+    {
+      "id": "source.pairing",
+      "path": "proto/pairing.md",
+      "role": "normative_source_document",
+      "sha256": "335e68568c8cb8fb4d378c521b0035bdfcc021505f84f91751f68ee8cfd3b03f"
+    }
+  ],
+  "schema_dialect_uri": "https://json-schema.org/draft/2020-12/schema"
+}
