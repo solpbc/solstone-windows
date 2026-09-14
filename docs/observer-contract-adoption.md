@@ -52,14 +52,13 @@ vendored export or the client.
 
 1. Start from a clean detached checkout of
    `https://github.com/solpbc/solstone-journal` at the exact reviewed commit.
-2. Export to a fresh destination with:
-
-   ```text
-   .venv/bin/python scripts/export_observer_client_contract_bundle.py "$DESTINATION"
-   ```
-
-3. Run the authority repository's export verification before transporting the
-   directory.
+2. The bundle to vendor (`$BUNDLE` below) is that checkout's own
+   `docs/openapi/client-ingest-contract/` directory — the authority commits its
+   generator's output directly into its own tree, so there is no separate
+   export step or export script to run.
+3. Treat that checkout's own generator round-trip test as the authority's
+   export verification; nothing further needs to run there before
+   transporting the directory.
 4. Produce the deterministic transport archive with the pinned recipe:
 
    ```text
