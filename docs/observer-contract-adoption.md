@@ -8,10 +8,10 @@ this repository's generated AutomationId and state-token contract described in
 `docs/automation-contract.md`.
 
 The adopted authority revision is
-`dd76c42a21a7892fccc1b0cfa790ce1ad31bf78b`, bundle version `9.0.0`. Its
+`5879fa6115129422cbbcb61be051dd8ca9874336`, bundle version `12.0.0`. Its
 generator identity is
-`solstone.repository_contracts.observer_client_contract_bundle.v1`; its bundle
-schema identity is `solstone.observer-client-contract-bundle.schema.v1`.
+`solstone.repository_contracts.client_ingest_contract_bundle.v1`; its bundle
+schema identity is `solstone.client-ingest-contract-bundle.schema.v1`.
 
 ## Repository layout and path basis
 
@@ -44,7 +44,7 @@ projection mappings, coverage sets, and focused behavior through the real Rust
 wire types and local transport seams. It does not contact a live journal, prove
 native packaging, or provide release or installed-artifact evidence.
 
-The v9 projection publishes the four linked-device `/app/devices/ingest`
+The adopted projection publishes the four linked-device `/app/devices/ingest`
 operations directly. The retired observer-route overlay is not present in the
 vendored export or the client.
 
@@ -85,7 +85,7 @@ vendored export or the client.
 11. Run `make check-observer-contract`, focused crate tests, the host checks,
     and the separately required native Windows evidence.
 
-The v9 bundle contains four declared payload files, four projected operations,
+The 12.0.0 bundle contains four declared payload files, four projected operations,
 and five fixtures and five vectors (the `ok`, `duplicate`, `collision`,
 `conflict`, and `failed` ingest statuses).
 
@@ -108,9 +108,10 @@ the digests then preserve the identity of those bytes.
 
 ## Upstream follow-ups
 
-The v9 consumer audit still classifies `solstone-windows` at
-`19c972c4fea775176cea6421ac8b87f3bb20ab42` as
-`legacy_v2_unmigrated`; this consumer adoption does not rewrite the authority's
-audit history. Version 9 also no longer projects pair, register, ingestEvent,
-or callosum, so their preserved request-byte tests use local committed fixtures
-until the upstream projection scope changes.
+The adopted 12.0.0 authority bundle at
+`5879fa6115129422cbbcb61be051dd8ca9874336` audits `solstone-windows` at
+`f276076e3554c75d75cbd3616644f46d831c0d90` and no longer lists this consumer
+as `legacy_v2_unmigrated` or a rollout blocker; `solstone-linux` remains the
+rollout target. Pairing and root SSE stay out of projection scope; local
+`excluded_operations.json` fixtures remain how those preserved request-byte
+tests operate until the upstream projection scope changes.

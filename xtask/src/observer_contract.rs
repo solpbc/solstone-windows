@@ -18,24 +18,24 @@ pub use crate::artifact_fs::{validate_relative_path, UnsafePathReason};
 pub const ADOPTION_SCHEMA_VERSION: u64 = 1;
 pub const CONSUMER_IDENTIFIER: &str = "solstone-windows";
 pub const AUTHORITY_REPOSITORY: &str = "https://github.com/solpbc/solstone-journal";
-pub const AUTHORITY_COMMIT: &str = "dd76c42a21a7892fccc1b0cfa790ce1ad31bf78b";
-pub const BUNDLE_SEMVER: &str = "9.0.0";
-pub const ARCHIVE_SHA256: &str = "8711c7e811cd83f0bdb38d4a8a525c0c40e9bccf96716e7b567829efe7b97a89";
-pub const ARCHIVE_SIZE_BYTES: u64 = 5_671;
+pub const AUTHORITY_COMMIT: &str = "5879fa6115129422cbbcb61be051dd8ca9874336";
+pub const BUNDLE_SEMVER: &str = "12.0.0";
+pub const ARCHIVE_SHA256: &str = "28a79ded638dbd30dab44f5f403983ff9e117fa60eeef93cc0398215d7f767a0";
+pub const ARCHIVE_SIZE_BYTES: u64 = 5_623;
 /// All authority paths are relative to the explicit bundle directory.
 pub const AUTHORITY_MANIFEST_PATH: &str = "manifest.json";
 pub const AUTHORITY_MANIFEST_SHA256: &str =
-    "93b2a5a1604f1ba6fad30624c00cac98ea3d04a80cb1718886cf665c16f58834";
+    "ad1883d9e6700205cf5d4e4a45c6a3198272e3379ab4936e25f155e32c339776";
 pub const GENERATOR_IDENTITY: &str =
-    "solstone.repository_contracts.observer_client_contract_bundle.v1";
-pub const BUNDLE_SCHEMA_IDENTITY: &str = "solstone.observer-client-contract-bundle.schema.v1";
+    "solstone.repository_contracts.client_ingest_contract_bundle.v1";
+pub const BUNDLE_SCHEMA_IDENTITY: &str = "solstone.client-ingest-contract-bundle.schema.v1";
 pub const SCHEMA_DIALECT_URI: &str = "https://json-schema.org/draft/2020-12/schema";
 pub const OPENAPI_DOCUMENT_VERSION: &str = "1.0.0";
 pub const OPENAPI_SPEC_VERSION: &str = "3.1.0";
 pub const PROJECTION_PATH: &str = "projection.openapi.json";
 pub const OBSERVER_PROTOCOL_VERSION: u64 = 3;
 pub const SUPPORTED_RESPONSE_VARIANTS: &[u64] = &[3];
-pub const SCOPE_RATIONALE: &str = "This ingest-triad bundle projects only the four Rust-served linked-device devices/ingest operations. Pairing and root SSE are live but out of scope; deferred legacy observer operations are not projected.";
+pub const SCOPE_RATIONALE: &str = "This ingest-triad bundle projects only the four Rust-served linked-device devices/ingest operations. Pairing and root SSE are live but out of scope; retired legacy operations are not projected.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FilePin {
@@ -46,19 +46,19 @@ pub struct FilePin {
 pub const BUNDLE_FILES: &[FilePin] = &[
     FilePin {
         path: "consumer-audit.json",
-        sha256: "522a1d0417086a85d755e058b9043e519665c63eace50b146bab1f1157ff0cdf",
+        sha256: "9d8944fc5f873e858e3dab9f9251ded9e840cec0ef2284f510f70a560026d57b",
     },
     FilePin {
         path: "fixtures/wire-behavior.json",
-        sha256: "65917fe91620f517d9988664e24b559722acbd6fb798bc518d1e092ef8f8771c",
+        sha256: "f95433babe4f10ccf87a1ea32dfdb1e71c03b6165e81a9199090b5a9d8b37ee6",
     },
     FilePin {
         path: "projection.openapi.json",
-        sha256: "7780c76380ae59504c069e388042401b050c60caf9027e1cf22a4cce0c19103e",
+        sha256: "1735105d931b6f6ac427969b842836ebc7c37ef70f7bc5a08a39025152c3249f",
     },
     FilePin {
         path: "vectors.json",
-        sha256: "fd99f21f225573cd2aead2217e9716237e7b4f66bd36a225d0e7019ded4a222b",
+        sha256: "bb9c140d4f587825fd18bdce28b739edcad04f53d870c60da41a15af815680ee",
     },
 ];
 
@@ -67,17 +67,17 @@ pub const CONSUMER_IDENTIFIERS: &[&str] =
     &["solstone-browser", "solstone-linux", "solstone-windows"];
 /// This order is pinned to the authority manifest, which is intentionally not lexical.
 pub const OPERATION_IDS: &[&str] = &[
-    "observer.ingestUpload",
-    "observer.ingestManifest",
-    "observer.ingestManifestDay",
-    "observer.ingestSegments",
+    "client.ingestUpload",
+    "client.ingestManifest",
+    "client.ingestManifestDay",
+    "client.ingestSegments",
 ];
 /// Adoption coverage is sorted independently of the authority's manifest order.
 pub const ADOPTED_OPERATION_IDS: &[&str] = &[
-    "observer.ingestManifest",
-    "observer.ingestManifestDay",
-    "observer.ingestSegments",
-    "observer.ingestUpload",
+    "client.ingestManifest",
+    "client.ingestManifestDay",
+    "client.ingestSegments",
+    "client.ingestUpload",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -89,40 +89,40 @@ pub struct OperationMapping {
 
 pub const WINDOWS_OPERATION_MAPPINGS: &[OperationMapping] = &[
     OperationMapping {
-        operation_id: "observer.ingestUpload",
+        operation_id: "client.ingestUpload",
         method: "POST",
         path: "/app/devices/ingest",
     },
     OperationMapping {
-        operation_id: "observer.ingestManifest",
+        operation_id: "client.ingestManifest",
         method: "GET",
         path: "/app/devices/ingest/manifest",
     },
     OperationMapping {
-        operation_id: "observer.ingestManifestDay",
+        operation_id: "client.ingestManifestDay",
         method: "GET",
         path: "/app/devices/ingest/manifest/{day}",
     },
     OperationMapping {
-        operation_id: "observer.ingestSegments",
+        operation_id: "client.ingestSegments",
         method: "GET",
         path: "/app/devices/ingest/segments/{day}",
     },
 ];
 
 pub const FIXTURE_IDS: &[&str] = &[
-    "declared.observer.ingestUpload.status.collision",
-    "declared.observer.ingestUpload.status.conflict",
-    "declared.observer.ingestUpload.status.duplicate",
-    "declared.observer.ingestUpload.status.failed",
-    "declared.observer.ingestUpload.status.ok",
+    "declared.client.ingestUpload.status.collision",
+    "declared.client.ingestUpload.status.conflict",
+    "declared.client.ingestUpload.status.duplicate",
+    "declared.client.ingestUpload.status.failed",
+    "declared.client.ingestUpload.status.ok",
 ];
 pub const VECTOR_IDS: &[&str] = &[
-    "observer.ingestUpload.status.collision",
-    "observer.ingestUpload.status.conflict",
-    "observer.ingestUpload.status.duplicate",
-    "observer.ingestUpload.status.failed",
-    "observer.ingestUpload.status.ok",
+    "client.ingestUpload.status.collision",
+    "client.ingestUpload.status.conflict",
+    "client.ingestUpload.status.duplicate",
+    "client.ingestUpload.status.failed",
+    "client.ingestUpload.status.ok",
 ];
 
 #[derive(Debug)]
@@ -723,7 +723,7 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
         ),
         ("generator_identity", serde_json::json!(GENERATOR_IDENTITY)),
         (
-            "observer_protocol_version",
+            "client_protocol_version",
             serde_json::json!(OBSERVER_PROTOCOL_VERSION),
         ),
         (
@@ -745,16 +745,16 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
         (
             "generator_inputs",
             serde_json::json!([{
-                "id": "openapi.convey_clients",
-                "path": "docs/openapi/convey-clients.json",
+                "id": "openapi.client_ingest_authority",
+                "path": "core/crates/solstone-core-repository-contracts/src/contracts/client_ingest_authority.json",
                 "role": "openapi_source",
-                "sha256": "434d103d7b2accc8d6244f9886884c6c05ce59096bd0b8ee9bfbc67d564f6563",
+                "sha256": "03595fba0190afb39f15c9f61d3353952e71512f01218c942741135bdb4cf3e0",
             }]),
         ),
         (
             "audited_consumer_revisions",
             serde_json::json!([
-                { "consumer_identifier": "solstone-windows", "revision": "19c972c4fea775176cea6421ac8b87f3bb20ab42" },
+                { "consumer_identifier": "solstone-windows", "revision": "f276076e3554c75d75cbd3616644f46d831c0d90" },
                 { "consumer_identifier": "solstone-linux", "revision": "1c679db1ce6f9a65db70c5aae0ca2fad677416ef" },
                 { "consumer_identifier": "solstone-browser", "revision": "998c1095cd8f766dd188bece5ad6527444f8dfac" },
             ]),
@@ -771,7 +771,7 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
                 },
                 {
                     "classification": "closed",
-                    "id": "observer.ingestUpload.status",
+                    "id": "client.ingestUpload.status",
                     "source_pointers": [
                         "/paths/~1app~1devices~1ingest/post/responses/200/content/application~1json/schema/properties/status",
                         "/paths/~1app~1devices~1ingest/post/responses/409",
@@ -787,10 +787,6 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
                 {
                     "adoption_blocker_ids": ["solstone-linux-legacy-v2-unmigrated"],
                     "consumer_identifier": "solstone-linux",
-                },
-                {
-                    "adoption_blocker_ids": ["solstone-windows-legacy-v2-unmigrated"],
-                    "consumer_identifier": "solstone-windows",
                 },
             ]),
         ),
@@ -904,7 +900,7 @@ fn verify_id_document(
                         format!("fixture {id} lacks boolean schema_validation.valid"),
                     )
                 })?;
-            if id == "declared.observer.ingestUpload.status.failed" && valid {
+            if id == "declared.client.ingestUpload.status.failed" && valid {
                 return Err(id_error(
                     true,
                     "failed fixture must deliberately carry schema_validation.valid=false"

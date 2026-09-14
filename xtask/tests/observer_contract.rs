@@ -428,12 +428,12 @@ fn observer_contract_rejects_duplicate_unsorted_and_mismatched_coverage() {
 fn observer_contract_rejects_manifest_projection_and_adopted_set_mutations() {
     let tree = TempTree::good();
     let mut manifest = tree.json("bundle/manifest.json");
-    manifest["observer_protocol_version"] = json!(2);
+    manifest["client_protocol_version"] = json!(2);
     tree.write_json("bundle/manifest.json", &manifest);
     let error = tree.verify().expect_err("mutated manifest pin must fail");
     assert!(matches!(
         &error,
-        VerifyError::ManifestFieldMismatch { field, .. } if field == "observer_protocol_version"
+        VerifyError::ManifestFieldMismatch { field, .. } if field == "client_protocol_version"
     ));
     assert!(error.to_string().contains("expected 3, got 2"));
 
@@ -551,7 +551,7 @@ fn observer_contract_rejects_stale_observer_routes_without_an_overlay() {
     observer_contract::verify_projection(&committed_projection(), WINDOWS_OPERATION_MAPPINGS)
         .expect("committed v3 projection must match the direct devices routes");
     assert_projection_mismatch(&catalog_with(
-        "observer.ingestUpload",
+        "client.ingestUpload",
         "/app/observer/ingest",
     ));
 }

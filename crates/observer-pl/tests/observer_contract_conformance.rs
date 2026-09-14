@@ -38,22 +38,22 @@ fn records(relative: &str, field: &str) -> BTreeMap<String, Value> {
 fn observer_contract_authority_projection_paths_equal_production_constants() {
     let expected = [
         (
-            "observer.ingestUpload",
+            "client.ingestUpload",
             "POST",
             observer_pl::paths::INGEST.to_owned(),
         ),
         (
-            "observer.ingestManifest",
+            "client.ingestManifest",
             "GET",
             observer_pl::paths::INGEST_MANIFEST.to_owned(),
         ),
         (
-            "observer.ingestManifestDay",
+            "client.ingestManifestDay",
             "GET",
             format!("{}/{{day}}", observer_pl::paths::INGEST_MANIFEST),
         ),
         (
-            "observer.ingestSegments",
+            "client.ingestSegments",
             "GET",
             format!("{}/{{day}}", observer_pl::paths::INGEST_SEGMENTS),
         ),
@@ -100,7 +100,7 @@ fn observer_contract_authority_status_fixtures_and_vectors_match_real_wire_types
             .expect("boolean schema validation result");
         assert_eq!(
             valid,
-            *vector_id != "observer.ingestUpload.status.failed",
+            *vector_id != "client.ingestUpload.status.failed",
             "{vector_id}"
         );
     }
