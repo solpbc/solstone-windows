@@ -39,7 +39,8 @@ PUBLISHER="$TOOL_REPO/scripts/publish-origin.sh"
 
 git -C "$SOURCE" init -q
 printf '[workspace]\nmembers=[]\n' > "$SOURCE/Cargo.toml"
-git -C "$SOURCE" add Cargo.toml
+printf '## [2.0.0] - 2026-01-01\n\n### Changed\n\n- test fixture entry.\n' > "$SOURCE/CHANGELOG.md"
+git -C "$SOURCE" add Cargo.toml CHANGELOG.md
 git -C "$SOURCE" -c user.name=test -c user.email=test@example.invalid commit -qm source
 SOURCE_COMMIT="$(git -C "$SOURCE" rev-parse HEAD)"
 VERSION=2.0.0
@@ -249,6 +250,8 @@ last_put="$(awk '$1 == "put" && $2 != "solstone-windows/.publication-lock.json" 
 assert test "$last_put" = "solstone-windows/releases.win.json"
 assert test -f "$FAKE_R2/solstone-windows/v/$VERSION/rust-release-finalization.json"
 assert cmp -s "$FAKE_R2/solstone-windows/$FULL" "$CANDIDATE/$FULL"
+assert cmp -s "$FAKE_R2/solstone-windows/CHANGELOG.md" "$SOURCE/CHANGELOG.md"
+assert test "$(grep -Fxc "put solstone-windows/CHANGELOG.md" "$WITNESS")" = 1
 
 jq -n '{schema:"solstone.origin-publication-lock.v1",state:"held",product:"solstone-windows",
   operation_id:"immediate-next-owner",version:"2.0.1",source_commit:"0000000000000000000000000000000000000000",

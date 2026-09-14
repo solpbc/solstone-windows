@@ -195,8 +195,14 @@ commands remain fail-closed.
 Per-release notes ship **inside the update feed**: `make package` extracts the
 `CHANGELOG.md` `## [<version>]` section and threads it into `vpk pack` via
 `--releaseNotes`, so `releases.win.json` carries `NotesMarkdown`/`NotesHTML`. The
-in-app Updates pane and `solstone.app/releases/windows` render those notes, the
-Windows analog of the macOS appcast `<description>`.
+in-app Updates pane renders those notes, the Windows analog of the macOS
+appcast `<description>`.
+
+`solstone.app/releases/windows` renders full release history instead, from a
+separate whole-file `CHANGELOG.md` mirror kept alongside the feed at the same
+origin — the feed itself only ever carries the single current version, so it
+cannot back a history page on its own. The aggregate provenance publisher
+keeps that mirror current on every release.
 
 **Before a signed release pack, cut the CHANGELOG:** rename `## [Unreleased]` to
 `## [<version>] - <YYYY-MM-DD>` (Keep a Changelog format) so a matching section

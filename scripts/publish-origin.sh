@@ -115,6 +115,11 @@ source_root="$(realpath "$source_root")"
 [[ "$source_root" == "$source_checkout" ]] ||
     die "source-unbound: source checkout must name the worktree root"
 
+changelog_file="$source_root/CHANGELOG.md"
+[[ -f "$changelog_file" && ! -L "$changelog_file" ]] ||
+    die "changelog-missing: $changelog_file must be a regular file"
+changelog_key="$PREFIX/CHANGELOG.md"
+
 mapfile -d '' -t manifests < <(
     find "$candidate_directory" -mindepth 1 -maxdepth 1 -type f \
         -name 'solstone-windows-*-pc-windows-msvc.rust-release-manifest.json' -print0
@@ -291,6 +296,7 @@ content_type_for() {
         *.json) echo "application/json" ;;
         *.zip) echo "application/zip" ;;
         RELEASES) echo "text/plain; charset=utf-8" ;;
+        CHANGELOG.md) echo "text/plain; charset=utf-8" ;;
         *) echo "application/octet-stream" ;;
     esac
 }
@@ -480,6 +486,7 @@ printf 'validated %s %s from source %s with tooling %s\n' "$PRODUCT" "$version" 
 if $dry_run; then
     for name in "${archive_names[@]}"; do printf '  would publish %s/%s/v/%s/%s\n' "$ORIGIN_URL" "$PREFIX" "$version" "$name"; done
     for name in "${flat_immutable[@]}" "${flat_mutable[@]}" "$FEED"; do printf '  would publish %s/%s/%s\n' "$ORIGIN_URL" "$PREFIX" "$name"; done
+    printf '  would publish %s/%s\n' "$ORIGIN_URL" "$changelog_key"
     printf 'dry-run complete; no origin calls and no receipt written\n'
     exit 0
 fi
@@ -499,6 +506,16 @@ for name in "${flat_mutable[@]}" "$FEED"; do
         MUTABLE_ETAG["$key"]=""
     fi
 done
+
+changelog_snapshot="$stage_root/snapshot-changelog"
+MUTABLE_SNAPSHOT["$changelog_key"]="$changelog_snapshot"
+if remote_get "$changelog_key" "$changelog_snapshot"; then
+    MUTABLE_PRESENT["$changelog_key"]=1
+    MUTABLE_ETAG["$changelog_key"]="$REMOTE_GET_ETAG"
+else
+    MUTABLE_PRESENT["$changelog_key"]=0
+    MUTABLE_ETAG["$changelog_key"]=""
+fi
 
 current_feed="${MUTABLE_SNAPSHOT["$PREFIX/$FEED"]}"
 if [[ "${MUTABLE_PRESENT["$PREFIX/$FEED"]}" == 1 ]]; then
@@ -558,6 +575,22 @@ for name in "${flat_mutable[@]}"; do
     put_mutable "$PREFIX/$name" "$candidate_directory/$name"
     checkpoint "mutable:$name"
 done
+
+# CHANGELOG.md mirror — lane-independent (there is one changelog, not one per
+# release) and sourced from the exact validated source checkout, so it can
+# never drift from what shipped. This lets solstone.app's /releases/windows
+# page read prose release notes straight from the origin instead of the
+# single-latest releases.win.json feed, which is untouched and still the
+# app's own auto-update source.
+put_mutable "$changelog_key" "$changelog_file"
+changelog_public="$stage_root/public-changelog"
+curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 -fsS \
+    "$ORIGIN_URL/$changelog_key" -o "$changelog_public" ||
+    die "origin-unreachable: public GET failed for CHANGELOG.md"
+cmp -s "$changelog_public" "$changelog_file" ||
+    die "digest-mismatch: public GET differs for CHANGELOG.md"
+checkpoint "changelog"
+
 checkpoint "before-feed"
 put_mutable "$PREFIX/$FEED" "$candidate_directory/$FEED"
 checkpoint "feed"
