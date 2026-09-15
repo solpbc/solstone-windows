@@ -212,9 +212,10 @@ pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
     };
     match manager.check_for_updates() {
         Ok(UpdateCheck::UpdateAvailable(info)) => {
-            let base = info.BaseRelease.as_ref().map(|a| {
-                UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
-            });
+            let base = info
+                .BaseRelease
+                .as_ref()
+                .map(|a| UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type));
             let deltas = info
                 .DeltasToTarget
                 .iter()
@@ -442,7 +443,9 @@ impl UpdateController {
                 let deltas = info
                     .DeltasToTarget
                     .iter()
-                    .map(|a| UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type))
+                    .map(|a| {
+                        UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
+                    })
                     .collect();
                 let target = UpdateAssetDescriptor::new(
                     &info.TargetFullRelease.FileName,
