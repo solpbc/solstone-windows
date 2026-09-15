@@ -99,9 +99,9 @@ impl SharedRelayFence for RelayFence {
     fn permit(&self, incarnation: u64) -> RelayPermit {
         if self.retired.load(Ordering::Acquire) {
             RelayPermit::Retired
-        } else if self.disabled.load(Ordering::Acquire) {
-            RelayPermit::Disabled
-        } else if self.ineligible_incarnation.load(Ordering::Acquire) == incarnation {
+        } else if self.disabled.load(Ordering::Acquire)
+            || self.ineligible_incarnation.load(Ordering::Acquire) == incarnation
+        {
             RelayPermit::Disabled
         } else if self.incarnation.load(Ordering::Acquire) != incarnation {
             RelayPermit::Retired
@@ -1154,6 +1154,64 @@ mod tests {
             Some("stale-token")
         );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn relay_fence_permit_preserves_disable_retire_and_incarnation_precedence() {
+        let retired = RelayFence::new(true);
+        retired.mark_relay_ineligible(1);
+        retired.retired.store(true, Ordering::Release);
+        assert_eq!(SharedRelayFence::permit(&retired, 1), RelayPermit::Retired);
+
+        let retired_mismatch = RelayFence::new(false);
+        assert_eq!(retired_mismatch.advance_from(1, false), Some(2));
+        retired_mismatch.mark_relay_ineligible(1);
+        retired_mismatch.retired.store(true, Ordering::Release);
+        assert_eq!(
+            SharedRelayFence::permit(&retired_mismatch, 1),
+            RelayPermit::Retired
+        );
+
+        let disabled_current = RelayFence::new(false);
+        assert_eq!(
+            SharedRelayFence::permit(&disabled_current, 1),
+            RelayPermit::Disabled
+        );
+
+        let disabled_mismatch = RelayFence::new(false);
+        assert_eq!(disabled_mismatch.advance_from(1, false), Some(2));
+        assert_eq!(
+            SharedRelayFence::permit(&disabled_mismatch, 1),
+            RelayPermit::Disabled
+        );
+
+        let ineligible_current = RelayFence::new(true);
+        ineligible_current.mark_relay_ineligible(1);
+        assert_eq!(
+            SharedRelayFence::permit(&ineligible_current, 1),
+            RelayPermit::Disabled
+        );
+
+        let ineligible_stale = RelayFence::new(true);
+        assert_eq!(ineligible_stale.advance_from(1, true), Some(2));
+        ineligible_stale.mark_relay_ineligible(1);
+        assert_eq!(
+            SharedRelayFence::permit(&ineligible_stale, 1),
+            RelayPermit::Disabled
+        );
+
+        let successor_ineligible = RelayFence::new(true);
+        assert_eq!(successor_ineligible.advance_from(1, true), Some(2));
+        successor_ineligible.mark_relay_ineligible(2);
+        assert_eq!(
+            SharedRelayFence::permit(&successor_ineligible, 1),
+            RelayPermit::Retired
+        );
+
+        let stale = RelayFence::new(true);
+        assert_eq!(stale.advance_from(1, true), Some(2));
+        assert_eq!(SharedRelayFence::permit(&stale, 1), RelayPermit::Retired);
+        assert_eq!(SharedRelayFence::permit(&stale, 2), RelayPermit::Allow);
     }
 
     #[tokio::test]

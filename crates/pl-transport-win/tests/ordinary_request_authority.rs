@@ -28,9 +28,9 @@ const POST_CONNECT_CAP: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 enum DirectDropPoint {
-    BeforeRequest,
-    PartialRequest,
-    CompleteRequest,
+    Before,
+    Partial,
+    Complete,
 }
 
 fn http_response_with_total(total: usize, prefix: &[u8], fill: u8) -> Vec<u8> {
@@ -132,18 +132,18 @@ async fn serve_direct_drop_then_response(
     let (tcp, _) = listener.accept().await.unwrap();
     accepts.fetch_add(1, Ordering::SeqCst);
     match drop_point {
-        DirectDropPoint::BeforeRequest => drop(tcp),
-        DirectDropPoint::PartialRequest | DirectDropPoint::CompleteRequest => {
+        DirectDropPoint::Before => drop(tcp),
+        DirectDropPoint::Partial | DirectDropPoint::Complete => {
             let mut tls = acceptor.accept(tcp).await.unwrap();
             match drop_point {
-                DirectDropPoint::PartialRequest => {
+                DirectDropPoint::Partial => {
                     let mut one_byte = [0u8; 1];
                     let _ = tls.read(&mut one_byte).await.unwrap();
                 }
-                DirectDropPoint::CompleteRequest => {
+                DirectDropPoint::Complete => {
                     let _ = read_framed_request(&mut tls).await;
                 }
-                DirectDropPoint::BeforeRequest => unreachable!(),
+                DirectDropPoint::Before => unreachable!(),
             }
         }
     }
@@ -165,18 +165,18 @@ async fn serve_direct_drop_once(
     let (tcp, _) = listener.accept().await.unwrap();
     accepts.fetch_add(1, Ordering::SeqCst);
     match drop_point {
-        DirectDropPoint::BeforeRequest => drop(tcp),
-        DirectDropPoint::PartialRequest | DirectDropPoint::CompleteRequest => {
+        DirectDropPoint::Before => drop(tcp),
+        DirectDropPoint::Partial | DirectDropPoint::Complete => {
             let mut tls = acceptor.accept(tcp).await.unwrap();
             match drop_point {
-                DirectDropPoint::PartialRequest => {
+                DirectDropPoint::Partial => {
                     let mut one_byte = [0u8; 1];
                     let _ = tls.read(&mut one_byte).await.unwrap();
                 }
-                DirectDropPoint::CompleteRequest => {
+                DirectDropPoint::Complete => {
                     let _ = read_framed_request(&mut tls).await;
                 }
-                DirectDropPoint::BeforeRequest => unreachable!(),
+                DirectDropPoint::Before => unreachable!(),
             }
         }
     }
@@ -370,10 +370,7 @@ async fn relay_fencing_does_not_block_a_reachable_direct_ordinary_request() {
 
 #[tokio::test]
 async fn direct_replay_safe_helpers_retry_before_and_during_request_writes() {
-    for drop_point in [
-        DirectDropPoint::BeforeRequest,
-        DirectDropPoint::PartialRequest,
-    ] {
+    for drop_point in [DirectDropPoint::Before, DirectDropPoint::Partial] {
         let (cert, key) = self_signed();
         let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -399,10 +396,7 @@ async fn direct_replay_safe_helpers_retry_before_and_during_request_writes() {
 
 #[tokio::test]
 async fn direct_forbid_after_write_never_retries_partial_or_complete_put() {
-    for drop_point in [
-        DirectDropPoint::PartialRequest,
-        DirectDropPoint::CompleteRequest,
-    ] {
+    for drop_point in [DirectDropPoint::Partial, DirectDropPoint::Complete] {
         let (cert, key) = self_signed();
         let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
