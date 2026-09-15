@@ -29,7 +29,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - the recovery action in settings and the tray menu is now called "restart intake".
 - you can open a support report from the tray menu with app version and status details filled in.
 
-## [2.0.0]
+## [2.0.0] - 2026-09-08
 
 ### changed
 
