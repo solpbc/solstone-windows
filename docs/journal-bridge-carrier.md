@@ -1,8 +1,9 @@
 # Journal Bridge Persistent Carrier Design
 
-Status: implemented (2026-07-02).
+Status: historical Wave-2 design, superseded by the shared `spl-transport`
+journal bridge in Wave 3.
 
-This note documents the local journal bridge rework: each bridge instance owns
+This archived note documents the former local journal bridge rework: each bridge instance owned
 at most one live upstream PL/TLS carrier, and every authorized loopback browser
 request opens its own odd-numbered mux stream on that carrier. The observer
 cadence paths - pairing, ingest, and reconcile - stay on
@@ -17,7 +18,7 @@ the existing request-per-carrier transport.
 - Local authorization, bootstrap, redacted logs, and local HTTP wire behavior
   stay byte-identical; upstream proxy requests start with protocol-v3 headers
   and strip caller-supplied legacy auth headers.
-- Pure mux state stays in `observer-pl`; socket, TLS, relay, and task topology
+- Historical (superseded): pure mux state stayed in `observer-pl`; socket, TLS, relay, and task topology
   stay in `pl-transport-win`.
 
 ## Non-goals
@@ -29,9 +30,9 @@ the existing request-per-carrier transport.
 
 ## Type and Module Plan
 
-### Pure crate: `crates/observer-pl/src/mux.rs`
+### Historical (superseded) pure crate: `crates/observer-pl/src/mux.rs`
 
-Keep `WindowedUpload`, `ResponseAssembler`, `StreamItem`, `StreamEnd`, and
+The former plan kept `WindowedUpload`, `ResponseAssembler`, `StreamItem`, `StreamEnd`, and
 `HttpHead`. Add the central carrier demux here so all mux-side state remains in
 one pure, host-testable module.
 

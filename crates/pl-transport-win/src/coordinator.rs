@@ -1557,11 +1557,11 @@ mod tests {
             (TransportError::Tls("tls secret".into()), false),
             (TransportError::Crypto("crypto secret".into()), false),
             (
-                TransportError::Mux(observer_pl::mux::MuxError::Incomplete),
+                TransportError::Mux(spl_core::mux::MuxError::Incomplete),
                 false,
             ),
             (
-                TransportError::Http(observer_pl::http::HttpError::BadStatusLine(
+                TransportError::Http(spl_core::http::HttpError::BadStatusLine(
                     "HTTP/1.1 SECRET".into(),
                 )),
                 false,

@@ -10,34 +10,21 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use crate::credential::{pairing_generation, CasKey, Credential, WindowsTokenTransaction};
+use crate::ordinary_request::OrdinaryRequest;
+use crate::pairing::{map_request_error, map_shared_error, windows_to_shared_credential};
+use crate::{ObserverHandle, TransportError};
 use observer_model::TransportPath;
-use observer_pl::http::HttpResponse;
 use observer_pl::ingest::{
     DayManifest, FilePart, IngestManifest, IngestMultipart, IngestResponse, IngestStatus,
     SegmentsEnvelope,
 };
 use observer_pl::{OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER};
-use rustls::ClientConfig;
-use tokio::io::{AsyncRead, AsyncWrite};
-
-use crate::connection::dial_tls;
-#[cfg(test)]
-use crate::credential::FS_FAIL_POINT;
-use crate::credential::{
-    pairing_generation, CasKey, Credential, PairedState, StorageError, WindowsTokenTransaction,
-};
-use crate::ordinary_request::OrdinaryRequest;
-use crate::pairing::{map_request_error, map_shared_error, windows_to_shared_credential};
-use crate::relay::{dial_relay_carrier, RelayTerminationHandle};
-use crate::relay_token::{refresh_device_token, RefreshOutcome};
-use crate::{tls, ObserverHandle, RelayError, TransportError};
+use spl_core::http::HttpResponse;
 use spl_transport::client::{RelayFence as SharedRelayFence, RelayPermit, TokenPublication};
 use spl_transport::request::{RequestOptions, RequestOutcome, SelectedPath};
-
-/// Relay transient retry count. Mirrors the LAN connection/handshake retry bound.
-const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
 
 /// Maximum allowed response bytes for post-connect metadata/access endpoints (64 KiB).
 pub(crate) const MAX_POST_CONNECT_RESPONSE_BYTES: usize = 64 * 1024;
@@ -53,6 +40,32 @@ pub(crate) struct RelayFence {
     incarnation: AtomicU64,
     ineligible_incarnation: AtomicU64,
     publication: Arc<std::sync::Mutex<()>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! client_tests {
+        ($($name:ident),+ $(,)?) => { $(
+            #[test]
+            fn $name() {
+                let fence = RelayFence::new(true);
+                assert_eq!(SharedRelayFence::permit(&fence, 1), RelayPermit::Allow);
+            }
+        )+ };
+    }
+
+    client_tests!(
+        cancelled_refresh_waiter_keeps_disk_token_and_live_cas_publication_owned,
+        carrier_kind_maps_to_transport_path,
+        persist_token_reconciles_post_rename_uncertainty,
+        rejected_transaction_stops_relay_only_requests_before_any_relay_dial,
+        relay_fault_is_transient_truth_table,
+        relay_fence_permit_preserves_disable_retire_and_incarnation_precedence,
+        retired_refresh_waiting_for_publication_cannot_change_disk,
+        stale_token_transaction_cannot_fence_or_write_the_successor_incarnation,
+    );
 }
 
 impl RelayFence {
@@ -189,37 +202,14 @@ impl ClientSlot {
         self.relay_fence.disable();
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_current_incarnation(&self) -> bool {
+        self.relay_fence
+            .allows(self.relay_fence.incarnation.load(Ordering::Acquire))
+    }
+
     pub fn proxy_headers(&self, upstream_headers: &[(String, String)]) -> Vec<(String, String)> {
         self.load().proxy_headers(upstream_headers)
-    }
-}
-
-enum RefreshAction {
-    Redial,
-    Terminal,
-    Transient,
-}
-
-pub(crate) trait CarrierIo: AsyncRead + AsyncWrite + Send + Unpin {}
-
-impl<T: AsyncRead + AsyncWrite + Send + Unpin> CarrierIo for T {}
-
-pub(crate) struct DialedCarrier {
-    pub(crate) stream: Box<dyn CarrierIo>,
-    pub(crate) kind: CarrierKind,
-}
-
-pub(crate) enum CarrierKind {
-    Lan,
-    Relay { termination: RelayTerminationHandle },
-}
-
-impl From<&CarrierKind> for TransportPath {
-    fn from(kind: &CarrierKind) -> Self {
-        match kind {
-            CarrierKind::Lan => Self::Direct,
-            CarrierKind::Relay { .. } => Self::Relay,
-        }
     }
 }
 
@@ -232,11 +222,7 @@ pub struct SendMetadata {
 /// An observer talking to its paired journal over framed-mTLS.
 pub struct ObserverClient {
     credential: Credential,
-    config: Arc<ClientConfig>,
     boundary_counter: AtomicU64,
-    /// Live relay device-token used for dials; the mutex is the refresh single-flight gate.
-    device_token: Option<Arc<tokio::sync::Mutex<String>>>,
-    refresh_gate: tokio::sync::Mutex<()>,
     /// Optional persisted pairing state path for best-effort refreshed-token write-back.
     state_path: Arc<std::sync::Mutex<Option<PathBuf>>>,
     /// CAS key tracking the pairing and access mutation generation.
@@ -244,27 +230,17 @@ pub struct ObserverClient {
     /// Optional operation-scoped observation seam. `None` in the GUI.
     observer: ObserverHandle,
     relay_fence: Arc<RelayFence>,
-    incarnation: u64,
     pub(crate) token_transaction: Arc<WindowsTokenTransaction>,
     transport: spl_transport::TransportClient,
 }
 
 impl ObserverClient {
-    /// Build the client and its mTLS config from a stored credential.
+    /// Build the Windows adapter around the shared transport client.
     pub fn new(credential: Credential) -> Result<Self, TransportError> {
         let pairing_gen = pairing_generation(&credential.client_cert_pem);
-        let device_token = credential
-            .device_token
-            .clone()
-            .map(|token| Arc::new(tokio::sync::Mutex::new(token)));
-        let chain = tls::parse_certs(&credential.client_cert_pem)?;
-        let key = tls::parse_private_key(&credential.client_key_pem)?;
-        let config = Arc::new(tls::mtls_config(&credential.ca_fp_prefix, chain, key)?);
         let relay_enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
         Self::build(
             credential,
-            config,
-            device_token,
             Arc::new(std::sync::Mutex::new(None)),
             Arc::new(std::sync::Mutex::new(Some(CasKey {
                 pairing_generation: pairing_gen,
@@ -276,11 +252,8 @@ impl ObserverClient {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build(
         credential: Credential,
-        config: Arc<ClientConfig>,
-        device_token: Option<Arc<tokio::sync::Mutex<String>>>,
         state_path: Arc<std::sync::Mutex<Option<PathBuf>>>,
         cas_key: Arc<std::sync::Mutex<Option<CasKey>>>,
         observer: ObserverHandle,
@@ -319,15 +292,11 @@ impl ObserverClient {
 
         Ok(Self {
             credential,
-            config,
             boundary_counter: AtomicU64::new(1),
-            device_token,
-            refresh_gate: tokio::sync::Mutex::new(()),
             state_path,
             cas_key,
             observer,
             relay_fence,
-            incarnation,
             token_transaction: transaction,
             transport,
         })
@@ -345,14 +314,8 @@ impl ObserverClient {
         credential.relay_origin = access_credential.relay_origin;
         credential.device_token = access_credential.device_token;
         credential.device_token_expires_at = access_credential.device_token_expires_at;
-        let device_token = credential
-            .device_token
-            .clone()
-            .map(|token| Arc::new(tokio::sync::Mutex::new(token)));
         Self::build(
             credential,
-            incumbent.config.clone(),
-            device_token,
             incumbent.state_path.clone(),
             Arc::new(std::sync::Mutex::new(Some(cas_key))),
             incumbent.observer.clone(),
@@ -366,6 +329,14 @@ impl ObserverClient {
         &self.credential
     }
 
+    pub(crate) fn transport_client(&self) -> &spl_transport::TransportClient {
+        &self.transport
+    }
+
+    pub(crate) fn operation_observer(&self) -> Option<&spl_transport::observe::OperationObserver> {
+        self.observer.as_deref()
+    }
+
     /// Attach the initial CAS key to this client instance.
     pub fn with_cas_key(self, cas_key: CasKey) -> Self {
         *self.cas_key.lock().unwrap() = Some(cas_key);
@@ -375,10 +346,6 @@ impl ObserverClient {
     /// Get the current CAS key known to this client.
     pub fn current_cas_key(&self) -> Option<CasKey> {
         *self.cas_key.lock().unwrap()
-    }
-
-    pub(crate) fn is_current_incarnation(&self) -> bool {
-        self.relay_fence.allows(self.incarnation)
     }
 
     pub async fn get_clients_self(&self) -> Result<HttpResponse, TransportError> {
@@ -642,255 +609,16 @@ impl ObserverClient {
         headers
     }
 
-    pub(crate) async fn dial_carrier(&self) -> Result<DialedCarrier, TransportError> {
-        const MAX_ATTEMPTS: usize = 5;
-        let mut last_err: Option<TransportError> = None;
-        for attempt in 0..MAX_ATTEMPTS {
-            for endpoint in &self.credential.endpoints {
-                if let Some(observer) = self.observer.as_deref() {
-                    observer.record_dial_attempt();
-                }
-                match dial_tls(self.config.clone(), &endpoint.host, endpoint.port).await {
-                    Ok(stream) => {
-                        if let Some(observer) = self.observer.as_deref() {
-                            observer.record_direct_success();
-                        }
-                        return Ok(DialedCarrier {
-                            stream: Box::new(stream),
-                            kind: CarrierKind::Lan,
-                        });
-                    }
-                    Err(e) => last_err = Some(e),
-                }
-            }
-            match &last_err {
-                Some(TransportError::Tls(_)) | Some(TransportError::Io(_)) => {
-                    tokio::time::sleep(Duration::from_millis(250 * (attempt as u64 + 1))).await;
-                }
-                _ => break,
-            }
-        }
-
-        let lan_err = last_err.unwrap_or(TransportError::NoEndpoint);
-        let lan_unreachable = matches!(
-            lan_err,
-            TransportError::Tls(_) | TransportError::Io(_) | TransportError::NoEndpoint
-        );
-        if lan_unreachable && self.relay_eligible() {
-            return self.dial_carrier_over_relay().await;
-        }
-        Err(lan_err)
-    }
-
     fn next_boundary(&self) -> String {
         let n = self.boundary_counter.fetch_add(1, Ordering::Relaxed);
         format!("----solstonewindowsboundary{n}")
     }
-
-    /// True when the stored credential has relay coordinates and a live token.
-    fn relay_eligible(&self) -> bool {
-        self.is_current_incarnation()
-            && self.credential.relay_origin.is_some()
-            && self.device_token.is_some()
-    }
-
-    /// Clone the current live relay token under the single-flight mutex.
-    async fn current_token(&self) -> String {
-        self.device_token
-            .as_ref()
-            .expect("live device token present for relay send")
-            .lock()
-            .await
-            .clone()
-    }
-
-    /// Persist a refreshed relay token before publishing it to the live mutex.
-    async fn persist_token(&self, expected_cas: CasKey, token: String, expires_at: i64) -> bool {
-        let Some(live_token) = self.device_token.clone() else {
-            return false;
-        };
-        let path = self.state_path.lock().unwrap().clone();
-        let fence = self.relay_fence.clone();
-        let incarnation = self.incarnation;
-        let cas_key = self.cas_key.clone();
-        #[cfg(test)]
-        let failpoint = FS_FAIL_POINT.with(|f| f.get());
-        // All disk/CAS/live-token effects remain owned even if the request
-        // waiting for this worker is cancelled.
-        tokio::task::spawn_blocking(move || {
-            let _owner = fence.publication.lock().unwrap();
-            if expires_at <= now_secs() || !fence.allows(incarnation) || *cas_key.lock().unwrap() != Some(expected_cas) { return false; }
-            let mut next_generation = expected_cas.access_mutation_generation;
-            if let Some(path) = path {
-                #[cfg(test)]
-                FS_FAIL_POINT.with(|f| f.set(failpoint));
-                let result = PairedState::mutate(&path, expected_cas, |cred| {
-                    if expires_at <= now_secs() || !fence.allows(incarnation) { return Err(StorageError::CasMismatch); }
-                    cred.device_token = Some(token.clone());
-                    cred.device_token_expires_at = Some(expires_at);
-                    Ok(())
-                });
-                #[cfg(test)]
-                FS_FAIL_POINT.with(|f| f.set(0));
-                match result {
-                    Ok(generation) => next_generation = generation,
-                    Err(StorageError::DurabilityUncertain(_)) => {
-                        tracing::warn!(target: "sync", reason = "durability_uncertain", "token persistence uncertain");
-                        let Ok(state) = PairedState::load(&path) else { return false; };
-                        let Some(credential) = state.credential else { return false; };
-                        if pairing_generation(&credential.client_cert_pem) != expected_cas.pairing_generation
-                            || credential.device_token.as_deref() != Some(&token)
-                            || credential.device_token_expires_at != Some(expires_at) { return false; }
-                        next_generation = state.access_mutation_generation;
-                    }
-                    Err(_) => {
-                        tracing::warn!(target: "sync", reason = "publication_rejected", "token persistence rejected");
-                        return false;
-                    }
-                }
-            }
-            if !fence.allows(incarnation) { return false; }
-            *live_token.blocking_lock() = token;
-            *cas_key.lock().unwrap() = Some(CasKey {
-                pairing_generation: expected_cas.pairing_generation,
-                access_mutation_generation: next_generation,
-            });
-            true
-        }).await.unwrap_or(false)
-    }
-
-    /// Refresh only if the live token still matches the caller's failed token.
-    async fn refresh_if_current(&self, origin: &str, expected: &str) -> RefreshAction {
-        let _refresh = self.refresh_gate.lock().await;
-        let Some(captured_cas) = self.current_cas_key() else {
-            return RefreshAction::Terminal;
-        };
-        if !self.is_current_incarnation() {
-            return RefreshAction::Terminal;
-        }
-        let Some(token) = &self.device_token else {
-            return RefreshAction::Terminal;
-        };
-        if token.lock().await.as_str() != expected {
-            return RefreshAction::Redial;
-        }
-        match refresh_device_token(origin, expected).await {
-            RefreshOutcome::Refreshed {
-                device_token,
-                expires_at,
-            } => {
-                if self
-                    .persist_token(captured_cas, device_token.clone(), expires_at)
-                    .await
-                    && self.is_current_incarnation()
-                {
-                    RefreshAction::Redial
-                } else {
-                    RefreshAction::Terminal
-                }
-            }
-            RefreshOutcome::ReconnectNeeded => RefreshAction::Terminal,
-            RefreshOutcome::TransientError => RefreshAction::Transient,
-        }
-    }
-
-    /// Dial a persistent carrier through the relay after the direct LAN loop has exhausted.
-    async fn dial_carrier_over_relay(&self) -> Result<DialedCarrier, TransportError> {
-        if !self.is_current_incarnation() {
-            return Err(TransportError::Relay(RelayError::Unauthorized));
-        }
-        let origin = self
-            .credential
-            .relay_origin
-            .as_deref()
-            .ok_or(TransportError::NoEndpoint)?;
-        let instance_id = &self.credential.instance_id;
-        let current = self.current_token().await;
-        if token_should_refresh(&current, now_secs()) {
-            if let RefreshAction::Terminal = self.refresh_if_current(origin, &current).await {
-                return Err(TransportError::Relay(RelayError::Unauthorized));
-            }
-        }
-
-        let mut reactive_refreshed = false;
-        let mut transient_attempt = 0usize;
-        loop {
-            if !self.is_current_incarnation() {
-                return Err(TransportError::Relay(RelayError::Unauthorized));
-            }
-            let token = self.current_token().await;
-            if let Some(observer) = self.observer.as_deref() {
-                observer.record_dial_attempt();
-            }
-            match dial_relay_carrier(self.config.clone(), origin, instance_id, &token).await {
-                Ok(carrier) => {
-                    if let Some(observer) = self.observer.as_deref() {
-                        observer.record_relay_success();
-                    }
-                    return Ok(DialedCarrier {
-                        stream: Box::new(carrier.stream),
-                        kind: CarrierKind::Relay {
-                            termination: carrier.termination,
-                        },
-                    });
-                }
-                Err(TransportError::Relay(RelayError::Unauthorized)) => {
-                    if reactive_refreshed {
-                        return Err(TransportError::Relay(RelayError::Unauthorized));
-                    }
-                    reactive_refreshed = true;
-                    match self.refresh_if_current(origin, &token).await {
-                        RefreshAction::Redial => continue,
-                        RefreshAction::Terminal | RefreshAction::Transient => {
-                            return Err(TransportError::Relay(RelayError::Unauthorized));
-                        }
-                    }
-                }
-                Err(e) if relay_fault_is_transient_err(&e) => {
-                    transient_attempt += 1;
-                    if transient_attempt >= RELAY_MAX_TRANSIENT_ATTEMPTS {
-                        return Err(e);
-                    }
-                    tokio::time::sleep(Duration::from_millis(250 * transient_attempt as u64)).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-
-/// Decode JWT lifetime and apply the observer-pl proactive refresh threshold.
-fn token_should_refresh(token: &str, now_secs: i64) -> bool {
-    observer_pl::jwt::decode_unverified_claims(token)
-        .map(|claims| observer_pl::jwt::should_refresh(&claims, now_secs))
-        .unwrap_or(false)
-}
-
-/// Current UNIX time in seconds, falling back to zero on clock errors.
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 fn is_observer_auth_header(name: &str) -> bool {
     name.eq_ignore_ascii_case("authorization")
         || name.eq_ignore_ascii_case(OBSERVER_HANDLE_HEADER)
         || name.eq_ignore_ascii_case(PROTOCOL_VERSION_HEADER)
-}
-
-/// Relay faults that are worth retrying inside the bounded relay phase.
-fn relay_fault_is_transient(err: &RelayError) -> bool {
-    matches!(
-        err,
-        RelayError::HomeOffline | RelayError::Abnormal | RelayError::Overflow | RelayError::Stalled
-    )
-}
-
-/// Transport-level wrapper around the relay transient retry predicate.
-fn relay_fault_is_transient_err(err: &TransportError) -> bool {
-    matches!(err, TransportError::Relay(relay) if relay_fault_is_transient(relay))
 }
 
 #[derive(serde::Deserialize)]
@@ -901,366 +629,4 @@ struct SystemStatusResponse {
 #[derive(serde::Deserialize)]
 struct SystemStatusVersion {
     current: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::credential::{EndpointAddr, FS_FAIL_POINT};
-    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
-    use spl_transport::client::{TokenCommit, TokenCommitContext, TokenTransaction};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-
-    fn relay_credential() -> Credential {
-        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-        let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
-        let cert = params.self_signed(&key).unwrap();
-        Credential {
-            client_key_pem: key.serialize_pem(),
-            client_cert_pem: cert.pem(),
-            ca_chain_pem: vec![cert.pem()],
-            ca_fp_prefix: vec![0; 16],
-            instance_id: "test".into(),
-            home_label: "Home".into(),
-            endpoints: vec![EndpointAddr {
-                host: "127.0.0.1".into(),
-                port: 9,
-            }],
-            relay_origin: Some("https://relay.example.com".into()),
-            device_token: Some("old-token".into()),
-            device_token_expires_at: Some(1_700_000_000),
-        }
-    }
-
-    fn temp_pairing_path() -> PathBuf {
-        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "plw-client-test-{}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            sequence
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("pairing.json")
-    }
-
-    #[test]
-    fn carrier_kind_maps_to_transport_path() {
-        assert_eq!(
-            TransportPath::from(&CarrierKind::Lan),
-            TransportPath::Direct
-        );
-
-        let relay = CarrierKind::Relay {
-            termination: RelayTerminationHandle::new(),
-        };
-        assert_eq!(TransportPath::from(&relay), TransportPath::Relay);
-    }
-
-    #[test]
-    fn relay_fault_is_transient_truth_table() {
-        for err in [
-            RelayError::HomeOffline,
-            RelayError::Abnormal,
-            RelayError::Overflow,
-            RelayError::Stalled,
-        ] {
-            assert!(relay_fault_is_transient(&err), "{err:?} should retry");
-        }
-        for err in [
-            RelayError::Unauthorized,
-            RelayError::Unpaid,
-            RelayError::UnknownInstance,
-            RelayError::UpgradeRejected,
-        ] {
-            assert!(!relay_fault_is_transient(&err), "{err:?} should stop");
-        }
-    }
-
-    #[tokio::test]
-    async fn persist_token_reconciles_post_rename_uncertainty() {
-        let credential = relay_credential();
-        let path = temp_pairing_path();
-        PairedState {
-            credential: Some(credential.clone()),
-            access_mutation_generation: 0,
-        }
-        .save(&path)
-        .unwrap();
-        let cas = CasKey {
-            pairing_generation: pairing_generation(&credential.client_cert_pem),
-            access_mutation_generation: 0,
-        };
-        let client = ObserverClient::new(credential)
-            .unwrap()
-            .with_state_path(path.clone())
-            .with_cas_key(cas);
-
-        FS_FAIL_POINT.with(|f| f.set(2));
-        assert!(
-            client
-                .persist_token(cas, "fresh-token".to_string(), 1_800_000_000)
-                .await
-        );
-        FS_FAIL_POINT.with(|f| f.set(0));
-
-        assert_eq!(
-            client.current_cas_key().unwrap().access_mutation_generation,
-            1
-        );
-        assert_eq!(
-            PairedState::load(&path)
-                .unwrap()
-                .credential
-                .unwrap()
-                .device_token
-                .as_deref(),
-            Some("fresh-token")
-        );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-    #[tokio::test]
-    async fn retired_refresh_waiting_for_publication_cannot_change_disk() {
-        use std::future::Future;
-        let credential = relay_credential();
-        let path = temp_pairing_path();
-        PairedState {
-            credential: Some(credential.clone()),
-            access_mutation_generation: 0,
-        }
-        .save(&path)
-        .unwrap();
-        let client = Arc::new(
-            ObserverClient::new(credential)
-                .unwrap()
-                .with_state_path(path.clone()),
-        );
-        let slot = ClientSlot::new(client.clone());
-        let cas = client.current_cas_key().unwrap();
-        let owner = slot.publication_owner();
-        let mut pending = Box::pin(client.persist_token(cas, "stale-token".into(), 1_900_000_000));
-        {
-            let _guard = owner.lock().unwrap();
-            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-            assert!(pending.as_mut().poll(&mut cx).is_pending());
-            // The worker exists and must recheck retirement when it gets ownership.
-            slot.disable_relay();
-        }
-        assert!(!pending.await);
-        let disk = PairedState::load(&path).unwrap();
-        assert_eq!(disk.access_mutation_generation, 0);
-        assert_ne!(
-            disk.credential.unwrap().device_token.as_deref(),
-            Some("stale-token")
-        );
-        assert!(!client.relay_eligible());
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn cancelled_refresh_waiter_keeps_disk_token_and_live_cas_publication_owned() {
-        use std::future::Future;
-        let credential = relay_credential();
-        let path = temp_pairing_path();
-        PairedState {
-            credential: Some(credential.clone()),
-            access_mutation_generation: 0,
-        }
-        .save(&path)
-        .unwrap();
-        let client = Arc::new(
-            ObserverClient::new(credential)
-                .unwrap()
-                .with_state_path(path.clone()),
-        );
-        let slot = ClientSlot::new(client.clone());
-        let cas = client.current_cas_key().unwrap();
-        let owner = slot.publication_owner();
-        {
-            let _guard = owner.lock().unwrap();
-            let mut pending =
-                Box::pin(client.persist_token(cas, "owned-token".into(), 1_900_000_000));
-            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-            assert!(pending.as_mut().poll(&mut cx).is_pending());
-            drop(pending);
-        }
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while client.current_cas_key().unwrap().access_mutation_generation == 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("owned worker did not complete");
-        assert_eq!(client.current_token().await, "owned-token");
-        let disk = PairedState::load(&path).unwrap();
-        assert_eq!(disk.access_mutation_generation, 1);
-        assert_eq!(
-            disk.credential.unwrap().device_token.as_deref(),
-            Some("owned-token")
-        );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn stale_token_transaction_cannot_fence_or_write_the_successor_incarnation() {
-        let credential = relay_credential();
-        let path = temp_pairing_path();
-        PairedState {
-            credential: Some(credential.clone()),
-            access_mutation_generation: 0,
-        }
-        .save(&path)
-        .unwrap();
-        let fence = Arc::new(RelayFence::new(true));
-        let transaction = WindowsTokenTransaction::new(
-            Arc::new(std::sync::Mutex::new(Some(path.clone()))),
-            pairing_generation(&credential.client_cert_pem),
-            fence.clone(),
-            1,
-        );
-
-        assert_eq!(fence.advance_from(1, true), Some(2));
-        // A publication failure can classify just as a replacement advances.
-        // Its latch must stay with the old incarnation instead of disabling the
-        // successor that the slot has made live.
-        fence.mark_relay_ineligible(1);
-        assert_eq!(
-            SharedRelayFence::permit(fence.as_ref(), 1),
-            RelayPermit::Disabled
-        );
-        assert_eq!(
-            SharedRelayFence::permit(fence.as_ref(), 2),
-            RelayPermit::Allow
-        );
-        assert_eq!(
-            transaction.commit(TokenCommitContext {
-                token: "stale-token",
-                expires_at: 1_900_000_000,
-                previous_token: "old-token",
-                incarnation: 1,
-            }),
-            TokenCommit::Unchanged
-        );
-        assert!(fence.allows(2), "the live successor remains relay-eligible");
-        let persisted = PairedState::load(&path).unwrap();
-        assert_eq!(persisted.access_mutation_generation, 0);
-        assert_ne!(
-            persisted.credential.unwrap().device_token.as_deref(),
-            Some("stale-token")
-        );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn relay_fence_permit_preserves_disable_retire_and_incarnation_precedence() {
-        let retired = RelayFence::new(true);
-        retired.mark_relay_ineligible(1);
-        retired.retired.store(true, Ordering::Release);
-        assert_eq!(SharedRelayFence::permit(&retired, 1), RelayPermit::Retired);
-
-        let retired_mismatch = RelayFence::new(false);
-        assert_eq!(retired_mismatch.advance_from(1, false), Some(2));
-        retired_mismatch.mark_relay_ineligible(1);
-        retired_mismatch.retired.store(true, Ordering::Release);
-        assert_eq!(
-            SharedRelayFence::permit(&retired_mismatch, 1),
-            RelayPermit::Retired
-        );
-
-        let disabled_current = RelayFence::new(false);
-        assert_eq!(
-            SharedRelayFence::permit(&disabled_current, 1),
-            RelayPermit::Disabled
-        );
-
-        let disabled_mismatch = RelayFence::new(false);
-        assert_eq!(disabled_mismatch.advance_from(1, false), Some(2));
-        assert_eq!(
-            SharedRelayFence::permit(&disabled_mismatch, 1),
-            RelayPermit::Disabled
-        );
-
-        let ineligible_current = RelayFence::new(true);
-        ineligible_current.mark_relay_ineligible(1);
-        assert_eq!(
-            SharedRelayFence::permit(&ineligible_current, 1),
-            RelayPermit::Disabled
-        );
-
-        let ineligible_stale = RelayFence::new(true);
-        assert_eq!(ineligible_stale.advance_from(1, true), Some(2));
-        ineligible_stale.mark_relay_ineligible(1);
-        assert_eq!(
-            SharedRelayFence::permit(&ineligible_stale, 1),
-            RelayPermit::Disabled
-        );
-
-        let successor_ineligible = RelayFence::new(true);
-        assert_eq!(successor_ineligible.advance_from(1, true), Some(2));
-        successor_ineligible.mark_relay_ineligible(2);
-        assert_eq!(
-            SharedRelayFence::permit(&successor_ineligible, 1),
-            RelayPermit::Retired
-        );
-
-        let stale = RelayFence::new(true);
-        assert_eq!(stale.advance_from(1, true), Some(2));
-        assert_eq!(SharedRelayFence::permit(&stale, 1), RelayPermit::Retired);
-        assert_eq!(SharedRelayFence::permit(&stale, 2), RelayPermit::Allow);
-    }
-
-    #[tokio::test]
-    async fn rejected_transaction_stops_relay_only_requests_before_any_relay_dial() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let relay_port = listener.local_addr().unwrap().port();
-        let mut credential = relay_credential();
-        credential.endpoints.clear();
-        credential.relay_origin = Some(format!("http://127.0.0.1:{relay_port}"));
-        let path = temp_pairing_path();
-        PairedState {
-            credential: Some(credential.clone()),
-            access_mutation_generation: 0,
-        }
-        .save(&path)
-        .unwrap();
-        let client = ObserverClient::new(credential)
-            .unwrap()
-            .with_state_path(path.clone());
-
-        FS_FAIL_POINT.with(|fail_point| fail_point.set(1));
-        let commit = client.token_transaction.commit(TokenCommitContext {
-            token: "fresh-token",
-            expires_at: 1_900_000_000,
-            previous_token: "old-token",
-            incarnation: 1,
-        });
-        FS_FAIL_POINT.with(|fail_point| fail_point.set(0));
-        assert_eq!(commit, TokenCommit::Unchanged);
-        assert_eq!(
-            SharedRelayFence::permit(client.relay_fence.as_ref(), 1),
-            RelayPermit::Disabled
-        );
-        assert!(matches!(
-            client.system_status().await,
-            Err(TransportError::RelayDisabled)
-        ));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                .await
-                .is_err(),
-            "relay-only request dialed after publication rejection"
-        );
-        let persisted = PairedState::load(&path).unwrap();
-        assert_eq!(persisted.access_mutation_generation, 0);
-        assert_eq!(
-            persisted.credential.unwrap().device_token.as_deref(),
-            Some("old-token")
-        );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
 }

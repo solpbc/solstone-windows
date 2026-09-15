@@ -11,12 +11,12 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use observer_pl::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
 use pl_transport_win::credential::{Credential, PairedState};
 use pl_transport_win::integration::report::{
     Outcome, EXIT_ASSERTION_FAILED, EXIT_ERROR, EXIT_PASS, SCHEMA_VERSION,
 };
 use pl_transport_win::integration::{self, Carrier, Environment};
+use spl_core::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -262,7 +262,7 @@ fn a_malformed_flag_value_is_never_echoed_back_into_the_envelope() {
 #[test]
 fn the_large_fetch_precondition_is_enforced_before_any_network_work() {
     let root = temp_root("fetch-window");
-    let window = observer_pl::mux::INITIAL_WINDOW as u64;
+    let window = spl_core::mux::INITIAL_WINDOW as u64;
     for bytes in [0, 1, window] {
         let (value, code) = run(
             &[

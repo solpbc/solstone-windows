@@ -9,13 +9,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use observer_pl::frame::{
-    Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_WINDOW, RECOMMENDED_CHUNK,
-};
 use observer_pl::ingest::{FilePart, IngestStatus};
-use observer_pl::mux::{MuxError, INITIAL_WINDOW};
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::{transport_error_code, ClientSlot, TransportError};
+use spl_core::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_WINDOW, RECOMMENDED_CHUNK};
+use spl_core::mux::{MuxError, INITIAL_WINDOW};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -430,7 +428,7 @@ async fn direct_shared_request_caps_use_exact_assembled_wire_lengths() {
     for (total, prefix, fill, manifest) in [
         (POST_CONNECT_CAP, b"x".as_slice(), b'x', false),
         (
-            observer_pl::mux::MAX_ASSEMBLED_BYTES,
+            spl_core::mux::MAX_ASSEMBLED_BYTES,
             br#"{"days":{}}"#.as_slice(),
             b' ',
             true,

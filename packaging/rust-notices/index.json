@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "5e96d042fe93e17c774033137961ed6163ed6402b24902b8388ff54e8dd3b4b8",
+  "cargo_lock_sha256": "94cce3fb831694b56477c6554f7c96044ce14c148823999059af61a45adc9044",
   "notice_texts": [
     {
       "byte_end_exclusive": 15206,
@@ -1619,7 +1619,7 @@
   "notices_sha256": "0bfaf423e4a3d720b6814e612002d13b8fdbce279e8def9fdfdae7db86ba3ec2",
   "packages": [
     {
-      "identity": "spl-core@0.1.0 (git+https://github.com/solpbc/spl-rust?rev=41982cf700f916b629d8d3f714c1f724cb9f81de#41982cf700f916b629d8d3f714c1f724cb9f81de)",
+      "identity": "spl-core@0.1.0 (git+https://github.com/solpbc/spl-rust?rev=3926ac33e1b1f1b5fa1855abf576816109b501ab#3926ac33e1b1f1b5fa1855abf576816109b501ab)",
       "license_expression": "AGPL-3.0-only",
       "name": "spl-core",
       "notice_references": [
@@ -1630,11 +1630,11 @@
           "source_kind": "committed-override"
         }
       ],
-      "source": "git+https://github.com/solpbc/spl-rust?rev=41982cf700f916b629d8d3f714c1f724cb9f81de#41982cf700f916b629d8d3f714c1f724cb9f81de",
+      "source": "git+https://github.com/solpbc/spl-rust?rev=3926ac33e1b1f1b5fa1855abf576816109b501ab#3926ac33e1b1f1b5fa1855abf576816109b501ab",
       "version": "0.1.0"
     },
     {
-      "identity": "spl-home@0.1.0 (git+https://github.com/solpbc/spl-rust?rev=41982cf700f916b629d8d3f714c1f724cb9f81de#41982cf700f916b629d8d3f714c1f724cb9f81de)",
+      "identity": "spl-home@0.1.0 (git+https://github.com/solpbc/spl-rust?rev=3926ac33e1b1f1b5fa1855abf576816109b501ab#3926ac33e1b1f1b5fa1855abf576816109b501ab)",
       "license_expression": "AGPL-3.0-only",
       "name": "spl-home",
       "notice_references": [
@@ -1645,11 +1645,11 @@
           "source_kind": "committed-override"
         }
       ],
-      "source": "git+https://github.com/solpbc/spl-rust?rev=41982cf700f916b629d8d3f714c1f724cb9f81de#41982cf700f916b629d8d3f714c1f724cb9f81de",
+      "source": "git+https://github.com/solpbc/spl-rust?rev=3926ac33e1b1f1b5fa1855abf576816109b501ab#3926ac33e1b1f1b5fa1855abf576816109b501ab",
       "version": "0.1.0"
     },
     {
-      "identity": "spl-transport@0.1.0 (git+https://github.com/solpbc/spl-rust?rev=41982cf700f916b629d8d3f714c1f724cb9f81de#41982cf700f916b629d8d3f714c1f724cb9f81de)",
+      "identity": "spl-transport@0.1.0 (git+https://github.com/solpbc/spl-rust?rev=3926ac33e1b1f1b5fa1855abf576816109b501ab#3926ac33e1b1f1b5fa1855abf576816109b501ab)",
       "license_expression": "AGPL-3.0-only",
       "name": "spl-transport",
       "notice_references": [
@@ -1660,7 +1660,7 @@
           "source_kind": "committed-override"
         }
       ],
-      "source": "git+https://github.com/solpbc/spl-rust?rev=41982cf700f916b629d8d3f714c1f724cb9f81de#41982cf700f916b629d8d3f714c1f724cb9f81de",
+      "source": "git+https://github.com/solpbc/spl-rust?rev=3926ac33e1b1f1b5fa1855abf576816109b501ab#3926ac33e1b1f1b5fa1855abf576816109b501ab",
       "version": "0.1.0"
     },
     {
@@ -9520,7 +9520,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 269,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-09-15T03:54:02.981318+00:00",
+    "query_utc": "2026-09-15T13:21:39.760853+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 24

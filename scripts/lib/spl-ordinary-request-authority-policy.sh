@@ -92,7 +92,7 @@ for relative in src/client.rs src/post_connect.rs src/coordinator.rs src/journal
   fi
 done
 
-for relative in src/journal_bridge.rs src/journal_bridge_carrier.rs; do
+for relative in src/journal_bridge.rs; do
   file="$ROOT/crates/pl-transport-win/$relative"
   [ -f "$file" ] || violation "journal bridge allowlisted file $relative is missing"
   if [ -f "$file" ]; then

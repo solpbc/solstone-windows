@@ -120,73 +120,8 @@ pub(crate) fn map_shared_error(err: spl_transport::TransportError) -> TransportE
             TransportError::Tls("tls certificate unknown".into())
         }
         spl_transport::TransportError::Crypto(e) => TransportError::Crypto(e),
-        spl_transport::TransportError::Mux(e) => {
-            let converted = match e {
-                spl_core::mux::MuxError::Frame(f) => {
-                    let f_conv = match f {
-                        spl_core::frame::FrameError::PayloadTooLarge(len) => {
-                            observer_pl::frame::FrameError::PayloadTooLarge(len)
-                        }
-                        spl_core::frame::FrameError::ReservedFlag(flag) => {
-                            observer_pl::frame::FrameError::ReservedFlag(flag)
-                        }
-                    };
-                    observer_pl::mux::MuxError::Frame(f_conv)
-                }
-                spl_core::mux::MuxError::StreamReset => observer_pl::mux::MuxError::StreamReset,
-                spl_core::mux::MuxError::Incomplete => observer_pl::mux::MuxError::Incomplete,
-                spl_core::mux::MuxError::Http(h) => {
-                    let h_conv = match h {
-                        spl_core::http::HttpError::MissingTerminator => {
-                            observer_pl::http::HttpError::MissingTerminator
-                        }
-                        spl_core::http::HttpError::MissingStatusLine => {
-                            observer_pl::http::HttpError::MissingStatusLine
-                        }
-                        spl_core::http::HttpError::BadStatusLine(s) => {
-                            observer_pl::http::HttpError::BadStatusLine(s)
-                        }
-                        spl_core::http::HttpError::TruncatedBody => {
-                            observer_pl::http::HttpError::TruncatedBody
-                        }
-                        spl_core::http::HttpError::BadChunkedBody(s) => {
-                            observer_pl::http::HttpError::BadChunkedBody(s)
-                        }
-                    };
-                    observer_pl::mux::MuxError::Http(h_conv)
-                }
-                spl_core::mux::MuxError::CapExceeded => observer_pl::mux::MuxError::CapExceeded,
-                spl_core::mux::MuxError::FlowControl => observer_pl::mux::MuxError::FlowControl,
-                spl_core::mux::MuxError::Protocol(p) => {
-                    observer_pl::mux::MuxError::Protocol(observer_pl::frame::FrameViolation {
-                        stream_id: p.stream_id,
-                        flags: p.flags,
-                        length: p.length,
-                    })
-                }
-            };
-            TransportError::Mux(converted)
-        }
-        spl_transport::TransportError::Http(e) => {
-            let converted = match e {
-                spl_core::http::HttpError::MissingTerminator => {
-                    observer_pl::http::HttpError::MissingTerminator
-                }
-                spl_core::http::HttpError::MissingStatusLine => {
-                    observer_pl::http::HttpError::MissingStatusLine
-                }
-                spl_core::http::HttpError::BadStatusLine(s) => {
-                    observer_pl::http::HttpError::BadStatusLine(s)
-                }
-                spl_core::http::HttpError::TruncatedBody => {
-                    observer_pl::http::HttpError::TruncatedBody
-                }
-                spl_core::http::HttpError::BadChunkedBody(s) => {
-                    observer_pl::http::HttpError::BadChunkedBody(s)
-                }
-            };
-            TransportError::Http(converted)
-        }
+        spl_transport::TransportError::Mux(e) => TransportError::Mux(e),
+        spl_transport::TransportError::Http(e) => TransportError::Http(e),
         spl_transport::TransportError::Json(e) => TransportError::Json(e),
         spl_transport::TransportError::PairLink(e) => TransportError::PairLink(e),
         spl_transport::TransportError::Pairing(e) => TransportError::Pairing(e),

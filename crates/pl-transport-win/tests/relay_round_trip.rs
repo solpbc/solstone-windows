@@ -11,33 +11,40 @@
 
 mod support;
 
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot, TransportPath};
-use observer_pl::frame::{
-    Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RECOMMENDED_CHUNK,
-};
-use observer_pl::http::{self, HttpResponse};
 use observer_pl::ingest::{FilePart, IngestStatus};
-use observer_pl::mux::{MuxError, INITIAL_WINDOW};
 use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::journal_bridge;
-use pl_transport_win::relay::{dial_relay_ws, request_once_over_ws, request_once_relay};
 use pl_transport_win::service::SyncConfig;
-use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{
     transport_error_code, ClientSlot, CredentialAccess, RelayError, TransportError,
 };
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::ClientConfig;
 use serde_json::json;
+use spl_core::bridge::BridgeNames;
+use spl_core::frame::{
+    Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RECOMMENDED_CHUNK,
+};
+use spl_core::http::{self, HttpResponse};
+use spl_core::mux::{MuxError, INITIAL_WINDOW};
+use spl_transport::journal_bridge::{
+    self as shared_bridge, BridgePolicy, CarrierOpener, JournalBridgeConfig,
+    JournalBridgeTerminalReason,
+};
+use spl_transport::relay::{dial_relay_ws, request_once_over_ws, request_once_relay};
+use spl_transport::tls::pairing_config;
 use spl_transport::{OperationObserver, OperationSnapshot, SelectedPath};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
@@ -142,7 +149,7 @@ fn observer_relay_credential(
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let params = CertificateParams::new(vec!["observer.test".to_string()]).unwrap();
     let cert = params.self_signed(&key).unwrap();
-    let expires_at = observer_pl::jwt::decode_unverified_claims(&token).map(|claims| claims.exp);
+    let expires_at = spl_core::jwt::decode_unverified_claims(&token).map(|claims| claims.exp);
     Credential {
         client_key_pem: key.serialize_pem(),
         client_cert_pem: cert.pem(),
@@ -243,7 +250,7 @@ fn loopback_host(port: u16) -> String {
 }
 
 fn cap_cookie(cap: &str) -> String {
-    format!("{}={cap}", observer_pl::bridge::CAP_COOKIE_NAME)
+    format!("{}={cap}", observer_pl::CAP_COOKIE_NAME)
 }
 
 async fn raw_bridge_request(port: u16, target: &str, cap: &str) -> Vec<u8> {
@@ -894,9 +901,22 @@ fn tls_pair() -> (Arc<ClientConfig>, TlsAcceptor) {
     (client_config(&pin), acceptor)
 }
 
-fn assert_relay_error<T>(result: Result<T, TransportError>, expected: RelayError) {
+fn assert_relay_error<T>(result: Result<T, spl_transport::TransportError>, expected: RelayError) {
     match result {
-        Err(TransportError::Relay(actual)) => assert_eq!(actual, expected),
+        Err(spl_transport::TransportError::Relay(actual)) => {
+            let expected = match expected {
+                RelayError::HomeOffline => spl_transport::RelayError::HomeOffline,
+                RelayError::Unauthorized => spl_transport::RelayError::Unauthorized,
+                RelayError::Unpaid => spl_transport::RelayError::Unpaid,
+                RelayError::UnknownInstance => spl_transport::RelayError::UnknownInstance,
+                RelayError::PairWindowClosed => spl_transport::RelayError::PairWindowClosed,
+                RelayError::Overflow => spl_transport::RelayError::Overflow,
+                RelayError::Abnormal => spl_transport::RelayError::Abnormal,
+                RelayError::UpgradeRejected => spl_transport::RelayError::UpgradeRejected,
+                RelayError::Stalled => spl_transport::RelayError::Stalled,
+            };
+            assert_eq!(actual, expected);
+        }
         Err(other) => panic!("expected relay error {expected:?}, got {other:?}"),
         Ok(_) => panic!("expected relay error {expected:?}, got success"),
     }
@@ -1676,8 +1696,10 @@ async fn relay_wrong_inner_pin_stays_tls_error() {
     .await;
 
     match result {
-        Err(TransportError::Tls(_)) => {}
-        Err(TransportError::Relay(err)) => panic!("wrong pin must not map to relay error: {err:?}"),
+        Err(spl_transport::TransportError::Tls(_)) => {}
+        Err(spl_transport::TransportError::Relay(err)) => {
+            panic!("wrong pin must not map to relay error: {err:?}")
+        }
         Err(other) => panic!("wrong pin should surface as TLS, got {other:?}"),
         Ok(response) => panic!("wrong pin unexpectedly succeeded: {response:?}"),
     }
@@ -2356,10 +2378,10 @@ async fn relay_bridge_initial_dial_failure_returns_502_and_next_request_redials(
     relay.abort();
 }
 
-// Multi-stream-over-relay does not get a separate live harness here: after
-// `dial_carrier` returns, LAN and relay both feed the same transport-agnostic
-// `MuxCarrier` coordinator. The duplex and persistent-TLS tests cover that mux
-// behavior; these relay tests cover the relay-specific dial and refresh branch.
+// Multi-stream-over-relay does not get a separate live harness here: LAN and
+// relay both feed the shared transport bridge. The duplex and persistent-TLS
+// tests cover shared-stream behavior; these relay tests cover its dial and
+// refresh branch.
 
 #[tokio::test]
 async fn relay_unauthorized_persists_after_refresh_is_terminal_no_storm() {
@@ -2378,7 +2400,10 @@ async fn relay_unauthorized_persists_after_refresh_is_terminal_no_storm() {
 
     let err = relay_probe(&client).await.unwrap_err();
 
-    assert_relay_error::<()>(Err(err), RelayError::Unauthorized);
+    assert!(matches!(
+        err,
+        TransportError::Relay(RelayError::Unauthorized)
+    ));
     assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 2);
     assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
     relay.abort();
@@ -2677,7 +2702,7 @@ async fn relay_unpaid_is_terminal_bounded() {
 
     let err = relay_probe(&client).await.unwrap_err();
 
-    assert_relay_error::<()>(Err(err), RelayError::Unpaid);
+    assert!(matches!(err, TransportError::Relay(RelayError::Unpaid)));
     assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 1);
     assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 0);
     relay.abort();
@@ -2751,7 +2776,142 @@ async fn relay_adapter_stops_post_connect_response_at_64_kib() {
     let err = client.get_clients_self().await.unwrap_err();
     assert!(matches!(
         err,
-        TransportError::Mux(observer_pl::mux::MuxError::CapExceeded)
+        TransportError::Mux(spl_core::mux::MuxError::CapExceeded)
     ));
     relay.abort();
+}
+
+#[derive(Clone, Copy)]
+enum BridgeDialFailure {
+    NoEndpoint,
+    TlsAccessDenied,
+}
+
+struct FailingBridgeOpener {
+    failure: BridgeDialFailure,
+    dials: AtomicUsize,
+}
+
+impl CarrierOpener for FailingBridgeOpener {
+    fn proxy_headers(
+        &self,
+        upstream_headers: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, spl_transport::TransportError> {
+        Ok(upstream_headers.to_vec())
+    }
+
+    fn dial_carrier(
+        &self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<spl_transport::DialedCarrier, spl_transport::TransportError>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.dials.fetch_add(1, Ordering::SeqCst);
+        let failure = self.failure;
+        Box::pin(async move {
+            Err(match failure {
+                BridgeDialFailure::NoEndpoint => spl_transport::TransportError::NoEndpoint,
+                BridgeDialFailure::TlsAccessDenied => {
+                    spl_transport::TransportError::TlsAccessDenied
+                }
+            })
+        })
+    }
+}
+
+async fn start_failing_shared_bridge(
+    opener: Arc<FailingBridgeOpener>,
+) -> shared_bridge::JournalBridgeHandle {
+    shared_bridge::start(JournalBridgeConfig {
+        opener,
+        bridge_names: BridgeNames {
+            capability_cookie_name: observer_pl::CAP_COOKIE_NAME.into(),
+            upstream_cookie_prefix: observer_pl::UPSTREAM_COOKIE_PREFIX.into(),
+            observer_header_name: observer_pl::OBSERVER_HANDLE_HEADER.to_ascii_lowercase(),
+            protocol_version_header_name: observer_pl::PROTOCOL_VERSION_HEADER.to_ascii_lowercase(),
+        },
+        endpoint_hosts: Vec::new(),
+        policy: BridgePolicy::default(),
+    })
+    .await
+    .expect("shared bridge start")
+}
+
+async fn failing_bridge_request(handle: &shared_bridge::JournalBridgeHandle) -> Vec<u8> {
+    let bootstrap = handle.bootstrap_url().expect("capability gate is enabled");
+    let cap = bootstrap
+        .split_once("cap=")
+        .map(|(_, cap)| cap)
+        .expect("bootstrap capability");
+    let mut stream = TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .expect("bridge connect");
+    let request = format!(
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\n\r\n",
+        handle.port(),
+        observer_pl::CAP_COOKIE_NAME,
+        cap
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("bridge write");
+    stream.flush().await.expect("bridge flush");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .expect("bridge response");
+    response
+}
+
+#[tokio::test]
+async fn disabled_or_retired_bridge_open_maps_to_no_endpoint_without_terminal_latch() {
+    for fence in [
+        "disabled",
+        "retired",
+        "publication_rejected",
+        "publication_indeterminate",
+    ] {
+        let opener = Arc::new(FailingBridgeOpener {
+            failure: BridgeDialFailure::NoEndpoint,
+            dials: AtomicUsize::new(0),
+        });
+        let handle = start_failing_shared_bridge(opener.clone()).await;
+        let response = failing_bridge_request(&handle).await;
+
+        assert_eq!(response_status(&response), 502, "{fence}");
+        assert_eq!(handle.status().terminal_reason, None, "{fence}");
+        assert_eq!(
+            opener.dials.load(Ordering::SeqCst),
+            1,
+            "{fence} must stop at the bridge opener without a relay retry"
+        );
+        handle.shutdown_and_wait().await;
+    }
+}
+
+#[tokio::test]
+async fn tls_access_denied_latches_and_prevents_follow_on_dial() {
+    let opener = Arc::new(FailingBridgeOpener {
+        failure: BridgeDialFailure::TlsAccessDenied,
+        dials: AtomicUsize::new(0),
+    });
+    let handle = start_failing_shared_bridge(opener.clone()).await;
+
+    assert_eq!(response_status(&failing_bridge_request(&handle).await), 502);
+    assert_eq!(response_status(&failing_bridge_request(&handle).await), 502);
+    assert_eq!(
+        handle.status().terminal_reason,
+        Some(JournalBridgeTerminalReason::TlsAccessDenied)
+    );
+    assert_eq!(
+        opener.dials.load(Ordering::SeqCst),
+        1,
+        "the terminal TLS latch must prevent a follow-on carrier dial"
+    );
+    handle.shutdown_and_wait().await;
 }

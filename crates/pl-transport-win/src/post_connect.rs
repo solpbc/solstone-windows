@@ -86,10 +86,10 @@ fn validate_relay_access_response(
             if instance_id != paired_instance_id {
                 return Err(RelayAccessValidationError::Identity);
             }
-            if crate::relay_http::parse_relay_origin(&relay_origin).is_err() {
+            if spl_core::relay::dial_url(&relay_origin, "relay-origin-check").is_err() {
                 return Err(RelayAccessValidationError::Origin);
             }
-            let access = observer_pl::relay_access::RelayAccess {
+            let access = spl_core::relay_access::RelayAccess {
                 protocol_version,
                 status: "ready".to_string(),
                 relay_origin: relay_origin.clone(),
@@ -154,7 +154,6 @@ pub struct PostConnectController {
     sync: Arc<Mutex<SyncSnapshot>>,
     facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
     deadline: Duration,
-    relay_disconnect_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     state: Mutex<PostConnectState>,
 }
 
@@ -175,7 +174,6 @@ impl PostConnectController {
             sync,
             facts_fn,
             deadline: DEFAULT_POST_CONNECT_DEADLINE,
-            relay_disconnect_hook: Mutex::new(None),
             state: Mutex::new(PostConnectState::default()),
         }
     }
@@ -186,21 +184,8 @@ impl PostConnectController {
         self
     }
 
-    /// Attach a callback to be invoked when live relay is disabled on `not_configured`.
-    pub fn with_relay_disconnect_hook(self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
-        *self.relay_disconnect_hook.lock().unwrap() = Some(hook);
-        self
-    }
-
-    /// Set a callback to be invoked when live relay is disabled on `not_configured`.
-    pub fn set_relay_disconnect_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self.relay_disconnect_hook.lock().unwrap() = Some(hook);
-    }
-
     pub(crate) fn disconnect_relay(&self) {
-        if let Some(hook) = self.relay_disconnect_hook.lock().unwrap().clone() {
-            hook();
-        }
+        self.client_slot.disable_relay();
     }
 
     pub(crate) fn set_journal_version_token(&self, token: JournalVersionSessionToken) {
@@ -1117,10 +1102,6 @@ mod tests {
             PostConnectController::new(slot.clone(), Some(path.clone()), None, sync, facts);
 
         let disconnect_called = Arc::new(AtomicBool::new(false));
-        let dc = disconnect_called.clone();
-        controller.set_relay_disconnect_hook(Arc::new(move || {
-            dc.store(true, Ordering::SeqCst);
-        }));
 
         (Arc::new(controller), slot, path, disconnect_called)
     }
@@ -1303,7 +1284,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_relay_access_not_configured() {
-        let (controller, slot, path, disconnect_called) = test_setup(true);
+        let (controller, slot, path, _disconnect_called) = test_setup(true);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
         controller.begin_session(&cred);
@@ -1321,8 +1302,8 @@ mod tests {
         assert_eq!(active_cred.device_token, None);
         assert_eq!(active_cred.device_token_expires_at, None);
 
-        // Relay disconnect hook invoked
-        assert!(disconnect_called.load(Ordering::SeqCst));
+        // The shared relay fence prevents future bridge relay opens.
+        assert!(!slot.is_current_incarnation());
 
         // Disk state cleared
         let loaded = PairedState::load(&path).unwrap();
@@ -1349,7 +1330,7 @@ mod tests {
             .await;
         FS_FAIL_POINT.with(|f| f.set(0));
 
-        assert!(!slot.load().is_current_incarnation());
+        assert!(!slot.is_current_incarnation());
         assert_eq!(controller.pending_durable_clear(), Some(cas));
         assert_eq!(
             PairedState::load(&path).unwrap().access_mutation_generation,
@@ -1408,7 +1389,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_relay_access_durability_uncertain_not_configured_reconciles_clear() {
-        let (controller, slot, path, disconnect_called) = test_setup(true);
+        let (controller, slot, path, _disconnect_called) = test_setup(true);
         let cred = slot.load().credential().clone();
         let p_gen = pairing_generation(&cred.client_cert_pem);
         controller.begin_session(&cred);
@@ -1425,7 +1406,7 @@ mod tests {
         // Live replace still occurred for LAN safety
         let active_client = slot.load();
         assert_eq!(active_client.credential().relay_origin, None);
-        assert!(disconnect_called.load(Ordering::SeqCst));
+        assert!(!slot.is_current_incarnation());
 
         assert_eq!(
             controller.pending_durable_clear(),

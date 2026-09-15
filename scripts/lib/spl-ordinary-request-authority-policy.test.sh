@@ -23,7 +23,7 @@ cp "$ROOT/crates/pl-transport-win/src/client.rs" "$TEST_ROOT/crates/pl-transport
 for file in post_connect.rs coordinator.rs journal_version.rs; do touch "$TEST_ROOT/crates/pl-transport-win/src/$file"; done
 mkdir -p "$TEST_ROOT/crates/pl-transport-win/src/integration"
 touch "$TEST_ROOT/crates/pl-transport-win/src/integration/ops.rs"
-touch "$TEST_ROOT/crates/pl-transport-win/src/journal_bridge.rs" "$TEST_ROOT/crates/pl-transport-win/src/journal_bridge_carrier.rs"
+touch "$TEST_ROOT/crates/pl-transport-win/src/journal_bridge.rs"
 touch "$TEST_ROOT/crates/observer-pl/src/lib.rs"
 
 sh "$POLICY" --root "$TEST_ROOT" >/dev/null

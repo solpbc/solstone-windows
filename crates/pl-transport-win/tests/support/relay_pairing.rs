@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
-use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, ExtendedKeyUsagePurpose,
     IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
@@ -19,6 +18,7 @@ use rcgen::{
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use serde_json::json;
+use spl_core::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
 use spl_core::pairlink::RelayPairLink;
 use spl_core::PairRequest;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
@@ -434,7 +434,7 @@ where
 }
 
 pub(crate) fn legacy_token(instance: &str) -> String {
-    let mut payload = observer_pl::relay_access::unverified_payload(NEW_TOKEN).unwrap();
+    let mut payload = spl_core::relay_access::unverified_payload(NEW_TOKEN).unwrap();
     payload["instance_id"] = json!(instance);
     format!(
         "e30.{}.sig",

@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_model::SyncSnapshot;
-use observer_pl::bridge;
 use observer_pl::civil;
+use observer_pl::CAP_COOKIE_NAME;
 use observer_retention::RetentionConfig;
+use spl_core::bridge;
 use spl_core::ca;
 use spl_core::pairlink::{self, ParsedPairLink};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -482,7 +483,7 @@ fn response_limit(expected_bytes: u64) -> usize {
 
 /// One HTTP/1.1 GET over the loopback bridge listener.
 ///
-/// The request is built by `observer_pl::http` and the response parsed by it too
+/// The request is built by `spl_core::http` and the response parsed by it too
 /// — the same codec the journal leg uses, so this adds no second HTTP stack. The
 /// host is explicit because `bridge::authorize` rejects anything but
 /// `127.0.0.1:<port>`.
@@ -491,16 +492,16 @@ async fn loopback_get(
     target: &str,
     cookie: Option<&str>,
     limit: usize,
-) -> Result<observer_pl::http::HttpResponse, TransportError> {
+) -> Result<spl_core::http::HttpResponse, TransportError> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
     let mut headers = Vec::new();
     if let Some(cookie) = cookie {
         headers.push((
             "cookie".to_string(),
-            format!("{}={}", bridge::CAP_COOKIE_NAME, cookie),
+            format!("{}={}", CAP_COOKIE_NAME, cookie),
         ));
     }
-    let request = observer_pl::http::build_request_with_host(
+    let request = spl_core::http::build_request_with_host(
         "GET",
         target,
         &format!("127.0.0.1:{port}"),
@@ -513,23 +514,23 @@ async fn loopback_get(
     let mut buffer = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
-        if let Ok(response) = observer_pl::http::parse_response(&buffer) {
+        if let Ok(response) = spl_core::http::parse_response(&buffer) {
             return Ok(response);
         }
         if buffer.len() > limit {
-            return Err(TransportError::Mux(observer_pl::mux::MuxError::CapExceeded));
+            return Err(TransportError::Mux(spl_core::mux::MuxError::CapExceeded));
         }
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
             // Final attempt on what arrived before the peer closed.
-            return observer_pl::http::parse_response(&buffer).map_err(TransportError::Http);
+            return spl_core::http::parse_response(&buffer).map_err(TransportError::Http);
         }
         buffer.extend_from_slice(&chunk[..read]);
     }
 }
 
 /// The capability the bridge handed back, read from its bootstrap `Set-Cookie`.
-fn capability_from_bootstrap(response: &observer_pl::http::HttpResponse) -> Option<String> {
+fn capability_from_bootstrap(response: &spl_core::http::HttpResponse) -> Option<String> {
     response
         .headers
         .iter()
@@ -537,7 +538,7 @@ fn capability_from_bootstrap(response: &observer_pl::http::HttpResponse) -> Opti
         .find_map(|(_, value)| {
             value.split(';').find_map(|part| {
                 let (name, cookie) = part.trim().split_once('=')?;
-                (name == bridge::CAP_COOKIE_NAME).then(|| cookie.to_string())
+                (name == CAP_COOKIE_NAME).then(|| cookie.to_string())
             })
         })
 }
@@ -1035,9 +1036,9 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use spl_core::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
 
@@ -1715,11 +1716,11 @@ mod tests {
 
     #[test]
     fn capability_is_read_from_the_bootstrap_cookie() {
-        let response = observer_pl::http::HttpResponse {
+        let response = spl_core::http::HttpResponse {
             status: 200,
             headers: vec![(
                 "set-cookie".to_string(),
-                format!("{}=abc123; Path=/; HttpOnly", bridge::CAP_COOKIE_NAME),
+                format!("{}=abc123; Path=/; HttpOnly", CAP_COOKIE_NAME),
             )],
             body: Vec::new(),
         };
@@ -1728,7 +1729,7 @@ mod tests {
             Some("abc123".to_string())
         );
 
-        let without = observer_pl::http::HttpResponse {
+        let without = spl_core::http::HttpResponse {
             status: 200,
             headers: vec![("set-cookie".to_string(), "sid=journal".to_string())],
             body: Vec::new(),

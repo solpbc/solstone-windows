@@ -1,62 +1,104 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! Hand-rolled loopback proxy for the paired journal dashboard.
+//! Windows lifecycle adapter for the shared loopback journal bridge.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use observer_pl::bridge::{
-    self, FailureCategory, RejectReason, RequestHead, BOOTSTRAP_ROUTE, CAP_COOKIE_NAME,
+use observer_pl::{
+    CAP_COOKIE_NAME, OBSERVER_HANDLE_HEADER, PROTOCOL_VERSION_HEADER, UPSTREAM_COOKIE_PREFIX,
 };
-use observer_pl::mux::StreamItem;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use spl_core::bridge::BridgeNames;
+use spl_transport::client::CarrierOpenError;
+use spl_transport::journal_bridge::{
+    self as shared_bridge, BridgePolicy, CarrierOpener, JournalBridgeConfig, JournalBridgeStatus,
+};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::access::CredentialAccess;
-use crate::credential::hex_lower;
-use crate::journal_bridge_carrier::MuxCarrier;
-use crate::{transport_error_code, TransportError};
-
-const MAX_HEAD_BYTES: usize = 64 * 1024;
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
-const READ_BUF_BYTES: usize = 4096;
+use crate::client::ClientSlot;
+use crate::pairing::map_shared_error;
+use crate::{
+    journal_version::JournalVersionController, post_connect::PostConnectController, TransportError,
+};
 
 pub struct JournalBridgeHandle {
-    port: u16,
-    capability: String,
-    contacted: Arc<AtomicBool>,
-    shutdown: oneshot::Sender<()>,
-    join: JoinHandle<()>,
+    inner: Arc<Mutex<Option<shared_bridge::JournalBridgeHandle>>>,
+    status_task: Option<JoinHandle<()>>,
+    lifecycle: Arc<BridgeLifecycle>,
 }
 
 impl JournalBridgeHandle {
     pub fn port(&self) -> u16 {
-        self.port
+        self.inner
+            .lock()
+            .expect("journal bridge handle lock")
+            .as_ref()
+            .expect("journal bridge handle is live")
+            .port()
     }
 
-    /// Whether the loopback listener has accepted at least one TCP connection.
-    /// Write-once observation flag (set at accept, before HTTP parse).
     pub fn contacted(&self) -> bool {
-        self.contacted.load(Ordering::Relaxed)
+        self.inner
+            .lock()
+            .expect("journal bridge handle lock")
+            .as_ref()
+            .expect("journal bridge handle is live")
+            .contacted()
     }
 
     pub fn bootstrap_url(&self) -> String {
-        format!(
-            "http://127.0.0.1:{}{}?cap={}",
-            self.port, BOOTSTRAP_ROUTE, self.capability
-        )
+        self.inner
+            .lock()
+            .expect("journal bridge handle lock")
+            .as_ref()
+            .expect("journal bridge handle is live")
+            .bootstrap_url()
+            .expect("Windows journal bridge always enables capability authorization")
     }
 
-    pub fn begin_shutdown(self) {
-        let _ = self.shutdown.send(());
+    pub fn begin_shutdown(mut self) {
+        self.stop_status_task();
+        if let Some(handle) = self
+            .inner
+            .lock()
+            .expect("journal bridge handle lock")
+            .take()
+        {
+            handle.begin_shutdown();
+        }
     }
 
-    pub async fn shutdown_and_wait(self) {
-        let _ = self.shutdown.send(());
-        let _ = self.join.await;
+    pub async fn shutdown_and_wait(mut self) {
+        self.stop_status_task();
+        if let Some(task) = self.status_task.take() {
+            let _ = task.await;
+        }
+        let handle = self
+            .inner
+            .lock()
+            .expect("journal bridge handle lock")
+            .take();
+        if let Some(handle) = handle {
+            let _ = handle.shutdown_and_wait().await;
+        }
+    }
+
+    fn stop_status_task(&mut self) {
+        self.lifecycle.retire();
+        if let Some(task) = self.status_task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for JournalBridgeHandle {
+    fn drop(&mut self) {
+        self.stop_status_task();
     }
 }
 
@@ -65,6 +107,17 @@ pub enum BridgeStartError {
     NotReady,
     Client(TransportError),
     Bind(std::io::Error),
+}
+
+impl From<shared_bridge::BridgeStartError> for BridgeStartError {
+    fn from(error: shared_bridge::BridgeStartError) -> Self {
+        match error {
+            shared_bridge::BridgeStartError::Capability(error) => {
+                Self::Client(map_shared_error(error))
+            }
+            shared_bridge::BridgeStartError::Bind(error) => Self::Bind(error),
+        }
+    }
 }
 
 pub async fn start(access: CredentialAccess) -> Result<JournalBridgeHandle, BridgeStartError> {
@@ -77,12 +130,6 @@ pub async fn start_with_facts(
     start_observed(access).await
 }
 
-/// [`start`] with an operation-scoped observation seam attached to the bridge's
-/// client.
-///
-/// The bridge's [`MuxCarrier`] redials silently whenever its cached carrier is
-/// dead; because those redials go through this client's `dial_carrier`, attaching
-/// the handle here is what makes them countable.
 pub async fn start_observed(
     access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
@@ -93,535 +140,190 @@ pub async fn start_observed_with_facts(
     access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
     let client_slot = access.client_slot();
-    let credential = client_slot.load().credential().clone();
-    let mut journal_hosts = Vec::with_capacity(credential.endpoints.len() + 1);
-    journal_hosts.push("spl.local".to_string());
-    journal_hosts.extend(
-        credential
-            .endpoints
-            .iter()
-            .map(|endpoint| endpoint.host.clone()),
-    );
-
-    let post_connect = access.post_connect();
-
-    let carrier = Arc::new(MuxCarrier::with_keepalive(
-        client_slot,
-        crate::journal_bridge_carrier::KeepaliveConfig::default(),
-        access.journal_version(),
-        Some(post_connect.clone()),
-        access.journal_version_token(),
-        Some(access.post_connect_token()),
-        access.sync(),
-    ));
-
-    let carrier_weak = Arc::downgrade(&carrier);
-    post_connect.set_relay_disconnect_hook(Arc::new(move || {
-        if let Some(c) = carrier_weak.upgrade() {
-            tokio::spawn(async move {
-                c.disconnect_relay_if_active().await;
-            });
-        }
-    }));
-
-    let capability = mint_capability()?;
-    let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            tracing::error!(
-                target: "journal_bridge",
-                category = FailureCategory::LocalBind.token(),
-                error_kind = ?error.kind()
-            );
-            return Err(BridgeStartError::Bind(error));
-        }
+    let endpoint_hosts = client_slot
+        .load()
+        .credential()
+        .endpoints
+        .iter()
+        .map(|endpoint| endpoint.host.clone())
+        .collect();
+    let opener = Arc::new(WindowsCarrierOpener { client_slot });
+    let config = JournalBridgeConfig {
+        opener,
+        bridge_names: BridgeNames {
+            capability_cookie_name: CAP_COOKIE_NAME.into(),
+            upstream_cookie_prefix: UPSTREAM_COOKIE_PREFIX.into(),
+            observer_header_name: OBSERVER_HANDLE_HEADER.to_ascii_lowercase(),
+            protocol_version_header_name: PROTOCOL_VERSION_HEADER.to_ascii_lowercase(),
+        },
+        endpoint_hosts,
+        policy: BridgePolicy::default(),
     };
-    let port = listener
-        .local_addr()
-        .map_err(BridgeStartError::Bind)?
-        .port();
-    let loopback_origin = Arc::new(format!("http://127.0.0.1:{port}"));
-    let capability = Arc::new(capability);
-    let journal_hosts = Arc::new(journal_hosts);
-    let (shutdown, shutdown_rx) = oneshot::channel();
-
-    let contacted = Arc::new(AtomicBool::new(false));
-    let join = tokio::spawn(accept_loop(
-        listener,
-        shutdown_rx,
-        carrier,
-        capability.clone(),
-        port,
-        journal_hosts,
-        loopback_origin,
-        contacted.clone(),
-    ));
+    let handle = shared_bridge::start(config)
+        .await
+        .map_err(BridgeStartError::from)?;
+    let subscription = handle.subscribe_status();
+    let lifecycle = Arc::new(BridgeLifecycle::new(&access));
+    let inner = Arc::new(Mutex::new(Some(handle)));
+    let task_lifecycle = lifecycle.clone();
+    let task_inner = inner.clone();
+    let status_task = tokio::spawn(async move {
+        task_lifecycle.apply(subscription.initial());
+        run_status_subscription(subscription, task_lifecycle, task_inner).await;
+    });
 
     Ok(JournalBridgeHandle {
-        port,
-        capability: (*capability).clone(),
-        contacted,
-        shutdown,
-        join,
+        inner,
+        status_task: Some(status_task),
+        lifecycle,
     })
 }
 
-fn mint_capability() -> Result<String, BridgeStartError> {
-    let mut bytes = [0u8; 32];
-    rustls::crypto::ring::default_provider()
-        .secure_random
-        .fill(&mut bytes)
-        .map_err(|error| {
-            BridgeStartError::Client(TransportError::Crypto(format!(
-                "journal bridge capability rng: {error:?}"
-            )))
-        })?;
-    Ok(hex_lower(&bytes))
+struct WindowsCarrierOpener {
+    client_slot: ClientSlot,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn accept_loop(
-    listener: TcpListener,
-    mut shutdown: oneshot::Receiver<()>,
-    carrier: Arc<MuxCarrier>,
-    capability: Arc<String>,
-    port: u16,
-    journal_hosts: Arc<Vec<String>>,
-    loopback_origin: Arc<String>,
-    contacted: Arc<AtomicBool>,
+impl CarrierOpener for WindowsCarrierOpener {
+    fn proxy_headers(
+        &self,
+        upstream_headers: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, spl_transport::TransportError> {
+        Ok(self.client_slot.proxy_headers(upstream_headers))
+    }
+
+    fn dial_carrier(
+        &self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<spl_transport::DialedCarrier, spl_transport::TransportError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let client = self.client_slot.load();
+            client
+                .transport_client()
+                .open_carrier(client.operation_observer())
+                .await
+                .map_err(map_carrier_open_error)
+        })
+    }
+}
+
+fn map_carrier_open_error(error: CarrierOpenError) -> spl_transport::TransportError {
+    match error {
+        CarrierOpenError::RelayDisabled
+        | CarrierOpenError::RelayRetired
+        | CarrierOpenError::PublicationRejected
+        | CarrierOpenError::PublicationIndeterminate => spl_transport::TransportError::NoEndpoint,
+        CarrierOpenError::Transport(error) => error,
+    }
+}
+
+struct BridgeLifecycle {
+    active: AtomicBool,
+    carrier_live: AtomicBool,
+    journal_version: Arc<JournalVersionController>,
+    post_connect: Arc<PostConnectController>,
+    journal_version_token: crate::JournalVersionSessionToken,
+    post_connect_token: crate::PostConnectSessionToken,
+    sync: Arc<Mutex<observer_model::SyncSnapshot>>,
+}
+
+impl BridgeLifecycle {
+    fn new(access: &CredentialAccess) -> Self {
+        Self {
+            active: AtomicBool::new(true),
+            carrier_live: AtomicBool::new(false),
+            journal_version: access.journal_version(),
+            post_connect: access.post_connect(),
+            journal_version_token: access.journal_version_token(),
+            post_connect_token: access.post_connect_token(),
+            sync: access.sync(),
+        }
+    }
+
+    fn apply(&self, status: JournalBridgeStatus) {
+        if !self.active.load(Ordering::Acquire) {
+            return;
+        }
+        let was_live = self
+            .carrier_live
+            .swap(status.carrier_live, Ordering::AcqRel);
+        if was_live && !status.carrier_live {
+            self.mark_disconnected();
+        } else if !was_live && status.carrier_live {
+            self.post_connect.note_connected(self.post_connect_token);
+        }
+    }
+
+    fn mark_unknown(&self) {
+        self.carrier_live.store(false, Ordering::Release);
+        self.mark_disconnected();
+    }
+
+    fn retire(&self) {
+        if self.active.swap(false, Ordering::AcqRel) {
+            self.carrier_live.store(false, Ordering::Release);
+            self.mark_disconnected();
+        }
+    }
+
+    fn mark_disconnected(&self) {
+        self.journal_version
+            .mark_session_disconnected(self.journal_version_token, &self.sync);
+        self.post_connect
+            .mark_session_disconnected(self.post_connect_token);
+    }
+}
+
+async fn run_status_subscription(
+    mut subscription: shared_bridge::JournalBridgeStatusSubscription,
+    lifecycle: Arc<BridgeLifecycle>,
+    inner: Arc<Mutex<Option<shared_bridge::JournalBridgeHandle>>>,
 ) {
     loop {
-        tokio::select! {
-            _ = &mut shutdown => {
-                carrier.shutdown().await;
-                break;
-            }
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else {
-                    continue;
-                };
-                contacted.store(true, Ordering::Relaxed);
-                tokio::spawn(handle_conn(
-                    stream,
-                    carrier.clone(),
-                    capability.clone(),
-                    port,
-                    journal_hosts.clone(),
-                    loopback_origin.clone(),
-                ));
-            }
-        }
-    }
-}
-
-async fn handle_conn(
-    mut stream: TcpStream,
-    carrier: Arc<MuxCarrier>,
-    capability: Arc<String>,
-    port: u16,
-    journal_hosts: Arc<Vec<String>>,
-    loopback_origin: Arc<String>,
-) {
-    let Some((head_bytes, body)) = read_request(&mut stream).await else {
-        return;
-    };
-    let Some(request_head) = bridge::parse_request_head(&head_bytes) else {
-        write_local(&mut stream, 400, b"bad request", "text/plain").await;
-        return;
-    };
-    let route = if request_head.path() == BOOTSTRAP_ROUTE {
-        "bootstrap"
-    } else {
-        "upstream"
-    };
-    tracing::info!(
-        target: "journal_bridge",
-        method = request_head.method.as_str(),
-        route,
-        "local request"
-    );
-
-    if request_head.path() == BOOTSTRAP_ROUTE {
-        handle_bootstrap(&mut stream, &request_head, &capability, port).await;
-        return;
-    }
-
-    if let Err(reason) = bridge::authorize(&request_head, capability.as_bytes(), port) {
-        log_capability_reject(reason);
-        let status = if reason == RejectReason::BadMethod {
-            405
-        } else {
-            403
-        };
-        write_local(&mut stream, status, b"forbidden", "text/plain").await;
-        return;
-    }
-
-    let upstream_headers = bridge::upstream_request_headers(&request_head);
-    if request_head.method == "GET" && request_head.path() == "/sse/events" {
-        forward_sse(
-            &mut stream,
-            carrier,
-            &request_head,
-            &upstream_headers,
-            &journal_hosts,
-            &loopback_origin,
-        )
-        .await;
-    } else {
-        forward_buffered(
-            &mut stream,
-            carrier,
-            &request_head,
-            &upstream_headers,
-            &body,
-            &journal_hosts,
-            &loopback_origin,
-        )
-        .await;
-    }
-}
-
-async fn handle_bootstrap(
-    stream: &mut TcpStream,
-    request_head: &RequestHead,
-    capability: &str,
-    port: u16,
-) {
-    let expected_host = format!("127.0.0.1:{port}");
-    if request_head.host() != Some(expected_host.as_str()) {
-        log_capability_reject(RejectReason::BadHost);
-        write_local(stream, 403, b"forbidden", "text/plain").await;
-        return;
-    }
-    if request_head.method != "GET" {
-        log_capability_reject(RejectReason::BadMethod);
-        write_local(stream, 405, b"forbidden", "text/plain").await;
-        return;
-    }
-    if request_head.has_caller_auth() {
-        log_capability_reject(RejectReason::CallerAuth);
-        write_local(stream, 403, b"forbidden", "text/plain").await;
-        return;
-    }
-
-    let cap_ok = bridge::bootstrap_cap(&request_head.target)
-        .map(|presented| bridge::ct_eq(presented.as_bytes(), capability.as_bytes()))
-        .unwrap_or(false);
-    if !cap_ok {
-        log_capability_reject(RejectReason::BadCapability);
-        write_local(stream, 403, b"forbidden", "text/plain").await;
-        return;
-    }
-
-    let response = format!(
-        "HTTP/1.1 302 Found\r\nSet-Cookie: {CAP_COOKIE_NAME}={capability}; {}\r\nLocation: /\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        bridge::bootstrap_cookie_attributes()
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.shutdown().await;
-}
-
-async fn forward_buffered(
-    stream: &mut TcpStream,
-    carrier: Arc<MuxCarrier>,
-    request_head: &RequestHead,
-    upstream_headers: &[(String, String)],
-    body: &[u8],
-    journal_hosts: &[String],
-    loopback_origin: &str,
-) {
-    let mut rx = match carrier
-        .open_stream(
-            &request_head.method,
-            &request_head.target,
-            upstream_headers,
-            body,
-        )
-        .await
-    {
-        Ok(rx) => rx,
-        Err(error) => {
-            log_upstream_open_error(&error);
-            write_local(stream, 502, b"journal unreachable", "text/plain").await;
-            return;
-        }
-    };
-
-    let mut response_head = None;
-    let mut response_body = Vec::new();
-    while let Some(item) = rx.recv().await {
-        match item {
-            StreamItem::Head(head) => {
-                if matches!(head.status, 401 | 403) {
-                    tracing::warn!(
-                        target: "journal_bridge",
-                        category = FailureCategory::UpstreamCredential.token(),
-                        status = head.status
-                    );
-                }
-                response_head = Some(head);
-            }
-            StreamItem::Body(bytes) => response_body.extend_from_slice(&bytes),
-            StreamItem::End(_) => break,
-        }
-    }
-
-    let Some(head) = response_head else {
-        tracing::warn!(
-            target: "journal_bridge",
-            category = FailureCategory::UpstreamUnreachable.token(),
-            code = "io"
-        );
-        write_local(stream, 502, b"journal unreachable", "text/plain").await;
-        return;
-    };
-
-    let headers = bridge::response_headers(&head.headers, journal_hosts, loopback_origin);
-    let body = if request_head.method == "HEAD" {
-        &[][..]
-    } else {
-        response_body.as_slice()
-    };
-    let content_length = if request_head.method == "HEAD" {
-        upstream_content_length(&head.headers).unwrap_or(body.len())
-    } else {
-        body.len()
-    };
-    if write_upstream_response(stream, head.status, &headers, body, Some(content_length))
-        .await
-        .is_err()
-    {
-        rx.cancel();
-    }
-}
-
-async fn forward_sse(
-    stream: &mut TcpStream,
-    carrier: Arc<MuxCarrier>,
-    request_head: &RequestHead,
-    upstream_headers: &[(String, String)],
-    journal_hosts: &[String],
-    loopback_origin: &str,
-) {
-    let mut rx = match carrier
-        .open_stream("GET", &request_head.target, upstream_headers, b"")
-        .await
-    {
-        Ok(rx) => rx,
-        Err(error) => {
-            log_upstream_open_error(&error);
-            write_local(stream, 502, b"journal unreachable", "text/plain").await;
-            return;
-        }
-    };
-
-    let mut head_written = false;
-    while let Some(item) = rx.recv().await {
-        match item {
-            StreamItem::Head(head) => {
-                if matches!(head.status, 401 | 403) {
-                    tracing::warn!(
-                        target: "journal_bridge",
-                        category = FailureCategory::UpstreamCredential.token(),
-                        status = head.status
-                    );
-                }
-                let headers =
-                    bridge::response_headers(&head.headers, journal_hosts, loopback_origin);
-                if write_stream_head(stream, head.status, &headers)
-                    .await
-                    .is_err()
-                {
-                    rx.cancel();
-                    return;
-                }
-                head_written = true;
-            }
-            StreamItem::Body(bytes) => {
-                if !head_written {
-                    break;
-                }
-                if stream.write_all(&bytes).await.is_err() || stream.flush().await.is_err() {
-                    rx.cancel();
-                    return;
+        match subscription.recv().await {
+            Ok(status) => lifecycle.apply(status),
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                lifecycle.mark_unknown();
+                let snapshot = inner
+                    .lock()
+                    .expect("journal bridge handle lock")
+                    .as_ref()
+                    .map(shared_bridge::JournalBridgeHandle::status);
+                if let Some(snapshot) = snapshot {
+                    lifecycle.apply(snapshot);
                 }
             }
-            StreamItem::End(_) => break,
+            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
-
-    if !head_written {
-        tracing::warn!(
-            target: "journal_bridge",
-            category = FailureCategory::UpstreamUnreachable.token(),
-            code = "io"
-        );
-        write_local(stream, 502, b"journal unreachable", "text/plain").await;
-        return;
-    }
-    let _ = stream.shutdown().await;
 }
 
-fn log_upstream_open_error(error: &TransportError) {
-    let category = if matches!(error, TransportError::NotPaired) {
-        FailureCategory::UpstreamCredential
-    } else {
-        FailureCategory::UpstreamUnreachable
-    };
-    tracing::warn!(
-        target: "journal_bridge",
-        category = category.token(),
-        code = %transport_error_code(error)
-    );
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-async fn read_request(stream: &mut TcpStream) -> Option<(Vec<u8>, Vec<u8>)> {
-    let mut received = Vec::new();
-    let mut buf = [0u8; READ_BUF_BYTES];
-    let split = loop {
-        let n = stream.read(&mut buf).await.ok()?;
-        if n == 0 {
-            return None;
+    #[test]
+    fn carrier_open_fences_collapse_only_at_the_bridge_opener_boundary() {
+        for error in [
+            CarrierOpenError::RelayDisabled,
+            CarrierOpenError::RelayRetired,
+            CarrierOpenError::PublicationRejected,
+            CarrierOpenError::PublicationIndeterminate,
+        ] {
+            assert!(matches!(
+                map_carrier_open_error(error),
+                spl_transport::TransportError::NoEndpoint
+            ));
         }
-        received.extend_from_slice(&buf[..n]);
-        if let Some(split) = find_header_end(&received) {
-            break split;
-        }
-        if received.len() > MAX_HEAD_BYTES {
-            return None;
-        }
-    };
-
-    let body_start = split + 4;
-    let head = received[..body_start].to_vec();
-    let content_length = parse_content_length(&head)?;
-    if content_length > MAX_BODY_BYTES {
-        return None;
+        assert!(matches!(
+            map_carrier_open_error(CarrierOpenError::Transport(
+                spl_transport::TransportError::TlsAccessDenied
+            )),
+            spl_transport::TransportError::TlsAccessDenied
+        ));
     }
-    let mut body = received[body_start..].to_vec();
-    if body.len() > content_length {
-        body.truncate(content_length);
-    }
-    while body.len() < content_length {
-        let remaining = content_length - body.len();
-        let n = stream
-            .read(&mut buf[..remaining.min(READ_BUF_BYTES)])
-            .await
-            .ok()?;
-        if n == 0 {
-            return None;
-        }
-        body.extend_from_slice(&buf[..n]);
-    }
-    Some((head, body))
-}
-
-fn parse_content_length(head: &[u8]) -> Option<usize> {
-    let text = String::from_utf8_lossy(head);
-    for line in text.split("\r\n").skip(1) {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.trim().eq_ignore_ascii_case("content-length") {
-            return value.trim().parse::<usize>().ok();
-        }
-    }
-    Some(0)
-}
-
-fn find_header_end(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
-async fn write_local(stream: &mut TcpStream, status: u16, body: &[u8], content_type: &str) {
-    let response = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        reason_phrase(status),
-        body.len()
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.write_all(body).await;
-    let _ = stream.shutdown().await;
-}
-
-async fn write_upstream_response(
-    stream: &mut TcpStream,
-    status: u16,
-    headers: &[(String, String)],
-    body: &[u8],
-    content_length: Option<usize>,
-) -> std::io::Result<()> {
-    let mut response = format!("HTTP/1.1 {status} {}\r\n", reason_phrase(status));
-    for (name, value) in headers {
-        response.push_str(name);
-        response.push_str(": ");
-        response.push_str(value);
-        response.push_str("\r\n");
-    }
-    if let Some(content_length) = content_length {
-        response.push_str("content-length: ");
-        response.push_str(&content_length.to_string());
-        response.push_str("\r\n");
-    }
-    response.push_str("connection: close\r\n\r\n");
-    stream.write_all(response.as_bytes()).await?;
-    stream.write_all(body).await?;
-    stream.shutdown().await
-}
-
-fn upstream_content_length(headers: &[(String, String)]) -> Option<usize> {
-    headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, value)| value.parse::<usize>().ok())
-}
-
-async fn write_stream_head(
-    stream: &mut TcpStream,
-    status: u16,
-    headers: &[(String, String)],
-) -> std::io::Result<()> {
-    let mut response = format!("HTTP/1.1 {status} {}\r\n", reason_phrase(status));
-    for (name, value) in headers {
-        response.push_str(name);
-        response.push_str(": ");
-        response.push_str(value);
-        response.push_str("\r\n");
-    }
-    response.push_str("connection: close\r\n\r\n");
-    stream.write_all(response.as_bytes()).await?;
-    stream.flush().await
-}
-
-fn reason_phrase(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        201 => "Created",
-        202 => "Accepted",
-        204 => "No Content",
-        206 => "Partial Content",
-        302 => "Found",
-        304 => "Not Modified",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        410 => "Gone",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        _ => "Status",
-    }
-}
-
-fn log_capability_reject(reason: RejectReason) {
-    tracing::warn!(
-        target: "journal_bridge",
-        category = FailureCategory::LocalCapabilityReject.token(),
-        reason = reason.token()
-    );
 }

@@ -20,18 +20,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
-use observer_pl::frame::{
-    Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RESET_CANCEL,
-};
 use observer_pl::ingest::{FilePart, IngestStatus};
-use observer_pl::mux::INITIAL_WINDOW;
 use observer_pl::PROTOCOL_VERSION_HEADER;
 use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
-use pl_transport_win::connection::request_once;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::service::{self, SyncConfig};
-use pl_transport_win::tls::pairing_config;
 use pl_transport_win::{journal_bridge, CredentialAccess, TransportError};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, IsCa, KeyPair,
@@ -39,6 +33,12 @@ use rcgen::{
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
+use spl_core::frame::{
+    Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW, RESET_CANCEL,
+};
+use spl_core::mux::INITIAL_WINDOW;
+use spl_transport::connection::request_once;
+use spl_transport::tls::pairing_config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
@@ -818,7 +818,7 @@ fn loopback_host(port: u16) -> String {
 }
 
 fn cap_cookie(cap: &str) -> String {
-    format!("{}={cap}", observer_pl::bridge::CAP_COOKIE_NAME)
+    format!("{}={cap}", observer_pl::CAP_COOKIE_NAME)
 }
 
 fn response_text(response: &[u8]) -> String {
@@ -1017,7 +1017,7 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
     );
     assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
     let credential_key = KeyPair::from_pem(&credential.client_key_pem).unwrap();
-    let credential_leaf = pl_transport_win::tls::parse_certs(&credential.client_cert_pem)
+    let credential_leaf = spl_transport::tls::parse_certs(&credential.client_cert_pem)
         .unwrap()
         .remove(0);
     assert_eq!(
@@ -1420,7 +1420,7 @@ async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
     let ok = raw_bridge_request(
         port,
         "GET",
-        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        &format!("{}?cap={cap}", spl_core::bridge::BOOTSTRAP_ROUTE),
         Some(loopback_host(port)),
         None,
         &[],
@@ -1431,14 +1431,14 @@ async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
     assert_eq!(response_status(&ok), 302);
     assert!(ok_text.contains(&format!(
         "Set-Cookie: {}={cap}; Path=/; HttpOnly; SameSite=Strict",
-        observer_pl::bridge::CAP_COOKIE_NAME
+        observer_pl::CAP_COOKIE_NAME
     )));
     assert!(ok_text.contains("Location: /\r\n"));
 
     let bad = raw_bridge_request(
         port,
         "GET",
-        &format!("{}?cap=wrong", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        &format!("{}?cap=wrong", spl_core::bridge::BOOTSTRAP_ROUTE),
         Some(loopback_host(port)),
         None,
         &[],
@@ -1451,7 +1451,7 @@ async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
     let wrong_method = raw_bridge_request(
         port,
         "POST",
-        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        &format!("{}?cap={cap}", spl_core::bridge::BOOTSTRAP_ROUTE),
         Some(loopback_host(port)),
         None,
         &[],
@@ -1464,7 +1464,7 @@ async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
     let caller_auth = raw_bridge_request(
         port,
         "GET",
-        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        &format!("{}?cap={cap}", spl_core::bridge::BOOTSTRAP_ROUTE),
         Some(loopback_host(port)),
         None,
         &[("Authorization", "Bearer caller")],
@@ -1569,7 +1569,7 @@ async fn journal_bridge_buffered_pass_through_adds_v3_headers_and_strips_local_h
     assert!(!request.contains("X-Solstone-Protocol-Version: 2"));
     assert!(request.contains("accept: text/html\r\n"));
     let lower = request.to_ascii_lowercase();
-    assert!(!lower.contains(observer_pl::bridge::CAP_COOKIE_NAME));
+    assert!(!lower.contains(observer_pl::CAP_COOKIE_NAME));
     assert!(!lower.contains("cookie:"));
     assert!(!lower.contains("host: 127.0.0.1"));
 
@@ -2230,7 +2230,7 @@ async fn journal_bridge_binds_loopback_and_serves_on_reported_port() {
     let response = raw_bridge_request(
         port,
         "GET",
-        &format!("{}?cap={cap}", observer_pl::bridge::BOOTSTRAP_ROUTE),
+        &format!("{}?cap={cap}", spl_core::bridge::BOOTSTRAP_ROUTE),
         Some(loopback_host(port)),
         None,
         &[],
@@ -2301,7 +2301,7 @@ async fn journal_bridge_logs_redacted_failure_categories_only() {
     assert!(logs.contains("code=io"));
     assert!(!logs.contains(&cap));
     assert!(!logs.contains("wrong-capability"));
-    assert!(!logs.contains(observer_pl::bridge::CAP_COOKIE_NAME));
+    assert!(!logs.contains(observer_pl::CAP_COOKIE_NAME));
     assert!(!logs.contains("/secret/path"));
     assert!(!logs.contains("owner-secret"));
     assert!(!logs.contains("body-secret"));
@@ -3389,7 +3389,7 @@ async fn test_adapter_oversize_response_body_rejected() {
     let err = client.get_clients_self().await.unwrap_err();
     assert!(matches!(
         err,
-        TransportError::Mux(observer_pl::mux::MuxError::CapExceeded)
+        TransportError::Mux(spl_core::mux::MuxError::CapExceeded)
     ));
 
     server.abort();

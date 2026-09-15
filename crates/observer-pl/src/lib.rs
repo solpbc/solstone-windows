@@ -1,41 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! The pure observer PL wire protocol.
+//! Protocol-v3 ingest envelopes, custody proof, and civil-date helpers.
 //!
-//! This is the **pure tier** Wave-2 crate: the faithful Rust port of the
-//! observer wire contract that iOS (`solstone-swift`) and Android
-//! (`solstone-android`) already ship, and that the journal (`solstone` convey)
-//! serves. It owns:
-//!
-//! - [`frame`] / [`mux`] — the spl multiplex framing (8-byte header, OPEN/DATA/
-//!   CLOSE/PING/PONG) and the dialer-side request/response assembler.
-//! - [`http`] — HTTP/1.1 request build + response parse, exactly as the Android
-//!   `PlHttp` transport frames it (`host: spl.local`, framing-owned headers).
-//! - [`ingest`] — the protocol-v3 ingest envelope, responses, and pure custody
-//!   proof.
-//! - [`jwt`] — token claim decoding and renewal time calculations.
-//! - [`relay_access`] — relay access response validation and token claims.
-//! - [`relay`] — relay dial URL construction and helper logic.
-//! - [`bridge`] — local loopback journal bridge proxying.
-//! - [`civil`] — epoch → `YYYYMMDD` / `HHMMSS` for the ingest `day` / `segment`
-//!   keys, pure UTC arithmetic (no chrono, no tz database).
-//!
-//! There is no I/O and no platform dependency here, so the whole wire contract
-//! is round-trip unit-tested on any host. The actual mTLS sockets live in the
-//! platform-tier `pl-transport-win`.
+//! Shared SPL framing, HTTP, relay, and loopback bridge authority lives in
+//! `spl-core` and `spl-transport`. This crate retains only Windows product
+//! protocol values that are not shared authority.
 
 #![forbid(unsafe_code)]
 
-pub mod bridge;
 pub mod civil;
-pub mod frame;
-pub mod http;
 pub mod ingest;
-pub mod jwt;
-pub mod mux;
-pub mod relay;
-pub mod relay_access;
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/bridge.rs"]
+mod bridge;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/frame.rs"]
+mod frame;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/http.rs"]
+mod http;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/jwt.rs"]
+mod jwt;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/mux.rs"]
+mod mux;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/relay.rs"]
+mod relay;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/relay_access.rs"]
+mod relay_access;
 
 /// The observer protocol version this client speaks (sent as
 /// `X-Solstone-Protocol-Version`).
@@ -44,6 +48,12 @@ pub const OBSERVER_PROTOCOL_VERSION: u32 = 3;
 /// Reserved caller-auth header. The bridge filters this and `Authorization` so
 /// local callers cannot override bridge-owned mTLS request identity.
 pub const OBSERVER_HANDLE_HEADER: &str = "X-Solstone-Observer";
+
+/// Capability-cookie name used by the Windows loopback bridge configuration.
+pub const CAP_COOKIE_NAME: &str = "__solstone_journal_cap";
+
+/// Prefix for journal cookies rewritten by the Windows loopback bridge.
+pub const UPSTREAM_COOKIE_PREFIX: &str = "__solstone_journal_up_";
 
 /// Protocol-version header name.
 pub const PROTOCOL_VERSION_HEADER: &str = "X-Solstone-Protocol-Version";

@@ -3,7 +3,7 @@
 - Exact source commit: `3ad55472b047d8eb906db8c379f7a7012a867d79`
 - Local index and worktree were clean before the first discovery command.
 - Cargo.lock SHA-256: `5e96d042fe93e17c774033137961ed6163ed6402b24902b8388ff54e8dd3b4b8`
-- ui/package-lock.json SHA-256: `544c4e8b8c49456a035b59a059a1b8a9dd5414db3224b266f8a6118c723248`
+- ui/package-lock.json SHA-256: `544c4e8b8b8c49456a035b59a059a1b8a9dd5414db3224b266f8a6118c723248`
 
 ## Hosts and collection metadata
 

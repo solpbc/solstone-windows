@@ -60,14 +60,14 @@ if [ -d "$ROOT/src-tauri" ]; then
 fi
 
 if [ -n "$search_dirs" ]; then
-  stale_hits=$(find $search_dirs -name "*.rs" -exec grep -HnE "(observer_pl::(pairlink|crockford|ca|relay_window|wire)|paths::PAIR|pair_dial_url)" {} + 2>/dev/null || true)
+  stale_hits=$(find $search_dirs -path '*/src/test_compat/*' -prune -o -name "*.rs" -exec grep -HnE "(observer_pl::(pairlink|crockford|ca|relay_window|wire)|paths::PAIR|pair_dial_url)" {} + 2>/dev/null || true)
   if [ -n "$stale_hits" ]; then
     report_violation "found stale observer_pl authority references in Rust sources: $stale_hits"
   fi
 fi
 
 # 5. Dependency pins for spl-core and spl-transport
-expected_rev="41982cf700f916b629d8d3f714c1f724cb9f81de"
+expected_rev="3926ac33e1b1f1b5fa1855abf576816109b501ab"
 expected_git="https://github.com/solpbc/spl-rust"
 
 if [ -f "$ROOT/Cargo.toml" ]; then

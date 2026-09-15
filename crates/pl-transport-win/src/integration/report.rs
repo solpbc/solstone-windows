@@ -477,7 +477,7 @@ pub fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observer_pl::http::HttpError;
+    use spl_core::http::HttpError;
 
     fn artifact() -> Artifact {
         Artifact {

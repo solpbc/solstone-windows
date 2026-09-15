@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! Framed-mTLS PL transport + observer client for the Windows observer.
+//! Windows credential, upload, and lifecycle adapter over shared SPL transport.
 //!
 //! This is the Wave-2 network layer. It drives the pure wire from `observer-pl`
 //! over a real TLS socket and implements the observer half of the protocol the
@@ -23,32 +23,46 @@
 
 pub mod access;
 pub mod client;
-pub mod connection;
 pub mod coordinator;
 pub mod credential;
 pub mod device_metadata;
 pub mod integration;
 pub mod journal_bridge;
-mod journal_bridge_carrier;
 pub mod journal_version;
 mod ordinary_request;
 pub mod pairing;
 pub mod post_connect;
-pub mod relay;
-pub(crate) mod relay_http;
 pub mod relay_pairing;
-pub mod relay_token;
 pub mod sealed;
 pub mod service;
 pub mod slot;
-pub(crate) mod spki_pin;
-pub mod tls;
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/connection.rs"]
+mod connection;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/journal_bridge_carrier.rs"]
+mod journal_bridge_carrier;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/relay.rs"]
+mod relay;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/relay_http.rs"]
+mod relay_http;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "test_compat/spki_pin.rs"]
+mod spki_pin;
 
 use std::fmt;
 use std::sync::Arc;
 
-use observer_pl::http::HttpError;
-use observer_pl::mux::MuxError;
+use spl_core::http::HttpError;
+use spl_core::mux::MuxError;
 use thiserror::Error;
 
 pub use access::CredentialAccess;

@@ -11,10 +11,10 @@ use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
 use observer_retention::RetentionConfig;
 use pl_transport_win::credential::EndpointAddr;
 use pl_transport_win::relay_pairing::pair_over_relay;
-use pl_transport_win::relay_token::{refresh_device_token, RefreshOutcome};
 use pl_transport_win::service::{self, SyncConfig};
 use pl_transport_win::{transport_error_code, TransportError};
 use spl_core::pairlink::RelayPairLink;
+use spl_transport::relay_token::{refresh_device_token, RefreshOutcome};
 
 use support::observer_contract::fixture as authority_fixture;
 use support::relay_pairing::{

@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use observer_pl::mux::INITIAL_WINDOW;
+use spl_core::mux::INITIAL_WINDOW;
 
 /// The flag that selects the mode.
 pub const MODE_FLAG: &str = "--integration";

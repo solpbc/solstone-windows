@@ -16,9 +16,9 @@ observer-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-base64.workspace = true
-time = { version = "0.3.54", features = ["parsing"] }
 
 [dev-dependencies]
+base64.workspace = true
 spl-core.workspace = true
+time = { version = "0.3.54", features = ["parsing"] }
 xtask = { path = "../../xtask" }

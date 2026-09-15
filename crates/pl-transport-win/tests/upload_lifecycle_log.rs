@@ -6,9 +6,9 @@ mod support;
 use std::sync::Arc;
 
 use observer_model::TransportPath;
-use observer_pl::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
 use observer_pl::ingest::FilePart;
 use pl_transport_win::client::ObserverClient;
+use spl_core::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
 use spl_transport::observe::OperationObserver;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;

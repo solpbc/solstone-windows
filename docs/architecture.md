@@ -41,8 +41,9 @@ transitions, recovery scans, contract codegen — is tested off-Windows.
 - **observer-contract** — AutomationId source of truth + the deterministic
   `automation-contract.json` generator; the state-token vocabulary derives from
   the model enums via `strum::EnumIter`.
-- **observer-pl** — pure protocol-v3 wire, multipart, custody, and civil date
-  helpers.
+- **observer-pl** — protocol-v3 ingest, multipart, custody, and civil date
+  helpers; shared SPL framing and bridge authority live in `spl-core` and
+  `spl-transport`.
 - **capture-wgc** — Windows.Graphics.Capture screen source.
 - **capture-wasapi** — WASAPI render-loopback system audio + eCapture mic; owns
   the `NoInputDevice` determination.
@@ -62,7 +63,8 @@ crate seam makes that flip a re-host of one crate, not a rewrite.
 
 ## Sync transport
 
-`observer-pl` and `pl-transport-win` carry the Wave-2 pair/upload path. The
+`observer-pl`, `spl-core`, `spl-transport`, and `pl-transport-win` carry the
+pair/upload path. The
 paired mTLS credential is the journal identity for every upload and bridge
 request. Journal-side `health.ingest_rejection` remains a separate health source
 recorded by the journal when uploads fail ingest contract validation.

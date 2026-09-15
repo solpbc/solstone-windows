@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use std::sync::{Arc, Mutex, RwLock};
@@ -11,6 +14,12 @@ use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::CredentialAccess;
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+use spl_core::bridge::BridgeNames;
+use spl_transport::journal_bridge::{
+    self as shared_bridge, BridgePolicy, CarrierOpener, JournalBridgeConfig,
+};
+
+static TEST_PATH_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn paired_state() -> PairedState {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -46,11 +55,17 @@ impl LocalOffset for TestOffset {
     }
 }
 
-#[tokio::test]
-async fn contacted_flips_on_first_accept_before_http_parse() {
+async fn start_windows_bridge(
+    name: &str,
+) -> (
+    pl_transport_win::journal_bridge::JournalBridgeHandle,
+    Arc<pl_transport_win::JournalVersionController>,
+    Arc<Mutex<SyncSnapshot>>,
+) {
     let paired = paired_state();
-    let state_path = std::env::temp_dir().join(format!(
-        "journal-bridge-contact-{}.json",
+    let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let state_path = std::path::PathBuf::from("/var/tmp").join(format!(
+        "journal-bridge-contact-{name}-{}-{unique}.json",
         std::process::id()
     ));
     let jv_path = state_path.with_file_name("journal-version.json");
@@ -63,14 +78,19 @@ async fn contacted_flips_on_first_accept_before_http_parse() {
         state_path,
         retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
-        journal_version: jv,
+        journal_version: jv.clone(),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
     };
-    let access = CredentialAccess::bind(&paired, &cfg, sync, None).expect("access bind");
+    let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
     let handle = pl_transport_win::journal_bridge::start(access)
         .await
         .expect("bridge start");
+    (handle, jv, sync)
+}
 
+#[tokio::test]
+async fn contacted_flips_on_first_accept_before_http_parse() {
+    let (handle, _, _) = start_windows_bridge("contacted").await;
     // Flag starts false before any connection.
     assert!(!handle.contacted(), "flag must start false");
 
@@ -97,4 +117,112 @@ async fn contacted_flips_on_first_accept_before_http_parse() {
 
     drop(stream);
     handle.begin_shutdown();
+}
+
+#[tokio::test]
+async fn status_task_ignores_contact_and_active_request_noise() {
+    let (handle, journal_version, sync) = start_windows_bridge("noise").await;
+    let token = journal_version.current_token();
+    journal_version.publish_journal_metadata(None, Some("test"), token, &sync);
+    assert!(sync.lock().unwrap().journal_version_fresh);
+
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .expect("connect to bridge");
+    drop(stream);
+    tokio::time::sleep(Duration::from_millis(25)).await;
+
+    assert!(
+        sync.lock().unwrap().journal_version_fresh,
+        "contacted and active-request transitions must not be treated as carrier loss"
+    );
+    handle.shutdown_and_wait().await;
+}
+
+struct NoDialOpener {
+    opens: AtomicUsize,
+}
+
+impl CarrierOpener for NoDialOpener {
+    fn proxy_headers(
+        &self,
+        upstream_headers: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, spl_transport::TransportError> {
+        Ok(upstream_headers.to_vec())
+    }
+
+    fn dial_carrier(
+        &self,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<spl_transport::DialedCarrier, spl_transport::TransportError>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(spl_transport::TransportError::NoEndpoint) })
+    }
+}
+
+async fn start_shared_bridge(opener: Arc<NoDialOpener>) -> shared_bridge::JournalBridgeHandle {
+    shared_bridge::start(JournalBridgeConfig {
+        opener,
+        bridge_names: BridgeNames {
+            capability_cookie_name: observer_pl::CAP_COOKIE_NAME.into(),
+            upstream_cookie_prefix: observer_pl::UPSTREAM_COOKIE_PREFIX.into(),
+            observer_header_name: observer_pl::OBSERVER_HANDLE_HEADER.to_ascii_lowercase(),
+            protocol_version_header_name: observer_pl::PROTOCOL_VERSION_HEADER.to_ascii_lowercase(),
+        },
+        endpoint_hosts: Vec::new(),
+        policy: BridgePolicy::default(),
+    })
+    .await
+    .expect("shared bridge start")
+}
+
+#[tokio::test]
+async fn status_task_lag_marks_unknown_then_reconciles_snapshot() {
+    let opener = Arc::new(NoDialOpener {
+        opens: AtomicUsize::new(0),
+    });
+    let handle = start_shared_bridge(opener).await;
+    let mut subscription = handle.subscribe_status();
+
+    let mut streams = Vec::new();
+    for _ in 0..80 {
+        streams.push(
+            tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+                .await
+                .expect("connect to bridge"),
+        );
+    }
+    drop(streams);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(
+        matches!(
+            subscription.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+        ),
+        "the bounded status stream must report a lag instead of silently dropping a carrier edge"
+    );
+    let snapshot = handle.status();
+    assert!(!snapshot.carrier_live);
+    assert!(snapshot.contacted);
+    handle.shutdown_and_wait().await;
+}
+
+#[tokio::test]
+async fn bridge_shutdown_stops_subscription_and_marks_sessions_disconnected() {
+    let (handle, journal_version, sync) = start_windows_bridge("shutdown").await;
+    let token = journal_version.current_token();
+    journal_version.publish_journal_metadata(None, Some("test"), token, &sync);
+    assert!(sync.lock().unwrap().journal_version_fresh);
+
+    handle.shutdown_and_wait().await;
+    assert!(
+        !sync.lock().unwrap().journal_version_fresh,
+        "shutdown must retire the status task and mark its journal session disconnected"
+    );
 }

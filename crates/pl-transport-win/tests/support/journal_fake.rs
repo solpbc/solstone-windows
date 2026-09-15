@@ -12,11 +12,11 @@
 
 use std::sync::Arc;
 
-use observer_pl::frame::{FrameDecoder, FLAG_CLOSE, FLAG_DATA};
 use pl_transport_win::credential::{Credential, EndpointAddr};
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
+use spl_core::frame::{FrameDecoder, FLAG_CLOSE, FLAG_DATA};
 use tokio::io::AsyncReadExt;
 
 pub fn self_signed() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {

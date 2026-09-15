@@ -5,6 +5,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use pl_transport_win::credential::{Credential, EndpointAddr};
+use pl_transport_win::{ClientSlot, ObserverClient};
+use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 
 struct BaselineCaller {
     relative: &'static str,
@@ -64,9 +69,9 @@ const BASELINE_CALLERS: &[BaselineCaller] = &[
         v3_surface: "self.v3_headers()",
     },
     BaselineCaller {
-        relative: "src/journal_bridge_carrier.rs",
-        needle: "async fn open_stream(",
-        v3_surface: "self.client.proxy_headers(upstream_headers)",
+        relative: "src/journal_bridge.rs",
+        needle: "fn proxy_headers(",
+        v3_surface: "self.client_slot.proxy_headers(upstream_headers)",
     },
 ];
 
@@ -151,6 +156,46 @@ fn v3_callers_use_v3_headers_and_retired_identity_is_absent() {
     assert!(!proxy_scope.contains("Authorization"));
     assert!(!proxy_scope.contains("X-Solstone-Observer"));
     assert!(!proxy_scope.contains("Bearer"));
+}
+
+#[test]
+fn windows_opener_attaches_complete_v3_header_set() {
+    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("test key");
+    let params = CertificateParams::new(vec!["observer.test".to_string()]).expect("test cert");
+    let cert = params.self_signed(&key).expect("self-signed test cert");
+    let client = ObserverClient::new(Credential {
+        client_key_pem: key.serialize_pem(),
+        client_cert_pem: cert.pem(),
+        ca_chain_pem: vec![cert.pem()],
+        ca_fp_prefix: vec![0; 16],
+        instance_id: "test-instance".into(),
+        home_label: "Home".into(),
+        endpoints: vec![EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: 1,
+        }],
+        relay_origin: None,
+        device_token: None,
+        device_token_expires_at: None,
+    })
+    .expect("observer client");
+    let slot = ClientSlot::new(Arc::new(client));
+
+    let headers = slot.proxy_headers(&[
+        ("Accept".into(), "application/json".into()),
+        ("Authorization".into(), "forged".into()),
+        ("X-Solstone-Observer".into(), "forged".into()),
+        ("X-Solstone-Protocol-Version".into(), "0".into()),
+    ]);
+
+    assert_eq!(
+        headers,
+        vec![
+            ("X-Solstone-Protocol-Version".into(), "3".into()),
+            ("Accept".into(), "application/json".into()),
+        ],
+        "the Windows opener delegates to this slot method, so every v3 header must be retained and caller auth must be stripped"
+    );
 }
 
 fn production_source(source: &str) -> &str {
