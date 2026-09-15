@@ -97,10 +97,15 @@ pub fn windows_to_shared_credential(cred: &Credential) -> spl_transport::credent
 }
 
 pub(crate) fn gate_usable_route(cred: &Credential) -> Result<(), TransportError> {
-    if cred.endpoints.is_empty() && cred.device_token.is_none() {
-        Err(TransportError::NoEndpoint)
-    } else {
+    if !cred.endpoints.is_empty()
+        || matches!(
+            (cred.relay_origin.as_deref(), cred.device_token.as_deref()),
+            (Some(origin), Some(token)) if !origin.is_empty() && !token.is_empty()
+        )
+    {
         Ok(())
+    } else {
+        Err(TransportError::NoEndpoint)
     }
 }
 
@@ -256,7 +261,7 @@ mod tests {
     use crate::transport_error_code;
 
     #[test]
-    fn usable_route_gate_requires_either_endpoint_or_device_token() {
+    fn usable_route_gate_matches_transport_constructor_predicate() {
         let mut cred = Credential {
             client_key_pem: "key".into(),
             client_cert_pem: "cert".into(),
@@ -281,6 +286,25 @@ mod tests {
         assert!(gate_usable_route(&cred).is_ok());
 
         cred.endpoints.clear();
+        cred.device_token = Some("token".into());
+        assert!(matches!(
+            gate_usable_route(&cred),
+            Err(TransportError::NoEndpoint)
+        ));
+
+        cred.relay_origin = Some("".into());
+        assert!(matches!(
+            gate_usable_route(&cred),
+            Err(TransportError::NoEndpoint)
+        ));
+
+        cred.relay_origin = Some("https://relay.example.com".into());
+        cred.device_token = Some("".into());
+        assert!(matches!(
+            gate_usable_route(&cred),
+            Err(TransportError::NoEndpoint)
+        ));
+
         cred.device_token = Some("token".into());
         assert!(gate_usable_route(&cred).is_ok());
     }

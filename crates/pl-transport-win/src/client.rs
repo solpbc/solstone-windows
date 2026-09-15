@@ -51,6 +51,7 @@ pub(crate) struct RelayFence {
     disabled: AtomicBool,
     retired: AtomicBool,
     incarnation: AtomicU64,
+    ineligible_incarnation: AtomicU64,
     publication: Arc<std::sync::Mutex<()>>,
 }
 
@@ -60,6 +61,7 @@ impl RelayFence {
             disabled: AtomicBool::new(!enabled),
             retired: AtomicBool::new(false),
             incarnation: AtomicU64::new(1),
+            ineligible_incarnation: AtomicU64::new(0),
             publication: Arc::new(std::sync::Mutex::new(())),
         }
     }
@@ -68,6 +70,7 @@ impl RelayFence {
         !self.retired.load(Ordering::Acquire)
             && !self.disabled.load(Ordering::Acquire)
             && self.incarnation.load(Ordering::Acquire) == incarnation
+            && self.ineligible_incarnation.load(Ordering::Acquire) != incarnation
     }
 
     fn advance_from(&self, expected: u64, enabled: bool) -> Option<u64> {
@@ -87,9 +90,8 @@ impl RelayFence {
     /// Fence relay for the current client incarnation after a publication
     /// rejection without changing the lifecycle incarnation.
     pub(crate) fn mark_relay_ineligible(&self, incarnation: u64) {
-        if self.incarnation.load(Ordering::Acquire) == incarnation {
-            self.disabled.store(true, Ordering::Release);
-        }
+        self.ineligible_incarnation
+            .store(incarnation, Ordering::Release);
     }
 }
 
@@ -98,6 +100,8 @@ impl SharedRelayFence for RelayFence {
         if self.retired.load(Ordering::Acquire) {
             RelayPermit::Retired
         } else if self.disabled.load(Ordering::Acquire) {
+            RelayPermit::Disabled
+        } else if self.ineligible_incarnation.load(Ordering::Acquire) == incarnation {
             RelayPermit::Disabled
         } else if self.incarnation.load(Ordering::Acquire) != incarnation {
             RelayPermit::Retired
@@ -1121,6 +1125,18 @@ mod tests {
         );
 
         assert_eq!(fence.advance_from(1, true), Some(2));
+        // A publication failure can classify just as a replacement advances.
+        // Its latch must stay with the old incarnation instead of disabling the
+        // successor that the slot has made live.
+        fence.mark_relay_ineligible(1);
+        assert_eq!(
+            SharedRelayFence::permit(fence.as_ref(), 1),
+            RelayPermit::Disabled
+        );
+        assert_eq!(
+            SharedRelayFence::permit(fence.as_ref(), 2),
+            RelayPermit::Allow
+        );
         assert_eq!(
             transaction.commit(TokenCommitContext {
                 token: "stale-token",
@@ -1167,6 +1183,10 @@ mod tests {
         });
         FS_FAIL_POINT.with(|fail_point| fail_point.set(0));
         assert_eq!(commit, TokenCommit::Unchanged);
+        assert_eq!(
+            SharedRelayFence::permit(client.relay_fence.as_ref(), 1),
+            RelayPermit::Disabled
+        );
         assert!(matches!(
             client.system_status().await,
             Err(TransportError::RelayDisabled)

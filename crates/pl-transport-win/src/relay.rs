@@ -381,8 +381,7 @@ pub async fn dial_pair_relay_ws(
 
 /// Send one unobserved compatibility request over an established relay WebSocket.
 ///
-/// Production [`crate::client::ObserverClient`] requests use the crate-private
-/// observed counterpart.
+/// Ordinary production requests use `spl_transport::TransportClient` instead.
 pub async fn request_once_over_ws(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     inner_config: Arc<ClientConfig>,
@@ -397,7 +396,7 @@ pub async fn request_once_over_ws(
     request_once_over_ws_observed(ws, inner_config, handshake_timeout, request).await
 }
 
-/// The observed production counterpart to [`request_once_over_ws`].
+/// Observed variant retained for low-level test fixtures.
 pub(crate) async fn request_once_over_ws_observed(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     inner_config: Arc<ClientConfig>,
@@ -541,7 +540,7 @@ pub async fn request_once_relay(
     .await
 }
 
-/// The observed production counterpart to [`request_once_relay`].
+/// Observed variant retained for low-level test fixtures.
 pub(crate) async fn request_once_relay_observed(
     inner_config: Arc<ClientConfig>,
     relay_origin: &str,
