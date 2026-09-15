@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "8f6b5f5699328485924f51fe27ff553b25f80414a5b5c1b5fdd99d7f5794c378",
+  "cargo_lock_sha256": "5e96d042fe93e17c774033137961ed6163ed6402b24902b8388ff54e8dd3b4b8",
   "notice_texts": [
     {
       "byte_end_exclusive": 15206,
@@ -6020,7 +6020,7 @@
       "version": "1.14.1"
     },
     {
-      "identity": "rustls-webpki@0.103.13 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "rustls-webpki@0.103.15 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "ISC",
       "name": "rustls-webpki",
       "notice_references": [
@@ -6032,10 +6032,10 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.103.13"
+      "version": "0.103.15"
     },
     {
-      "identity": "rustls@0.23.40 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "rustls@0.23.45 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "Apache-2.0 OR ISC OR MIT",
       "name": "rustls",
       "notice_references": [
@@ -6059,7 +6059,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.23.40"
+      "version": "0.23.45"
     },
     {
       "identity": "rustversion@1.0.22 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -9520,7 +9520,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 269,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-09-15T03:29:18.863475+00:00",
+    "query_utc": "2026-09-15T03:54:02.981318+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 24
