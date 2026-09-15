@@ -4,14 +4,11 @@
 //! The pairing handshake adapter.
 //!
 //! Production pairing delegates directly to `spl_transport`'s shared implementation.
-//! This module adapts types, translates errors, copies operation observations,
-//! and validates route usability across the Windows boundary.
-
-use observer_model::TransportPath;
+//! This module adapts types, translates errors, and validates route usability
+//! across the Windows boundary.
 
 use crate::credential::{Credential, EndpointAddr};
-use crate::observe::ObserverHandle;
-use crate::{RelayControlEndpoint, RelayError, TransportError};
+use crate::{ObserverHandle, RelayControlEndpoint, RelayError, TransportError};
 
 /// Parse a `https://go.solstone.app/p#…` pair-link and pair against it.
 pub async fn pair_from_link(link: &str, device_label: &str) -> Result<Credential, TransportError> {
@@ -24,39 +21,28 @@ pub async fn pair_from_link_observed(
     device_label: &str,
     observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
-    let shared_observer = spl_transport::observe::OperationObserver::new_unshared();
     let empty_map = serde_json::Map::new();
     let result = spl_transport::pairing::pair_from_link_observed(
         link,
         device_label,
         &empty_map,
-        Some(&shared_observer),
+        observer.as_deref(),
     )
     .await;
 
-    handle_shared_pairing_result(result, &shared_observer, observer)
+    handle_shared_pairing_result(result)
 }
 
 pub(crate) fn handle_shared_pairing_result(
     result: Result<spl_transport::credential::Credential, spl_transport::TransportError>,
-    source_observer: &spl_transport::observe::OperationObserver,
-    dest_observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
     match result {
         Ok(shared_cred) => {
             let cred = convert_shared_credential(shared_cred);
-            if let Err(e) = gate_usable_route(&cred) {
-                copy_shared_observation(source_observer, &dest_observer, true);
-                Err(e)
-            } else {
-                copy_shared_observation(source_observer, &dest_observer, false);
-                Ok(cred)
-            }
+            gate_usable_route(&cred)?;
+            Ok(cred)
         }
-        Err(e) => {
-            copy_shared_observation(source_observer, &dest_observer, true);
-            Err(map_shared_error(e))
-        }
+        Err(e) => Err(map_shared_error(e)),
     }
 }
 
@@ -79,6 +65,34 @@ pub fn convert_shared_credential(cred: spl_transport::credential::Credential) ->
         relay_origin: cred.relay_origin,
         device_token: cred.device_token,
         device_token_expires_at: cred.device_token_expires_at,
+    }
+}
+
+/// Convert the persisted Windows credential to the shared transport shape.
+///
+/// The shared-only pairing hints are intentionally absent from Windows durable
+/// state and must remain so for compatibility with existing pairing files.
+pub fn windows_to_shared_credential(cred: &Credential) -> spl_transport::credential::Credential {
+    spl_transport::credential::Credential {
+        client_key_pem: cred.client_key_pem.clone(),
+        client_cert_pem: cred.client_cert_pem.clone(),
+        ca_chain_pem: cred.ca_chain_pem.clone(),
+        ca_fp_prefix: cred.ca_fp_prefix.clone(),
+        instance_id: cred.instance_id.clone(),
+        home_label: cred.home_label.clone(),
+        endpoints: cred
+            .endpoints
+            .iter()
+            .map(|endpoint| spl_transport::credential::EndpointAddr {
+                host: endpoint.host.clone(),
+                port: endpoint.port,
+            })
+            .collect(),
+        relay_origin: cred.relay_origin.clone(),
+        device_token: cred.device_token.clone(),
+        device_token_expires_at: cred.device_token_expires_at,
+        home_attestation: None,
+        local_endpoints: None,
     }
 }
 
@@ -218,43 +232,20 @@ pub(crate) fn map_shared_error(err: spl_transport::TransportError) -> TransportE
     }
 }
 
-pub(crate) fn copy_shared_observation(
-    source: &spl_transport::observe::OperationObserver,
-    dest: &ObserverHandle,
-    suppress_selected_path: bool,
-) {
-    if let Some(dest) = dest {
-        let snapshot = source.snapshot();
-        for _ in 0..snapshot.dial_attempts {
-            dest.record_dial_attempt();
+/// Preserve the established Windows transport vocabulary at the shared request
+/// boundary while giving replay and publication outcomes their own stable
+/// local classifications.
+pub(crate) fn map_request_error(err: spl_transport::request::RequestError) -> TransportError {
+    match err {
+        spl_transport::request::RequestError::Transport(inner) => map_shared_error(inner),
+        spl_transport::request::RequestError::ReplayUnsafe(_) => TransportError::ReplayUnsafe,
+        spl_transport::request::RequestError::RelayDisabled => TransportError::RelayDisabled,
+        spl_transport::request::RequestError::RelayRetired => TransportError::RelayRetired,
+        spl_transport::request::RequestError::PublicationRejected => {
+            TransportError::RelayPublicationRejected
         }
-        for _ in 0..snapshot.direct_successes {
-            dest.record_dial_success(TransportPath::Direct);
-        }
-        for _ in 0..snapshot.relay_successes {
-            dest.record_dial_success(TransportPath::Relay);
-        }
-        dest.record_request_bytes(snapshot.request_bytes_sent);
-        if snapshot.close_completed {
-            dest.record_close_completed();
-        }
-        if snapshot.legacy_enrollment_possible {
-            dest.record_enrollment_started();
-        } else {
-            dest.record_stateless_enrollment();
-        }
-        for _ in 0..snapshot.enrollment_events {
-            dest.record_enrollment_event();
-        }
-        if !suppress_selected_path {
-            let mapped_path = match snapshot.selected_path {
-                Some(spl_transport::request::SelectedPath::Direct) => Some(TransportPath::Direct),
-                Some(spl_transport::request::SelectedPath::Relay) => Some(TransportPath::Relay),
-                None => None,
-            };
-            dest.record_selected_path(mapped_path);
-        } else {
-            dest.record_selected_path(None);
+        spl_transport::request::RequestError::PublicationIndeterminate => {
+            TransportError::RelayPublicationIndeterminate
         }
     }
 }
@@ -262,7 +253,6 @@ pub(crate) fn copy_shared_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observe::OperationObserver;
     use crate::transport_error_code;
 
     #[test]
@@ -314,6 +304,11 @@ mod tests {
             | TransportError::Ingest(_)
             | TransportError::Rejected { .. }
             | TransportError::RelayControlRejected { .. }
+            | TransportError::ReplayUnsafe
+            | TransportError::RelayDisabled
+            | TransportError::RelayRetired
+            | TransportError::RelayPublicationRejected
+            | TransportError::RelayPublicationIndeterminate
             | TransportError::NotPaired
             | TransportError::LocalOffset => false,
         }
@@ -497,34 +492,5 @@ mod tests {
             assert_ne!(code, "tls_certificate_unknown");
             assert_eq!(code, "tls");
         }
-    }
-
-    #[test]
-    fn observation_copy_propagates_counts_and_respects_suppression() {
-        let source = spl_transport::observe::OperationObserver::new_unshared();
-        source.record_dial_attempt();
-        source.record_dial_attempt();
-        source.record_relay_success();
-        source.record_request_bytes(256);
-        source.record_close_completed();
-        source.record_legacy_enrollment_possible();
-        source.record_enrollment();
-        source.record_selected_path(spl_transport::request::SelectedPath::Relay);
-
-        let dest = OperationObserver::new();
-        copy_shared_observation(&source, &Some(dest.clone()), false);
-
-        let counts = dest.counts();
-        assert_eq!(counts.dial_attempts, 2);
-        assert_eq!(counts.relay_successes, 1);
-        assert_eq!(counts.request_bytes_sent, 256);
-        assert!(counts.close_completed);
-        assert!(dest.legacy_enrollment_possible());
-        assert_eq!(dest.enrollment_events(), 1);
-        assert_eq!(dest.selected_path(), Some(TransportPath::Relay));
-
-        let dest_suppressed = OperationObserver::new();
-        copy_shared_observation(&source, &Some(dest_suppressed.clone()), true);
-        assert_eq!(dest_suppressed.selected_path(), None);
     }
 }

@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_model::TransportPath;
 use observer_pl::http::HttpResponse;
@@ -18,22 +18,23 @@ use observer_pl::ingest::{
     DayManifest, FilePart, IngestManifest, IngestMultipart, IngestResponse, IngestStatus,
     SegmentsEnvelope,
 };
-use observer_pl::{
-    paths, OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER,
-};
+use observer_pl::{OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER};
 use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::connection::{dial_tls, request_once_observed_with_cap};
+use crate::connection::dial_tls;
 #[cfg(test)]
 use crate::credential::FS_FAIL_POINT;
-use crate::credential::{pairing_generation, CasKey, Credential, PairedState, StorageError};
-use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
-use crate::relay::{
-    dial_relay_carrier, request_once_relay_observed, RelayRequestSpec, RelayTerminationHandle,
+use crate::credential::{
+    pairing_generation, CasKey, Credential, PairedState, StorageError, WindowsTokenTransaction,
 };
+use crate::ordinary_request::OrdinaryRequest;
+use crate::pairing::{map_request_error, map_shared_error, windows_to_shared_credential};
+use crate::relay::{dial_relay_carrier, RelayTerminationHandle};
 use crate::relay_token::{refresh_device_token, RefreshOutcome};
-use crate::{tls, transport_error_code, RelayError, TransportError};
+use crate::{tls, ObserverHandle, RelayError, TransportError};
+use spl_transport::client::{RelayFence as SharedRelayFence, RelayPermit, TokenPublication};
+use spl_transport::request::{RequestOptions, RequestOutcome, SelectedPath};
 
 /// Relay transient retry count. Mirrors the LAN connection/handshake retry bound.
 const RELAY_MAX_TRANSIENT_ATTEMPTS: usize = 5;
@@ -54,7 +55,7 @@ pub(crate) struct RelayFence {
 }
 
 impl RelayFence {
-    fn new(enabled: bool) -> Self {
+    pub(crate) fn new(enabled: bool) -> Self {
         Self {
             disabled: AtomicBool::new(!enabled),
             retired: AtomicBool::new(false),
@@ -63,20 +64,51 @@ impl RelayFence {
         }
     }
 
-    fn allows(&self, incarnation: u64) -> bool {
+    pub(crate) fn allows(&self, incarnation: u64) -> bool {
         !self.retired.load(Ordering::Acquire)
             && !self.disabled.load(Ordering::Acquire)
             && self.incarnation.load(Ordering::Acquire) == incarnation
     }
 
-    fn advance(&self, enabled: bool) -> u64 {
+    fn advance_from(&self, expected: u64, enabled: bool) -> Option<u64> {
+        let next = expected.wrapping_add(1);
+        self.incarnation
+            .compare_exchange(expected, next, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
         self.disabled.store(!enabled, Ordering::Release);
-        self.incarnation.fetch_add(1, Ordering::AcqRel) + 1
+        Some(next)
     }
 
     pub(crate) fn disable(&self) {
         self.disabled.store(true, Ordering::Release);
         self.incarnation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Fence relay for the current client incarnation after a publication
+    /// rejection without changing the lifecycle incarnation.
+    pub(crate) fn mark_relay_ineligible(&self, incarnation: u64) {
+        if self.incarnation.load(Ordering::Acquire) == incarnation {
+            self.disabled.store(true, Ordering::Release);
+        }
+    }
+}
+
+impl SharedRelayFence for RelayFence {
+    fn permit(&self, incarnation: u64) -> RelayPermit {
+        if self.retired.load(Ordering::Acquire) {
+            RelayPermit::Retired
+        } else if self.disabled.load(Ordering::Acquire) {
+            RelayPermit::Disabled
+        } else if self.incarnation.load(Ordering::Acquire) != incarnation {
+            RelayPermit::Retired
+        } else {
+            RelayPermit::Allow
+        }
+    }
+
+    fn with_publication(&self, body: &mut dyn FnMut()) {
+        let _guard = self.publication.lock().unwrap();
+        body();
     }
 }
 
@@ -99,7 +131,8 @@ impl ClientSlot {
         self.relay_fence.retired.load(Ordering::Acquire)
     }
 
-    pub(crate) fn publication_owner(&self) -> Arc<std::sync::Mutex<()>> {
+    /// Serialize lifecycle transitions with a shared durable token publication.
+    pub fn publication_owner(&self) -> Arc<std::sync::Mutex<()>> {
         self.relay_fence.publication.clone()
     }
 
@@ -122,20 +155,28 @@ impl ClientSlot {
         if self.relay_fence.retired.load(Ordering::Acquire) {
             return Err(TransportError::NotPaired);
         }
-        let incumbent = self.load();
         let enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
-        let mut replacement = ObserverClient::rebuild_from(&incumbent, credential, cas_key, 0)?;
-        if self.relay_fence.retired.load(Ordering::Acquire) {
-            return Err(TransportError::NotPaired);
+        loop {
+            let incumbent = self.load();
+            let current = self.relay_fence.incarnation.load(Ordering::Acquire);
+            let incarnation = current.wrapping_add(1);
+            let replacement =
+                ObserverClient::rebuild_from(&incumbent, credential.clone(), cas_key, incarnation)?;
+            if self.relay_fence.retired.load(Ordering::Acquire) {
+                return Err(TransportError::NotPaired);
+            }
+            if self.relay_fence.advance_from(current, enabled) != Some(incarnation) {
+                continue;
+            }
+            let replacement = Arc::new(replacement);
+            self.replace(replacement.clone());
+            return Ok(replacement);
         }
-        replacement.incarnation = self.relay_fence.advance(enabled);
-        let replacement = Arc::new(replacement);
-        self.replace(replacement.clone());
-        Ok(replacement)
     }
 
     /// Make relay unavailable before any durable operation. LAN remains usable.
-    pub(crate) fn retire(&self) {
+    /// Permanently retire this slot's relay incarnation.
+    pub fn retire(&self) {
         self.relay_fence.retired.store(true, Ordering::Release);
         self.relay_fence.disable();
     }
@@ -184,11 +225,6 @@ pub struct SendMetadata {
     pub attempts: u32,
 }
 
-struct SendOutcome {
-    response: HttpResponse,
-    metadata: SendMetadata,
-}
-
 /// An observer talking to its paired journal over framed-mTLS.
 pub struct ObserverClient {
     credential: Credential,
@@ -198,13 +234,15 @@ pub struct ObserverClient {
     device_token: Option<Arc<tokio::sync::Mutex<String>>>,
     refresh_gate: tokio::sync::Mutex<()>,
     /// Optional persisted pairing state path for best-effort refreshed-token write-back.
-    state_path: Option<PathBuf>,
+    state_path: Arc<std::sync::Mutex<Option<PathBuf>>>,
     /// CAS key tracking the pairing and access mutation generation.
     cas_key: Arc<std::sync::Mutex<Option<CasKey>>>,
     /// Optional operation-scoped observation seam. `None` in the GUI.
     observer: ObserverHandle,
     relay_fence: Arc<RelayFence>,
     incarnation: u64,
+    pub(crate) token_transaction: Arc<WindowsTokenTransaction>,
+    transport: spl_transport::TransportClient,
 }
 
 impl ObserverClient {
@@ -219,20 +257,75 @@ impl ObserverClient {
         let key = tls::parse_private_key(&credential.client_key_pem)?;
         let config = Arc::new(tls::mtls_config(&credential.ca_fp_prefix, chain, key)?);
         let relay_enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
+        Self::build(
+            credential,
+            config,
+            device_token,
+            Arc::new(std::sync::Mutex::new(None)),
+            Arc::new(std::sync::Mutex::new(Some(CasKey {
+                pairing_generation: pairing_gen,
+                access_mutation_generation: 0,
+            }))),
+            None,
+            Arc::new(RelayFence::new(relay_enabled)),
+            1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        credential: Credential,
+        config: Arc<ClientConfig>,
+        device_token: Option<Arc<tokio::sync::Mutex<String>>>,
+        state_path: Arc<std::sync::Mutex<Option<PathBuf>>>,
+        cas_key: Arc<std::sync::Mutex<Option<CasKey>>>,
+        observer: ObserverHandle,
+        relay_fence: Arc<RelayFence>,
+        incarnation: u64,
+    ) -> Result<Self, TransportError> {
+        let transaction = Arc::new(WindowsTokenTransaction::new(
+            state_path.clone(),
+            pairing_generation(&credential.client_cert_pem),
+            relay_fence.clone(),
+            incarnation,
+        ));
+        let publication = TokenPublication {
+            transaction: transaction.clone(),
+            fence: Some(relay_fence.clone()),
+            incarnation,
+        };
+        let shared_credential = windows_to_shared_credential(&credential);
+        let transport = if !shared_credential.endpoints.is_empty() {
+            spl_transport::TransportClient::new_with_publication(shared_credential, publication)
+        } else if matches!(
+            (
+                shared_credential.relay_origin.as_deref(),
+                shared_credential.device_token.as_deref()
+            ),
+            (Some(origin), Some(token)) if !origin.is_empty() && !token.is_empty()
+        ) {
+            spl_transport::TransportClient::new_relay_only_with_publication(
+                shared_credential,
+                publication,
+            )
+        } else {
+            return Err(TransportError::NoEndpoint);
+        }
+        .map_err(map_shared_error)?;
+
         Ok(Self {
             credential,
             config,
             boundary_counter: AtomicU64::new(1),
             device_token,
             refresh_gate: tokio::sync::Mutex::new(()),
-            state_path: None,
-            cas_key: Arc::new(std::sync::Mutex::new(Some(CasKey {
-                pairing_generation: pairing_gen,
-                access_mutation_generation: 0,
-            }))),
-            observer: None,
-            relay_fence: Arc::new(RelayFence::new(relay_enabled)),
-            incarnation: 1,
+            state_path,
+            cas_key,
+            observer,
+            relay_fence,
+            incarnation,
+            token_transaction: transaction,
+            transport,
         })
     }
 
@@ -248,13 +341,20 @@ impl ObserverClient {
         credential.relay_origin = access_credential.relay_origin;
         credential.device_token = access_credential.device_token;
         credential.device_token_expires_at = access_credential.device_token_expires_at;
-        let mut rebuilt = Self::new(credential)?;
-        rebuilt.state_path = incumbent.state_path.clone();
-        rebuilt.observer = incumbent.observer.clone();
-        rebuilt.relay_fence = incumbent.relay_fence.clone();
-        rebuilt.incarnation = incarnation;
-        rebuilt.cas_key = Arc::new(std::sync::Mutex::new(Some(cas_key)));
-        Ok(rebuilt)
+        let device_token = credential
+            .device_token
+            .clone()
+            .map(|token| Arc::new(tokio::sync::Mutex::new(token)));
+        Self::build(
+            credential,
+            incumbent.config.clone(),
+            device_token,
+            incumbent.state_path.clone(),
+            Arc::new(std::sync::Mutex::new(Some(cas_key))),
+            incumbent.observer.clone(),
+            incumbent.relay_fence.clone(),
+            incarnation,
+        )
     }
 
     /// Access the underlying credential.
@@ -278,66 +378,29 @@ impl ObserverClient {
     }
 
     pub async fn get_clients_self(&self) -> Result<HttpResponse, TransportError> {
-        let outcome = self
-            .send(
-                "GET",
-                "/app/network/api/clients/self",
-                &self.v3_headers(),
-                &[],
-            )
-            .await?;
-        if outcome.response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
-            return Err(TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "response body exceeds 64 KiB limit",
-            )));
-        }
-        Ok(outcome.response)
+        self.post_connect_response(OrdinaryRequest::ClientsSelfGet, self.v3_headers(), &[])
+            .await
     }
 
     pub async fn put_clients_self(&self, body: &[u8]) -> Result<HttpResponse, TransportError> {
         let mut headers = self.v3_headers();
         headers.push(("content-type".to_string(), "application/json".to_string()));
-        let outcome = self
-            .send("PUT", "/app/network/api/clients/self", &headers, body)
-            .await?;
-        if outcome.response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
-            return Err(TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "response body exceeds 64 KiB limit",
-            )));
-        }
-        Ok(outcome.response)
+        self.post_connect_response(OrdinaryRequest::ClientsSelfPut, headers, body)
+            .await
     }
 
     pub async fn get_relay_access(&self) -> Result<HttpResponse, TransportError> {
-        let outcome = self
-            .send(
-                "GET",
-                "/app/network/api/relay/access",
-                &self.v3_headers(),
-                &[],
-            )
-            .await?;
-        if outcome.response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
-            return Err(TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "response body exceeds 64 KiB limit",
-            )));
-        }
-        Ok(outcome.response)
+        self.post_connect_response(OrdinaryRequest::RelayAccessGet, self.v3_headers(), &[])
+            .await
     }
 
     /// Attach the persisted pairing state path for best-effort relay token refresh write-back.
-    pub fn with_state_path(mut self, path: PathBuf) -> Self {
-        self.state_path = Some(path);
+    pub fn with_state_path(self, path: PathBuf) -> Self {
+        self.token_transaction.set_state_path(path);
         self
     }
 
-    /// Attach an operation-scoped observation seam.
-    ///
-    /// Observation only: every dial site records through it without branching on
-    /// what it holds, so retry policy, backoff, and ordering are unchanged.
+    /// Attach an operation-scoped shared observation seam.
     pub fn with_observer(mut self, observer: ObserverHandle) -> Self {
         self.observer = observer;
         self
@@ -345,15 +408,6 @@ impl ObserverClient {
 
     pub fn home_label(&self) -> &str {
         &self.credential.home_label
-    }
-
-    fn response_cap_for(&self, path: &str) -> usize {
-        match path {
-            "/app/network/api/clients/self"
-            | "/app/network/api/relay/access"
-            | "/api/system/status" => MAX_POST_CONNECT_RESPONSE_BYTES,
-            _ => observer_pl::mux::MAX_ASSEMBLED_BYTES,
-        }
     }
 
     /// Upload one segment's files with the protocol-v3 envelope. `segment` is
@@ -372,8 +426,9 @@ impl ObserverClient {
         let mut headers = self.v3_headers();
         headers.push(("Content-Type".to_string(), request.content_type()));
 
-        let SendOutcome { response, metadata } =
-            self.send("POST", paths::INGEST, &headers, &body).await?;
+        let (response, metadata) = self
+            .ordinary_request(OrdinaryRequest::IngestPost, None, &headers, &body)
+            .await?;
         let parsed = self.parse_ingest_response(response)?;
         Ok((parsed, metadata))
     }
@@ -381,8 +436,8 @@ impl ObserverClient {
     /// Read the root manifest used by protocol-v3 custody proof.
     pub async fn ingest_manifest(&self) -> Result<(IngestManifest, SendMetadata), TransportError> {
         let headers = self.v3_headers();
-        let SendOutcome { response, metadata } = self
-            .send("GET", paths::INGEST_MANIFEST, &headers, b"")
+        let (response, metadata) = self
+            .ordinary_request(OrdinaryRequest::IngestManifestGet, None, &headers, b"")
             .await?;
         Ok((self.parse_v3_read(response)?, metadata))
     }
@@ -392,9 +447,15 @@ impl ObserverClient {
         &self,
         day: &str,
     ) -> Result<(DayManifest, SendMetadata), TransportError> {
-        let path = format!("{}/{}", paths::INGEST_MANIFEST, day);
         let headers = self.v3_headers();
-        let SendOutcome { response, metadata } = self.send("GET", &path, &headers, b"").await?;
+        let (response, metadata) = self
+            .ordinary_request(
+                OrdinaryRequest::IngestManifestDayGet,
+                Some(day),
+                &headers,
+                b"",
+            )
+            .await?;
         Ok((self.parse_v3_read(response)?, metadata))
     }
 
@@ -403,9 +464,15 @@ impl ObserverClient {
         &self,
         day: &str,
     ) -> Result<(SegmentsEnvelope, SendMetadata), TransportError> {
-        let path = format!("{}/{}", paths::INGEST_SEGMENTS, day);
         let headers = self.v3_headers();
-        let SendOutcome { response, metadata } = self.send("GET", &path, &headers, b"").await?;
+        let (response, metadata) = self
+            .ordinary_request(
+                OrdinaryRequest::IngestSegmentsDayGet,
+                Some(day),
+                &headers,
+                b"",
+            )
+            .await?;
         Ok((self.parse_v3_read(response)?, metadata))
     }
 
@@ -414,8 +481,8 @@ impl ObserverClient {
         let fetch = async {
             let mut headers = self.v3_headers();
             headers.push(("Cache-Control".into(), "no-cache".into()));
-            let SendOutcome { response, .. } = self
-                .send("GET", "/api/system/status", &headers, b"")
+            let (response, _) = self
+                .ordinary_request(OrdinaryRequest::SystemStatusGet, None, &headers, b"")
                 .await?;
             if response.status != 200 {
                 return Err(TransportError::Rejected {
@@ -453,6 +520,66 @@ impl ObserverClient {
             PROTOCOL_VERSION_HEADER.to_string(),
             OBSERVER_PROTOCOL_VERSION.to_string(),
         )]
+    }
+
+    async fn post_connect_response(
+        &self,
+        route: OrdinaryRequest,
+        headers: Vec<(String, String)>,
+        body: &[u8],
+    ) -> Result<HttpResponse, TransportError> {
+        let (response, _) = self.ordinary_request(route, None, &headers, body).await?;
+        if response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
+            return Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "response body exceeds 64 KiB limit",
+            )));
+        }
+        Ok(response)
+    }
+
+    async fn ordinary_request(
+        &self,
+        route: OrdinaryRequest,
+        day: Option<&str>,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<(HttpResponse, SendMetadata), TransportError> {
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 8);
+        let spec = route.spec();
+        let path = route.path(day);
+        let observer = self.observer.clone();
+        let RequestOutcome {
+            response,
+            path: selected_path,
+            attempts,
+        } = self
+            .transport
+            .request(
+                spec.method,
+                &path,
+                headers,
+                body,
+                RequestOptions {
+                    response_cap: spec.response_cap,
+                    replay: spec.replay,
+                    observer: observer.as_deref(),
+                },
+            )
+            .await
+            .map_err(map_request_error)?;
+        let path = match selected_path {
+            SelectedPath::Direct => TransportPath::Direct,
+            SelectedPath::Relay => TransportPath::Relay,
+        };
+        Ok((
+            HttpResponse {
+                status: response.status,
+                headers: response.headers,
+                body: response.body,
+            },
+            SendMetadata { path, attempts },
+        ))
     }
 
     fn parse_v3_read<T: serde::de::DeserializeOwned>(
@@ -516,10 +643,14 @@ impl ObserverClient {
         let mut last_err: Option<TransportError> = None;
         for attempt in 0..MAX_ATTEMPTS {
             for endpoint in &self.credential.endpoints {
-                note_dial_attempt(&self.observer);
+                if let Some(observer) = self.observer.as_deref() {
+                    observer.record_dial_attempt();
+                }
                 match dial_tls(self.config.clone(), &endpoint.host, endpoint.port).await {
                     Ok(stream) => {
-                        note_dial_success(&self.observer, TransportPath::Direct);
+                        if let Some(observer) = self.observer.as_deref() {
+                            observer.record_direct_success();
+                        }
                         return Ok(DialedCarrier {
                             stream: Box::new(stream),
                             kind: CarrierKind::Lan,
@@ -574,7 +705,7 @@ impl ObserverClient {
         let Some(live_token) = self.device_token.clone() else {
             return false;
         };
-        let path = self.state_path.clone();
+        let path = self.state_path.lock().unwrap().clone();
         let fence = self.relay_fence.clone();
         let incarnation = self.incarnation;
         let cas_key = self.cas_key.clone();
@@ -659,95 +790,6 @@ impl ObserverClient {
         }
     }
 
-    /// Send through the relay after the direct LAN loop has exhausted.
-    async fn send_over_relay(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-    ) -> Result<(HttpResponse, u32), TransportError> {
-        if !self.is_current_incarnation() {
-            return Err(TransportError::Relay(RelayError::Unauthorized));
-        }
-        let Some(origin) = self.credential.relay_origin.as_deref() else {
-            let err = TransportError::NoEndpoint;
-            log_dial_failed(path, 0, &err);
-            return Err(err);
-        };
-        let instance_id = &self.credential.instance_id;
-        let current = self.current_token().await;
-        if token_should_refresh(&current, now_secs()) {
-            if let RefreshAction::Terminal = self.refresh_if_current(origin, &current).await {
-                let err = TransportError::Relay(RelayError::Unauthorized);
-                log_dial_failed(path, 0, &err);
-                return Err(err);
-            }
-        }
-
-        let mut reactive_refreshed = false;
-        let mut transient_attempt = 0usize;
-        let mut attempts = 0u32;
-        loop {
-            if !self.is_current_incarnation() {
-                return Err(TransportError::Relay(RelayError::Unauthorized));
-            }
-            let token = self.current_token().await;
-            attempts = attempts.saturating_add(1);
-            note_dial_attempt(&self.observer);
-            log_dial_start(path, attempts);
-            let started = Instant::now();
-            let request = RelayRequestSpec::new(method, path, headers, body, &self.observer)
-                .with_response_cap(self.response_cap_for(path));
-            match request_once_relay_observed(
-                self.config.clone(),
-                origin,
-                instance_id,
-                &token,
-                request,
-            )
-            .await
-            {
-                Ok(response) => {
-                    note_dial_success(&self.observer, TransportPath::Relay);
-                    log_dial_success(path, attempts, elapsed_ms(started));
-                    log_path_selected(TransportPath::Relay);
-                    return Ok((response, attempts));
-                }
-                Err(TransportError::Relay(RelayError::Unauthorized)) => {
-                    if reactive_refreshed {
-                        let err = TransportError::Relay(RelayError::Unauthorized);
-                        log_dial_failed(path, attempts, &err);
-                        return Err(err);
-                    }
-                    reactive_refreshed = true;
-                    match self.refresh_if_current(origin, &token).await {
-                        RefreshAction::Redial => continue,
-                        RefreshAction::Terminal | RefreshAction::Transient => {
-                            let err = TransportError::Relay(RelayError::Unauthorized);
-                            log_dial_failed(path, attempts, &err);
-                            return Err(err);
-                        }
-                    }
-                }
-                Err(e) if relay_fault_is_transient_err(&e) => {
-                    transient_attempt += 1;
-                    if transient_attempt >= RELAY_MAX_TRANSIENT_ATTEMPTS {
-                        log_dial_failed(path, attempts, &e);
-                        return Err(e);
-                    }
-                    let backoff_ms = 250 * transient_attempt as u64;
-                    log_transient_retry(path, attempts, backoff_ms, &e);
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                }
-                Err(e) => {
-                    log_dial_failed(path, attempts, &e);
-                    return Err(e);
-                }
-            }
-        }
-    }
-
     /// Dial a persistent carrier through the relay after the direct LAN loop has exhausted.
     async fn dial_carrier_over_relay(&self) -> Result<DialedCarrier, TransportError> {
         if !self.is_current_incarnation() {
@@ -773,10 +815,14 @@ impl ObserverClient {
                 return Err(TransportError::Relay(RelayError::Unauthorized));
             }
             let token = self.current_token().await;
-            note_dial_attempt(&self.observer);
+            if let Some(observer) = self.observer.as_deref() {
+                observer.record_dial_attempt();
+            }
             match dial_relay_carrier(self.config.clone(), origin, instance_id, &token).await {
                 Ok(carrier) => {
-                    note_dial_success(&self.observer, TransportPath::Relay);
+                    if let Some(observer) = self.observer.as_deref() {
+                        observer.record_relay_success();
+                    }
                     return Ok(DialedCarrier {
                         stream: Box::new(carrier.stream),
                         kind: CarrierKind::Relay {
@@ -807,152 +853,6 @@ impl ObserverClient {
             }
         }
     }
-
-    /// Send a request, trying each journal endpoint and retrying transient
-    /// connection/handshake failures. Connection-per-request means each call
-    /// re-handshakes; a freshly-paired fingerprint can take a moment to reach
-    /// every journal worker (the box fans :7657 across SO_REUSEPORT processes),
-    /// so a `tls handshake eof` / connection error is retried with linear
-    /// backoff before giving up.
-    async fn send(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-    ) -> Result<SendOutcome, TransportError> {
-        const MAX_ATTEMPTS: usize = 5;
-        let mut last_err: Option<TransportError> = None;
-        let mut attempts = 0u32;
-        for attempt in 0..MAX_ATTEMPTS {
-            for endpoint in &self.credential.endpoints {
-                attempts = attempts.saturating_add(1);
-                note_dial_attempt(&self.observer);
-                log_dial_start(path, attempts);
-                let started = Instant::now();
-                match request_once_observed_with_cap(
-                    self.config.clone(),
-                    &endpoint.host,
-                    endpoint.port,
-                    method,
-                    path,
-                    headers,
-                    body,
-                    &self.observer,
-                    self.response_cap_for(path),
-                )
-                .await
-                {
-                    Ok(response) => {
-                        note_dial_success(&self.observer, TransportPath::Direct);
-                        log_dial_success(path, attempts, elapsed_ms(started));
-                        let transport_path = TransportPath::Direct;
-                        log_path_selected(transport_path);
-                        return Ok(SendOutcome {
-                            response,
-                            metadata: SendMetadata {
-                                path: transport_path,
-                                attempts,
-                            },
-                        });
-                    }
-                    Err(e) => last_err = Some(e),
-                }
-            }
-            // Only connection/handshake faults are worth retrying; a parsed HTTP
-            // error (e.g. 401) is deterministic and returned immediately.
-            match &last_err {
-                Some(TransportError::Tls(_)) | Some(TransportError::Io(_)) => {
-                    let backoff_ms = 250 * (attempt as u64 + 1);
-                    if let Some(error) = &last_err {
-                        log_transient_retry(path, attempts, backoff_ms, error);
-                    }
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                }
-                _ => break,
-            }
-        }
-        let lan_err = last_err.unwrap_or(TransportError::NoEndpoint);
-        let lan_unreachable = matches!(
-            lan_err,
-            TransportError::Tls(_) | TransportError::Io(_) | TransportError::NoEndpoint
-        );
-        if lan_unreachable && self.relay_eligible() {
-            tracing::info!(
-                target: "pl_transport",
-                route = path,
-                from = "direct",
-                to = "relay",
-                "transport fallback"
-            );
-            let (response, relay_attempts) =
-                self.send_over_relay(method, path, headers, body).await?;
-            return Ok(SendOutcome {
-                response,
-                metadata: SendMetadata {
-                    path: TransportPath::Relay,
-                    // The exhausted LAN legs were real dials on the way here, so
-                    // the reported total spans both. Reporting only the relay
-                    // count would understate the work this request cost.
-                    attempts: attempts.saturating_add(relay_attempts),
-                },
-            });
-        }
-        log_dial_failed(path, attempts, &lan_err);
-        Err(lan_err)
-    }
-}
-
-fn elapsed_ms(started: Instant) -> u64 {
-    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-}
-
-fn log_dial_start(route: &str, attempt: u32) {
-    tracing::info!(
-        target: "pl_transport",
-        route,
-        attempt,
-        "dial start"
-    );
-}
-
-fn log_dial_success(route: &str, attempts: u32, duration_ms: u64) {
-    tracing::info!(
-        target: "pl_transport",
-        route,
-        attempts,
-        duration_ms,
-        "dial success"
-    );
-}
-
-fn log_path_selected(path: TransportPath) {
-    tracing::info!(
-        target: "pl_transport",
-        path = path.as_str(),
-        "path selected"
-    );
-}
-
-fn log_transient_retry(route: &str, attempt: u32, backoff_ms: u64, err: &TransportError) {
-    tracing::info!(
-        target: "pl_transport",
-        route,
-        attempt,
-        backoff_ms,
-        reason = %transport_error_code(err),
-        "transient retry"
-    );
-}
-
-fn log_dial_failed(route: &str, attempts: u32, err: &TransportError) {
-    tracing::warn!(
-        target: "pl_transport",
-        route,
-        attempts,
-        reason = %transport_error_code(err),
-        "dial failed"
-    );
 }
 
 /// Decode JWT lifetime and apply the observer-pl proactive refresh threshold.
@@ -1004,6 +904,7 @@ mod tests {
     use super::*;
     use crate::credential::{EndpointAddr, FS_FAIL_POINT};
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use spl_transport::client::{TokenCommit, TokenCommitContext, TokenTransaction};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -1197,6 +1098,90 @@ mod tests {
         assert_eq!(
             disk.credential.unwrap().device_token.as_deref(),
             Some("owned-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn stale_token_transaction_cannot_fence_or_write_the_successor_incarnation() {
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        PairedState {
+            credential: Some(credential.clone()),
+            access_mutation_generation: 0,
+        }
+        .save(&path)
+        .unwrap();
+        let fence = Arc::new(RelayFence::new(true));
+        let transaction = WindowsTokenTransaction::new(
+            Arc::new(std::sync::Mutex::new(Some(path.clone()))),
+            pairing_generation(&credential.client_cert_pem),
+            fence.clone(),
+            1,
+        );
+
+        assert_eq!(fence.advance_from(1, true), Some(2));
+        assert_eq!(
+            transaction.commit(TokenCommitContext {
+                token: "stale-token",
+                expires_at: 1_900_000_000,
+                previous_token: "old-token",
+                incarnation: 1,
+            }),
+            TokenCommit::Unchanged
+        );
+        assert!(fence.allows(2), "the live successor remains relay-eligible");
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 0);
+        assert_ne!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("stale-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_transaction_stops_relay_only_requests_before_any_relay_dial() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = listener.local_addr().unwrap().port();
+        let mut credential = relay_credential();
+        credential.endpoints.clear();
+        credential.relay_origin = Some(format!("http://127.0.0.1:{relay_port}"));
+        let path = temp_pairing_path();
+        PairedState {
+            credential: Some(credential.clone()),
+            access_mutation_generation: 0,
+        }
+        .save(&path)
+        .unwrap();
+        let client = ObserverClient::new(credential)
+            .unwrap()
+            .with_state_path(path.clone());
+
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(1));
+        let commit = client.token_transaction.commit(TokenCommitContext {
+            token: "fresh-token",
+            expires_at: 1_900_000_000,
+            previous_token: "old-token",
+            incarnation: 1,
+        });
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(0));
+        assert_eq!(commit, TokenCommit::Unchanged);
+        assert!(matches!(
+            client.system_status().await,
+            Err(TransportError::RelayDisabled)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "relay-only request dialed after publication rejection"
+        );
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 0);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("old-token")
         );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

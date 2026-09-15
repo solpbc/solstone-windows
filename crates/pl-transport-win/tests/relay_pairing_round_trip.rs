@@ -264,9 +264,9 @@ async fn refresh_negotiates_v2_rejects_null_and_downgrade_and_keeps_legacy_omiss
 
 #[tokio::test]
 async fn actual_optional_enrollment_reports_only_possible_legacy_residue() {
-    use pl_transport_win::observe::OperationObserver;
     use pl_transport_win::relay_pairing::pair_over_relay_observed;
     use serde_json::json;
+    use spl_transport::observe::OperationObserver;
     use std::sync::atomic::Ordering;
     // Missing attestation, protected bootstrap, rejection, legacy success, v2 success.
     for mode in 0..5 {
@@ -364,7 +364,7 @@ async fn relay_pairing_crossed_no_usable_route_returns_no_endpoint_and_persists_
     assert_eq!(transport_error_code(&err), "no_endpoint");
 
     // Also verify pair_from_link with an observer
-    let obs = pl_transport_win::observe::OperationObserver::new();
+    let obs = spl_transport::observe::OperationObserver::new();
     let link_str = relay_form_link(&origin, &PAIR_SECRET, &state.json_ca.spki_pin());
     let err2 = pl_transport_win::pairing::pair_from_link_observed(
         &link_str,
@@ -374,7 +374,7 @@ async fn relay_pairing_crossed_no_usable_route_returns_no_endpoint_and_persists_
     .await
     .unwrap_err();
     assert!(matches!(err2, TransportError::NoEndpoint));
-    assert!(obs.selected_path().is_none());
+    assert!(obs.snapshot().dial_attempts > 0);
 
     // 2. Drive service::pair with temp state_path -> no credential persisted
     let state_path = temp_pairing_path("noroute");

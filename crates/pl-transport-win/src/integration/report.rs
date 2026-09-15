@@ -10,9 +10,9 @@
 
 use serde::Serialize;
 
-use crate::observe::DialCounts;
 use crate::{transport_error_code, RelayError, TransportError};
 use observer_pl::ingest::SegmentFileStatus;
+use spl_transport::observe::OperationSnapshot;
 
 /// The envelope's schema version. One constant, one place.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -121,7 +121,7 @@ impl Failure {
         Self::Error {
             phase,
             reason: transport_error_code(error),
-            guidance: bounded(guidance),
+            guidance: bounded(transport_guidance(error, guidance)),
             retryable: transport_error_is_retryable(error),
         }
     }
@@ -176,6 +176,27 @@ impl Failure {
     }
 }
 
+fn transport_guidance<'a>(error: &TransportError, fallback: &'a str) -> &'a str {
+    match error {
+        TransportError::ReplayUnsafe => {
+            "the request outcome is uncertain; reconcile durable custody before treating the operation as complete"
+        }
+        TransportError::RelayDisabled => {
+            "relay needs a current enabled session; direct is usable only with a reachable persisted direct endpoint"
+        }
+        TransportError::RelayRetired => {
+            "relay needs a current enabled session; direct is usable only with a reachable persisted direct endpoint"
+        }
+        TransportError::RelayPublicationRejected => {
+            "relay is latched off; reload or reconcile durable pairing state before relay work"
+        }
+        TransportError::RelayPublicationIndeterminate => {
+            "relay is latched off until lifecycle reload or reconciliation confirms durable pairing state"
+        }
+        _ => fallback,
+    }
+}
+
 /// Connection-class faults are worth another run; a rejection or a malformed
 /// response is deterministic.
 fn transport_error_is_retryable(error: &TransportError) -> bool {
@@ -197,8 +218,35 @@ fn transport_error_is_retryable(error: &TransportError) -> bool {
         | TransportError::Ingest(_)
         | TransportError::Rejected { .. }
         | TransportError::RelayControlRejected { .. }
+        | TransportError::ReplayUnsafe
+        | TransportError::RelayDisabled
+        | TransportError::RelayRetired
+        | TransportError::RelayPublicationRejected
+        | TransportError::RelayPublicationIndeterminate
         | TransportError::NotPaired
         | TransportError::LocalOffset => false,
+    }
+}
+
+/// Per-operation dial accounting, derived from the shared transport observer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialCounts {
+    pub dial_attempts: u64,
+    pub direct_successes: u64,
+    pub relay_successes: u64,
+    pub request_bytes_sent: u64,
+    pub close_completed: bool,
+}
+
+impl From<OperationSnapshot> for DialCounts {
+    fn from(snapshot: OperationSnapshot) -> Self {
+        Self {
+            dial_attempts: snapshot.dial_attempts,
+            direct_successes: snapshot.direct_successes,
+            relay_successes: snapshot.relay_successes,
+            request_bytes_sent: snapshot.request_bytes_sent,
+            close_completed: snapshot.close_completed,
+        }
     }
 }
 
@@ -532,6 +580,58 @@ mod tests {
             body: String::new(),
         }));
         assert!(!transport_error_is_retryable(&TransportError::NotPaired));
+    }
+
+    #[test]
+    fn ordinary_request_terminal_classes_have_stable_secret_free_guidance() {
+        let cases = [
+            (
+                TransportError::ReplayUnsafe,
+                "replay_unsafe",
+                "outcome is uncertain",
+            ),
+            (
+                TransportError::RelayDisabled,
+                "relay_disabled",
+                "current enabled session",
+            ),
+            (
+                TransportError::RelayRetired,
+                "relay_retired",
+                "current enabled session",
+            ),
+            (
+                TransportError::RelayPublicationRejected,
+                "relay_publication_rejected",
+                "durable pairing state",
+            ),
+            (
+                TransportError::RelayPublicationIndeterminate,
+                "relay_publication_indeterminate",
+                "lifecycle reload or reconciliation",
+            ),
+        ];
+
+        for (error, token, expected_guidance) in cases {
+            let failure = Failure::transport(Phase::Ingest, &error, "unused fallback");
+            assert!(!failure.retryable());
+            let outcome = finish(
+                "ingest",
+                Some(failure),
+                0,
+                artifact(),
+                Dials::default(),
+                Evidence::default(),
+            );
+            assert_eq!(outcome.envelope.reason.as_deref(), Some(token));
+            let guidance = outcome.envelope.guidance;
+            assert!(!guidance.is_empty());
+            assert!(guidance.chars().count() <= GUIDANCE_MAX_CHARS);
+            assert!(guidance.contains(expected_guidance));
+            for secret in ["token", "127.0.0.1", "CERT", "pairing.json", "HTTP/"] {
+                assert!(!guidance.contains(secret), "{secret} leaked into guidance");
+            }
+        }
     }
 
     #[test]

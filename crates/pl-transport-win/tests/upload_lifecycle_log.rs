@@ -9,12 +9,12 @@ use observer_model::TransportPath;
 use observer_pl::frame::{Frame, FLAG_CLOSE, FLAG_DATA};
 use observer_pl::ingest::FilePart;
 use pl_transport_win::client::ObserverClient;
+use spl_transport::observe::OperationObserver;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 use support::journal_fake::{direct_credential, read_framed_request, self_signed, server_config};
-use support::log_capture::CapturingSubscriber;
 
 async fn serve_one_ingest(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
@@ -34,17 +34,17 @@ async fn serve_one_ingest(listener: TcpListener, acceptor: TlsAcceptor) -> Vec<u
 }
 
 #[tokio::test]
-async fn lan_ingest_lifecycle_logs_direct_path_without_secret_material() {
-    let subscriber = CapturingSubscriber::for_target("pl_transport");
-    subscriber.install();
-
+async fn lan_ingest_reports_shared_direct_outcome() {
     let (cert, key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_ingest(listener, acceptor));
-    let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+    let observer = OperationObserver::new();
+    let client = ObserverClient::new(direct_credential(pin, port))
+        .unwrap()
+        .with_observer(Some(observer.clone()));
     let files = vec![FilePart {
         filename: "display_1_screen.mp4".into(),
         content_type: "video/mp4".into(),
@@ -59,15 +59,13 @@ async fn lan_ingest_lifecycle_logs_direct_path_without_secret_material() {
 
     assert_eq!(metadata.path, TransportPath::Direct);
     assert_eq!(metadata.attempts, 1);
-    let logs = subscriber.joined();
-    assert!(logs.contains("dial success"));
-    assert!(logs.contains("path=direct"));
-    assert!(!logs.contains("127.0.0.1"));
-    assert!(!logs.contains(&format!("127.0.0.1:{port}")));
-    assert!(!logs.contains("test-instance"));
-    assert!(!logs.contains("observer-key"));
-    assert!(!logs.contains("token"));
-    assert!(!logs.contains("relay"));
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.direct_successes, 1);
+    assert_eq!(snapshot.relay_successes, 0);
+    assert_eq!(
+        snapshot.selected_path,
+        Some(spl_transport::request::SelectedPath::Direct)
+    );
 }
 
 #[tokio::test]

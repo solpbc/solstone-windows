@@ -691,6 +691,42 @@ mod tests {
     }
 
     #[test]
+    fn terminal_transport_errors_preserve_durable_version_and_withhold_freshness() {
+        let errors = [
+            TransportError::ReplayUnsafe,
+            TransportError::RelayDisabled,
+            TransportError::RelayRetired,
+            TransportError::RelayPublicationRejected,
+            TransportError::RelayPublicationIndeterminate,
+        ];
+
+        for (index, error) in errors.into_iter().enumerate() {
+            let dir = temp_test_dir(&format!("terminal-error-{index}"));
+            let path = dir.join("journal-version.json");
+            let ctrl = JournalVersionController::new(path.clone());
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            let cred = make_credential("inst-1", &[0x01, 0x02]);
+
+            ctrl.begin_session(&cred, &sync);
+            ctrl.apply_result(ctrl.current_token(), Ok("1.2.3".into()), &sync);
+            ctrl.mark_disconnected(&sync);
+            let refresh_token = ctrl.current_token();
+            ctrl.apply_result(refresh_token, Err(error), &sync);
+
+            let snapshot = sync.lock().unwrap().clone();
+            assert_eq!(snapshot.journal_version.as_deref(), Some("1.2.3"));
+            assert!(
+                !snapshot.journal_version_fresh,
+                "terminal transport failure published a fresh journal version"
+            );
+            let persisted: PersistedJournalVersion =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(persisted.version, "1.2.3");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
     fn newer_value_on_reconnect_replaces_old_value() {
         let dir = temp_test_dir("newer-value");
         let path = dir.join("journal-version.json");

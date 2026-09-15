@@ -9,14 +9,17 @@
 //! after a restart without re-pairing. The private key never leaves the machine.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use rcgen::{CertificateParams, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
 use serde::{Deserialize, Serialize};
 use spl_core::pairlink::Endpoint;
 
+use crate::client::RelayFence;
 use crate::TransportError;
+use spl_transport::client::{TokenCommit, TokenCommitContext, TokenTransaction};
 
 const CREDENTIAL_WRAP_MARKER: &str = "dpapi:v1:";
 
@@ -423,6 +426,123 @@ impl PairedState {
     }
 }
 
+/// Windows durable relay-token publication for the shared transport client.
+///
+/// Shared refresh owns the publication critical section and cancellation-safe
+/// blocking task. This transaction only classifies durable Windows state.
+pub(crate) struct WindowsTokenTransaction {
+    state_path: Arc<Mutex<Option<PathBuf>>>,
+    pairing_generation: u64,
+    relay_fence: Arc<RelayFence>,
+    incarnation: u64,
+}
+
+impl WindowsTokenTransaction {
+    pub(crate) fn new(
+        state_path: Arc<Mutex<Option<PathBuf>>>,
+        pairing_generation: u64,
+        relay_fence: Arc<RelayFence>,
+        incarnation: u64,
+    ) -> Self {
+        Self {
+            state_path,
+            pairing_generation,
+            relay_fence,
+            incarnation,
+        }
+    }
+
+    pub(crate) fn set_state_path(&self, path: PathBuf) {
+        *self.state_path.lock().unwrap() = Some(path);
+    }
+
+    fn unchanged(&self) -> TokenCommit {
+        // Shared refresh already owns RelayFence::with_publication. Taking the
+        // publication mutex here would self-deadlock; the lifecycle latch is
+        // deliberately atomic. Do not advance the incarnation: publication
+        // rejection is a relay eligibility fact, not slot retirement.
+        self.relay_fence.mark_relay_ineligible(self.incarnation);
+        TokenCommit::Unchanged
+    }
+
+    fn classify_readback(
+        &self,
+        path: &Path,
+        expected_next_generation: u64,
+        token: &str,
+        expires_at: i64,
+    ) -> TokenCommit {
+        let state = match PairedState::load(path) {
+            Ok(state) => state,
+            Err(_) => return TokenCommit::Indeterminate,
+        };
+        let Some(credential) = state.credential else {
+            return self.unchanged();
+        };
+        if pairing_generation(&credential.client_cert_pem) != self.pairing_generation {
+            return self.unchanged();
+        }
+        if state.access_mutation_generation == expected_next_generation
+            && credential.device_token.as_deref() == Some(token)
+            && credential.device_token_expires_at == Some(expires_at)
+        {
+            TokenCommit::Committed {
+                generation: expected_next_generation,
+            }
+        } else {
+            self.unchanged()
+        }
+    }
+}
+
+impl TokenTransaction for WindowsTokenTransaction {
+    fn commit(&self, ctx: TokenCommitContext<'_>) -> TokenCommit {
+        if ctx.incarnation != self.incarnation || !self.relay_fence.allows(self.incarnation) {
+            // A held transaction from a replaced client cannot change the
+            // current fence or durable state, even if the caller presents a
+            // stale publication.
+            return TokenCommit::Unchanged;
+        }
+        let Some(path) = self.state_path.lock().unwrap().clone() else {
+            return self.unchanged();
+        };
+        let state = match PairedState::load(&path) {
+            Ok(state) => state,
+            Err(_) => return TokenCommit::Indeterminate,
+        };
+        let Some(credential) = state.credential else {
+            return self.unchanged();
+        };
+        if pairing_generation(&credential.client_cert_pem) != self.pairing_generation {
+            return self.unchanged();
+        }
+
+        let current_generation = state.access_mutation_generation;
+        let expected_next_generation = current_generation.wrapping_add(1);
+        let result = PairedState::mutate(
+            &path,
+            CasKey {
+                pairing_generation: self.pairing_generation,
+                access_mutation_generation: current_generation,
+            },
+            |credential| {
+                credential.device_token = Some(ctx.token.to_string());
+                credential.device_token_expires_at = Some(ctx.expires_at);
+                Ok(())
+            },
+        );
+
+        match result {
+            Ok(generation) if generation == expected_next_generation => {
+                TokenCommit::Committed { generation }
+            }
+            Ok(_) | Err(_) => {
+                self.classify_readback(&path, expected_next_generation, ctx.token, ctx.expires_at)
+            }
+        }
+    }
+}
+
 /// A freshly-generated device key + the CSR PEM to send to the journal.
 pub struct GeneratedKey {
     pub key_pem: String,
@@ -483,6 +603,7 @@ pub fn generate_csr(device_label: &str) -> Result<GeneratedKey, TransportError> 
 mod tests {
     use super::*;
 
+    use spl_transport::client::{RelayFence as SharedRelayFence, RelayPermit};
     use std::cell::Cell;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -576,6 +697,231 @@ mod tests {
             std::env::temp_dir().join(format!("plw-cred-{name}-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("pairing.json")
+    }
+
+    fn token_transaction(
+        path: &Path,
+        state: &PairedState,
+    ) -> (WindowsTokenTransaction, Arc<RelayFence>) {
+        state.save(path).unwrap();
+        let pairing_generation = pairing_generation(
+            &state
+                .credential
+                .as_ref()
+                .expect("paired state fixture has a credential")
+                .client_cert_pem,
+        );
+        let fence = Arc::new(RelayFence::new(true));
+        (
+            WindowsTokenTransaction::new(
+                Arc::new(Mutex::new(Some(path.to_path_buf()))),
+                pairing_generation,
+                fence.clone(),
+                1,
+            ),
+            fence,
+        )
+    }
+
+    fn token_context<'a>(token: &'a str, expires_at: i64) -> TokenCommitContext<'a> {
+        TokenCommitContext {
+            token,
+            expires_at,
+            previous_token: "old-token",
+            incarnation: 1,
+        }
+    }
+
+    #[test]
+    fn token_transaction_commits_successive_durable_generations() {
+        let path = temp_pairing_path("token-transaction");
+        let mut state = paired_state_with("KEY", Some("old-token"));
+        state.credential.as_mut().unwrap().client_cert_pem = "CERT".into();
+        state.save(&path).unwrap();
+
+        let fence = Arc::new(RelayFence::new(true));
+        let transaction = WindowsTokenTransaction::new(
+            Arc::new(Mutex::new(Some(path.clone()))),
+            pairing_generation("CERT"),
+            fence,
+            1,
+        );
+        let first = transaction.commit(TokenCommitContext {
+            token: "first-token",
+            expires_at: 100,
+            previous_token: "old-token",
+            incarnation: 1,
+        });
+        let second = transaction.commit(TokenCommitContext {
+            token: "second-token",
+            expires_at: 200,
+            previous_token: "first-token",
+            incarnation: 1,
+        });
+
+        assert_eq!(first, TokenCommit::Committed { generation: 1 });
+        assert_eq!(second, TokenCommit::Committed { generation: 2 });
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 2);
+        let credential = persisted.credential.unwrap();
+        assert_eq!(credential.device_token.as_deref(), Some("second-token"));
+        assert_eq!(credential.device_token_expires_at, Some(200));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn token_transaction_reloads_generation_before_each_commit() {
+        let path = temp_pairing_path("token-transaction-fresh-generation");
+        let mut state = paired_state_with("KEY", Some("old-token"));
+        state.credential.as_mut().unwrap().client_cert_pem = "CERT".into();
+        let (transaction, _fence) = token_transaction(&path, &state);
+
+        assert_eq!(
+            transaction.commit(token_context("first-token", 100)),
+            TokenCommit::Committed { generation: 1 }
+        );
+        let competing_generation = PairedState::mutate(
+            &path,
+            CasKey {
+                pairing_generation: pairing_generation("CERT"),
+                access_mutation_generation: 1,
+            },
+            |credential| {
+                credential.device_token = Some("competing-token".into());
+                credential.device_token_expires_at = Some(150);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(competing_generation, 2);
+
+        // The transaction does not reuse the first commit's captured access
+        // generation: its durable commit is truthfully generation 3.
+        assert_eq!(
+            transaction.commit(token_context("second-token", 200)),
+            TokenCommit::Committed { generation: 3 }
+        );
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 3);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("second-token")
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn token_transaction_rejects_confirmed_stale_pairing_and_latches_relay() {
+        let path = temp_pairing_path("token-transaction-stale-pairing");
+        let mut state = paired_state_with("KEY", Some("old-token"));
+        state.credential.as_mut().unwrap().client_cert_pem = "CERT-OLD".into();
+        let (transaction, fence) = token_transaction(&path, &state);
+
+        let mut competing = state;
+        let credential = competing.credential.as_mut().unwrap();
+        credential.client_cert_pem = "CERT-NEW".into();
+        credential.device_token = Some("competing-token".into());
+        credential.device_token_expires_at = Some(500);
+        competing.access_mutation_generation = 9;
+        competing.save(&path).unwrap();
+
+        assert_eq!(
+            transaction.commit(token_context("fresh-token", 600)),
+            TokenCommit::Unchanged
+        );
+        assert_eq!(
+            SharedRelayFence::permit(fence.as_ref(), 1),
+            RelayPermit::Disabled
+        );
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 9);
+        let persisted = persisted.credential.unwrap();
+        assert_eq!(persisted.device_token.as_deref(), Some("competing-token"));
+        assert_eq!(persisted.device_token_expires_at, Some(500));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn token_transaction_reconciles_uncertain_write_only_for_exact_readback_tuple() {
+        let path = temp_pairing_path("token-transaction-uncertain-exact");
+        let mut state = paired_state_with("KEY", Some("old-token"));
+        state.credential.as_mut().unwrap().client_cert_pem = "CERT".into();
+        let (transaction, _fence) = token_transaction(&path, &state);
+
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(2));
+        let committed = transaction.commit(token_context("fresh-token", 100));
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(0));
+        assert_eq!(committed, TokenCommit::Committed { generation: 1 });
+
+        let exact = PairedState::load(&path).unwrap();
+        assert_eq!(exact.access_mutation_generation, 1);
+        let exact_credential = exact.credential.unwrap();
+        assert_eq!(
+            exact_credential.device_token.as_deref(),
+            Some("fresh-token")
+        );
+        assert_eq!(exact_credential.device_token_expires_at, Some(100));
+
+        for (name, generation, cert, expiry) in [
+            ("expiry", 1, "CERT", 101),
+            ("generation", 2, "CERT", 100),
+            ("pairing", 1, "CERT-OTHER", 100),
+        ] {
+            let mismatch_path = temp_pairing_path(&format!("token-transaction-uncertain-{name}"));
+            let mut mismatch = paired_state_with("KEY", Some("fresh-token"));
+            let credential = mismatch.credential.as_mut().unwrap();
+            credential.client_cert_pem = cert.into();
+            credential.device_token_expires_at = Some(expiry);
+            mismatch.access_mutation_generation = generation;
+            let (mismatch_transaction, mismatch_fence) = token_transaction(&mismatch_path, &state);
+            mismatch.save(&mismatch_path).unwrap();
+
+            assert_eq!(
+                mismatch_transaction.classify_readback(&mismatch_path, 1, "fresh-token", 100),
+                TokenCommit::Unchanged,
+                "{name} mismatch must not publish a live token"
+            );
+            assert_eq!(
+                SharedRelayFence::permit(mismatch_fence.as_ref(), 1),
+                RelayPermit::Disabled
+            );
+            let _ = std::fs::remove_dir_all(mismatch_path.parent().unwrap());
+        }
+
+        let missing = temp_pairing_path("token-transaction-unresolved-readback");
+        let (missing_transaction, _fence) = token_transaction(&missing, &state);
+        std::fs::write(&missing, b"not durable pairing state").unwrap();
+        assert_eq!(
+            missing_transaction.classify_readback(&missing, 1, "fresh-token", 100),
+            TokenCommit::Indeterminate
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(missing.parent().unwrap());
+    }
+
+    #[test]
+    fn token_transaction_rejected_write_keeps_old_state_and_latches_relay() {
+        let path = temp_pairing_path("token-transaction-write-failure");
+        let mut state = paired_state_with("KEY", Some("old-token"));
+        state.credential.as_mut().unwrap().client_cert_pem = "CERT".into();
+        let (transaction, fence) = token_transaction(&path, &state);
+
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(1));
+        let result = transaction.commit(token_context("fresh-token", 100));
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(0));
+        assert_eq!(result, TokenCommit::Unchanged);
+        assert_eq!(
+            SharedRelayFence::permit(fence.as_ref(), 1),
+            RelayPermit::Disabled
+        );
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 0);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("old-token")
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     fn write_raw_state(path: &std::path::Path, state: &PairedState) {

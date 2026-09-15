@@ -8,8 +8,7 @@
 use spl_core::pairlink::RelayPairLink;
 
 use crate::credential::Credential;
-use crate::observe::ObserverHandle;
-use crate::TransportError;
+use crate::{ObserverHandle, TransportError};
 
 pub async fn pair_over_relay(
     link: &RelayPairLink,
@@ -24,15 +23,14 @@ pub async fn pair_over_relay_observed(
     device_label: &str,
     observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
-    let shared_observer = spl_transport::observe::OperationObserver::new_unshared();
     let empty_map = serde_json::Map::new();
     let result = spl_transport::relay_pairing::pair_over_relay_observed(
         link,
         device_label,
         &empty_map,
-        Some(&shared_observer),
+        observer.as_deref(),
     )
     .await;
 
-    crate::pairing::handle_shared_pairing_result(result, &shared_observer, observer)
+    crate::pairing::handle_shared_pairing_result(result)
 }

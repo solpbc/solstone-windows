@@ -31,7 +31,7 @@ pub mod integration;
 pub mod journal_bridge;
 mod journal_bridge_carrier;
 pub mod journal_version;
-pub mod observe;
+mod ordinary_request;
 pub mod pairing;
 pub mod post_connect;
 pub mod relay;
@@ -45,6 +45,7 @@ pub(crate) mod spki_pin;
 pub mod tls;
 
 use std::fmt;
+use std::sync::Arc;
 
 use observer_pl::http::HttpError;
 use observer_pl::mux::MuxError;
@@ -58,6 +59,9 @@ pub use journal_version::{JournalVersionController, JournalVersionSessionToken};
 pub use post_connect::{PostConnectController, PostConnectSessionToken};
 pub use service::run_uploader;
 pub use slot::UploaderSlot;
+
+/// Optional shared operation observer. `None` in the GUI.
+pub type ObserverHandle = Option<Arc<spl_transport::observe::OperationObserver>>;
 
 /// Default upload poll interval when there is nothing to do.
 pub const DEFAULT_UPLOAD_INTERVAL_SECS: u64 = 5;
@@ -164,6 +168,16 @@ pub enum TransportError {
         endpoint: RelayControlEndpoint,
         status: u16,
     },
+    #[error("request could not be safely replayed after write")]
+    ReplayUnsafe,
+    #[error("relay communication is disabled by local lifecycle state")]
+    RelayDisabled,
+    #[error("relay communication belongs to a retired client incarnation")]
+    RelayRetired,
+    #[error("relay token publication was rejected by durable storage")]
+    RelayPublicationRejected,
+    #[error("relay token publication could not be confirmed")]
+    RelayPublicationIndeterminate,
     #[error("no reachable journal endpoint")]
     NoEndpoint,
     #[error("not paired")]
@@ -198,6 +212,13 @@ pub fn transport_error_code(err: &TransportError) -> String {
         .to_string(),
         TransportError::RelayControlRejected { endpoint, status } => {
             format!("relay_{}_http_{status}", endpoint.code())
+        }
+        TransportError::ReplayUnsafe => "replay_unsafe".to_string(),
+        TransportError::RelayDisabled => "relay_disabled".to_string(),
+        TransportError::RelayRetired => "relay_retired".to_string(),
+        TransportError::RelayPublicationRejected => "relay_publication_rejected".to_string(),
+        TransportError::RelayPublicationIndeterminate => {
+            "relay_publication_indeterminate".to_string()
         }
         TransportError::NoEndpoint => "no_endpoint".to_string(),
         TransportError::NotPaired => "not_paired".to_string(),
@@ -281,6 +302,17 @@ mod tests {
                     status: 404,
                 },
                 "relay_refresh_http_404",
+            ),
+            (TransportError::ReplayUnsafe, "replay_unsafe"),
+            (TransportError::RelayDisabled, "relay_disabled"),
+            (TransportError::RelayRetired, "relay_retired"),
+            (
+                TransportError::RelayPublicationRejected,
+                "relay_publication_rejected",
+            ),
+            (
+                TransportError::RelayPublicationIndeterminate,
+                "relay_publication_indeterminate",
             ),
             (TransportError::NoEndpoint, "no_endpoint"),
             (TransportError::NotPaired, "not_paired"),

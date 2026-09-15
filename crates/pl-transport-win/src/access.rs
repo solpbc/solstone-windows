@@ -11,10 +11,9 @@ use observer_model::SyncSnapshot;
 use crate::client::ClientSlot;
 use crate::credential::{pairing_generation, CasKey, PairedState};
 use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
-use crate::observe::ObserverHandle;
 use crate::post_connect::{PostConnectController, PostConnectSessionToken};
 use crate::service::SyncConfig;
-use crate::{ObserverClient, TransportError};
+use crate::{ObserverClient, ObserverHandle, TransportError};
 
 /// The one live authority for a paired credential file.
 ///

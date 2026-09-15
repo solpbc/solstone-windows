@@ -24,19 +24,21 @@ use observer_pl::frame::{
 };
 use observer_pl::http::{self, HttpResponse};
 use observer_pl::ingest::{FilePart, IngestStatus};
-use observer_pl::mux::INITIAL_WINDOW;
+use observer_pl::mux::{MuxError, INITIAL_WINDOW};
 use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::journal_bridge;
-use pl_transport_win::observe::{DialCounts, OperationObserver};
 use pl_transport_win::relay::{dial_relay_ws, request_once_over_ws, request_once_relay};
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::tls::pairing_config;
-use pl_transport_win::{transport_error_code, CredentialAccess, RelayError, TransportError};
+use pl_transport_win::{
+    transport_error_code, ClientSlot, CredentialAccess, RelayError, TransportError,
+};
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::ClientConfig;
 use serde_json::json;
+use spl_transport::{OperationObserver, OperationSnapshot, SelectedPath};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -194,7 +196,16 @@ async fn start_test_bridge(
 }
 
 fn relay_client(credential: Credential) -> ObserverClient {
-    ObserverClient::new(credential).unwrap()
+    let path = temp_pairing_path("shared-relay-client");
+    PairedState {
+        credential: Some(credential.clone()),
+        access_mutation_generation: 0,
+    }
+    .save(&path)
+    .unwrap();
+    ObserverClient::new(credential)
+        .unwrap()
+        .with_state_path(path)
 }
 
 async fn relay_probe(client: &ObserverClient) -> Result<(), TransportError> {
@@ -899,6 +910,27 @@ enum CombinedWsMode {
     Close(u16),
     UpgradeReject(u16),
     OversizeResponse,
+    DropBeforeRequest,
+    DropPartialRequest,
+    DropCompleteRequest,
+    ResponseAssembledBytes(usize),
+}
+
+fn body_for_assembled_response(total: usize) -> Vec<u8> {
+    let mut body = Vec::new();
+    loop {
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let desired_body_len = total
+            .checked_sub(head.len())
+            .expect("assembled cap accommodates HTTP response head");
+        if desired_body_len == body.len() {
+            return body;
+        }
+        body.resize(desired_body_len, b'x');
+    }
 }
 
 struct CombinedRelayState {
@@ -1021,7 +1053,12 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
         Err(_) => return Ok(()),
     };
     match mode {
-        CombinedWsMode::AcceptAny | CombinedWsMode::OversizeResponse => {}
+        CombinedWsMode::AcceptAny
+        | CombinedWsMode::OversizeResponse
+        | CombinedWsMode::DropBeforeRequest
+        | CombinedWsMode::DropPartialRequest
+        | CombinedWsMode::DropCompleteRequest
+        | CombinedWsMode::ResponseAssembledBytes(_) => {}
         CombinedWsMode::FreshOnly => {
             let expected = format!("Bearer {}", state.fresh_token);
             if *seen_auth.lock().unwrap() != expected {
@@ -1055,18 +1092,68 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
         CombinedWsMode::UpgradeReject(_) => return Ok(()),
     }
 
+    if state.ws_dials.load(Ordering::SeqCst) == 1 {
+        match mode {
+            CombinedWsMode::DropBeforeRequest => return Ok(()),
+            CombinedWsMode::DropPartialRequest | CombinedWsMode::DropCompleteRequest => {
+                let (relay_side, server_side) = tokio::io::duplex(4096);
+                tokio::spawn(async move {
+                    let _ = pump_ws(ws, relay_side, None).await;
+                });
+                drop_stream_after_request(
+                    server_side,
+                    state.acceptor.clone(),
+                    matches!(mode, CombinedWsMode::DropPartialRequest),
+                )
+                .await;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let (relay_side, server_side) = tokio::io::duplex(4096);
     tokio::spawn(async move {
         let _ = pump_ws(ws, relay_side, None).await;
     });
-    let body = if matches!(mode, CombinedWsMode::OversizeResponse) {
-        Box::leak(vec![b'x'; 64 * 1024 + 1].into_boxed_slice()) as &'static [u8]
-    } else {
-        b"{\"status\":\"ok\"}"
+    let body = match mode {
+        CombinedWsMode::OversizeResponse => {
+            Box::leak(vec![b'x'; 64 * 1024 + 1].into_boxed_slice()) as &'static [u8]
+        }
+        CombinedWsMode::ResponseAssembledBytes(total) => {
+            Box::leak(body_for_assembled_response(total).into_boxed_slice()) as &'static [u8]
+        }
+        _ => b"{\"status\":\"ok\"}",
     };
     let request = serve_stream_response(server_side, state.acceptor.clone(), "200 OK", body).await;
     state.inner_requests.lock().unwrap().push(request);
     Ok(())
+}
+
+async fn drop_stream_after_request<S>(stream: S, acceptor: TlsAcceptor, partial: bool)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut tls = acceptor.accept(stream).await.unwrap();
+    if partial {
+        let mut one_byte = [0u8; 1];
+        let _ = tls.read(&mut one_byte).await.unwrap();
+        return;
+    }
+
+    let mut decoder = FrameDecoder::new();
+    let mut closed = false;
+    let mut buf = [0u8; 4096];
+    while !closed {
+        let read = tls.read(&mut buf).await.unwrap();
+        if read == 0 {
+            return;
+        }
+        decoder.feed(&buf[..read]);
+        for frame in decoder.drain().unwrap() {
+            closed |= frame.flags & FLAG_CLOSE != 0;
+        }
+    }
 }
 
 async fn handle_combined_http(
@@ -1207,7 +1294,7 @@ struct CompleteClientOutcome {
 
 #[derive(Debug, PartialEq, Eq)]
 enum InterruptedClientOutcome {
-    RelayUnpaid,
+    Transport(String),
 }
 
 fn production_ingest_files() -> Vec<FilePart> {
@@ -1264,10 +1351,7 @@ async fn run_interrupted_observer_ingest(
         .ingest("143000_300", "20260729", production_ingest_files())
         .await
         .unwrap_err();
-    let outcome = match error {
-        TransportError::Relay(RelayError::Unpaid) => InterruptedClientOutcome::RelayUnpaid,
-        other => panic!("expected the terminal relay unpaid error, got {other:?}"),
-    };
+    let outcome = InterruptedClientOutcome::Transport(transport_error_code(&error));
     let artifacts = server.await.unwrap();
     (artifacts, outcome)
 }
@@ -1814,7 +1898,7 @@ async fn relay_observer_is_inert_and_reports_every_byte_of_a_complete_production
     assert_eq!(rebuilt, observed_artifacts.request_bytes);
     assert_eq!(observed_artifacts.request_bytes.len(), rebuilt.len());
 
-    let counts = observed.counts();
+    let counts = observed.snapshot();
     assert_eq!(
         counts.dial_attempts,
         OBSERVER_CLIENT_PRODUCTION_DIAL_ATTEMPTS
@@ -1824,13 +1908,16 @@ async fn relay_observer_is_inert_and_reports_every_byte_of_a_complete_production
     assert_eq!(counts.direct_successes, 0);
     assert_eq!(counts.relay_successes, 1);
     assert_eq!(
-        unattached.counts(),
-        DialCounts {
+        unattached.snapshot(),
+        OperationSnapshot {
             dial_attempts: 0,
             direct_successes: 0,
             relay_successes: 0,
             request_bytes_sent: 0,
             close_completed: false,
+            selected_path: None,
+            enrollment_events: 0,
+            legacy_enrollment_possible: false,
         }
     );
 }
@@ -1852,7 +1939,10 @@ async fn relay_observer_is_inert_and_reports_progress_for_the_only_one_attempt_c
 
     assert_eq!(observed_artifacts, unobserved_artifacts);
     assert_eq!(observed_outcome, unobserved_outcome);
-    assert_eq!(observed_outcome, InterruptedClientOutcome::RelayUnpaid);
+    assert_eq!(
+        observed_outcome,
+        InterruptedClientOutcome::Transport("tls".to_string())
+    );
 
     assert!(observed_artifacts.head_boundary_found);
     assert!(!observed_artifacts.saw_request_close);
@@ -1867,10 +1957,10 @@ async fn relay_observer_is_inert_and_reports_progress_for_the_only_one_attempt_c
     let encoded_head_len = request_head_len(&observed_artifacts.request_bytes).unwrap();
     let full_http_request_len =
         full_request_len_from_captured_head(&observed_artifacts.request_bytes);
-    let counts = observed.counts();
+    let counts = observed.snapshot();
     assert_eq!(
         counts.dial_attempts,
-        OBSERVER_CLIENT_PRODUCTION_DIAL_ATTEMPTS
+        OBSERVER_CLIENT_PRODUCTION_DIAL_ATTEMPTS + 1
     );
 
     assert!(
@@ -1898,13 +1988,16 @@ async fn relay_observer_is_inert_and_reports_progress_for_the_only_one_attempt_c
     assert_eq!(counts.direct_successes, 0);
     assert_eq!(counts.relay_successes, 0);
     assert_eq!(
-        unattached.counts(),
-        DialCounts {
+        unattached.snapshot(),
+        OperationSnapshot {
             dial_attempts: 0,
             direct_successes: 0,
             relay_successes: 0,
             request_bytes_sent: 0,
             close_completed: false,
+            selected_path: None,
+            enrollment_events: 0,
+            legacy_enrollment_possible: false,
         }
     );
 }
@@ -1922,11 +2015,200 @@ async fn relay_only_credential_can_be_disabled_without_retaining_an_old_adapter(
     credential.relay_origin = None;
     credential.device_token = None;
     credential.device_token_expires_at = None;
-    slot.replace_from_incumbent(credential, cas).unwrap();
     assert!(matches!(
-        slot.load().ingest_manifest().await,
+        slot.replace_from_incumbent(credential, cas),
         Err(TransportError::NoEndpoint)
     ));
+    assert!(matches!(
+        slot.load().ingest_manifest().await,
+        Err(TransportError::RelayDisabled)
+    ));
+}
+
+#[tokio::test]
+async fn relay_only_credential_constructs_and_reaches_relay() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let relay = spawn_combined_relay(
+        acceptor,
+        CombinedWsMode::AcceptAny,
+        mint_jwt(now, now + 10_000),
+    )
+    .await;
+    let mut credential =
+        observer_relay_credential(pin, 9, relay.origin.clone(), mint_jwt(now, now + 10_000));
+    credential.endpoints.clear();
+
+    relay_probe(&relay_client(credential)).await.unwrap();
+    assert_eq!(relay.state.ws_dials.load(Ordering::SeqCst), 1);
+    relay.abort();
+}
+
+#[tokio::test]
+async fn relay_replay_safe_helper_retries_before_and_during_request_writes() {
+    for mode in [
+        CombinedWsMode::DropBeforeRequest,
+        CombinedWsMode::DropPartialRequest,
+    ] {
+        let (pin, acceptor) = tls_pair_with_pin();
+        let now = epoch_secs();
+        let token = mint_jwt(now, now + 10_000);
+        let relay = spawn_combined_relay(acceptor, mode, token.clone()).await;
+        let mut credential = observer_relay_credential(pin, 9, relay.origin.clone(), token);
+        credential.endpoints.clear();
+        let client = relay_client(credential);
+
+        relay_probe(&client).await.unwrap();
+        assert!(
+            relay.state.ws_dials.load(Ordering::SeqCst) > 1,
+            "ReplaySafe ingest did not retry through relay"
+        );
+        relay.abort();
+    }
+}
+
+#[tokio::test]
+async fn relay_forbid_after_write_put_never_retries_partial_or_complete_request() {
+    for mode in [
+        CombinedWsMode::DropPartialRequest,
+        CombinedWsMode::DropCompleteRequest,
+    ] {
+        let (pin, acceptor) = tls_pair_with_pin();
+        let now = epoch_secs();
+        let token = mint_jwt(now, now + 10_000);
+        let relay = spawn_combined_relay(acceptor, mode, token.clone()).await;
+        let mut credential = observer_relay_credential(pin, 9, relay.origin.clone(), token);
+        credential.endpoints.clear();
+        let client = relay_client(credential);
+
+        let error = client
+            .put_clients_self(br#"{"label":"relay"}"#)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TransportError::ReplayUnsafe));
+        assert_eq!(transport_error_code(&error), "replay_unsafe");
+        assert_eq!(
+            relay.state.ws_dials.load(Ordering::SeqCst),
+            1,
+            "ForbidAfterWrite PUT retried through relay"
+        );
+        relay.abort();
+    }
+}
+
+#[tokio::test]
+async fn relay_get_clients_self_accepts_exact_assembled_cap_and_rejects_cap_plus_one() {
+    for (assembled_len, expects_success) in [(64 * 1024, true), (64 * 1024 + 1, false)] {
+        let (pin, acceptor) = tls_pair_with_pin();
+        let now = epoch_secs();
+        let token = mint_jwt(now, now + 10_000);
+        let relay = spawn_combined_relay(
+            acceptor,
+            CombinedWsMode::ResponseAssembledBytes(assembled_len),
+            token.clone(),
+        )
+        .await;
+        let mut credential = observer_relay_credential(pin, 9, relay.origin.clone(), token);
+        credential.endpoints.clear();
+        let client = relay_client(credential);
+
+        let result = client.get_clients_self().await;
+        if expects_success {
+            assert!(
+                result.is_ok(),
+                "exact assembled cap was rejected: {result:?}"
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(TransportError::Mux(MuxError::CapExceeded))
+            ));
+        }
+        assert!(
+            relay.state.ws_dials.load(Ordering::SeqCst) > 0,
+            "relay-only production helper did not physically dial the relay"
+        );
+        relay.abort();
+    }
+}
+
+#[tokio::test]
+async fn shared_observer_aggregates_direct_then_relay_production_helpers() {
+    let observer = OperationObserver::new();
+
+    let (direct_pin, direct_acceptor) = tls_pair_with_pin();
+    let direct_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let direct_port = direct_listener.local_addr().unwrap().port();
+    let direct_dials = Arc::new(AtomicUsize::new(0));
+    let direct_server = tokio::spawn({
+        let direct_dials = direct_dials.clone();
+        async move {
+            let (tcp, _) = direct_listener.accept().await.unwrap();
+            direct_dials.fetch_add(1, Ordering::SeqCst);
+            serve_stream_response(
+                tcp,
+                direct_acceptor,
+                "200 OK",
+                br#"{"items":[],"total":0,"protocol_version":3}"#,
+            )
+            .await
+        }
+    });
+    let now = epoch_secs();
+    let mut direct_credential = observer_relay_credential(
+        direct_pin,
+        direct_port,
+        "http://127.0.0.1:1".into(),
+        mint_jwt(now, now + 10_000),
+    );
+    direct_credential.relay_origin = None;
+    direct_credential.device_token = None;
+    direct_credential.device_token_expires_at = None;
+    let direct_client = relay_client(direct_credential).with_observer(Some(observer.clone()));
+    direct_client.list_segments("20260729").await.unwrap();
+    let _ = direct_server.await.unwrap();
+
+    let (relay_pin, relay_acceptor) = tls_pair_with_pin();
+    let token = mint_jwt(now, now + 10_000);
+    let relay =
+        spawn_combined_relay(relay_acceptor, CombinedWsMode::AcceptAny, token.clone()).await;
+    let mut relay_credential = observer_relay_credential(relay_pin, 9, relay.origin.clone(), token);
+    relay_credential.endpoints.clear();
+    let relay_observer_client =
+        relay_client(relay_credential).with_observer(Some(observer.clone()));
+    relay_probe(&relay_observer_client).await.unwrap();
+
+    let snapshot = observer.snapshot();
+    let physical_dials = direct_dials.load(Ordering::SeqCst) as u64
+        + relay.state.ws_dials.load(Ordering::SeqCst) as u64;
+    assert_eq!(snapshot.direct_successes, 1);
+    assert_eq!(snapshot.relay_successes, 1);
+    assert_eq!(snapshot.dial_attempts, physical_dials);
+    assert_eq!(snapshot.selected_path, Some(SelectedPath::Relay));
+
+    let failed_observer = OperationObserver::new();
+    let (failure_pin, failure_acceptor) = tls_pair_with_pin();
+    let failure_token = mint_jwt(now, now + 10_000);
+    let failing_relay = spawn_combined_relay(
+        failure_acceptor,
+        CombinedWsMode::DropCompleteRequest,
+        failure_token.clone(),
+    )
+    .await;
+    let mut failing_credential =
+        observer_relay_credential(failure_pin, 9, failing_relay.origin.clone(), failure_token);
+    failing_credential.endpoints.clear();
+    let failing_client =
+        relay_client(failing_credential).with_observer(Some(failed_observer.clone()));
+    assert!(matches!(
+        failing_client
+            .put_clients_self(br#"{"label":"failed"}"#)
+            .await,
+        Err(TransportError::ReplayUnsafe)
+    ));
+    assert_eq!(failed_observer.snapshot().selected_path, None);
+    failing_relay.abort();
+    relay.abort();
 }
 
 #[tokio::test]
@@ -1941,7 +2223,7 @@ async fn relay_proactive_refresh_before_first_dial() {
         pin,
         9,
         relay.origin.clone(),
-        old_token,
+        old_token.clone(),
     ));
 
     relay_probe(&client).await.unwrap();
@@ -2133,6 +2415,211 @@ async fn relay_refresh_persists_token_for_restart() {
         Some(now + 20_000)
     );
     let _ = std::fs::remove_file(&path);
+    relay.abort();
+}
+
+#[tokio::test]
+async fn cancelled_shared_refresh_still_latches_windows_publication_before_next_relay_request() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay = spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token).await;
+    let mut credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token.clone());
+    credential.endpoints.clear();
+    let path = temp_pairing_path("cancelled-windows-publication");
+    PairedState {
+        credential: Some(credential.clone()),
+        ..Default::default()
+    }
+    .save(&path)
+    .unwrap();
+
+    // The live client is bound to the original pairing generation. The durable
+    // state now represents a competing pairing, so the shared owned publication
+    // task must receive WindowsTokenTransaction::Unchanged.
+    let mut competing = PairedState::load(&path).unwrap();
+    competing.credential.as_mut().unwrap().client_cert_pem = "competing-cert".into();
+    competing.save(&path).unwrap();
+    let client = Arc::new(
+        ObserverClient::new(credential)
+            .unwrap()
+            .with_state_path(path.clone()),
+    );
+    let slot = ClientSlot::new(client.clone());
+    let publication_owner = slot.publication_owner();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let publication_blocker = std::thread::spawn(move || {
+        let _owner = publication_owner.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+    locked_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let first = tokio::spawn({
+        let client = client.clone();
+        async move { relay_probe(&client).await }
+    });
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while relay.state.refreshes.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shared refresh did not start");
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    first.abort();
+    let _ = first.await;
+    release_tx.send(()).unwrap();
+    publication_blocker.join().unwrap();
+
+    // Shared refresh owns the blocking transaction after the request future is
+    // gone. Give it a bounded chance to classify the durable mismatch before
+    // releasing a second ordinary request.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let dials_before_second = relay.state.ws_dials.load(Ordering::SeqCst);
+    assert!(matches!(
+        relay_probe(&client).await,
+        Err(TransportError::RelayDisabled)
+    ));
+    assert_eq!(
+        relay.state.ws_dials.load(Ordering::SeqCst),
+        dials_before_second,
+        "the latched relay-only request made a physical relay dial"
+    );
+    let persisted = PairedState::load(&path).unwrap();
+    assert_eq!(persisted.access_mutation_generation, 0);
+    assert_eq!(
+        persisted.credential.unwrap().device_token.as_deref(),
+        Some(old_token.as_str())
+    );
+    let _ = std::fs::remove_file(path);
+    relay.abort();
+}
+
+#[tokio::test]
+async fn concurrent_relay_only_request_after_publication_latch_makes_no_relay_dial() {
+    let (pin, acceptor) = tls_pair_with_pin();
+    let now = epoch_secs();
+    let old_token = mint_jwt(now, now + 10_000);
+    let fresh_token = mint_jwt(now, now + 20_000);
+    let relay = spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token).await;
+    let mut credential = observer_relay_credential(pin, 9, relay.origin.clone(), old_token.clone());
+    credential.endpoints.clear();
+    let path = temp_pairing_path("concurrent-windows-publication");
+    PairedState {
+        credential: Some(credential.clone()),
+        ..Default::default()
+    }
+    .save(&path)
+    .unwrap();
+
+    let mut competing = PairedState::load(&path).unwrap();
+    competing.credential.as_mut().unwrap().client_cert_pem = "competing-cert".into();
+    competing.save(&path).unwrap();
+    let client = Arc::new(
+        ObserverClient::new(credential)
+            .unwrap()
+            .with_state_path(path.clone()),
+    );
+    let slot = ClientSlot::new(client.clone());
+    let publication_owner = slot.publication_owner();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let publication_blocker = std::thread::spawn(move || {
+        let _owner = publication_owner.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+    locked_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let (classified_tx, classified_rx) = oneshot::channel();
+    let (return_tx, return_rx) = oneshot::channel();
+    let first = tokio::spawn({
+        let client = client.clone();
+        async move {
+            let result = relay_probe(&client).await;
+            classified_tx.send(()).unwrap();
+            return_rx.await.unwrap();
+            result
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while relay.state.refreshes.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shared refresh did not start");
+    release_tx.send(()).unwrap();
+    publication_blocker.join().unwrap();
+    tokio::time::timeout(Duration::from_secs(3), classified_rx)
+        .await
+        .expect("first request did not classify publication")
+        .unwrap();
+    assert!(
+        !first.is_finished(),
+        "the first caller observed its result before the second operation was released"
+    );
+
+    let dials_before_second = relay.state.ws_dials.load(Ordering::SeqCst);
+    assert!(matches!(
+        relay_probe(&client).await,
+        Err(TransportError::RelayDisabled)
+    ));
+    assert_eq!(
+        relay.state.ws_dials.load(Ordering::SeqCst),
+        dials_before_second,
+        "second relay-only operation dialed after publication was rejected"
+    );
+
+    let (direct_pin, direct_acceptor) = tls_pair_with_pin();
+    let direct_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let direct_port = direct_listener.local_addr().unwrap().port();
+    let direct_dials = Arc::new(AtomicUsize::new(0));
+    let direct_server = tokio::spawn({
+        let direct_dials = direct_dials.clone();
+        async move {
+            let (tcp, _) = direct_listener.accept().await.unwrap();
+            direct_dials.fetch_add(1, Ordering::SeqCst);
+            serve_stream_response(
+                tcp,
+                direct_acceptor,
+                "200 OK",
+                br#"{"items":[],"total":0,"protocol_version":3}"#,
+            )
+            .await
+        }
+    });
+    let mut direct_credential = observer_relay_credential(
+        direct_pin,
+        direct_port,
+        "http://127.0.0.1:1".into(),
+        old_token.clone(),
+    );
+    direct_credential.relay_origin = None;
+    direct_credential.device_token = None;
+    direct_credential.device_token_expires_at = None;
+    relay_client(direct_credential)
+        .list_segments("20260729")
+        .await
+        .unwrap();
+    let _ = direct_server.await.unwrap();
+    assert_eq!(direct_dials.load(Ordering::SeqCst), 1);
+
+    return_tx.send(()).unwrap();
+    assert!(matches!(
+        first.await.unwrap(),
+        Err(TransportError::RelayPublicationRejected)
+    ));
+    let persisted = PairedState::load(&path).unwrap();
+    assert_eq!(persisted.access_mutation_generation, 0);
+    assert_eq!(
+        persisted.credential.unwrap().device_token.as_deref(),
+        Some(old_token.as_str())
+    );
+    let _ = std::fs::remove_file(path);
     relay.abort();
 }
 

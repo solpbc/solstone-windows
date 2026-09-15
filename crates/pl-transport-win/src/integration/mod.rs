@@ -26,9 +26,9 @@ use std::time::{Duration, Instant};
 
 use spl_core::ca;
 
-use crate::observe::{DialCounts, OperationObserver};
 use args::{ArgError, Command};
-use report::{Artifact, Dials, Evidence, Failure, Outcome, Phase};
+use report::{Artifact, DialCounts, Dials, Evidence, Failure, Outcome, Phase};
+use spl_transport::observe::OperationObserver;
 
 pub use args::{is_selected, Carrier, Operation, HELP, MODE_FLAG};
 pub use report::SCHEMA_VERSION;
@@ -145,7 +145,7 @@ pub fn report_for(selection: Selection, environment: &Environment) -> Outcome {
         ),
     };
 
-    let counts = observer.counts();
+    let counts = DialCounts::from(observer.snapshot());
     let failure = failure.or_else(|| dial_maximum_failure(counts, max_dials));
 
     report::finish(
@@ -249,7 +249,7 @@ impl observer_model::LocalOffset for FixedOffset {
     }
 }
 
-pub(crate) fn shared_observer(observer: &Arc<OperationObserver>) -> crate::observe::ObserverHandle {
+pub(crate) fn shared_observer(observer: &Arc<OperationObserver>) -> crate::ObserverHandle {
     Some(observer.clone())
 }
 

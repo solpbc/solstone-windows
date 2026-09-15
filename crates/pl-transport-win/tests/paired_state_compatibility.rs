@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
-use pl_transport_win::pairing::convert_shared_credential;
+use pl_transport_win::credential::{EndpointAddr, PairedState};
+use pl_transport_win::pairing::{convert_shared_credential, windows_to_shared_credential};
 use pl_transport_win::relay_pairing::pair_over_relay;
 
 use support::relay_pairing::{relay_link, spawn_mock_relay, MockState};
@@ -28,30 +28,6 @@ fn temp_pairing_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("plw-compat-{name}-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join("pairing.json")
-}
-
-fn windows_to_shared_credential(w: &Credential) -> spl_transport::credential::Credential {
-    spl_transport::credential::Credential {
-        client_key_pem: w.client_key_pem.clone(),
-        client_cert_pem: w.client_cert_pem.clone(),
-        ca_chain_pem: w.ca_chain_pem.clone(),
-        ca_fp_prefix: w.ca_fp_prefix.clone(),
-        instance_id: w.instance_id.clone(),
-        home_label: w.home_label.clone(),
-        endpoints: w
-            .endpoints
-            .iter()
-            .map(|e| spl_transport::credential::EndpointAddr {
-                host: e.host.clone(),
-                port: e.port,
-            })
-            .collect(),
-        relay_origin: w.relay_origin.clone(),
-        device_token: w.device_token.clone(),
-        device_token_expires_at: w.device_token_expires_at,
-        home_attestation: None,
-        local_endpoints: None,
-    }
 }
 
 #[test]

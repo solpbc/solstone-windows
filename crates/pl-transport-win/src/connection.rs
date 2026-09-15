@@ -27,9 +27,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
-use crate::observe::{note_close_completed, note_request_bytes, ObserverHandle};
 use crate::tls::pinned_server_name;
-use crate::TransportError;
+use crate::{ObserverHandle, TransportError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Upper bound on outbound writes. A stalled write means the peer is dead or no
@@ -206,7 +205,9 @@ where
                 // Recorded per frame, not per burst: a write that fails partway
                 // through a burst must still leave the bytes that did reach the
                 // wire visible, which is what an interrupted upload looks like.
-                note_request_bytes(observer, upload.sent_bytes() as u64);
+                if let Some(observer) = observer.as_deref() {
+                    observer.record_request_bytes(upload.sent_bytes() as u64);
+                }
                 wrote = true;
             }
             if wrote {
@@ -282,7 +283,9 @@ where
     // closed our stream before the body finished leaves `is_done()` false, and is
     // honestly reported as an incomplete close.
     if upload.is_done() {
-        note_close_completed(observer);
+        if let Some(observer) = observer.as_deref() {
+            observer.record_close_completed();
+        }
     }
     Ok(response)
 }
@@ -458,7 +461,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_completed_request_records_every_byte_and_a_completed_close() {
-        use crate::observe::OperationObserver;
+        use spl_transport::observe::OperationObserver;
 
         let observer = OperationObserver::new();
         let body = vec![b'z'; 4096];
@@ -487,7 +490,7 @@ mod tests {
         fake_peer.await.unwrap();
 
         assert_eq!(response.status, 200);
-        let counts = observer.counts();
+        let counts = observer.snapshot();
         assert_eq!(counts.request_bytes_sent, request_len);
         assert!(
             counts.close_completed,
@@ -497,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_interrupted_request_records_progress_without_a_completed_close() {
-        use crate::observe::OperationObserver;
+        use spl_transport::observe::OperationObserver;
 
         // A body past the initial window: the peer takes the first window's worth
         // of DATA and then drops, which is the shape a bounded operator
@@ -534,7 +537,7 @@ mod tests {
             error,
             TransportError::Io(_) | TransportError::Mux(_)
         ));
-        let counts = observer.counts();
+        let counts = observer.snapshot();
         assert!(
             counts.request_bytes_sent > 0,
             "progress before the interruption is visible"
@@ -551,7 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_early_peer_rejection_reports_an_incomplete_close() {
-        use crate::observe::OperationObserver;
+        use spl_transport::observe::OperationObserver;
 
         // The peer answers and closes our stream before the body is done. There is
         // a valid response, but our CLOSE never went out, so the close is honestly
@@ -594,7 +597,7 @@ mod tests {
         fake_peer.await.unwrap();
 
         assert_eq!(response.status, 413);
-        let counts = observer.counts();
+        let counts = observer.snapshot();
         assert!(counts.request_bytes_sent > 0);
         assert!(
             !counts.close_completed,

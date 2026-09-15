@@ -35,12 +35,12 @@ use crate::client::ObserverClient;
 use crate::coordinator::UploadCoordinator;
 use crate::credential::PairedState;
 use crate::journal_bridge;
-use crate::observe::{ObserverHandle, OperationObserver};
 use crate::pairing;
 use crate::sealed::{SealedSegment, SealedStore};
 use crate::service::SyncConfig;
 use crate::RawDeviceFacts;
-use crate::TransportError;
+use crate::{ObserverHandle, TransportError};
+use spl_transport::observe::OperationObserver;
 
 /// The result of one operation: how it failed (if it did) and what it earned.
 type OpResult = (Option<Failure>, Evidence);
@@ -459,7 +459,7 @@ async fn roundtrip(
         }
     }
 
-    let counts = counts_source.counts();
+    let counts = super::report::DialCounts::from(counts_source.snapshot());
     // The single post-await boundary for roundtrip, fetch, and upload sits
     // immediately before relay-path finalization. Assertions drawn from earned
     // data keep precedence; the budget gates the sole remaining route to PASS.
@@ -646,7 +646,7 @@ async fn fetch(
         return (Some(failure), evidence);
     }
 
-    let counts = counts_source.counts();
+    let counts = super::report::DialCounts::from(counts_source.snapshot());
     if let Some(deadline) = budget.checkpoint(Phase::Assert) {
         return (Some(deadline), evidence);
     }
@@ -971,7 +971,7 @@ async fn upload(
 
     // Progress evidence is read whether or not the tick succeeded: a bounded
     // interruption must be visible as bytes sent without a completed close.
-    let counts = counts_source.counts();
+    let counts = super::report::DialCounts::from(counts_source.snapshot());
     evidence.bytes_sent_before_close = Some(counts.request_bytes_sent);
     evidence.close_completed = Some(counts.close_completed);
     let confirmed = match ticked {
@@ -1520,10 +1520,10 @@ mod tests {
         let handle = Some(observer.clone());
         let report = || ceremony_residue(Carrier::Relay, &handle, Residue::Present);
         assert_eq!(report().relay_device_enrollment, Residue::None);
-        observer.record_enrollment_started();
+        observer.record_legacy_enrollment_possible();
         assert_eq!(report().relay_device_enrollment, Residue::Possible);
         assert_eq!(report().journal_pairing_identity, Residue::Present);
-        observer.record_stateless_enrollment();
+        observer.clear_legacy_enrollment_possible();
         assert_eq!(report().relay_device_enrollment, Residue::None);
     }
 
@@ -1617,7 +1617,7 @@ mod tests {
             "expected the carrier mismatch refusal, got {failure:?}"
         );
         assert_eq!(
-            observer.counts().dial_attempts,
+            observer.snapshot().dial_attempts,
             0,
             "refusal must precede every dial"
         );
@@ -1654,7 +1654,7 @@ mod tests {
                 matches!(&failure, Failure::Error { reason, .. } if reason == "pair_link"),
                 "expected the pair_link token for {link:?}, got {failure:?}"
             );
-            assert_eq!(observer.counts().dial_attempts, 0);
+            assert_eq!(observer.snapshot().dial_attempts, 0);
             // The rejected link is never reflected back.
             assert!(!format!("{failure:?}").contains(&link));
         }
@@ -1680,7 +1680,7 @@ mod tests {
 
         let failure = failure.expect("a non-empty profile fails closed");
         assert_eq!(failure.phase(), Phase::Precondition);
-        assert_eq!(observer.counts().dial_attempts, 0);
+        assert_eq!(observer.snapshot().dial_attempts, 0);
         // The precondition must not delete the operator's existing profile.
         assert!(environment.state_path.exists());
 

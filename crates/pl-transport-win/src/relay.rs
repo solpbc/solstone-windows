@@ -33,9 +33,8 @@ use tokio_tungstenite::{
 };
 
 use crate::connection::run_request_over_stream_observed_with_cap;
-use crate::observe::ObserverHandle;
 use crate::tls::pinned_server_name;
-use crate::{RelayError, TransportError};
+use crate::{ObserverHandle, RelayError, TransportError};
 use observer_pl::mux::MAX_ASSEMBLED_BYTES;
 
 /// Inner mTLS progress bound for AC6. This is not a presence-hold wait; a live
@@ -73,11 +72,6 @@ impl<'a> RelayRequestSpec<'a> {
             observer,
             response_cap: MAX_ASSEMBLED_BYTES,
         }
-    }
-
-    pub(crate) fn with_response_cap(mut self, response_cap: usize) -> Self {
-        self.response_cap = response_cap;
-        self
     }
 }
 

@@ -4,11 +4,12 @@
 //! End-to-end transport round-trip against a real in-process rustls peer.
 //!
 //! Stands up a tokio-rustls TLS server presenting a self-signed cert, then dials
-//! it with the production `request_once` path: real TCP, real TLS 1.3 handshake,
+//! it with the low-level carrier fixture path: real TCP, real TLS 1.3 handshake,
 //! real CA-fingerprint pinning + leaf-signature verification, real spl framing,
 //! real HTTP-over-PL. Nothing is mocked — only the journal application logic is
-//! replaced by a fixed echo. This is the deterministic, host-runnable proxy for
-//! the live cross-repo gate.
+//! replaced by a fixed echo. Production ordinary-helper authority is covered in
+//! `ordinary_request_authority.rs`; this file retains carrier fixtures for the
+//! bridge and protocol seams.
 
 mod support;
 
@@ -2486,11 +2487,10 @@ async fn reachable_lan_rejection_never_dials_relay() {
 async fn lan_only_no_endpoint_still_returns_no_endpoint() {
     let mut credential = observer_credential(vec![0; 16], 7657);
     credential.endpoints.clear();
-    let client = ObserverClient::new(credential).unwrap();
-
-    let err = client.list_segments("20260729").await.unwrap_err();
-
-    assert!(matches!(err, TransportError::NoEndpoint));
+    assert!(matches!(
+        ObserverClient::new(credential),
+        Err(TransportError::NoEndpoint)
+    ));
 }
 
 #[tokio::test]
@@ -2886,6 +2886,93 @@ async fn test_adapter_metadata_get_put_on_first_send() {
     assert!(put_json.get("journal").is_none());
 
     server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_metadata_keeps_prior_publication_when_relay_is_retired() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => {
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": 0,
+                "reported": null,
+                "owner_label": "Owner",
+                "display_label": "Device",
+                "updated_at": null,
+                "journal": { "name": "Journal", "version": "1.0.0" }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("PUT", "/app/network/api/clients/self") => {
+            let body = serde_json::json!({
+                "protocol_version": 1,
+                "revision": 1,
+                "reported": null,
+                "owner_label": null,
+                "display_label": "Device",
+                "updated_at": null,
+                "journal": { "name": null, "version": "1.0.0" }
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        _ => (404, vec![], b"{}".to_vec()),
+    })
+    .await;
+    let mut credential = observer_credential(server.pin.clone(), server.port);
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 3_600;
+    credential.relay_origin = Some("http://127.0.0.1:1".into());
+    credential.device_token = Some(mint_test_jwt_v2(&credential.instance_id, expiry));
+    credential.device_token_expires_at = Some(expiry);
+    let state_path = temp_state_path("metadata-retired-preserves-prior");
+    paired_state(credential.clone()).save(&state_path).unwrap();
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(
+        ObserverClient::new(credential.clone()).unwrap(),
+    ));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
+        name: Some("Device".into()),
+        platform: Some("windows".into()),
+        device_type: None,
+        app_id: Some("app.solstone.windows".into()),
+        app_version: Some("2.0.0".into()),
+    });
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+    let session = controller.begin_session(&credential);
+    controller.trigger();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while controller.last_published_metadata().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial metadata publication did not complete");
+    let published = controller.last_published_metadata();
+
+    // The follow-up uses the same production controller, but its direct peer is
+    // gone and its lifecycle fence prevents a relay fallback.
+    server.abort();
+    slot.retire();
+    controller.mark_session_disconnected(session);
+    controller.note_connected(session);
+    let error = slot.load().get_clients_self().await.unwrap_err();
+    assert!(
+        matches!(error, TransportError::RelayRetired),
+        "retired fence yielded {error:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(controller.last_published_metadata(), published);
+
     let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
 }
 
@@ -3674,7 +3761,7 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
     let (jv, sync) = test_jv_and_sync("carrier-trigger");
     let mut cfg = service_config(state_path.clone());
     cfg.journal_version = jv;
-    let observer = pl_transport_win::observe::OperationObserver::new();
+    let observer = spl_transport::observe::OperationObserver::new();
     let access =
         CredentialAccess::bind(&paired, &cfg, sync.clone(), Some(observer.clone())).unwrap();
     let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -3711,7 +3798,7 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
     );
 
     let cap = capability_from(&handle);
-    let counts_before_bridge = observer.counts();
+    let counts_before_bridge = observer.snapshot();
     let _ = raw_bridge_request(
         handle.port(),
         "GET",
@@ -3725,7 +3812,7 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
 
     wait_for_journal_requests(&server, "GET", "/app/status", 1).await;
     assert!(
-        observer.counts().direct_successes > counts_before_bridge.direct_successes,
+        observer.snapshot().direct_successes > counts_before_bridge.direct_successes,
         "the bridge must use the observer retained across the ready replacement"
     );
 
@@ -3746,9 +3833,9 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
     // The same replacement authority now refuses relay credentials while its
     // LAN adapter continues serving requests with the attached observer.
     assert!(slot.load().credential().device_token.is_none());
-    let lan_counts = observer.counts();
+    let lan_counts = observer.snapshot();
     slot.load().get_clients_self().await.unwrap();
-    assert!(observer.counts().direct_successes > lan_counts.direct_successes);
+    assert!(observer.snapshot().direct_successes > lan_counts.direct_successes);
     assert!(PairedState::load(&state_path)
         .unwrap()
         .credential

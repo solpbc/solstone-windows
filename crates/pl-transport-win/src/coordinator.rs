@@ -2052,6 +2052,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_transport_failures_keep_unconfirmed_sealed_segment_and_path_unset() {
+        let errors = [
+            (TransportError::ReplayUnsafe, "replay_unsafe"),
+            (TransportError::RelayDisabled, "relay_disabled"),
+            (TransportError::RelayRetired, "relay_retired"),
+            (
+                TransportError::RelayPublicationRejected,
+                "relay_publication_rejected",
+            ),
+            (
+                TransportError::RelayPublicationIndeterminate,
+                "relay_publication_indeterminate",
+            ),
+        ];
+
+        for (error, expected_code) in errors {
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            let store = OneSegmentStore::new(
+                1_700_000_100,
+                "display_1_screen.mp4",
+                b"sealed segment".to_vec(),
+            );
+            let removed = store.removed_handle();
+            let client = FakeClient::new(vec![Err(error)], vec![]);
+            let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+            let result = coordinator.tick().await;
+            assert_eq!(
+                result
+                    .as_ref()
+                    .err()
+                    .map(|error| transport_error_code(error).to_string()),
+                Some(expected_code.to_string())
+            );
+            assert!(
+                !*removed.lock().unwrap(),
+                "terminal transport failure discarded unconfirmed sealed custody"
+            );
+            let snapshot = sync.lock().unwrap().clone();
+            assert_eq!(snapshot.upload.failed_segments, 1);
+            assert_eq!(snapshot.upload.last_error.as_deref(), Some(expected_code));
+            assert_eq!(snapshot.upload.last_upload_path, None);
+            let reason = snapshot.upload.last_error.unwrap();
+            assert!(reason.len() <= 240);
+            assert!(!reason.contains("token"));
+            assert!(!reason.contains("http"));
+            assert!(!reason.contains('/'));
+        }
+    }
+
+    #[tokio::test]
     async fn no_work_successful_tick_resets_reason_and_stamps_sync_time() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         {
