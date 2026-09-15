@@ -16,10 +16,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_model::SyncSnapshot;
+use observer_pl::bridge;
 use observer_pl::civil;
-use observer_pl::pairlink::{self, ParsedPairLink};
-use observer_pl::{bridge, ca};
 use observer_retention::RetentionConfig;
+use spl_core::ca;
+use spl_core::pairlink::{self, ParsedPairLink};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -1461,7 +1462,7 @@ mod tests {
         blob.extend_from_slice(origin.as_bytes());
         format!(
             "https://go.solstone.app/p#{}",
-            observer_pl::crockford::encode(&blob)
+            spl_core::crockford::encode(&blob)
         )
     }
 
@@ -1479,7 +1480,7 @@ mod tests {
         blob.extend_from_slice(&[0xD4; 16]);
         format!(
             "https://go.solstone.app/p#{}",
-            observer_pl::crockford::encode(&blob)
+            spl_core::crockford::encode(&blob)
         )
     }
 
@@ -1636,7 +1637,7 @@ mod tests {
             // Valid crockford, unsupported version byte.
             format!(
                 "https://go.solstone.app/p#{}",
-                observer_pl::crockford::encode(&[0x09u8; 40])
+                spl_core::crockford::encode(&[0x09u8; 40])
             ),
         ] {
             let observer = OperationObserver::new();

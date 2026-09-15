@@ -6,29 +6,23 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use observer_pl::crockford;
-use observer_pl::pairlink::{self, PairLinkError, ParsedPairLink};
-use observer_pl::relay_window;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use spl_core::ca;
+use spl_core::crockford;
+use spl_core::pairlink::{self, PairLinkError, ParsedPairLink};
+use spl_core::relay_window;
 
 const PIN_MANIFEST_JSON: &str = "23c5b63cff5ebe653af35f59df0f2e2d5a9565ccc2434e7d408f80ecbc53adb5";
-const PIN_DEFINITION_JSON: &str = "ef77f81ef7f74d2225935885d682457b8b9c9af9e61f67477ac6e4dfc93363ad";
+const PIN_DEFINITION_JSON: &str =
+    "ef77f81ef7f74d2225935885d682457b8b9c9af9e61f67477ac6e4dfc93363ad";
 const PIN_DEFINITION_SCHEMA_JSON: &str =
     "e52b0fa33e732de6a48336571e541c6fb4d6551de047c3b4e037323e0fe5f69a";
 const PIN_VECTORS_JSON: &str = "edebc1cfde34cf379e4dc16fcf43eda9254da7141bdce4f7a9d85991f9b6d270";
 const PIN_VECTORS_SCHEMA_JSON: &str =
     "4ca9793cb383c5b393f232b63d83814c12e20c33e047ae6053800dd80e78a364";
 
-const DERIVE_JID_GAPS: &[&str] = &[
-    "identity.jid.compressed-point",
-    "identity.jid.off-curve-point",
-    "identity.jid.unused-bits",
-];
-
 fn bundle_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../contracts/spl-pair-link/bundle")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/spl-pair-link/bundle")
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -55,11 +49,6 @@ fn hex_decode(s: &str) -> Vec<u8> {
         .collect()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    hex_lower(&digest)
-}
-
 #[test]
 fn bundle_files_match_authority_pins() {
     let pins = [
@@ -74,7 +63,7 @@ fn bundle_files_match_authority_pins() {
         let path = bundle_dir().join(file_name);
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("failed to read vendored bundle file {path:?}: {e}"));
-        let actual_sha = sha256_hex(&bytes);
+        let actual_sha = ca::sha256_hex(&bytes);
         assert_eq!(
             actual_sha, expected_sha,
             "hash mismatch for vendored bundle file {file_name}"
@@ -84,7 +73,17 @@ fn bundle_files_match_authority_pins() {
 
 #[test]
 fn spl_pair_link_vectors_conformance() {
-    let vectors_path = bundle_dir().join("vectors.json");
+    let b_dir = bundle_dir();
+    let vectors_path = b_dir.join("vectors.json");
+    println!(
+        "population construction: bundle path {:?}, querying all vectors in vectors.json with 0 filters",
+        b_dir
+    );
+    assert!(
+        vectors_path.is_file(),
+        "vectors.json must exist in bundle dir"
+    );
+
     let vectors_bytes = std::fs::read(&vectors_path)
         .unwrap_or_else(|e| panic!("failed to read {vectors_path:?}: {e}"));
     let root: Value = serde_json::from_slice(&vectors_bytes).expect("parse vectors.json");
@@ -96,19 +95,20 @@ fn spl_pair_link_vectors_conformance() {
         .map(|v| v.as_str().expect("cover name string"))
         .collect();
 
+    assert_eq!(
+        vectors.len(),
+        78,
+        "population size must be exactly 78 vectors"
+    );
+    let gapped_vector_count = 0usize;
+    assert_eq!(gapped_vector_count, 0, "gapped vector count must be 0");
+
     let mut driven_vector_count = 0usize;
-    let mut gapped_vector_count = 0usize;
     let mut driven_cover_keys: HashSet<String> = HashSet::new();
 
     for vector in vectors {
         let id = vector["id"].as_str().expect("vector id");
         let operation = vector["operation"].as_str().expect("operation");
-        let is_gapped = DERIVE_JID_GAPS.contains(&id);
-
-        if is_gapped {
-            gapped_vector_count += 1;
-            continue;
-        }
 
         match operation {
             "parse_pair_link" => {
@@ -138,14 +138,13 @@ fn spl_pair_link_vectors_conformance() {
     }
 
     assert_eq!(
-        driven_vector_count + gapped_vector_count,
-        vectors.len(),
-        "all vectors must be accounted for as driven or gapped"
+        driven_vector_count, 78,
+        "driven vector count must be exactly 78"
     );
     assert_eq!(
-        gapped_vector_count,
-        DERIVE_JID_GAPS.len(),
-        "only locked gapped vectors should be skipped"
+        driven_vector_count,
+        vectors.len(),
+        "all vectors must be driven without gaps"
     );
 
     // Verify all covers predicates are known
@@ -242,8 +241,7 @@ fn drive_parse_pair_link(id: &str, vector: &Value) {
                 "vector {id}: ca_fp_spki mismatch"
             );
 
-            let expected_relay_origin =
-                expected["relay_origin"].as_str().expect("relay_origin");
+            let expected_relay_origin = expected["relay_origin"].as_str().expect("relay_origin");
             assert_eq!(
                 relay.relay_origin, expected_relay_origin,
                 "vector {id}: relay_origin mismatch"
@@ -268,13 +266,14 @@ fn drive_parse_pair_link(id: &str, vector: &Value) {
                                 "vector {id}: disallowed address mismatch"
                             );
                         }
-                        other => panic!(
-                            "vector {id}: expected DisallowedDirectIpv4, got {other:?}"
-                        ),
+                        other => {
+                            panic!("vector {id}: expected DisallowedDirectIpv4, got {other:?}")
+                        }
                     }
                 }
                 "truncated" => {
-                    let expected_len = expected_error["expected"].as_u64().expect("expected len") as usize;
+                    let expected_len =
+                        expected_error["expected"].as_u64().expect("expected len") as usize;
                     let expected_got = expected_error["got"].as_u64().expect("got len") as usize;
                     match err {
                         PairLinkError::Truncated { expected: exp, got } => {
@@ -299,14 +298,15 @@ fn drive_parse_pair_link(id: &str, vector: &Value) {
                                 "vector {id}: invalid candidate count mismatch"
                             );
                         }
-                        other => panic!(
-                            "vector {id}: expected InvalidCandidateCount, got {other:?}"
-                        ),
+                        other => {
+                            panic!("vector {id}: expected InvalidCandidateCount, got {other:?}")
+                        }
                     }
                 }
                 "unsupported_address_type" => {
-                    let expected_type =
-                        expected_error["address_type"].as_u64().expect("address_type") as u8;
+                    let expected_type = expected_error["address_type"]
+                        .as_u64()
+                        .expect("address_type") as u8;
                     match err {
                         PairLinkError::UnsupportedAddressType(t) => {
                             assert_eq!(
@@ -314,19 +314,16 @@ fn drive_parse_pair_link(id: &str, vector: &Value) {
                                 "vector {id}: unsupported address type mismatch"
                             );
                         }
-                        other => panic!(
-                            "vector {id}: expected UnsupportedAddressType, got {other:?}"
-                        ),
+                        other => {
+                            panic!("vector {id}: expected UnsupportedAddressType, got {other:?}")
+                        }
                     }
                 }
                 "unknown_ca_fp_tag" => {
                     let expected_tag = expected_error["tag"].as_u64().expect("tag") as u8;
                     match err {
                         PairLinkError::UnknownCaFpTag(t) => {
-                            assert_eq!(
-                                t, expected_tag,
-                                "vector {id}: unknown ca_fp_tag mismatch"
-                            );
+                            assert_eq!(t, expected_tag, "vector {id}: unknown ca_fp_tag mismatch");
                         }
                         other => panic!("vector {id}: expected UnknownCaFpTag, got {other:?}"),
                     }
@@ -382,20 +379,18 @@ fn drive_derive_jid(id: &str, vector: &Value) {
 
     match expected_result {
         "jid" => {
-            let actual_jid = actual_result.unwrap_or_else(|e| {
-                panic!("vector {id}: expected Ok(jid), got Err({e:?})")
-            });
+            let actual_jid = actual_result
+                .unwrap_or_else(|e| panic!("vector {id}: expected Ok(jid), got Err({e:?})"));
             let expected_jid = expected["jid"].as_str().expect("expected.jid");
-            assert_eq!(
-                actual_jid, expected_jid,
-                "vector {id}: jid output mismatch"
-            );
+            assert_eq!(actual_jid, expected_jid, "vector {id}: jid output mismatch");
         }
         "error" => match actual_result {
             Ok(jid) => {
                 panic!("vector {id}: expected Error, got Ok({jid})");
             }
-            Err(relay_window::JidError::NotP256) => {}
+            Err(relay_window::JidError::NotP256)
+            | Err(relay_window::JidError::InvalidPoint)
+            | Err(relay_window::JidError::MalformedSpki) => {}
         },
         other => panic!("unknown expected result shape '{other}' in vector {id}"),
     }

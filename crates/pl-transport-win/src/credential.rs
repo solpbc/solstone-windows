@@ -12,9 +12,9 @@ use std::io::Write;
 use std::path::Path;
 
 use base64::Engine as _;
-use observer_pl::pairlink::Endpoint;
 use rcgen::{CertificateParams, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
 use serde::{Deserialize, Serialize};
+use spl_core::pairlink::Endpoint;
 
 use crate::TransportError;
 
@@ -213,7 +213,7 @@ pub struct Credential {
 ///
 /// Same-home re-pair mints a new certificate, so this value changes on every re-pair.
 pub fn pairing_generation(client_cert_pem: &str) -> u64 {
-    let digest = observer_pl::ca::sha256(client_cert_pem.as_bytes());
+    let digest = spl_core::ca::sha256(client_cert_pem.as_bytes());
     u64::from_be_bytes(digest[..8].try_into().unwrap())
 }
 
@@ -430,11 +430,10 @@ pub struct GeneratedKey {
     pub public_key_spki_der: Vec<u8>,
 }
 
+#[cfg(test)]
 pub(crate) fn endpoint_addrs_from_local_endpoints(
     value: Option<&serde_json::Value>,
 ) -> Vec<EndpointAddr> {
-    // Relay pair-response local_endpoints are {ip, port, scope}; scope is kept
-    // server-side for now and intentionally not persisted here.
     let Some(serde_json::Value::Array(entries)) = value else {
         return Vec::new();
     };

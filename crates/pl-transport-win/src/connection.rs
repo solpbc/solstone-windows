@@ -130,6 +130,7 @@ pub(crate) async fn dial_tls(
         .map_err(|e| TransportError::Tls(format!("handshake to {host}:{port}: {e}")))
 }
 
+#[cfg(test)]
 pub(crate) async fn run_request_over_stream<S>(
     stream: S,
     method: &str,
@@ -143,6 +144,7 @@ where
     run_request_over_stream_observed(stream, method, path, headers, body, &None).await
 }
 
+#[cfg(test)]
 pub(crate) async fn run_request_over_stream_observed<S>(
     stream: S,
     method: &str,

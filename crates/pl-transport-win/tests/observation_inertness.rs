@@ -33,7 +33,7 @@ async fn observation_is_inert() {
         drop(closed); // nothing is listening on this port now
 
         let (cert, _key) = self_signed();
-        let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+        let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
         let client = ObserverClient::new(direct_credential(pin, port))
             .unwrap()
             .with_observer(observer.clone());

@@ -45,15 +45,20 @@ pub async fn refresh_device_token(relay_origin: &str, current_token: &str) -> Re
     }
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 async fn refresh_device_token_inner(
     relay_origin: &str,
     current_token: &str,
 ) -> Result<RefreshOutcome, TransportError> {
-    let (instance, current_is_v2) = observer_pl::relay_access::renewal_identity(
-        current_token,
-        crate::relay_pairing::unix_now(),
-    )
-    .ok_or_else(|| TransportError::Pairing("relay refresh input malformed".into()))?;
+    let (instance, current_is_v2) =
+        observer_pl::relay_access::renewal_identity(current_token, unix_now())
+            .ok_or_else(|| TransportError::Pairing("relay refresh input malformed".into()))?;
     let body =
         serde_json::to_vec(&json!({ "protocol_version": 2, "device_token": current_token }))?;
     let response = relay_http::relay_https_post_json(relay_origin, "/token/refresh", &body).await?;
@@ -67,13 +72,13 @@ async fn refresh_device_token_inner(
                     &parsed.device_token,
                     expiry,
                     &instance,
-                    crate::relay_pairing::unix_now(),
+                    unix_now(),
                 )
             }),
             None if !current_is_v2 => observer_pl::relay_access::legacy_claims(
                 &parsed.device_token,
                 &instance,
-                crate::relay_pairing::unix_now(),
+                unix_now(),
             ),
             _ => None,
         }

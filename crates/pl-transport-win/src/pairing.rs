@@ -1,881 +1,530 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! The pairing handshake.
+//! The pairing handshake adapter.
 //!
-//! Over a certless, CA-fp-pinned TLS connection, POST a freshly-minted CSR to
-//! `/app/network/pair?token=<nonce>`; the journal signs it and returns the client
-//! cert + CA chain + its identity. We verify the returned `fingerprint` equals
-//! `sha256:<hex>` of the signed client cert (the integrity check the Android/iOS
-//! clients also do) before trusting the credential. One key/CSR and request body
-//! are generated per ceremony. Candidates are prepared in order, but only a
-//! pre-write preparation failure advances to the next candidate: the first
-//! prepared connection receives the sole request and its outcome is terminal.
+//! Production pairing delegates directly to `spl_transport`'s shared implementation.
+//! This module adapts types, translates errors, copies operation observations,
+//! and validates route usability across the Windows boundary.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-
-use observer_pl::http::HttpResponse;
-use observer_pl::pairlink::{self, Endpoint, ParsedPairLink};
-use observer_pl::wire::{PairRequest, PairResponse};
-use observer_pl::{ca, paths};
-use rustls::ClientConfig;
-use tokio::net::TcpStream;
-use tokio_rustls::client::TlsStream;
-
-use crate::connection::{dial_tls, run_request_over_stream};
-use crate::credential::{generate_csr, Credential, EndpointAddr, GeneratedKey};
-use crate::observe::{note_dial_attempt, note_dial_success, ObserverHandle};
-use crate::relay_pairing;
-use crate::{tls, TransportError};
 use observer_model::TransportPath;
 
-pub(crate) type DirectPairPrepareFuture<'a> = Pin<
-    Box<
-        dyn Future<Output = Result<Box<dyn PreparedDirectPairConnection>, TransportError>>
-            + Send
-            + 'a,
-    >,
->;
-
-pub(crate) type DirectPairSendFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<HttpResponse, TransportError>> + Send + 'a>>;
-
-pub(crate) trait DirectPairingSeam: Send + Sync {
-    fn generate_material(&self, device_label: &str) -> Result<GeneratedKey, TransportError>;
-
-    fn prepare<'a>(
-        &'a self,
-        config: Arc<ClientConfig>,
-        endpoint: &'a Endpoint,
-    ) -> DirectPairPrepareFuture<'a>;
-}
-
-pub(crate) trait PreparedDirectPairConnection: Send {
-    fn send<'a>(
-        self: Box<Self>,
-        method: &'a str,
-        path: &'a str,
-        headers: &'a [(String, String)],
-        body: &'a [u8],
-    ) -> DirectPairSendFuture<'a>;
-}
-
-/// The production direct-pairing seam. It carries the observation handle rather
-/// than widening [`DirectPairingSeam`], so the trait the tests implement is
-/// unchanged.
-struct RealDirectPairingSeam {
-    observer: ObserverHandle,
-}
-
-struct TlsPreparedDirectPairConnection {
-    stream: TlsStream<TcpStream>,
-}
-
-impl DirectPairingSeam for RealDirectPairingSeam {
-    fn generate_material(&self, device_label: &str) -> Result<GeneratedKey, TransportError> {
-        generate_csr(device_label)
-    }
-
-    fn prepare<'a>(
-        &'a self,
-        config: Arc<ClientConfig>,
-        endpoint: &'a Endpoint,
-    ) -> DirectPairPrepareFuture<'a> {
-        Box::pin(async move {
-            note_dial_attempt(&self.observer);
-            let stream = dial_tls(config, &endpoint.host, endpoint.port).await?;
-            note_dial_success(&self.observer, TransportPath::Direct);
-            Ok(Box::new(TlsPreparedDirectPairConnection { stream })
-                as Box<dyn PreparedDirectPairConnection>)
-        })
-    }
-}
-
-impl PreparedDirectPairConnection for TlsPreparedDirectPairConnection {
-    fn send<'a>(
-        self: Box<Self>,
-        method: &'a str,
-        path: &'a str,
-        headers: &'a [(String, String)],
-        body: &'a [u8],
-    ) -> DirectPairSendFuture<'a> {
-        Box::pin(
-            async move { run_request_over_stream(self.stream, method, path, headers, body).await },
-        )
-    }
-}
-
-/// Pair against the given candidate endpoints using the one-shot `nonce_hex` and
-/// the pinned `ca_fp_prefix`. Returns the signed [`Credential`] on success.
-/// Direct-address allow-listing and duplicate coalescing are pair-link parser
-/// policy; this lower-level function uses endpoints exactly as supplied.
-pub async fn pair(
-    endpoints: &[Endpoint],
-    nonce_hex: &str,
-    ca_fp_prefix: &[u8],
-    device_label: &str,
-) -> Result<Credential, TransportError> {
-    pair_with_seam(
-        endpoints,
-        nonce_hex,
-        ca_fp_prefix,
-        device_label,
-        Arc::new(RealDirectPairingSeam { observer: None }),
-    )
-    .await
-}
-
-pub(crate) async fn pair_with_seam(
-    endpoints: &[Endpoint],
-    nonce_hex: &str,
-    ca_fp_prefix: &[u8],
-    device_label: &str,
-    seam: Arc<dyn DirectPairingSeam>,
-) -> Result<Credential, TransportError> {
-    if endpoints.is_empty() {
-        return Err(TransportError::NoEndpoint);
-    }
-    let config = Arc::new(tls::pairing_config(ca_fp_prefix)?);
-    let path = format!("{}?token={}", paths::PAIR, nonce_hex);
-    let generated = seam.generate_material(device_label)?;
-    let request = PairRequest {
-        csr: generated.csr_pem.clone(),
-        device_label: device_label.to_string(),
-    };
-    let body = serde_json::to_vec(&request)?;
-    let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-
-    let mut last_err: Option<TransportError> = None;
-    for endpoint in endpoints {
-        match seam.prepare(config.clone(), endpoint).await {
-            Ok(connection) => {
-                let response = connection.send("POST", &path, &headers, &body).await?;
-                return credential_from_direct_pair_response(
-                    response,
-                    generated,
-                    ca_fp_prefix,
-                    endpoints,
-                );
-            }
-            Err(e) => last_err = Some(e),
-        }
-    }
-    Err(last_err.expect("a non-empty endpoint list always records a preparation error"))
-}
+use crate::credential::{Credential, EndpointAddr};
+use crate::observe::ObserverHandle;
+use crate::{RelayControlEndpoint, RelayError, TransportError};
 
 /// Parse a `https://go.solstone.app/p#…` pair-link and pair against it.
 pub async fn pair_from_link(link: &str, device_label: &str) -> Result<Credential, TransportError> {
     pair_from_link_observed(link, device_label, None).await
 }
 
-/// [`pair_from_link`] with an operation-scoped observation seam attached, so a
-/// ceremony's dials are counted like every other leg of an operation.
+/// [`pair_from_link`] with an operation-scoped observation seam attached.
 pub async fn pair_from_link_observed(
     link: &str,
     device_label: &str,
     observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
-    let seam = Arc::new(RealDirectPairingSeam {
-        observer: observer.clone(),
-    });
-    pair_from_link_with_seam(link, device_label, seam, observer).await
-}
-
-async fn pair_from_link_with_seam(
-    link: &str,
-    device_label: &str,
-    seam: Arc<dyn DirectPairingSeam>,
-    observer: ObserverHandle,
-) -> Result<Credential, TransportError> {
-    let parsed = pairlink::parse(link).map_err(|e| TransportError::PairLink(e.to_string()))?;
-    match parsed {
-        ParsedPairLink::Direct(pl) => {
-            pair_with_seam(
-                &pl.candidates,
-                &pl.nonce_hex,
-                &pl.ca_fp_prefix,
-                device_label,
-                seam,
-            )
-            .await
-        }
-        ParsedPairLink::Relay(rl) => {
-            relay_pairing::pair_over_relay_observed(&rl, device_label, observer).await
-        }
-    }
-}
-
-fn summarize_rejection_body(body: &[u8]) -> String {
-    let digest = ca::sha256_hex(body);
-    format!(
-        "rejection-body bytes={} sha256={}",
-        body.len(),
-        &digest[..12]
+    let shared_observer = spl_transport::observe::OperationObserver::new_unshared();
+    let empty_map = serde_json::Map::new();
+    let result = spl_transport::pairing::pair_from_link_observed(
+        link,
+        device_label,
+        &empty_map,
+        Some(&shared_observer),
     )
+    .await;
+
+    handle_shared_pairing_result(result, &shared_observer, observer)
 }
 
-fn credential_from_direct_pair_response(
-    response: HttpResponse,
-    generated: GeneratedKey,
-    ca_fp_prefix: &[u8],
-    all_endpoints: &[Endpoint],
+pub(crate) fn handle_shared_pairing_result(
+    result: Result<spl_transport::credential::Credential, spl_transport::TransportError>,
+    source_observer: &spl_transport::observe::OperationObserver,
+    dest_observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
-    if !response.is_success() {
-        return Err(TransportError::Rejected {
-            status: response.status,
-            body: summarize_rejection_body(&response.body),
-        });
+    match result {
+        Ok(shared_cred) => {
+            let cred = convert_shared_credential(shared_cred);
+            if let Err(e) = gate_usable_route(&cred) {
+                copy_shared_observation(source_observer, &dest_observer, true);
+                Err(e)
+            } else {
+                copy_shared_observation(source_observer, &dest_observer, false);
+                Ok(cred)
+            }
+        }
+        Err(e) => {
+            copy_shared_observation(source_observer, &dest_observer, true);
+            Err(map_shared_error(e))
+        }
     }
+}
 
-    let pair: PairResponse = serde_json::from_slice(&response.body)
-        .map_err(|_| TransportError::Pairing("pair response malformed".into()))?;
-    let cert_der = tls::parse_certs(&pair.client_cert)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| TransportError::Pairing("pair response carried no client cert".into()))?;
-    let computed = format!("sha256:{}", ca::sha256_hex(cert_der.as_ref()));
-    if pair.fingerprint != computed {
-        return Err(TransportError::Pairing(
-            "client cert fingerprint mismatch".into(),
-        ));
+pub fn convert_shared_credential(cred: spl_transport::credential::Credential) -> Credential {
+    Credential {
+        client_key_pem: cred.client_key_pem,
+        client_cert_pem: cred.client_cert_pem,
+        ca_chain_pem: cred.ca_chain_pem,
+        ca_fp_prefix: cred.ca_fp_prefix,
+        instance_id: cred.instance_id,
+        home_label: cred.home_label,
+        endpoints: cred
+            .endpoints
+            .into_iter()
+            .map(|e| EndpointAddr {
+                host: e.host,
+                port: e.port,
+            })
+            .collect(),
+        relay_origin: cred.relay_origin,
+        device_token: cred.device_token,
+        device_token_expires_at: cred.device_token_expires_at,
     }
-    let cert_spki = ca::extract_spki_der(cert_der.as_ref()).map_err(|_| {
-        TransportError::Pairing("client certificate public key is malformed".into())
-    })?;
-    if cert_spki != generated.public_key_spki_der {
-        return Err(TransportError::Pairing(
-            "client certificate public key does not match generated key".into(),
-        ));
-    }
+}
 
-    let access = pair.relay_access.as_ref().and_then(|raw| {
-        let access: observer_pl::relay_access::RelayAccess =
-            serde_json::from_value(raw.clone()).ok()?;
-        crate::relay_http::validate_relay_origin(&access.relay_origin).ok()?;
-        let expiry = access
-            .claims(&pair.instance_id, crate::relay_pairing::unix_now())?
-            .exp;
-        Some((access.relay_origin, access.device_token, expiry))
-    });
-    Ok(Credential {
-        client_key_pem: generated.key_pem,
-        client_cert_pem: pair.client_cert,
-        ca_chain_pem: pair.ca_chain,
-        ca_fp_prefix: ca_fp_prefix.to_vec(),
-        instance_id: pair.instance_id,
-        home_label: pair.home_label,
-        endpoints: all_endpoints.iter().map(EndpointAddr::from).collect(),
-        relay_origin: access.as_ref().map(|a| a.0.clone()),
-        device_token: access.as_ref().map(|a| a.1.clone()),
-        device_token_expires_at: access.map(|a| a.2),
-    })
+pub(crate) fn gate_usable_route(cred: &Credential) -> Result<(), TransportError> {
+    if cred.endpoints.is_empty() && cred.device_token.is_none() {
+        Err(TransportError::NoEndpoint)
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn map_shared_error(err: spl_transport::TransportError) -> TransportError {
+    match err {
+        spl_transport::TransportError::Io(e) => TransportError::Io(e),
+        spl_transport::TransportError::Tls(e) => TransportError::Tls(e),
+        spl_transport::TransportError::TlsAccessDenied => {
+            TransportError::Tls("tls access denied".into())
+        }
+        spl_transport::TransportError::TlsCertificateUnknown => {
+            TransportError::Tls("tls certificate unknown".into())
+        }
+        spl_transport::TransportError::Crypto(e) => TransportError::Crypto(e),
+        spl_transport::TransportError::Mux(e) => {
+            let converted = match e {
+                spl_core::mux::MuxError::Frame(f) => {
+                    let f_conv = match f {
+                        spl_core::frame::FrameError::PayloadTooLarge(len) => {
+                            observer_pl::frame::FrameError::PayloadTooLarge(len)
+                        }
+                        spl_core::frame::FrameError::ReservedFlag(flag) => {
+                            observer_pl::frame::FrameError::ReservedFlag(flag)
+                        }
+                    };
+                    observer_pl::mux::MuxError::Frame(f_conv)
+                }
+                spl_core::mux::MuxError::StreamReset => observer_pl::mux::MuxError::StreamReset,
+                spl_core::mux::MuxError::Incomplete => observer_pl::mux::MuxError::Incomplete,
+                spl_core::mux::MuxError::Http(h) => {
+                    let h_conv = match h {
+                        spl_core::http::HttpError::MissingTerminator => {
+                            observer_pl::http::HttpError::MissingTerminator
+                        }
+                        spl_core::http::HttpError::MissingStatusLine => {
+                            observer_pl::http::HttpError::MissingStatusLine
+                        }
+                        spl_core::http::HttpError::BadStatusLine(s) => {
+                            observer_pl::http::HttpError::BadStatusLine(s)
+                        }
+                        spl_core::http::HttpError::TruncatedBody => {
+                            observer_pl::http::HttpError::TruncatedBody
+                        }
+                        spl_core::http::HttpError::BadChunkedBody(s) => {
+                            observer_pl::http::HttpError::BadChunkedBody(s)
+                        }
+                    };
+                    observer_pl::mux::MuxError::Http(h_conv)
+                }
+                spl_core::mux::MuxError::CapExceeded => observer_pl::mux::MuxError::CapExceeded,
+                spl_core::mux::MuxError::FlowControl => observer_pl::mux::MuxError::FlowControl,
+                spl_core::mux::MuxError::Protocol(p) => {
+                    observer_pl::mux::MuxError::Protocol(observer_pl::frame::FrameViolation {
+                        stream_id: p.stream_id,
+                        flags: p.flags,
+                        length: p.length,
+                    })
+                }
+            };
+            TransportError::Mux(converted)
+        }
+        spl_transport::TransportError::Http(e) => {
+            let converted = match e {
+                spl_core::http::HttpError::MissingTerminator => {
+                    observer_pl::http::HttpError::MissingTerminator
+                }
+                spl_core::http::HttpError::MissingStatusLine => {
+                    observer_pl::http::HttpError::MissingStatusLine
+                }
+                spl_core::http::HttpError::BadStatusLine(s) => {
+                    observer_pl::http::HttpError::BadStatusLine(s)
+                }
+                spl_core::http::HttpError::TruncatedBody => {
+                    observer_pl::http::HttpError::TruncatedBody
+                }
+                spl_core::http::HttpError::BadChunkedBody(s) => {
+                    observer_pl::http::HttpError::BadChunkedBody(s)
+                }
+            };
+            TransportError::Http(converted)
+        }
+        spl_transport::TransportError::Json(e) => TransportError::Json(e),
+        spl_transport::TransportError::PairLink(e) => TransportError::PairLink(e),
+        spl_transport::TransportError::Pairing(e) => TransportError::Pairing(e),
+        spl_transport::TransportError::Rejected { status, body } => {
+            TransportError::Rejected { status, body }
+        }
+        spl_transport::TransportError::Relay(r) => match r {
+            spl_transport::RelayError::HomeOffline => {
+                TransportError::Relay(RelayError::HomeOffline)
+            }
+            spl_transport::RelayError::Unauthorized => {
+                TransportError::Relay(RelayError::Unauthorized)
+            }
+            spl_transport::RelayError::Unpaid => TransportError::Relay(RelayError::Unpaid),
+            spl_transport::RelayError::UnknownInstance => {
+                TransportError::Relay(RelayError::UnknownInstance)
+            }
+            spl_transport::RelayError::PairWindowClosed => {
+                TransportError::Relay(RelayError::PairWindowClosed)
+            }
+            spl_transport::RelayError::Overflow => TransportError::Relay(RelayError::Overflow),
+            spl_transport::RelayError::Abnormal => TransportError::Relay(RelayError::Abnormal),
+            spl_transport::RelayError::UpgradeRejected
+            | spl_transport::RelayError::HomeListenConnection
+            | spl_transport::RelayError::HomeRelayConfiguration
+            | spl_transport::RelayError::HomeTunnelRejected(_) => {
+                TransportError::Relay(RelayError::UpgradeRejected)
+            }
+            spl_transport::RelayError::Stalled => TransportError::Relay(RelayError::Stalled),
+        },
+        spl_transport::TransportError::RelayControlRejected { endpoint, status } => {
+            let ep = match endpoint {
+                spl_transport::RelayControlEndpoint::EnrollDevice => {
+                    RelayControlEndpoint::EnrollDevice
+                }
+                spl_transport::RelayControlEndpoint::TokenRefresh => {
+                    RelayControlEndpoint::TokenRefresh
+                }
+            };
+            TransportError::RelayControlRejected {
+                endpoint: ep,
+                status,
+            }
+        }
+        spl_transport::TransportError::NoEndpoint => TransportError::NoEndpoint,
+        spl_transport::TransportError::NotPaired => TransportError::NotPaired,
+        spl_transport::TransportError::LocalOffset => TransportError::LocalOffset,
+    }
+}
+
+pub(crate) fn copy_shared_observation(
+    source: &spl_transport::observe::OperationObserver,
+    dest: &ObserverHandle,
+    suppress_selected_path: bool,
+) {
+    if let Some(dest) = dest {
+        let snapshot = source.snapshot();
+        for _ in 0..snapshot.dial_attempts {
+            dest.record_dial_attempt();
+        }
+        for _ in 0..snapshot.direct_successes {
+            dest.record_dial_success(TransportPath::Direct);
+        }
+        for _ in 0..snapshot.relay_successes {
+            dest.record_dial_success(TransportPath::Relay);
+        }
+        dest.record_request_bytes(snapshot.request_bytes_sent);
+        if snapshot.close_completed {
+            dest.record_close_completed();
+        }
+        if snapshot.legacy_enrollment_possible {
+            dest.record_enrollment_started();
+        } else {
+            dest.record_stateless_enrollment();
+        }
+        for _ in 0..snapshot.enrollment_events {
+            dest.record_enrollment_event();
+        }
+        if !suppress_selected_path {
+            let mapped_path = match snapshot.selected_path {
+                Some(spl_transport::request::SelectedPath::Direct) => Some(TransportPath::Direct),
+                Some(spl_transport::request::SelectedPath::Relay) => Some(TransportPath::Relay),
+                None => None,
+            };
+            dest.record_selected_path(mapped_path);
+        } else {
+            dest.record_selected_path(None);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observe::OperationObserver;
+    use crate::transport_error_code;
 
-    use std::collections::VecDeque;
-    use std::io;
-    use std::sync::Mutex;
-
-    use observer_pl::mux::MuxError;
-    use rcgen::{
-        BasicConstraints, CertificateParams, CertificateSigningRequestParams, IsCa, KeyPair,
-        KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
-    };
-
-    #[derive(Debug, Default)]
-    struct PairingCounters {
-        material_generations: usize,
-        prepare_attempts: Vec<Endpoint>,
-        request_writes: usize,
-    }
-
-    struct FakeDirectPairingSeam {
-        material: Mutex<Option<GeneratedKey>>,
-        prepare_results: Mutex<VecDeque<Result<(), TransportError>>>,
-        send_result: Arc<Mutex<Option<Result<HttpResponse, TransportError>>>>,
-        counters: Arc<Mutex<PairingCounters>>,
-    }
-
-    impl FakeDirectPairingSeam {
-        fn new(
-            material: GeneratedKey,
-            prepare_results: Vec<Result<(), TransportError>>,
-            send_result: Result<HttpResponse, TransportError>,
-        ) -> Arc<Self> {
-            Arc::new(Self {
-                material: Mutex::new(Some(material)),
-                prepare_results: Mutex::new(VecDeque::from(prepare_results)),
-                send_result: Arc::new(Mutex::new(Some(send_result))),
-                counters: Arc::new(Mutex::new(PairingCounters::default())),
-            })
-        }
-
-        fn counters(&self) -> Arc<Mutex<PairingCounters>> {
-            self.counters.clone()
-        }
-    }
-
-    impl DirectPairingSeam for FakeDirectPairingSeam {
-        fn generate_material(&self, _device_label: &str) -> Result<GeneratedKey, TransportError> {
-            self.counters.lock().unwrap().material_generations += 1;
-            Ok(self
-                .material
-                .lock()
-                .unwrap()
-                .take()
-                .expect("one scripted material generation"))
-        }
-
-        fn prepare<'a>(
-            &'a self,
-            _config: Arc<ClientConfig>,
-            endpoint: &'a Endpoint,
-        ) -> DirectPairPrepareFuture<'a> {
-            self.counters
-                .lock()
-                .unwrap()
-                .prepare_attempts
-                .push(endpoint.clone());
-            let result = self
-                .prepare_results
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("scripted prepare result");
-            let send_result = self.send_result.clone();
-            let counters = self.counters.clone();
-            Box::pin(async move {
-                result?;
-                Ok(Box::new(FakePreparedDirectPairConnection {
-                    send_result,
-                    counters,
-                }) as Box<dyn PreparedDirectPairConnection>)
-            })
-        }
-    }
-
-    struct FakePreparedDirectPairConnection {
-        send_result: Arc<Mutex<Option<Result<HttpResponse, TransportError>>>>,
-        counters: Arc<Mutex<PairingCounters>>,
-    }
-
-    impl PreparedDirectPairConnection for FakePreparedDirectPairConnection {
-        fn send<'a>(
-            self: Box<Self>,
-            _method: &'a str,
-            _path: &'a str,
-            _headers: &'a [(String, String)],
-            _body: &'a [u8],
-        ) -> DirectPairSendFuture<'a> {
-            self.counters.lock().unwrap().request_writes += 1;
-            let result = self
-                .send_result
-                .lock()
-                .unwrap()
-                .take()
-                .expect("one scripted request write");
-            Box::pin(async move { result })
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    enum TestCertificateMode {
-        SubmittedCsr,
-        UnrelatedKey,
-    }
-
-    fn pair_response(material: &GeneratedKey, mode: TestCertificateMode) -> PairResponse {
-        let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        ca_params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-        ca_params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-        let client_cert = match mode {
-            TestCertificateMode::SubmittedCsr => {
-                CertificateSigningRequestParams::from_pem(&material.csr_pem)
-                    .unwrap()
-                    .signed_by(&ca_cert, &ca_key)
-                    .unwrap()
-            }
-            TestCertificateMode::UnrelatedKey => {
-                let unrelated_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-                CertificateParams::new(Vec::<String>::new())
-                    .unwrap()
-                    .signed_by(&unrelated_key, &ca_cert, &ca_key)
-                    .unwrap()
-            }
-        };
-        PairResponse {
-            client_cert: client_cert.pem(),
-            ca_chain: vec![ca_cert.pem()],
-            instance_id: "test-instance".into(),
+    #[test]
+    fn usable_route_gate_requires_either_endpoint_or_device_token() {
+        let mut cred = Credential {
+            client_key_pem: "key".into(),
+            client_cert_pem: "cert".into(),
+            ca_chain_pem: vec!["ca".into()],
+            ca_fp_prefix: vec![1, 2, 3],
+            instance_id: "inst".into(),
             home_label: "Home".into(),
-            fingerprint: format!("sha256:{}", ca::sha256_hex(client_cert.der())),
-            home_attestation: None,
-            relay_access: None,
-            local_endpoints: None,
+            endpoints: vec![],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        };
+        assert!(matches!(
+            gate_usable_route(&cred),
+            Err(TransportError::NoEndpoint)
+        ));
+
+        cred.endpoints.push(EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: 7657,
+        });
+        assert!(gate_usable_route(&cred).is_ok());
+
+        cred.endpoints.clear();
+        cred.device_token = Some("token".into());
+        assert!(gate_usable_route(&cred).is_ok());
+    }
+
+    fn transport_error_is_retryable(error: &TransportError) -> bool {
+        match error {
+            TransportError::Io(_) | TransportError::Tls(_) | TransportError::NoEndpoint => true,
+            TransportError::Relay(relay) => matches!(
+                relay,
+                RelayError::HomeOffline
+                    | RelayError::Abnormal
+                    | RelayError::Overflow
+                    | RelayError::Stalled
+            ),
+            TransportError::Crypto(_)
+            | TransportError::Mux(_)
+            | TransportError::Http(_)
+            | TransportError::Json(_)
+            | TransportError::PairLink(_)
+            | TransportError::Pairing(_)
+            | TransportError::Ingest(_)
+            | TransportError::Rejected { .. }
+            | TransportError::RelayControlRejected { .. }
+            | TransportError::NotPaired
+            | TransportError::LocalOffset => false,
         }
     }
 
     #[test]
-    fn direct_bootstrap_is_optional_and_validated_without_control_io() {
-        use base64::Engine as _;
-        use serde_json::json;
-        let payload = json!({"iss":"independent-issuer","sub":"instance:test-instance",
-            "aud":"spl-relay","scope":"session.dial","ver":2,"instance_id":"test-instance",
-            "iat":100,"exp":4_102_444_800_i64,"jti":"fresh"});
-        let token = format!(
-            "e30.{}.sig",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string())
-        );
-        let valid = json!({"protocol_version":2,"status":"ready","instance_id":"test-instance","relay_origin":"https://relay.example",
-            "device_token":token,"expires_at":"2100-01-01T00:00:00Z"});
-        let mut wrong_origin = valid.clone();
-        wrong_origin["relay_origin"] = json!("https://relay.example/private");
-        let mut wrong_expiry = valid.clone();
-        wrong_expiry["expires_at"] = json!("2100-01-01T00:00:01Z");
-        for (access, accepted) in [
-            (None, false),
-            (Some(json!(null)), false),
-            (Some(json!({})), false),
-            (Some(wrong_origin), false),
-            (Some(wrong_expiry), false),
-            (Some(valid), true),
-        ] {
-            let material = generate_csr("test-device").unwrap();
-            let mut pair = pair_response(&material, TestCertificateMode::SubmittedCsr);
-            pair.relay_access = access;
-            let credential = credential_from_direct_pair_response(
-                http_response(200, serde_json::to_vec(&pair).unwrap()),
-                material,
-                &[0; 16],
-                &test_endpoints(),
-            )
-            .unwrap();
-            assert_eq!(credential.device_token.is_some(), accepted);
-            assert_eq!(credential.relay_origin.is_some(), accepted);
-            assert_eq!(credential.device_token_expires_at.is_some(), accepted);
-            assert_eq!(credential.endpoints.len(), test_endpoints().len());
-            assert!(credential.client_cert_pem.contains("BEGIN CERTIFICATE"));
+    fn error_mapper_covers_all_shared_variants_without_secret_leakage() {
+        let cases = [
+            (
+                spl_transport::TransportError::Io(std::io::Error::other("secret-path")),
+                "io",
+                true,
+            ),
+            (
+                spl_transport::TransportError::Tls("secret-host".into()),
+                "tls",
+                true,
+            ),
+            (spl_transport::TransportError::TlsAccessDenied, "tls", true),
+            (
+                spl_transport::TransportError::TlsCertificateUnknown,
+                "tls",
+                true,
+            ),
+            (
+                spl_transport::TransportError::Crypto("secret-key".into()),
+                "crypto",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Mux(spl_core::mux::MuxError::Incomplete),
+                "mux",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Http(spl_core::http::HttpError::MissingStatusLine),
+                "http",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Json(
+                    serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+                ),
+                "json",
+                false,
+            ),
+            (
+                spl_transport::TransportError::PairLink("secret-link".into()),
+                "pair_link",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Pairing("secret-material".into()),
+                "pairing",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Rejected {
+                    status: 503,
+                    body: "secret-body".into(),
+                },
+                "http_503",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::HomeOffline),
+                "relay_home_offline",
+                true,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::Unauthorized),
+                "relay_unauthorized",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::Unpaid),
+                "relay_unpaid",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::UnknownInstance),
+                "relay_unknown_instance",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::PairWindowClosed),
+                "relay_pair_window_closed",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::Overflow),
+                "relay_overflow",
+                true,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::Abnormal),
+                "relay_abnormal",
+                true,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::UpgradeRejected),
+                "relay_upgrade_rejected",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(
+                    spl_transport::RelayError::HomeListenConnection,
+                ),
+                "relay_upgrade_rejected",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(
+                    spl_transport::RelayError::HomeRelayConfiguration,
+                ),
+                "relay_upgrade_rejected",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(
+                    spl_transport::RelayError::HomeTunnelRejected(500),
+                ),
+                "relay_upgrade_rejected",
+                false,
+            ),
+            (
+                spl_transport::TransportError::Relay(spl_transport::RelayError::Stalled),
+                "relay_stalled",
+                true,
+            ),
+            (
+                spl_transport::TransportError::RelayControlRejected {
+                    endpoint: spl_transport::RelayControlEndpoint::EnrollDevice,
+                    status: 409,
+                },
+                "relay_enroll_device_http_409",
+                false,
+            ),
+            (
+                spl_transport::TransportError::RelayControlRejected {
+                    endpoint: spl_transport::RelayControlEndpoint::TokenRefresh,
+                    status: 404,
+                },
+                "relay_refresh_http_404",
+                false,
+            ),
+            (
+                spl_transport::TransportError::NoEndpoint,
+                "no_endpoint",
+                true,
+            ),
+            (
+                spl_transport::TransportError::NotPaired,
+                "not_paired",
+                false,
+            ),
+            (
+                spl_transport::TransportError::LocalOffset,
+                "local_offset",
+                false,
+            ),
+        ];
+
+        for (shared_err, expected_code, expected_retryable) in cases {
+            let mapped = map_shared_error(shared_err);
+            assert_eq!(transport_error_code(&mapped), expected_code);
+            assert_eq!(transport_error_is_retryable(&mapped), expected_retryable);
         }
     }
 
-    fn http_response(status: u16, body: Vec<u8>) -> HttpResponse {
-        HttpResponse {
-            status,
-            headers: Vec::new(),
-            body,
+    #[test]
+    fn pairing_adapter_never_emits_shared_tls_extra_tokens() {
+        let cases = [
+            spl_transport::TransportError::TlsAccessDenied,
+            spl_transport::TransportError::TlsCertificateUnknown,
+        ];
+        for err in cases {
+            let mapped = map_shared_error(err);
+            let code = transport_error_code(&mapped);
+            assert_ne!(code, "tls_access_denied");
+            assert_ne!(code, "tls_certificate_unknown");
+            assert_eq!(code, "tls");
         }
     }
 
-    fn successful_response(material: &GeneratedKey) -> HttpResponse {
-        http_response(
-            200,
-            serde_json::to_vec(&pair_response(material, TestCertificateMode::SubmittedCsr))
-                .unwrap(),
-        )
-    }
+    #[test]
+    fn observation_copy_propagates_counts_and_respects_suppression() {
+        let source = spl_transport::observe::OperationObserver::new_unshared();
+        source.record_dial_attempt();
+        source.record_dial_attempt();
+        source.record_relay_success();
+        source.record_request_bytes(256);
+        source.record_close_completed();
+        source.record_legacy_enrollment_possible();
+        source.record_enrollment();
+        source.record_selected_path(spl_transport::request::SelectedPath::Relay);
 
-    fn endpoint(host: &str, port: u16) -> Endpoint {
-        Endpoint {
-            host: host.into(),
-            port,
-        }
-    }
+        let dest = OperationObserver::new();
+        copy_shared_observation(&source, &Some(dest.clone()), false);
 
-    fn test_endpoints() -> Vec<Endpoint> {
-        vec![
-            endpoint("10.0.0.1", 7657),
-            endpoint("192.168.0.2", 7657),
-            endpoint("100.64.0.3", 7657),
-        ]
-    }
+        let counts = dest.counts();
+        assert_eq!(counts.dial_attempts, 2);
+        assert_eq!(counts.relay_successes, 1);
+        assert_eq!(counts.request_bytes_sent, 256);
+        assert!(counts.close_completed);
+        assert!(dest.legacy_enrollment_possible());
+        assert_eq!(dest.enrollment_events(), 1);
+        assert_eq!(dest.selected_path(), Some(TransportPath::Relay));
 
-    fn direct_v05_link(addresses: &[[u8; 4]]) -> String {
-        let mut blob = vec![0x05, 0x01, addresses.len() as u8];
-        blob.extend_from_slice(&7657u16.to_be_bytes());
-        for address in addresses {
-            blob.extend_from_slice(address);
-        }
-        blob.extend_from_slice(&[0x11; 16]);
-        blob.extend_from_slice(&[0x22; 16]);
-        format!(
-            "https://go.solstone.app/p#{}",
-            observer_pl::crockford::encode(&blob)
-        )
-    }
-
-    fn prepare_error(message: &'static str) -> TransportError {
-        TransportError::Io(io::Error::other(message))
-    }
-
-    #[tokio::test]
-    async fn direct_pair_link_refusal_has_zero_material_prepare_and_write_counts() {
-        let material = generate_csr("test-device").unwrap();
-        let response = successful_response(&material);
-        let seam = FakeDirectPairingSeam::new(material, vec![], Ok(response));
-        let counters = seam.counters();
-        let link = direct_v05_link(&[[10, 0, 0, 1], [192, 0, 2, 42]]);
-
-        let error = pair_from_link_with_seam(&link, "test-device", seam, None)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(error, TransportError::PairLink(_)));
-        let counters = counters.lock().unwrap();
-        assert_eq!(counters.material_generations, 0);
-        assert!(counters.prepare_attempts.is_empty());
-        assert_eq!(counters.request_writes, 0);
-    }
-
-    #[tokio::test]
-    async fn direct_pairing_generates_one_material_and_prepares_in_candidate_order() {
-        let material = generate_csr("test-device").unwrap();
-        let response = successful_response(&material);
-        let seam = FakeDirectPairingSeam::new(
-            material,
-            vec![
-                Err(prepare_error("first unavailable")),
-                Err(prepare_error("second unavailable")),
-                Ok(()),
-            ],
-            Ok(response),
-        );
-        let counters = seam.counters();
-        let endpoints = test_endpoints();
-
-        let credential = pair_with_seam(
-            &endpoints,
-            "00112233445566778899aabbccddeeff",
-            &[0x22; 16],
-            "test-device",
-            seam,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(credential.endpoints.len(), 3);
-        let counters = counters.lock().unwrap();
-        assert_eq!(counters.material_generations, 1);
-        assert_eq!(counters.prepare_attempts, endpoints);
-        assert_eq!(counters.request_writes, 1);
-    }
-
-    #[tokio::test]
-    async fn direct_pairing_all_prepare_failures_return_last_error_without_writing() {
-        let material = generate_csr("test-device").unwrap();
-        let response = successful_response(&material);
-        let seam = FakeDirectPairingSeam::new(
-            material,
-            vec![
-                Err(prepare_error("first unavailable")),
-                Err(prepare_error("second unavailable")),
-                Err(TransportError::Tls("last handshake failed".into())),
-            ],
-            Ok(response),
-        );
-        let counters = seam.counters();
-        let endpoints = test_endpoints();
-
-        let error = pair_with_seam(
-            &endpoints,
-            "00112233445566778899aabbccddeeff",
-            &[0x22; 16],
-            "test-device",
-            seam,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            TransportError::Tls(message) if message == "last handshake failed"
-        ));
-        let counters = counters.lock().unwrap();
-        assert_eq!(counters.material_generations, 1);
-        assert_eq!(counters.prepare_attempts, endpoints);
-        assert_eq!(counters.request_writes, 0);
-    }
-
-    #[tokio::test]
-    async fn parser_coalesced_candidates_are_each_prepared_at_most_once() {
-        let material = generate_csr("test-device").unwrap();
-        let response = successful_response(&material);
-        let seam = FakeDirectPairingSeam::new(
-            material,
-            vec![
-                Err(prepare_error("first unavailable")),
-                Err(prepare_error("second unavailable")),
-            ],
-            Ok(response),
-        );
-        let counters = seam.counters();
-        let link = direct_v05_link(&[[10, 0, 0, 1], [192, 168, 0, 2], [10, 0, 0, 1]]);
-
-        let error = pair_from_link_with_seam(&link, "test-device", seam, None)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(error, TransportError::Io(_)));
-        let counters = counters.lock().unwrap();
-        assert_eq!(
-            counters.prepare_attempts,
-            vec![endpoint("10.0.0.1", 7657), endpoint("192.168.0.2", 7657),]
-        );
-        assert_eq!(counters.request_writes, 0);
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    enum TerminalFailureKind {
-        ImmediateWrite,
-        PartialWrite,
-        ResponseTimeout,
-        ResponseReset,
-        ResponseClose,
-        Http400,
-        Http403,
-        Http500,
-        MalformedJson,
-        NoClientCertificate,
-        FingerprintMismatch,
-        DifferentKeyCertificate,
-        MalformedCertificate,
-        CredentialConstruction,
-    }
-
-    enum ExpectedFailure {
-        Io(io::ErrorKind, &'static str),
-        Mux(MuxError),
-        Rejected(u16),
-        TlsPrefix(&'static str),
-        PairingExact(&'static str),
-        PairingPrefix(&'static str),
-    }
-
-    fn terminal_failure_script(
-        kind: TerminalFailureKind,
-        material: &GeneratedKey,
-    ) -> (Result<HttpResponse, TransportError>, ExpectedFailure) {
-        match kind {
-            // The seam observes a send failure, not TCP byte progress. Distinct
-            // errors keep immediate and partial writes independently attributable
-            // without claiming the fake can see how many bytes reached the peer.
-            TerminalFailureKind::ImmediateWrite => (
-                Err(TransportError::Io(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "immediate write failed",
-                ))),
-                ExpectedFailure::Io(io::ErrorKind::BrokenPipe, "immediate write failed"),
-            ),
-            TerminalFailureKind::PartialWrite => (
-                Err(TransportError::Io(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "partial write failed",
-                ))),
-                ExpectedFailure::Io(io::ErrorKind::WriteZero, "partial write failed"),
-            ),
-            TerminalFailureKind::ResponseTimeout => (
-                Err(TransportError::Io(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "response timed out",
-                ))),
-                ExpectedFailure::Io(io::ErrorKind::TimedOut, "response timed out"),
-            ),
-            TerminalFailureKind::ResponseReset => (
-                Err(TransportError::Mux(MuxError::StreamReset)),
-                ExpectedFailure::Mux(MuxError::StreamReset),
-            ),
-            TerminalFailureKind::ResponseClose => (
-                Err(TransportError::Mux(MuxError::Incomplete)),
-                ExpectedFailure::Mux(MuxError::Incomplete),
-            ),
-            TerminalFailureKind::Http400 => (
-                Ok(http_response(400, b"bad request".to_vec())),
-                ExpectedFailure::Rejected(400),
-            ),
-            TerminalFailureKind::Http403 => (
-                Ok(http_response(403, b"forbidden".to_vec())),
-                ExpectedFailure::Rejected(403),
-            ),
-            TerminalFailureKind::Http500 => (
-                Ok(http_response(500, b"server error".to_vec())),
-                ExpectedFailure::Rejected(500),
-            ),
-            TerminalFailureKind::MalformedJson => (
-                Ok(http_response(200, b"{".to_vec())),
-                ExpectedFailure::PairingExact("pair response malformed"),
-            ),
-            TerminalFailureKind::NoClientCertificate => {
-                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
-                response.client_cert.clear();
-                (
-                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
-                    ExpectedFailure::PairingExact("pair response carried no client cert"),
-                )
-            }
-            TerminalFailureKind::FingerprintMismatch => {
-                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
-                response.fingerprint = "sha256:not-the-client-cert".into();
-                (
-                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
-                    ExpectedFailure::PairingPrefix("client cert fingerprint mismatch"),
-                )
-            }
-            TerminalFailureKind::DifferentKeyCertificate => {
-                let response = pair_response(material, TestCertificateMode::UnrelatedKey);
-                (
-                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
-                    ExpectedFailure::PairingExact(
-                        "client certificate public key does not match generated key",
-                    ),
-                )
-            }
-            TerminalFailureKind::MalformedCertificate => {
-                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
-                response.client_cert =
-                    "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n".into();
-                response.fingerprint = format!("sha256:{}", ca::sha256_hex(&[0]));
-                (
-                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
-                    ExpectedFailure::PairingExact("client certificate public key is malformed"),
-                )
-            }
-            TerminalFailureKind::CredentialConstruction => {
-                let mut response = pair_response(material, TestCertificateMode::SubmittedCsr);
-                response.client_cert =
-                    "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n".into();
-                (
-                    Ok(http_response(200, serde_json::to_vec(&response).unwrap())),
-                    ExpectedFailure::TlsPrefix("bad certificate PEM:"),
-                )
-            }
-        }
-    }
-
-    fn assert_expected_failure(error: TransportError, expected: ExpectedFailure) {
-        match (error, expected) {
-            (TransportError::Io(error), ExpectedFailure::Io(kind, message)) => {
-                assert_eq!(error.kind(), kind);
-                assert_eq!(error.to_string(), message);
-            }
-            (TransportError::Mux(actual), ExpectedFailure::Mux(expected)) => {
-                assert_eq!(actual, expected);
-            }
-            (TransportError::Rejected { status, .. }, ExpectedFailure::Rejected(expected)) => {
-                assert_eq!(status, expected)
-            }
-            (TransportError::Tls(actual), ExpectedFailure::TlsPrefix(expected)) => {
-                assert!(
-                    actual.starts_with(expected),
-                    "unexpected TLS error: {actual}"
-                );
-            }
-            (TransportError::Pairing(actual), ExpectedFailure::PairingExact(expected)) => {
-                assert_eq!(actual, expected);
-            }
-            (TransportError::Pairing(actual), ExpectedFailure::PairingPrefix(expected)) => {
-                assert!(
-                    actual.starts_with(expected),
-                    "unexpected pairing error: {actual}"
-                );
-            }
-            (actual, _) => panic!("unexpected terminal error: {actual:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn direct_pairing_first_write_is_terminal_for_every_failure_shape() {
-        for kind in [
-            TerminalFailureKind::ImmediateWrite,
-            TerminalFailureKind::PartialWrite,
-            TerminalFailureKind::ResponseTimeout,
-            TerminalFailureKind::ResponseReset,
-            TerminalFailureKind::ResponseClose,
-            TerminalFailureKind::Http400,
-            TerminalFailureKind::Http403,
-            TerminalFailureKind::Http500,
-            TerminalFailureKind::MalformedJson,
-            TerminalFailureKind::NoClientCertificate,
-            TerminalFailureKind::FingerprintMismatch,
-            TerminalFailureKind::DifferentKeyCertificate,
-            TerminalFailureKind::MalformedCertificate,
-            TerminalFailureKind::CredentialConstruction,
-        ] {
-            let material = generate_csr("test-device").unwrap();
-            let (send_result, expected) = terminal_failure_script(kind, &material);
-            let seam = FakeDirectPairingSeam::new(material, vec![Ok(())], send_result);
-            let counters = seam.counters();
-            let error = pair_with_seam(
-                &test_endpoints(),
-                "00112233445566778899aabbccddeeff",
-                &[0x22; 16],
-                "test-device",
-                seam,
-            )
-            .await
-            .unwrap_err();
-
-            assert_expected_failure(error, expected);
-            let counters = counters.lock().unwrap();
-            assert_eq!(
-                counters.prepare_attempts.len(),
-                1,
-                "later endpoint prepared after {kind:?}"
-            );
-            assert_eq!(
-                counters.request_writes, 1,
-                "extra request written after {kind:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn direct_pairing_rejection_preserves_status_and_displays_only_body_summary() {
-        let nonce = "00112233445566778899aabbccddeeff";
-        let csr = "-----BEGIN CERTIFICATE REQUEST-----";
-        let ca_fp_prefix = [0x22; 16];
-        let ca_fp = "22222222222222222222222222222222";
-        let fragment = "PAIRLINK-FRAGMENT-SENTINEL";
-        let request_url =
-            "https://10.0.0.1:7657/app/network/pair?token=00112233445566778899aabbccddeeff";
-        let mut raw_body = format!(
-            "reflected nonce={nonce} csr={csr} ca={ca_fp} fragment={fragment} url={request_url}"
-        )
-        .into_bytes();
-        raw_body.push(0xff);
-        assert_ne!(String::from_utf8_lossy(&raw_body).len(), raw_body.len());
-        let expected_digest = ca::sha256_hex(&raw_body);
-        let expected_display = format!(
-            "server rejected request: HTTP 403 rejection-body bytes={} sha256={}",
-            raw_body.len(),
-            &expected_digest[..12]
-        );
-
-        let material = generate_csr("test-device").unwrap();
-        let seam =
-            FakeDirectPairingSeam::new(material, vec![Ok(())], Ok(http_response(403, raw_body)));
-        let error = pair_with_seam(&test_endpoints(), nonce, &ca_fp_prefix, "test-device", seam)
-            .await
-            .unwrap_err();
-
-        assert_eq!(crate::transport_error_code(&error), "http_403");
-        let display = error.to_string();
-        assert_eq!(display, expected_display);
-        for sentinel in [nonce, csr, ca_fp, fragment, request_url, "?token="] {
-            assert!(
-                !display.contains(sentinel),
-                "rejection display reflected {sentinel}"
-            );
-        }
-        assert!(matches!(
-            error,
-            TransportError::Rejected { status: 403, .. }
-        ));
+        let dest_suppressed = OperationObserver::new();
+        copy_shared_observation(&source, &Some(dest_suppressed.clone()), true);
+        assert_eq!(dest_suppressed.selected_path(), None);
     }
 }

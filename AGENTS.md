@@ -154,7 +154,7 @@ crates/
   observer-recovery/   incomplete-segment scan/finalize over a RecoveryFs trait
   observer-lifecycle/  backoff + circuit-breaker state machine
   observer-contract/   AutomationId source of truth + the JSON generator
-  observer-pl/         pair-link parse + spl framing + observer wire + multipart + CA-fp pin (pure)
+  observer-pl/         protocol-v3 wire + multipart + custody + civil date (pure)
   observer-audio/      combine + downmix + resample + FLAC-encode segment audio
   ── platform tier ── (windows-rs quarantine, target-gated; unsafe only here)
   capture-wgc/         Windows.Graphics.Capture screen source

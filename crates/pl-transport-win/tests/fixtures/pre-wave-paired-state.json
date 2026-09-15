@@ -1,0 +1,24 @@
+{
+  "credential": {
+    "client_key_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIKb39Nqj+F9kY3g0o+6bM5/s9q3vL9v3K9v3K9v3K9v3\n-----END PRIVATE KEY-----\n",
+    "client_cert_pem": "-----BEGIN CERTIFICATE-----\nMIIBojCCAUqgAwIBAgIBATAKBggqhkjOPQQDAjAzMR8wHQYDVQQDDBZzb2xzdG9u\nZS10ZXN0LWpvdXJuYWwxEDAOBgNVBAoMB3NvbHBiYzAeFw0yNjAxMDEwMDAwMDBa\nFw0yNzAxMDEwMDAwMDBaMDMxHzAdBgNVBAMMFnNvbHN0b25lLXRlc3Qtam91cm5h\nbDEQMA4GA1UECgwHc29scGJjMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7Z5N\n3O6lU+9x2Y7mH9j7Z9x2Y7mH9j7Z9x2Y7mH9j7Z9x2Y7mH9j7Z9x2Y7mH9j7Z9x2\nY7mH9j7Z9x2Y7mH9jw==\n-----END CERTIFICATE-----\n",
+    "ca_chain_pem": [
+      "-----BEGIN CERTIFICATE-----\nMIIBojCCAUqgAwIBAgIBATAKBggqhkjOPQQDAjAzMR8wHQYDVQQDDBZzb2xzdG9u\nZS10ZXN0LWpvdXJuYWwxEDAOBgNVBAoMB3NvbHBiYzAeFw0yNjAxMDEwMDAwMDBa\nFw0yNzAxMDEwMDAwMDBaMDMxHzAdBgNVBAMMFnNvbHN0b25lLXRlc3Qtam91cm5h\nbDEQMA4GA1UECgwHc29scGJjMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7Z5N\n3O6lU+9x2Y7mH9j7Z9x2Y7mH9j7Z9x2Y7mH9j7Z9x2Y7mH9j7Z9x2Y7mH9j7Z9x2\nY7mH9j7Z9x2Y7mH9jw==\n-----END CERTIFICATE-----\n"
+    ],
+    "ca_fp_prefix": [
+      16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 255
+    ],
+    "instance_id": "01234567-89ab-cdef-0123-456789abcdef",
+    "home_label": "Living Room Journal",
+    "endpoints": [
+      {
+        "host": "192.168.1.100",
+        "port": 7657
+      }
+    ],
+    "relay_origin": "https://link.solstone.app",
+    "device_token": "header.eyJpYXQiOjE3ODAwMDAwMDAsImV4cCI6MTc4MDAxMDAwMCwianRpIjoidGVzdC1qdGkiLCJzdWIiOiJkZXZpY2UifQ.signature",
+    "device_token_expires_at": 1780010000
+  },
+  "access_mutation_generation": 1
+}

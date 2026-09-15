@@ -29,9 +29,9 @@ pub(crate) fn verify_live_peer_binding(
 }
 
 pub(crate) fn verify_ca_self_signed(pinned_ca: &CertificateDer<'_>) -> Result<(), TransportError> {
-    let (tbs, signature) = observer_pl::ca::extract_tbs_and_signature(pinned_ca.as_ref())
+    let (tbs, signature) = spl_core::ca::extract_tbs_and_signature(pinned_ca.as_ref())
         .map_err(|_| TransportError::Pairing("relay ca not self signed".into()))?;
-    let spki = observer_pl::ca::extract_spki_der(pinned_ca.as_ref())
+    let spki = spl_core::ca::extract_spki_der(pinned_ca.as_ref())
         .map_err(|_| TransportError::Pairing("relay ca not self signed".into()))?;
     let spki_der = SubjectPublicKeyInfoDer::from(spki.as_slice());
     let rpk = webpki::RawPublicKeyEntity::try_from(&spki_der)
@@ -108,7 +108,7 @@ mod tests {
         let home_der = cert_der(&home);
         let leaf = leaf_signed_by(&home);
         let verifier = crate::tls::CaFpPinVerifier {
-            prefix: observer_pl::ca::sha256(home_der.as_ref())[..16].to_vec(),
+            prefix: spl_core::ca::sha256(home_der.as_ref())[..16].to_vec(),
             provider: std::sync::Arc::new(rustls::crypto::ring::default_provider()),
         };
         let name = rustls::pki_types::ServerName::try_from("spl.local").unwrap();

@@ -116,6 +116,7 @@ test-scripts:
 	sh scripts/lib/make-package-ordering.test.sh
 	sh scripts/lib/make-prove-native-ordering.test.sh
 	sh scripts/lib/doc-stale-scan.test.sh
+	sh scripts/lib/spl-pairing-authority-policy.test.sh
 
 # UI unit tests (vitest+jsdom) on the Linux host. Materialize only the committed
 # graph from the warmed cache; fail if the cache is incomplete.

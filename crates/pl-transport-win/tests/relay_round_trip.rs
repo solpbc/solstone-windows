@@ -873,7 +873,7 @@ async fn spawn_large_response_relay(
 
 fn tls_pair_with_pin() -> (Vec<u8>, TlsAcceptor) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     (pin, acceptor)
 }

@@ -8,18 +8,16 @@
 //! (`solstone-android`) already ship, and that the journal (`solstone` convey)
 //! serves. It owns:
 //!
-//! - [`pairlink`] — parse the `https://go.solstone.app/p#…` QR pair-link
-//!   (Crockford base32, v04 single-address + v05 multi-address).
 //! - [`frame`] / [`mux`] — the spl multiplex framing (8-byte header, OPEN/DATA/
 //!   CLOSE/PING/PONG) and the dialer-side request/response assembler.
 //! - [`http`] — HTTP/1.1 request build + response parse, exactly as the Android
 //!   `PlHttp` transport frames it (`host: spl.local`, framing-owned headers).
-//! - [`wire`] — the pairing request/response shapes.
 //! - [`ingest`] — the protocol-v3 ingest envelope, responses, and pure custody
 //!   proof.
-//! - [`ca`] — CA-fingerprint prefix pinning (SHA-256 of the cert DER, first 16
-//!   bytes), the constant the transport's TLS verifier enforces.
-//! - [`relay_window`] — relay pair-window RK and journal identity derivations.
+//! - [`jwt`] — token claim decoding and renewal time calculations.
+//! - [`relay_access`] — relay access response validation and token claims.
+//! - [`relay`] — relay dial URL construction and helper logic.
+//! - [`bridge`] — local loopback journal bridge proxying.
 //! - [`civil`] — epoch → `YYYYMMDD` / `HHMMSS` for the ingest `day` / `segment`
 //!   keys, pure UTC arithmetic (no chrono, no tz database).
 //!
@@ -30,22 +28,14 @@
 #![forbid(unsafe_code)]
 
 pub mod bridge;
-pub mod ca;
 pub mod civil;
-pub mod crockford;
 pub mod frame;
 pub mod http;
 pub mod ingest;
 pub mod jwt;
 pub mod mux;
-pub mod pairlink;
 pub mod relay;
 pub mod relay_access;
-pub mod relay_window;
-pub mod wire;
-
-/// Default PL-direct mTLS port, used when a pair-link carries port 0.
-pub const DEFAULT_DIRECT_PORT: u16 = 7657;
 
 /// The observer protocol version this client speaks (sent as
 /// `X-Solstone-Protocol-Version`).
@@ -58,11 +48,8 @@ pub const OBSERVER_HANDLE_HEADER: &str = "X-Solstone-Observer";
 /// Protocol-version header name.
 pub const PROTOCOL_VERSION_HEADER: &str = "X-Solstone-Protocol-Version";
 
-/// Observer endpoint paths (relative to the journal origin). PAIR still matches
-/// the convey blueprint; the journal ingest endpoints use `/app/devices`.
+/// Observer endpoint paths (relative to the journal origin).
 pub mod paths {
-    /// Mobile/observer pairing endpoint. Carries `?token=<pair-token-hex>`.
-    pub const PAIR: &str = "/app/network/pair";
     /// Segment upload (multipart).
     pub const INGEST: &str = "/app/devices/ingest";
     /// Root ingest manifest used for protocol-v3 custody proof.

@@ -3,18 +3,23 @@
 
 mod support;
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use observer_pl::pairlink::RelayPairLink;
+use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
+use observer_retention::RetentionConfig;
 use pl_transport_win::credential::EndpointAddr;
 use pl_transport_win::relay_pairing::pair_over_relay;
 use pl_transport_win::relay_token::{refresh_device_token, RefreshOutcome};
+use pl_transport_win::service::{self, SyncConfig};
 use pl_transport_win::{transport_error_code, TransportError};
+use spl_core::pairlink::RelayPairLink;
 
 use support::observer_contract::fixture as authority_fixture;
 use support::relay_pairing::{
     jid_for_ca, legacy_token, relay_form_link, relay_link, spawn_mock_relay, v2_token, HomeMode,
-    MockState, CURRENT_TOKEN,
+    MockState, CURRENT_TOKEN, PAIR_SECRET,
 };
 
 #[tokio::test]
@@ -43,6 +48,13 @@ async fn relay_pairing_full_ceremony_populates_credential() {
             port: 7657
         }]
     );
+
+    let raw_body = state.raw_pair_request_body.lock().unwrap().clone().unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&raw_body).unwrap();
+    let obj = body_json.as_object().unwrap();
+    let mut keys: Vec<&String> = obj.keys().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["csr", "device_label"]);
 }
 
 #[tokio::test]
@@ -296,5 +308,94 @@ async fn actual_optional_enrollment_reports_only_possible_legacy_residue() {
             mode == 2 || mode == 3
         );
         assert_eq!(credential.device_token.is_some(), mode == 1 || mode >= 3);
+    }
+}
+
+fn temp_pairing_path(name: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "plw-relay-pairing-{name}-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("pairing.json")
+}
+
+#[derive(Debug)]
+struct TestOffset;
+
+impl LocalOffset for TestOffset {
+    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
+        Ok(0)
+    }
+}
+
+fn service_config(state_path: PathBuf) -> SyncConfig {
+    let jv_path = state_path.with_file_name("journal-version.json");
+    SyncConfig {
+        device_label: "win-test".into(),
+        period_secs: 300,
+        segments_root: state_path.with_extension("segments"),
+        state_path,
+        retention: Arc::new(RwLock::new(RetentionConfig::default())),
+        local_offset: Arc::new(TestOffset),
+        journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+    }
+}
+
+#[tokio::test]
+async fn relay_pairing_crossed_no_usable_route_returns_no_endpoint_and_persists_nothing() {
+    let mut setup = MockState::normal().with_same_tls_ca();
+    setup.home_mode = HomeMode::MissingHomeAttestation;
+    *setup.omit_local_endpoints.lock().unwrap() = true;
+    *setup.enroll_status.lock().unwrap() = Some(503);
+    let state = Arc::new(setup);
+
+    let origin = spawn_mock_relay(state.clone()).await;
+    let link = relay_link(origin.clone(), state.json_ca.spki_pin());
+
+    // 1. pair_over_relay / pair_from_link returns NoEndpoint
+    let err = pair_over_relay(&link, "win-test").await.unwrap_err();
+    assert!(matches!(err, TransportError::NoEndpoint));
+    assert_eq!(transport_error_code(&err), "no_endpoint");
+
+    // Also verify pair_from_link with an observer
+    let obs = pl_transport_win::observe::OperationObserver::new();
+    let link_str = relay_form_link(&origin, &PAIR_SECRET, &state.json_ca.spki_pin());
+    let err2 = pl_transport_win::pairing::pair_from_link_observed(
+        &link_str,
+        "win-test",
+        Some(obs.clone()),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err2, TransportError::NoEndpoint));
+    assert!(obs.selected_path().is_none());
+
+    // 2. Drive service::pair with temp state_path -> no credential persisted
+    let state_path = temp_pairing_path("noroute");
+    let cfg = service_config(state_path.clone());
+    let sync = Arc::new(std::sync::Mutex::new(SyncSnapshot::default()));
+    let pair_res = service::pair(&link_str, &cfg, sync.clone()).await;
+    assert!(pair_res.is_err());
+    assert!(
+        !state_path.exists()
+            || pl_transport_win::credential::PairedState::load(&state_path)
+                .unwrap()
+                .credential
+                .is_none()
+    );
+    assert_ne!(
+        sync.lock().unwrap().pairing.phase,
+        observer_model::PairingPhase::Paired
+    );
+
+    let _ = std::fs::remove_file(&state_path);
+    if let Some(parent) = state_path.parent() {
+        let _ = std::fs::remove_dir(parent);
     }
 }

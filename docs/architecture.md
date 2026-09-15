@@ -41,8 +41,8 @@ transitions, recovery scans, contract codegen — is tested off-Windows.
 - **observer-contract** — AutomationId source of truth + the deterministic
   `automation-contract.json` generator; the state-token vocabulary derives from
   the model enums via `strum::EnumIter`.
-- **observer-pl** — pure pair-link, framing, observer wire, multipart, and
-  CA-fingerprint pinning helpers.
+- **observer-pl** — pure protocol-v3 wire, multipart, custody, and civil date
+  helpers.
 - **capture-wgc** — Windows.Graphics.Capture screen source.
 - **capture-wasapi** — WASAPI render-loopback system audio + eCapture mic; owns
   the `NoInputDevice` determination.

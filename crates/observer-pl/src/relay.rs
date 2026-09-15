@@ -15,10 +15,6 @@ pub fn dial_url(relay_origin: &str, instance_id: &str) -> Result<String, DialUrl
     relay_url(relay_origin, "/session/dial", instance_id)
 }
 
-pub fn pair_dial_url(relay_origin: &str) -> Result<String, DialUrlError> {
-    Ok(format!("{}/session/pair-dial", ws_origin(relay_origin)?))
-}
-
 fn relay_url(relay_origin: &str, path: &str, instance_id: &str) -> Result<String, DialUrlError> {
     let origin = ws_origin(relay_origin)?;
     Ok(format!(
@@ -116,38 +112,6 @@ mod tests {
         assert_eq!(
             dial_url("https://link.solstone.app", "inst-123").unwrap(),
             "wss://link.solstone.app/session/dial?instance=inst-123"
-        );
-    }
-
-    #[test]
-    fn pair_dial_rewrites_https_to_wss() {
-        assert_eq!(
-            pair_dial_url("https://link.solstone.app").unwrap(),
-            "wss://link.solstone.app/session/pair-dial"
-        );
-    }
-
-    #[test]
-    fn pair_dial_rewrites_http_to_ws() {
-        assert_eq!(
-            pair_dial_url("http://127.0.0.1:7657").unwrap(),
-            "ws://127.0.0.1:7657/session/pair-dial"
-        );
-    }
-
-    #[test]
-    fn pair_dial_trims_one_trailing_slash() {
-        assert_eq!(
-            pair_dial_url("https://link.solstone.app/").unwrap(),
-            "wss://link.solstone.app/session/pair-dial"
-        );
-    }
-
-    #[test]
-    fn pair_dial_rejects_unsupported_scheme() {
-        assert_eq!(
-            pair_dial_url("wss://link.solstone.app").unwrap_err(),
-            DialUrlError::UnsupportedScheme
         );
     }
 }

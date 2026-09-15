@@ -550,10 +550,7 @@ fn assert_projection_mismatch(mappings: &[OperationMapping]) {
 fn observer_contract_rejects_stale_observer_routes_without_an_overlay() {
     observer_contract::verify_projection(&committed_projection(), WINDOWS_OPERATION_MAPPINGS)
         .expect("committed v3 projection must match the direct devices routes");
-    assert_projection_mismatch(&catalog_with(
-        "client.ingestUpload",
-        "/app/observer/ingest",
-    ));
+    assert_projection_mismatch(&catalog_with("client.ingestUpload", "/app/observer/ingest"));
 }
 
 #[test]

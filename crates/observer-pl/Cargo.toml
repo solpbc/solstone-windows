@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Pure observer PL wire protocol: pair-link parse, spl mux framing, HTTP-over-PL, pairing and protocol-v3 ingest/reconcile wire types, multipart, and CA-fingerprint pinning logic. No platform dep, no I/O; host-testable. The faithful Rust port of the contract iOS/Android ship."
+description = "Pure observer PL wire protocol: protocol-v3 ingest and reconcile wire types, multipart envelope, custody proofs, and civil date math. No platform dep, no I/O; host-testable."
 
 [lints]
 workspace = true
@@ -16,10 +16,9 @@ observer-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-sha2.workspace = true
-hkdf.workspace = true
 base64.workspace = true
 time = { version = "0.3.54", features = ["parsing"] }
 
 [dev-dependencies]
+spl-core.workspace = true
 xtask = { path = "../../xtask" }

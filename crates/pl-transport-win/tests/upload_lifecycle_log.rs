@@ -39,7 +39,7 @@ async fn lan_ingest_lifecycle_logs_direct_path_without_secret_material() {
     subscriber.install();
 
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -75,7 +75,7 @@ async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
     let day = "20260618";
     let segment = "143022_300";
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

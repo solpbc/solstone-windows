@@ -46,7 +46,7 @@ impl ServerCertVerifier for CaFpPinVerifier {
     ) -> Result<ServerCertVerified, RustlsError> {
         let pinned_ca = std::iter::once(end_entity)
             .chain(intermediates.iter())
-            .find(|cert| observer_pl::ca::cert_matches_prefix(cert.as_ref(), &self.prefix))
+            .find(|cert| spl_core::ca::cert_matches_prefix(cert.as_ref(), &self.prefix))
             .ok_or_else(|| RustlsError::General("journal CA fingerprint pin mismatch".into()))?;
         crate::spki_pin::verify_ca_self_signed(pinned_ca)
             .and_then(|()| crate::spki_pin::verify_live_peer_binding(end_entity, pinned_ca))

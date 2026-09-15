@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use observer_pl::ca;
+use spl_core::ca;
 
 use crate::observe::{DialCounts, OperationObserver};
 use args::{ArgError, Command};

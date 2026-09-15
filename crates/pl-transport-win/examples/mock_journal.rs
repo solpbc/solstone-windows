@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ));
 
     let (cert, key) = self_signed()?;
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)?));
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -338,7 +338,7 @@ fn parse_ingest_multipart(bytes: &[u8]) -> Result<MockSegment, String> {
         files.push(MockFile {
             submitted_name: declared.submitted,
             size: data.len() as u64,
-            sha256: observer_pl::ca::sha256_hex(data),
+            sha256: spl_core::ca::sha256_hex(data),
         });
     }
     Ok(MockSegment {

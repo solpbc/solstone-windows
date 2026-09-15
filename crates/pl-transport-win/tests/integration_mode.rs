@@ -78,12 +78,12 @@ fn start_direct_upload_journal(
     payload: &[u8],
 ) -> (Credential, std::thread::JoinHandle<()>) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let sha256 = observer_pl::ca::sha256_hex(payload);
+    let sha256 = spl_core::ca::sha256_hex(payload);
     let size = payload.len() as u64;
     let server = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -423,7 +423,7 @@ fn artifact_identity_is_reported_or_honestly_absent() {
     assert_eq!(value["artifact"]["source_commit"], commit);
     assert_eq!(
         value["artifact"]["executable_sha256"],
-        observer_pl::ca::sha256_hex(b"executable bytes")
+        spl_core::ca::sha256_hex(b"executable bytes")
     );
 
     // An unstamped build reports null rather than a placeholder.

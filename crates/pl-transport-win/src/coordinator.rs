@@ -22,13 +22,13 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use observer_model::{LocalOffset, SyncSnapshot, TransportPath};
-use observer_pl::ca;
 use observer_pl::civil;
 use observer_pl::ingest::{
     prove_custody, CustodyProof, CustodyWitness, DayManifest, FilePart, IngestManifest,
     IngestResponse, IngestStatus, LocalFile, SegmentsEnvelope,
 };
 use observer_retention::RetentionConfig;
+use spl_core::ca;
 use tokio::sync::watch;
 
 use crate::client::{ClientSlot, ObserverClient, SendMetadata};

@@ -12,8 +12,6 @@ use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
 use observer_pl::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
-use observer_pl::pairlink::RelayPairLink;
-use observer_pl::wire::PairRequest;
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, ExtendedKeyUsagePurpose,
     IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
@@ -21,6 +19,8 @@ use rcgen::{
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
 use serde_json::json;
+use spl_core::pairlink::RelayPairLink;
+use spl_core::PairRequest;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -51,12 +51,12 @@ impl TestCa {
     }
 
     pub(crate) fn spki_pin(&self) -> Vec<u8> {
-        let spki = observer_pl::ca::extract_spki_der(self.cert.der()).unwrap();
-        observer_pl::ca::sha256(&spki)[..16].to_vec()
+        let spki = spl_core::ca::extract_spki_der(self.cert.der()).unwrap();
+        spl_core::ca::sha256(&spki)[..16].to_vec()
     }
 
     pub(crate) fn cert_der_pin(&self) -> Vec<u8> {
-        observer_pl::ca::sha256(self.cert.der())[..16].to_vec()
+        spl_core::ca::sha256(self.cert.der())[..16].to_vec()
     }
 }
 
@@ -99,6 +99,8 @@ pub(crate) struct MockState {
     pub(crate) refresh_status: Mutex<Option<u16>>,
     pub(crate) expected_pair_token: Mutex<String>,
     pub(crate) pair_request: Mutex<Option<PairRequest>>,
+    pub(crate) raw_pair_request_body: Mutex<Option<Vec<u8>>>,
+    pub(crate) omit_local_endpoints: Mutex<bool>,
 }
 
 impl MockState {
@@ -117,6 +119,8 @@ impl MockState {
             refresh_status: Mutex::new(None),
             expected_pair_token: Mutex::new(PAIR_SECRET_HEX.to_owned()),
             pair_request: Mutex::new(None),
+            raw_pair_request_body: Mutex::new(None),
+            omit_local_endpoints: Mutex::new(false),
         }
     }
 
@@ -144,13 +148,13 @@ pub(crate) fn relay_form_link(origin: &str, secret: &[u8; 8], ca_fp_spki: &[u8])
     blob.extend_from_slice(origin_bytes);
     format!(
         "https://go.solstone.app/p#{}",
-        observer_pl::crockford::encode(&blob)
+        spl_core::crockford::encode(&blob)
     )
 }
 
 pub(crate) fn jid_for_ca(ca: &TestCa) -> String {
-    let spki = observer_pl::ca::extract_spki_der(ca.cert.der()).unwrap();
-    observer_pl::relay_window::jid_from_spki(&spki).unwrap()
+    let spki = spl_core::ca::extract_spki_der(ca.cert.der()).unwrap();
+    spl_core::relay_window::jid_from_spki(&spki).unwrap()
 }
 
 pub(crate) async fn spawn_mock_relay(state: Arc<MockState>) -> String {
@@ -354,13 +358,14 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
         .position(|w| w == b"\r\n\r\n")
         .map(|split| &request[split + 4..])
         .unwrap();
+    *state.raw_pair_request_body.lock().unwrap() = Some(body.to_vec());
     let pair_request: PairRequest = serde_json::from_slice(body).unwrap();
     *state.pair_request.lock().unwrap() = Some(pair_request.clone());
     let csr = CertificateSigningRequestParams::from_pem(&pair_request.csr).unwrap();
     let client_cert = csr
         .signed_by(&state.json_ca.cert, &state.json_ca.key)
         .unwrap();
-    let fingerprint = format!("sha256:{}", observer_pl::ca::sha256_hex(client_cert.der()));
+    let fingerprint = format!("sha256:{}", spl_core::ca::sha256_hex(client_cert.der()));
 
     let instance_id = state
         .pair_instance_id
@@ -374,8 +379,10 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
         "instance_id": instance_id,
         "home_label": "Home",
         "fingerprint": fingerprint,
-        "local_endpoints": [{"ip":"10.0.0.2","port":7657,"scope":"lan"}]
     });
+    if !*state.omit_local_endpoints.lock().unwrap() {
+        response["local_endpoints"] = json!([{"ip":"10.0.0.2","port":7657,"scope":"lan"}]);
+    }
     if !matches!(state.home_mode, HomeMode::MissingHomeAttestation) {
         response["home_attestation"] = json!("attestation");
     }

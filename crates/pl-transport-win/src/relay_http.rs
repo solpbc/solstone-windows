@@ -108,10 +108,12 @@ async fn relay_https_post_json_inner(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn validate_relay_origin(origin: &str) -> Result<(), TransportError> {
     parse_relay_origin(origin).map(|_| ())
 }
 
+#[cfg(test)]
 pub(crate) fn same_relay_origin(left: &str, right: &str) -> Result<bool, TransportError> {
     let left = parse_relay_origin(left)?;
     let right = parse_relay_origin(right)?;

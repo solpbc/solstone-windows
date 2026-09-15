@@ -230,15 +230,18 @@ async fn serve_one_pair_response(
     let (tcp, _) = listener.accept().await.unwrap();
     let mut tls = acceptor.accept(tcp).await.unwrap();
     let (stream_id, request) = read_framed_request(&mut tls).await;
-    let pair_request: observer_pl::wire::PairRequest =
-        serde_json::from_value(request_body(&request)).unwrap();
+    let body_json = request_body(&request);
+    let body_obj = body_json.as_object().unwrap();
+    let mut keys: Vec<&String> = body_obj.keys().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["csr", "device_label"]);
+
+    let csr = body_obj.get("csr").unwrap().as_str().unwrap();
     let client_cert = match mode {
-        PairCertificateMode::SubmittedCsr => {
-            CertificateSigningRequestParams::from_pem(&pair_request.csr)
-                .unwrap()
-                .signed_by(&signing_cert, &signing_key)
-                .unwrap()
-        }
+        PairCertificateMode::SubmittedCsr => CertificateSigningRequestParams::from_pem(csr)
+            .unwrap()
+            .signed_by(&signing_cert, &signing_key)
+            .unwrap(),
         PairCertificateMode::UnrelatedKey => {
             let unrelated_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
             CertificateParams::new(Vec::<String>::new())
@@ -255,7 +258,7 @@ async fn serve_one_pair_response(
         "ca_chain": [signing_cert.pem()],
         "instance_id": payload["instance_id"],
         "home_label": payload["home_label"],
-        "fingerprint": format!("sha256:{}", observer_pl::ca::sha256_hex(client_cert.der())),
+        "fingerprint": format!("sha256:{}", spl_core::ca::sha256_hex(client_cert.der())),
         "home_attestation": payload["home_attestation"],
         "local_endpoints": payload["local_endpoints"],
     }))
@@ -298,7 +301,7 @@ fn direct_pair_link(port: u16, ca_fp_prefix: &[u8]) -> String {
     blob.extend_from_slice(ca_fp_prefix);
     format!(
         "https://go.solstone.app/p#{}",
-        observer_pl::crockford::encode(&blob)
+        spl_core::crockford::encode(&blob)
     )
 }
 
@@ -433,7 +436,7 @@ async fn start_bridge_with_response(
     body: &'static [u8],
 ) -> (journal_bridge::JournalBridgeHandle, JoinHandle<Vec<u8>>) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_port = listener.local_addr().unwrap().port();
@@ -449,7 +452,7 @@ async fn start_client_with_response(
     body: &'static [u8],
 ) -> (ObserverClient, JoinHandle<Vec<u8>>) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -464,7 +467,7 @@ async fn start_bridge_with_response_content_length(
     content_length: usize,
 ) -> (journal_bridge::JournalBridgeHandle, JoinHandle<Vec<u8>>) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_port = listener.local_addr().unwrap().port();
@@ -485,7 +488,7 @@ async fn start_bridge_with_sse(
     mode: SseMode,
 ) -> (journal_bridge::JournalBridgeHandle, JoinHandle<Vec<u8>>) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_port = listener.local_addr().unwrap().port();
@@ -502,7 +505,7 @@ async fn start_bridge_with_counting_upstream() -> (
     JoinHandle<()>,
 ) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let _acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_port = listener.local_addr().unwrap().port();
@@ -603,7 +606,7 @@ impl PersistentBridgeServer {
 async fn start_bridge_with_persistent_server(
 ) -> (journal_bridge::JournalBridgeHandle, PersistentBridgeServer) {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_port = listener.local_addr().unwrap().port();
@@ -939,7 +942,7 @@ async fn spawn_counting_relay() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
 #[tokio::test]
 async fn round_trips_request_over_real_tls_and_framing() {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -980,7 +983,7 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
     let (signing_cert, signing_key) = signing_ca();
 
     let (server_cert, server_key) = self_signed();
-    let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
+    let server_pin = spl_core::ca::sha256(server_cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
     let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let port = listener.local_addr().unwrap().port();
@@ -993,14 +996,16 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
     ));
     let nonce = request_fixture["payload"]["nonce"].as_str().unwrap();
     let label = request_fixture["payload"]["device_label"].as_str().unwrap();
-    let endpoints = [observer_pl::pairlink::Endpoint {
+    let endpoints = [spl_core::pairlink::Endpoint {
         host: "127.0.0.1".to_owned(),
         port,
     }];
+    let empty_map = serde_json::Map::new();
 
-    let credential = pl_transport_win::pairing::pair(&endpoints, nonce, &server_pin, label)
-        .await
-        .unwrap();
+    let credential =
+        spl_transport::pairing::pair(&endpoints, nonce, &server_pin, label, &empty_map)
+            .await
+            .unwrap();
     assert_eq!(
         credential.instance_id,
         response_fixture["payload"]["instance_id"]
@@ -1016,7 +1021,7 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
         .remove(0);
     assert_eq!(
         credential_key.public_key_der(),
-        observer_pl::ca::extract_spki_der(credential_leaf.as_ref()).unwrap()
+        spl_core::ca::extract_spki_der(credential_leaf.as_ref()).unwrap()
     );
     let request = server.await.unwrap();
     assert!(pair_capture_matches(&request, nonce, label));
@@ -1033,7 +1038,7 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
     let (signing_cert, signing_key) = signing_ca();
 
     let (server_cert, server_key) = self_signed();
-    let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
+    let server_pin = spl_core::ca::sha256(server_cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
     let first_listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let first_port = first_listener.local_addr().unwrap().port();
@@ -1063,28 +1068,30 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
         }
     });
     let endpoints = [
-        observer_pl::pairlink::Endpoint {
+        spl_core::pairlink::Endpoint {
             host: "127.0.0.1".into(),
             port: first_port,
         },
-        observer_pl::pairlink::Endpoint {
+        spl_core::pairlink::Endpoint {
             host: "127.0.0.1".into(),
             port: later_port,
         },
     ];
+    let empty_map = serde_json::Map::new();
 
-    let error = pl_transport_win::pairing::pair(
+    let error = spl_transport::pairing::pair(
         &endpoints,
         "00112233445566778899aabbccddeeff",
         &server_pin,
         "win-test",
+        &empty_map,
     )
     .await
     .unwrap_err();
 
     assert!(matches!(
         error,
-        TransportError::Pairing(message)
+        spl_transport::TransportError::Pairing(message)
             if message == "client certificate public key does not match generated key"
     ));
     let request = first_server.await.unwrap();
@@ -1098,7 +1105,7 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
 async fn service_pair_persists_credential_without_register_request() {
     let (signing_cert, signing_key) = signing_ca();
     let (server_cert, server_key) = self_signed();
-    let server_pin = observer_pl::ca::sha256(server_cert.as_ref())[..16].to_vec();
+    let server_pin = spl_core::ca::sha256(server_cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
     let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let port = listener.local_addr().unwrap().port();
@@ -2369,7 +2376,7 @@ async fn serve_one_with_flow_control(listener: TcpListener, acceptor: TlsAccepto
 #[tokio::test]
 async fn streams_multi_mib_body_under_window_flow_control() {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2434,7 +2441,7 @@ async fn wrong_pin_fails_the_handshake() {
 #[tokio::test]
 async fn reachable_lan_success_never_dials_relay() {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -2453,7 +2460,7 @@ async fn reachable_lan_success_never_dials_relay() {
 #[tokio::test]
 async fn reachable_lan_rejection_never_dials_relay() {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -2489,7 +2496,7 @@ async fn lan_only_no_endpoint_still_returns_no_endpoint() {
 #[tokio::test]
 async fn transient_lan_fault_then_success_absorbed_before_relay() {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -2613,7 +2620,7 @@ where
         + 'static,
 {
     let (cert, key) = self_signed();
-    let pin = observer_pl::ca::sha256(cert.as_ref())[..16].to_vec();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

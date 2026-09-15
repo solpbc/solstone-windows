@@ -24,10 +24,14 @@
 //! in `tests/observation_inertness.rs` proves it by running the same scenario with
 //! `Some(handle)` and with `None` and comparing the emitted dial sequence.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use observer_model::TransportPath;
+
+const SELECTED_PATH_NONE: u8 = 0;
+const SELECTED_PATH_DIRECT: u8 = 1;
+const SELECTED_PATH_RELAY: u8 = 2;
 
 /// The optional, explicitly-threaded observation handle. `None` in the GUI.
 pub type ObserverHandle = Option<Arc<OperationObserver>>;
@@ -41,6 +45,8 @@ pub struct OperationObserver {
     request_bytes_sent: AtomicU64,
     close_completed: AtomicBool,
     legacy_enrollment_possible: AtomicBool,
+    selected_path: AtomicU8,
+    enrollment_events: AtomicU64,
 }
 
 /// A consistent-enough read of an [`OperationObserver`] for reporting.
@@ -96,6 +102,31 @@ impl OperationObserver {
     pub(crate) fn record_stateless_enrollment(&self) {
         self.legacy_enrollment_possible
             .store(false, Ordering::Relaxed);
+    }
+
+    pub fn record_selected_path(&self, path: Option<TransportPath>) {
+        let code = match path {
+            None => SELECTED_PATH_NONE,
+            Some(TransportPath::Direct) => SELECTED_PATH_DIRECT,
+            Some(TransportPath::Relay) => SELECTED_PATH_RELAY,
+        };
+        self.selected_path.store(code, Ordering::Relaxed);
+    }
+
+    pub fn selected_path(&self) -> Option<TransportPath> {
+        match self.selected_path.load(Ordering::Relaxed) {
+            SELECTED_PATH_DIRECT => Some(TransportPath::Direct),
+            SELECTED_PATH_RELAY => Some(TransportPath::Relay),
+            _ => None,
+        }
+    }
+
+    pub fn record_enrollment_event(&self) {
+        self.enrollment_events.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn enrollment_events(&self) -> u64 {
+        self.enrollment_events.load(Ordering::Relaxed)
     }
 
     /// Whether this operation contacted enrollment without confirming the stateless protocol.
