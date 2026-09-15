@@ -3,53 +3,173 @@
 
 #[cfg(test)]
 mod tests {
-    use spl_core::http::{parse_response, HttpError};
-    use spl_transport::{same_relay_origin, validate_relay_origin};
+    use std::io;
+    use std::time::Duration;
 
-    #[test]
-    fn chunked_response_split_across_reads_waits_for_eof() {
-        let incomplete = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n";
-        assert_eq!(
-            parse_response(incomplete),
-            Err(HttpError::BadChunkedBody("missing terminal chunk".into()))
+    use spl_transport::relay_pairing::enroll_device;
+    use spl_transport::{
+        same_relay_origin, validate_relay_origin, RelayControlEndpoint, TransportError,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+
+    async fn read_control_request(stream: &mut TcpStream) {
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        loop {
+            let count = stream.read(&mut buffer).await.expect("control request");
+            assert_ne!(count, 0, "control request ended before headers");
+            request.extend_from_slice(&buffer[..count]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                return;
+            }
+        }
+    }
+
+    async fn listener() -> (TcpListener, String) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("relay control listener");
+        let origin = format!(
+            "http://{}",
+            listener.local_addr().expect("relay control address")
         );
+        (listener, origin)
+    }
+
+    fn rejected(error: TransportError, status: u16) {
+        assert!(matches!(
+            error,
+            TransportError::RelayControlRejected {
+                endpoint: RelayControlEndpoint::EnrollDevice,
+                status: actual,
+            } if actual == status
+        ));
+    }
+
+    #[tokio::test]
+    async fn chunked_response_split_across_reads_waits_for_eof() {
+        let (listener, origin) = listener().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("control accept");
+            read_control_request(&mut stream).await;
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n",
+                )
+                .await
+                .expect("first chunk");
+            tokio::task::yield_now().await;
+            stream
+                .write_all(b"5\r\npedia\r\n0\r\n\r\n")
+                .await
+                .expect("terminal chunk");
+            let mut byte = [0u8; 1];
+            assert_eq!(stream.read(&mut byte).await.expect("client EOF"), 0);
+        });
+
+        rejected(
+            enroll_device(&origin, "compat-instance", "attestation")
+                .await
+                .expect_err("401 response"),
+            401,
+        );
+        server.await.expect("control server");
     }
 
     #[test]
     fn origin_comparison_normalizes_default_ports_and_rejects_injection() {
         assert!(
-            same_relay_origin("https://relay.example", "https://relay.example:443")
+            same_relay_origin("https://Relay.Example/", "https://relay.example:443")
                 .expect("valid origins")
         );
-        assert!(validate_relay_origin("https://relay.example/path").is_err());
-        assert!(validate_relay_origin("https://user@relay.example").is_err());
+        assert!(
+            !same_relay_origin("http://relay.example", "https://relay.example")
+                .expect("valid origins")
+        );
+        for origin in [
+            "https://user@relay.example",
+            "https://relay.example/extra",
+            "https://relay.example\r\nx: y",
+            "https://[not-ipv6]",
+        ] {
+            assert!(validate_relay_origin(origin).is_err(), "{origin}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn total_deadline_cancels_blocked_write_and_progressing_reads() {
+        let (listener, origin) = listener().await;
+        let (accepted_tx, accepted_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("control accept");
+            read_control_request(&mut stream).await;
+            let _ = accepted_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let client =
+            tokio::spawn(
+                async move { enroll_device(&origin, "compat-instance", "attestation").await },
+            );
+        accepted_rx.await.expect("request reached relay");
+        tokio::time::advance(Duration::from_secs(15)).await;
+        let error = client
+            .await
+            .expect("control task")
+            .expect_err("control deadline");
+        assert!(matches!(
+            error,
+            TransportError::Io(error) if error.kind() == io::ErrorKind::TimedOut
+        ));
+        server.abort();
     }
 
     #[tokio::test]
-    async fn total_deadline_cancels_blocked_write_and_progressing_reads() {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(1),
-            std::future::pending::<()>(),
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(validate_relay_origin("http://127.0.0.1:8080").is_ok());
-    }
-
-    #[test]
-    fn complete_chunked_response_returns_without_eof() {
-        let response = parse_response(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n",
-        )
-        .expect("complete chunked response");
-        assert_eq!(response.body, b"ok");
-    }
-
-    #[test]
-    fn control_body_limit_and_framing_errors_return_fixed_classifications() {
-        assert_eq!(
-            parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx"),
-            Err(HttpError::TruncatedBody)
+    async fn complete_chunked_response_returns_without_eof() {
+        let (listener, origin) = listener().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("control accept");
+            read_control_request(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\nX-Trailer: ignored\r\n\r\n")
+                .await
+                .expect("chunked response");
+            let mut byte = [0u8; 1];
+            assert_eq!(stream.read(&mut byte).await.expect("client EOF"), 0);
+        });
+        rejected(
+            enroll_device(&origin, "compat-instance", "attestation")
+                .await
+                .expect_err("401 response"),
+            401,
         );
+        server.await.expect("control server");
+    }
+
+    #[tokio::test]
+    async fn control_body_limit_and_framing_errors_return_fixed_classifications() {
+        for response in [
+            b"HTTP/1.1 private-control-sentinel\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n".to_vec(),
+            {
+                let mut response = b"HTTP/1.1 200 OK\r\nContent-Length: 70000\r\n\r\n".to_vec();
+                response.extend(vec![b'x'; 70_000]);
+                response
+            },
+        ] {
+            let (listener, origin) = listener().await;
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("control accept");
+                read_control_request(&mut stream).await;
+                stream.write_all(&response).await.expect("control response");
+            });
+            let error = enroll_device(&origin, "compat-instance", "attestation")
+                .await
+                .expect_err("malformed control response");
+            assert!(matches!(error, TransportError::Pairing(_)));
+            assert!(!format!("{error:?} {error}").contains("private-control-sentinel"));
+            server.await.expect("control server");
+        }
     }
 }

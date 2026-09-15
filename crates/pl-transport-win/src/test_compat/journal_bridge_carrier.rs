@@ -5,7 +5,8 @@
 mod tests {
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -13,20 +14,20 @@ mod tests {
     use spl_core::bridge::BridgeNames;
     use spl_core::ca::sha256;
     use spl_core::frame::{
-        Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, FLAG_RESET,
-        RESET_FLOW_CONTROL_ERROR, RESET_PROTOCOL_ERROR,
+        Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_RESET, FLAG_WINDOW,
+        RESET_FLOW_CONTROL_ERROR,
     };
-    use spl_core::mux::{
-        CarrierDemux, HttpStreamAssembler, MuxError, ResponseAssembler, StreamEnd, StreamItem,
-        INITIAL_WINDOW,
-    };
+    use spl_core::mux::INITIAL_WINDOW;
     use spl_transport::credential::{Credential, EndpointAddr};
     use spl_transport::journal_bridge::{self, BridgePolicy, CarrierOpener, JournalBridgeConfig};
     use spl_transport::{CarrierOpenError, TransportClient};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
     use tokio_rustls::TlsAcceptor;
+
+    type ServerStream = tokio_rustls::server::TlsStream<TcpStream>;
 
     struct TestOpener {
         client: Arc<TransportClient>,
@@ -75,13 +76,15 @@ mod tests {
         let params = CertificateParams::new(vec!["spl.local".to_owned()]).expect("server params");
         let cert = params.self_signed(&key).expect("server certificate");
         let cert_der = CertificateDer::from(cert.der().to_vec());
-        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
         let server =
             ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
                 .with_safe_default_protocol_versions()
                 .expect("TLS versions")
                 .with_no_client_auth()
-                .with_single_cert(vec![cert_der.clone()], key_der)
+                .with_single_cert(
+                    vec![cert_der.clone()],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+                )
                 .expect("server config");
         let fingerprint = sha256(cert_der.as_ref());
         let credential = Credential {
@@ -104,64 +107,25 @@ mod tests {
         (server, credential)
     }
 
-    async fn serve_carrier(
-        listener: TcpListener,
-        server: ServerConfig,
-        stream_ids: Arc<Mutex<Vec<u32>>>,
-    ) {
-        let (tcp, _) = listener.accept().await.expect("carrier TCP accept");
-        let mut tls = TlsAcceptor::from(Arc::new(server))
-            .accept(tcp)
-            .await
-            .expect("carrier TLS accept");
-        let mut decoder = FrameDecoder::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            let count = match tls.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(count) => count,
-            };
-            decoder.feed(&buf[..count]);
-            for frame in decoder.drain().expect("carrier frame") {
-                if let Some(pong) = frame.control_pong() {
-                    tls.write_all(&pong.encode().expect("pong"))
-                        .await
-                        .expect("pong write");
-                    tls.flush().await.expect("pong flush");
-                }
-                if frame.flags & FLAG_CLOSE != 0 {
-                    stream_ids
-                        .lock()
-                        .expect("stream id lock")
-                        .push(frame.stream_id);
-                    let response = Frame::new(
-                        frame.stream_id,
-                        FLAG_DATA | FLAG_CLOSE,
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
-                    )
-                    .encode()
-                    .expect("response frame");
-                    tls.write_all(&response).await.expect("response write");
-                    tls.flush().await.expect("response flush");
-                }
-            }
-        }
-    }
-
-    async fn start_bridge() -> (
-        journal_bridge::JournalBridgeHandle,
-        JoinHandle<()>,
-        Arc<Mutex<Vec<u32>>>,
-    ) {
+    async fn start_bridge<F, Fut>(serve: F) -> (journal_bridge::JournalBridgeHandle, JoinHandle<()>)
+    where
+        F: FnOnce(ServerStream) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("TLS listener");
         let port = listener.local_addr().expect("TLS address").port();
         let (server, credential) = tls_fixture(port);
-        let stream_ids = Arc::new(Mutex::new(Vec::new()));
-        let task = tokio::spawn(serve_carrier(listener, server, stream_ids.clone()));
-        let client =
-            Arc::new(TransportClient::new(credential, None).expect("shared transport client"));
+        let task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("carrier TCP accept");
+            let tls = TlsAcceptor::from(Arc::new(server))
+                .accept(tcp)
+                .await
+                .expect("carrier TLS accept");
+            serve(tls).await;
+        });
+        let client = Arc::new(TransportClient::new(credential, None).expect("transport client"));
         let handle = journal_bridge::start(JournalBridgeConfig {
             opener: Arc::new(TestOpener { client }),
             bridge_names: BridgeNames {
@@ -176,30 +140,118 @@ mod tests {
         })
         .await
         .expect("shared bridge");
-        (handle, task, stream_ids)
+        (handle, task)
     }
 
-    async fn request(handle: &journal_bridge::JournalBridgeHandle) -> Vec<u8> {
-        let cap = handle
+    async fn next_frame<S: AsyncRead + Unpin>(stream: &mut S, decoder: &mut FrameDecoder) -> Frame {
+        loop {
+            if let Some(frame) = decoder.next_frame().expect("frame decode") {
+                return frame;
+            }
+            let mut bytes = [0u8; 16 * 1024];
+            let count = stream.read(&mut bytes).await.expect("carrier read");
+            assert_ne!(count, 0, "carrier closed before expected frame");
+            decoder.feed(&bytes[..count]);
+        }
+    }
+
+    async fn possible_frame<S: AsyncRead + Unpin>(
+        stream: &mut S,
+        decoder: &mut FrameDecoder,
+    ) -> Option<Frame> {
+        loop {
+            if let Some(frame) = decoder.next_frame().expect("frame decode") {
+                return Some(frame);
+            }
+            let mut bytes = [0u8; 16 * 1024];
+            let count = match stream.read(&mut bytes).await {
+                Ok(count) => count,
+                Err(_) => return None,
+            };
+            if count == 0 {
+                return None;
+            }
+            decoder.feed(&bytes[..count]);
+        }
+    }
+
+    async fn send_frame<S: AsyncWrite + Unpin>(
+        stream: &mut S,
+        stream_id: u32,
+        flags: u8,
+        payload: &[u8],
+    ) {
+        stream
+            .write_all(
+                &Frame::new(stream_id, flags, payload.to_vec())
+                    .encode()
+                    .expect("response frame"),
+            )
+            .await
+            .expect("carrier write");
+        stream.flush().await.expect("carrier flush");
+    }
+
+    async fn request_close<S: AsyncRead + Unpin>(
+        stream: &mut S,
+        decoder: &mut FrameDecoder,
+    ) -> u32 {
+        loop {
+            let frame = next_frame(stream, decoder).await;
+            if frame.flags & FLAG_CLOSE != 0 {
+                return frame.stream_id;
+            }
+        }
+    }
+
+    async fn wait_for_reset<S: AsyncRead + Unpin>(
+        stream: &mut S,
+        decoder: &mut FrameDecoder,
+        stream_id: u32,
+    ) {
+        loop {
+            let frame = next_frame(stream, decoder).await;
+            if frame.stream_id == stream_id && frame.flags == FLAG_RESET {
+                assert_eq!(frame.payload, vec![RESET_FLOW_CONTROL_ERROR]);
+                return;
+            }
+        }
+    }
+
+    fn capability(handle: &journal_bridge::JournalBridgeHandle) -> String {
+        handle
             .bootstrap_url()
             .expect("capability URL")
             .split_once("cap=")
             .map(|(_, cap)| cap.to_owned())
-            .expect("capability");
+            .expect("capability")
+    }
+
+    async fn browser_request(
+        handle: &journal_bridge::JournalBridgeHandle,
+        method: &str,
+        body: &[u8],
+    ) -> TcpStream {
         let mut socket = TcpStream::connect(("127.0.0.1", handle.port()))
             .await
             .expect("bridge connect");
         let request = format!(
-            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\n\r\n",
+            "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\nContent-Length: {}\r\n\r\n",
             handle.port(),
             observer_pl::CAP_COOKIE_NAME,
-            cap
+            capability(handle),
+            body.len(),
         );
         socket
             .write_all(request.as_bytes())
             .await
-            .expect("bridge request");
-        socket.flush().await.expect("bridge flush");
+            .expect("browser head");
+        socket.write_all(body).await.expect("browser body");
+        socket.flush().await.expect("browser flush");
+        socket
+    }
+
+    async fn completed_response(socket: &mut TcpStream) -> Vec<u8> {
         let mut response = Vec::new();
         socket
             .read_to_end(&mut response)
@@ -208,271 +260,394 @@ mod tests {
         response
     }
 
-    async fn assert_shared_bridge_round_trip() {
-        let (handle, task, _) = start_bridge().await;
-        let response = request(&handle).await;
-        assert!(response.starts_with(b"HTTP/1.1 200"));
-        handle.shutdown_and_wait().await;
-        task.abort();
-    }
-
-    async fn assert_distinct_stream_ids() {
-        let (handle, task, ids) = start_bridge().await;
-        assert!(request(&handle).await.starts_with(b"HTTP/1.1 200"));
-        assert!(request(&handle).await.starts_with(b"HTTP/1.1 200"));
-        let seen = ids.lock().expect("stream id lock").clone();
-        assert_eq!(seen, vec![1, 3]);
-        handle.shutdown_and_wait().await;
-        task.abort();
-    }
-
-    fn decode_single(bytes: &[u8]) -> Frame {
-        let mut decoder = FrameDecoder::new();
-        decoder.feed(bytes);
-        decoder
-            .next_frame()
-            .expect("frame decode")
-            .expect("one frame")
-    }
-
-    fn open_demux() -> CarrierDemux {
-        let mut demux = CarrierDemux::new();
-        demux.open_stream(1);
-        demux
+    fn response(body: &[u8]) -> Vec<u8> {
+        let mut bytes =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        bytes.extend_from_slice(body);
+        bytes
     }
 
     #[tokio::test]
     async fn carrier_allocates_distinct_odd_stream_ids() {
-        assert_distinct_stream_ids().await;
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let first = request_close(&mut tls, &mut decoder).await;
+            send_frame(&mut tls, first, FLAG_DATA | FLAG_CLOSE, &response(b"ok")).await;
+            let second = request_close(&mut tls, &mut decoder).await;
+            assert_eq!((first, second), (1, 3));
+            send_frame(&mut tls, second, FLAG_DATA | FLAG_CLOSE, &response(b"ok")).await;
+        })
+        .await;
+        for _ in 0..2 {
+            let mut socket = browser_request(&handle, "GET", b"").await;
+            assert!(completed_response(&mut socket)
+                .await
+                .starts_with(b"HTTP/1.1 200"));
+        }
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_routes_window_grants_to_the_owning_upload() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = open_demux();
-        let out = demux
-            .feed(&Frame::window(1, 73).encode().expect("window"))
-            .expect("demux window");
-        assert_eq!(out.window_grants, vec![(1, 73)]);
+        let body = vec![b'x'; INITIAL_WINDOW + 1024];
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let first = next_frame(&mut tls, &mut decoder).await;
+            assert_ne!(first.flags & FLAG_DATA, 0);
+            let stream_id = first.stream_id;
+            let mut initial = first.payload.len();
+            while initial < INITIAL_WINDOW {
+                let frame = next_frame(&mut tls, &mut decoder).await;
+                assert_eq!(frame.stream_id, stream_id);
+                assert_ne!(frame.flags & FLAG_DATA, 0);
+                initial += frame.payload.len();
+            }
+            assert_eq!(initial, INITIAL_WINDOW);
+            send_frame(&mut tls, stream_id, FLAG_WINDOW, &73u32.to_be_bytes()).await;
+            let grant = next_frame(&mut tls, &mut decoder).await;
+            assert_eq!(grant.stream_id, stream_id);
+            assert_eq!(grant.flags & FLAG_DATA, FLAG_DATA);
+            assert_eq!(grant.payload.len(), 73);
+            send_frame(&mut tls, stream_id, FLAG_WINDOW, &2048u32.to_be_bytes()).await;
+            let _ = request_close(&mut tls, &mut decoder).await;
+            send_frame(
+                &mut tls,
+                stream_id,
+                FLAG_DATA | FLAG_CLOSE,
+                &response(b"ok"),
+            )
+            .await;
+        })
+        .await;
+        let mut socket = browser_request(&handle, "POST", &body).await;
+        assert!(completed_response(&mut socket)
+            .await
+            .starts_with(b"HTTP/1.1 200"));
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_excess_send_credit_resets_only_owning_upload() {
-        assert_shared_bridge_round_trip().await;
-        let mut response = ResponseAssembler::new(1);
-        let out = response
-            .feed(
-                &Frame::new(1, FLAG_DATA, vec![b'x'; INITIAL_WINDOW + 1])
-                    .encode()
-                    .expect("over-credit frame"),
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let request = next_frame(&mut tls, &mut decoder).await;
+            send_frame(
+                &mut tls,
+                request.stream_id,
+                FLAG_WINDOW,
+                &u32::MAX.to_be_bytes(),
             )
-            .expect("flow-control output");
-        assert_eq!(out.terminal_error, Some(MuxError::FlowControl));
-        assert_eq!(decode_single(&out.emit_frames[0]).flags, FLAG_RESET);
+            .await;
+            wait_for_reset(&mut tls, &mut decoder, request.stream_id).await;
+        })
+        .await;
+        let socket = browser_request(&handle, "POST", &vec![b'x'; INITIAL_WINDOW + 9]).await;
+        server.await.expect("carrier server");
+        drop(socket);
+        handle.shutdown_and_wait().await;
     }
 
     #[tokio::test]
     async fn carrier_response_over_initial_window_replenishes_credit_on_consumer_drain() {
-        assert_shared_bridge_round_trip().await;
-        let mut response = ResponseAssembler::new(1);
-        let first = Frame::new(1, FLAG_DATA, vec![b'x'; INITIAL_WINDOW / 2 - 1]);
-        assert!(response
-            .feed(&first.encode().expect("first frame"))
-            .unwrap()
-            .emit_frames
-            .is_empty());
-        let second = Frame::new(1, FLAG_DATA, vec![b'x'; 1]);
-        let out = response
-            .feed(&second.encode().expect("second frame"))
-            .unwrap();
-        assert_eq!(
-            decode_single(&out.emit_frames[0]).window_credit(),
-            Some((INITIAL_WINDOW / 2) as u32)
-        );
+        let body = vec![b'y'; INITIAL_WINDOW + 1024];
+        let expected = body.clone();
+        let (release_tx, release_rx) = oneshot::channel();
+        let (handle, server) = start_bridge(move |mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = request_close(&mut tls, &mut decoder).await;
+            let wire = response(&body);
+            let mut offset = 0;
+            let mut credit = INITIAL_WINDOW;
+            while offset < wire.len() {
+                if credit == 0 {
+                    let frame = next_frame(&mut tls, &mut decoder).await;
+                    if frame.stream_id == stream_id {
+                        credit += frame.window_credit().expect("response credit") as usize;
+                    }
+                    continue;
+                }
+                let count = (wire.len() - offset).min(16 * 1024).min(credit);
+                send_frame(
+                    &mut tls,
+                    stream_id,
+                    FLAG_DATA,
+                    &wire[offset..offset + count],
+                )
+                .await;
+                offset += count;
+                credit -= count;
+            }
+            send_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
+            let _ = release_rx.await;
+        })
+        .await;
+        let mut socket = browser_request(&handle, "GET", b"").await;
+        let received = completed_response(&mut socket).await;
+        assert!(received.ends_with(&expected));
+        let _ = release_tx.send(());
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_without_body_drain_depletes_window_then_flow_control_resets() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = open_demux();
-        let out = demux
-            .feed(
-                &Frame::new(1, FLAG_DATA, vec![b'x'; INITIAL_WINDOW + 1])
-                    .encode()
-                    .expect("over-credit frame"),
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = request_close(&mut tls, &mut decoder).await;
+            send_frame(
+                &mut tls,
+                stream_id,
+                FLAG_DATA,
+                &vec![b'x'; INITIAL_WINDOW + 1],
             )
-            .expect("demux output");
-        let reset = decode_single(&out.emit_frames[0]);
-        assert_eq!(reset.payload, vec![RESET_FLOW_CONTROL_ERROR]);
+            .await;
+            wait_for_reset(&mut tls, &mut decoder, stream_id).await;
+        })
+        .await;
+        let _socket = browser_request(&handle, "GET", b"").await;
+        server.await.expect("carrier server");
+        handle.shutdown_and_wait().await;
     }
 
     #[tokio::test]
     async fn carrier_grants_exact_wire_bytes_after_body_drain() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = open_demux();
-        let payload = [
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".as_slice(),
-            &vec![b'x'; INITIAL_WINDOW / 2],
-        ]
-        .concat();
-        let wire_bytes = payload.len() as u32;
-        let out = demux
-            .feed(
-                &Frame::new(1, FLAG_DATA, payload)
-                    .encode()
-                    .expect("response"),
-            )
-            .expect("demux response");
-        let body_cost = out
-            .stream_events
-            .iter()
-            .find_map(|(_, event)| match &event.item {
-                StreamItem::Body(_) => Some(event.wire_cost),
-                _ => None,
-            })
-            .expect("body event");
-        let grant = demux
-            .consume(1, body_cost)
-            .expect("consume")
-            .expect("window grant");
-        assert_eq!(decode_single(&grant).window_credit(), Some(wire_bytes));
+        let body = vec![b'x'; INITIAL_WINDOW / 2];
+        let (handle, server) = start_bridge(move |mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = request_close(&mut tls, &mut decoder).await;
+            let wire = response(&body);
+            let expected_credit = wire.len() as u32;
+            send_frame(&mut tls, stream_id, FLAG_DATA, &wire).await;
+            let grant = next_frame(&mut tls, &mut decoder).await;
+            assert_eq!(grant.stream_id, stream_id);
+            assert_eq!(grant.window_credit(), Some(expected_credit));
+            send_frame(&mut tls, stream_id, FLAG_CLOSE, b"").await;
+        })
+        .await;
+        let mut socket = browser_request(&handle, "GET", b"").await;
+        let _ = completed_response(&mut socket).await;
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_subthreshold_response_emits_no_window() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = open_demux();
-        let out = demux
-            .feed(
-                &Frame::new(
-                    1,
-                    FLAG_DATA,
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok".to_vec(),
-                )
-                .encode()
-                .expect("response"),
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = request_close(&mut tls, &mut decoder).await;
+            send_frame(
+                &mut tls,
+                stream_id,
+                FLAG_DATA | FLAG_CLOSE,
+                &response(b"ok"),
             )
-            .expect("demux response");
-        let body_cost = out
-            .stream_events
-            .iter()
-            .find_map(|(_, event)| {
-                matches!(event.item, StreamItem::Body(_)).then_some(event.wire_cost)
-            })
-            .expect("body event");
-        assert_eq!(demux.consume(1, body_cost).expect("consume"), None);
+            .await;
+            let unexpected = tokio::time::timeout(
+                Duration::from_millis(100),
+                possible_frame(&mut tls, &mut decoder),
+            )
+            .await;
+            if let Ok(Some(frame)) = unexpected {
+                assert!(
+                    frame.window_credit().is_none(),
+                    "small response must not replenish credit"
+                );
+            }
+        })
+        .await;
+        let mut socket = browser_request(&handle, "GET", b"").await;
+        let _ = completed_response(&mut socket).await;
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_chunked_window_counts_framing_wire_bytes_on_drain() {
-        assert_shared_bridge_round_trip().await;
-        let mut assembler = HttpStreamAssembler::new();
-        assembler
-            .feed_data(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
-            .expect("chunked head");
-        let events = assembler.feed_data(b"4\r\nWiki\r\n").expect("chunk");
-        assert!(matches!(events.events[0].item, StreamItem::Body(ref body) if body == b"Wiki"));
-        assert_eq!(events.events[0].wire_cost, 9);
+        let chunks = b"4\r\nWiki\r\n".repeat((INITIAL_WINDOW / 2 / 9) + 1);
+        let (handle, server) = start_bridge(move |mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = request_close(&mut tls, &mut decoder).await;
+            let mut wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+            wire.extend_from_slice(&chunks);
+            let expected_credit = wire.len() as u32;
+            send_frame(&mut tls, stream_id, FLAG_DATA, &wire).await;
+            let grant = loop {
+                let frame = next_frame(&mut tls, &mut decoder).await;
+                if frame.stream_id == stream_id && frame.window_credit().is_some() {
+                    break frame;
+                }
+            };
+            assert_eq!(grant.window_credit(), Some(expected_credit));
+            send_frame(&mut tls, stream_id, FLAG_DATA | FLAG_CLOSE, b"0\r\n\r\n").await;
+        })
+        .await;
+        let mut socket = browser_request(&handle, "GET", b"").await;
+        let _ = completed_response(&mut socket).await;
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_over_window_resets_one_stream_and_keeps_sibling_alive() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = CarrierDemux::new();
-        demux.open_stream(1);
-        demux.open_stream(3);
-        let out = demux
-            .feed(
-                &[
-                    Frame::new(1, FLAG_DATA, vec![b'x'; INITIAL_WINDOW + 1]),
-                    Frame::new(
-                        3,
-                        FLAG_DATA | FLAG_CLOSE,
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
-                    ),
-                ]
-                .iter()
-                .flat_map(|frame| frame.encode().expect("frame"))
-                .collect::<Vec<_>>(),
-            )
-            .expect("demux output");
-        assert_eq!(decode_single(&out.emit_frames[0]).stream_id, 1);
-        assert!(out.stream_events.iter().any(|(stream, _)| *stream == 3));
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let first = request_close(&mut tls, &mut decoder).await;
+            let second = request_close(&mut tls, &mut decoder).await;
+            send_frame(&mut tls, first, FLAG_DATA, &vec![b'x'; INITIAL_WINDOW + 1]).await;
+            wait_for_reset(&mut tls, &mut decoder, first).await;
+            send_frame(&mut tls, second, FLAG_DATA | FLAG_CLOSE, &response(b"ok")).await;
+        })
+        .await;
+        let mut first = browser_request(&handle, "GET", b"").await;
+        let mut second = browser_request(&handle, "GET", b"").await;
+        let _ = completed_response(&mut first).await;
+        assert!(completed_response(&mut second)
+            .await
+            .starts_with(b"HTTP/1.1 200"));
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_answers_stream_zero_ping_while_stream_is_active() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = open_demux();
-        let out = demux
-            .feed(&Frame::control_ping(*b"pingpong").encode().expect("ping"))
-            .expect("pong output");
-        assert_eq!(out.pongs.len(), 1);
-        assert_eq!(decode_single(&out.pongs[0]).stream_id, 0);
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let request = next_frame(&mut tls, &mut decoder).await;
+            assert_ne!(request.stream_id, 0);
+            tls.write_all(&Frame::control_ping(*b"pingpong").encode().expect("ping"))
+                .await
+                .expect("ping write");
+            tls.flush().await.expect("ping flush");
+            loop {
+                let Some(frame) = possible_frame(&mut tls, &mut decoder).await else {
+                    return;
+                };
+                if frame.stream_id == 0 {
+                    assert_eq!(frame.control_pong_nonce(), Some(*b"pingpong"));
+                    return;
+                }
+            }
+        })
+        .await;
+        let _socket = browser_request(&handle, "POST", &vec![b'x'; INITIAL_WINDOW + 1]).await;
+        server.await.expect("carrier server");
+        handle.shutdown_and_wait().await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn carrier_keepalive_tears_down_silent_wedged_carrier() {
-        let (handle, task, _) = start_bridge().await;
-        assert!(request(&handle).await.starts_with(b"HTTP/1.1 200"));
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let stream_id = request_close(&mut tls, &mut decoder).await;
+            send_frame(
+                &mut tls,
+                stream_id,
+                FLAG_DATA | FLAG_CLOSE,
+                &response(b"ok"),
+            )
+            .await;
+            loop {
+                let Some(frame) = possible_frame(&mut tls, &mut decoder).await else {
+                    return;
+                };
+                if frame.stream_id == 0 {
+                    assert!(
+                        frame.control_pong_nonce().is_none(),
+                        "silent peer must not answer keepalive"
+                    );
+                }
+            }
+        })
+        .await;
+        let mut socket = browser_request(&handle, "GET", b"").await;
+        assert!(completed_response(&mut socket)
+            .await
+            .starts_with(b"HTTP/1.1 200"));
         assert!(handle.status().carrier_live);
-        let shutdown = handle.shutdown_and_wait().await;
-        assert!(!shutdown.carrier_live);
-        task.abort();
+        for _ in 0..6 {
+            tokio::time::advance(Duration::from_secs(31)).await;
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !handle.status().carrier_live,
+            "missed keepalives retire the carrier"
+        );
+        handle.shutdown_and_wait().await;
+        server.abort();
     }
 
     #[tokio::test]
     async fn carrier_drop_stream_rx_sends_reset_for_that_stream_only() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = CarrierDemux::new();
-        demux.open_stream(1);
-        demux.open_stream(3);
-        let out = demux
-            .feed(
-                &Frame::new(1, FLAG_OPEN, b"invalid".to_vec())
-                    .encode()
-                    .expect("invalid"),
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let first = request_close(&mut tls, &mut decoder).await;
+            let second = request_close(&mut tls, &mut decoder).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            send_frame(
+                &mut tls,
+                first,
+                FLAG_DATA,
+                &response(&vec![b'x'; INITIAL_WINDOW + 1]),
             )
-            .expect("reset output");
-        let reset = decode_single(&out.emit_frames[0]);
-        assert_eq!(reset.stream_id, 1);
-        assert_eq!(reset.payload, vec![RESET_PROTOCOL_ERROR]);
+            .await;
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                wait_for_reset(&mut tls, &mut decoder, first),
+            )
+            .await
+            .expect("dropped browser stream must reset its carrier stream");
+            send_frame(&mut tls, second, FLAG_DATA | FLAG_CLOSE, &response(b"ok")).await;
+        })
+        .await;
+        let first = browser_request(&handle, "GET", b"").await;
+        let mut second = browser_request(&handle, "GET", b"").await;
+        drop(first);
+        assert!(completed_response(&mut second)
+            .await
+            .starts_with(b"HTTP/1.1 200"));
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_slow_consumer_resets_only_that_stream() {
-        assert_shared_bridge_round_trip().await;
-        let mut demux = CarrierDemux::new();
-        demux.open_stream(1);
-        demux.open_stream(3);
-        let out = demux
-            .feed(
-                &Frame::new(1, FLAG_DATA, vec![b'x'; INITIAL_WINDOW + 1])
-                    .encode()
-                    .expect("over-credit"),
-            )
-            .expect("reset output");
-        assert_eq!(decode_single(&out.emit_frames[0]).stream_id, 1);
-        let sibling = demux
-            .feed(
-                &Frame::new(
-                    3,
-                    FLAG_DATA | FLAG_CLOSE,
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
-                )
-                .encode()
-                .expect("sibling"),
-            )
-            .expect("sibling output");
-        assert!(sibling.stream_events.iter().any(|(stream, _)| *stream == 3));
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let first = request_close(&mut tls, &mut decoder).await;
+            let second = request_close(&mut tls, &mut decoder).await;
+            send_frame(&mut tls, first, FLAG_DATA, &vec![b'x'; INITIAL_WINDOW + 1]).await;
+            wait_for_reset(&mut tls, &mut decoder, first).await;
+            send_frame(&mut tls, second, FLAG_DATA | FLAG_CLOSE, &response(b"ok")).await;
+        })
+        .await;
+        let _slow = browser_request(&handle, "GET", b"").await;
+        let mut sibling = browser_request(&handle, "GET", b"").await;
+        assert!(completed_response(&mut sibling)
+            .await
+            .starts_with(b"HTTP/1.1 200"));
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 
     #[tokio::test]
     async fn carrier_death_fans_out_eof_to_all_active_streams() {
-        assert_shared_bridge_round_trip().await;
-        let mut first = HttpStreamAssembler::new();
-        let mut second = HttpStreamAssembler::new();
-        assert_eq!(first.finish_eof(), StreamItem::End(StreamEnd::Eof));
-        assert_eq!(second.finish_eof(), StreamItem::End(StreamEnd::Eof));
+        let (handle, server) = start_bridge(|mut tls| async move {
+            let mut decoder = FrameDecoder::new();
+            let _ = request_close(&mut tls, &mut decoder).await;
+            let _ = request_close(&mut tls, &mut decoder).await;
+            drop(tls);
+        })
+        .await;
+        let mut first = browser_request(&handle, "GET", b"").await;
+        let mut second = browser_request(&handle, "GET", b"").await;
+        let first_response = completed_response(&mut first).await;
+        let second_response = completed_response(&mut second).await;
+        assert!(!first_response.starts_with(b"HTTP/1.1 200"));
+        assert!(!second_response.starts_with(b"HTTP/1.1 200"));
+        assert!(!handle.status().carrier_live);
+        handle.shutdown_and_wait().await;
+        server.await.expect("carrier server");
     }
 }
