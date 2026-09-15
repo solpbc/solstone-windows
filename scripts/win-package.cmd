@@ -26,7 +26,15 @@ if defined SOLSTONE_SIGN if not "%SOLSTONE_SIGN%"=="1" (
 )
 if "%SOLSTONE_SIGN%"=="1" set "SIGN_ARG=-Sign"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 %SIGN_ARG%
+:: Optional disposable-proof seam: one historical full-package basename to
+:: force a delta build against, forwarded to package.ps1 -DeltaBaseFull.
+:: Single value only (package.ps1's array parameter degrades to one element
+:: through a -File invocation; a real multi-base chain needs a -Command
+:: caller instead).
+set "DELTA_ARG="
+if defined SOLSTONE_DELTA_BASE_FULL set "DELTA_ARG=-DeltaBaseFull %SOLSTONE_DELTA_BASE_FULL%"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 %SIGN_ARG% %DELTA_ARG%
 if errorlevel 1 exit /b 1
 
 echo === WIN_PACKAGE_OK: source-bound release candidate transaction passed ===

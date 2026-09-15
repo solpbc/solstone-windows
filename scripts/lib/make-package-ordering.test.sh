@@ -84,6 +84,29 @@ assert_eq "signed delegation translates flag" \
   "$(cat "$WITNESS")"
 
 : > "$WITNESS"
+DELTA_BASE=Solstone-2.0.2-full.nupkg
+EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
+  SOLSTONE_ADVISORY_MIRROR_LOCATOR="$MIRROR_LOCATOR" \
+  SOLSTONE_ADVISORY_RECEIPT="$MIRROR_RECEIPT" SOLSTONE_ADVISORY_MIRROR_PUB="$MIRROR_PUB" \
+  SOLSTONE_DELTA_BASE_FULL="$DELTA_BASE" \
+  make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
+assert_eq "unsigned delta-base make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
+assert_eq "unsigned delegation forwards the delta base" \
+  "delegate|commit=$EXPECTED|advisory=$ADVISORY|git=git|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -DeltaBaseFull $DELTA_BASE" \
+  "$(cat "$WITNESS")"
+
+: > "$WITNESS"
+EXPECTED_RELEASE_COMMIT="$EXPECTED" SOLSTONE_ADVISORY_TREE_SHA256="$ADVISORY" \
+  SOLSTONE_ADVISORY_MIRROR_LOCATOR="$MIRROR_LOCATOR" \
+  SOLSTONE_ADVISORY_RECEIPT="$MIRROR_RECEIPT" SOLSTONE_ADVISORY_MIRROR_PUB="$MIRROR_PUB" \
+  SOLSTONE_SIGN=1 SOLSTONE_DELTA_BASE_FULL="$DELTA_BASE" \
+  make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null
+assert_eq "signed delta-base make delegates once" "1" "$(wc -l < "$WITNESS" | tr -d ' ')"
+assert_eq "signed delegation forwards sign then the delta base" \
+  "delegate|commit=$EXPECTED|advisory=$ADVISORY|git=git|args=-NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign -DeltaBaseFull $DELTA_BASE" \
+  "$(cat "$WITNESS")"
+
+: > "$WITNESS"
 if EXPECTED_RELEASE_COMMIT="$EXPECTED" \
     make -s -C "$REPO_ROOT" package PWSH="$FAKE_PWSH" >/dev/null 2>&1; then
   fail "missing SOLSTONE_ADVISORY_TREE_SHA256 must fail"

@@ -51,6 +51,7 @@ function Reset-Case {
     Set-TestEnvironment "SOLSTONE_ADVISORY_MIRROR_LOCATOR" $MirrorLocator
     Set-TestEnvironment "SOLSTONE_ADVISORY_RECEIPT" $MirrorReceipt
     Set-TestEnvironment "SOLSTONE_ADVISORY_MIRROR_PUB" $MirrorPublicKey
+    Set-TestEnvironment "SOLSTONE_DELTA_BASE_FULL" $null
 }
 
 function Run-Process([string]$FileName, [string]$Arguments) {
@@ -68,9 +69,10 @@ function Run-Process([string]$FileName, [string]$Arguments) {
     return [pscustomobject]@{ status = $process.ExitCode; stdout = $stdout; stderr = $stderr }
 }
 
-function Run-Direct([switch]$Sign) {
+function Run-Direct([switch]$Sign, [string]$DeltaBase = "") {
     $signArg = if ($Sign) { " -Sign" } else { "" }
-    return Run-Process $PowerShellPath "-NoProfile -ExecutionPolicy Bypass -File `"$Temp\scripts\package.ps1`"$signArg"
+    $deltaArg = if ($DeltaBase -ne "") { " -DeltaBaseFull `"$DeltaBase`"" } else { "" }
+    return Run-Process $PowerShellPath "-NoProfile -ExecutionPolicy Bypass -File `"$Temp\scripts\package.ps1`"$signArg$deltaArg"
 }
 
 function Run-DirectEnvironmentProbe([AllowNull()][string]$PriorValue, [switch]$ExpectFailure) {
@@ -120,13 +122,18 @@ function Witness-Text {
     return $raw.Trim()
 }
 
-function Assert-OneFinalizer([string]$Label, [switch]$Signed) {
+function Assert-OneFinalizer([string]$Label, [switch]$Signed, [string]$DeltaBase = "") {
     $lines = @(Get-Content -LiteralPath $Witness | Where-Object { $_.StartsWith("finalize|") })
     Assert-True ($lines.Count -eq 1) "$Label invokes exactly one xtask finalizer"
     Assert-True ($lines[0].Contains("rust-release-manifest finalize --expected-release-commit $ExpectedCommit")) "$Label passes expected commit"
     Assert-True ($lines[0].Contains("git=$env:PACKAGE_TEST_GIT")) "$Label passes one absolute Git executable"
     Assert-True ($lines[0].Contains("advisory=$AdvisoryTreeSha256")) "$Label passes reviewed advisory digest"
     Assert-True ($lines[0].Contains("--sign") -eq [bool]$Signed) "$Label translates signed mode"
+    if ($DeltaBase -ne "") {
+        Assert-True ($lines[0].Contains("--delta-base-full $DeltaBase")) "$Label forwards the delta base"
+    } else {
+        Assert-True (-not $lines[0].Contains("--delta-base-full")) "$Label omits delta-base-full by default"
+    }
     Assert-True ((Get-Content -LiteralPath $SelectionStdin -Raw).Trim() -eq (Get-Content -LiteralPath $EmittedSelection -Raw).Trim()) "$Label passes exact selection JSON on stdin"
 }
 
@@ -295,6 +302,11 @@ exit /b 0
     Assert-OneFinalizer "direct signed" -Signed
 
     Reset-Case
+    $result = Run-Direct -DeltaBase "Solstone-2.0.2-full.nupkg"
+    Assert-True ($result.status -eq 0) "direct delta-base delegation succeeds"
+    Assert-OneFinalizer "direct delta-base" -DeltaBase "Solstone-2.0.2-full.nupkg"
+
+    Reset-Case
     Set-TestEnvironment "EXPECTED_RELEASE_COMMIT" $null
     $result = Run-Wrapper
     Assert-True ($result.status -ne 0) "cmd wrapper requires EXPECTED_RELEASE_COMMIT"
@@ -326,6 +338,12 @@ exit /b 0
     $result = Run-Wrapper
     Assert-True ($result.status -eq 0) "cmd wrapper signed delegation succeeds"
     Assert-OneFinalizer "cmd wrapper signed" -Signed
+
+    Reset-Case
+    Set-TestEnvironment "SOLSTONE_DELTA_BASE_FULL" "Solstone-2.0.2-full.nupkg"
+    $result = Run-Wrapper
+    Assert-True ($result.status -eq 0) "cmd wrapper delta-base delegation succeeds"
+    Assert-OneFinalizer "cmd wrapper delta-base" -DeltaBase "Solstone-2.0.2-full.nupkg"
 
     Assert-True (-not (Test-Path (Join-Path $Temp "target\release\solstone-windows-app.exe"))) "entry points never inspect a pre-existing release exe"
     Write-Host "package-entrypoints.test.ps1: $Assertions assertions passed"

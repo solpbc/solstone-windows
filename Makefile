@@ -322,10 +322,14 @@ package:
 	    1) sign_arg=-Sign ;; \
 	    *) echo "ERROR: SOLSTONE_SIGN must be exactly 1 when signing is requested; unset it for unsigned finalization and retry." >&2; exit 1 ;; \
 	  esac; \
+	  delta_arg=; \
+	  if [ -n "$${SOLSTONE_DELTA_BASE_FULL:-}" ]; then \
+	    delta_arg="-DeltaBaseFull $${SOLSTONE_DELTA_BASE_FULL}"; \
+	  fi; \
 	  if [ -n "$$sign_arg" ]; then \
-	    GIT="$(GIT)" $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign; \
+	    GIT="$(GIT)" $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Sign $$delta_arg; \
 	  else \
-	    GIT="$(GIT)" $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1; \
+	    GIT="$(GIT)" $(PWSH) -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 $$delta_arg; \
 	  fi
 
 # Strict native install/smoke proof for one already-finalized signed candidate.

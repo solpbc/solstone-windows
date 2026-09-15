@@ -561,7 +561,7 @@ publication.
   - Disposable proof workflow (unsigned, off-origin):
     - Build/package baseline N with `solstone-setup-<N>.exe`.
     - Install N using the setup installer (not portable zip extract, so `%LocalAppData%\Solstone\packages\Solstone-<N>-full.nupkg` is populated).
-    - Package N+1 unsigned via `scripts\package.ps1 -DeltaBaseFull Solstone-<N>-full.nupkg` (note: `-DeltaBaseFull` is not forwarded by `make package` / `win-package.cmd`; follow-up).
+    - Package N+1 unsigned via `scripts\package.ps1 -DeltaBaseFull Solstone-<N>-full.nupkg`, or via the box wrapper with `SOLSTONE_DELTA_BASE_FULL=Solstone-<N>-full.nupkg scripts\win-package.cmd` (both wrappers, and `make package SOLSTONE_DELTA_BASE_FULL=...`, forward exactly one delta-base basename).
     - Serve candidate N+1's releases directory on a disposable local static server (off `updates.solstone.app`).
     - Execute `solstone-windows-app.exe --check-update --update-feed <url>`: assert stdout contains `plan=delta-chain` and `downloading asset: Solstone-<N+1>-delta.nupkg`.
     - Apply with `solstone-windows-app.exe --apply-update --update-feed <url>` and assert the updated binary reports version N+1 via `--dump-state`.
