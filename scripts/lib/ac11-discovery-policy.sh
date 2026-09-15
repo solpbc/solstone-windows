@@ -3,6 +3,8 @@
 # Copyright (c) 2026 sol pbc
 
 set -eu
+# Committed fixtures are sorted bytewise.
+export LC_ALL=C
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
