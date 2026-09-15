@@ -39,7 +39,7 @@ foreach ($lock in $locks) {
 }
 
 try {
-    $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+    $gitPath = @(Get-Command git -CommandType Application -ErrorAction Stop)[0].Source
 } catch {
     Fail-Git "git is unavailable"
 }

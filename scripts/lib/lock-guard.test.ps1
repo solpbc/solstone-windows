@@ -51,7 +51,7 @@ try {
     $beforeUi = (Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash
     $beforeStatus = (& git -C $Temp status --short | Out-String)
     $result = Run-Guard $Temp
-    Assert-True ($result.status -eq 0) "tracked locks succeed"
+    Assert-True ($result.status -eq 0) "tracked locks succeed (status=$($result.status), stdout=<$($result.stdout)>, stderr=<$($result.stderr)>)"
     Assert-True ($result.stdout -eq "" -and $result.stderr -eq "") "success is silent"
     Assert-True ((Get-FileHash (Join-Path $Temp "Cargo.lock") -Algorithm SHA256).Hash -eq $beforeCargo) "Cargo.lock bytes stable"
     Assert-True ((Get-FileHash (Join-Path $Temp "ui\package-lock.json") -Algorithm SHA256).Hash -eq $beforeUi) "UI lock bytes stable"
