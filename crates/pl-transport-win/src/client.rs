@@ -1004,6 +1004,9 @@ mod tests {
     use super::*;
     use crate::credential::{EndpointAddr, FS_FAIL_POINT};
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     fn relay_credential() -> Credential {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -1027,13 +1030,15 @@ mod tests {
     }
 
     fn temp_pairing_path() -> PathBuf {
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "plw-client-test-{}-{}",
+            "plw-client-test-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            sequence
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("pairing.json")
