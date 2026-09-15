@@ -1,0 +1,500 @@
+=== platform: linux ===
+=== command: cargo test --locked -p observer-pl -- --list ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/observer_pl-88b97d24b4e5a058)
+bridge::tests::authorize_accepts_valid_local_request: test
+bridge::tests::authorize_rejects_bad_or_missing_capability: test
+bridge::tests::authorize_rejects_caller_auth_headers: test
+bridge::tests::authorize_rejects_host_mismatch_before_anything_else: test
+bridge::tests::authorize_rejects_unsupported_methods: test
+bridge::tests::bootstrap_cap_extracts_only_exact_route_query: test
+bridge::tests::constant_time_compare_basics: test
+bridge::tests::failure_category_tokens_are_stable: test
+bridge::tests::parses_request_head_helpers: test
+bridge::tests::response_headers_filter_and_rewrite: test
+bridge::tests::rewrite_redirect_handles_relative_journal_foreign_and_spl: test
+bridge::tests::rewrite_set_cookie_drops_domain_and_secure: test
+bridge::tests::upstream_request_headers_keep_only_allowlist: test
+bridge::tests::upstream_request_headers_omit_cookie_when_only_capability_cookie_present: test
+civil::tests::dst_fall_back_fold_can_collide_by_design: test
+civil::tests::dst_spring_forward_uses_supplied_post_transition_offset: test
+civil::tests::epoch_from_local_parts_accepts_a_real_leap_day: test
+civil::tests::epoch_from_local_parts_applies_the_offset: test
+civil::tests::epoch_from_local_parts_inverts_utc_parts: test
+civil::tests::epoch_from_local_parts_rejects_impossible_civil_values: test
+civil::tests::epoch_zero_is_unix_birth: test
+civil::tests::known_timestamp_decodes: test
+civil::tests::leap_day_2024_decodes: test
+civil::tests::local_keys_match_format_regex_shape: test
+civil::tests::local_keys_with_zero_offset_match_utc_parts: test
+civil::tests::negative_offset_can_cross_to_previous_local_day: test
+frame::tests::control_helpers_require_exact_flags: test
+frame::tests::control_ping_builds_stream_zero_ping: test
+frame::tests::control_ping_yields_pong_with_same_nonce: test
+frame::tests::control_pong_nonce_round_trips: test
+frame::tests::decoder_reframes_across_split_reads: test
+frame::tests::dialer_allocates_odd_ids: test
+frame::tests::encode_decode_round_trip: test
+frame::tests::flags_valid_matches_exact_spl_set: test
+frame::tests::non_ping_is_not_a_pong: test
+frame::tests::non_pong_is_not_a_pong_nonce: test
+frame::tests::non_window_or_malformed_is_not_a_credit: test
+frame::tests::reserved_flag_is_rejected: test
+frame::tests::window_and_reset_builders_encode_protocol_payloads: test
+frame::tests::window_frame_parses_big_endian_credit: test
+http::tests::build_request_defaults_to_the_pinned_journal_host: test
+http::tests::build_request_owns_host_accept_and_content_length: test
+http::tests::caller_can_override_accept: test
+http::tests::chunked_decoder_allows_total_body_over_per_chunk_cap: test
+http::tests::chunked_decoder_byte_at_a_time_reconstructs_body: test
+http::tests::chunked_decoder_handles_arbitrary_splits: test
+http::tests::chunked_decoder_rejects_over_cap_size_and_latches_failure: test
+http::tests::chunked_response_without_terminal_chunk_is_an_error: test
+http::tests::dechunk_accepts_chunk_at_max_payload: test
+http::tests::dechunk_rejects_first_over_cap_size_before_truncated_chunk: test
+http::tests::dechunk_rejects_usize_max_chunk_size: test
+http::tests::explicit_host_targets_the_loopback_leg_without_admitting_a_caller_header: test
+http::tests::missing_terminator_is_an_error: test
+http::tests::parse_head_accepts_401: test
+http::tests::parse_head_lowercases_headers: test
+http::tests::parses_401_with_body: test
+http::tests::parses_chunked_response: test
+http::tests::parses_content_length_response: test
+http::tests::short_content_length_is_an_error: test
+jwt::tests::decodes_valid_claims: test
+jwt::tests::expired_positive_ttl_refreshes: test
+jwt::tests::malformed_tokens_decode_to_none: test
+jwt::tests::non_positive_ttl_does_not_refresh: test
+jwt::tests::refresh_boundary_is_strictly_greater_than_eighty_percent: test
+mux::tests::answers_control_ping_with_pong: test
+mux::tests::body_over_window_blocks_until_granted_then_completes: test
+mux::tests::body_within_initial_window_sends_without_blocking: test
+mux::tests::carrier_close_suppresses_decode_time_window: test
+mux::tests::carrier_consume_after_close_emits_no_late_window: test
+mux::tests::carrier_demux_control_and_window_outputs_are_tagged: test
+mux::tests::carrier_demux_data_close_orders_body_before_end: test
+mux::tests::carrier_demux_discriminates_unknown_or_closed_stream_frames: test
+mux::tests::carrier_demux_isolates_head_cap_to_one_stream: test
+mux::tests::carrier_demux_isolates_http_parse_error_to_one_stream: test
+mux::tests::carrier_demux_over_credit_resets_only_offending_stream: test
+mux::tests::carrier_demux_rejects_inbound_open_for_dialer_role: test
+mux::tests::carrier_demux_rejects_invalid_flag_combinations_without_delivering_payload: test
+mux::tests::carrier_demux_rejects_malformed_window_payload: test
+mux::tests::carrier_demux_rejects_ping_pong_on_nonzero_streams: test
+mux::tests::carrier_demux_rejects_window_close_as_protocol_error: test
+mux::tests::carrier_demux_reserved_flag_remains_frame_fatal: test
+mux::tests::carrier_demux_routes_interleaved_streams: test
+mux::tests::carrier_demux_stream_zero_misuse_is_tunnel_fatal: test
+mux::tests::carrier_demux_surfaces_inbound_reset_reason: test
+mux::tests::carrier_demux_tunnel_fatal_is_latched: test
+mux::tests::empty_request_is_a_single_open_close: test
+mux::tests::http_stream_assembler_dechunks_incrementally: test
+mux::tests::http_stream_assembler_emits_head_body_and_split_head: test
+mux::tests::http_stream_assembler_end_methods_mark_closed: test
+mux::tests::recv_window_grants_all_consumed_bytes_at_half_window: test
+mux::tests::recv_window_rejects_over_credit_without_mutation: test
+mux::tests::reset_frame_surfaces_as_error: test
+mux::tests::reset_reason_parses_known_unknown_empty_and_overlong_payloads: test
+mux::tests::response_assembler_cap_remains_exactly_four_mib: test
+mux::tests::response_assembler_close_suppresses_terminal_window: test
+mux::tests::response_assembler_grants_exact_wire_bytes_at_half_window: test
+mux::tests::response_assembler_honors_custom_cap_before_append: test
+mux::tests::response_assembler_over_credit_emits_one_flow_control_reset: test
+mux::tests::response_assembler_subthreshold_response_emits_no_window: test
+mux::tests::response_data_close_round_trips: test
+mux::tests::sent_bytes_tracks_progress_and_stops_at_the_window_until_granted: test
+mux::tests::small_request_opens_data_then_closes_in_one_pass: test
+mux::tests::surfaces_window_grant_for_our_stream_only: test
+mux::tests::unclosed_stream_is_incomplete: test
+mux::tests::windowed_upload_accepts_max_remaining_credit_and_rejects_one_over: test
+mux::tests::windowed_upload_credit_cap_excludes_consumed_credit: test
+relay::tests::builds_normal_relay_url: test
+relay::tests::percent_encodes_query_value: test
+relay::tests::rejects_unsupported_scheme: test
+relay::tests::rewrites_http_to_ws: test
+relay::tests::rewrites_https_to_wss: test
+relay::tests::trims_one_trailing_slash: test
+relay_access::tests::negotiated_access_checks_identity_shape_and_exact_expiry: test
+
+113 tests, 0 benchmarks
+     Running tests/ingest_v3.rs (target/debug/deps/ingest_v3-5c0cb62888021cdc)
+ingest_response_rejects_an_unknown_status: test
+ingest_status_acceptance_is_closed: test
+multipart_derives_the_envelope_file_list_and_uses_a_text_envelope_part: test
+multipart_rejects_a_duplicate_filename_before_serialization: test
+multipart_rejects_an_empty_file_list_before_serialization: test
+proof_accepts_processed_custody_in_both_documents: test
+proof_checks_segments_files_after_the_day_manifest: test
+proof_fails_for_each_document_invariant: test
+proof_fails_with_distinct_file_reasons: test
+proof_rejects_a_missing_file_from_the_segments_listing: test
+proof_rejects_an_extra_file_with_a_count_mismatch: test
+proof_returns_the_server_key_only_after_all_documents_agree: test
+root_and_day_manifest_require_their_v3_fields: test
+strict_v3_models_reject_missing_or_unknown_custody_fields: test
+submitted_or_name_uses_the_written_name_only_when_not_renamed: test
+
+15 tests, 0 benchmarks
+     Running tests/observer_contract_conformance.rs (target/debug/deps/observer_contract_conformance-a3899aea833b5a1a)
+observer_contract_authority_projection_paths_equal_production_constants: test
+observer_contract_authority_status_fixtures_and_vectors_match_real_wire_types: test
+
+2 tests, 0 benchmarks
+     Running tests/spl_pair_link_conformance.rs (target/debug/deps/spl_pair_link_conformance-2ad71599a1957557)
+bundle_files_match_authority_pins: test
+spl_pair_link_vectors_conformance: test
+
+2 tests, 0 benchmarks
+   Doc-tests observer_pl
+0 tests, 0 benchmarks
+=== command: cargo test --locked -p pl-transport-win -- --list ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/pl_transport_win-0247f3cc770c19b3)
+client::tests::cancelled_refresh_waiter_keeps_disk_token_and_live_cas_publication_owned: test
+client::tests::carrier_kind_maps_to_transport_path: test
+client::tests::persist_token_reconciles_post_rename_uncertainty: test
+client::tests::rejected_transaction_stops_relay_only_requests_before_any_relay_dial: test
+client::tests::relay_fault_is_transient_truth_table: test
+client::tests::relay_fence_permit_preserves_disable_retire_and_incarnation_precedence: test
+client::tests::retired_refresh_waiting_for_publication_cannot_change_disk: test
+client::tests::stale_token_transaction_cannot_fence_or_write_the_successor_incarnation: test
+connection::tests::a_completed_request_records_every_byte_and_a_completed_close: test
+connection::tests::an_early_peer_rejection_reports_an_incomplete_close: test
+connection::tests::an_interrupted_request_records_progress_without_a_completed_close: test
+connection::tests::one_shot_excess_send_credit_writes_flow_control_reset_before_error: test
+connection::tests::one_shot_over_window_writes_one_flow_control_reset_before_error: test
+connection::tests::one_shot_response_over_initial_window_replenishes_peer_credit: test
+connection::tests::pending_write_times_out_without_waiting: test
+coordinator::tests::accepted_unconfirmed_does_not_set_earned_upload_fields_until_confirmed_once: test
+coordinator::tests::cancel_between_segments_stops_before_next_ingest: test
+coordinator::tests::cleanup_mark_confirmed_failure_is_nonfatal_and_reconfirms_next_tick: test
+coordinator::tests::cleanup_remove_failure_is_nonfatal_and_reconfirms_next_tick: test
+coordinator::tests::collision_reconciles_against_remapped_segment_key: test
+coordinator::tests::conflict_and_failed_statuses_do_not_accumulate_quarantine: test
+coordinator::tests::duplicate_reconciles_against_existing_segment_key: test
+coordinator::tests::failed_tick_records_bounded_sanitized_reason: test
+coordinator::tests::list_reject_does_not_feed_quarantine_counter: test
+coordinator::tests::list_transport_error_aborts_after_accepted_ingest: test
+coordinator::tests::local_offset_failure_aborts_without_submitting_key_and_retries: test
+coordinator::tests::missing_status_does_not_confirm_or_delete_until_held: test
+coordinator::tests::no_work_successful_tick_resets_reason_and_stamps_sync_time: test
+coordinator::tests::only_attributable_local_request_rejections_count: test
+coordinator::tests::quarantines_segment_after_five_consecutive_rejects: test
+coordinator::tests::read_error_skips_segment_without_quarantine: test
+coordinator::tests::reject_isolation_processes_later_segments: test
+coordinator::tests::terminal_transport_failures_keep_unconfirmed_sealed_segment_and_path_unset: test
+coordinator::tests::tick_failure_marks_disconnected_and_recovery_triggers_refresh: test
+coordinator::tests::transport_error_aborts_tick_and_leaves_rest_untried: test
+coordinator::tests::unknown_custody_status_is_retry_eligible_and_the_original_segment_confirms_later: test
+coordinator::tests::upload_event_failed_reason_uses_redacted_error_codes: test
+coordinator::tests::upload_event_records_three_outcomes: test
+credential::tests::generated_csr_carries_matching_public_key_spki_der: test
+credential::tests::legacy_plaintext_valid_base64_loads_without_unprotect: test
+credential::tests::load_missing_file_is_unpaired_default: test
+credential::tests::local_endpoints_helper_maps_valid_entries_and_skips_invalid: test
+credential::tests::marked_field_unprotect_failure_is_crypto_error: test
+credential::tests::paired_state_round_trips_through_disk: test
+credential::tests::pre_w2_pairing_json_loads_with_default_relay_fields: test
+credential::tests::public_load_save_migrates_legacy_plaintext_to_marked_disk: test
+credential::tests::relay_fields_round_trip: test
+credential::tests::reversible_protector_wraps_on_disk_and_round_trips: test
+credential::tests::second_secret_unprotect_failure_returns_error: test
+credential::tests::test_paired_state_mutate_cas_mismatch: test
+credential::tests::test_paired_state_mutate_fail_points: test
+credential::tests::test_paired_state_mutate_success: test
+credential::tests::token_transaction_commits_successive_durable_generations: test
+credential::tests::token_transaction_reconciles_uncertain_write_only_for_exact_readback_tuple: test
+credential::tests::token_transaction_rejected_write_keeps_old_state_and_latches_relay: test
+credential::tests::token_transaction_rejects_confirmed_stale_pairing_and_latches_relay: test
+credential::tests::token_transaction_reloads_generation_before_each_commit: test
+device_metadata::tests::metadata_resource_rejects_omitted_nullable_fields_and_accepts_full_null_snapshot: test
+device_metadata::tests::sanitize_facts_nulls_invalid_only: test
+device_metadata::tests::sanitize_field_bounds_and_controls: test
+integration::args::tests::deadline_is_required_and_bounded: test
+integration::args::tests::fetch_rejects_a_relative_path_and_a_bad_digest: test
+integration::args::tests::fetch_rejects_an_impossible_status: test
+integration::args::tests::fetch_requires_expected_bytes_over_the_initial_window: test
+integration::args::tests::help_names_every_operation_and_exit_status: test
+integration::args::tests::max_dials_is_optional_but_must_be_positive: test
+integration::args::tests::missing_operation_is_a_named_rejection_not_a_panic: test
+integration::args::tests::parses_a_minimal_roundtrip: test
+integration::args::tests::selection_requires_the_mode_flag: test
+integration::args::tests::unknown_operation_never_echoes_the_caller_value: test
+integration::args::tests::upload_requires_a_named_valid_carrier: test
+integration::args::tests::upload_validates_the_day_and_segment_shapes: test
+integration::ops::tests::a_caller_named_segment_must_round_trip_through_production_derivation: test
+integration::ops::tests::a_failed_pair_leaves_no_loadable_credential_and_names_remote_residue: test
+integration::ops::tests::a_failed_pair_never_reflects_the_link_into_its_result: test
+integration::ops::tests::a_pair_link_carrier_mismatch_is_refused_before_any_network_work: test
+integration::ops::tests::a_present_state_file_is_not_empty_even_with_a_null_credential: test
+integration::ops::tests::a_stray_tmp_sibling_alone_is_partial_and_fails_closed: test
+integration::ops::tests::an_absent_profile_is_empty: test
+integration::ops::tests::an_unparseable_link_is_refused_with_the_sanitizer_s_own_token: test
+integration::ops::tests::an_unrepresentable_caller_name_is_refused_rather_than_injected: test
+integration::ops::tests::capability_is_read_from_the_bootstrap_cookie: test
+integration::ops::tests::clearing_an_already_empty_profile_is_a_no_op_that_still_reports_true: test
+integration::ops::tests::clearing_removes_both_files_and_reports_absence: test
+integration::ops::tests::direct_pairing_never_claims_relay_enrollment_residue: test
+integration::ops::tests::every_fetch_expectation_can_turn_the_operation_red: test
+integration::ops::tests::pair_refuses_a_non_empty_profile_before_dialing: test
+integration::ops::tests::relay_residue_tracks_enrollment_observation_independently_of_pairing: test
+integration::ops::tests::response_limit_bounds_a_runaway_peer: test
+integration::ops::tests::roundtrip_budget_bounds_the_segment_list_request: test
+integration::ops::tests::the_synthetic_store_serves_exactly_one_segment_then_nothing: test
+integration::ops::tests::the_test_relay_link_really_is_relay_form: test
+integration::ops::tests::upload_without_a_custody_witness_has_no_pass_shaped_terminal_outcome: test
+integration::report::tests::absent_evidence_fields_stay_out_of_the_object: test
+integration::report::tests::artifact_identity_is_null_rather_than_a_placeholder: test
+integration::report::tests::each_failure_class_maps_to_its_own_exit_status: test
+integration::report::tests::guidance_is_bounded_and_single_line: test
+integration::report::tests::ordinary_request_terminal_classes_have_stable_secret_free_guidance: test
+integration::report::tests::pass_serializes_one_object_with_exit_zero: test
+integration::report::tests::retryability_splits_connection_faults_from_deterministic_ones: test
+integration::report::tests::transport_failures_reuse_the_one_sanitizer_and_leak_nothing: test
+integration::tests::a_current_thread_runtime_is_constructible_with_the_crate_features: test
+integration::tests::an_exhausted_operation_budget_checkpoints_the_named_boundary: test
+integration::tests::an_exhausted_operation_budget_does_not_poll_the_next_phase: test
+integration::tests::dial_maximum_is_only_asserted_when_the_operator_set_one: test
+integration::tests::fixed_offset_is_stable_across_instants: test
+integration::tests::operation_budget_reports_the_exact_remaining_sub_budget: test
+integration::tests::operation_budget_runs_only_for_the_exact_remaining_sub_budget: test
+integration::tests::relay_assertion_rejects_a_direct_success_and_a_silent_no_op: test
+integration::tests::source_commit_is_accepted_only_as_full_lowercase_hex: test
+integration::tests::state_tmp_sibling_matches_what_save_writes: test
+journal_bridge_carrier::tests::carrier_allocates_distinct_odd_stream_ids: test
+journal_bridge_carrier::tests::carrier_answers_stream_zero_ping_while_stream_is_active: test
+journal_bridge_carrier::tests::carrier_chunked_window_counts_framing_wire_bytes_on_drain: test
+journal_bridge_carrier::tests::carrier_death_fans_out_eof_to_all_active_streams: test
+journal_bridge_carrier::tests::carrier_drop_stream_rx_sends_reset_for_that_stream_only: test
+journal_bridge_carrier::tests::carrier_excess_send_credit_resets_only_owning_upload: test
+journal_bridge_carrier::tests::carrier_grants_exact_wire_bytes_after_body_drain: test
+journal_bridge_carrier::tests::carrier_keepalive_tears_down_silent_wedged_carrier: test
+journal_bridge_carrier::tests::carrier_over_window_resets_one_stream_and_keeps_sibling_alive: test
+journal_bridge_carrier::tests::carrier_response_over_initial_window_replenishes_credit_on_consumer_drain: test
+journal_bridge_carrier::tests::carrier_routes_window_grants_to_the_owning_upload: test
+journal_bridge_carrier::tests::carrier_slow_consumer_resets_only_that_stream: test
+journal_bridge_carrier::tests::carrier_subthreshold_response_emits_no_window: test
+journal_bridge_carrier::tests::carrier_without_body_drain_depletes_window_then_flow_control_resets: test
+journal_version::tests::apply_result_obsolete_generation_discarded: test
+journal_version::tests::apply_result_success_updates_state_sync_and_persists: test
+journal_version::tests::begin_session_drops_invalid_persisted_journal_name: test
+journal_version::tests::cold_start_restore_and_begin_session: test
+journal_version::tests::different_identity_re_pair_clears_old_value_and_file: test
+journal_version::tests::disconnect_fences_inflight_completion: test
+journal_version::tests::full_null_name_clears_cache_but_older_attempt_cannot_restore_it: test
+journal_version::tests::malformed_or_failed_fetch_preserves_existing_cache: test
+journal_version::tests::metadata_publish_rejects_disconnected_epoch: test
+journal_version::tests::newer_value_on_reconnect_replaces_old_value: test
+journal_version::tests::same_identity_pairing_clears_and_rejects_old_completion_and_disconnect: test
+journal_version::tests::terminal_transport_errors_preserve_durable_version_and_withhold_freshness: test
+journal_version::tests::version_only_publish_preserves_journal_name_across_reconstruction: test
+ordinary_request::tests::registry_is_the_exact_eight_route_inventory: test
+pairing::tests::error_mapper_covers_all_shared_variants_without_secret_leakage: test
+pairing::tests::pairing_adapter_never_emits_shared_tls_extra_tokens: test
+pairing::tests::usable_route_gate_matches_transport_constructor_predicate: test
+post_connect::tests::stale_metadata_get_does_not_publish_journal_cache: test
+post_connect::tests::test_apply_relay_access_durability_uncertain_not_configured_reconciles_clear: test
+post_connect::tests::test_apply_relay_access_durability_uncertain_ready_reconciles_live_state: test
+post_connect::tests::test_apply_relay_access_not_configured: test
+post_connect::tests::test_apply_relay_access_ready: test
+post_connect::tests::test_clear_write_failed_fence_retries_the_same_current_clear: test
+post_connect::tests::test_durable_clear_retry_cas_mismatch_does_not_clear_newer_ready: test
+post_connect::tests::test_metadata_get_response_deserialization: test
+post_connect::tests::test_metadata_serialization_shape: test
+post_connect::tests::test_ready_write_failed_keeps_old_tuple_until_current_retry: test
+post_connect::tests::test_relay_access_validator_rejects_strict_invalid_envelopes_without_replacing_live_access: test
+post_connect::tests::test_session_lifecycle: test
+post_connect::tests::test_shared_burst_allows_one_follow_up_then_requires_external_trigger: test
+post_connect::tests::test_stale_token_fenced_from_applying_ready_or_not_configured: test
+post_connect::tests::test_trigger_coalesces_when_in_flight: test
+relay::tests::build_pair_dial_request_sets_pair_key_without_authorization: test
+relay::tests::pair_upgrade_401_maps_to_pair_window_closed: test
+relay::tests::pair_upgrade_402_maps_to_unpaid: test
+relay_http::tests::chunked_response_split_across_reads_waits_for_eof: test
+relay_http::tests::complete_chunked_response_returns_without_eof: test
+relay_http::tests::control_body_limit_and_framing_errors_return_fixed_classifications: test
+relay_http::tests::origin_comparison_normalizes_default_ports_and_rejects_injection: test
+relay_http::tests::total_deadline_cancels_blocked_write_and_progressing_reads: test
+sealed::tests::confirmed_marker_excludes_from_scan_and_lists_in_confirmed: test
+sealed::tests::coordinator_uploads_renamed_mp4_filename_unchanged: test
+sealed::tests::flac_content_type_is_audio_flac: test
+sealed::tests::missing_root_scans_empty: test
+sealed::tests::mp4_content_type_is_video_mp4: test
+sealed::tests::quarantine_moves_dir_aside_and_scan_ignores_it: test
+sealed::tests::scan_missing_len_sidecar_reports_none: test
+sealed::tests::scan_reads_len_sidecar_and_filters_it_from_files: test
+sealed::tests::scans_sealed_dirs_skips_incomplete: test
+sealed::tests::seal_then_restart_scan_uses_persisted_len: test
+service::tests::await_coordinator_does_not_mark_external_cancellation_dead: test
+service::tests::await_coordinator_marks_clean_early_exit_as_stopped: test
+service::tests::await_coordinator_marks_panicked_task_dead: test
+service::tests::failed_pairing_state_redacts_detail: test
+slot::tests::replace_stops_incumbent_before_new_uploader_ticks: test
+slot::tests::skipped_replace_leaves_incumbent_running: test
+spki_pin::tests::live_peer_leaf_signed_by_self_signed_ca_verifies: test
+spki_pin::tests::live_peer_leaf_signed_by_unrelated_ca_rejects: test
+spki_pin::tests::non_self_signed_ca_rejects: test
+spki_pin::tests::tls_verifier_requires_a_valid_pinned_certificate_binding: test
+tests::transport_error_code_maps_every_variant_without_inner_detail: test
+
+186 tests, 0 benchmarks
+     Running tests/integration_mode.rs (target/debug/deps/integration_mode-353bfb3de9608ece)
+a_dial_ceiling_is_reported_even_when_it_is_not_exceeded: test
+a_malformed_flag_value_is_never_echoed_back_into_the_envelope: test
+a_malformed_pairing_file_is_an_error_not_a_silent_unpaired_default: test
+a_rejected_invocation_is_an_error_verdict_with_the_error_exit_status: test
+an_upload_carrier_mismatch_is_a_nonzero_terminal_outcome: test
+artifact_identity_is_reported_or_honestly_absent: test
+every_attempted_operation_emits_one_schema_versioned_object: test
+operations_needing_a_pairing_refuse_an_unpaired_profile: test
+requested_carrier_uses_the_operator_cli_vocabulary: test
+the_large_fetch_precondition_is_enforced_before_any_network_work: test
+the_mode_is_selected_only_by_its_own_flag: test
+upload_refuses_an_unrepresentable_caller_named_segment: test
+
+12 tests, 0 benchmarks
+     Running tests/integration_worker_stack.rs (target/debug/deps/integration_worker_stack-a54dbb05edd41f30)
+integration_pair_emits_one_envelope_from_one_mib_caller_stack: test
+
+1 test, 0 benchmarks
+     Running tests/journal_bridge_contact.rs (target/debug/deps/journal_bridge_contact-8271db2378dd848a)
+contacted_flips_on_first_accept_before_http_parse: test
+
+1 test, 0 benchmarks
+     Running tests/observation_inertness.rs (target/debug/deps/observation_inertness-92f8c4b673b3104e)
+observation_is_inert: test
+
+1 test, 0 benchmarks
+     Running tests/ordinary_request_authority.rs (target/debug/deps/ordinary_request_authority-4fe55879eb24bbe5)
+all_eight_production_helpers_use_the_shared_ordinary_request_authority: test
+direct_forbid_after_write_never_retries_partial_or_complete_put: test
+direct_replay_safe_helpers_retry_before_and_during_request_writes: test
+direct_shared_request_caps_use_exact_assembled_wire_lengths: test
+relay_fencing_does_not_block_a_reachable_direct_ordinary_request: test
+retired_slot_blocks_relay_only_helper_without_a_relay_dial: test
+stale_slot_incarnation_blocks_old_relay_only_helper_without_a_relay_dial: test
+
+7 tests, 0 benchmarks
+     Running tests/paired_state_compatibility.rs (target/debug/deps/paired_state_compatibility-3f9645a69a443eba)
+newly_generated_pairing_result_saves_and_loads_through_protector_path: test
+paired_state_disk_round_trip_with_fixture: test
+pre_wave_paired_state_fixture_deserializes_and_round_trips_identically: test
+
+3 tests, 0 benchmarks
+     Running tests/relay_pairing_round_trip.rs (target/debug/deps/relay_pairing_round_trip-1ba6e68ce25bccbf)
+actual_optional_enrollment_reports_only_possible_legacy_residue: test
+forced_refresh_reconnect_statuses: test
+observer_contract_authority_pair_from_link_dispatches_relay_ceremony: test
+observer_contract_authority_relay_pairing_uses_real_ceremony: test
+older_home_pairing_survives_unavailable_optional_enrollment: test
+protected_remote_bootstrap_skips_enrollment_and_invalid_present_access_cannot_fallback: test
+refresh_negotiates_v2_rejects_null_and_downgrade_and_keeps_legacy_omission: test
+relay_pairing_crossed_no_usable_route_returns_no_endpoint_and_persists_nothing: test
+relay_pairing_full_ceremony_populates_credential: test
+relay_pairing_inner_410_maps_to_http_410: test
+relay_pairing_rejects_anti_pin_theater_leaf: test
+relay_pairing_rejects_jid_mismatch_before_enroll: test
+relay_pairing_rejects_wrong_spki_before_enroll: test
+
+13 tests, 0 benchmarks
+     Running tests/relay_round_trip.rs (target/debug/deps/relay_round_trip-0fe970037aaf1f6a)
+cancelled_shared_refresh_still_latches_windows_publication_before_next_relay_request: test
+concurrent_relay_only_request_after_publication_latch_makes_no_relay_dial: test
+observer_contract_authority_relay_status_vectors_use_documented_http_mapping: test
+observer_contract_authority_relay_v3_operations_have_identical_mtls_only_policy: test
+observer_contract_authority_relay_v3_reads_fail_closed_on_non_success: test
+relay_abnormal_drop_maps_to_abnormal: test
+relay_adapter_stops_post_connect_response_at_64_kib: test
+relay_bridge_carrier_refreshes_on_4401_then_succeeds: test
+relay_bridge_initial_dial_failure_returns_502_and_next_request_redials: test
+relay_fallbacks_after_lan_unreachable: test
+relay_forbid_after_write_put_never_retries_partial_or_complete_request: test
+relay_get_clients_self_accepts_exact_assembled_cap_and_rejects_cap_plus_one: test
+relay_inner_app_503_returns_http_response_not_home_offline: test
+relay_inner_handshake_stall_maps_to_stalled: test
+relay_is_blind_to_inner_http_and_tokens: test
+relay_observer_is_inert_and_reports_every_byte_of_a_complete_production_ingest: test
+relay_observer_is_inert_and_reports_progress_for_the_only_one_attempt_close_4402: test
+relay_only_credential_can_be_disabled_without_retaining_an_old_adapter: test
+relay_only_credential_constructs_and_reaches_relay: test
+relay_post_upgrade_close_maps_codes: test
+relay_proactive_refresh_before_first_dial: test
+relay_reasons_map_verbatim_and_redacted: test
+relay_reassembles_large_response_across_partial_frames: test
+relay_refresh_persists_token_for_restart: test
+relay_refresh_single_flight_across_concurrent_sends: test
+relay_replay_safe_helper_retries_before_and_during_request_writes: test
+relay_round_trips_small_body: test
+relay_streams_multi_mib_body_under_flow_control: test
+relay_unauthorized_persists_after_refresh_is_terminal_no_storm: test
+relay_unauthorized_refreshes_and_redials_once: test
+relay_unpaid_is_terminal_bounded: test
+relay_upgrade_reject_maps_http_statuses: test
+relay_wrong_inner_pin_stays_tls_error: test
+shared_observer_aggregates_direct_then_relay_production_helpers: test
+test_relay_adapter_get_clients_self_and_get_relay_access: test
+
+35 tests, 0 benchmarks
+     Running tests/transport_round_trip.rs (target/debug/deps/transport_round_trip-9cd6888dadd5c4aa)
+direct_pairing_key_mismatch_is_terminal_after_first_written_request: test
+journal_bridge_authority_rejects_before_upstream: test
+journal_bridge_binds_loopback_and_serves_on_reported_port: test
+journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap: test
+journal_bridge_buffered_pass_through_adds_v3_headers_and_strips_local_headers: test
+journal_bridge_carrier_death_redials_without_replaying_failed_stream: test
+journal_bridge_first_load_concurrent_requests_coalesce_one_carrier: test
+journal_bridge_forwards_journal_401_without_masking: test
+journal_bridge_head_preserves_upstream_content_length_without_body: test
+journal_bridge_interleaves_streams_to_correct_clients_on_one_carrier: test
+journal_bridge_logs_redacted_failure_categories_only: test
+journal_bridge_reset_isolates_one_stream_on_shared_carrier: test
+journal_bridge_reuses_one_carrier_for_sequential_requests: test
+journal_bridge_shutdown_closes_active_carrier_and_streams: test
+journal_bridge_shutdown_frees_port: test
+journal_bridge_sse_does_not_block_second_get_on_same_carrier: test
+journal_bridge_sse_fail_after_head_does_not_emit_502: test
+journal_bridge_sse_fail_before_head_returns_502: test
+journal_bridge_sse_streams_without_local_framing_headers: test
+journal_bridge_two_handles_use_separate_caps_and_carriers: test
+lan_only_no_endpoint_still_returns_no_endpoint: test
+observer_contract_authority_direct_pairing_uses_real_crypto_and_request_path: test
+observer_contract_authority_direct_status_vectors_use_documented_http_mapping: test
+observer_contract_authority_direct_v3_operations_have_identical_mtls_only_policy: test
+observer_contract_authority_direct_v3_reads_fail_closed_on_non_success: test
+observer_contract_authority_root_sse_preserves_data_and_heartbeat_bytes: test
+protocol_v3_ingest_captures_envelope_and_conflict_status: test
+protocol_v3_list_segments_is_strict_and_mtls_only: test
+protocol_v3_manifest_reads_do_not_require_an_observer_handle: test
+reachable_lan_rejection_never_dials_relay: test
+reachable_lan_success_never_dials_relay: test
+round_trips_request_over_real_tls_and_framing: test
+service_pair_persists_credential_without_register_request: test
+streams_multi_mib_body_under_window_flow_control: test
+test_adapter_3xx_redirect_on_get_clients_self_and_get_relay_access: test
+test_adapter_clients_self_404_no_put: test
+test_adapter_corrupt_json_get_no_put: test
+test_adapter_malformed_put_keeps_validated_get_journal_cache: test
+test_adapter_metadata_409_conflict_retry: test
+test_adapter_metadata_get_put_on_first_send: test
+test_adapter_metadata_keeps_prior_publication_when_relay_is_retired: test
+test_adapter_metadata_version_fallback_preserves_journal_name: test
+test_adapter_oversize_response_body_rejected: test
+test_adapter_relay_access_404_503_and_not_configured: test
+test_adapter_relay_access_ready: test
+test_adapter_service_and_carrier_share_post_connect_authority: test
+test_adapter_unchanged_snapshot_no_second_put: test
+transient_lan_fault_then_success_absorbed_before_relay: test
+wrong_pin_fails_the_handshake: test
+
+49 tests, 0 benchmarks
+     Running tests/upload_lifecycle_log.rs (target/debug/deps/upload_lifecycle_log-a7ff291802461297)
+lan_ingest_reports_shared_direct_outcome: test
+observer_contract_authority_upload_reuses_ingest_capture_seam: test
+
+2 tests, 0 benchmarks
+     Running tests/v3_header_callers.rs (target/debug/deps/v3_header_callers-ad5fe24eb52eeec6)
+v3_callers_use_v3_headers_and_retired_identity_is_absent: test
+
+1 test, 0 benchmarks
+   Doc-tests pl_transport_win
+0 tests, 0 benchmarks
