@@ -51,29 +51,64 @@ mod tests {
     #[tokio::test]
     async fn chunked_response_split_across_reads_waits_for_eof() {
         let (listener, origin) = listener().await;
+        let token = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJpc3MiOiJjb21wYXQiLCJzdWIiOiJpbnN0YW5jZTpjb21wYXQtaW5zdGFuY2UiLCJhdWQiOiJzcGwtcmVsYXkiLCJzY29wZSI6InNlc3Npb24uZGlhbCIsInZlciI6MiwiaW5zdGFuY2VfaWQiOiJjb21wYXQtaW5zdGFuY2UiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6NDEwMjQ0NDgwMCwianRpIjoiY29tcGF0In0.testsig";
+        let body = format!(
+            r#"{{"device_token":"{token}","protocol_version":2,"expires_at":"2100-01-01T00:00:00Z"}}"#
+        )
+        .into_bytes();
+        let split = body.len() / 2;
+        let (partial_tx, partial_rx) = oneshot::channel();
+        let (finish_tx, finish_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("control accept");
             read_control_request(&mut stream).await;
             stream
-                .write_all(
-                    b"HTTP/1.1 401 Unauthorized\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n",
-                )
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
                 .await
-                .expect("first chunk");
-            tokio::task::yield_now().await;
+                .expect("response head");
             stream
-                .write_all(b"5\r\npedia\r\n0\r\n\r\n")
+                .write_all(format!("{:X}\r\n", split).as_bytes())
+                .await
+                .expect("first chunk length");
+            stream
+                .write_all(&body[..split])
+                .await
+                .expect("first chunk body");
+            stream.write_all(b"\r\n").await.expect("first chunk end");
+            partial_tx.send(()).expect("partial notification");
+            finish_rx.await.expect("finish notification");
+            stream
+                .write_all(format!("{:X}\r\n", body.len() - split).as_bytes())
+                .await
+                .expect("second chunk length");
+            stream
+                .write_all(&body[split..])
+                .await
+                .expect("second chunk body");
+            stream
+                .write_all(b"\r\n0\r\n\r\n")
                 .await
                 .expect("terminal chunk");
-            let mut byte = [0u8; 1];
-            assert_eq!(stream.read(&mut byte).await.expect("client EOF"), 0);
+            stream.shutdown().await.expect("control EOF");
         });
 
-        rejected(
-            enroll_device(&origin, "compat-instance", "attestation")
+        let client =
+            tokio::spawn(
+                async move { enroll_device(&origin, "compat-instance", "attestation").await },
+            );
+        partial_rx.await.expect("first chunk sent");
+        tokio::task::yield_now().await;
+        assert!(
+            !client.is_finished(),
+            "a partial chunk must not complete the control operation"
+        );
+        finish_tx.send(()).expect("finish response");
+        assert_eq!(
+            client
                 .await
-                .expect_err("401 response"),
-            401,
+                .expect("control task")
+                .expect("completed chunked enrollment"),
+            token
         );
         server.await.expect("control server");
     }

@@ -6,7 +6,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use spl_core::pairlink::RelayPairLink;
-    use spl_transport::relay::dial_relay_ws;
     use spl_transport::{pair_over_relay, RelayError, TransportError};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -122,22 +121,19 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("relay listener");
-        let url = format!(
-            "ws://{}/session/dial?instance=compat-test",
-            listener.local_addr().expect("relay address")
-        );
+        let origin = format!("http://{}", listener.local_addr().expect("relay address"));
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.expect("relay accept");
             reject_upgrade(tcp, 402).await;
         });
 
-        let outer = rustls::ClientConfig::builder()
-            .with_root_certificates(rustls::RootCertStore::empty())
-            .with_no_client_auth();
-        let error = dial_relay_ws(&url, "compat-device-token", Arc::new(outer))
+        let error = pair_over_relay(&relay_link(origin), "compat-test", &serde_json::Map::new())
             .await
             .expect_err("402 rejection");
-        assert!(matches!(error, TransportError::Relay(RelayError::Unpaid)));
+        assert!(matches!(
+            error,
+            TransportError::Relay(RelayError::UpgradeRejected)
+        ));
         server.await.expect("relay task");
     }
 }
