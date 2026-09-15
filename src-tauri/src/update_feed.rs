@@ -71,6 +71,10 @@ impl UpdateSource for R2FeedSource {
         local_file: &Path,
         progress_sender: Option<Sender<i16>>,
     ) -> Result<(), Error> {
+        println!(
+            "{}",
+            observer_update::format_downloading_asset(&asset.FileName, &asset.Type)
+        );
         let url = resolve_asset_url(&self.base, &asset.FileName)?;
         download::download_url_to_file(&url, local_file, move |p| {
             if let Some(s) = &progress_sender {

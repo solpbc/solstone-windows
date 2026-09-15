@@ -453,6 +453,94 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
     }
 }
 
+/// Pure descriptor of an update asset (filename, version, and type).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAssetDescriptor {
+    pub file_name: String,
+    pub version: String,
+    pub asset_type: String,
+}
+
+impl UpdateAssetDescriptor {
+    pub fn new(
+        file_name: impl Into<String>,
+        version: impl Into<String>,
+        asset_type: impl Into<String>,
+    ) -> Self {
+        Self {
+            file_name: file_name.into(),
+            version: version.into(),
+            asset_type: asset_type.into(),
+        }
+    }
+}
+
+/// The classified strategy Velopack offered for an available update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdatePlan {
+    FullOnly {
+        target: UpdateAssetDescriptor,
+    },
+    DeltaChain {
+        base: UpdateAssetDescriptor,
+        deltas: Vec<UpdateAssetDescriptor>,
+        target: UpdateAssetDescriptor,
+    },
+}
+
+/// Classify an update into a pure `UpdatePlan`.
+/// Returns `DeltaChain` only when `base` is `Some` and `deltas` is non-empty;
+/// returns `FullOnly` otherwise.
+pub fn classify_update_plan(
+    base: Option<UpdateAssetDescriptor>,
+    deltas: Vec<UpdateAssetDescriptor>,
+    target: UpdateAssetDescriptor,
+) -> UpdatePlan {
+    match base {
+        Some(base) if !deltas.is_empty() => UpdatePlan::DeltaChain {
+            base,
+            deltas,
+            target,
+        },
+        _ => UpdatePlan::FullOnly { target },
+    }
+}
+
+/// Format the update plan line for CLI stdout.
+pub fn format_update_plan(plan: &UpdatePlan) -> String {
+    match plan {
+        UpdatePlan::FullOnly { target } => {
+            format!(
+                "--check-update: plan=full-only target={} type={} version={}",
+                target.file_name, target.asset_type, target.version
+            )
+        }
+        UpdatePlan::DeltaChain {
+            base,
+            deltas,
+            target,
+        } => {
+            let delta_list: Vec<&str> = deltas.iter().map(|d| d.file_name.as_str()).collect();
+            format!(
+                "--check-update: plan=delta-chain base={} version={} deltas={} target={} version={}",
+                base.file_name,
+                base.version,
+                delta_list.join(","),
+                target.file_name,
+                target.version
+            )
+        }
+    }
+}
+
+/// Format the downloading asset line for CLI stdout.
+pub fn format_downloading_asset(file_name: &str, asset_type: &str) -> String {
+    format!(
+        "--check-update: downloading asset: {} type={}",
+        file_name, asset_type
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,5 +810,98 @@ mod tests {
         let back: ReconciledUpdateStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(back.last_checked_at, Some(77));
         assert_eq!(back.last_check_outcome, Some(UpdateOutcome::UpToDate));
+    }
+
+    #[test]
+    fn classify_full_only_when_no_base() {
+        let target = UpdateAssetDescriptor::new("Solstone-2.0.3-full.nupkg", "2.0.3", "Full");
+        let plan = classify_update_plan(None, Vec::new(), target.clone());
+        assert_eq!(plan, UpdatePlan::FullOnly { target });
+    }
+
+    #[test]
+    fn classify_full_only_when_no_base_but_nonempty_deltas() {
+        let delta = UpdateAssetDescriptor::new("Solstone-2.0.3-delta.nupkg", "2.0.3", "Delta");
+        let target = UpdateAssetDescriptor::new("Solstone-2.0.3-full.nupkg", "2.0.3", "Full");
+        let plan = classify_update_plan(None, vec![delta], target.clone());
+        assert_eq!(plan, UpdatePlan::FullOnly { target });
+    }
+
+    #[test]
+    fn classify_full_only_when_base_present_but_empty_deltas() {
+        let base = UpdateAssetDescriptor::new("Solstone-2.0.2-full.nupkg", "2.0.2", "Full");
+        let target = UpdateAssetDescriptor::new("Solstone-2.0.3-full.nupkg", "2.0.3", "Full");
+        let plan = classify_update_plan(Some(base), Vec::new(), target.clone());
+        assert_eq!(plan, UpdatePlan::FullOnly { target });
+    }
+
+    #[test]
+    fn classify_delta_chain_single_delta() {
+        let base = UpdateAssetDescriptor::new("Solstone-2.0.2-full.nupkg", "2.0.2", "Full");
+        let delta = UpdateAssetDescriptor::new("Solstone-2.0.3-delta.nupkg", "2.0.3", "Delta");
+        let target = UpdateAssetDescriptor::new("Solstone-2.0.3-full.nupkg", "2.0.3", "Full");
+        let plan = classify_update_plan(Some(base.clone()), vec![delta.clone()], target.clone());
+        assert_eq!(
+            plan,
+            UpdatePlan::DeltaChain {
+                base,
+                deltas: vec![delta],
+                target,
+            }
+        );
+    }
+
+    #[test]
+    fn classify_delta_chain_multiple_deltas_preserves_order() {
+        let base = UpdateAssetDescriptor::new("Solstone-2.0.1-full.nupkg", "2.0.1", "Full");
+        let d1 = UpdateAssetDescriptor::new("Solstone-2.0.2-delta.nupkg", "2.0.2", "Delta");
+        let d2 = UpdateAssetDescriptor::new("Solstone-2.0.3-delta.nupkg", "2.0.3", "Delta");
+        let target = UpdateAssetDescriptor::new("Solstone-2.0.3-full.nupkg", "2.0.3", "Full");
+        let plan = classify_update_plan(
+            Some(base.clone()),
+            vec![d1.clone(), d2.clone()],
+            target.clone(),
+        );
+        match plan {
+            UpdatePlan::DeltaChain {
+                base: b,
+                deltas,
+                target: t,
+            } => {
+                assert_eq!(b, base);
+                assert_eq!(deltas, vec![d1, d2]);
+                assert_eq!(t, target);
+            }
+            UpdatePlan::FullOnly { .. } => panic!("expected DeltaChain"),
+        }
+    }
+
+    #[test]
+    fn format_output_contains_tokens_and_exact_filenames() {
+        let base = UpdateAssetDescriptor::new("Solstone-2.0.2-full.nupkg", "2.0.2", "Full");
+        let delta = UpdateAssetDescriptor::new("Solstone-2.0.3-delta.nupkg", "2.0.3", "Delta");
+        let target = UpdateAssetDescriptor::new("Solstone-2.0.3-full.nupkg", "2.0.3", "Full");
+
+        let full_plan = UpdatePlan::FullOnly {
+            target: target.clone(),
+        };
+        let full_line = format_update_plan(&full_plan);
+        assert!(full_line.contains("plan=full-only"));
+        assert!(full_line.contains("Solstone-2.0.3-full.nupkg"));
+
+        let delta_plan = UpdatePlan::DeltaChain {
+            base: base.clone(),
+            deltas: vec![delta.clone()],
+            target: target.clone(),
+        };
+        let delta_line = format_update_plan(&delta_plan);
+        assert!(delta_line.contains("plan=delta-chain"));
+        assert!(delta_line.contains("Solstone-2.0.2-full.nupkg"));
+        assert!(delta_line.contains("Solstone-2.0.3-delta.nupkg"));
+        assert!(delta_line.contains("Solstone-2.0.3-full.nupkg"));
+
+        let download_line = format_downloading_asset(&delta.file_name, &delta.asset_type);
+        assert!(download_line.contains("downloading asset: Solstone-2.0.3-delta.nupkg"));
+        assert!(download_line.contains("type=Delta"));
     }
 }

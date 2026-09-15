@@ -66,12 +66,12 @@ fn main() -> ExitCode {
 
     // Headless check + stage of an update (readies it for --apply-update).
     if args.iter().any(|a| a == "--check-update") {
-        return update::check_update_cli();
+        return update::check_update_cli(&args);
     }
 
     // Headless apply of a staged update (the CLI analog of relaunch-to-install).
     if args.iter().any(|a| a == "--apply-update") {
-        return update::apply_pending_cli();
+        return update::apply_pending_cli(&args);
     }
 
     // Agent-native exclusion diagnostic: the windows the enumerator sees on the

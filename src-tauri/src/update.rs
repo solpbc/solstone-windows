@@ -31,8 +31,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_update::{
-    reduce, CheckInterval, CheckOutcome, ReconciledUpdateStatus, UpdateActivity, UpdateEvent,
-    UpdatePrefs, UpdateState, UpdateView,
+    classify_update_plan, format_update_plan, reduce, CheckInterval, CheckOutcome,
+    ReconciledUpdateStatus, UpdateActivity, UpdateAssetDescriptor, UpdateEvent, UpdatePrefs,
+    UpdateState, UpdateView,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -135,16 +136,16 @@ fn neutralize_staging_id(data_root: &Path) {
     }
 }
 
-/// Construct the Velopack `UpdateManager` over our R2 feed. `None` when the app is
+/// Construct the Velopack `UpdateManager` over the given feed URL. `None` when the app is
 /// not Velopack-installed (e.g. a dev tree), surfaced honestly as `Unavailable`.
-fn build_manager() -> Option<UpdateManager> {
+fn build_manager_with_feed(feed_url: &str) -> Option<UpdateManager> {
     let opts = UpdateOptions {
         // Explicit so feed resolution is deterministic (`releases.win.json`),
         // even though the build's default channel is already `win`.
         ExplicitChannel: Some(CHANNEL.to_string()),
         ..Default::default()
     };
-    match UpdateManager::new(R2FeedSource::new(FEED_URL), Some(opts), None) {
+    match UpdateManager::new(R2FeedSource::new(feed_url), Some(opts), None) {
         Ok(m) => Some(m),
         Err(e) => {
             tracing::warn!(
@@ -158,21 +159,75 @@ fn build_manager() -> Option<UpdateManager> {
     }
 }
 
+fn build_manager() -> Option<UpdateManager> {
+    build_manager_with_feed(FEED_URL)
+}
+
+/// Extract `--update-feed <url>` from CLI args for `--check-update` and `--apply-update`.
+/// Rejects missing, empty, equals-form (`--update-feed=...`), and query-string URLs.
+fn parse_update_feed_arg(args: &[String]) -> Result<Option<&str>, &'static str> {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i].starts_with("--update-feed=") {
+            return Err("--update-feed does not accept '=' form; pass '--update-feed <url>' as separate arguments");
+        }
+        if args[i] == "--update-feed" {
+            let Some(val) = args.get(i + 1) else {
+                return Err("--update-feed requires a URL argument");
+            };
+            let trimmed = val.trim();
+            if trimmed.is_empty() {
+                return Err("--update-feed URL cannot be empty");
+            }
+            if trimmed.contains('?') {
+                return Err("--update-feed URL must not contain query strings");
+            }
+            return Ok(Some(trimmed));
+        }
+        i += 1;
+    }
+    Ok(None)
+}
+
 /// Headless check + stage of an update (`--check-update`) — readies an update
 /// without the GUI: checks the feed, and if a newer version is available downloads
 /// it (full or delta) and stages it for the next launch. Apply it with
 /// `--apply-update`. Neutralizes the staging id first (Article 8), same as the GUI
 /// boot. Enables unattended update + the build-box end-to-end delta validation.
-pub fn check_update_cli() -> std::process::ExitCode {
+pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
+    let feed_override = match parse_update_feed_arg(args) {
+        Ok(f) => f,
+        Err(msg) => {
+            eprintln!("--check-update: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let feed_url = feed_override.unwrap_or(FEED_URL);
     // Article 8: strip velopack's per-install staging UUID before the check.
     neutralize_staging_id(&platform_win::local_data_root());
-    let Some(manager) = build_manager() else {
+    let Some(manager) = build_manager_with_feed(feed_url) else {
         eprintln!("--check-update: updater unavailable (not installed via Velopack?)");
         return ExitCode::FAILURE;
     };
     match manager.check_for_updates() {
         Ok(UpdateCheck::UpdateAvailable(info)) => {
+            let base = info.BaseRelease.as_ref().map(|a| {
+                UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
+            });
+            let deltas = info
+                .DeltasToTarget
+                .iter()
+                .map(|a| UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type))
+                .collect();
+            let target = UpdateAssetDescriptor::new(
+                &info.TargetFullRelease.FileName,
+                info.TargetFullRelease.Version.to_string(),
+                &info.TargetFullRelease.Type,
+            );
+            let plan = classify_update_plan(base, deltas, target);
+            println!("{}", format_update_plan(&plan));
+
             let v = info.TargetFullRelease.Version.clone();
             println!("--check-update: update available: {v}; downloading...");
             if let Err(e) = manager.download_updates(&info, None) {
@@ -201,9 +256,17 @@ pub fn check_update_cli() -> std::process::ExitCode {
 /// relaunch-to-install (`--apply-update`). Applies the pending-restart package via
 /// Velopack (which relaunches the app), or exits nonzero when nothing is staged.
 /// Enables unattended apply and the build-box end-to-end delta validation.
-pub fn apply_pending_cli() -> std::process::ExitCode {
+pub fn apply_pending_cli(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
-    let Some(manager) = build_manager() else {
+    let feed_override = match parse_update_feed_arg(args) {
+        Ok(f) => f,
+        Err(msg) => {
+            eprintln!("--apply-update: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let feed_url = feed_override.unwrap_or(FEED_URL);
+    let Some(manager) = build_manager_with_feed(feed_url) else {
         eprintln!("--apply-update: updater unavailable (not installed via Velopack?)");
         return ExitCode::FAILURE;
     };
@@ -373,6 +436,20 @@ impl UpdateController {
         let ctrl = self.clone();
         std::thread::spawn(move || match manager.check_for_updates() {
             Ok(UpdateCheck::UpdateAvailable(info)) => {
+                let base = info.BaseRelease.as_ref().map(|a| {
+                    UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
+                });
+                let deltas = info
+                    .DeltasToTarget
+                    .iter()
+                    .map(|a| UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type))
+                    .collect();
+                let target = UpdateAssetDescriptor::new(
+                    &info.TargetFullRelease.FileName,
+                    info.TargetFullRelease.Version.to_string(),
+                    &info.TargetFullRelease.Type,
+                );
+                let plan = classify_update_plan(base, deltas, target);
                 let version = info.TargetFullRelease.Version.clone();
                 let notes = non_empty(&info.TargetFullRelease.NotesMarkdown);
                 ctrl.inner.rt.lock().expect("update rt").available_info = Some(*info);
@@ -381,6 +458,7 @@ impl UpdateController {
                     operation = "check",
                     result = "available",
                     version = %version,
+                    plan = %format_update_plan(&plan),
                     "update check result"
                 );
                 ctrl.apply(UpdateEvent::CheckResult {

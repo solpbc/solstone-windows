@@ -552,14 +552,19 @@ publication.
 - Invoke `.cmd` shims via `cmd.exe /c`.
 - The FlaUI smoke runs via a low-privilege scheduled task
   (`LogonType=Interactive`) into Session 1 against the installed app.
-- Delta-update validation: install N → bump → package N+1 → after controlled
-  aggregate publication to R2 →
-  ready the update with `solstone-windows-app.exe --check-update` (asserts it
-  finds N+1, downloads the *delta*, and stages it) → apply with
-  `solstone-windows-app.exe --apply-update` (the CLI analogs of the in-app
-  check / relaunch-to-install) → assert the relaunched app reports the new version
-  via `--dump-state`. (The running app's auto-check timer is unit-tested; the CLI
-  verbs make the delta mechanics deterministically verifiable headless.)
+- Delta-update validation:
+  - Velopack 1.2.0 contract: delta updates require a local full package on disk at `%LocalAppData%\Solstone\packages\*-full.nupkg` whose nuspec version < remote, a remote feed asset with `Type=Delta` whose `Version` matches the latest remote `Full`, and a successful binary patch via `Update.exe patch`. The staged pending file on disk is always the reconstructed full nupkg (`packages\Solstone-<V>-full.nupkg`), so staged basename alone does not indicate whether a delta was downloaded.
+  - Observable stdout tokens on `solstone-windows-app.exe --check-update`:
+    - `plan=delta-chain`: strategy offered deltas from local base.
+    - `plan=full-only`: strategy selected full package only (e.g. no local base nupkg present).
+    - `downloading asset: Solstone-<V>-delta.nupkg`: delta package asset was requested from the feed. If followed by a subsequent `downloading asset: Solstone-<V>-full.nupkg`, `Update.exe patch` or network download failed and triggered fallback to full.
+  - Disposable proof workflow (unsigned, off-origin):
+    - Build/package baseline N with `solstone-setup-<N>.exe`.
+    - Install N using the setup installer (not portable zip extract, so `%LocalAppData%\Solstone\packages\Solstone-<N>-full.nupkg` is populated).
+    - Package N+1 unsigned via `scripts\package.ps1 -DeltaBaseFull Solstone-<N>-full.nupkg` (note: `-DeltaBaseFull` is not forwarded by `make package` / `win-package.cmd`; follow-up).
+    - Serve candidate N+1's releases directory on a disposable local static server (off `updates.solstone.app`).
+    - Execute `solstone-windows-app.exe --check-update --update-feed <url>`: assert stdout contains `plan=delta-chain` and `downloading asset: Solstone-<N+1>-delta.nupkg`.
+    - Apply with `solstone-windows-app.exe --apply-update --update-feed <url>` and assert the updated binary reports version N+1 via `--dump-state`.
 
 ## Remote build host (optional)
 
