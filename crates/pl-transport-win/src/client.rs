@@ -45,27 +45,347 @@ pub(crate) struct RelayFence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential::{EndpointAddr, PairedState, FS_FAIL_POINT};
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use spl_transport::client::{TokenCommit, TokenCommitContext, TokenTransaction};
+    use spl_transport::RelayError;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    macro_rules! client_tests {
-        ($($name:ident),+ $(,)?) => { $(
-            #[test]
-            fn $name() {
-                let fence = RelayFence::new(true);
-                assert_eq!(SharedRelayFence::permit(&fence, 1), RelayPermit::Allow);
-            }
-        )+ };
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn relay_credential() -> Credential {
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        Credential {
+            client_key_pem: key.serialize_pem(),
+            client_cert_pem: cert.pem(),
+            ca_chain_pem: vec![cert.pem()],
+            ca_fp_prefix: vec![0; 16],
+            instance_id: "test".into(),
+            home_label: "Home".into(),
+            endpoints: vec![EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: 9,
+            }],
+            relay_origin: Some("https://relay.example.com".into()),
+            device_token: Some("old-token".into()),
+            device_token_expires_at: Some(1_700_000_000),
+        }
     }
 
-    client_tests!(
-        cancelled_refresh_waiter_keeps_disk_token_and_live_cas_publication_owned,
-        carrier_kind_maps_to_transport_path,
-        persist_token_reconciles_post_rename_uncertainty,
-        rejected_transaction_stops_relay_only_requests_before_any_relay_dial,
-        relay_fault_is_transient_truth_table,
-        relay_fence_permit_preserves_disable_retire_and_incarnation_precedence,
-        retired_refresh_waiting_for_publication_cannot_change_disk,
-        stale_token_transaction_cannot_fence_or_write_the_successor_incarnation,
-    );
+    fn temp_pairing_path() -> PathBuf {
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "plw-client-test-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            sequence
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("pairing.json")
+    }
+
+    fn save_credential(path: &std::path::Path, credential: &Credential) {
+        PairedState {
+            credential: Some(credential.clone()),
+            access_mutation_generation: 0,
+        }
+        .save(path)
+        .unwrap();
+    }
+
+    #[test]
+    fn carrier_kind_maps_to_transport_path() {
+        assert_eq!(
+            map_selected_path(SelectedPath::Direct),
+            TransportPath::Direct
+        );
+        assert_eq!(map_selected_path(SelectedPath::Relay), TransportPath::Relay);
+    }
+
+    #[test]
+    fn relay_fault_is_transient_truth_table() {
+        for error in [
+            RelayError::HomeOffline,
+            RelayError::Abnormal,
+            RelayError::Overflow,
+            RelayError::Stalled,
+        ] {
+            assert!(error.is_transient(), "{error:?} should retry");
+        }
+        for error in [
+            RelayError::Unauthorized,
+            RelayError::Unpaid,
+            RelayError::UnknownInstance,
+            RelayError::PairWindowClosed,
+            RelayError::UpgradeRejected,
+            RelayError::HomeListenConnection,
+            RelayError::HomeRelayConfiguration,
+            RelayError::HomeTunnelRejected(503),
+        ] {
+            assert!(!error.is_transient(), "{error:?} should stop");
+        }
+    }
+
+    #[test]
+    fn persist_token_reconciles_post_rename_uncertainty() {
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        save_credential(&path, &credential);
+        let initial_cas = CasKey {
+            pairing_generation: pairing_generation(&credential.client_cert_pem),
+            access_mutation_generation: 0,
+        };
+        let client = ObserverClient::new(credential)
+            .unwrap()
+            .with_state_path(path.clone())
+            .with_cas_key(initial_cas);
+
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(2));
+        let commit = client.token_transaction.commit(TokenCommitContext {
+            token: "fresh-token",
+            expires_at: 1_800_000_000,
+            previous_token: "old-token",
+            incarnation: 1,
+        });
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(0));
+
+        assert_eq!(commit, TokenCommit::Committed { generation: 1 });
+        assert_eq!(
+            client.current_cas_key(),
+            Some(CasKey {
+                access_mutation_generation: 1,
+                ..initial_cas
+            })
+        );
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 1);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("fresh-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn retired_refresh_waiting_for_publication_cannot_change_disk() {
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        save_credential(&path, &credential);
+        let client = Arc::new(
+            ObserverClient::new(credential)
+                .unwrap()
+                .with_state_path(path.clone()),
+        );
+        let slot = ClientSlot::new(client.clone());
+        let owner = slot.publication_owner();
+        let owner_guard = owner.lock().unwrap();
+        let transaction = client.token_transaction.clone();
+        let fence = client.relay_fence.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let mut outcome = None;
+            let mut publish = || {
+                outcome = Some(transaction.commit(TokenCommitContext {
+                    token: "stale-token",
+                    expires_at: 1_900_000_000,
+                    previous_token: "old-token",
+                    incarnation: 1,
+                }));
+            };
+            SharedRelayFence::with_publication(fence.as_ref(), &mut publish);
+            outcome.unwrap()
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        slot.retire();
+        drop(owner_guard);
+
+        assert_eq!(worker.join().unwrap(), TokenCommit::Unchanged);
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 0);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("old-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_refresh_waiter_keeps_disk_token_and_live_cas_publication_owned() {
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        save_credential(&path, &credential);
+        let initial_cas = CasKey {
+            pairing_generation: pairing_generation(&credential.client_cert_pem),
+            access_mutation_generation: 0,
+        };
+        let client = Arc::new(
+            ObserverClient::new(credential)
+                .unwrap()
+                .with_state_path(path.clone())
+                .with_cas_key(initial_cas),
+        );
+        let slot = ClientSlot::new(client.clone());
+        let owner = slot.publication_owner();
+        let owner_guard = owner.lock().unwrap();
+        let transaction = client.token_transaction.clone();
+        let fence = client.relay_fence.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let waiter = tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            let mut outcome = None;
+            let mut publish = || {
+                outcome = Some(transaction.commit(TokenCommitContext {
+                    token: "owned-token",
+                    expires_at: 1_900_000_000,
+                    previous_token: "old-token",
+                    incarnation: 1,
+                }));
+            };
+            SharedRelayFence::with_publication(fence.as_ref(), &mut publish);
+            outcome.unwrap()
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        waiter.abort();
+        drop(owner_guard);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while client
+                .current_cas_key()
+                .map(|key| key.access_mutation_generation)
+                != Some(1)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owned publication did not finish after its waiter was cancelled");
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 1);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("owned-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn stale_token_transaction_cannot_fence_or_write_the_successor_incarnation() {
+        let credential = relay_credential();
+        let path = temp_pairing_path();
+        save_credential(&path, &credential);
+        let fence = Arc::new(RelayFence::new(true));
+        let initial_cas = CasKey {
+            pairing_generation: pairing_generation(&credential.client_cert_pem),
+            access_mutation_generation: 0,
+        };
+        let cas_key = Arc::new(std::sync::Mutex::new(Some(initial_cas)));
+        let transaction = WindowsTokenTransaction::new(
+            Arc::new(std::sync::Mutex::new(Some(path.clone()))),
+            cas_key.clone(),
+            initial_cas.pairing_generation,
+            fence.clone(),
+            1,
+        );
+
+        assert_eq!(fence.advance_from(1, true), Some(2));
+        assert_eq!(
+            transaction.commit(TokenCommitContext {
+                token: "stale-token",
+                expires_at: 1_900_000_000,
+                previous_token: "old-token",
+                incarnation: 1,
+            }),
+            TokenCommit::Unchanged
+        );
+        assert_eq!(
+            SharedRelayFence::permit(fence.as_ref(), 2),
+            RelayPermit::Allow
+        );
+        assert_eq!(*cas_key.lock().unwrap(), Some(initial_cas));
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 0);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("old-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn relay_fence_permit_preserves_disable_retire_and_incarnation_precedence() {
+        let retired = RelayFence::new(true);
+        retired.mark_relay_ineligible(1);
+        retired.retired.store(true, Ordering::Release);
+        assert_eq!(SharedRelayFence::permit(&retired, 1), RelayPermit::Retired);
+
+        let disabled = RelayFence::new(false);
+        assert_eq!(
+            SharedRelayFence::permit(&disabled, 1),
+            RelayPermit::Disabled
+        );
+
+        let stale = RelayFence::new(true);
+        assert_eq!(stale.advance_from(1, true), Some(2));
+        assert_eq!(SharedRelayFence::permit(&stale, 1), RelayPermit::Retired);
+        assert_eq!(SharedRelayFence::permit(&stale, 2), RelayPermit::Allow);
+
+        stale.mark_relay_ineligible(2);
+        assert_eq!(SharedRelayFence::permit(&stale, 2), RelayPermit::Disabled);
+        stale.retired.store(true, Ordering::Release);
+        assert_eq!(SharedRelayFence::permit(&stale, 2), RelayPermit::Retired);
+    }
+
+    #[tokio::test]
+    async fn rejected_transaction_stops_relay_only_requests_before_any_relay_dial() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = listener.local_addr().unwrap().port();
+        let mut credential = relay_credential();
+        credential.endpoints.clear();
+        credential.relay_origin = Some(format!("http://127.0.0.1:{relay_port}"));
+        let path = temp_pairing_path();
+        save_credential(&path, &credential);
+        let client = ObserverClient::new(credential)
+            .unwrap()
+            .with_state_path(path.clone());
+
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(1));
+        let commit = client.token_transaction.commit(TokenCommitContext {
+            token: "fresh-token",
+            expires_at: 1_900_000_000,
+            previous_token: "old-token",
+            incarnation: 1,
+        });
+        FS_FAIL_POINT.with(|fail_point| fail_point.set(0));
+        assert_eq!(commit, TokenCommit::Unchanged);
+        assert_eq!(
+            SharedRelayFence::permit(client.relay_fence.as_ref(), 1),
+            RelayPermit::Disabled
+        );
+        assert!(matches!(
+            client.system_status().await,
+            Err(TransportError::RelayDisabled)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "relay-only request dialed after publication rejection"
+        );
+        let persisted = PairedState::load(&path).unwrap();
+        assert_eq!(persisted.access_mutation_generation, 0);
+        assert_eq!(
+            persisted.credential.unwrap().device_token.as_deref(),
+            Some("old-token")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 }
 
 impl RelayFence {
@@ -262,6 +582,7 @@ impl ObserverClient {
     ) -> Result<Self, TransportError> {
         let transaction = Arc::new(WindowsTokenTransaction::new(
             state_path.clone(),
+            cas_key.clone(),
             pairing_generation(&credential.client_cert_pem),
             relay_fence.clone(),
             incarnation,
@@ -539,10 +860,7 @@ impl ObserverClient {
             )
             .await
             .map_err(map_request_error)?;
-        let path = match selected_path {
-            SelectedPath::Direct => TransportPath::Direct,
-            SelectedPath::Relay => TransportPath::Relay,
-        };
+        let path = map_selected_path(selected_path);
         Ok((
             HttpResponse {
                 status: response.status,
@@ -612,6 +930,13 @@ impl ObserverClient {
     fn next_boundary(&self) -> String {
         let n = self.boundary_counter.fetch_add(1, Ordering::Relaxed);
         format!("----solstonewindowsboundary{n}")
+    }
+}
+
+fn map_selected_path(selected_path: SelectedPath) -> TransportPath {
+    match selected_path {
+        SelectedPath::Direct => TransportPath::Direct,
+        SelectedPath::Relay => TransportPath::Relay,
     }
 }
 

@@ -432,6 +432,7 @@ impl PairedState {
 /// blocking task. This transaction only classifies durable Windows state.
 pub(crate) struct WindowsTokenTransaction {
     state_path: Arc<Mutex<Option<PathBuf>>>,
+    cas_key: Arc<Mutex<Option<CasKey>>>,
     pairing_generation: u64,
     relay_fence: Arc<RelayFence>,
     incarnation: u64,
@@ -440,12 +441,14 @@ pub(crate) struct WindowsTokenTransaction {
 impl WindowsTokenTransaction {
     pub(crate) fn new(
         state_path: Arc<Mutex<Option<PathBuf>>>,
+        cas_key: Arc<Mutex<Option<CasKey>>>,
         pairing_generation: u64,
         relay_fence: Arc<RelayFence>,
         incarnation: u64,
     ) -> Self {
         Self {
             state_path,
+            cas_key,
             pairing_generation,
             relay_fence,
             incarnation,
@@ -463,6 +466,14 @@ impl WindowsTokenTransaction {
         // rejection is a relay eligibility fact, not slot retirement.
         self.relay_fence.mark_relay_ineligible(self.incarnation);
         TokenCommit::Unchanged
+    }
+
+    fn committed(&self, generation: u64) -> TokenCommit {
+        *self.cas_key.lock().unwrap() = Some(CasKey {
+            pairing_generation: self.pairing_generation,
+            access_mutation_generation: generation,
+        });
+        TokenCommit::Committed { generation }
     }
 
     fn classify_readback(
@@ -486,9 +497,7 @@ impl WindowsTokenTransaction {
             && credential.device_token.as_deref() == Some(token)
             && credential.device_token_expires_at == Some(expires_at)
         {
-            TokenCommit::Committed {
-                generation: expected_next_generation,
-            }
+            self.committed(expected_next_generation)
         } else {
             self.unchanged()
         }
@@ -533,9 +542,7 @@ impl TokenTransaction for WindowsTokenTransaction {
         );
 
         match result {
-            Ok(generation) if generation == expected_next_generation => {
-                TokenCommit::Committed { generation }
-            }
+            Ok(generation) if generation == expected_next_generation => self.committed(generation),
             Ok(_) | Err(_) => {
                 self.classify_readback(&path, expected_next_generation, ctx.token, ctx.expires_at)
             }
@@ -715,6 +722,10 @@ mod tests {
         (
             WindowsTokenTransaction::new(
                 Arc::new(Mutex::new(Some(path.to_path_buf()))),
+                Arc::new(Mutex::new(Some(CasKey {
+                    pairing_generation,
+                    access_mutation_generation: state.access_mutation_generation,
+                }))),
                 pairing_generation,
                 fence.clone(),
                 1,
@@ -742,6 +753,10 @@ mod tests {
         let fence = Arc::new(RelayFence::new(true));
         let transaction = WindowsTokenTransaction::new(
             Arc::new(Mutex::new(Some(path.clone()))),
+            Arc::new(Mutex::new(Some(CasKey {
+                pairing_generation: pairing_generation("CERT"),
+                access_mutation_generation: 0,
+            }))),
             pairing_generation("CERT"),
             fence,
             1,

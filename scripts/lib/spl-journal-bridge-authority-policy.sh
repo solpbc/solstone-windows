@@ -30,7 +30,7 @@ for manifest in "$ROOT/Cargo.toml" "$ROOT"/*/Cargo.toml "$ROOT"/*/*/Cargo.toml; 
 done
 
 if [ -f "$ROOT/Cargo.lock" ]; then
-  expected_source="git+https://github.com/solpbc/spl-rust?rev=3926ac33e1b1f1b5fa1855abf576816109b501ab#3926ac33e1b1f1b5fa1855abf576816109b501ab"
+  expected_source="git+https://github.com/solpbc/spl-rust?rev=44d17b0e02fd9937449dcebec5fd43aad827bd7f#44d17b0e02fd9937449dcebec5fd43aad827bd7f"
   for package in spl-core spl-transport; do
     source=$(awk -v package="$package" '
       $0 == "[[package]]" { in_package = 0 }
@@ -70,6 +70,8 @@ production="$ROOT/crates/pl-transport-win/src"
 if [ -d "$production" ]; then
   forbidden=$(find "$production" -path '*/test_compat/*' -prune -o -name '*.rs' -exec grep -HnE 'TransportClient::dial_carrier|MuxCarrier|disconnect_relay_if_active' {} + 2>/dev/null || true)
   [ -z "$forbidden" ] || violation "local carrier authority remains: $forbidden"
+  stubbed=$(grep -HnF 'macro_rules! client_tests' "$production/client.rs" 2>/dev/null || true)
+  [ -z "$stubbed" ] || violation "AC11 client behavior collapsed into generated name-only stubs: $stubbed"
 fi
 
 # AC10 applies to test compatibility modules too: they may call shared APIs, but

@@ -39,9 +39,15 @@ if sh "$POLICY" --root "$TEST_ROOT" >/dev/null 2>&1; then
   exit 1
 fi
 rm "$TEST_ROOT/crates/pl-transport-win/src/test_compat/red_mux.rs"
+printf 'macro_rules! client_tests { () => {} }\n' > "$TEST_ROOT/crates/pl-transport-win/src/client.rs"
+if sh "$POLICY" --root "$TEST_ROOT" >/dev/null 2>&1; then
+  echo "generated AC11 client stub fixture unexpectedly passed" >&2
+  exit 1
+fi
+rm "$TEST_ROOT/crates/pl-transport-win/src/client.rs"
 sh "$POLICY" --root "$TEST_ROOT" >/dev/null
 
-sed 's/rev = "3926ac33e1b1f1b5fa1855abf576816109b501ab"/branch = "main"/' "$ROOT/Cargo.toml" > "$TEST_ROOT/Cargo.toml"
+sed 's/rev = "44d17b0e02fd9937449dcebec5fd43aad827bd7f"/branch = "main"/' "$ROOT/Cargo.toml" > "$TEST_ROOT/Cargo.toml"
 if sh "$POLICY" --root "$TEST_ROOT" >/dev/null 2>&1; then
   echo "non-exact dependency fixture unexpectedly passed" >&2
   exit 1

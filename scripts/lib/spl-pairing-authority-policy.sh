@@ -67,7 +67,7 @@ if [ -n "$search_dirs" ]; then
 fi
 
 # 5. Dependency pins for spl-core and spl-transport
-expected_rev="3926ac33e1b1f1b5fa1855abf576816109b501ab"
+expected_rev="44d17b0e02fd9937449dcebec5fd43aad827bd7f"
 expected_git="https://github.com/solpbc/spl-rust"
 
 if [ -f "$ROOT/Cargo.toml" ]; then
