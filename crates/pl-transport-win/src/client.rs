@@ -255,17 +255,20 @@ mod tests {
         waiter.abort();
         drop(owner_guard);
 
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while client
-                .current_cas_key()
-                .map(|key| key.access_mutation_generation)
-                != Some(1)
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("owned publication did not finish after its waiter was cancelled");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), waiter)
+                .await
+                .expect("owned publication did not finish after its waiter was cancelled")
+                .expect("owned publication task panicked"),
+            TokenCommit::Committed { generation: 1 }
+        );
+        assert_eq!(
+            client.current_cas_key(),
+            Some(CasKey {
+                access_mutation_generation: 1,
+                ..initial_cas
+            })
+        );
         let persisted = PairedState::load(&path).unwrap();
         assert_eq!(persisted.access_mutation_generation, 1);
         assert_eq!(
