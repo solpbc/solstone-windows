@@ -14,7 +14,7 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
 | Source-bound build and atomic finalization | Set the release commit, advisory digest, and the three mirror-packet variables below, then run `make package` |
 | Prove one exact signed candidate by isolated install and explicit smoke | `make prove-rust-release-native RELEASE_DIR=target/release-candidate/<VERSION>` |
-| Publish retained release evidence after delivery | `make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>` |
+| Publish retained release evidence after delivery | Suspended during the Rust conversion freeze; do not override `TRANSPARENCY_ACTIVATED=0` |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
 | R2 direct-publication guard (**primary channel remains R2**) | `make publish-r2` (always fails closed) |
 | GitHub direct-publication guard (optional, non-authoritative mirror) | `make publish` (always fails closed) |
@@ -211,8 +211,8 @@ missing; cut and review it before starting the transaction.
 
 ## Update feed: R2 authoritative, optional GitHub mirror
 
-The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows/`
-is a privacy-clean static surface (no analytics, GET-only). The in-app updater
+The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows/`.
+The in-app updater
 fetches `releases.win.json` from there with a bare, query-free manifest GET via
 the custom local Velopack `UpdateSource`; package downloads still request the
 package files by filename from the same first-party feed host. R2 is the
@@ -282,8 +282,9 @@ and a missing or failed mirror never blocks a release.
      PUBLICATION_RECEIPT=/absolute/path/to/windows-origin-publication.json
    ```
 
-   Use the release operator's R2 S3-compatible credential; do not place it in
-   the repository or candidate directory. The conditional S3 `PutObject` call is
+   Use the release-origin R2 S3-compatible credential, not the separate
+   transparency-publisher identity; do not place it in the repository or
+   candidate directory. The conditional S3 `PutObject` call is
    the create-only enforcement for immutable keys. A concurrent winner is fetched
    and accepted only when its bytes equal the candidate.
 
@@ -324,23 +325,14 @@ These are secondary discovery surfaces; R2 remains authoritative, and any GitHub
 mirror is optional and non-authoritative. They are **community-moderated**, so factor
 the wait into release planning, don't block on it.
 
-- **winget (`microsoft/winget-pkgs`).** A **first/new-package** PR for a publisher is
-  the gated, slow step: after the Azure validation pipeline (~30-40 min) labels it
-  `Azure-Pipeline-Passed`/`Validation-Completed`, it sits on a **human (volunteer)
-  moderator** approval (`REVIEW_REQUIRED` → `Moderator-Approved` → auto-merge). Empirical
-  (gh, June 2026): new-package merges run a **median ~3.7 days, p90 ~6 days, tail to
-  1-2 weeks** (weekends slow it). **Subsequent version-update PRs are the fast path**:
-  median **~2 hours**, frequently auto-merged with no human (a "verified developer"
-  self-serve path is in development). So: land the first package once, then version bumps
-  are near-instant (build a little slack for the occasional one that hits the manual
-  queue). Don't close/reopen or push empty commits to "nudge" (resets validation); for
-  genuinely urgent items moderators watch the community Discord.
+- **winget (`microsoft/winget-pkgs`).** Submission and review are external and
+  variable. Do not block the authoritative R2 release on moderator timing, and
+  do not close/reopen or push empty commits to nudge a pending submission.
 - **scoop**: bucket PR, lighter process.
 - **After aggregate publication, run `make check-channels`**: it derives the
   expected version from Cargo metadata, reads the live channels, and exits non-zero
   on drift. It does not repair drift; release publication belongs to the aggregate
-  provenance publisher. winget once sat **ten releases stale** (0.2.0 while we
-  shipped 0.2.10) before anyone noticed. Manifest inputs remain in-repo
+  provenance publisher. Manifest inputs remain in-repo
   (`packaging/winget/`, `packaging/scoop/`); see `packaging/DISTRIBUTION.md`.
 - **Chocolatey**: a third channel (enterprise/IT-admin reach) we have **not** adopted;
   its community repo is also human-moderated. Evaluate deliberately, below winget/scoop.
@@ -431,8 +423,12 @@ certificate, and Session-1 evidence is earned only by running it on the box.
 
 ## Release transparency
 
-Run `make publish-transparency RELEASE_DIR=target/release-candidate/<VERSION>`
-only after the aggregate provenance publisher has completed authoritative
+Windows release transparency is suspended during the Rust conversion freeze.
+The Makefile defaults `TRANSPARENCY_ACTIVATED=0` and both transparency targets
+refuse; do not override that guard during a release. The remainder of this
+section is the dormant transaction contract for the post-conversion review,
+not a current release step. When reactivated, run `make publish-transparency
+RELEASE_DIR=target/release-candidate/<VERSION>` only after authoritative
 delivery; transparency publication never gates or rolls back that delivery.
 Both publishing and retrying require the local checkout to sit on the
 candidate's exact commit with a clean working tree; xtask inherits this from
@@ -538,10 +534,8 @@ publication.
 - Canonical checkout paths keep their Windows verbatim form for containment and
   identity checks, but child-process path text permits only drive and UNC forms
   and removes their verbatim prefix. The ordinary child paths therefore inherit
-  the 260-character limit of tools that do not opt in to long paths. For the
-  current layout and version, the longest repository-constructed finalizer path
-  is 78 characters beyond the checkout and the longest native-proof path is 90.
-  Those counts do not bound or prove Cargo- or Tauri-created descendants beneath
+  the 260-character limit of tools that do not opt in to long paths. That limit
+  does not bound or prove Cargo- or Tauri-created descendants beneath
   `CARGO_TARGET_DIR`, including build-script output and dependency intermediate
   directories. A shallow `~/swbuild`-style checkout is the sanctioned convention,
   not a maximum enforced by this repository or the build box. There is
@@ -565,6 +559,14 @@ publication.
     - Serve candidate N+1's releases directory on a disposable local static server (off `updates.solstone.app`).
     - Execute `solstone-windows-app.exe --check-update --update-feed <url>`: assert stdout contains `plan=delta-chain` and `downloading asset: Solstone-<N+1>-delta.nupkg`.
     - Apply with `solstone-windows-app.exe --apply-update --update-feed <url>` and assert the updated binary reports version N+1 via `--dump-state`.
+  - A released baseline built before these diagnostics cannot emit
+    `plan=delta-chain` or accept `--update-feed`; do not require N to speak
+    N+1's CLI contract. Against the production feed, distinguish the path by
+    artifact identity: successful delta application reconstructs a staged full
+    nupkg whose bytes differ from the published full download. Verify its
+    embedded app equals the accepted N+1 executable, then apply and verify the
+    signed relaunched version. A byte-identical staged full is full download or
+    fallback, not delta proof.
 
 ## Remote build host (optional)
 
