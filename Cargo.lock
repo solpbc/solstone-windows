@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "capture-engine"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-audio",
  "observer-health",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "capture-screen-encode"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
  "observer-nv12",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "capture-wasapi"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-mic",
  "observer-model",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "capture-wgc"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-exclusion",
  "observer-model",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "observer-audio"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "claxon",
  "flacenc",
@@ -2993,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "observer-contract"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
  "serde",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "observer-exclusion"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
  "serde",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "observer-health"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
  "serde_json",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "observer-hotkey"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -3028,14 +3028,14 @@ dependencies = [
 
 [[package]]
 name = "observer-lifecycle"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-log"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "observer-mic"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "observer-model"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -3063,7 +3063,7 @@ dependencies = [
 
 [[package]]
 name = "observer-nv12"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
  "thiserror 2.0.18",
@@ -3071,7 +3071,7 @@ dependencies = [
 
 [[package]]
 name = "observer-pl"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "base64 0.22.1",
  "observer-model",
@@ -3085,14 +3085,14 @@ dependencies = [
 
 [[package]]
 name = "observer-recovery"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-retention"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -3100,25 +3100,25 @@ dependencies = [
 
 [[package]]
 name = "observer-sample-timing"
-version = "2.0.3"
+version = "2.0.4"
 
 [[package]]
 name = "observer-segment"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-state"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-update"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -3348,7 +3348,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "pl-transport-win"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -3377,7 +3377,7 @@ dependencies = [
 
 [[package]]
 name = "platform-win"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "observer-audio",
  "observer-hotkey",
@@ -4352,7 +4352,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-windows-app"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "anyhow",
  "capture-engine",
@@ -6649,7 +6649,7 @@ checksum = "636f85e5ca6488e96401b61eb7de54f4e44755c988af0f52cf90230c312a1a89"
 
 [[package]]
 name = "xtask"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "base64 0.22.1",
  "jsonschema",
