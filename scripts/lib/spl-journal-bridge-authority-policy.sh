@@ -30,7 +30,7 @@ for manifest in "$ROOT/Cargo.toml" "$ROOT"/*/Cargo.toml "$ROOT"/*/*/Cargo.toml; 
 done
 
 if [ -f "$ROOT/Cargo.lock" ]; then
-  expected_source="git+https://github.com/solpbc/spl-rust?rev=44d17b0e02fd9937449dcebec5fd43aad827bd7f#44d17b0e02fd9937449dcebec5fd43aad827bd7f"
+  expected_source="git+https://github.com/solpbc/spl-rust?rev=fb82d70cd60eac83a5633d12511a4a8a102e26dd#fb82d70cd60eac83a5633d12511a4a8a102e26dd"
   for package in spl-core spl-transport; do
     source=$(awk -v package="$package" '
       $0 == "[[package]]" { in_package = 0 }

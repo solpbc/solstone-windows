@@ -248,6 +248,15 @@ impl BridgeLifecycle {
         if !self.active.load(Ordering::Acquire) {
             return;
         }
+        if status.terminal_reason.is_some() {
+            // The journal refused this device, or refusals went on too long:
+            // the bridge has stopped dialing for this pairing.
+            if let Ok(mut snapshot) = self.sync.lock() {
+                snapshot.pairing.phase = observer_model::PairingPhase::Failed;
+                snapshot.pairing.detail =
+                    Some(crate::coordinator::PAIRING_REFUSED_DETAIL.to_string());
+            }
+        }
         let was_live = self
             .carrier_live
             .swap(status.carrier_live, Ordering::AcqRel);

@@ -24,7 +24,8 @@ use observer_pl::ingest::{
 use observer_pl::{OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER};
 use spl_core::http::HttpResponse;
 use spl_transport::client::{RelayFence as SharedRelayFence, RelayPermit, TokenPublication};
-use spl_transport::request::{RequestOptions, RequestOutcome, SelectedPath};
+use spl_transport::handshake::{HandshakeFailure, HandshakeStop, RefusalTracker};
+use spl_transport::request::{RequestError, RequestOptions, RequestOutcome, SelectedPath};
 
 /// Maximum allowed response bytes for post-connect metadata/access endpoints (64 KiB).
 pub(crate) const MAX_POST_CONNECT_RESPONSE_BYTES: usize = 64 * 1024;
@@ -534,6 +535,12 @@ impl ClientSlot {
     pub fn proxy_headers(&self, upstream_headers: &[(String, String)]) -> Vec<(String, String)> {
         self.load().proxy_headers(upstream_headers)
     }
+
+    /// Why this pairing stopped reaching the journal, if it has: the journal
+    /// refused this device (access denied), or other refusals went on too long.
+    pub fn refusal_stop(&self) -> Option<HandshakeStop> {
+        self.load().refusal_stop()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -555,6 +562,8 @@ pub struct ObserverClient {
     relay_fence: Arc<RelayFence>,
     pub(crate) token_transaction: Arc<WindowsTokenTransaction>,
     transport: spl_transport::TransportClient,
+    /// Handshake refusals for this pairing, kept across access rebuilds.
+    refusals: Arc<std::sync::Mutex<RefusalTracker>>,
 }
 
 impl ObserverClient {
@@ -572,6 +581,7 @@ impl ObserverClient {
             None,
             Arc::new(RelayFence::new(relay_enabled)),
             1,
+            Arc::new(std::sync::Mutex::new(RefusalTracker::new())),
         )
     }
 
@@ -582,6 +592,7 @@ impl ObserverClient {
         observer: ObserverHandle,
         relay_fence: Arc<RelayFence>,
         incarnation: u64,
+        refusals: Arc<std::sync::Mutex<RefusalTracker>>,
     ) -> Result<Self, TransportError> {
         let transaction = Arc::new(WindowsTokenTransaction::new(
             state_path.clone(),
@@ -623,6 +634,7 @@ impl ObserverClient {
             relay_fence,
             token_transaction: transaction,
             transport,
+            refusals,
         })
     }
 
@@ -645,7 +657,27 @@ impl ObserverClient {
             incumbent.observer.clone(),
             incumbent.relay_fence.clone(),
             incarnation,
+            incumbent.refusals.clone(),
         )
+    }
+
+    /// Why this pairing stopped reaching the journal, if it has.
+    pub fn refusal_stop(&self) -> Option<HandshakeStop> {
+        self.refusals.lock().unwrap().stop()
+    }
+
+    /// Feed one request's outcome to the pairing's refusal rule. Any answer from
+    /// the journal proves it accepted this device; a local fence denial is not
+    /// an attempt at all.
+    fn note_attempt(&self, result: &Result<RequestOutcome, RequestError>) {
+        let mut refusals = self.refusals.lock().unwrap();
+        match result {
+            Ok(_) => refusals.accepted(),
+            Err(RequestError::Transport(error) | RequestError::ReplayUnsafe(error)) => {
+                refusals.failed(HandshakeFailure::classify(error));
+            }
+            Err(_) => {}
+        }
     }
 
     /// Access the underlying credential.
@@ -844,11 +876,12 @@ impl ObserverClient {
         let spec = route.spec();
         let path = route.path(day);
         let observer = self.observer.clone();
-        let RequestOutcome {
-            response,
-            path: selected_path,
-            attempts,
-        } = self
+        // A stopped pairing does not dial: the journal refused this device, or
+        // other refusals went on too long. Re-pairing builds a new client.
+        if let Some(stop) = self.refusal_stop() {
+            return Err(map_shared_error(stop.error()));
+        }
+        let result = self
             .transport
             .request(
                 spec.method,
@@ -861,8 +894,13 @@ impl ObserverClient {
                     observer: observer.as_deref(),
                 },
             )
-            .await
-            .map_err(map_request_error)?;
+            .await;
+        self.note_attempt(&result);
+        let RequestOutcome {
+            response,
+            path: selected_path,
+            attempts,
+        } = result.map_err(map_request_error)?;
         let path = map_selected_path(selected_path);
         Ok((
             HttpResponse {

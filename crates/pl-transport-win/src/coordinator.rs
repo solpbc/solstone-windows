@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use observer_model::{LocalOffset, SyncSnapshot, TransportPath};
+use observer_model::{LocalOffset, PairingPhase, SyncSnapshot, TransportPath};
 use observer_pl::civil;
 use observer_pl::ingest::{
     prove_custody, CustodyProof, CustodyWitness, DayManifest, FilePart, IngestManifest,
@@ -29,6 +29,7 @@ use observer_pl::ingest::{
 };
 use observer_retention::RetentionConfig;
 use spl_core::ca;
+use spl_transport::handshake::HandshakeStop;
 use tokio::sync::watch;
 
 use crate::client::{ClientSlot, ObserverClient, SendMetadata};
@@ -123,7 +124,16 @@ trait UploadClient: Send + Sync {
     fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a>;
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a>;
+
+    /// Why this pairing stopped reaching the journal, if it has.
+    fn refusal_stop(&self) -> Option<HandshakeStop> {
+        None
+    }
 }
+
+/// The pairing detail shown when the journal refused this device, or refusals
+/// went on too long. The saved pairing is kept; restarting tries again.
+pub const PAIRING_REFUSED_DETAIL: &str = "journal_refused";
 
 impl UploadClient for ObserverClient {
     fn ingest<'a>(
@@ -145,6 +155,10 @@ impl UploadClient for ObserverClient {
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
         Box::pin(ObserverClient::list_segments(self, day))
+    }
+
+    fn refusal_stop(&self) -> Option<HandshakeStop> {
+        ObserverClient::refusal_stop(self)
     }
 }
 
@@ -174,6 +188,10 @@ impl UploadClient for ClientSlot {
         let client = self.load();
         let day = day.to_string();
         Box::pin(async move { client.list_segments(&day).await })
+    }
+
+    fn refusal_stop(&self) -> Option<HandshakeStop> {
+        ClientSlot::refusal_stop(self)
     }
 }
 
@@ -824,9 +842,14 @@ impl UploadCoordinator {
     }
 
     fn note_tick_failure(&self, err: &TransportError) {
+        let stopped = self.client.refusal_stop().is_some();
         let was_healthy = if let Ok(mut snapshot) = self.sync.lock() {
             let healthy = snapshot.upload.recent_error_count == 0;
             snapshot.upload.record_failure(&transport_error_code(err));
+            if stopped {
+                snapshot.pairing.phase = PairingPhase::Failed;
+                snapshot.pairing.detail = Some(PAIRING_REFUSED_DETAIL.to_string());
+            }
             healthy
         } else {
             false
@@ -1174,6 +1197,7 @@ mod tests {
         ingests: Mutex<VecDeque<Result<(IngestResponse, SendMetadata), TransportError>>>,
         lists: Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
         submitted_day: Mutex<Option<String>>,
+        stop: Mutex<Option<HandshakeStop>>,
     }
 
     impl FakeClient {
@@ -1185,6 +1209,7 @@ mod tests {
                 ingests: Mutex::new(VecDeque::from(ingests)),
                 lists: Mutex::new(VecDeque::from(lists)),
                 submitted_day: Mutex::new(None),
+                stop: Mutex::new(None),
             })
         }
     }
@@ -1229,6 +1254,10 @@ mod tests {
                 .pop_front()
                 .expect("scripted list result");
             Box::pin(async move { result })
+        }
+
+        fn refusal_stop(&self) -> Option<HandshakeStop> {
+            *self.stop.lock().unwrap()
         }
     }
 
@@ -1741,6 +1770,47 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("Users"));
+    }
+
+    // SPL session § 7. Falsified by recording a stopped pairing as an ordinary failed tick: the
+    // owner keeps seeing "paired" while nothing can reach the journal.
+    #[tokio::test]
+    async fn a_stopped_pairing_reads_as_refused_and_an_ordinary_failure_does_not() {
+        for (stop, refused) in [
+            (Some(HandshakeStop::TlsAccessDenied), true),
+            (Some(HandshakeStop::RefusalsExhausted), true),
+            (None, false),
+        ] {
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            sync.lock().unwrap().pairing.phase = PairingPhase::Paired;
+            let store = MultiSegmentStore::new(vec![(
+                1,
+                1_700_000_100,
+                "display_1_screen.mp4",
+                b"first".to_vec(),
+            )]);
+            let client = FakeClient::new(
+                vec![Err(TransportError::Tls("tls access denied".into()))],
+                vec![],
+            );
+            *client.stop.lock().unwrap() = stop;
+            let coordinator =
+                coordinator_with_client(client.clone(), Box::new(store), sync.clone());
+
+            assert!(coordinator.tick().await.is_err());
+            let pairing = sync.lock().unwrap().pairing.clone();
+            if refused {
+                assert_eq!(pairing.phase, PairingPhase::Failed, "{stop:?}");
+                assert_eq!(
+                    pairing.detail.as_deref(),
+                    Some(PAIRING_REFUSED_DETAIL),
+                    "{stop:?}"
+                );
+            } else {
+                assert_eq!(pairing.phase, PairingPhase::Paired);
+                assert_eq!(pairing.detail, None);
+            }
+        }
     }
 
     #[tokio::test]

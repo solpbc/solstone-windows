@@ -17,6 +17,8 @@ const NO_NETWORK =
   "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
 const GENERIC =
   "pairing didn't go through. show a new pairing code on your journal and try again.";
+const JOURNAL_REFUSED =
+  "this PC can't connect to your journal with its saved pairing. show a new pairing code on your journal and pair again.";
 const PRIVATE_NETWORK_UNAVAILABLE =
   "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing code on your journal.";
 
@@ -180,6 +182,7 @@ describe("failed pairing status sentences", () => {
       { detail: "io", expected: NO_NETWORK },
       { detail: "pair_link", expected: PAIR_LINK },
       { detail: "relay_unpaid", expected: PRIVATE_NETWORK_UNAVAILABLE },
+      { detail: "journal_refused", expected: JOURNAL_REFUSED },
     ];
 
     for (const { detail, expected } of namedCases) {

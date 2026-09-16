@@ -983,6 +983,8 @@ function failedPairingLabel(detail: string | null | undefined): string {
       return "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
     case "relay_unpaid":
       return "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing code on your journal.";
+    case "journal_refused":
+      return "this PC can't connect to your journal with its saved pairing. show a new pairing code on your journal and pair again.";
     default:
       return "pairing didn't go through. show a new pairing code on your journal and try again.";
   }

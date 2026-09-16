@@ -37,6 +37,66 @@ pub fn server_config(cert: CertificateDer<'static>, key: PrivateKeyDer<'static>)
         .unwrap()
 }
 
+/// A journal-like client verifier: after the TLS 1.3 handshake it refuses every
+/// client certificate with the given error, the way a journal answers a device it
+/// will not accept (49 for `ApplicationVerificationFailure`, 46 for `Other`, 48
+/// for `UnknownIssuer`).
+#[derive(Debug)]
+pub struct RefusingClientVerifier(pub rustls::CertificateError);
+
+impl rustls::server::danger::ClientCertVerifier for RefusingClientVerifier {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        Err(rustls::Error::InvalidCertificate(self.0.clone()))
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// A server config that refuses every client certificate after the handshake.
+pub fn refusing_server_config(
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+    error: rustls::CertificateError,
+) -> ServerConfig {
+    ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_client_cert_verifier(Arc::new(RefusingClientVerifier(error)))
+        .with_single_cert(vec![cert], key)
+        .unwrap()
+}
+
 /// A direct-only observer credential pointing at one loopback endpoint.
 pub fn direct_credential(pin: Vec<u8>, port: u16) -> Credential {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();

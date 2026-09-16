@@ -119,6 +119,10 @@ pub(crate) fn map_shared_error(err: spl_transport::TransportError) -> TransportE
         spl_transport::TransportError::TlsCertificateUnknown => {
             TransportError::Tls("tls certificate unknown".into())
         }
+        spl_transport::TransportError::TlsRefused => TransportError::Tls("tls refused".into()),
+        spl_transport::TransportError::UnknownJournal(_) => {
+            TransportError::Tls("unknown journal".into())
+        }
         spl_transport::TransportError::Crypto(e) => TransportError::Crypto(e),
         spl_transport::TransportError::Mux(e) => TransportError::Mux(e),
         spl_transport::TransportError::Http(e) => TransportError::Http(e),
@@ -292,6 +296,15 @@ mod tests {
                 "tls",
                 true,
             ),
+            (spl_transport::TransportError::TlsRefused, "tls", true),
+            (
+                spl_transport::TransportError::UnknownJournal(spl_transport::UnknownJournal {
+                    address: Some("secret-host:7657".into()),
+                    jid: Some("secret-jid".into()),
+                }),
+                "tls",
+                true,
+            ),
             (
                 spl_transport::TransportError::Crypto("secret-key".into()),
                 "crypto",
@@ -443,12 +456,19 @@ mod tests {
         let cases = [
             spl_transport::TransportError::TlsAccessDenied,
             spl_transport::TransportError::TlsCertificateUnknown,
+            spl_transport::TransportError::TlsRefused,
+            spl_transport::TransportError::UnknownJournal(spl_transport::UnknownJournal {
+                address: None,
+                jid: None,
+            }),
         ];
         for err in cases {
             let mapped = map_shared_error(err);
             let code = transport_error_code(&mapped);
             assert_ne!(code, "tls_access_denied");
             assert_ne!(code, "tls_certificate_unknown");
+            assert_ne!(code, "tls_refused");
+            assert_ne!(code, "unknown_journal");
             assert_eq!(code, "tls");
         }
     }
