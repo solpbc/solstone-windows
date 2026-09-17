@@ -15,7 +15,7 @@ InstallerSwitches:
   Log: --log "<LOGPATH>"
 UpgradeBehavior: install
 ProductCode: Solstone
-ReleaseDate: 2026-08-29
+ReleaseDate: 2026-09-16
 # The Settings/About UI is a WebView2 surface; the app relies on the OS Evergreen
 # WebView2 runtime (not bundled). Declaring it lets winget resolve the runtime from
 # its own catalog first on the rare machine that lacks it (older Win10/LTSC/Server).
@@ -37,6 +37,6 @@ Installers:
   # let one "correct" this to x86.
   - Architecture: x64
     InstallerUrl: https://github.com/solpbc/solstone-windows/releases/download/v2.0.5/solstone-setup-2.0.5.exe
-    InstallerSha256: F3A091451CEF2FB7B441261F800C9886D4EFF995AE1F024A2BACD4E5F2B7012A
+    InstallerSha256: 66777A153F26E5A05950369CE858442C1DF6978F1D08FD9234FA05F02E8FC15B
 ManifestType: installer
 ManifestVersion: 1.12.0
