@@ -1023,7 +1023,9 @@ mod tests {
     use crate::{CasKey, Credential, ObserverClient};
     use observer_model::SyncSnapshot;
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     fn dummy_credential(with_relay: bool) -> Credential {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -1062,12 +1064,15 @@ mod tests {
         PathBuf,
         Arc<AtomicBool>,
     ) {
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "solstone-pc-test-{}",
+            "solstone-pc-test-{}-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            sequence
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("paired.json");
