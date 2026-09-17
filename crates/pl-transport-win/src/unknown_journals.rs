@@ -176,14 +176,13 @@ mod tests {
         let server_spki = spl_core::ca::extract_spki_der(cert_der.as_ref()).unwrap();
         let responding_jid = spl_core::relay_window::jid_from_spki(&server_spki).unwrap();
 
-        let server_cfg = ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key_der)
-        .unwrap();
+        let server_cfg =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert_der], key_der)
+                .unwrap();
 
         let acceptor = TlsAcceptor::from(Arc::new(server_cfg));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -220,7 +219,11 @@ mod tests {
         assert_eq!(snapshot.unknown_journals.len(), 1);
 
         let sighting = &snapshot.unknown_journals[0];
-        assert!(sighting.address.as_ref().unwrap().contains(&port.to_string()));
+        assert!(sighting
+            .address
+            .as_ref()
+            .unwrap()
+            .contains(&port.to_string()));
 
         let expected_mark_model = spl_core::mark::mark_from_jid(expected_jid)
             .unwrap()
@@ -239,10 +242,7 @@ mod tests {
             .unwrap()
             .to_render_spec();
         assert_eq!(responding_mark.words, responding_mark_model.words);
-        assert_eq!(
-            responding_mark.icon1.name,
-            responding_mark_model.icon1.name
-        );
+        assert_eq!(responding_mark.icon1.name, responding_mark_model.icon1.name);
 
         server_task.abort();
     }
