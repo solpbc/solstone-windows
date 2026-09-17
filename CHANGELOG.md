@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.5] - 2026-09-16
+
 ### Added
 
 - if something other than your journal answers where it's expected, the solstone app now tells you right away, with a way to see what answered and compare its mark against your journal's own.
