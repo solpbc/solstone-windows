@@ -304,6 +304,7 @@ impl UploadEvent {
 /// Drives sealed segments to the journal and reconciles them.
 pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
+    client_slot: Option<ClientSlot>,
     journal_version: Option<Arc<JournalVersionController>>,
     post_connect: Option<Arc<PostConnectController>>,
     version_generation: JournalVersionSessionToken,
@@ -341,6 +342,7 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client: client.clone(),
+            client_slot: Some(ClientSlot::new(client)),
             version_generation: JournalVersionSessionToken(journal_version.current_token().0),
             journal_version: Some(journal_version),
             post_connect: None,
@@ -369,6 +371,7 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client: Arc::new(client_slot.clone()),
+            client_slot: Some(client_slot),
             version_generation,
             journal_version: Some(journal_version),
             post_connect,
@@ -393,6 +396,7 @@ impl UploadCoordinator {
     ) -> Self {
         Self {
             client,
+            client_slot: None,
             post_connect: None,
             post_connect_generation: None,
             journal_version: None,
@@ -834,6 +838,14 @@ impl UploadCoordinator {
         let is_recovery = if let Ok(mut snapshot) = self.sync.lock() {
             let was_failing = snapshot.upload.recent_error_count > 0;
             snapshot.upload.record_success(now_epoch_millis());
+            if let Some(slot) = &self.client_slot {
+                let client = slot.load();
+                crate::unknown_journals::publish_unknown_journals(
+                    &mut snapshot,
+                    client.transport_client(),
+                    &client.credential().instance_id,
+                );
+            }
             was_failing
         } else {
             false
@@ -849,6 +861,14 @@ impl UploadCoordinator {
             if stopped {
                 snapshot.pairing.phase = PairingPhase::Failed;
                 snapshot.pairing.detail = Some(PAIRING_REFUSED_DETAIL.to_string());
+            }
+            if let Some(slot) = &self.client_slot {
+                let client = slot.load();
+                crate::unknown_journals::publish_unknown_journals(
+                    &mut snapshot,
+                    client.transport_client(),
+                    &client.credential().instance_id,
+                );
             }
             healthy
         } else {
@@ -2492,6 +2512,7 @@ mod tests {
 
         let coordinator = UploadCoordinator {
             client,
+            client_slot: None,
             post_connect: None,
             post_connect_generation: None,
             store: Box::new(store),

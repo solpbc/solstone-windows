@@ -232,3 +232,46 @@ export function updateView(
     },
   };
 }
+
+export function sampleMarkSpec(word1 = "piano", word2 = "key", colorHex = "#3b82f6") {
+  return {
+    icon1: {
+      name: "piano",
+      svg: '<path d="M18.5 8c-1.4 0-2.6-.8-3.2-2A6.87 6.87 0 0 0 2 9v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-8.5C22 9.6 20.4 8 18.5 8" /><path d="M2 14h20" />',
+      color: {
+        name: "blue",
+        hex: colorHex,
+      },
+      rot: 45,
+    },
+    icon2: {
+      name: "key",
+      svg: '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4" /><path d="m21 2-9.6 9.6" /><circle cx="7.5" cy="15.5" r="5.5" />',
+      color: {
+        name: "purple",
+        hex: "#a855f7",
+      },
+      rot: 0,
+    },
+    words: [word1, word2] as [string, string],
+  };
+}
+
+export function unknownJournalsDump(sightings: Array<{
+  address?: string | null;
+  expected_mark?: ReturnType<typeof sampleMarkSpec>;
+  responding_mark?: ReturnType<typeof sampleMarkSpec> | null;
+}>) {
+  const base = observingDump();
+  return {
+    ...base,
+    sync: {
+      ...base.sync,
+      unknown_journals: sightings.map((s) => ({
+        address: s.address !== undefined ? s.address : "192.168.1.50:443",
+        expected_mark: s.expected_mark ?? sampleMarkSpec("liquefy", "smock", "#3b82f6"),
+        responding_mark: s.responding_mark !== undefined ? s.responding_mark : sampleMarkSpec("distrust", "chokehold", "#ec4899"),
+      })),
+    },
+  };
+}

@@ -74,6 +74,13 @@ pub mod settings {
     pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
     pub const JOURNAL_OPEN: &str = "settings.journal.open";
     pub const JOURNAL_UNAVAILABLE: &str = "settings.journal.unavailable";
+    pub const UNKNOWN_JOURNAL_LIST: &str = "settings.unknown-journal.list";
+    pub const UNKNOWN_JOURNAL_SUMMARY: &str = "settings.unknown-journal.summary";
+    pub const UNKNOWN_JOURNAL_DETAIL: &str = "settings.unknown-journal.detail";
+    pub const UNKNOWN_JOURNAL_WHAT_ANSWERED: &str = "settings.unknown-journal.what-answered";
+    pub const UNKNOWN_JOURNAL_YOUR_JOURNAL: &str = "settings.unknown-journal.your-journal";
+    pub const UNKNOWN_JOURNAL_RESPONDING_CAPTION: &str =
+        "settings.unknown-journal.responding-caption";
     /// Updates pane: honest state line, live last-checked, the control buttons,
     /// the auto-check / frequency / background-download settings, release notes.
     pub const UPDATES_STATE: &str = "settings.updates.state";
@@ -165,6 +172,30 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         (
             "settings.journal.unavailable",
             settings::JOURNAL_UNAVAILABLE,
+        ),
+        (
+            "settings.unknown-journal.list",
+            settings::UNKNOWN_JOURNAL_LIST,
+        ),
+        (
+            "settings.unknown-journal.summary",
+            settings::UNKNOWN_JOURNAL_SUMMARY,
+        ),
+        (
+            "settings.unknown-journal.detail",
+            settings::UNKNOWN_JOURNAL_DETAIL,
+        ),
+        (
+            "settings.unknown-journal.what-answered",
+            settings::UNKNOWN_JOURNAL_WHAT_ANSWERED,
+        ),
+        (
+            "settings.unknown-journal.your-journal",
+            settings::UNKNOWN_JOURNAL_YOUR_JOURNAL,
+        ),
+        (
+            "settings.unknown-journal.responding-caption",
+            settings::UNKNOWN_JOURNAL_RESPONDING_CAPTION,
         ),
         ("settings.updates.state", settings::UPDATES_STATE),
         (

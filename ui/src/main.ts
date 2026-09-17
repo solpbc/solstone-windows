@@ -109,11 +109,36 @@ interface UploadStatus {
   last_error_reason?: string | null;
 }
 
+interface MarkColor {
+  name: string;
+  hex: string;
+}
+
+interface MarkIconSpec {
+  name: string;
+  svg: string;
+  color: MarkColor;
+  rot: number;
+}
+
+interface MarkRenderSpec {
+  icon1: MarkIconSpec;
+  icon2: MarkIconSpec;
+  words: [string, string];
+}
+
+interface UnknownJournalSighting {
+  address: string | null;
+  expected_mark: MarkRenderSpec;
+  responding_mark: MarkRenderSpec | null;
+}
+
 interface SyncSnapshot {
   pairing: PairingState;
   upload: UploadStatus;
   journal_version?: string | null;
   journal_version_fresh?: boolean;
+  unknown_journals?: UnknownJournalSighting[];
 }
 
 interface EncoderHealth {
@@ -1205,6 +1230,174 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
 
   inputRow.append(input, button);
   pane.append(inputRow);
+  return pane;
+}
+
+function renderMarkWords(w1: string, w2: string): HTMLElement {
+  const container = document.createElement("span");
+  container.style.fontSize = "13px";
+  container.style.fontWeight = "600";
+  container.style.display = "inline-flex";
+  container.style.alignItems = "center";
+  container.style.gap = "4px";
+
+  const first = text("span", w1.toLowerCase());
+  first.style.color = "#1A1A1A";
+
+  const dot = text("span", " · ");
+  dot.style.color = "#6E6453";
+
+  const second = text("span", w2.toLowerCase());
+  second.style.color = "#1A1A1A";
+
+  container.append(first, dot, second);
+  return container;
+}
+
+function renderMarkChip(spec: MarkRenderSpec | null): HTMLElement {
+  const chipContainer = document.createElement("div");
+  chipContainer.classList.add("unknown-journal-chip");
+  chipContainer.style.display = "inline-flex";
+  chipContainer.style.alignItems = "center";
+  chipContainer.style.gap = "7px";
+
+  if (!spec) {
+    const renderEmptyTile = (): HTMLElement => {
+      const tile = document.createElement("div");
+      tile.classList.add("unknown-journal-mark-tile");
+      tile.style.width = "32px";
+      tile.style.height = "32px";
+      tile.style.borderRadius = "8px";
+      tile.style.border = "2px dashed #6E6453";
+      tile.style.background = "none";
+      tile.style.boxSizing = "border-box";
+      return tile;
+    };
+    chipContainer.append(renderEmptyTile(), renderEmptyTile(), renderMarkWords("not", "presented"));
+    return chipContainer;
+  }
+
+  const renderTile = (icon: MarkIconSpec): HTMLElement => {
+    const tile = document.createElement("div");
+    tile.classList.add("unknown-journal-mark-tile");
+    tile.style.display = "inline-flex";
+    tile.style.alignItems = "center";
+    tile.style.justifyContent = "center";
+    tile.style.width = "32px";
+    tile.style.height = "32px";
+    tile.style.borderRadius = "8px";
+    tile.style.border = `2px solid ${icon.color.hex}`;
+    tile.style.background = `${icon.color.hex}1f`;
+    tile.style.boxSizing = "border-box";
+    if (icon.rot === 45) {
+      tile.style.transform = "rotate(45deg)";
+    }
+
+    const parser = new DOMParser();
+    const svgDoc = parser.parseFromString(
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`,
+      "image/svg+xml",
+    );
+    const svgEl = svgDoc.documentElement;
+    tile.append(document.importNode(svgEl, true));
+    return tile;
+  };
+
+  chipContainer.append(
+    renderTile(spec.icon1),
+    renderTile(spec.icon2),
+    renderMarkWords(spec.words[0], spec.words[1]),
+  );
+  return chipContainer;
+}
+
+function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | undefined): HTMLElement | null {
+  if (!sightings || sightings.length === 0) {
+    return null;
+  }
+
+  const pane = section("unknown journals");
+  automation(pane, ids["settings.unknown-journal.list"]);
+
+  for (const sighting of sightings) {
+    const details = document.createElement("details");
+    details.classList.add("unknown-journal-details");
+    details.style.marginBottom = "8px";
+
+    const summary = document.createElement("summary");
+    summary.classList.add("unknown-journal-summary");
+    automation(summary, ids["settings.unknown-journal.summary"]);
+    summary.style.cursor = "pointer";
+    summary.style.fontSize = "13px";
+    summary.style.fontWeight = "600";
+    summary.style.color = "var(--fg)";
+    summary.style.padding = "4px 0";
+
+    summary.textContent = sighting.address
+      ? `unknown journal seen at ${sighting.address} — view details`
+      : "unknown journal seen through the relay — view details";
+    details.append(summary);
+
+    const detailContent = document.createElement("div");
+    detailContent.classList.add("unknown-journal-detail");
+    automation(detailContent, ids["settings.unknown-journal.detail"]);
+    detailContent.style.marginTop = "12px";
+    detailContent.style.display = "flex";
+    detailContent.style.flexDirection = "column";
+    detailContent.style.gap = "12px";
+
+    const intro = text(
+      "p",
+      "something other than your journal answered. compare its mark with your journal's own.",
+    );
+    intro.style.margin = "0";
+    intro.style.fontSize = "12px";
+    intro.style.color = "var(--fg-subtle)";
+    detailContent.append(intro);
+
+    const comparisonRow = document.createElement("div");
+    comparisonRow.style.display = "grid";
+    comparisonRow.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+    comparisonRow.style.gap = "12px";
+
+    // Responding / what answered
+    const respondingBlock = document.createElement("div");
+    automation(respondingBlock, ids["settings.unknown-journal.what-answered"]);
+    const respondingLabel = text("div", "what answered");
+    respondingLabel.style.fontSize = "11px";
+    respondingLabel.style.color = "var(--fg-subtle)";
+    respondingLabel.style.marginBottom = "6px";
+
+    const respondingCaption = text(
+      "div",
+      sighting.responding_mark ? "claimed, not verified" : "no identity presented",
+    );
+    automation(respondingCaption, ids["settings.unknown-journal.responding-caption"]);
+    respondingCaption.style.fontSize = "11px";
+    respondingCaption.style.color = "var(--fg-subtle)";
+    respondingCaption.style.marginTop = "6px";
+
+    respondingBlock.append(
+      respondingLabel,
+      renderMarkChip(sighting.responding_mark),
+      respondingCaption,
+    );
+
+    // Expected / your journal
+    const pairedBlock = document.createElement("div");
+    automation(pairedBlock, ids["settings.unknown-journal.your-journal"]);
+    const pairedLabel = text("div", "your journal");
+    pairedLabel.style.fontSize = "11px";
+    pairedLabel.style.color = "var(--fg-subtle)";
+    pairedLabel.style.marginBottom = "6px";
+    pairedBlock.append(pairedLabel, renderMarkChip(sighting.expected_mark));
+
+    comparisonRow.append(respondingBlock, pairedBlock);
+    detailContent.append(comparisonRow);
+    details.append(detailContent);
+    pane.append(details);
+  }
+
   return pane;
 }
 
@@ -2413,11 +2606,18 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
     case "journal": {
       const sync = section("sync");
       sync.append(syncRow(dump.sync));
-      content.append(
+      const sections = [
         renderJournalOpenSection(dump),
         renderPairingSection(dump),
         sync,
-      );
+      ];
+      if (dump.sync.unknown_journals && dump.sync.unknown_journals.length > 0) {
+        const unknownSection = renderUnknownJournalsSection(dump.sync.unknown_journals);
+        if (unknownSection) {
+          sections.push(unknownSection);
+        }
+      }
+      content.append(...sections);
       break;
     }
     case "shortcut":

@@ -229,6 +229,7 @@ struct BridgeLifecycle {
     journal_version_token: crate::JournalVersionSessionToken,
     post_connect_token: crate::PostConnectSessionToken,
     sync: Arc<Mutex<observer_model::SyncSnapshot>>,
+    client_slot: ClientSlot,
 }
 
 impl BridgeLifecycle {
@@ -241,6 +242,7 @@ impl BridgeLifecycle {
             journal_version_token: access.journal_version_token(),
             post_connect_token: access.post_connect_token(),
             sync: access.sync(),
+            client_slot: access.client_slot(),
         }
     }
 
@@ -248,14 +250,20 @@ impl BridgeLifecycle {
         if !self.active.load(Ordering::Acquire) {
             return;
         }
-        if status.terminal_reason.is_some() {
-            // The journal refused this device, or refusals went on too long:
-            // the bridge has stopped dialing for this pairing.
-            if let Ok(mut snapshot) = self.sync.lock() {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            if status.terminal_reason.is_some() {
+                // The journal refused this device, or refusals went on too long:
+                // the bridge has stopped dialing for this pairing.
                 snapshot.pairing.phase = observer_model::PairingPhase::Failed;
                 snapshot.pairing.detail =
                     Some(crate::coordinator::PAIRING_REFUSED_DETAIL.to_string());
             }
+            let client = self.client_slot.load();
+            crate::unknown_journals::publish_unknown_journals(
+                &mut snapshot,
+                client.transport_client(),
+                &client.credential().instance_id,
+            );
         }
         let was_live = self
             .carrier_live

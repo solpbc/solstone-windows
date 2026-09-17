@@ -36,6 +36,7 @@ pub mod relay_pairing;
 pub mod sealed;
 pub mod service;
 pub mod slot;
+pub(crate) mod unknown_journals;
 
 #[cfg(test)]
 #[allow(dead_code)]

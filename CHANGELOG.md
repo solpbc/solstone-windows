@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- if something other than your journal answers where it's expected, the solstone app now tells you right away, with a way to see what answered and compare its mark against your journal's own.
+
 ### Fixed
 
 - when this PC's saved pairing stops working, the solstone app now asks you to pair again instead of staying on "waiting to sync". when your journal just can't be reached, the app still shows "waiting to sync" and keeps trying. restarting the app tries the saved pairing again.

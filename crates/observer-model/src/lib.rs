@@ -534,6 +534,38 @@ fn bounded_single_line(input: &str, max_chars: usize) -> String {
         .collect()
 }
 
+/// One chip's tint, as both a locked palette name and its hex value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkColor {
+    pub name: String,
+    pub hex: String,
+}
+
+/// One chip: a glyph, its tint, and its rotation in degrees (`0` or `45`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkIconSpec {
+    pub name: String,
+    pub svg: String,
+    pub color: MarkColor,
+    pub rot: u16,
+}
+
+/// The wire shape a client validates and paints: two chips and two words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkRenderSpec {
+    pub icon1: MarkIconSpec,
+    pub icon2: MarkIconSpec,
+    pub words: [String; 2],
+}
+
+/// A peer that answered where the paired journal was expected but was not it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnknownJournalSighting {
+    pub address: Option<String>,
+    pub expected_mark: MarkRenderSpec,
+    pub responding_mark: Option<MarkRenderSpec>,
+}
+
 /// The sync layer's snapshot (pairing + upload), folded into [`HealthDump`] by
 /// the engine. `Default` is the honest not-paired, nothing-uploaded state.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -544,6 +576,8 @@ pub struct SyncSnapshot {
     pub journal_version: Option<String>,
     #[serde(default)]
     pub journal_version_fresh: bool,
+    #[serde(default)]
+    pub unknown_journals: Vec<UnknownJournalSighting>,
 }
 
 /// The honest pause detail surfaced in the health dump while the observer is
@@ -1203,5 +1237,103 @@ mod tests {
         assert_eq!(View::parse(""), None);
         assert_eq!(View::Settings.label(), "settings");
         assert_eq!(View::valid_list(), "settings, about");
+    }
+
+    #[test]
+    fn unknown_journals_deserializes_missing_to_empty() {
+        let json_without_unknown_journals = r#"{
+            "pairing": {"phase": "not_paired", "journal_label": null, "detail": null},
+            "upload": {
+                "pending_segments": 0,
+                "uploaded_segments": 0,
+                "failed_segments": 0,
+                "quarantined_segments": 0,
+                "last_uploaded_segment": null,
+                "last_uploaded_server_segment": null,
+                "last_error": null,
+                "last_successful_sync": null,
+                "recent_error_count": 0,
+                "last_error_reason": null,
+                "last_upload_duration_ms": null,
+                "last_upload_bytes": null,
+                "last_upload_path": null,
+                "last_upload_dial_attempts": null
+            }
+        }"#;
+
+        let snapshot: SyncSnapshot = serde_json::from_str(json_without_unknown_journals).unwrap();
+        assert!(snapshot.unknown_journals.is_empty());
+    }
+
+    #[test]
+    fn unknown_journals_sighting_emits_and_preserves_pairing() {
+        let base = base_dump();
+        let sighting = UnknownJournalSighting {
+            address: Some("192.168.1.50:7657".into()),
+            expected_mark: MarkRenderSpec {
+                icon1: MarkIconSpec {
+                    name: "piano".into(),
+                    svg: "<path d=\"...\"/>".into(),
+                    color: MarkColor {
+                        name: "blue".into(),
+                        hex: "#3b82f6".into(),
+                    },
+                    rot: 45,
+                },
+                icon2: MarkIconSpec {
+                    name: "key".into(),
+                    svg: "<path d=\"...\"/>".into(),
+                    color: MarkColor {
+                        name: "purple".into(),
+                        hex: "#a855f7".into(),
+                    },
+                    rot: 0,
+                },
+                words: ["liquefy".into(), "smock".into()],
+            },
+            responding_mark: Some(MarkRenderSpec {
+                icon1: MarkIconSpec {
+                    name: "turtle".into(),
+                    svg: "<path d=\"...\"/>".into(),
+                    color: MarkColor {
+                        name: "pink".into(),
+                        hex: "#ec4899".into(),
+                    },
+                    rot: 0,
+                },
+                icon2: MarkIconSpec {
+                    name: "pizza".into(),
+                    svg: "<path d=\"...\"/>".into(),
+                    color: MarkColor {
+                        name: "cyan".into(),
+                        hex: "#06b6d4".into(),
+                    },
+                    rot: 0,
+                },
+                words: ["distrust".into(), "chokehold".into()],
+            }),
+        };
+
+        let mut with_sighting = base.clone();
+        with_sighting.sync.unknown_journals = vec![sighting.clone()];
+
+        // Emits when sighting appears
+        assert!(should_emit(&base, &with_sighting));
+        assert_eq!(with_sighting.sync.pairing, base.sync.pairing);
+
+        // Does not emit if identical
+        assert!(!should_emit(&with_sighting, &with_sighting));
+
+        // Emits when sighting changes
+        let mut modified_sighting = with_sighting.clone();
+        modified_sighting.sync.unknown_journals[0].address = Some("10.0.0.1:7657".into());
+        assert!(should_emit(&with_sighting, &modified_sighting));
+        assert_eq!(modified_sighting.sync.pairing, base.sync.pairing);
+
+        // Emits when sightings clear
+        let mut cleared = with_sighting.clone();
+        cleared.sync.unknown_journals.clear();
+        assert!(should_emit(&with_sighting, &cleared));
+        assert_eq!(cleared.sync.pairing, base.sync.pairing);
     }
 }
