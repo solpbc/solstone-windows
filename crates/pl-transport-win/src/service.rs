@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use observer_model::{LocalOffset, PairingPhase, PairingState, SyncSnapshot};
+use observer_model::{LocalOffset, MarkRenderSpec, PairingPhase, PairingState, SyncSnapshot};
 use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinHandle};
@@ -23,7 +23,15 @@ use crate::credential::PairedState;
 use crate::device_metadata::RawDeviceFacts;
 use crate::journal_version::JournalVersionController;
 use crate::sealed::{LocalSealedStore, SealedStore};
+use crate::unknown_journals::mark_spec_for_jid;
 use crate::{cancelled, pairing, transport_error_code, TransportError};
+
+/// The paired journal's own mark, for the given instance id. Reuses the same
+/// primitive the unknown-journal comparison uses for "your journal" — `None`
+/// only for a placeholder/test instance id that isn't a real journal id.
+fn journal_mark(instance_id: &str) -> Option<MarkRenderSpec> {
+    mark_spec_for_jid(instance_id)
+}
 
 /// Static identity + paths the sync layer needs.
 #[derive(Clone)]
@@ -77,7 +85,7 @@ pub async fn pair(
     );
 
     match pair_inner(link, cfg).await {
-        Ok((paired, journal_label)) => {
+        Ok((paired, journal_label, mark)) => {
             cfg.journal_version.clear(&sync);
             set_pairing(
                 &sync,
@@ -85,6 +93,7 @@ pub async fn pair(
                     phase: PairingPhase::Paired,
                     journal_label: Some(journal_label),
                     detail: None,
+                    mark,
                 },
             );
             Ok(paired)
@@ -96,15 +105,19 @@ pub async fn pair(
     }
 }
 
-async fn pair_inner(link: &str, cfg: &SyncConfig) -> Result<(PairedState, String), TransportError> {
+async fn pair_inner(
+    link: &str,
+    cfg: &SyncConfig,
+) -> Result<(PairedState, String, Option<MarkRenderSpec>), TransportError> {
     let credential = pairing::pair_from_link(link, &cfg.device_label).await?;
     let journal_label = credential.home_label.clone();
+    let mark = journal_mark(&credential.instance_id);
     let paired = PairedState {
         credential: Some(credential),
         ..Default::default()
     };
     paired.save(&cfg.state_path)?;
-    Ok((paired, journal_label))
+    Ok((paired, journal_label, mark))
 }
 
 /// Run the upload coordinator for an already-paired observer until `cancel`
@@ -140,7 +153,9 @@ async fn setup_uploader(
 ) -> Result<UploadCoordinator, TransportError> {
     let client_slot = access.client_slot();
     let post_connect = access.post_connect();
-    let journal_label = client_slot.load().home_label().to_string();
+    let client = client_slot.load();
+    let journal_label = client.home_label().to_string();
+    let mark = journal_mark(&client.credential().instance_id);
 
     set_pairing(
         &sync,
@@ -148,6 +163,7 @@ async fn setup_uploader(
             phase: PairingPhase::Paired,
             journal_label: Some(journal_label),
             detail: None,
+            mark,
         },
     );
 
@@ -232,6 +248,13 @@ mod tests {
         assert!(!detail.contains("https://"));
         assert!(!detail.contains("sha256"));
         assert!(!detail.contains("10.0.0.5"));
+    }
+
+    #[test]
+    fn journal_mark_is_some_for_a_real_instance_id_and_none_for_a_placeholder() {
+        let real_jid = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
+        assert!(journal_mark(real_jid).is_some());
+        assert!(journal_mark("test").is_none());
     }
 
     #[tokio::test]

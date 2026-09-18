@@ -257,6 +257,20 @@ export function sampleMarkSpec(word1 = "piano", word2 = "key", colorHex = "#3b82
   };
 }
 
+export function pairedWithMarkDump(mark?: ReturnType<typeof sampleMarkSpec> | null) {
+  const base = observingDump();
+  return {
+    ...base,
+    sync: {
+      ...base.sync,
+      pairing: {
+        ...base.sync.pairing,
+        mark: mark !== undefined ? mark : sampleMarkSpec("liquefy", "smock", "#3b82f6"),
+      },
+    },
+  };
+}
+
 export function unknownJournalsDump(sightings: Array<{
   address?: string | null;
   expected_mark?: ReturnType<typeof sampleMarkSpec>;

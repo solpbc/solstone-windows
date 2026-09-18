@@ -29,6 +29,16 @@ pub(crate) fn mark_spec_from_spl(
     }
 }
 
+/// The render spec for a journal id, or `None` if `jid` isn't a valid
+/// mark-bearing journal id (a dummy test id or unpaired placeholder). Shared by
+/// the unknown-journal comparison (the "your journal" side) and ordinary
+/// pairing (the paired journal's own mark).
+pub(crate) fn mark_spec_for_jid(jid: &str) -> Option<observer_model::MarkRenderSpec> {
+    spl_core::mark::mark_from_jid(jid)
+        .ok()
+        .map(|m| mark_spec_from_spl(m.to_render_spec()))
+}
+
 /// Reflect sightings of unknown peer journals into the health snapshot.
 ///
 /// If no unknown journals were seen, or if `expected_jid` is not a valid
@@ -46,19 +56,14 @@ pub(crate) fn publish_unknown_journals(
         return;
     }
 
-    let Ok(expected_mark_model) = spl_core::mark::mark_from_jid(expected_jid) else {
+    let Some(expected_mark) = mark_spec_for_jid(expected_jid) else {
         snapshot.unknown_journals = Vec::new();
         return;
     };
-    let expected_mark = mark_spec_from_spl(expected_mark_model.to_render_spec());
 
     let mut result = Vec::with_capacity(sightings.len());
     for sighting in sightings {
-        let responding_mark = sighting.jid.as_deref().and_then(|jid| {
-            spl_core::mark::mark_from_jid(jid)
-                .ok()
-                .map(|m| mark_spec_from_spl(m.to_render_spec()))
-        });
+        let responding_mark = sighting.jid.as_deref().and_then(mark_spec_for_jid);
         result.push(observer_model::UnknownJournalSighting {
             address: sighting.address,
             expected_mark: expected_mark.clone(),
@@ -144,6 +149,20 @@ mod tests {
         assert_eq!(converted.icon2.color.hex, "#a855f7");
         assert_eq!(converted.icon2.rot, 0);
         assert_eq!(converted.words, ["liquefy", "smock"]);
+    }
+
+    #[test]
+    fn mark_spec_for_jid_is_none_for_invalid_jid() {
+        assert!(mark_spec_for_jid("not-a-jid").is_none());
+    }
+
+    #[test]
+    fn mark_spec_for_jid_matches_direct_conversion_for_valid_jid() {
+        let jid = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
+        let direct =
+            mark_spec_from_spl(spl_core::mark::mark_from_jid(jid).unwrap().to_render_spec());
+        let via_helper = mark_spec_for_jid(jid).expect("valid jid yields a mark");
+        assert_eq!(direct, via_helper);
     }
 
     #[test]

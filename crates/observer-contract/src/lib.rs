@@ -72,6 +72,9 @@ pub mod settings {
     pub const PAIRING_JOURNAL: &str = "settings.pairing.journal";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
     pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
+    /// The paired journal's own visual mark, shown once paired — the same mark
+    /// comparison primitive the unknown-journal detail card uses.
+    pub const PAIRING_MARK: &str = "settings.pairing.mark";
     pub const JOURNAL_OPEN: &str = "settings.journal.open";
     pub const JOURNAL_UNAVAILABLE: &str = "settings.journal.unavailable";
     pub const UNKNOWN_JOURNAL_LIST: &str = "settings.unknown-journal.list";
@@ -168,6 +171,7 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.pairing.journal", settings::PAIRING_JOURNAL),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
+        ("settings.pairing.mark", settings::PAIRING_MARK),
         ("settings.journal.open", settings::JOURNAL_OPEN),
         (
             "settings.journal.unavailable",

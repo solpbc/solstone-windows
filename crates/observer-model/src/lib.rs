@@ -444,6 +444,11 @@ pub struct PairingState {
     pub journal_label: Option<String>,
     /// A failure detail when `phase` is `Failed`.
     pub detail: Option<String>,
+    /// The paired journal's own visual mark, earned at pairing success and on
+    /// every reconnect — the same primitive the unknown-journal comparison
+    /// uses for "your journal". `None` until computed, like `journal_label`.
+    #[serde(default)]
+    pub mark: Option<MarkRenderSpec>,
 }
 
 /// The honest upload/sync state surfaced in the health dump. Counts are earned
@@ -861,6 +866,7 @@ mod tests {
                     phase: PairingPhase::Paired,
                     journal_label: Some("journal".into()),
                     detail: None,
+                    ..Default::default()
                 },
                 upload: UploadStatus {
                     pending_segments: 2,

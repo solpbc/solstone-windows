@@ -95,6 +95,7 @@ interface PairingState {
   phase: PairingPhase;
   journal_label: string | null;
   detail: string | null;
+  mark?: MarkRenderSpec | null;
 }
 
 interface UploadStatus {
@@ -1172,6 +1173,15 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     ),
   );
 
+  if (pairing.phase === "paired" && pairing.mark) {
+    pane.append(
+      valueRow(
+        "mark",
+        automation(renderMarkChip(pairing.mark), ids["settings.pairing.mark"]),
+      ),
+    );
+  }
+
   const inputRow = document.createElement("div");
   inputRow.style.display = "grid";
   inputRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
@@ -1254,17 +1264,27 @@ function renderMarkWords(w1: string, w2: string): HTMLElement {
   return container;
 }
 
+/** The one spoken announcement for a mark: both chip colors, then both words. */
+function markAriaLabel(spec: MarkRenderSpec): string {
+  return `mark: ${spec.icon1.color.name}, ${spec.icon2.color.name}, ${spec.words[0].toLowerCase()}, ${spec.words[1].toLowerCase()}`;
+}
+
 function renderMarkChip(spec: MarkRenderSpec | null): HTMLElement {
   const chipContainer = document.createElement("div");
   chipContainer.classList.add("unknown-journal-chip");
   chipContainer.style.display = "inline-flex";
   chipContainer.style.alignItems = "center";
   chipContainer.style.gap = "7px";
+  // One announcement for the whole chip, not four fragments (two tiles + the
+  // words span) read separately.
+  chipContainer.setAttribute("role", "img");
 
   if (!spec) {
+    chipContainer.setAttribute("aria-label", "no mark presented");
     const renderEmptyTile = (): HTMLElement => {
       const tile = document.createElement("div");
       tile.classList.add("unknown-journal-mark-tile");
+      tile.setAttribute("aria-hidden", "true");
       tile.style.width = "32px";
       tile.style.height = "32px";
       tile.style.borderRadius = "8px";
@@ -1273,13 +1293,18 @@ function renderMarkChip(spec: MarkRenderSpec | null): HTMLElement {
       tile.style.boxSizing = "border-box";
       return tile;
     };
-    chipContainer.append(renderEmptyTile(), renderEmptyTile(), renderMarkWords("not", "presented"));
+    const words = renderMarkWords("not", "presented");
+    words.setAttribute("aria-hidden", "true");
+    chipContainer.append(renderEmptyTile(), renderEmptyTile(), words);
     return chipContainer;
   }
+
+  chipContainer.setAttribute("aria-label", markAriaLabel(spec));
 
   const renderTile = (icon: MarkIconSpec): HTMLElement => {
     const tile = document.createElement("div");
     tile.classList.add("unknown-journal-mark-tile");
+    tile.setAttribute("aria-hidden", "true");
     tile.style.display = "inline-flex";
     tile.style.alignItems = "center";
     tile.style.justifyContent = "center";
@@ -1303,11 +1328,10 @@ function renderMarkChip(spec: MarkRenderSpec | null): HTMLElement {
     return tile;
   };
 
-  chipContainer.append(
-    renderTile(spec.icon1),
-    renderTile(spec.icon2),
-    renderMarkWords(spec.words[0], spec.words[1]),
-  );
+  const words = renderMarkWords(spec.words[0], spec.words[1]);
+  words.setAttribute("aria-hidden", "true");
+
+  chipContainer.append(renderTile(spec.icon1), renderTile(spec.icon2), words);
   return chipContainer;
 }
 

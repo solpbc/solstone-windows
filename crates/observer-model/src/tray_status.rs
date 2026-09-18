@@ -55,7 +55,7 @@ pub fn classify_tray(
     pause: Option<&PauseSnapshot>,
     fault_detail: Option<&str>,
 ) -> (TrayVisual, String) {
-    match app {
+    let (visual, tooltip) = match app {
         AppPhase::Idle => (TrayVisual::Connecting, "connecting".to_string()),
         AppPhase::Starting => (TrayVisual::Connecting, "starting…".to_string()),
         AppPhase::Paused => {
@@ -92,6 +92,22 @@ pub fn classify_tray(
                 }
             }
         },
+    };
+
+    // Additive: an unknown-journal sighting never changes the tray's visual or
+    // otherwise-computed tooltip, it only appends a notice line — same wording
+    // as the Settings detail card, earned independently of app phase or pairing
+    // state (a sighting can happen while paired-and-healthy just as easily as
+    // while reconnecting).
+    match sync.unknown_journals.first() {
+        Some(sighting) => {
+            let notice = match &sighting.address {
+                Some(address) => format!("unknown journal seen at {address}"),
+                None => "unknown journal seen through the relay".to_string(),
+            };
+            (visual, format!("{tooltip}\n{notice}"))
+        }
+        None => (visual, tooltip),
     }
 }
 
@@ -124,6 +140,7 @@ mod tests {
                 phase,
                 journal_label: None,
                 detail: None,
+                ..Default::default()
             },
             upload: UploadStatus::default(),
             ..Default::default()
@@ -347,5 +364,91 @@ mod tests {
         assert_eq!(format_remaining(14 * 60 + 30), "14 min");
         assert_eq!(format_remaining(60 * 60), "1 hr");
         assert_eq!(format_remaining(62 * 60), "1 hr 2 min");
+    }
+
+    fn sample_mark() -> crate::MarkRenderSpec {
+        crate::MarkRenderSpec {
+            icon1: crate::MarkIconSpec {
+                name: "piano".into(),
+                svg: "<path d=\"...\"/>".into(),
+                color: crate::MarkColor {
+                    name: "blue".into(),
+                    hex: "#3b82f6".into(),
+                },
+                rot: 45,
+            },
+            icon2: crate::MarkIconSpec {
+                name: "key".into(),
+                svg: "<path d=\"...\"/>".into(),
+                color: crate::MarkColor {
+                    name: "purple".into(),
+                    hex: "#a855f7".into(),
+                },
+                rot: 0,
+            },
+            words: ["liquefy".into(), "smock".into()],
+        }
+    }
+
+    fn sighting(address: Option<&str>) -> crate::UnknownJournalSighting {
+        crate::UnknownJournalSighting {
+            address: address.map(|a| a.to_string()),
+            expected_mark: sample_mark(),
+            responding_mark: None,
+        }
+    }
+
+    #[test]
+    fn unknown_journal_sighting_appends_notice_with_address() {
+        let mut clean = sync(PairingPhase::Paired);
+        clean.upload.uploaded_segments = 1;
+        clean.upload.last_successful_sync = Some(1);
+        clean.unknown_journals = vec![sighting(Some("192.168.1.50:7657"))];
+
+        let (visual, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None);
+        assert_eq!(visual, TrayVisual::Healthy);
+        assert_eq!(
+            tooltip,
+            "on, connected to your journal\nunknown journal seen at 192.168.1.50:7657"
+        );
+    }
+
+    #[test]
+    fn unknown_journal_sighting_appends_notice_through_relay() {
+        let mut clean = sync(PairingPhase::Paired);
+        clean.upload.uploaded_segments = 1;
+        clean.upload.last_successful_sync = Some(1);
+        clean.unknown_journals = vec![sighting(None)];
+
+        let (_, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None);
+        assert_eq!(
+            tooltip,
+            "on, connected to your journal\nunknown journal seen through the relay"
+        );
+    }
+
+    #[test]
+    fn unknown_journal_sighting_appends_regardless_of_phase() {
+        let paused_sync = SyncSnapshot {
+            unknown_journals: vec![sighting(Some("10.0.0.1:443"))],
+            ..Default::default()
+        };
+        let indefinite = PauseSnapshot {
+            reason: PauseReason::Operator,
+            seconds_remaining: None,
+        };
+
+        let (visual, tooltip) =
+            classify_tray(AppPhase::Paused, &paused_sync, Some(&indefinite), None);
+        assert_eq!(visual, TrayVisual::Paused);
+        assert_eq!(tooltip, "paused\nunknown journal seen at 10.0.0.1:443");
+    }
+
+    #[test]
+    fn no_unknown_journal_sighting_leaves_tooltip_untouched() {
+        let idle = SyncSnapshot::default();
+        let (_, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None);
+        assert_eq!(tooltip, "connecting");
+        assert!(!tooltip.contains('\n'));
     }
 }

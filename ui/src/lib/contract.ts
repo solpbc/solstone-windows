@@ -30,6 +30,7 @@ export const automationContract = {
     "settings.mic.gain": "settings.mic.gain",
     "settings.pairing.input": "settings.pairing.input",
     "settings.pairing.journal": "settings.pairing.journal",
+    "settings.pairing.mark": "settings.pairing.mark",
     "settings.pairing.state": "settings.pairing.state",
     "settings.pairing.submit": "settings.pairing.submit",
     "settings.retention": "settings.retention",
