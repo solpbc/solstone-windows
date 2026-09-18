@@ -6,6 +6,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-09-18
+
+### Added
+
+- pairing now shows your journal's mark when it succeeds, so you can check that this PC connected to the journal you meant.
+
+### Fixed
+
+- the mark comparison is now read as one clear description by screen readers.
+- when something other than your journal answers where it is expected, the tray now tells you what happened instead of leaving the mismatch hidden.
+
 ## [2.0.5] - 2026-09-16
 
 ### Added
