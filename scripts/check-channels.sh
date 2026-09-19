@@ -13,6 +13,14 @@
 # Compares the live published version on each channel against the workspace version.
 # Exit 1 on drift. Read-only -- it publishes nothing.
 #
+# It also fetches each committed manifest's own download URL and hashes the bytes,
+# because a version match is not an installable package. Two real defects this
+# catches, both found on the 2.0.7 train: the manifests carried 2.0.5-era digests
+# (the bump advances version and URL, but the hash cannot exist until the signed
+# artifact does, and nothing came back afterwards), and the GitHub release those
+# URLs resolve from had not been cut since 2.0.5, so both channels pointed at a
+# 404. Neither is visible from a version comparison.
+#
 #   make check-channels
 set -eu
 
@@ -62,6 +70,37 @@ else
   echo "  scoop   DRIFT    published $SCOOP, expected $VERSION -- release publication belongs to the aggregate provenance publisher"
   rc=1
 fi
+
+# The committed manifests are only inputs until their bytes resolve and match.
+# A package manager fetches the URL and checks the digest; so does this.
+check_asset() {
+  label="$1"; url="$2"; want="$3"
+  case "$want" in
+    "" ) echo "  $label  UNKNOWN  no digest committed for $url"; rc=1; return ;;
+  esac
+  tmp="$(mktemp)" || { echo "  $label  UNKNOWN  mktemp failed"; rc=1; return; }
+  if ! curl -sSfL --max-time 300 -o "$tmp" "$url" 2>/dev/null; then
+    echo "  $label  MISSING  $url does not resolve -- the release the channel points at was never cut"
+    rm -f "$tmp"; rc=1; return
+  fi
+  got="$(sha256sum "$tmp" | cut -d" " -f1)"
+  rm -f "$tmp"
+  want_lc="$(printf '%s' "$want" | tr 'A-F' 'a-f')"
+  if [ "$got" = "$want_lc" ]; then
+    echo "  $label  OK       digest matches the published bytes"
+  else
+    echo "  $label  STALE    committed $want_lc, published bytes are $got"
+    rc=1
+  fi
+}
+
+SCOOP_URL="$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' packaging/scoop/solstone.json | head -1)"
+SCOOP_HASH="$(sed -n 's/.*"hash": *"\([^"]*\)".*/\1/p' packaging/scoop/solstone.json | head -1)"
+check_asset "scoop-bytes " "$SCOOP_URL" "$SCOOP_HASH"
+
+WINGET_URL="$(sed -n 's/.*InstallerUrl: *\(.*\)/\1/p' packaging/winget/solpbc.Solstone.installer.yaml | head -1)"
+WINGET_HASH="$(sed -n 's/.*InstallerSha256: *\(.*\)/\1/p' packaging/winget/solpbc.Solstone.installer.yaml | head -1)"
+check_asset "winget-bytes" "$WINGET_URL" "$WINGET_HASH"
 
 if [ "$rc" -ne 0 ]; then
   echo "check-channels: DRIFT -- a channel is serving a stale version." >&2
