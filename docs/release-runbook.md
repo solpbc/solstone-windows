@@ -70,7 +70,14 @@ commit. Provision a clean cargo home containing only the approved private RustSe
 mirror cache, set the same mirror locator, and run
 `make check-release-advisory-config`; this config-only finalizer compatibility
 check maps that cache to `target/release-advisory-db/` and does not consume or
-verify the signed packet.
+verify the signed packet. `check-release-advisory-config` provisions that clean
+cargo home itself (`scripts/advisory-cargo-home.sh`, checkout-local under
+`target/advisory-cargo-home/`) whenever the caller has not exported `CARGO_HOME`,
+so this and `make ci` are reproducible on any host with the mirror locator and
+no other setup; run `make provision-advisory-cargo-home` directly to pre-warm or
+inspect that cache, or point `make audit`/`make package` at it with
+`CARGO_HOME=target/advisory-cargo-home`. An explicit `CARGO_HOME` still bypasses
+this and is checked exactly as before.
 
 For finalization, retain the operator-supplied mirror freshness receipt body and
 its adjacent `<body>.minisig`, plus the approved mirror public-key file. Keep all

@@ -35,14 +35,14 @@ WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlP
 TRANSPARENCY_ACTIVATED ?= 0
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
-	        provision-cargo-deny preflight-release-tools build test ui-test \
+	        provision-cargo-deny provision-advisory-cargo-home preflight-release-tools build test ui-test \
 	        test-scripts gate-minisign ci audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live brand-sync help
 
 help:
-	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny build test ci audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
+	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny provision-advisory-cargo-home build test ci audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
 	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT, SOLSTONE_ADVISORY_TREE_SHA256, and the signed mirror packet environment)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "delivery: publish-origin CANDIDATE_DIR=<candidate> FINALIZATION_RECEIPT=<json> SOURCE_CHECKOUT=<exact-source-tree> CLEARANCE=<json> PUBLICATION_RECEIPT=<json>"
@@ -88,6 +88,16 @@ preflight-cargo-deny:
 
 provision-cargo-deny:
 	cargo install cargo-deny --version 0.20.2 --locked
+
+# Build or refresh the checkout-local Cargo home whose advisory-dbs holds
+# only the approved private RustSec mirror (docs/release-runbook.md's
+# "provision a clean cargo home" step, made reproducible). check-release-
+# advisory-config runs this automatically when CARGO_HOME is unset; call it
+# directly to inspect or pre-warm the cache, or to point `make audit`/
+# `make package` at the same isolated home via CARGO_HOME=target/advisory-
+# cargo-home. Requires SOLSTONE_ADVISORY_MIRROR_LOCATOR.
+provision-advisory-cargo-home:
+	@sh scripts/advisory-cargo-home.sh
 
 # Windows build-box release-tool observation only: no credentials or network.
 preflight-release-tools:
@@ -186,6 +196,11 @@ check-rust-release-manifest: preflight-toolchain
 # Offline real-pin acceptance for the deterministic release advisory config.
 # The default cargo-deny cache is only the source snapshot; the check itself
 # always uses the isolated target/release-advisory-db path written into config.
+# When the caller has not pointed CARGO_HOME at an already-provisioned mirror
+# cache, self-provision a checkout-local one (scripts/advisory-cargo-home.sh)
+# so this gate is reproducible on any host without hand-built scratch state
+# and never collides with an ambient ~/.cargo/advisory-dbs that also carries
+# cargo-deny's public default cache. An explicit CARGO_HOME is honored as-is.
 check-release-advisory-config: preflight-toolchain preflight-cargo-deny
 	@set -eu; \
 	  mirror_locator="$${SOLSTONE_ADVISORY_MIRROR_LOCATOR:-}"; \
@@ -193,7 +208,10 @@ check-release-advisory-config: preflight-toolchain preflight-cargo-deny
 	    echo "ERROR: SOLSTONE_ADVISORY_MIRROR_LOCATOR is required; set it to the approved private mirror Git URL and retry." >&2; \
 	    exit 1; \
 	  fi; \
-	  cargo_home="$${CARGO_HOME:-$$HOME/.cargo}"; \
+	  cargo_home="$${CARGO_HOME:-}"; \
+	  if [ -z "$$cargo_home" ]; then \
+	    cargo_home=$$(SOLSTONE_ADVISORY_MIRROR_LOCATOR="$$mirror_locator" sh scripts/advisory-cargo-home.sh) || exit 1; \
+	  fi; \
 	  host_db_root="$$cargo_home/advisory-dbs"; \
 	  fail_unsafe_advisory_cache() { \
 	    echo "ERROR: advisory database root or child under $$host_db_root is unsafe/inaccessible; use a clean/isolated cargo home containing the approved mirror cache, then retry." >&2; \
