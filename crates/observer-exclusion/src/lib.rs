@@ -57,12 +57,11 @@ pub struct ExclusionRules {
     /// title-pattern model. Plain substrings, not glob/regex.
     #[serde(default)]
     pub title_patterns: Vec<String>,
-    /// Auto-exclude private/incognito browser windows. Detection is a
-    /// title-string heuristic keyed on the browser's exe — the same robustness
-    /// the macOS observer ships (it, too, reads the window title, not an
-    /// Accessibility API). Honest caveat for owner copy: catches the mainstream
-    /// browsers in their default private modes; a browser that doesn't mark its
-    /// title, or one not in the table, is not auto-detected.
+    /// Auto-exclude private browser windows. Detection reads the window title,
+    /// keyed on the browser's exe, and recognizes only the browsers whose private
+    /// mode reaches their own title (see [`is_private_window`]: Edge and Firefox).
+    /// Owner copy must say the rest are not recognized: a browser that doesn't
+    /// mark its title, or one not in the table, is not auto-detected.
     #[serde(default = "default_true")]
     pub exclude_private_browsing: bool,
 }
@@ -174,51 +173,45 @@ pub enum ExclusionDecision {
     Drop,
 }
 
-/// Browser exe → the case-insensitive title markers that denote a private /
-/// incognito window. Title-based, matching the macOS observer's robustness.
-/// Verified on the build box; extend here as new browsers are confirmed.
+/// Browser exe → the trailing form its own native window title takes for a
+/// private window, lowercased. Only a browser that writes its private mode
+/// into that title can be recognized this way, and a row belongs here only when a real
+/// private window of the browser's current stable build was read on Windows 11
+/// (2026-09-19) and the exclusion policy excluded it:
 ///
-/// **Brave, narrowed 2026-09-19.** The prior markers (`"private"`, `"tor"`)
-/// were bare substrings and redacted ordinary windows whose titles merely
-/// contained those words (Brave's own History page, "Inventory", "Doctor
-/// Who", a GitHub repo settings page, "Storage", "Tutorial"). Brave's private
-/// window title carries the accessible-title suffix `" (Private)"` — the
-/// parenthesised form is the only string that cannot collide with an
-/// ordinary title. `"tor"` is dropped rather than narrowed: live-measured on
-/// `sol-winbuild` against real Brave 153.1.95.104 (`--tor`, `--incognito`,
-/// navigated to a real page), NEITHER a Tor window NOR an ordinary private
-/// window currently carries any marker in the real native window title —
-/// Brave's Tor profile is a *non-primary* off-the-record profile
-/// (`OTRProfileID(tor::kTorProfileID)` in brave-core), which upstream
-/// Chromium classifies as `kOtherOffTheRecordProfile`, not `kIncognito`, so
-/// even the `" (Private)"` suffix (gated on `IsIncognitoProfile()`) does not
-/// apply to it. A Tor-specific marker would be pure guesswork with no
-/// observed positive to justify it, and no evidence anywhere in brave-core
-/// (resources or code) of a distinct Tor title string. The single narrowed
-/// `"(private)"` marker is a forward-compatible, false-positive-free stand-in
-/// for both cases, not a functioning positive-detection path for either —
-/// see `req_t3kzvhwv` (CPO) on whether title-substring matching is the right
-/// mechanism at all.
-fn private_markers(exe_name: &str) -> Option<&'static [&'static str]> {
+/// - Edge 153.0.4234.48: `Example Domain - [InPrivate] - Microsoft\u{200b} Edge`.
+///   Edge puts a zero-width space inside its own name.
+/// - Firefox 156.0: `Example Domain — Mozilla Firefox Private Browsing`.
+///
+/// Chrome 153.0.8010.53 and Brave 153.1.95.104 have no row: their private
+/// windows read exactly like ordinary ones (`Example Domain - Google Chrome`,
+/// `Example Domain - Brave`), and so does a Brave Tor window. Chromium writes
+/// the private annotation into the accessibility name only, not the caption.
+/// A marker for a browser that shows none would read as protection it does not
+/// give, so none is kept; the owner-facing copy says these browsers are not recognized.
+///
+/// The form is anchored to the *end* of the title, where the browser writes it.
+/// A page's own title is at the front, so a page that talks about private
+/// browsing cannot make an ordinary window match. Add a row only from a
+/// measured title, anchored the same way.
+fn private_title_suffix(exe_name: &str) -> Option<&'static str> {
     match exe_name {
-        "chrome.exe" => Some(&["incognito"]),
-        "msedge.exe" => Some(&["inprivate"]),
-        "brave.exe" => Some(&["(private)"]),
-        "firefox.exe" => Some(&["private browsing"]),
+        "msedge.exe" => Some("[inprivate] - microsoft\u{200b} edge"),
+        "firefox.exe" => Some("mozilla firefox private browsing"),
         _ => None,
     }
 }
 
-/// Whether a window is a private/incognito browser window, by the title
-/// heuristic keyed on the browser exe. Public so the running-app picker and
-/// tests can reuse the exact production logic.
+/// Whether a window is a private browser window, by the trailing form its
+/// browser's title takes (see [`private_title_suffix`]). A browser with no row
+/// is never matched. Public so the running-app picker and tests can reuse the
+/// exact production logic.
 pub fn is_private_window(exe_name: &str, title: &str) -> bool {
     let exe = exe_name.to_ascii_lowercase();
-    let Some(markers) = private_markers(&exe) else {
+    let Some(suffix) = private_title_suffix(&exe) else {
         return false;
     };
-    let title = title.to_ascii_lowercase();
-    markers.iter().any(|marker| title.contains(marker))
+    title.to_ascii_lowercase().ends_with(suffix)
 }
 
 fn exe_excluded(exe_name: &str, excluded: &[String]) -> bool {
@@ -458,63 +451,73 @@ mod tests {
 
     // ── private-browsing detection ────────────────────────────────────────────
 
+    // Edge stable 153.0.4234.48 and Firefox stable 156.0, each read from a real
+    // private window on Windows 11 (2026-09-19) navigated to a real page.
+    const EDGE_PRIVATE: &str = "Example Domain - [InPrivate] - Microsoft\u{200b} Edge";
+    const FIREFOX_PRIVATE: &str = "Example Domain \u{2014} Mozilla Firefox Private Browsing";
+
     #[test]
-    fn private_browser_detection_per_family() {
-        assert!(is_private_window(
-            "chrome.exe",
-            "Reddit (Incognito) - Google Chrome"
-        ));
-        assert!(is_private_window(
-            "msedge.exe",
-            "Bing - [InPrivate] - Microsoft Edge"
-        ));
-        assert!(is_private_window(
-            "firefox.exe",
-            "Mozilla Firefox (Private Browsing)"
-        ));
-        assert!(is_private_window("brave.exe", "Search (Private) - Brave"));
-        // normal windows of the same browsers
-        assert!(!is_private_window("chrome.exe", "Reddit - Google Chrome"));
-        assert!(!is_private_window("firefox.exe", "Mozilla Firefox"));
-        // non-browser with "incognito" in the title is NOT a private-browser match
-        assert!(!is_private_window("notepad.exe", "incognito notes.txt"));
+    fn private_windows_are_recognized_by_their_measured_titles() {
+        assert!(is_private_window("msedge.exe", EDGE_PRIVATE));
+        assert!(is_private_window("firefox.exe", FIREFOX_PRIVATE));
+        // exe names are matched case-insensitively, like the excluded-app list
+        assert!(is_private_window("MSEdge.exe", EDGE_PRIVATE));
     }
 
     #[test]
-    fn brave_marker_is_narrow_enough_to_survive_ordinary_titles_containing_private_or_tor() {
-        // Ordinary Brave windows whose titles happen to contain the bare
-        // words "private" or "tor" as substrings — the exact false-positive
-        // class the old `["private", "tor"]` markers produced, including
-        // Brave's own History page and window titles named in req_4gb2xqm4.
+    fn ordinary_windows_are_never_taken_for_private_ones_by_a_word_in_the_page_title() {
+        // The first two of each are ordinary windows read live; the shape is the
+        // browser's own ordinary form (Edge adds the profile name, Firefox the
+        // brand after an em dash). Page titles carry the very words the markers
+        // use, and one carries the marker's whole form.
         for title in [
-            "History - Brave",
-            "Inventory - Brave",
-            "Doctor Who - Brave",
-            "Storage - Brave",
-            "Tutorial - Brave",
-            "GitHub editor - Brave",
-            "Make this repository private - GitHub - Brave",
-            "Private Equity - Brave",
+            "Private equity - Wikipedia - Profile 1 - Microsoft\u{200b} Edge",
+            "Private browsing - Wikipedia - Profile 1 - Microsoft\u{200b} Edge",
+            "Incognito mode - Wikipedia - Personal - Microsoft\u{200b} Edge",
+            "InPrivate browsing - Microsoft Support - Personal - Microsoft\u{200b} Edge",
+            "Using [InPrivate] windows - Personal - Microsoft\u{200b} Edge",
+            "Save the [InPrivate] - Microsoft\u{200b} Edge docs - Personal - Microsoft\u{200b} Edge",
         ] {
             assert!(
-                !is_private_window("brave.exe", title),
-                "false positive on ordinary title: {title:?}"
+                !is_private_window("msedge.exe", title),
+                "ordinary Edge window taken for private: {title:?}"
+            );
+        }
+        for title in [
+            "Private equity - Wikipedia \u{2014} Mozilla Firefox",
+            "Private browsing - Wikipedia \u{2014} Mozilla Firefox",
+            "Incognito mode - Wikipedia \u{2014} Mozilla Firefox",
+            "Private Browsing - Use Firefox without saving history \u{2014} Mozilla Firefox",
+            "Mozilla Firefox Private Browsing tips \u{2014} Mozilla Firefox",
+            "Mozilla Firefox",
+        ] {
+            assert!(
+                !is_private_window("firefox.exe", title),
+                "ordinary Firefox window taken for private: {title:?}"
             );
         }
     }
 
     #[test]
-    fn brave_tor_window_carries_no_distinguishing_title_marker() {
-        // Live-measured 2026-09-19 on sol-winbuild against real Brave
-        // 153.1.95.104: `brave.exe --tor` navigated to a real page produces
-        // a native window title with no private/Tor annotation at all (same
-        // as an ordinary window) — Brave's Tor profile fails
-        // `IsIncognitoProfile()` (it is a non-primary OTR profile), so it
-        // never reaches Chromium's incognito-suffix branch. There is no
-        // known positive title to assert a Tor window IS detected; this
-        // documents the negative so a future marker change doesn't
-        // reintroduce a false-positive "tor" substring assuming one exists.
+    fn a_browser_whose_private_window_shows_no_marker_is_not_recognized() {
+        // Measured 2026-09-19 on Windows 11: a private window of each of these,
+        // navigated to a real page, reads exactly like an ordinary one, so there
+        // is no title to match. Chrome 153.0.8010.53 (`--incognito`) and Brave
+        // 153.1.95.104 (`--incognito` and `--tor`). Owner copy says so; no marker
+        // stands in for one that has not been observed.
+        assert!(!is_private_window(
+            "chrome.exe",
+            "Example Domain - Google Chrome"
+        ));
         assert!(!is_private_window("brave.exe", "Example Domain - Brave"));
+        // and a Chrome or Brave title that happens to say the words is ordinary
+        assert!(!is_private_window(
+            "chrome.exe",
+            "Incognito mode - Wikipedia - Google Chrome"
+        ));
+        assert!(!is_private_window("brave.exe", "Private Equity - Brave"));
+        // non-browser with a marker word in the title is NOT a private-browser match
+        assert!(!is_private_window("notepad.exe", "incognito notes.txt"));
     }
 
     #[test]
@@ -528,7 +531,7 @@ mod tests {
             exclude_private_browsing: false,
             ..on.clone()
         };
-        let w = win("chrome.exe", "x (Incognito)", Some(rect(0, 0, 5, 5)));
+        let w = win("msedge.exe", EDGE_PRIVATE, Some(rect(0, 0, 5, 5)));
         assert_eq!(
             evaluate(&on, std::slice::from_ref(&w)),
             ExclusionDecision::Redact(vec![rect(0, 0, 5, 5)])

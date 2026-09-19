@@ -1536,11 +1536,12 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
     pane.append(warn);
   }
 
-  // Private browsing — title-heuristic auto-exclude, on by default. The honest
-  // caveat (a title heuristic, not a structural exclude) is stated, not implied.
+  // Private browsing — title-heuristic auto-exclude, on by default. Only the
+  // browsers measured to write their private mode into the window title are
+  // named (see observer-exclusion); every other browser is stated as not seen.
   pane.append(
     toggleRow(
-      "keep private browsing windows out",
+      "keep private windows out of your journal: Edge and Firefox set to English",
       ids["settings.exclusions.privateBrowsing"],
       rules.exclude_private_browsing,
       (on) => {
@@ -1551,7 +1552,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   );
   pane.append(
     microCaption(
-      "this reads the window title and knows Chrome, Edge, Brave and Firefox. it can miss a private window, which then reaches your journal, and it can keep out an ordinary one. to be certain about a whole app either way, add it to the excluded apps below.",
+      "this reads the window title and matches private windows in Edge and Firefox. that was checked on Edge 153 and Firefox 156, each set to English; a browser update or another language can change a title, and then a private window there may reach your journal. Chrome 153 and Brave 153 don't show private mode in their titles, and other browsers are not matched, so their private windows reach your journal. to keep every window of a browser out of your journal, add that browser to the excluded apps below.",
     ),
   );
 

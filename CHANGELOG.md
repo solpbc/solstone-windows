@@ -6,9 +6,13 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- the private-browsing setting now names only the two browsers whose private windows showed private mode in the title: Edge 153 and Firefox 156, set to English. Chrome 153 and Brave 153 don't show private mode in their titles, and other browsers are not matched, so private windows in those reach your journal. the match uses English wording, so a browser set to another language may not match. private windows you opened in Chrome, Brave or another browser before this update may already be in your journal. to keep every window of a browser out of your journal, add that browser to the excluded apps in privacy settings.
+
 ### Fixed
 
-- the private-browsing exclusion on Brave no longer blacks out ordinary windows just because their title happens to contain the word "private" or "tor". this was catching Brave's own history page and windows named things like inventory, storage, a tutorial, or a GitHub repository's settings — none of them private windows.
+- the private-browsing setting no longer keeps an ordinary window out of your journal just because its page title contains "private browsing" in Firefox or the letters "tor" in Brave, as in history, inventory, storage or tutorial. those windows were kept out even though they were not private.
 
 ## [2.0.7] - 2026-09-19
 
