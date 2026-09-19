@@ -64,7 +64,7 @@ if [ "$needs_fetch" -eq 1 ]; then
     printf '[advisories]\n'
     printf 'db-urls = ["%s"]\n' "$mirror_locator"
   } >"$fetch_config"
-  (cd "$repo_root" && CARGO_HOME="$cargo_home" "$cargo_bin" deny --config "$fetch_config" fetch db)
+  (cd "$repo_root" && CARGO_HOME="$cargo_home" "$cargo_bin" deny --locked --config "$fetch_config" fetch db)
   printf '%s' "$mirror_locator" >"$locator_marker"
 fi
 
