@@ -2592,6 +2592,34 @@ function renderKinshipCard(): HTMLElement {
   return card;
 }
 
+// The kinship card is a first-run-only intro, not a not-paired-forever banner:
+// "not paired" is a legitimate ongoing mode for an owner who chooses local-only
+// capture, so gating solely on it would show the intro on every settings visit
+// for the life of the install. Windows has no source-level opt-in to read a
+// "has the owner done anything yet" fact from (sources activate automatically,
+// unlike the Android wish-store precedent this mirrors), so the fact this gate
+// needs is instead recorded the first time the card is actually shown. This is
+// UI-dismissal state, not an engine fact, so it lives in the webview's own
+// storage rather than HealthDump (whose fields the shell only ever reads, never
+// mints, per the module doc comment above).
+const KINSHIP_SEEN_STORAGE_KEY = "solstone.settings.kinshipSeen";
+
+function hasSeenKinship(): boolean {
+  try {
+    return localStorage.getItem(KINSHIP_SEEN_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markKinshipSeen(): void {
+  try {
+    localStorage.setItem(KINSHIP_SEEN_STORAGE_KEY, "1");
+  } catch {
+    // Best-effort only; a storage failure just means the intro may repeat.
+  }
+}
+
 function renderHome(dump: HealthDump): HTMLElement {
   const home = document.createElement("div");
   home.classList.add("settings-home");
@@ -2605,7 +2633,8 @@ function renderHome(dump: HealthDump): HTMLElement {
     renderUpdatesCard(),
   );
 
-  if (dump.sync.pairing.phase === "not_paired") {
+  if (dump.sync.pairing.phase === "not_paired" && !hasSeenKinship()) {
+    markKinshipSeen();
     home.append(renderKinshipCard(), renderStatusStrip(dump), cards);
   } else {
     home.append(renderStatusStrip(dump), cards);
@@ -3612,6 +3641,11 @@ export const __test__ = {
   sanitizeJournalVersion,
   rerender,
   reset() {
+    try {
+      localStorage.clear();
+    } catch {
+      // jsdom always provides localStorage; a real failure isn't testable state.
+    }
     latestHealth = null;
     healthReceivedAt = null;
     latestStorage = null;

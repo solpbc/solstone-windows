@@ -88,6 +88,19 @@ describe("settings renderer characterization", () => {
     absent(ids["settings.home.kinship"]);
   });
 
+  it("omits the kinship intro on a later not-paired render, once already shown once", () => {
+    const dump = notPairedDump();
+    app.__test__.setRoute("home");
+    app.__test__.setHealth(dump);
+
+    app.__test__.renderSettings(dump);
+    present(ids["settings.home.kinship"]);
+
+    app.__test__.renderSettings(dump);
+
+    absent(ids["settings.home.kinship"]);
+  });
+
   it.each(["pairing", "failed"] as const)(
     "omits the kinship intro while %s",
     (phase) => {
