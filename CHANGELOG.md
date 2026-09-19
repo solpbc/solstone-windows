@@ -6,6 +6,18 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.7] - 2026-09-19
+
+### Changed
+
+- the private-browsing setting now names the four browsers it knows, Chrome, Edge, Brave and Firefox, and says plainly that it can get the match wrong in either direction: it can miss a private window, which then reaches your journal, and it can keep out an ordinary one. to be certain about a whole app either way, add it to the excluded apps in privacy settings.
+- the solstone app on windows no longer calls itself sol. settings, the about window, the window titles and the update messages all use the current name now, and the global pause shortcut is described as pausing intake rather than the app.
+
+### Fixed
+
+- the exclusion activity line under privacy settings now counts the right thing. it reported the frames where an excluded window was blacked out as frames kept out of your journal; those frames do reach your journal, with the window blacked out. it now leads with the frames that were kept out whole, and counts the blacked-out ones separately.
+- the welcome on the settings home now shows once and then goes away. it used to stay for good on a PC you never paired with a journal.
+
 ## [2.0.6] - 2026-09-18
 
 ### Added

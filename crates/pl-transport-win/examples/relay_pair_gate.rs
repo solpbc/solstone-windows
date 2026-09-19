@@ -21,8 +21,9 @@ use pl_transport_win::pairing;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    let link = std::env::var("SOLSTONE_PAIR_LINK")
-        .expect("set SOLSTONE_PAIR_LINK to a fresh 0x06 relay pair-link from `sol call link pair`");
+    let link = std::env::var("SOLSTONE_PAIR_LINK").expect(
+        "set SOLSTONE_PAIR_LINK to a fresh 0x06 relay pair-link from `solstone call link pair`",
+    );
     let credential_file = std::env::var("SOLSTONE_CREDENTIAL_FILE")
         .expect("set SOLSTONE_CREDENTIAL_FILE to the output pairing.json path");
     let device_label = std::env::var("SOLSTONE_DEVICE_LABEL")

@@ -209,7 +209,7 @@ type ExclusionEdit =
 
 const SELF_EXE = "solstone-windows-app.exe";
 const STORE_APPS_LABEL =
-  "Store apps (all) — Windows Store apps share one entry; excluding it excludes them all";
+  "store apps (all). apps from the Microsoft Store share one entry, so excluding it excludes all of them";
 
 // ── Updater (observer-update) ────────────────────────────────────────────────
 // Update state arrives on its own `update://changed` event, separate from the
@@ -1458,11 +1458,15 @@ function exclusionActivityLabel(health: ExclusionHealth | null): string {
   if (!health || !health.rules_active) {
     return "no exclusions active";
   }
-  const kept = `${health.frames_redacted} frame${health.frames_redacted === 1 ? "" : "s"} kept out of your journal this session`;
-  if (health.frames_dropped > 0) {
-    return `${kept} · ${health.frames_dropped} dropped`;
+  // frames_dropped is the count that never reached the journal: the Drop arm in
+  // capture-wgc returns before emit_screen_frame. frames_redacted frames DO reach
+  // the journal with the excluded rectangles blacked out, so they are not "kept
+  // out" and must not be reported as though they were.
+  const keptOut = `${health.frames_dropped} frame${health.frames_dropped === 1 ? "" : "s"} kept out of your journal this session`;
+  if (health.frames_redacted > 0) {
+    return `${keptOut} · ${health.frames_redacted} more reached your journal with an excluded window blacked out`;
   }
-  return kept;
+  return keptOut;
 }
 
 // A removable list of string values (excluded exes / title keywords).
@@ -1522,11 +1526,11 @@ function removableList(
 function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLElement {
   const pane = section("privacy");
   pane.append(
-    helpCaption("choose what sol keeps out of your journal. changes take effect right away."),
+    helpCaption("choose what stays out of your journal. changes take effect right away."),
   );
   if (!exclusionsPersisted) {
     const warn = helpCaption(
-      "These rules are active now but couldn't be saved — they may not survive a restart.",
+      "these rules are active now but couldn't be saved, so they may not survive a restart.",
     );
     warn.style.color = "var(--danger)";
     pane.append(warn);
@@ -1547,7 +1551,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
   );
   pane.append(
     microCaption(
-      "sol recognizes private and incognito windows by their title — it catches the major browsers in their default private mode.",
+      "this reads the window title and knows Chrome, Edge, Brave and Firefox. it can miss a private window, which then reaches your journal, and it can keep out an ordinary one. to be certain about a whole app either way, add it to the excluded apps below.",
     ),
   );
 
@@ -1627,7 +1631,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
 
   // Title keywords — case-insensitive substring of a window title.
   pane.append(subheadLabel("title keywords"));
-  pane.append(helpCaption("hide any window whose title contains a word you choose."));
+  pane.append(helpCaption("windows whose title contains a word you choose never reach your journal."));
   const titleRow = document.createElement("div");
   titleRow.style.display = "grid";
   titleRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
@@ -1697,7 +1701,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
 
   pane.append(
     microCaption(
-      "A window that closes or moves can appear for up to one frame before exclusion applies.",
+      "a window that closes or moves can appear for up to one frame before exclusion applies.",
     ),
   );
 
@@ -1984,7 +1988,7 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   const pane = section("global shortcut");
   const cfg = view.config;
 
-  pane.append(helpCaption("a global shortcut to pause and resume sol from anywhere."));
+  pane.append(helpCaption("a global shortcut to pause and resume intake from anywhere."));
 
   pane.append(
     toggleRow(
@@ -2157,7 +2161,7 @@ function renderMicSection(view: MicView): HTMLElement {
 
   pane.append(
     helpCaption(
-      "sol uses one microphone at a time. set which one, and how much to boost it.",
+      "the solstone app uses one microphone at a time. set which one, and how much to boost it.",
     ),
   );
 
@@ -2165,7 +2169,7 @@ function renderMicSection(view: MicView): HTMLElement {
   pane.append(subheadLabel("device priority"));
   pane.append(
     helpCaption(
-      "the top enabled microphone is used. use ↑ ↓ to set the order; sol falls back to the next if one is unavailable.",
+      "the top enabled microphone is used. use ↑ ↓ to set the order; the solstone app falls back to the next if one is unavailable.",
     ),
   );
   const list = automation(document.createElement("div"), ids["settings.mic.devices"]);
@@ -2292,7 +2296,7 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
   const pane = section("local storage");
   pane.append(
     helpCaption(
-      "after a segment safely reaches your journal, how long should sol keep its local copy on this computer?",
+      "after a segment safely reaches your journal, how long should its local copy stay on this computer?",
     ),
   );
   pane.append(
@@ -2330,7 +2334,7 @@ function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
   pane.append(valueRow("keep segments", sel));
   pane.append(
     trustFootnote(
-      "your unsynced segments are never deleted — sol only clears local copies of segments already saved to your journal.",
+      "segments that have not reached your journal yet are never deleted. only local copies of segments already in your journal are cleared.",
     ),
   );
 
@@ -2576,12 +2580,12 @@ function renderKinshipCard(): HTMLElement {
   card.classList.add("settings-kinship");
   automation(card, ids["settings.home.kinship"]);
 
-  const heading = text("h2", "this is sol, part of solstone.");
+  const heading = text("h2", "welcome to solstone.");
   heading.classList.add("settings-card-title");
 
   const body1 = text(
     "div",
-    "sol lives on your devices, experiences your day with you, and keeps it all in your journal.",
+    "the solstone app takes in what you share with it, and all of it goes into your journal.",
   );
   body1.classList.add("settings-kinship-body");
 
@@ -2714,7 +2718,7 @@ function renderRail(): HTMLElement {
   rail.classList.add("settings-rail");
   rail.setAttribute("aria-label", "settings");
 
-  const title = text("div", "sol");
+  const title = text("div", "solstone");
   title.classList.add("settings-rail-title");
   rail.append(title);
 
@@ -2813,28 +2817,29 @@ function renderAbout(dump: HealthDump): void {
   root.style.padding = "22px";
   root.style.boxSizing = "border-box";
 
-  const title = text("h1", "sol");
+  const title = text("h1", "solstone");
   title.style.margin = "0 0 12px";
   title.style.fontSize = "24px";
 
   const body1 = text(
     "p",
-    "sol lives on your devices, experiences your day with you, and keeps it all in your journal. your journal is always private, only yours.",
+    "the solstone app takes in what you share with it, and all of it goes into your journal.",
   );
-  const body2 = text("p", "sol is part of solstone — open source, local-first.");
-  const body3 = text("p", "made by sol pbc.");
-  for (const body of [body1, body2, body3]) {
+  const body2 = text("p", "your journal is always private, only yours.");
+  const body3 = text("p", "open source, local-first.");
+  const body4 = text("p", "made by sol pbc.");
+  for (const body of [body1, body2, body3, body4]) {
     body.style.margin = "0 0 12px";
     body.style.lineHeight = "1.5";
     body.style.color = "var(--fg-subtle)";
   }
-  body3.style.margin = "0 0 18px";
+  body4.style.margin = "0 0 18px";
 
   const version = selectable(automation(text("div", dump.version), ids["about.version"]));
   version.style.fontSize = "13px";
   version.style.color = "var(--fg-subtle)";
 
-  root.append(title, body1, body2, body3, version);
+  root.append(title, body1, body2, body3, body4, version);
 
   const raw = dump.sync.journal_version;
   const sanitized = sanitizeJournalVersion(raw);
@@ -2881,25 +2886,25 @@ function lastCheckedRelative(checkedAt: number | null, secsNow: number): string 
 function updateHeadline(view: UpdateView): string {
   const v = view.available_version ?? "";
   if (view.activity === "installing") {
-    return v ? `installing sol ${v}…` : "installing…";
+    return v ? `installing solstone ${v}…` : "installing…";
   }
   switch (view.display) {
     case "never_checked":
       return "not checked for updates yet";
     case "up_to_date":
-      return "sol is up to date";
+      return "solstone is up to date";
     case "checking":
       return "checking for updates…";
     case "available":
-      return `sol ${v} is available`;
+      return `solstone ${v} is available`;
     case "downloading":
-      return `downloading sol ${v}`;
+      return `downloading solstone ${v}`;
     case "staged":
-      return `sol ${v} is ready to install`;
+      return `solstone ${v} is ready to install`;
     case "failed":
       return "couldn't check for updates";
     case "failed_with_available":
-      return `couldn't check — sol ${v} found earlier`;
+      return `couldn't check for updates. solstone ${v} was found earlier`;
     case "unavailable":
       return "this build can't update itself";
   }
@@ -2920,7 +2925,7 @@ function updateSubtitle(
     case "never_checked":
       return {
         text: view.prefs.auto_check
-          ? "automatic checks are on — sol will check on its own"
+          ? "automatic checks are on"
           : "automatic checks are off",
         live: false,
       };
@@ -2928,7 +2933,7 @@ function updateSubtitle(
     case "downloading":
       return null;
     case "staged":
-      return { text: "it installs the next time sol restarts", live: false };
+      return { text: "it installs the next time the solstone app restarts", live: false };
     case "unavailable":
       return {
         text: "download the latest from solstone.app/download/windows",
@@ -3377,13 +3382,13 @@ function renderUnavailable(): void {
   const rootId = label === "about" ? ids["about.window.root"] : ids["settings.window.root"];
   resetRoot(rootId);
 
-  const title = text("h1", "sol");
+  const title = text("h1", "solstone");
   title.style.margin = "0";
   title.style.padding = "18px 20px 8px";
   title.style.fontSize = "22px";
   title.style.fontWeight = "700";
 
-  const msg = text("p", "couldn't load sol's status just now.");
+  const msg = text("p", "couldn't load the solstone app's status just now.");
   msg.style.padding = "0 20px";
   msg.style.color = "var(--fg-subtle)";
 

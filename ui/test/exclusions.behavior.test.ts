@@ -10,7 +10,7 @@ import { exclusionRules, exclusionsDump } from "./fixtures";
 
 const ids = automationContract.automation_ids;
 const WARNING_TEXT =
-  "These rules are active now but couldn't be saved — they may not survive a restart.";
+  "these rules are active now but couldn't be saved, so they may not survive a restart.";
 
 type ExclusionRulesFixture = ReturnType<typeof exclusionRules>;
 type RunningAppFixture = { exe_name: string; display_name: string };

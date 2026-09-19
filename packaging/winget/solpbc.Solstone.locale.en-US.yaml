@@ -7,7 +7,7 @@
 # not authored in this static input.
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.6
+PackageVersion: 2.0.7
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -18,7 +18,7 @@ License: AGPL-3.0-only
 LicenseUrl: https://github.com/solpbc/solstone-windows/blob/main/LICENSE
 Copyright: Copyright (c) 2026 sol pbc
 ShortDescription: the solstone app for windows
-Description: the solstone app for windows takes in what you share with it from your screen, system audio, and any microphone you choose. it prepares local, owner-controlled segments for your journal. the solstone app runs on windows; your journal runs on a mac or linux computer. no telemetry.
+Description: the solstone app for windows takes in what you share with it from your screen, system audio, and any microphone you choose. it prepares local, owner-controlled segments for your journal. the solstone app runs on windows; your journal lives on a mac or linux computer. no telemetry.
 Moniker: solstone
 Tags:
   - journal

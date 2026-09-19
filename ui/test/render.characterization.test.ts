@@ -20,9 +20,9 @@ import {
 
 const ids = automationContract.automation_ids;
 const STORE_APPS_LABEL =
-  "Store apps (all) — Windows Store apps share one entry; excluding it excludes them all";
+  "store apps (all). apps from the Microsoft Store share one entry, so excluding it excludes all of them";
 const EXCLUSION_BOUNDARY =
-  "A window that closes or moves can appear for up to one frame before exclusion applies.";
+  "a window that closes or moves can appear for up to one frame before exclusion applies.";
 const byId = (id: string): HTMLElement | null =>
   document.querySelector(`[data-automation-id="${id}"]`);
 
@@ -71,9 +71,9 @@ describe("settings renderer characterization", () => {
     app.__test__.renderSettings(dump);
 
     const block = present(ids["settings.home.kinship"]);
-    expect(block.textContent).toContain("this is sol, part of solstone.");
+    expect(block.textContent).toContain("welcome to solstone.");
     expect(block.textContent).toContain(
-      "sol lives on your devices, experiences your day with you, and keeps it all in your journal.",
+      "the solstone app takes in what you share with it, and all of it goes into your journal.",
     );
     expect(block.textContent).toContain("your journal is always private, only yours.");
   });
@@ -250,7 +250,7 @@ describe("settings renderer characterization", () => {
       ),
     ).toBe(true);
     expect(present(ids["settings.exclusions.activity"]).textContent).toBe(
-      "3 frames kept out of your journal this session · 1 dropped",
+      "1 frame kept out of your journal this session · 3 more reached your journal with an excluded window blacked out",
     );
   });
 

@@ -59,7 +59,7 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
 
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
-        .title("sol — settings")
+        .title("solstone settings")
         .inner_size(820.0, 580.0)
         .min_inner_size(460.0, 480.0)
         .transparent(true)
@@ -392,7 +392,7 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
 
     WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into()))
-        .title("about sol")
+        .title("about solstone")
         .inner_size(360.0, 280.0)
         .transparent(true)
         .effects(mica_effects())
