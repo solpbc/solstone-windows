@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- the private-browsing exclusion on Brave no longer blacks out ordinary windows just because their title happens to contain the word "private" or "tor". this was catching Brave's own history page and windows named things like inventory, storage, a tutorial, or a GitHub repository's settings — none of them private windows.
+
 ## [2.0.7] - 2026-09-19
 
 ### Changed

@@ -177,11 +177,33 @@ pub enum ExclusionDecision {
 /// Browser exe → the case-insensitive title markers that denote a private /
 /// incognito window. Title-based, matching the macOS observer's robustness.
 /// Verified on the build box; extend here as new browsers are confirmed.
+///
+/// **Brave, narrowed 2026-09-19.** The prior markers (`"private"`, `"tor"`)
+/// were bare substrings and redacted ordinary windows whose titles merely
+/// contained those words (Brave's own History page, "Inventory", "Doctor
+/// Who", a GitHub repo settings page, "Storage", "Tutorial"). Brave's private
+/// window title carries the accessible-title suffix `" (Private)"` — the
+/// parenthesised form is the only string that cannot collide with an
+/// ordinary title. `"tor"` is dropped rather than narrowed: live-measured on
+/// `sol-winbuild` against real Brave 153.1.95.104 (`--tor`, `--incognito`,
+/// navigated to a real page), NEITHER a Tor window NOR an ordinary private
+/// window currently carries any marker in the real native window title —
+/// Brave's Tor profile is a *non-primary* off-the-record profile
+/// (`OTRProfileID(tor::kTorProfileID)` in brave-core), which upstream
+/// Chromium classifies as `kOtherOffTheRecordProfile`, not `kIncognito`, so
+/// even the `" (Private)"` suffix (gated on `IsIncognitoProfile()`) does not
+/// apply to it. A Tor-specific marker would be pure guesswork with no
+/// observed positive to justify it, and no evidence anywhere in brave-core
+/// (resources or code) of a distinct Tor title string. The single narrowed
+/// `"(private)"` marker is a forward-compatible, false-positive-free stand-in
+/// for both cases, not a functioning positive-detection path for either —
+/// see `req_t3kzvhwv` (CPO) on whether title-substring matching is the right
+/// mechanism at all.
 fn private_markers(exe_name: &str) -> Option<&'static [&'static str]> {
     match exe_name {
         "chrome.exe" => Some(&["incognito"]),
         "msedge.exe" => Some(&["inprivate"]),
-        "brave.exe" => Some(&["private", "tor"]),
+        "brave.exe" => Some(&["(private)"]),
         "firefox.exe" => Some(&["private browsing"]),
         _ => None,
     }
@@ -456,6 +478,43 @@ mod tests {
         assert!(!is_private_window("firefox.exe", "Mozilla Firefox"));
         // non-browser with "incognito" in the title is NOT a private-browser match
         assert!(!is_private_window("notepad.exe", "incognito notes.txt"));
+    }
+
+    #[test]
+    fn brave_marker_is_narrow_enough_to_survive_ordinary_titles_containing_private_or_tor() {
+        // Ordinary Brave windows whose titles happen to contain the bare
+        // words "private" or "tor" as substrings — the exact false-positive
+        // class the old `["private", "tor"]` markers produced, including
+        // Brave's own History page and window titles named in req_4gb2xqm4.
+        for title in [
+            "History - Brave",
+            "Inventory - Brave",
+            "Doctor Who - Brave",
+            "Storage - Brave",
+            "Tutorial - Brave",
+            "GitHub editor - Brave",
+            "Make this repository private - GitHub - Brave",
+            "Private Equity - Brave",
+        ] {
+            assert!(
+                !is_private_window("brave.exe", title),
+                "false positive on ordinary title: {title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn brave_tor_window_carries_no_distinguishing_title_marker() {
+        // Live-measured 2026-09-19 on sol-winbuild against real Brave
+        // 153.1.95.104: `brave.exe --tor` navigated to a real page produces
+        // a native window title with no private/Tor annotation at all (same
+        // as an ordinary window) — Brave's Tor profile fails
+        // `IsIncognitoProfile()` (it is a non-primary OTR profile), so it
+        // never reaches Chromium's incognito-suffix branch. There is no
+        // known positive title to assert a Tor window IS detected; this
+        // documents the negative so a future marker change doesn't
+        // reintroduce a false-positive "tor" substring assuming one exists.
+        assert!(!is_private_window("brave.exe", "Example Domain - Brave"));
     }
 
     #[test]
