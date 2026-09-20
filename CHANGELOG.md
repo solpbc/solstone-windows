@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.8] - 2026-09-20
+
 ### Changed
 
 - the private-browsing setting now names only the two browsers whose private windows showed private mode in the title: Edge 153 and Firefox 156, set to English. Chrome 153 and Brave 153 don't show private mode in their titles, and other browsers are not matched, so private windows in those reach your journal. the match uses English wording, so a browser set to another language may not match. private windows you opened in Chrome, Brave or another browser before this update may already be in your journal. to keep every window of a browser out of your journal, add that browser to the excluded apps in privacy settings.
