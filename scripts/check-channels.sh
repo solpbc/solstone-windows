@@ -46,14 +46,17 @@ if [ -z "$WINGET" ]; then
 elif [ "$WINGET" = "$VERSION" ]; then
   echo "  winget  OK       $WINGET"
 else
+  # Title match is prefix-agnostic on purpose: submissions appear as "New version:",
+  # "Add version:" or "Update version:" depending on the tool and on whether an open PR
+  # was retargeted to a later release. Pinning one form made a submitted PR read as DRIFT.
   PENDING="$(gh api -X GET search/issues \
-             -f q="repo:$UPSTREAM is:pr is:open \"New version: solpbc.Solstone version $VERSION\" in:title" \
+             -f q="repo:$UPSTREAM is:pr is:open \"solpbc.Solstone version $VERSION\" in:title" \
              --jq '.items[].html_url' 2>/dev/null || true)"
   if [ -n "$PENDING" ]; then
     echo "  winget  PENDING  published $WINGET, $VERSION awaiting merge: $PENDING"
     pending=1
   else
-    echo "  winget  DRIFT    published $WINGET, expected $VERSION -- release publication belongs to the aggregate provenance publisher"
+    echo "  winget  DRIFT    published $WINGET, expected $VERSION -- submit a manifest PR to $UPSTREAM; see docs/release-runbook.md"
     rc=1
   fi
 fi
@@ -67,7 +70,7 @@ if [ -z "$SCOOP" ]; then
 elif [ "$SCOOP" = "$VERSION" ]; then
   echo "  scoop   OK       $SCOOP"
 else
-  echo "  scoop   DRIFT    published $SCOOP, expected $VERSION -- release publication belongs to the aggregate provenance publisher"
+  echo "  scoop   DRIFT    published $SCOOP, expected $VERSION -- commit packaging/scoop/solstone.json into $BUCKET bucket/; our own bucket, no third-party queue"
   rc=1
 fi
 
