@@ -112,8 +112,15 @@ Our source of truth is [`scoop/solstone.json`](scoop/solstone.json). It points a
 `Solstone-win-Portable.zip` and carries `checkver`/`autoupdate` blocks (the latter
 let a maintainer auto-refresh from a scoop checkout — `bin/checkver.ps1 solstone -u`).
 
-The direct scoop script is locked. Hashing the finalized `Portable.zip` and
-publishing the complete reviewed manifest to `solpbc/scoop-solstone` belongs to the aggregate provenance publisher.
+The direct scoop script is locked, and **nothing automated replaced it** — the aggregate
+provenance publisher covers R2 and the GitHub mirror and has no package-channel leg. Publishing
+scoop is a **hand-run one-file commit**: hash the finalized `Portable.zip`, put that digest in
+`packaging/scoop/solstone.json`, and commit the whole reviewed manifest into `solpbc/scoop-solstone`
+as `bucket/solstone.json` (message `solstone <version>`). Our own bucket, so no third-party queue.
+⚠ **Hash the artifact; do not carry the previous release's digest forward** — 2.0.8 shipped with
+2.0.7's hash here, which fails every install because scoop verifies before extracting.
+✅ `make check-channels`, run **from the release commit**, downloads the committed URL and compares
+its sha256, so it catches exactly that.
 
 **`bin` / `shortcuts` must name a file that exists in the portable zip.** Velopack
 names the top-level launcher after `--packTitle` — today `solstone.exe`. If `--packTitle`
