@@ -586,8 +586,9 @@ fn rust_release_manifest_schema_accepts_unknown_root_field() {
     )
     .unwrap();
     manifest["unknown"] = json!(true);
-    let schema = rust_release_manifest::compile_schema_with_import(&RUST_RELEASE_MANIFEST_V1_IMPORT)
-        .expect("schema compiles");
+    let schema =
+        rust_release_manifest::compile_schema_with_import(&RUST_RELEASE_MANIFEST_V1_IMPORT)
+            .expect("schema compiles");
     assert!(
         schema.validate(&manifest).is_ok(),
         "root additionalProperties: true must accept an unrecognized field at the schema level"
