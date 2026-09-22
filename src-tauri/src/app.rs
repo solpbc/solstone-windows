@@ -208,6 +208,16 @@ pub fn run(
                     );
                     if open_journal_on_launch {
                         let _ = crate::control::signal_open_journal();
+                    } else if let Some(view) = open_view {
+                        // `--open-view` has to mean the same thing whether or not
+                        // the app is already running. This branch used to fall
+                        // through to the surface verb, so `--open-view about`
+                        // against a live instance opened Settings and reported
+                        // nothing wrong -- the flag lied rather than failed.
+                        let _ = match view {
+                            observer_model::View::Settings => crate::control::signal_surface(),
+                            observer_model::View::About => crate::control::signal_surface_about(),
+                        };
                     } else if surface_on_launch {
                         let _ = crate::control::signal_surface();
                     }

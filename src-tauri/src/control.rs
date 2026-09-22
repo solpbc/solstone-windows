@@ -11,6 +11,7 @@ pub const CONTROL_PORT: u16 = 49248;
 
 const OPEN_JOURNAL_VERB: &[u8] = b"open-journal\n";
 const SURFACE_VERB: &[u8] = b"surface-settings\n";
+const SURFACE_ABOUT_VERB: &[u8] = b"surface-about\n";
 
 pub fn signal_surface() -> bool {
     signal(SURFACE_VERB)
@@ -18,6 +19,13 @@ pub fn signal_surface() -> bool {
 
 pub fn signal_open_journal() -> bool {
     signal(OPEN_JOURNAL_VERB)
+}
+
+/// Surface About on an already-running instance. Without this, `--open-view
+/// about` against a live app fell through to the surface verb and opened
+/// Settings, so the flag silently did the wrong thing rather than failing.
+pub fn signal_surface_about() -> bool {
+    signal(SURFACE_ABOUT_VERB)
 }
 
 fn signal(verb: &[u8]) -> bool {
@@ -71,9 +79,42 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: tokio::net::TcpStr
                 );
             }
         });
+    } else if buf[..n].starts_with(SURFACE_ABOUT_VERB) {
+        std::thread::spawn(move || {
+            let _ = crate::windows::open_about(&app);
+        });
     } else if buf[..n].starts_with(SURFACE_VERB) {
         std::thread::spawn(move || {
             let _ = crate::windows::open_settings(&app);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two surface verbs must not prefix-match each other: `handle_connection`
+    /// dispatches on `starts_with`, so a shared prefix would route About to
+    /// Settings and reintroduce exactly the silent-wrong-window bug this verb
+    /// was added to fix.
+    #[test]
+    fn surface_verbs_are_distinguishable() {
+        assert_ne!(SURFACE_VERB, SURFACE_ABOUT_VERB);
+        assert!(!SURFACE_ABOUT_VERB.starts_with(SURFACE_VERB));
+        assert!(!SURFACE_VERB.starts_with(SURFACE_ABOUT_VERB));
+    }
+
+    /// Every view reachable by `--open-view` needs a control verb, or a second
+    /// launch silently opens the wrong one.
+    #[test]
+    fn every_view_has_a_surface_verb() {
+        for view in observer_model::View::ALL {
+            let verb: &[u8] = match view {
+                observer_model::View::Settings => SURFACE_VERB,
+                observer_model::View::About => SURFACE_ABOUT_VERB,
+            };
+            assert!(verb.ends_with(b"\n"), "{} verb must be newline-terminated", view.label());
+        }
     }
 }
