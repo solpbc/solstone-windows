@@ -272,10 +272,10 @@ fn rust_release_manifest_schema_is_exact_and_compiles_unchanged() {
     let bytes = fs::read(repo_root().join("schemas/rust-release-manifest/v1.json")).unwrap();
     let import_contract =
         fs::read(repo_root().join("contracts/rust-release-manifest-import.json")).unwrap();
-    assert_eq!(bytes.len(), 4_416);
+    assert_eq!(bytes.len(), 4_415);
     assert_eq!(
         RUST_RELEASE_MANIFEST_V1_IMPORT.sha256,
-        "d4eabf52bcc68b56945912d351f818e5444fe8c6461cb5c48b096f87b17a875c"
+        "45e12a73062eededbe4d47b1101425eeca7be03f55dbc75ce087f477ae3a8a72"
     );
     assert_eq!(
         lower_hex(&Sha256::digest(&bytes)),
@@ -462,7 +462,7 @@ fn rust_release_manifest_schema_asserts_lookaheads_and_date_time() {
 }
 
 #[test]
-fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
+fn rust_release_manifest_schema_rejects_required_and_nested_unknown_field_classes() {
     for field in [
         "schema_version",
         "product",
@@ -485,7 +485,7 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
             "{field}"
         );
     }
-    for mutation in 0..17 {
+    for mutation in 0..16 {
         assert_eq!(
             schema_mutation(|manifest| match mutation {
                 0 => {
@@ -554,16 +554,44 @@ fn rust_release_manifest_schema_rejects_required_and_unknown_field_classes() {
                         .unwrap()
                         .remove("bytes");
                 }
-                12 => manifest["unknown"] = json!(true),
-                13 => manifest["rust"]["unknown"] = json!(true),
-                14 => manifest["target"]["unknown"] = json!(true),
-                15 => manifest["dependency_policy"]["unknown"] = json!(true),
+                12 => manifest["rust"]["unknown"] = json!(true),
+                13 => manifest["target"]["unknown"] = json!(true),
+                14 => manifest["dependency_policy"]["unknown"] = json!(true),
                 _ => manifest["artifacts"][0]["unknown"] = json!(true),
             }),
             ManifestError::SchemaViolation,
             "mutation {mutation}"
         );
     }
+}
+
+#[test]
+fn rust_release_manifest_schema_accepts_unknown_root_field() {
+    // The vendored v1 schema's root `additionalProperties: true` must tolerate
+    // an unrecognized top-level field (a product-specific manifest extension,
+    // e.g. solstone-journal's bootstrap-contract fields). This asserts the
+    // schema layer specifically, not `validate_manifest_bytes`: that function
+    // additionally deserializes into this repo's own `Manifest` struct, which
+    // keeps `#[serde(deny_unknown_fields)]` deliberately — solstone-windows
+    // only ever validates manifests of its own known shape, so its own struct
+    // staying strict about fields *it* doesn't recognize is a separate,
+    // legitimate choice, not a fleet-contract requirement.
+    let mut manifest: Value = serde_json::from_slice(
+        &fs::read(
+            fixture_root()
+                .join("release-candidate/0.2.11")
+                .join(companion_basename()),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    manifest["unknown"] = json!(true);
+    let schema = rust_release_manifest::compile_schema_with_import(&RUST_RELEASE_MANIFEST_V1_IMPORT)
+        .expect("schema compiles");
+    assert!(
+        schema.validate(&manifest).is_ok(),
+        "root additionalProperties: true must accept an unrecognized field at the schema level"
+    );
 }
 
 #[test]
