@@ -12,12 +12,12 @@ use spl_core::crockford;
 use spl_core::pairlink::{self, PairLinkError, ParsedPairLink};
 use spl_core::relay_window;
 
-const PIN_MANIFEST_JSON: &str = "23c5b63cff5ebe653af35f59df0f2e2d5a9565ccc2434e7d408f80ecbc53adb5";
+const PIN_MANIFEST_JSON: &str = "8e2dc3f9f0eed57bc0f813654f5ff6dac1f5dbbb254c1dd05ee67bf5707202a9";
 const PIN_DEFINITION_JSON: &str =
-    "ef77f81ef7f74d2225935885d682457b8b9c9af9e61f67477ac6e4dfc93363ad";
+    "0507791c12f71b595cab3b49b0e47848137c2c5f8ee9340d9e3b5205a28218df";
 const PIN_DEFINITION_SCHEMA_JSON: &str =
-    "e52b0fa33e732de6a48336571e541c6fb4d6551de047c3b4e037323e0fe5f69a";
-const PIN_VECTORS_JSON: &str = "edebc1cfde34cf379e4dc16fcf43eda9254da7141bdce4f7a9d85991f9b6d270";
+    "2050eb864994751ba19f0ab6f5a2ab5ffbf2ce4483c0ed531a667a1e9a574f55";
+const PIN_VECTORS_JSON: &str = "9a7833f0e0206b03981a14459e0a1b90070dc562e4cd1bf162cb541ce3d0a8de";
 const PIN_VECTORS_SCHEMA_JSON: &str =
     "4ca9793cb383c5b393f232b63d83814c12e20c33e047ae6053800dd80e78a364";
 
@@ -97,8 +97,8 @@ fn spl_pair_link_vectors_conformance() {
 
     assert_eq!(
         vectors.len(),
-        78,
-        "population size must be exactly 78 vectors"
+        84,
+        "population size must be exactly 84 vectors"
     );
     let gapped_vector_count = 0usize;
     assert_eq!(gapped_vector_count, 0, "gapped vector count must be 0");
@@ -138,8 +138,8 @@ fn spl_pair_link_vectors_conformance() {
     }
 
     assert_eq!(
-        driven_vector_count, 78,
-        "driven vector count must be exactly 78"
+        driven_vector_count, 84,
+        "driven vector count must be exactly 84"
     );
     assert_eq!(
         driven_vector_count,

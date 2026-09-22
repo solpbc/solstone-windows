@@ -125,6 +125,40 @@ mod tests {
     }
 
     #[test]
+    fn authorize_accepts_current_device_delete_only_on_exact_paths() {
+        for path in [
+            "/app/network/api/clients/self",
+            "/app/link/api/clients/self",
+        ] {
+            let head = request(
+                "DELETE",
+                path,
+                Some("127.0.0.1:49152"),
+                &[("Cookie", "__solstone_journal_cap=secret")],
+            );
+            assert_eq!(authorize(&head, b"secret", 49152, &names()), Ok(()));
+        }
+
+        for path in [
+            "/app/network/api/clients/self/",
+            "/app/network/api/clients/sha256:other",
+            "/app/link/api/clients/selfish",
+        ] {
+            let head = request(
+                "DELETE",
+                path,
+                Some("127.0.0.1:49152"),
+                &[("Cookie", "__solstone_journal_cap=secret")],
+            );
+            assert_eq!(
+                authorize(&head, b"secret", 49152, &names()),
+                Err(RejectReason::BadMethod),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn authorize_rejects_unsupported_methods() {
         for method in ["OPTIONS", "PUT", "DELETE"] {
             let head = authed_request(method, Some("127.0.0.1:49152"), "secret");
