@@ -114,7 +114,11 @@ mod tests {
                 observer_model::View::Settings => SURFACE_VERB,
                 observer_model::View::About => SURFACE_ABOUT_VERB,
             };
-            assert!(verb.ends_with(b"\n"), "{} verb must be newline-terminated", view.label());
+            assert!(
+                verb.ends_with(b"\n"),
+                "{} verb must be newline-terminated",
+                view.label()
+            );
         }
     }
 }
