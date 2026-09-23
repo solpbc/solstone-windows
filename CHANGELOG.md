@@ -6,6 +6,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.9] - 2026-09-23
+
+### Changed
+
+- a pairing link can now point at a public IPv4 address you can reach your journal at, not only one on your local network. pairing over the internet works the same way as pairing at home: the link still carries your journal's fingerprint, and this PC still checks it before trusting anything.
+
 ## [2.0.8] - 2026-09-20
 
 ### Changed
