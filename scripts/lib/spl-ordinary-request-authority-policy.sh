@@ -110,6 +110,18 @@ for relative in src/journal_bridge.rs; do
   fi
 done
 
+for src_file in $(find "$ROOT/crates/pl-transport-win/src" -type f -name '*.rs'); do
+  case "$src_file" in
+    */client.rs|*/ordinary_request.rs) continue ;;
+    *)
+      if grep -qE "ingest_manifest|IngestManifestGet|IngestManifestDayGet" "$src_file"; then
+        rel=${src_file#"$ROOT/crates/pl-transport-win/"}
+        violation "$rel contains obsolete manifest route reference"
+      fi
+      ;;
+  esac
+done
+
 if [ "$violations" -ne 0 ]; then
   echo "spl-ordinary-request-authority-policy: $violations policy violation(s) found" >&2
   exit 1

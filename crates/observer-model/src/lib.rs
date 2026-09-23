@@ -485,6 +485,21 @@ pub struct UploadStatus {
     /// Segments moved aside after repeated journal rejections.
     #[serde(default)]
     pub quarantined_segments: u64,
+    /// Invalid upload receipts encountered.
+    #[serde(default)]
+    pub invalid_receipts: u64,
+    /// Segments reported as removed by the journal (HTTP 500 segment_removed).
+    #[serde(default)]
+    pub segment_removed_segments: u64,
+    /// Segments omitted or unproven by listing reconciliation.
+    #[serde(default)]
+    pub listing_unproven_segments: u64,
+    /// Refusals encountered on listing requests.
+    #[serde(default)]
+    pub listing_refusals: u64,
+    /// Segments on unknown track kept after non-proving answer.
+    #[serde(default)]
+    pub unknown_kept_segments: u64,
     /// The last segment confirmed landed (`HHMMSS_LEN`), as this device named it.
     pub last_uploaded_segment: Option<String>,
     /// The segment key the journal reported for that same upload.
@@ -883,6 +898,7 @@ mod tests {
                     last_upload_bytes: Some(12_345),
                     last_upload_path: Some(TransportPath::Direct),
                     last_upload_dial_attempts: Some(2),
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -1191,6 +1207,7 @@ mod tests {
             last_upload_bytes: Some(12_345),
             last_upload_path: Some(TransportPath::Direct),
             last_upload_dial_attempts: Some(2),
+            ..Default::default()
         };
 
         let value = serde_json::to_value(&upload).unwrap();

@@ -572,3 +572,454 @@ fn proof_checks_segments_files_after_the_day_manifest() {
         })
     );
 }
+
+#[test]
+fn receipt_validation_fails_on_sha256_mismatch() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::Sha256Mismatch { .. })
+    ));
+}
+
+#[test]
+fn receipt_validation_fails_on_size_mismatch() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 200,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::SizeMismatch { .. })
+    ));
+}
+
+#[test]
+fn receipt_validation_fails_on_received_not_written() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "received_not_written".into(),
+        }]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::ReceivedNotWritten { .. })
+    ));
+}
+
+#[test]
+fn receipt_validation_fails_on_missing_descriptor() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [
+        LocalFile {
+            name: "screen.mp4",
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            size: 100,
+        },
+        LocalFile {
+            name: "audio.flac",
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            size: 50,
+        },
+    ];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::FileCountMismatch { .. })
+    ));
+}
+
+#[test]
+fn receipt_validation_fails_on_extra_descriptor() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![
+            FileDescriptor {
+                submitted: "screen.mp4".into(),
+                written: "screen.mp4".into(),
+                size: 100,
+                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+                disposition: "written".into(),
+            },
+            FileDescriptor {
+                submitted: "extra.bin".into(),
+                written: "extra.bin".into(),
+                size: 50,
+                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+                disposition: "written".into(),
+            },
+        ]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::FileCountMismatch { .. })
+    ));
+}
+
+#[test]
+fn receipt_validation_fails_on_duplicate_submitted_name() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![
+            FileDescriptor {
+                submitted: "screen.mp4".into(),
+                written: "screen.mp4".into(),
+                size: 100,
+                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+                disposition: "written".into(),
+            },
+            FileDescriptor {
+                submitted: "screen.mp4".into(),
+                written: "screen.mp4".into(),
+                size: 100,
+                sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+                disposition: "written".into(),
+            },
+        ]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::DuplicateSubmittedName(_))
+    ));
+}
+
+#[test]
+fn receipt_validation_fails_on_non_hex_or_uppercase_sha256() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp_upper = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp_upper, &local),
+        Err(ReceiptFault::Sha256InvalidHex(..))
+    ));
+
+    let resp_short = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "invalid-hex".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp_short, &local),
+        Err(ReceiptFault::Sha256InvalidHex(..))
+    ));
+}
+
+#[test]
+fn receipt_validation_fails_on_absent_file_descriptors() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Absent,
+    };
+    assert_eq!(validate_receipt(&resp, &local), Err(ReceiptFault::Absent));
+}
+
+#[test]
+fn receipt_validation_fails_on_duplicate_without_existing_segment() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Duplicate,
+        segment: None,
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "already_held".into(),
+        }]),
+    };
+    assert_eq!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::DuplicateMissingExistingSegment)
+    );
+}
+
+#[test]
+fn receipt_validation_fails_on_ok_without_segment() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: None,
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    assert_eq!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::MissingServerSegment)
+    );
+}
+
+#[test]
+fn receipt_validation_fails_on_unknown_disposition() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors, ReceiptFault};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+    let resp = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "quarantined".into(),
+        }]),
+    };
+    assert!(matches!(
+        validate_receipt(&resp, &local),
+        Err(ReceiptFault::UnknownDisposition { .. })
+    ));
+}
+
+#[test]
+fn receipt_validation_passes_on_valid_ok_duplicate_and_collision_responses() {
+    use observer_pl::ingest::{validate_receipt, FileDescriptor, FileDescriptors};
+
+    let local = [LocalFile {
+        name: "screen.mp4",
+        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        size: 100,
+    }];
+
+    // Ok response
+    let resp_ok = IngestResponse {
+        status: IngestStatus::Ok,
+        segment: Some("143000_300".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    let receipt = validate_receipt(&resp_ok, &local).unwrap();
+    assert_eq!(receipt.server_segment(), "143000_300");
+
+    // Collision response with written != submitted
+    let resp_collision = IngestResponse {
+        status: IngestStatus::Collision,
+        segment: Some("143000_300_1".into()),
+        existing_segment: None,
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "remapped_screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "written".into(),
+        }]),
+    };
+    let receipt_collision = validate_receipt(&resp_collision, &local).unwrap();
+    assert_eq!(receipt_collision.server_segment(), "143000_300_1");
+    assert_eq!(receipt_collision.files()[0].written, "remapped_screen.mp4");
+
+    // Duplicate response with already_held
+    let resp_duplicate = IngestResponse {
+        status: IngestStatus::Duplicate,
+        segment: None,
+        existing_segment: Some("143000_300".into()),
+        reason_code: None,
+        file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
+            submitted: "screen.mp4".into(),
+            written: "screen.mp4".into(),
+            size: 100,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            disposition: "already_held".into(),
+        }]),
+    };
+    let receipt_dup = validate_receipt(&resp_duplicate, &local).unwrap();
+    assert_eq!(receipt_dup.server_segment(), "143000_300");
+}
+
+#[test]
+fn ingest_response_decodes_unknown_disposition_and_extra_descriptor_properties() {
+    use observer_pl::ingest::FileDescriptors;
+
+    let json = r#"{
+        "status": "ok",
+        "segment": "143000_300",
+        "file_descriptors": [
+            {
+                "submitted": "screen.mp4",
+                "written": "screen.mp4",
+                "size": 100,
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "disposition": "quarantined_by_server",
+                "extra_server_metadata": "ignored_value"
+            }
+        ]
+    }"#;
+    let resp: IngestResponse = serde_json::from_str(json).unwrap();
+    match resp.file_descriptors {
+        FileDescriptors::Decoded(descriptors) => {
+            assert_eq!(descriptors.len(), 1);
+            assert_eq!(descriptors[0].disposition, "quarantined_by_server");
+        }
+        _ => panic!("expected decoded descriptors"),
+    }
+}
+
+#[test]
+fn segment_item_decodes_without_observed_field() {
+    let json = r#"{
+        "key": "143000_300",
+        "files": [
+            {
+                "name": "screen.mp4",
+                "size": 100,
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "status": "present"
+            }
+        ]
+    }"#;
+    let item: SegmentItem = serde_json::from_str(json).unwrap();
+    assert_eq!(item.key, "143000_300");
+    assert!(!item.observed);
+}

@@ -828,6 +828,37 @@ impl SealedStore for SingleSegmentStore {
     fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>> {
         Ok(Vec::new())
     }
+
+    fn list_entries(&self, index: u64) -> std::io::Result<Vec<crate::sealed::DirEntryFact>> {
+        if !self.consumed.load(Ordering::SeqCst) && index == self.segment.index {
+            Ok(vec![crate::sealed::DirEntryFact {
+                name: self.file_name.clone(),
+                is_file: true,
+                size_bytes: self.bytes.len() as u64,
+            }])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn remove_entry(&self, _index: u64, _name: &str) -> std::io::Result<()> {
+        self.consumed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn remove_dir(&self, _index: u64) -> std::io::Result<()> {
+        self.consumed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn read_ack(&self, _index: u64) -> std::io::Result<Option<crate::ack::UploadAck>> {
+        Ok(None)
+    }
+
+    fn write_ack(&self, _index: u64, _ack: &crate::ack::UploadAck) -> std::io::Result<()> {
+        self.consumed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 /// Turn the caller's `YYYYMMDD` + `HHMMSS_LEN` into a boundary instant, then let
@@ -1014,7 +1045,7 @@ fn record_custody_witness(
             "the journal accepted the segment but custody of every submitted file was not proven by the segment listing",
         ));
     };
-    let [file] = confirmed.witness.files() else {
+    let [file] = confirmed.files.as_slice() else {
         return Err(Failure::assertion(
             Phase::Reconcile,
             "custody_file_witness_missing",
@@ -1022,12 +1053,13 @@ fn record_custody_witness(
         ));
     };
     evidence.confirmed = Some(true);
-    evidence.server_segment = Some(confirmed.witness.server_segment().to_owned());
+    evidence.server_segment = Some(confirmed.server_segment.clone());
     evidence.observed_carrier = Some(confirmed.metadata.path.as_str());
-    evidence.server_submitted_name = Some(file.submitted_name.clone());
+    evidence.server_submitted_name = Some(file.submitted.clone());
     evidence.server_sha256 = Some(file.sha256.clone());
     evidence.server_size = Some(file.size);
-    evidence.server_custody_status = Some(file.status);
+    evidence.server_disposition = file.disposition.clone();
+    evidence.server_custody_status = file.listing_status;
     Ok(())
 }
 
@@ -1042,6 +1074,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[test]
     fn upload_without_a_custody_witness_has_no_pass_shaped_terminal_outcome() {
         let root = temp_root("upload-unconfirmed");
@@ -1062,8 +1095,6 @@ mod tests {
                 let acceptor = TlsAcceptor::from(Arc::new(server_config));
                 for body in [
                     r#"{"status":"ok","segment":"143000_300"}"#,
-                    r#"{"days":{"20260617":{"segments":1}}}"#,
-                    r#"{"version":1,"day":"20260617","segments":{}}"#,
                     r#"{"items":[],"total":0,"protocol_version":3}"#,
                 ] {
                     let (tcp, _) = listener.accept().await.unwrap();
@@ -1123,6 +1154,7 @@ mod tests {
             "server_submitted_name",
             "server_sha256",
             "server_size",
+            "server_disposition",
             "server_custody_status",
         ] {
             assert!(

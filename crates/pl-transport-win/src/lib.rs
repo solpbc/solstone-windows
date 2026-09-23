@@ -22,6 +22,7 @@
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
 pub mod access;
+pub mod ack;
 pub mod client;
 pub mod coordinator;
 pub mod credential;

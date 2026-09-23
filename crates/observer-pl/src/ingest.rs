@@ -154,6 +154,72 @@ impl IngestStatus {
     }
 }
 
+/// One custody receipt per submitted file returned by `/app/devices/ingest`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDescriptor {
+    pub submitted: String,
+    pub written: String,
+    pub size: u64,
+    pub sha256: String,
+    pub disposition: String,
+}
+
+/// The parsed state of the `file_descriptors` field in an [`IngestResponse`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub enum FileDescriptors {
+    #[default]
+    Absent,
+    Malformed,
+    Decoded(Vec<FileDescriptor>),
+}
+
+impl<'de> Deserialize<'de> for FileDescriptors {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = match Option::<serde_json::Value>::deserialize(deserializer)? {
+            Some(v) => v,
+            None => return Ok(Self::Absent),
+        };
+        match value {
+            serde_json::Value::Null => Ok(Self::Absent),
+            serde_json::Value::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    let serde_json::Value::Object(map) = item else {
+                        return Ok(Self::Malformed);
+                    };
+                    let Some(submitted) = map.get("submitted").and_then(|v| v.as_str()) else {
+                        return Ok(Self::Malformed);
+                    };
+                    let Some(written) = map.get("written").and_then(|v| v.as_str()) else {
+                        return Ok(Self::Malformed);
+                    };
+                    let Some(size) = map.get("size").and_then(|v| v.as_u64()) else {
+                        return Ok(Self::Malformed);
+                    };
+                    let Some(sha256) = map.get("sha256").and_then(|v| v.as_str()) else {
+                        return Ok(Self::Malformed);
+                    };
+                    let Some(disposition) = map.get("disposition").and_then(|v| v.as_str()) else {
+                        return Ok(Self::Malformed);
+                    };
+                    out.push(FileDescriptor {
+                        submitted: submitted.to_owned(),
+                        written: written.to_owned(),
+                        size,
+                        sha256: sha256.to_owned(),
+                        disposition: disposition.to_owned(),
+                    });
+                }
+                Ok(Self::Decoded(out))
+            }
+            _ => Ok(Self::Malformed),
+        }
+    }
+}
+
 /// The consumed fields of an ingest response.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct IngestResponse {
@@ -162,6 +228,10 @@ pub struct IngestResponse {
     pub segment: Option<String>,
     #[serde(default)]
     pub existing_segment: Option<String>,
+    #[serde(default)]
+    pub reason_code: Option<String>,
+    #[serde(default)]
+    pub file_descriptors: FileDescriptors,
 }
 
 /// Root ingest manifest returned by `/app/devices/ingest/manifest`.
@@ -202,10 +272,167 @@ pub struct SegmentsEnvelope {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct SegmentItem {
     pub key: String,
+    #[serde(default)]
     pub observed: bool,
     pub files: Vec<SegmentFile>,
     #[serde(default)]
     pub original_key: Option<String>,
+}
+
+/// A validated upload receipt proving that the journal durably recorded the upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadReceipt {
+    server_segment: String,
+    files: Vec<FileDescriptor>,
+}
+
+impl UploadReceipt {
+    pub fn server_segment(&self) -> &str {
+        &self.server_segment
+    }
+
+    pub fn files(&self) -> &[FileDescriptor] {
+        &self.files
+    }
+}
+
+/// Why an upload response cannot serve as a valid upload receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ReceiptFault {
+    #[error("file_descriptors field is absent")]
+    Absent,
+    #[error("file_descriptors field is malformed")]
+    Malformed,
+    #[error("ingest status is not accepted: {0:?}")]
+    StatusNotAccepted(IngestStatus),
+    #[error("missing server segment in accepted response")]
+    MissingServerSegment,
+    #[error("missing existing_segment in duplicate response")]
+    DuplicateMissingExistingSegment,
+    #[error("duplicate submitted name: {0}")]
+    DuplicateSubmittedName(String),
+    #[error("missing local file in receipt: {0}")]
+    MissingLocalFile(String),
+    #[error("extra submitted file in receipt: {0}")]
+    ExtraSubmittedFile(String),
+    #[error("file count mismatch: expected {expected}, got {actual}")]
+    FileCountMismatch { expected: usize, actual: usize },
+    #[error("invalid sha256 format for file {0}: {1}")]
+    Sha256InvalidHex(String, String),
+    #[error("sha256 mismatch for file {name}: expected {expected}, got {actual}")]
+    Sha256Mismatch {
+        name: String,
+        expected: String,
+        actual: String,
+    },
+    #[error("size mismatch for file {name}: expected {expected}, got {actual}")]
+    SizeMismatch {
+        name: String,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("file disposition received_not_written for {name}")]
+    ReceivedNotWritten { name: String },
+    #[error("unknown file disposition {disposition} for {name}")]
+    UnknownDisposition { name: String, disposition: String },
+}
+
+fn is_sha256_lower(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Validate that `response` serves as a durable upload receipt matching all `local_files`.
+pub fn validate_receipt(
+    response: &IngestResponse,
+    local_files: &[LocalFile<'_>],
+) -> Result<UploadReceipt, ReceiptFault> {
+    let descriptors = match &response.file_descriptors {
+        FileDescriptors::Absent => return Err(ReceiptFault::Absent),
+        FileDescriptors::Malformed => return Err(ReceiptFault::Malformed),
+        FileDescriptors::Decoded(descriptors) => descriptors,
+    };
+
+    let server_segment = match response.status {
+        IngestStatus::Ok | IngestStatus::Collision => response
+            .segment
+            .as_ref()
+            .ok_or(ReceiptFault::MissingServerSegment)?
+            .clone(),
+        IngestStatus::Duplicate => response
+            .existing_segment
+            .as_ref()
+            .ok_or(ReceiptFault::DuplicateMissingExistingSegment)?
+            .clone(),
+        status => return Err(ReceiptFault::StatusNotAccepted(status)),
+    };
+
+    let mut seen_submitted = HashSet::with_capacity(descriptors.len());
+    for desc in descriptors {
+        if !seen_submitted.insert(&desc.submitted) {
+            return Err(ReceiptFault::DuplicateSubmittedName(desc.submitted.clone()));
+        }
+    }
+
+    if descriptors.len() != local_files.len() {
+        return Err(ReceiptFault::FileCountMismatch {
+            expected: local_files.len(),
+            actual: descriptors.len(),
+        });
+    }
+
+    for local in local_files {
+        let Some(desc) = descriptors.iter().find(|d| d.submitted == local.name) else {
+            return Err(ReceiptFault::MissingLocalFile(local.name.to_owned()));
+        };
+        if !is_sha256_lower(&desc.sha256) {
+            return Err(ReceiptFault::Sha256InvalidHex(
+                desc.submitted.clone(),
+                desc.sha256.clone(),
+            ));
+        }
+        if desc.sha256 != local.sha256 {
+            return Err(ReceiptFault::Sha256Mismatch {
+                name: desc.submitted.clone(),
+                expected: local.sha256.to_owned(),
+                actual: desc.sha256.clone(),
+            });
+        }
+        if desc.size != local.size {
+            return Err(ReceiptFault::SizeMismatch {
+                name: desc.submitted.clone(),
+                expected: local.size,
+                actual: desc.size,
+            });
+        }
+        match desc.disposition.as_str() {
+            "written" | "already_held" => {}
+            "received_not_written" => {
+                return Err(ReceiptFault::ReceivedNotWritten {
+                    name: desc.submitted.clone(),
+                })
+            }
+            unknown => {
+                return Err(ReceiptFault::UnknownDisposition {
+                    name: desc.submitted.clone(),
+                    disposition: unknown.to_owned(),
+                })
+            }
+        }
+    }
+
+    for desc in descriptors {
+        if !local_files.iter().any(|l| l.name == desc.submitted) {
+            return Err(ReceiptFault::ExtraSubmittedFile(desc.submitted.clone()));
+        }
+    }
+
+    Ok(UploadReceipt {
+        server_segment,
+        files: descriptors.clone(),
+    })
 }
 
 /// One server-listed file.
@@ -237,6 +464,10 @@ pub enum SegmentFileStatus {
 }
 
 impl SegmentFileStatus {
+    pub fn is_held(self) -> bool {
+        matches!(self, Self::Present | Self::Processed)
+    }
+
     fn is_terminal(self) -> bool {
         matches!(self, Self::Present | Self::Processed)
     }

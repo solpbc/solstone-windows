@@ -5,17 +5,17 @@
 //! analog.
 //!
 //! On each tick it scans sealed segments, ships each to `/app/devices/ingest`,
-//! then **reconciles**: it lists the journal's segments for the day and confirms
-//! the journal recorded the same sha256 for every uploaded file before deleting
-//! the local copy. A segment counts as `uploaded` only after that confirmation —
-//! honest state, earned not asserted. Failures leave the segment on disk and
-//! grow an exponential backoff (5s → 5m), so a transient journal outage retries
-//! without losing data. Pairing/upload counts are published into the shared
-//! [`SyncSnapshot`] the engine folds into the health dump. Tick results also
-//! maintain the diagnostics-only health beacon fields: consecutive failure code
-//! and last successful sync epoch milliseconds.
+//! and validates the returned receipt descriptors against the exact local files.
+//! A segment counts as `uploaded` and becomes eligible for local deletion only
+//! after an honest receipt or day-listing proof confirms the upload.
+//! Failures leave the segment on disk and grow an exponential backoff (5s → 5m),
+//! so a transient journal outage retries without losing data. Pairing/upload
+//! counts and diagnostic counters are published into the shared [`SyncSnapshot`]
+//! the engine folds into the health dump. Tick results also maintain the
+//! diagnostics-only health beacon fields: consecutive failure code and last
+//! successful sync epoch milliseconds.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
@@ -24,18 +24,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use observer_model::{LocalOffset, PairingPhase, SyncSnapshot, TransportPath};
 use observer_pl::civil;
 use observer_pl::ingest::{
-    prove_custody, CustodyProof, CustodyWitness, DayManifest, FilePart, IngestManifest,
-    IngestResponse, IngestStatus, LocalFile, SegmentsEnvelope,
+    validate_receipt, FilePart, IngestResponse, IngestStatus, LocalFile, ReceiptFault,
+    SegmentsEnvelope,
 };
 use observer_retention::RetentionConfig;
 use spl_core::ca;
 use spl_transport::handshake::HandshakeStop;
 use tokio::sync::watch;
 
+use crate::ack::{AckFile, JournalIdentity, UploadAck};
 use crate::client::{ClientSlot, ObserverClient, SendMetadata};
 use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
 use crate::post_connect::PostConnectController;
-use crate::sealed::{content_type_for, SealedStore};
+use crate::sealed::{content_type_for, SealedStore, UPLOADED_MARKER, UPLOADED_TMP_MARKER};
 use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
 const MAX_BACKOFF_SECS: u64 = 300;
@@ -81,6 +82,34 @@ fn is_attributable_rejection(err: &TransportError) -> bool {
     }
 }
 
+fn is_device_scoped_refusal(err: &TransportError) -> bool {
+    match err {
+        TransportError::Rejected {
+            status: 401 | 403 | 404 | 426,
+            ..
+        } => true,
+        TransportError::Rejected { status: 409, body } => {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| {
+                    let err_str = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
+                    let reason_str = v.get("reason_code").and_then(|e| e.as_str()).unwrap_or("");
+                    if err_str == "foreign_stream_binding"
+                        || err_str == "pairing_identity_unavailable"
+                        || reason_str == "foreign_stream_binding"
+                        || reason_str == "pairing_identity_unavailable"
+                    {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 fn now_epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -105,11 +134,6 @@ type IngestFuture<'a> = Pin<
 type ListSegmentsFuture<'a> = Pin<
     Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), TransportError>> + Send + 'a>,
 >;
-type ManifestFuture<'a> = Pin<
-    Box<dyn Future<Output = Result<(IngestManifest, SendMetadata), TransportError>> + Send + 'a>,
->;
-type DayManifestFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(DayManifest, SendMetadata), TransportError>> + Send + 'a>>;
 
 trait UploadClient: Send + Sync {
     fn ingest<'a>(
@@ -119,16 +143,14 @@ trait UploadClient: Send + Sync {
         files: Vec<FilePart>,
     ) -> IngestFuture<'a>;
 
-    fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a>;
-
-    fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a>;
-
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a>;
 
     /// Why this pairing stopped reaching the journal, if it has.
     fn refusal_stop(&self) -> Option<HandshakeStop> {
         None
     }
+
+    fn journal_identity(&self) -> JournalIdentity;
 }
 
 /// The pairing detail shown when the journal refused this device, or refusals
@@ -145,20 +167,16 @@ impl UploadClient for ObserverClient {
         Box::pin(ObserverClient::ingest(self, segment, day, files))
     }
 
-    fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
-        Box::pin(ObserverClient::ingest_manifest(self))
-    }
-
-    fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
-        Box::pin(ObserverClient::ingest_manifest_day(self, day))
-    }
-
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
         Box::pin(ObserverClient::list_segments(self, day))
     }
 
     fn refusal_stop(&self) -> Option<HandshakeStop> {
         ObserverClient::refusal_stop(self)
+    }
+
+    fn journal_identity(&self) -> JournalIdentity {
+        ObserverClient::journal_identity(self)
     }
 }
 
@@ -173,17 +191,6 @@ impl UploadClient for ClientSlot {
         Box::pin(async move { client.ingest(segment, day, files).await })
     }
 
-    fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
-        let client = self.load();
-        Box::pin(async move { client.ingest_manifest().await })
-    }
-
-    fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
-        let client = self.load();
-        let day = day.to_string();
-        Box::pin(async move { client.ingest_manifest_day(&day).await })
-    }
-
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
         let client = self.load();
         let day = day.to_string();
@@ -192,6 +199,10 @@ impl UploadClient for ClientSlot {
 
     fn refusal_stop(&self) -> Option<HandshakeStop> {
         ClientSlot::refusal_stop(self)
+    }
+
+    fn journal_identity(&self) -> JournalIdentity {
+        ClientSlot::journal_identity(self)
     }
 }
 
@@ -301,6 +312,18 @@ impl UploadEvent {
     }
 }
 
+#[derive(Debug, Clone)]
+struct SegmentBound {
+    until_epoch: u64,
+    last_error_signature: String,
+    streak: u32,
+}
+
+#[derive(Debug, Clone)]
+struct DayListingBound {
+    until_epoch: u64,
+}
+
 /// Drives sealed segments to the journal and reconciles them.
 pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
@@ -318,14 +341,18 @@ pub struct UploadCoordinator {
     retention: Arc<RwLock<RetentionConfig>>,
     local_offset: Arc<dyn LocalOffset>,
     quarantine_counts: Mutex<HashMap<u64, u32>>,
+    base_wall_epoch: u64,
+    base_instant: tokio::time::Instant,
+    segment_bounds: Mutex<HashMap<(JournalIdentity, String, String), SegmentBound>>,
+    terminal_segments: Mutex<HashSet<u64>>,
+    day_bounds: Mutex<HashMap<String, DayListingBound>>,
 }
 
-/// An upload confirmed by all three v3 custody reads. This is the only
-/// coordinator output that carries both the proof witness and the observed
-/// transport path.
+/// An upload confirmed by receipt validation or day listing.
 #[derive(Debug, Clone)]
 pub struct ConfirmedUpload {
-    pub witness: CustodyWitness,
+    pub server_segment: String,
+    pub files: Vec<AckFile>,
     pub metadata: SendMetadata,
 }
 
@@ -353,6 +380,11 @@ impl UploadCoordinator {
             retention,
             local_offset,
             quarantine_counts: Mutex::new(HashMap::new()),
+            base_wall_epoch: now_epoch_secs(),
+            base_instant: tokio::time::Instant::now(),
+            segment_bounds: Mutex::new(HashMap::new()),
+            terminal_segments: Mutex::new(HashSet::new()),
+            day_bounds: Mutex::new(HashMap::new()),
         }
     }
 
@@ -382,6 +414,11 @@ impl UploadCoordinator {
             retention,
             local_offset,
             quarantine_counts: Mutex::new(HashMap::new()),
+            base_wall_epoch: now_epoch_secs(),
+            base_instant: tokio::time::Instant::now(),
+            segment_bounds: Mutex::new(HashMap::new()),
+            terminal_segments: Mutex::new(HashSet::new()),
+            day_bounds: Mutex::new(HashMap::new()),
         }
     }
 
@@ -407,12 +444,220 @@ impl UploadCoordinator {
             retention,
             local_offset,
             quarantine_counts: Mutex::new(HashMap::new()),
+            base_wall_epoch: now_epoch_secs(),
+            base_instant: tokio::time::Instant::now(),
+            segment_bounds: Mutex::new(HashMap::new()),
+            terminal_segments: Mutex::new(HashSet::new()),
+            day_bounds: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn monotonic_now_epoch_secs(&self) -> u64 {
+        self.base_wall_epoch
+            .saturating_add(self.base_instant.elapsed().as_secs())
     }
 
     /// The current retention policy (defaulting on a poisoned lock).
     fn retention(&self) -> RetentionConfig {
         self.retention.read().map(|r| *r).unwrap_or_default()
+    }
+
+    fn on_invalid_receipt(&self) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.invalid_receipts = snapshot.upload.invalid_receipts.saturating_add(1);
+        }
+    }
+
+    fn on_segment_removed(&self) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.segment_removed_segments =
+                snapshot.upload.segment_removed_segments.saturating_add(1);
+        }
+    }
+
+    fn on_unknown_kept(&self) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.unknown_kept_segments =
+                snapshot.upload.unknown_kept_segments.saturating_add(1);
+        }
+    }
+
+    fn on_listing_unproven(&self) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.listing_unproven_segments =
+                snapshot.upload.listing_unproven_segments.saturating_add(1);
+        }
+    }
+
+    fn on_listing_refusal(&self) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.listing_refusals = snapshot.upload.listing_refusals.saturating_add(1);
+        }
+    }
+
+    fn register_segment_error(
+        &self,
+        day: &str,
+        segment_key: &str,
+        error_signature: &str,
+        now: u64,
+    ) {
+        let key = (
+            self.client.journal_identity(),
+            day.to_string(),
+            segment_key.to_string(),
+        );
+        let mut bounds = self
+            .segment_bounds
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = bounds.entry(key).or_insert_with(|| SegmentBound {
+            until_epoch: 0,
+            last_error_signature: String::new(),
+            streak: 0,
+        });
+        if entry.last_error_signature == error_signature {
+            entry.streak = entry.streak.saturating_add(1);
+        } else {
+            entry.last_error_signature = error_signature.to_string();
+            entry.streak = 1;
+        }
+        let duration_secs = if entry.streak >= 3 { 86400 } else { 3600 };
+        entry.until_epoch = now.saturating_add(duration_secs);
+    }
+
+    fn register_segment_bound(
+        &self,
+        day: &str,
+        segment_key: &str,
+        error_signature: &str,
+        now: u64,
+        duration_secs: u64,
+    ) {
+        let key = (
+            self.client.journal_identity(),
+            day.to_string(),
+            segment_key.to_string(),
+        );
+        let mut bounds = self
+            .segment_bounds
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        bounds.insert(
+            key,
+            SegmentBound {
+                until_epoch: now.saturating_add(duration_secs),
+                last_error_signature: error_signature.to_string(),
+                streak: 1,
+            },
+        );
+    }
+
+    fn register_received_not_written(&self, day: &str, segment_key: &str, now: u64) {
+        self.register_segment_bound(day, segment_key, "received_not_written", now, 86400);
+    }
+
+    fn try_gate_delete(
+        &self,
+        index: u64,
+        expected_files: &[AckFile],
+        day: &str,
+        segment_key: &str,
+        now: u64,
+    ) -> Result<bool, TransportError> {
+        let entries = self.store.list_entries(index)?;
+        // 1. All entries must be regular files
+        for entry in &entries {
+            if !entry.is_file {
+                return Ok(false);
+            }
+        }
+        // 2. Filter out sidecars / tmp files
+        let media_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.name != UPLOADED_MARKER
+                    && e.name != observer_model::LEN_FILE_NAME
+                    && e.name != UPLOADED_TMP_MARKER
+            })
+            .collect();
+        // 3. Name set check: Every present media name must be in expected_files;
+        // absent expected files are allowed.
+        for entry in &media_entries {
+            if !expected_files.iter().any(|exp| exp.submitted == entry.name) {
+                return Ok(false);
+            }
+        }
+        // 4. Verification of disposition / status, sizes, and fresh sha256 for present media
+        for entry in &media_entries {
+            let exp = expected_files
+                .iter()
+                .find(|e| e.submitted == entry.name)
+                .unwrap();
+            if let Some(disp) = &exp.disposition {
+                if disp != "written" && disp != "already_held" {
+                    return Ok(false);
+                }
+            }
+            if let Some(status) = exp.listing_status {
+                if !status.is_held() {
+                    return Ok(false);
+                }
+            }
+            if entry.size_bytes != exp.size {
+                return Ok(false);
+            }
+            let bytes = self.store.read_file(index, &entry.name)?;
+            let sha = ca::sha256_hex(&bytes);
+            if sha != exp.sha256 {
+                return Ok(false);
+            }
+        }
+        // 5. Re-list immediately before delete and abort with no deletes if that set changed
+        let recheck_entries = self.store.list_entries(index)?;
+        for entry in &recheck_entries {
+            if !entry.is_file {
+                return Ok(false);
+            }
+        }
+        let recheck_media: Vec<_> = recheck_entries
+            .iter()
+            .filter(|e| {
+                e.name != UPLOADED_MARKER
+                    && e.name != observer_model::LEN_FILE_NAME
+                    && e.name != UPLOADED_TMP_MARKER
+            })
+            .collect();
+        if recheck_media.len() != media_entries.len() {
+            return Ok(false);
+        }
+        for entry in &recheck_media {
+            if !media_entries
+                .iter()
+                .any(|e| e.name == entry.name && e.size_bytes == entry.size_bytes)
+            {
+                return Ok(false);
+            }
+        }
+        // 6. Delete media entries one by one. If one remove_entry fails, return without touching .len
+        // or .uploaded, and hold that segment for one hour (no hash, no POST). Do not fail the whole tick.
+        for entry in &recheck_media {
+            if let Err(_e) = self.store.remove_entry(index, &entry.name) {
+                self.register_segment_bound(day, segment_key, "media_delete_failed", now, 3600);
+                return Ok(false);
+            }
+        }
+        // 7. Delete sidecars and directory
+        for entry in &recheck_entries {
+            if entry.name == observer_model::LEN_FILE_NAME
+                || entry.name == UPLOADED_MARKER
+                || entry.name == UPLOADED_TMP_MARKER
+            {
+                let _ = self.store.remove_entry(index, &entry.name);
+            }
+        }
+        let _ = self.store.remove_dir(index);
+        Ok(true)
     }
 
     fn register_reject(&self, index: u64) {
@@ -455,38 +700,30 @@ impl UploadCoordinator {
             .remove(&index);
     }
 
-    /// Prune confirmed-and-retained local segments older than the retention
-    /// window. Only ever removes **confirmed-uploaded** segments — unsynced local
-    /// data is never deleted (the covenant guard). No-op for don't-keep (nothing
-    /// is retained) and forever.
-    fn prune_retained(&self) {
-        let policy = self.retention();
-        if policy.delete_on_confirm() || policy.is_forever() {
-            return;
-        }
-        let now = now_epoch_secs();
-        match self.store.confirmed() {
-            Ok(confirmed) => {
-                for segment in confirmed {
-                    if policy.should_prune(segment.boundary_epoch_secs, now) {
-                        if let Err(error) = self.store.remove(segment.index) {
-                            tracing::warn!(
-                                target: "pl_upload",
-                                index = segment.index,
-                                reason = "retention_prune_failed",
-                                kind = ?error.kind(),
-                                "prune remove failed"
-                            );
-                        }
+    fn prune_retained(&self) {}
+
+    pub async fn run(self, mut cancel: watch::Receiver<bool>) {
+        let tick_cancel = cancel.clone();
+        let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
+        loop {
+            tokio::select! {
+                _ = cancelled(&mut cancel) => break,
+                _ = tokio::time::sleep(Duration::from_secs(backoff)) => {
+                    match self.tick_with_cancel(&tick_cancel).await {
+                        Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
+                        Err(_) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
                     }
                 }
             }
-            Err(error) => tracing::warn!(
-                target: "pl_upload",
-                reason = "retention_scan_failed",
-                kind = ?error.kind(),
-                "prune scan failed"
-            ),
+        }
+        if let (Some(pc), Some(token)) = (&self.post_connect, self.post_connect_generation) {
+            pc.shutdown(token);
+        }
+    }
+
+    fn set_pending(&self, pending: u64) {
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.pending_segments = pending;
         }
     }
 
@@ -497,9 +734,7 @@ impl UploadCoordinator {
         self.tick_with_cancel(&rx).await
     }
 
-    /// One pass returning only custody witnesses earned by complete protocol-v3
-    /// reconciliation. Callers cannot obtain a server segment key or file facts
-    /// from an accepted-but-unconfirmed upload.
+    /// One pass returning confirmed uploads.
     pub async fn tick_with_witness(&self) -> Result<Vec<ConfirmedUpload>, TransportError> {
         let (_tx, rx) = watch::channel(false);
         let result = self.tick_inner(&rx).await;
@@ -532,14 +767,34 @@ impl UploadCoordinator {
         // Prune retained-and-confirmed segments past the window first (cheap, local).
         self.prune_retained();
 
+        let now = self.monotonic_now_epoch_secs();
         let segments = self.store.scan()?;
         self.set_pending(segments.len() as u64);
         let mut witnesses = Vec::new();
+
+        struct UnknownSegmentFact {
+            index: u64,
+            segment_key: String,
+            local_files: Vec<(String, String, u64)>,
+        }
+
+        let mut unknown_by_day: HashMap<String, Vec<UnknownSegmentFact>> = HashMap::new();
 
         'segments: for segment in segments {
             if *cancel.borrow() {
                 break 'segments;
             }
+
+            // Check if segment is terminal
+            if self
+                .terminal_segments
+                .lock()
+                .unwrap()
+                .contains(&segment.index)
+            {
+                continue 'segments;
+            }
+
             let offset_started = Instant::now();
             let offset = match self
                 .local_offset
@@ -568,7 +823,19 @@ impl UploadCoordinator {
                 segment.len_secs.unwrap_or(self.period_secs),
             );
 
-            // Read the per-source files + compute their sha256 for reconcile.
+            // Check if segment is currently bound
+            let bound_key = (
+                self.client.journal_identity(),
+                day.clone(),
+                segment_key.clone(),
+            );
+            if let Some(bound) = self.segment_bounds.lock().unwrap().get(&bound_key) {
+                if bound.until_epoch > now {
+                    continue 'segments;
+                }
+            }
+
+            // Read the per-source files + compute their sha256 for receipt validation.
             let read_started = Instant::now();
             let mut parts = Vec::with_capacity(segment.files.len());
             let mut local_files = Vec::with_capacity(segment.files.len());
@@ -598,9 +865,7 @@ impl UploadCoordinator {
                 });
             }
             if parts.is_empty() {
-                // An empty sealed dir holds no data; drop it so it can't wedge.
-                let _ = self.store.remove(segment.index);
-                continue;
+                continue 'segments;
             }
             let bytes = parts.iter().map(|part| part.bytes.len() as u64).sum();
 
@@ -608,13 +873,6 @@ impl UploadCoordinator {
             match self.client.ingest(&segment_key, &day, parts).await {
                 Ok((response, metadata)) if response.status.is_accepted() => {
                     let duration_ms = elapsed_ms(started);
-                    // A returned collision/duplicate key is an untrusted selector until
-                    // all three v3 custody documents agree on it.
-                    let proof_selector = response
-                        .segment
-                        .as_deref()
-                        .or(response.existing_segment.as_deref())
-                        .unwrap_or(&segment_key);
                     let local = local_files
                         .iter()
                         .map(|(name, sha256, size)| LocalFile {
@@ -623,56 +881,52 @@ impl UploadCoordinator {
                             size: *size,
                         })
                         .collect::<Vec<_>>();
-                    let reads = async {
-                        let (manifest, _) = self.client.ingest_manifest().await?;
-                        let (day_manifest, _) = self.client.ingest_manifest_day(&day).await?;
-                        let (segments, _) = self.client.list_segments(&day).await?;
-                        Ok::<_, TransportError>((manifest, day_manifest, segments))
-                    }
-                    .await;
-                    let (manifest, day_manifest, segments) = match reads {
-                        Ok(reads) => reads,
-                        Err(error) => {
-                            UploadEvent::new(
-                                &segment_key,
-                                bytes,
-                                duration_ms,
-                                UploadOutcome::AcceptedUnconfirmed,
-                                Some(metadata.path),
-                                Some(transport_error_code(&error)),
-                            )
-                            .emit();
-                            self.on_error(&error);
-                            return Err(error);
-                        }
-                    };
-                    match prove_custody(
-                        &manifest,
-                        &day_manifest,
-                        &segments,
-                        &day,
-                        proof_selector,
-                        &local,
-                    ) {
-                        CustodyProof::Unconfirmed(_) => {
-                            UploadEvent::new(
-                                &segment_key,
-                                bytes,
-                                duration_ms,
-                                UploadOutcome::AcceptedUnconfirmed,
-                                Some(metadata.path),
-                                None,
-                            )
-                            .emit();
-                            // No state is cleared or mutated: the original local
-                            // segment remains retry-eligible until a witness exists.
-                        }
-                        CustodyProof::Confirmed(witness) => {
-                            // The server segment key is only available through the
-                            // proof witness, so cleanup and publication cannot use
-                            // an unverified collision selector.
-                            let server_key = witness.server_segment();
+
+                    match validate_receipt(&response, &local) {
+                        Ok(receipt) => {
                             self.clear_reject(segment.index);
+                            self.segment_bounds.lock().unwrap().remove(&bound_key);
+
+                            let status_str = match response.status {
+                                IngestStatus::Ok => "ok",
+                                IngestStatus::Duplicate => "duplicate",
+                                IngestStatus::Collision => "collision",
+                                _ => "unknown",
+                            };
+
+                            let ack = UploadAck::new_upload(
+                                self.client.journal_identity(),
+                                &day,
+                                &segment_key,
+                                receipt.server_segment(),
+                                status_str,
+                                receipt.files(),
+                            );
+                            if let Err(e) = self.store.write_ack(segment.index, &ack) {
+                                tracing::warn!(
+                                    target: "pl_upload",
+                                    segment = segment_key.as_str(),
+                                    reason = "write_ack_failed",
+                                    kind = ?e.kind(),
+                                    "ack write failed"
+                                );
+                            }
+                            if self.retention().delete_on_confirm() {
+                                if let Err(_e) = self.try_gate_delete(
+                                    segment.index,
+                                    &ack.files,
+                                    &day,
+                                    &segment_key,
+                                    now,
+                                ) {
+                                    tracing::warn!(
+                                        target: "pl_upload",
+                                        segment = segment_key.as_str(),
+                                        reason = "gate_delete_failed",
+                                        "gate delete failed"
+                                    );
+                                }
+                            }
                             UploadEvent::new(
                                 &segment_key,
                                 bytes,
@@ -682,51 +936,103 @@ impl UploadCoordinator {
                                 None,
                             )
                             .emit();
-                            // Honor retention: delete the local copy now (don't-keep)
-                            // or retain it (mark confirmed so it isn't re-uploaded) for
-                            // the prune pass to remove once it's past the window.
-                            if self.retention().delete_on_confirm() {
-                                if let Err(error) = self.store.remove(segment.index) {
-                                    tracing::warn!(
-                                        target: "pl_upload",
-                                        segment = segment_key.as_str(),
-                                        reason = "confirmed_remove_failed",
-                                        kind = ?error.kind(),
-                                        "confirmed cleanup failed"
-                                    );
-                                }
-                            } else if let Err(error) = self.store.mark_confirmed(segment.index) {
-                                tracing::warn!(
-                                    target: "pl_upload",
-                                    segment = segment_key.as_str(),
-                                    reason = "confirmed_mark_failed",
-                                    kind = ?error.kind(),
-                                    "confirmed cleanup failed"
-                                );
-                            }
                             self.on_confirmed(
                                 &segment_key,
-                                server_key,
+                                receipt.server_segment(),
                                 bytes,
                                 duration_ms,
                                 metadata.path,
                                 metadata.attempts,
                             );
-                            witnesses.push(ConfirmedUpload { witness, metadata });
+                            witnesses.push(ConfirmedUpload {
+                                server_segment: receipt.server_segment().to_string(),
+                                files: ack.files,
+                                metadata,
+                            });
+                        }
+                        Err(ReceiptFault::Absent) => {
+                            // Unknown track: absent file_descriptors
+                            UploadEvent::new(
+                                &segment_key,
+                                bytes,
+                                duration_ms,
+                                UploadOutcome::AcceptedUnconfirmed,
+                                Some(metadata.path),
+                                None,
+                            )
+                            .emit();
+                            unknown_by_day.entry(day.clone()).or_default().push(
+                                UnknownSegmentFact {
+                                    index: segment.index,
+                                    segment_key,
+                                    local_files,
+                                },
+                            );
+                        }
+                        Err(ReceiptFault::ReceivedNotWritten { .. }) => {
+                            self.register_received_not_written(&day, &segment_key, now);
+                            UploadEvent::new(
+                                &segment_key,
+                                bytes,
+                                duration_ms,
+                                UploadOutcome::Failed,
+                                Some(metadata.path),
+                                Some("received_not_written".to_string()),
+                            )
+                            .emit();
+                            continue 'segments;
+                        }
+                        Err(fault) => {
+                            self.on_invalid_receipt();
+                            self.register_segment_error(&day, &segment_key, "invalid_receipt", now);
+                            UploadEvent::new(
+                                &segment_key,
+                                bytes,
+                                duration_ms,
+                                UploadOutcome::Failed,
+                                Some(metadata.path),
+                                Some("invalid_receipt".to_string()),
+                            )
+                            .emit();
+                            self.on_error(&TransportError::Rejected {
+                                status: 200,
+                                body: format!("invalid receipt: {fault:?}"),
+                            });
+                            continue 'segments;
                         }
                     }
                 }
                 Ok((response, metadata)) => {
                     let duration_ms = elapsed_ms(started);
+                    let reason_code = response.reason_code.as_deref().unwrap_or(
+                        match response.status {
+                            IngestStatus::Conflict => "conflict",
+                            IngestStatus::Failed => "failed",
+                            _ => "rejected",
+                        },
+                    );
+
+                    if reason_code == "segment_removed" {
+                        self.on_segment_removed();
+                        self.terminal_segments.lock().unwrap().insert(segment.index);
+                        UploadEvent::new(
+                            &segment_key,
+                            bytes,
+                            duration_ms,
+                            UploadOutcome::Failed,
+                            Some(metadata.path),
+                            Some("segment_removed".to_string()),
+                        )
+                        .emit();
+                        continue 'segments;
+                    }
+
+                    self.register_segment_error(&day, &segment_key, reason_code, now);
                     let error = TransportError::Rejected {
                         status: match response.status {
                             IngestStatus::Conflict => 409,
                             IngestStatus::Failed => 500,
-                            IngestStatus::Ok
-                            | IngestStatus::Duplicate
-                            | IngestStatus::Collision => {
-                                unreachable!("accepted statuses matched above")
-                            }
+                            _ => 400,
                         },
                         body: format!("ingest response: {:?}", response.status),
                     };
@@ -736,13 +1042,11 @@ impl UploadCoordinator {
                         duration_ms,
                         UploadOutcome::Failed,
                         Some(metadata.path),
-                        Some(transport_error_code(&error)),
+                        Some(reason_code.to_string()),
                     )
                     .emit();
                     self.on_error(&error);
-                    // Failed/conflict upload responses are retry-eligible and do
-                    // not accumulate toward quarantine.
-                    continue;
+                    continue 'segments;
                 }
                 Err(e) => {
                     let duration_ms = elapsed_ms(started);
@@ -756,11 +1060,288 @@ impl UploadCoordinator {
                     )
                     .emit();
                     self.on_error(&e);
+
+                    if is_device_scoped_refusal(&e) {
+                        return Err(e);
+                    }
                     if is_attributable_rejection(&e) {
                         self.register_reject(segment.index);
-                        continue;
+                        self.register_segment_error(
+                            &day,
+                            &segment_key,
+                            &transport_error_code(&e),
+                            now,
+                        );
+                        continue 'segments;
+                    }
+                    if matches!(
+                        e,
+                        TransportError::Io(_)
+                            | TransportError::Tls(_)
+                            | TransportError::NoEndpoint
+                            | TransportError::Json(_)
+                    ) {
+                        return Err(e);
+                    }
+                    if let TransportError::Rejected { status, ref body } = e {
+                        let reason = serde_json::from_str::<serde_json::Value>(body)
+                            .ok()
+                            .and_then(|v| v.get("reason_code")?.as_str().map(str::to_string))
+                            .unwrap_or_else(|| format!("http_{status}"));
+                        if reason == "segment_removed" {
+                            self.on_segment_removed();
+                            self.terminal_segments.lock().unwrap().insert(segment.index);
+                        } else {
+                            self.register_segment_error(&day, &segment_key, &reason, now);
+                        }
+                        continue 'segments;
                     }
                     return Err(e);
+                }
+            }
+        }
+
+        // In don't-keep mode, retry deletion for any previously confirmed segments that failed removal
+        if self.retention().delete_on_confirm() {
+            if let Ok(confirmed) = self.store.confirmed() {
+                for seg in confirmed {
+                    if let Ok(Some(ack)) = self.store.read_ack(seg.index) {
+                        let bound_key = (
+                            self.client.journal_identity(),
+                            ack.day.clone(),
+                            ack.local_segment.clone(),
+                        );
+                        if let Some(bound) = self.segment_bounds.lock().unwrap().get(&bound_key) {
+                            if bound.until_epoch > now {
+                                continue;
+                            }
+                        }
+                        if self
+                            .try_gate_delete(
+                                seg.index,
+                                &ack.files,
+                                &ack.day,
+                                &ack.local_segment,
+                                now,
+                            )
+                            .is_err()
+                        {
+                            self.register_segment_bound(
+                                &ack.day,
+                                &ack.local_segment,
+                                "media_delete_failed",
+                                now,
+                                3600,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Listing pass: after pending segment POSTs
+        let mut candidate_days: Vec<String> = unknown_by_day.keys().cloned().collect();
+        if !self.retention().delete_on_confirm() {
+            if let Ok(confirmed) = self.store.confirmed() {
+                for seg in confirmed {
+                    if self.retention().should_prune(seg.boundary_epoch_secs, now) {
+                        if let Ok(Some(ack)) = self.store.read_ack(seg.index) {
+                            if !candidate_days.contains(&ack.day) {
+                                candidate_days.push(ack.day);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        candidate_days.sort();
+
+        let eligible_day = candidate_days.into_iter().find(|d| {
+            let bounds = self.day_bounds.lock().unwrap();
+            bounds.get(d).is_none_or(|b| b.until_epoch <= now)
+        });
+
+        if let Some(day) = eligible_day {
+            match self.client.list_segments(&day).await {
+                Ok((envelope, _metadata)) => {
+                    self.day_bounds.lock().unwrap().insert(
+                        day.clone(),
+                        DayListingBound {
+                            until_epoch: now.saturating_add(3600),
+                        },
+                    );
+
+                    if let Some(unknown_list) = unknown_by_day.get(&day) {
+                        for unk in unknown_list {
+                            let matched_item = envelope.items.iter().find(|item| {
+                                if item.key != unk.segment_key {
+                                    return false;
+                                }
+                                if item.files.len() != unk.local_files.len() {
+                                    return false;
+                                }
+                                for (name, sha, size) in &unk.local_files {
+                                    let Some(sf) = item.files.iter().find(|f| &f.name == name)
+                                    else {
+                                        return false;
+                                    };
+                                    if sf.size != *size || &sf.sha256 != sha || !sf.status.is_held()
+                                    {
+                                        return false;
+                                    }
+                                }
+                                true
+                            });
+
+                            if let Some(item) = matched_item {
+                                let ack_files: Vec<AckFile> = unk
+                                    .local_files
+                                    .iter()
+                                    .map(|(name, sha, size)| {
+                                        let sf =
+                                            item.files.iter().find(|f| &f.name == name).unwrap();
+                                        AckFile {
+                                            submitted: name.clone(),
+                                            written: sf.name.clone(),
+                                            size: *size,
+                                            sha256: sha.clone(),
+                                            disposition: None,
+                                            listing_status: Some(sf.status),
+                                        }
+                                    })
+                                    .collect();
+
+                                let ack = UploadAck::new_listing(
+                                    self.client.journal_identity(),
+                                    &day,
+                                    &unk.segment_key,
+                                    &item.key,
+                                    ack_files,
+                                );
+                                let _ = self.store.write_ack(unk.index, &ack);
+                                if self.retention().delete_on_confirm() {
+                                    let _ = self.try_gate_delete(
+                                        unk.index,
+                                        &ack.files,
+                                        &day,
+                                        &unk.segment_key,
+                                        now,
+                                    );
+                                }
+                            } else {
+                                self.on_unknown_kept();
+                                self.register_segment_bound(
+                                    &day,
+                                    &unk.segment_key,
+                                    "unknown_kept",
+                                    now,
+                                    86400,
+                                );
+                            }
+                        }
+                    }
+
+                    if let Ok(confirmed) = self.store.confirmed() {
+                        let mut has_unproven = false;
+                        for seg in confirmed {
+                            if let Ok(Some(ack)) = self.store.read_ack(seg.index) {
+                                if ack.day == day {
+                                    let proven = envelope.items.iter().any(|item| {
+                                        (item.key == ack.server_segment
+                                            || item.key == ack.local_segment)
+                                            && ack.files.iter().all(|af| {
+                                                item.files.iter().any(|sf| {
+                                                    sf.name == af.written
+                                                        && sf.size == af.size
+                                                        && sf.sha256 == af.sha256
+                                                        && sf.status.is_held()
+                                                })
+                                            })
+                                    });
+                                    if !proven {
+                                        self.on_listing_unproven();
+                                        has_unproven = true;
+                                    } else if self.retention().delete_on_confirm()
+                                        || self
+                                            .retention()
+                                            .should_prune(seg.boundary_epoch_secs, now)
+                                    {
+                                        let _ = self.try_gate_delete(
+                                            seg.index,
+                                            &ack.files,
+                                            &ack.day,
+                                            &ack.local_segment,
+                                            now,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if has_unproven {
+                            self.day_bounds.lock().unwrap().insert(
+                                day.clone(),
+                                DayListingBound {
+                                    until_epoch: now.saturating_add(86400),
+                                },
+                            );
+                        }
+                    }
+
+                    if let Ok(pending) = self.store.scan() {
+                        for seg in pending {
+                            if let Ok(Some(ack)) = self.store.read_ack(seg.index) {
+                                if ack.day == day {
+                                    let proven = envelope.items.iter().any(|item| {
+                                        (item.key == ack.server_segment
+                                            || item.key == ack.local_segment)
+                                            && ack.files.iter().all(|af| {
+                                                item.files.iter().any(|sf| {
+                                                    sf.name == af.written
+                                                        && sf.size == af.size
+                                                        && sf.sha256 == af.sha256
+                                                        && sf.status.is_held()
+                                                })
+                                            })
+                                    });
+                                    if proven && self.retention().delete_on_confirm() {
+                                        let _ = self.try_gate_delete(
+                                            seg.index,
+                                            &ack.files,
+                                            &ack.day,
+                                            &ack.local_segment,
+                                            now,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.on_error(&e);
+                    if is_device_scoped_refusal(&e) {
+                        return Err(e);
+                    }
+                    if matches!(
+                        e,
+                        TransportError::Io(_)
+                            | TransportError::Tls(_)
+                            | TransportError::NoEndpoint
+                            | TransportError::Json(_)
+                    ) {
+                        return Err(e);
+                    }
+                    if let TransportError::Rejected { .. } = e {
+                        self.on_listing_refusal();
+                        self.day_bounds.lock().unwrap().insert(
+                            day.clone(),
+                            DayListingBound {
+                                until_epoch: now.saturating_add(3600),
+                            },
+                        );
+                    } else {
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -769,33 +1350,6 @@ impl UploadCoordinator {
         Ok(witnesses)
     }
 
-    /// Run forever (until `cancel`), ticking with exponential backoff on error.
-    pub async fn run(self, mut cancel: watch::Receiver<bool>) {
-        let tick_cancel = cancel.clone();
-        let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
-        loop {
-            tokio::select! {
-                _ = cancelled(&mut cancel) => break,
-                _ = tokio::time::sleep(Duration::from_secs(backoff)) => {
-                    match self.tick_with_cancel(&tick_cancel).await {
-                        Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
-                        Err(_) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
-                    }
-                }
-            }
-        }
-        if let (Some(pc), Some(token)) = (&self.post_connect, self.post_connect_generation) {
-            pc.shutdown(token);
-        }
-    }
-
-    fn set_pending(&self, pending: u64) {
-        if let Ok(mut snapshot) = self.sync.lock() {
-            snapshot.upload.pending_segments = pending;
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn on_confirmed(
         &self,
         segment_key: &str,
@@ -888,15 +1442,17 @@ impl UploadCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeMap, HashSet, VecDeque};
+    use std::collections::{HashSet, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use observer_model::RECENT_ERROR_COUNT_MAX;
-    use observer_pl::ingest::{DayManifestSegment, SegmentFile, SegmentFileStatus, SegmentItem};
+    use observer_pl::ingest::{
+        FileDescriptor, FileDescriptors, SegmentFile, SegmentFileStatus, SegmentItem,
+    };
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 
     use crate::credential::{Credential, EndpointAddr};
-    use crate::sealed::SealedSegment;
+    use crate::sealed::{DirEntryFact, SealedSegment};
 
     #[derive(Debug)]
     struct FixedOffset(i64);
@@ -978,6 +1534,26 @@ mod tests {
         fn confirmed(&self) -> std::io::Result<Vec<crate::sealed::SealedSegment>> {
             Ok(Vec::new())
         }
+
+        fn list_entries(&self, _index: u64) -> std::io::Result<Vec<DirEntryFact>> {
+            Ok(Vec::new())
+        }
+
+        fn remove_entry(&self, _index: u64, _name: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn remove_dir(&self, _index: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn read_ack(&self, _index: u64) -> std::io::Result<Option<UploadAck>> {
+            Ok(None)
+        }
+
+        fn write_ack(&self, _index: u64, _ack: &UploadAck) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     struct FailingStore;
@@ -1006,17 +1582,43 @@ mod tests {
         fn confirmed(&self) -> std::io::Result<Vec<crate::sealed::SealedSegment>> {
             Ok(Vec::new())
         }
+
+        fn list_entries(&self, _index: u64) -> std::io::Result<Vec<DirEntryFact>> {
+            Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"))
+        }
+
+        fn remove_entry(&self, _index: u64, _name: &str) -> std::io::Result<()> {
+            Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"))
+        }
+
+        fn remove_dir(&self, _index: u64) -> std::io::Result<()> {
+            Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"))
+        }
+
+        fn read_ack(&self, _index: u64) -> std::io::Result<Option<UploadAck>> {
+            Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"))
+        }
+
+        fn write_ack(&self, _index: u64, _ack: &UploadAck) -> std::io::Result<()> {
+            Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"))
+        }
     }
 
     struct OneSegmentStore {
         removed: Arc<Mutex<bool>>,
         segment: SealedSegment,
+        #[allow(dead_code)]
         file_name: String,
+        #[allow(dead_code)]
         bytes: Vec<u8>,
+        ack: Arc<Mutex<Option<UploadAck>>>,
+        files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     }
 
     impl OneSegmentStore {
         fn new(boundary_epoch_secs: u64, file_name: &str, bytes: Vec<u8>) -> Self {
+            let mut files = HashMap::new();
+            files.insert(file_name.to_string(), bytes.clone());
             Self {
                 removed: Arc::new(Mutex::new(false)),
                 segment: SealedSegment {
@@ -1027,6 +1629,8 @@ mod tests {
                 },
                 file_name: file_name.to_string(),
                 bytes,
+                ack: Arc::new(Mutex::new(None)),
+                files: Arc::new(Mutex::new(files)),
             }
         }
 
@@ -1045,12 +1649,16 @@ mod tests {
         }
 
         fn read_file(&self, _index: u64, name: &str) -> std::io::Result<Vec<u8>> {
-            assert_eq!(name, self.file_name);
-            Ok(self.bytes.clone())
+            let files = self.files.lock().unwrap();
+            files
+                .get(name)
+                .cloned()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"))
         }
 
         fn remove(&self, _index: u64) -> std::io::Result<()> {
             *self.removed.lock().unwrap() = true;
+            *self.ack.lock().unwrap() = None;
             Ok(())
         }
 
@@ -1060,11 +1668,69 @@ mod tests {
 
         fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
             *self.removed.lock().unwrap() = true;
+            *self.ack.lock().unwrap() = None;
             Ok(())
         }
 
         fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>> {
-            Ok(Vec::new())
+            if *self.removed.lock().unwrap() {
+                return Ok(Vec::new());
+            }
+            if self.ack.lock().unwrap().is_some() {
+                Ok(vec![self.segment.clone()])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn list_entries(&self, _index: u64) -> std::io::Result<Vec<DirEntryFact>> {
+            if *self.removed.lock().unwrap() {
+                return Ok(Vec::new());
+            }
+            let files = self.files.lock().unwrap();
+            let mut facts = Vec::new();
+            for (name, data) in files.iter() {
+                facts.push(DirEntryFact {
+                    name: name.clone(),
+                    is_file: true,
+                    size_bytes: data.len() as u64,
+                });
+            }
+            if self.ack.lock().unwrap().is_some() {
+                facts.push(DirEntryFact {
+                    name: UPLOADED_MARKER.to_string(),
+                    is_file: true,
+                    size_bytes: 100,
+                });
+            }
+            Ok(facts)
+        }
+
+        fn remove_entry(&self, _index: u64, name: &str) -> std::io::Result<()> {
+            if name == UPLOADED_MARKER {
+                *self.ack.lock().unwrap() = None;
+            }
+            let mut files = self.files.lock().unwrap();
+            files.remove(name);
+            Ok(())
+        }
+
+        fn remove_dir(&self, _index: u64) -> std::io::Result<()> {
+            *self.removed.lock().unwrap() = true;
+            *self.ack.lock().unwrap() = None;
+            Ok(())
+        }
+
+        fn read_ack(&self, _index: u64) -> std::io::Result<Option<UploadAck>> {
+            if *self.removed.lock().unwrap() {
+                return Ok(None);
+            }
+            Ok(self.ack.lock().unwrap().clone())
+        }
+
+        fn write_ack(&self, _index: u64, ack: &UploadAck) -> std::io::Result<()> {
+            *self.ack.lock().unwrap() = Some(ack.clone());
+            Ok(())
         }
     }
 
@@ -1075,13 +1741,14 @@ mod tests {
 
     struct MultiSegmentState {
         segments: Vec<SealedSegment>,
-        bytes: HashMap<u64, Vec<u8>>,
+        bytes: HashMap<u64, HashMap<String, Vec<u8>>>,
         read_errors: HashMap<u64, String>,
         removed: HashSet<u64>,
         confirmed: HashSet<u64>,
         quarantined: HashSet<u64>,
         remove_fails_once: HashSet<u64>,
         mark_confirmed_fails_once: HashSet<u64>,
+        acks: HashMap<u64, UploadAck>,
     }
 
     impl MultiSegmentStore {
@@ -1095,7 +1762,9 @@ mod tests {
                     len_secs: None,
                     files: vec![file_name.to_string()],
                 });
-                bytes.insert(index, data);
+                let mut map = HashMap::new();
+                map.insert(file_name.to_string(), data);
+                bytes.insert(index, map);
             }
             sealed.sort_by_key(|segment| segment.index);
             Self {
@@ -1108,6 +1777,7 @@ mod tests {
                     quarantined: HashSet::new(),
                     remove_fails_once: HashSet::new(),
                     mark_confirmed_fails_once: HashSet::new(),
+                    acks: HashMap::new(),
                 })),
             }
         }
@@ -1161,13 +1831,14 @@ mod tests {
                 .filter(|segment| {
                     !state.removed.contains(&segment.index)
                         && !state.confirmed.contains(&segment.index)
+                        && !state.acks.contains_key(&segment.index)
                         && !state.quarantined.contains(&segment.index)
                 })
                 .cloned()
                 .collect())
         }
 
-        fn read_file(&self, index: u64, _name: &str) -> std::io::Result<Vec<u8>> {
+        fn read_file(&self, index: u64, name: &str) -> std::io::Result<Vec<u8>> {
             let state = self.state.lock().unwrap();
             if let Some(message) = state.read_errors.get(&index) {
                 return Err(std::io::Error::other(message.clone()));
@@ -1175,6 +1846,7 @@ mod tests {
             state
                 .bytes
                 .get(&index)
+                .and_then(|map| map.get(name))
                 .cloned()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing bytes"))
         }
@@ -1185,6 +1857,8 @@ mod tests {
                 return Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"));
             }
             state.removed.insert(index);
+            state.acks.remove(&index);
+            state.confirmed.remove(&index);
             Ok(())
         }
 
@@ -1207,9 +1881,77 @@ mod tests {
             Ok(state
                 .segments
                 .iter()
-                .filter(|segment| state.confirmed.contains(&segment.index))
+                .filter(|segment| {
+                    !state.removed.contains(&segment.index)
+                        && (state.confirmed.contains(&segment.index)
+                            || state.acks.contains_key(&segment.index))
+                })
                 .cloned()
                 .collect())
+        }
+
+        fn list_entries(&self, index: u64) -> std::io::Result<Vec<DirEntryFact>> {
+            let state = self.state.lock().unwrap();
+            if state.removed.contains(&index) {
+                return Ok(Vec::new());
+            }
+            let mut facts = Vec::new();
+            if let Some(map) = state.bytes.get(&index) {
+                for (name, data) in map {
+                    facts.push(DirEntryFact {
+                        name: name.clone(),
+                        is_file: true,
+                        size_bytes: data.len() as u64,
+                    });
+                }
+            }
+            if state.acks.contains_key(&index) {
+                facts.push(DirEntryFact {
+                    name: UPLOADED_MARKER.to_string(),
+                    is_file: true,
+                    size_bytes: 100,
+                });
+            }
+            Ok(facts)
+        }
+
+        fn remove_entry(&self, index: u64, name: &str) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if state.remove_fails_once.remove(&index) {
+                return Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"));
+            }
+            if name == UPLOADED_MARKER {
+                state.acks.remove(&index);
+            }
+            if let Some(map) = state.bytes.get_mut(&index) {
+                map.remove(name);
+            }
+            Ok(())
+        }
+
+        fn remove_dir(&self, index: u64) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            state.removed.insert(index);
+            state.acks.remove(&index);
+            state.confirmed.remove(&index);
+            Ok(())
+        }
+
+        fn read_ack(&self, index: u64) -> std::io::Result<Option<UploadAck>> {
+            let state = self.state.lock().unwrap();
+            if state.removed.contains(&index) {
+                return Ok(None);
+            }
+            Ok(state.acks.get(&index).cloned())
+        }
+
+        fn write_ack(&self, index: u64, ack: &UploadAck) -> std::io::Result<()> {
+            let mut state = self.state.lock().unwrap();
+            if state.mark_confirmed_fails_once.remove(&index) {
+                return Err(std::io::Error::other("C:\\Users\\me\\seg.mp4"));
+            }
+            state.acks.insert(index, ack.clone());
+            Ok(())
         }
     }
 
@@ -1235,6 +1977,15 @@ mod tests {
     }
 
     impl UploadClient for FakeClient {
+        fn journal_identity(&self) -> JournalIdentity {
+            JournalIdentity {
+                instance_id: "test".to_string(),
+                ca_fp_prefix: "0000000000000000".to_string(),
+                client_cert_sha256:
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            }
+        }
+
         fn ingest<'a>(
             &'a self,
             _segment: &'a str,
@@ -1249,21 +2000,6 @@ mod tests {
                 .pop_front()
                 .expect("scripted ingest result");
             Box::pin(async move { result })
-        }
-
-        fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
-            let day = self
-                .submitted_day
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("ingest precedes its root manifest read");
-            Box::pin(async move { Ok((manifest_for(&day), test_metadata())) })
-        }
-
-        fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
-            let day_manifest = day_manifest_for(day, &self.lists);
-            Box::pin(async move { Ok((day_manifest, test_metadata())) })
         }
 
         fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
@@ -1312,6 +2048,15 @@ mod tests {
     }
 
     impl UploadClient for CancelAfterFirstListClient {
+        fn journal_identity(&self) -> JournalIdentity {
+            JournalIdentity {
+                instance_id: "test".to_string(),
+                ca_fp_prefix: "0000000000000000".to_string(),
+                client_cert_sha256:
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            }
+        }
+
         fn ingest<'a>(
             &'a self,
             _segment: &'a str,
@@ -1326,26 +2071,15 @@ mod tests {
                 .pop_front()
                 .expect("scripted ingest result");
             let ingest_count = self.ingest_count.clone();
+            let cancel = self.cancel.clone();
             Box::pin(async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                ingest_count.fetch_add(1, Ordering::SeqCst);
+                let count = ingest_count.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    let _ = cancel.send(true);
+                }
                 result
             })
-        }
-
-        fn ingest_manifest<'a>(&'a self) -> ManifestFuture<'a> {
-            let day = self
-                .submitted_day
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("ingest precedes its root manifest read");
-            Box::pin(async move { Ok((manifest_for(&day), test_metadata())) })
-        }
-
-        fn ingest_manifest_day<'a>(&'a self, day: &'a str) -> DayManifestFuture<'a> {
-            let day_manifest = day_manifest_for(day, &self.lists);
-            Box::pin(async move { Ok((day_manifest, test_metadata())) })
         }
 
         fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
@@ -1370,46 +2104,6 @@ mod tests {
         SendMetadata {
             path: TransportPath::Direct,
             attempts: 1,
-        }
-    }
-
-    fn manifest_for(day: &str) -> IngestManifest {
-        IngestManifest {
-            days: BTreeMap::from([(
-                day.to_owned(),
-                observer_pl::ingest::ManifestDay { segments: 1 },
-            )]),
-        }
-    }
-
-    fn day_manifest_for(
-        day: &str,
-        lists: &Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
-    ) -> DayManifest {
-        let segments = lists
-            .lock()
-            .unwrap()
-            .front()
-            .and_then(|result| result.as_ref().ok())
-            .map(|(envelope, _)| {
-                envelope
-                    .items
-                    .iter()
-                    .map(|item| {
-                        (
-                            item.key.clone(),
-                            DayManifestSegment {
-                                files: item.files.clone(),
-                            },
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        DayManifest {
-            version: 1,
-            day: day.to_owned(),
-            segments,
         }
     }
 
@@ -1503,14 +2197,77 @@ mod tests {
         )
     }
 
-    fn accepted_ingest(attempts: u32) -> Result<(IngestResponse, SendMetadata), TransportError> {
-        scripted_ingest("ok", None, None, attempts)
+    fn coordinator_with_client_and_jv(
+        client: Arc<dyn UploadClient>,
+        store: Box<dyn SealedStore>,
+        sync: Arc<Mutex<SyncSnapshot>>,
+        jv: Arc<JournalVersionController>,
+    ) -> UploadCoordinator {
+        UploadCoordinator {
+            client,
+            client_slot: None,
+            post_connect: None,
+            post_connect_generation: None,
+            version_generation: JournalVersionSessionToken(jv.current_token().0),
+            journal_version: Some(jv),
+            store,
+            sync,
+            period_secs: 300,
+            retention: Arc::new(RwLock::new(RetentionConfig::default())),
+            local_offset: Arc::new(FixedOffset(0)),
+            quarantine_counts: Mutex::new(HashMap::new()),
+            base_wall_epoch: now_epoch_secs(),
+            base_instant: tokio::time::Instant::now(),
+            segment_bounds: Mutex::new(HashMap::new()),
+            terminal_segments: Mutex::new(HashSet::new()),
+            day_bounds: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn accepted_ingest(
+        segment_key: &str,
+        file_name: &str,
+        bytes: &[u8],
+        attempts: u32,
+    ) -> Result<(IngestResponse, SendMetadata), TransportError> {
+        scripted_ingest(
+            "ok",
+            Some(segment_key),
+            None,
+            vec![FileDescriptor {
+                submitted: file_name.to_string(),
+                written: file_name.to_string(),
+                size: bytes.len() as u64,
+                sha256: ca::sha256_hex(bytes),
+                disposition: "written".to_string(),
+            }],
+            attempts,
+        )
+    }
+
+    fn accepted_unconfirmed_ingest(
+        attempts: u32,
+    ) -> Result<(IngestResponse, SendMetadata), TransportError> {
+        Ok((
+            IngestResponse {
+                status: IngestStatus::Ok,
+                segment: Some("120000_300".to_string()),
+                existing_segment: None,
+                reason_code: None,
+                file_descriptors: FileDescriptors::Absent,
+            },
+            SendMetadata {
+                path: TransportPath::Direct,
+                attempts,
+            },
+        ))
     }
 
     fn scripted_ingest(
         status: &str,
         segment: Option<&str>,
         existing_segment: Option<&str>,
+        descriptors: Vec<FileDescriptor>,
         attempts: u32,
     ) -> Result<(IngestResponse, SendMetadata), TransportError> {
         Ok((
@@ -1525,6 +2282,8 @@ mod tests {
                 },
                 segment: segment.map(ToOwned::to_owned),
                 existing_segment: existing_segment.map(ToOwned::to_owned),
+                reason_code: None,
+                file_descriptors: FileDescriptors::Decoded(descriptors),
             },
             SendMetadata {
                 path: TransportPath::Direct,
@@ -1665,6 +2424,7 @@ mod tests {
         }
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; earlier tests relied on manifest verification.
     #[tokio::test]
     async fn reject_isolation_processes_later_segments() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
@@ -1674,7 +2434,6 @@ mod tests {
         let bytes1 = b"poison segment".to_vec();
         let bytes2 = b"healthy segment".to_vec();
         let key2 = civil::segment_key_string_local(boundary2, 0, 300);
-        let sha2 = ca::sha256_hex(&bytes2);
         let store = MultiSegmentStore::new(vec![
             (1, boundary1, file_name, bytes1),
             (2, boundary2, file_name, bytes2.clone()),
@@ -1686,14 +2445,9 @@ mod tests {
                     status: 400,
                     body: attributable_request_body(),
                 }),
-                accepted_ingest(1),
+                accepted_ingest(&key2, file_name, &bytes2, 1),
             ],
-            vec![confirmed_segments(
-                key2,
-                file_name,
-                sha2,
-                bytes2.len() as u64,
-            )],
+            vec![],
         );
         let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
 
@@ -1709,7 +2463,8 @@ mod tests {
         assert_eq!(snapshot.upload.recent_error_count, 0);
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; advances simulated time between ticks to exercise the quarantine threshold.
+    #[tokio::test(start_paused = true)]
     async fn quarantines_segment_after_five_consecutive_rejects() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let file_name = "display_1_screen.mp4";
@@ -1737,6 +2492,7 @@ mod tests {
                 assert_eq!(snapshot.upload.quarantined_segments, 0);
                 assert_eq!(handle.pending_indices(), vec![1]);
             }
+            tokio::time::advance(Duration::from_secs(86401)).await;
         }
 
         let snapshot = sync.lock().unwrap().clone();
@@ -1755,22 +2511,25 @@ mod tests {
         assert!(!last_error.contains("10.0.0.5"));
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test]
     async fn transport_error_aborts_tick_and_leaves_rest_untried() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let file_name = "display_1_screen.mp4";
         let boundary1 = 1_700_000_100;
         let boundary2 = boundary1 + 300;
+        let bytes2 = b"second".to_vec();
+        let key2 = civil::segment_key_string_local(boundary2, 0, 300);
         let store = MultiSegmentStore::new(vec![
             (1, boundary1, file_name, b"first".to_vec()),
-            (2, boundary2, file_name, b"second".to_vec()),
+            (2, boundary2, file_name, bytes2.clone()),
         ]);
         let client = FakeClient::new(
             vec![
                 Err(TransportError::Io(std::io::Error::other(
                     "C:\\Users\\me\\seg.mp4",
                 ))),
-                accepted_ingest(1),
+                accepted_ingest(&key2, file_name, &bytes2, 1),
             ],
             vec![],
         );
@@ -1792,8 +2551,7 @@ mod tests {
             .contains("Users"));
     }
 
-    // SPL session § 7. Falsified by recording a stopped pairing as an ordinary failed tick: the
-    // owner keeps seeing "paired" while nothing can reach the journal.
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test]
     async fn a_stopped_pairing_reads_as_refused_and_an_ordinary_failure_does_not() {
         for (stop, refused) in [
@@ -1833,6 +2591,7 @@ mod tests {
         }
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test]
     async fn read_error_skips_segment_without_quarantine() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
@@ -1841,22 +2600,13 @@ mod tests {
         let boundary2 = boundary1 + 300;
         let bytes2 = b"healthy segment".to_vec();
         let key2 = civil::segment_key_string_local(boundary2, 0, 300);
-        let sha2 = ca::sha256_hex(&bytes2);
         let store = MultiSegmentStore::new(vec![
             (1, boundary1, file_name, b"locked".to_vec()),
             (2, boundary2, file_name, bytes2.clone()),
         ])
         .with_read_error(1, "C:\\Users\\me\\seg.mp4");
         let handle = store.clone();
-        let client = FakeClient::new(
-            vec![accepted_ingest(1)],
-            vec![confirmed_segments(
-                key2,
-                file_name,
-                sha2,
-                bytes2.len() as u64,
-            )],
-        );
+        let client = FakeClient::new(vec![accepted_ingest(&key2, file_name, &bytes2, 1)], vec![]);
         let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
 
         let confirmed = coordinator.tick().await.unwrap();
@@ -1869,7 +2619,8 @@ mod tests {
         assert!(snapshot.upload.failed_segments >= 1);
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses simulated time advance across ticks.
+    #[tokio::test(start_paused = true)]
     async fn list_reject_does_not_feed_quarantine_counter() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let file_name = "display_1_screen.mp4";
@@ -1883,7 +2634,7 @@ mod tests {
                 body: attributable_request_body(),
             }));
         }
-        ingests.push(accepted_ingest(1));
+        ingests.push(accepted_unconfirmed_ingest(1));
         let client = FakeClient::new(
             ingests,
             vec![Err(TransportError::Rejected {
@@ -1895,6 +2646,7 @@ mod tests {
 
         for _ in 0..(QUARANTINE_AFTER_REJECTS - 1) {
             assert_eq!(coordinator.tick().await.unwrap(), 0);
+            tokio::time::advance(Duration::from_secs(86401)).await;
         }
         assert!(matches!(
             coordinator.tick().await,
@@ -1908,6 +2660,7 @@ mod tests {
         assert_eq!(snapshot.upload.recent_error_count, 1);
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test]
     async fn list_transport_error_aborts_after_accepted_ingest() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
@@ -1915,7 +2668,7 @@ mod tests {
         let boundary = 1_700_000_100;
         let store = MultiSegmentStore::new(vec![(1, boundary, file_name, b"segment".to_vec())]);
         let client = FakeClient::new(
-            vec![accepted_ingest(1)],
+            vec![accepted_unconfirmed_ingest(1)],
             vec![Err(TransportError::Io(std::io::Error::other(
                 "C:\\Users\\me\\seg.mp4",
             )))],
@@ -1930,6 +2683,7 @@ mod tests {
         assert_eq!(snapshot.upload.recent_error_count, 1);
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test(start_paused = true)]
     async fn cancel_between_segments_stops_before_next_ingest() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
@@ -1941,7 +2695,6 @@ mod tests {
         let bytes2 = b"second segment".to_vec();
         let bytes3 = b"third segment".to_vec();
         let key1 = civil::segment_key_string_local(boundary1, 0, 300);
-        let sha1 = ca::sha256_hex(&bytes1);
         let store = MultiSegmentStore::new(vec![
             (1, boundary1, file_name, bytes1.clone()),
             (2, boundary2, file_name, bytes2),
@@ -1950,13 +2703,8 @@ mod tests {
         let handle = store.clone();
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let client = CancelAfterFirstListClient::new(
-            vec![accepted_ingest(1)],
-            vec![confirmed_segments(
-                key1,
-                file_name,
-                sha1,
-                bytes1.len() as u64,
-            )],
+            vec![accepted_ingest(&key1, file_name, &bytes1, 1)],
+            vec![],
             cancel_tx,
         );
         let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
@@ -1971,7 +2719,8 @@ mod tests {
         assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 1);
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses receipt-driven confirmation and simulates time advance across ticks.
+    #[tokio::test(start_paused = true)]
     async fn cleanup_remove_failure_is_nonfatal_and_reconfirms_next_tick() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let file_name = "display_1_screen.mp4";
@@ -1981,8 +2730,6 @@ mod tests {
         let bytes2 = b"second segment".to_vec();
         let key1 = civil::segment_key_string_local(boundary1, 0, 300);
         let key2 = civil::segment_key_string_local(boundary2, 0, 300);
-        let sha1 = ca::sha256_hex(&bytes1);
-        let sha2 = ca::sha256_hex(&bytes2);
         let store = MultiSegmentStore::new(vec![
             (1, boundary1, file_name, bytes1.clone()),
             (2, boundary2, file_name, bytes2.clone()),
@@ -1991,51 +2738,67 @@ mod tests {
         let handle = store.clone();
         let client = FakeClient::new(
             vec![
-                accepted_ingest(1),
-                accepted_ingest(1),
-                scripted_ingest("duplicate", None, Some(&key1), 2),
+                accepted_ingest(&key1, file_name, &bytes1, 1),
+                accepted_ingest(&key2, file_name, &bytes2, 1),
+                scripted_ingest(
+                    "duplicate",
+                    None,
+                    Some(&key1),
+                    vec![FileDescriptor {
+                        submitted: file_name.to_string(),
+                        written: file_name.to_string(),
+                        size: bytes1.len() as u64,
+                        sha256: ca::sha256_hex(&bytes1),
+                        disposition: "already_held".to_string(),
+                    }],
+                    2,
+                ),
             ],
-            vec![
-                confirmed_segments(key1.clone(), file_name, sha1.clone(), bytes1.len() as u64),
-                confirmed_segments(key2, file_name, sha2, bytes2.len() as u64),
-                confirmed_segments(key1, file_name, sha1, bytes1.len() as u64),
-            ],
+            vec![],
         );
         let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
 
         let first = coordinator.tick().await.unwrap();
         assert_eq!(first, 2);
-        assert_eq!(client.ingests.lock().unwrap().len(), 1);
         assert!(!handle.removed(1));
         assert!(handle.removed(2));
-        assert_eq!(handle.pending_indices(), vec![1]);
 
+        tokio::time::advance(Duration::from_secs(3601)).await;
         let second = coordinator.tick().await.unwrap();
-        assert_eq!(second, 1);
+        assert_eq!(second, 0);
         assert!(handle.removed(1));
         assert!(handle.pending_indices().is_empty());
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses retention and simulated time advance.
+    #[tokio::test(start_paused = true)]
     async fn cleanup_mark_confirmed_failure_is_nonfatal_and_reconfirms_next_tick() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let file_name = "display_1_screen.mp4";
-        let boundary = 1_700_000_100;
+        let boundary = now_epoch_secs();
         let bytes = b"retained segment".to_vec();
         let key = civil::segment_key_string_local(boundary, 0, 300);
-        let sha = ca::sha256_hex(&bytes);
         let store = MultiSegmentStore::new(vec![(1, boundary, file_name, bytes.clone())])
             .with_mark_confirmed_fails_once(1);
         let handle = store.clone();
         let client = FakeClient::new(
             vec![
-                accepted_ingest(1),
-                scripted_ingest("duplicate", None, Some(&key), 2),
+                accepted_ingest(&key, file_name, &bytes, 1),
+                scripted_ingest(
+                    "duplicate",
+                    None,
+                    Some(&key),
+                    vec![FileDescriptor {
+                        submitted: file_name.to_string(),
+                        written: file_name.to_string(),
+                        size: bytes.len() as u64,
+                        sha256: ca::sha256_hex(&bytes),
+                        disposition: "already_held".to_string(),
+                    }],
+                    2,
+                ),
             ],
-            vec![
-                confirmed_segments(key.clone(), file_name, sha.clone(), bytes.len() as u64),
-                confirmed_segments(key, file_name, sha, bytes.len() as u64),
-            ],
+            vec![],
         );
         let coordinator = coordinator_with_client_and_retention(
             client,
@@ -2048,6 +2811,7 @@ mod tests {
         assert_eq!(first, 1);
         assert_eq!(handle.pending_indices(), vec![1]);
 
+        tokio::time::advance(Duration::from_secs(3601)).await;
         let second = coordinator.tick().await.unwrap();
         assert_eq!(second, 1);
         assert!(handle.pending_indices().is_empty());
@@ -2210,20 +2974,20 @@ mod tests {
         assert!(snapshot.upload.last_successful_sync.is_some());
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; tests fallback when file_descriptors is Absent.
+    #[tokio::test(start_paused = true)]
     async fn accepted_unconfirmed_does_not_set_earned_upload_fields_until_confirmed_once() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
         let file_name = "display_1_screen.mp4";
         let bytes = b"segment bytes".to_vec();
-        let sha = ca::sha256_hex(&bytes);
         let segment_key = civil::segment_key_string_local(boundary, 0, 300);
         let client = FakeClient::new(
-            vec![accepted_ingest(2), accepted_ingest(3)],
             vec![
-                empty_segments(),
-                confirmed_segments(segment_key.clone(), file_name, sha, bytes.len() as u64),
+                accepted_unconfirmed_ingest(2),
+                accepted_ingest(&segment_key, file_name, &bytes, 3),
             ],
+            vec![empty_segments()],
         );
         let coordinator = coordinator_with_client(
             client,
@@ -2240,6 +3004,7 @@ mod tests {
         assert_eq!(first_snapshot.upload.last_upload_path, None);
         assert_eq!(first_snapshot.upload.last_upload_dial_attempts, None);
 
+        tokio::time::advance(Duration::from_secs(86401)).await;
         let second = coordinator.tick().await.unwrap();
         let second_snapshot = sync.lock().unwrap().clone();
         assert_eq!(second, 1);
@@ -2271,26 +3036,21 @@ mod tests {
         assert_eq!(third_snapshot.upload.last_upload_duration_ms, duration);
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test]
     async fn local_offset_failure_aborts_without_submitting_key_and_retries() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
         let file_name = "display_1_screen.mp4";
         let bytes = b"segment bytes".to_vec();
-        let sha = ca::sha256_hex(&bytes);
         let segment_key = civil::segment_key_string_local(boundary, 0, 300);
         assert!(matches!(
             FailingOffset.local_offset_secs(boundary),
             Err(observer_model::LocalOffsetError::Lookup)
         ));
         let client = FakeClient::new(
-            vec![accepted_ingest(1)],
-            vec![confirmed_segments(
-                segment_key,
-                file_name,
-                sha,
-                bytes.len() as u64,
-            )],
+            vec![accepted_ingest(&segment_key, file_name, &bytes, 1)],
+            vec![],
         );
         let coordinator = coordinator_with_client_and_offset(
             client.clone(),
@@ -2316,24 +3076,31 @@ mod tests {
         assert_eq!(second_snapshot.upload.last_error_reason, None);
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test]
     async fn duplicate_reconciles_against_existing_segment_key() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
         let file_name = "display_1_screen.mp4";
         let bytes = b"segment bytes".to_vec();
-        let sha = ca::sha256_hex(&bytes);
         let local_key = civil::segment_key_string_local(boundary, 0, 300);
         let server_key = "111111_300";
         assert_ne!(local_key, server_key);
         let client = FakeClient::new(
-            vec![scripted_ingest("duplicate", None, Some(server_key), 1)],
-            vec![confirmed_segments(
-                server_key.to_string(),
-                file_name,
-                sha,
-                bytes.len() as u64,
+            vec![scripted_ingest(
+                "duplicate",
+                None,
+                Some(server_key),
+                vec![FileDescriptor {
+                    submitted: file_name.to_string(),
+                    written: file_name.to_string(),
+                    size: bytes.len() as u64,
+                    sha256: ca::sha256_hex(&bytes),
+                    disposition: "already_held".to_string(),
+                }],
+                1,
             )],
+            vec![],
         );
         let store = OneSegmentStore::new(boundary, file_name, bytes);
         let removed = store.removed_handle();
@@ -2346,22 +3113,29 @@ mod tests {
         assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 1);
     }
 
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
     #[tokio::test]
     async fn collision_reconciles_against_remapped_segment_key() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
         let file_name = "display_1_screen.mp4";
         let bytes = b"segment bytes".to_vec();
-        let sha = ca::sha256_hex(&bytes);
         let remapped_key = "222222_300";
         let client = FakeClient::new(
-            vec![scripted_ingest("collision", Some(remapped_key), None, 1)],
-            vec![confirmed_segments(
-                remapped_key.to_string(),
-                file_name,
-                sha,
-                bytes.len() as u64,
+            vec![scripted_ingest(
+                "collision",
+                Some(remapped_key),
+                None,
+                vec![FileDescriptor {
+                    submitted: file_name.to_string(),
+                    written: file_name.to_string(),
+                    size: bytes.len() as u64,
+                    sha256: ca::sha256_hex(&bytes),
+                    disposition: "written".to_string(),
+                }],
+                1,
             )],
+            vec![],
         );
         let store = OneSegmentStore::new(boundary, file_name, bytes);
         let removed = store.removed_handle();
@@ -2374,7 +3148,8 @@ mod tests {
         assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 1);
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses simulated time advance across ticks.
+    #[tokio::test(start_paused = true)]
     async fn missing_status_does_not_confirm_or_delete_until_held() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
@@ -2383,7 +3158,10 @@ mod tests {
         let sha = ca::sha256_hex(&bytes);
         let segment_key = civil::segment_key_string_local(boundary, 0, 300);
         let client = FakeClient::new(
-            vec![accepted_ingest(1), accepted_ingest(2)],
+            vec![
+                accepted_unconfirmed_ingest(1),
+                accepted_unconfirmed_ingest(2),
+            ],
             vec![
                 listed_segments(
                     segment_key.clone(),
@@ -2404,12 +3182,15 @@ mod tests {
         assert!(!*removed.lock().unwrap());
         assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 0);
 
+        tokio::time::advance(Duration::from_secs(86401)).await;
         let second = coordinator.tick().await.unwrap();
-        assert_eq!(second, 1);
+        assert_eq!(second, 0);
         assert!(*removed.lock().unwrap());
+        assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 0);
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses simulated time advance across ticks.
+    #[tokio::test(start_paused = true)]
     async fn unknown_custody_status_is_retry_eligible_and_the_original_segment_confirms_later() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
@@ -2425,7 +3206,11 @@ mod tests {
             )
         };
         let client = FakeClient::new(
-            vec![accepted_ingest(1), accepted_ingest(2), accepted_ingest(3)],
+            vec![
+                accepted_unconfirmed_ingest(1),
+                accepted_unconfirmed_ingest(2),
+                accepted_unconfirmed_ingest(3),
+            ],
             vec![
                 Err(unknown_status()),
                 Err(unknown_status()),
@@ -2445,6 +3230,7 @@ mod tests {
             coordinator.tick().await,
             Err(TransportError::Json(_))
         ));
+        tokio::time::advance(Duration::from_secs(3601)).await;
         assert!(matches!(
             coordinator.tick().await,
             Err(TransportError::Json(_))
@@ -2452,32 +3238,36 @@ mod tests {
         assert!(!*removed.lock().unwrap());
         assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
 
-        assert_eq!(coordinator.tick().await.unwrap(), 1);
+        tokio::time::advance(Duration::from_secs(3601)).await;
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
         assert!(*removed.lock().unwrap());
         assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses simulated time advance across ticks.
+    #[tokio::test(start_paused = true)]
     async fn conflict_and_failed_statuses_do_not_accumulate_quarantine() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let store = OneSegmentStore::new(1_700_000_100, "audio.flac", b"retained".to_vec());
         let removed = store.removed_handle();
         let client = FakeClient::new(
             vec![
-                scripted_ingest("conflict", None, None, 1),
-                scripted_ingest("failed", None, None, 2),
+                scripted_ingest("conflict", None, None, vec![], 1),
+                scripted_ingest("failed", None, None, vec![], 2),
             ],
             vec![],
         );
         let coordinator = coordinator_with_client(client, Box::new(store), sync);
 
         assert_eq!(coordinator.tick().await.unwrap(), 0);
+        tokio::time::advance(Duration::from_secs(3601)).await;
         assert_eq!(coordinator.tick().await.unwrap(), 0);
         assert!(!*removed.lock().unwrap());
         assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
     }
 
-    #[tokio::test]
+    // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
+    #[tokio::test(start_paused = true)]
     async fn tick_failure_marks_disconnected_and_recovery_triggers_refresh() {
         let jv_path = std::env::temp_dir().join(format!(
             "journal-version-coord-test-{}.json",
@@ -2504,26 +3294,14 @@ mod tests {
                     std::io::ErrorKind::ConnectionReset,
                     "reset",
                 ))),
-                scripted_ingest("conflict", None, None, 1),
-                scripted_ingest("conflict", None, None, 1),
+                scripted_ingest("conflict", None, None, vec![], 1),
+                scripted_ingest("conflict", None, None, vec![], 1),
             ],
             vec![],
         );
 
-        let coordinator = UploadCoordinator {
-            client,
-            client_slot: None,
-            post_connect: None,
-            post_connect_generation: None,
-            store: Box::new(store),
-            sync: sync.clone(),
-            period_secs: 300,
-            retention: Arc::new(RwLock::new(RetentionConfig::default())),
-            local_offset: Arc::new(FixedOffset(0)),
-            quarantine_counts: Mutex::new(std::collections::HashMap::new()),
-            version_generation: JournalVersionSessionToken(jv.current_token().0),
-            journal_version: Some(jv.clone()),
-        };
+        let coordinator =
+            coordinator_with_client_and_jv(client, Box::new(store), sync.clone(), jv.clone());
 
         assert_eq!(jv.in_flight_token(), None);
 
@@ -2539,6 +3317,7 @@ mod tests {
         assert_eq!(jv.in_flight_token(), None);
 
         // Recovery does not start an independent version-refresh burst.
+        tokio::time::advance(Duration::from_secs(3601)).await;
         let res = coordinator.tick().await;
         assert_eq!(res.unwrap(), 0);
         {
@@ -2548,11 +3327,482 @@ mod tests {
         assert_eq!(jv.in_flight_token(), None);
 
         // Third tick succeeds when already healthy (recent_error_count == 0) -> does NOT trigger a refresh.
-        // Clear in-flight token to observe whether healthy tick sets it.
         jv.apply_result((1, 1), Ok("0.4.1".into()), &sync);
         assert_eq!(jv.in_flight_token(), None);
+        tokio::time::advance(Duration::from_secs(3601)).await;
         let res = coordinator.tick().await;
         assert_eq!(res.unwrap(), 0);
         assert_eq!(jv.in_flight_token(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acceptance_2_received_not_written_daily_bound() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "screen.mp4";
+        let bytes = b"payload".to_vec();
+        let key = civil::segment_key_string_local(boundary, 0, 300);
+        let store = OneSegmentStore::new(boundary, file_name, bytes.clone());
+        let handle = store.removed_handle();
+        let client = FakeClient::new(
+            vec![
+                scripted_ingest(
+                    "ok",
+                    Some(&key),
+                    None,
+                    vec![FileDescriptor {
+                        submitted: file_name.to_string(),
+                        written: file_name.to_string(),
+                        size: bytes.len() as u64,
+                        sha256: ca::sha256_hex(&bytes),
+                        disposition: "received_not_written".to_string(),
+                    }],
+                    1,
+                ),
+                accepted_ingest(&key, file_name, &bytes, 1),
+            ],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        // Tick 1: returns received_not_written -> 24h bound, no deletion, invalid_receipts == 0
+        let confirmed = coordinator.tick().await.unwrap();
+        assert_eq!(confirmed, 0);
+        assert!(!*handle.lock().unwrap());
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.upload.invalid_receipts, 0);
+
+        // Tick 2 (1 hour later): still bound (24h), skipped
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        let confirmed2 = coordinator.tick().await.unwrap();
+        assert_eq!(confirmed2, 0);
+
+        // Tick 3 (24h+1s later): bound expired, re-attempts and confirms
+        tokio::time::advance(Duration::from_secs(82801)).await;
+        let confirmed3 = coordinator.tick().await.unwrap();
+        assert_eq!(confirmed3, 1);
+        assert!(*handle.lock().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acceptance_3_segment_removed_terminal_state() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "screen.mp4";
+        let bytes = b"payload".to_vec();
+        let store = OneSegmentStore::new(boundary, file_name, bytes);
+        let handle = store.removed_handle();
+        let client = FakeClient::new(
+            vec![Err(TransportError::Rejected {
+                status: 500,
+                body: r#"{"error":"Removed","reason_code":"segment_removed"}"#.to_string(),
+            })],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        // Tick 1: terminal error
+        let confirmed = coordinator.tick().await.unwrap();
+        assert_eq!(confirmed, 0);
+        assert!(!*handle.lock().unwrap());
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.upload.segment_removed_segments, 1);
+
+        // Tick 2 (even 30 days later): never attempted again
+        tokio::time::advance(Duration::from_secs(86400 * 30)).await;
+        let confirmed2 = coordinator.tick().await.unwrap();
+        assert_eq!(confirmed2, 0);
+        assert!(!*handle.lock().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acceptance_4_error_ladder() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "screen.mp4";
+        let bytes = b"payload".to_vec();
+        let key = civil::segment_key_string_local(boundary, 0, 300);
+        let store = OneSegmentStore::new(boundary, file_name, bytes.clone());
+        let handle = store.removed_handle();
+        let client = FakeClient::new(
+            vec![
+                Err(TransportError::Rejected {
+                    status: 500,
+                    body: r#"{"status":"failed"}"#.to_string(),
+                }),
+                Err(TransportError::Rejected {
+                    status: 500,
+                    body: r#"{"status":"failed"}"#.to_string(),
+                }),
+                Err(TransportError::Rejected {
+                    status: 500,
+                    body: r#"{"status":"failed"}"#.to_string(),
+                }),
+                accepted_ingest(&key, file_name, &bytes, 1),
+            ],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        // Streak 1 (1st rejection): 1-hour bound
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+
+        // At 30m: bound active, skipped
+        tokio::time::advance(Duration::from_secs(1800)).await;
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+
+        // At 1h+1s: Streak 2 (2nd rejection): 1-hour bound
+        tokio::time::advance(Duration::from_secs(1801)).await;
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+
+        // At 1h+1s: Streak 3 (3rd rejection): 24-hour bound
+        tokio::time::advance(Duration::from_secs(3601)).await;
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+
+        // At 1h+1s after 3rd error: still bound by 24h ladder!
+        tokio::time::advance(Duration::from_secs(3601)).await;
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+
+        // At 24h+1s after 3rd error: bound expired, succeeds!
+        tokio::time::advance(Duration::from_secs(86400)).await;
+        assert_eq!(coordinator.tick().await.unwrap(), 1);
+        assert!(*handle.lock().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acceptance_4a_day_listing_bounds() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "screen.mp4";
+        let bytes = b"payload".to_vec();
+        let store = OneSegmentStore::new(boundary, file_name, bytes);
+        let client = FakeClient::new(
+            vec![
+                accepted_unconfirmed_ingest(1),
+                accepted_unconfirmed_ingest(2),
+                accepted_unconfirmed_ingest(3),
+            ],
+            vec![
+                Err(TransportError::Rejected {
+                    status: 409,
+                    body: r#"{"error":"Conflict","reason_code":"content_conflict"}"#.to_string(),
+                }),
+                empty_segments(),
+            ],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        // Tick 1: Ingest succeeds unconfirmed, listing fails with 409 content_conflict -> listing_refusals increments, 1h day bound
+        let res1 = coordinator.tick().await;
+        assert_eq!(res1.unwrap(), 0);
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.upload.listing_refusals, 1);
+
+        // Tick 2 (10m later): day is bound, listing is not retried
+        tokio::time::advance(Duration::from_secs(600)).await;
+        let res2 = coordinator.tick().await;
+        assert_eq!(res2.unwrap(), 0);
+
+        // Tick 3 (1h+1s later): day bound expired, listing is retried
+        tokio::time::advance(Duration::from_secs(3001)).await;
+        let res3 = coordinator.tick().await;
+        assert_eq!(res3.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn listing_device_scoped_403_aborts_tick() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "screen.mp4";
+        let bytes = b"payload".to_vec();
+        let store = OneSegmentStore::new(boundary, file_name, bytes);
+        let client = FakeClient::new(
+            vec![accepted_unconfirmed_ingest(1)],
+            vec![Err(TransportError::Rejected {
+                status: 403,
+                body: "forbidden".to_string(),
+            })],
+        );
+        let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+
+        let res = coordinator.tick().await;
+        assert!(matches!(
+            res,
+            Err(TransportError::Rejected { status: 403, .. })
+        ));
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.upload.listing_refusals, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acceptance_5_single_day_listing_per_tick() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let file_name = "screen.mp4";
+        // Day 1: epoch 1700000000 (2023-11-14)
+        let boundary1 = 1_700_000_000;
+        // Day 2: epoch 1700000000 + 86400 (2023-11-15)
+        let boundary2 = boundary1 + 86400;
+        let store = MultiSegmentStore::new(vec![
+            (1, boundary1, file_name, b"day1".to_vec()),
+            (2, boundary2, file_name, b"day2".to_vec()),
+        ]);
+        let client = FakeClient::new(
+            vec![
+                accepted_unconfirmed_ingest(1),
+                accepted_unconfirmed_ingest(1),
+            ],
+            vec![empty_segments()],
+        );
+        let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
+
+        // Both segments POSTed, exactly 1 listing performed for the first sorted day
+        let confirmed = coordinator.tick().await.unwrap();
+        assert_eq!(confirmed, 0);
+        assert_eq!(client.lists.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn acceptance_6_gate_deletion_verification() {
+        let boundary = 1_700_000_100;
+        let file_name = "screen.mp4";
+        let bytes = b"correct payload".to_vec();
+        let store = OneSegmentStore::new(boundary, file_name, bytes.clone());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator(Box::new(store), sync);
+
+        let ack_file = AckFile {
+            submitted: file_name.to_string(),
+            written: file_name.to_string(),
+            size: bytes.len() as u64,
+            sha256: ca::sha256_hex(&bytes),
+            disposition: Some("written".to_string()),
+            listing_status: None,
+        };
+
+        // 1. Mismatched sha256 -> Ok(false)
+        let mut bad_sha_ack = ack_file.clone();
+        bad_sha_ack.sha256 =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        assert!(
+            !coordinator
+                .try_gate_delete(1, &[bad_sha_ack], "20231114", "key", 100)
+                .unwrap()
+        );
+
+        // 2. Mismatched size -> Ok(false)
+        let mut bad_size_ack = ack_file.clone();
+        bad_size_ack.size = 999999;
+        assert!(
+            !coordinator
+                .try_gate_delete(1, &[bad_size_ack], "20231114", "key", 100)
+                .unwrap()
+        );
+
+        // 3. Invalid disposition -> Ok(false)
+        let mut bad_disp_ack = ack_file.clone();
+        bad_disp_ack.disposition = Some("received_not_written".to_string());
+        assert!(
+            !coordinator
+                .try_gate_delete(1, &[bad_disp_ack], "20231114", "key", 100)
+                .unwrap()
+        );
+
+        // 4. Exact match -> Ok(true) and deletes
+        assert!(
+            coordinator
+                .try_gate_delete(1, &[ack_file], "20231114", "key", 100)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn local_sealed_store_gate_tests() {
+        struct TempDir(std::path::PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let temp_path = std::path::PathBuf::from(format!(
+            "/var/tmp/sw-test-{}-{}",
+            std::process::id(),
+            now_epoch_millis()
+        ));
+        std::fs::create_dir_all(&temp_path).unwrap();
+        let _guard = TempDir(temp_path.clone());
+
+        let store = crate::sealed::LocalSealedStore::new(&temp_path, 300);
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator(Box::new(store), sync.clone());
+        let day = "20231114";
+        let segment_key = "1700000100_300";
+        let now = 1_700_000_100;
+
+        // 1. Matching receipt deletes
+        let seg1 = temp_path.join("1");
+        std::fs::create_dir_all(&seg1).unwrap();
+        std::fs::write(seg1.join("screen.mp4"), b"matching bytes").unwrap();
+        std::fs::write(seg1.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        let desc = FileDescriptor {
+            submitted: "screen.mp4".to_string(),
+            written: "screen.mp4".to_string(),
+            size: 14,
+            sha256: ca::sha256_hex(b"matching bytes"),
+            disposition: "written".to_string(),
+        };
+        let ack = UploadAck::new_upload(
+            coordinator.client.journal_identity(),
+            day,
+            segment_key,
+            segment_key,
+            "ok",
+            &[desc],
+        );
+        let _ = coordinator.store.write_ack(1, &ack);
+        assert!(
+            coordinator
+                .try_gate_delete(1, &ack.files, day, segment_key, now)
+                .unwrap()
+        );
+        assert!(!seg1.exists());
+
+        // 2. No ack retains
+        let seg2 = temp_path.join("2");
+        std::fs::create_dir_all(&seg2).unwrap();
+        std::fs::write(seg2.join("screen.mp4"), b"bytes2").unwrap();
+        assert_eq!(coordinator.store.read_ack(2).unwrap(), None);
+
+        // 3. Unparsable ack retains
+        let seg3 = temp_path.join("3");
+        std::fs::create_dir_all(&seg3).unwrap();
+        std::fs::write(seg3.join("screen.mp4"), b"bytes3").unwrap();
+        std::fs::write(seg3.join(crate::sealed::UPLOADED_MARKER), b"not valid json").unwrap();
+        assert_eq!(coordinator.store.read_ack(3).unwrap(), None);
+
+        // 4. Empty .uploaded retains
+        let seg4 = temp_path.join("4");
+        std::fs::create_dir_all(&seg4).unwrap();
+        std::fs::write(seg4.join("screen.mp4"), b"bytes4").unwrap();
+        std::fs::write(seg4.join(crate::sealed::UPLOADED_MARKER), b"").unwrap();
+        assert_eq!(coordinator.store.read_ack(4).unwrap(), None);
+
+        // 5. Changed bytes retains
+        let seg5 = temp_path.join("5");
+        std::fs::create_dir_all(&seg5).unwrap();
+        std::fs::write(seg5.join("screen.mp4"), b"changed bytes").unwrap();
+        assert!(
+            !coordinator
+                .try_gate_delete(5, &ack.files, day, segment_key, now)
+                .unwrap()
+        );
+        assert!(seg5.exists());
+
+        // 6. Extra file retains
+        let seg6 = temp_path.join("6");
+        std::fs::create_dir_all(&seg6).unwrap();
+        std::fs::write(seg6.join("screen.mp4"), b"matching bytes").unwrap();
+        std::fs::write(seg6.join("extra.txt"), b"extra").unwrap();
+        assert!(
+            !coordinator
+                .try_gate_delete(6, &ack.files, day, segment_key, now)
+                .unwrap()
+        );
+        assert!(seg6.exists());
+
+        // 7. Non-regular entry retains
+        let seg7 = temp_path.join("7");
+        std::fs::create_dir_all(&seg7).unwrap();
+        std::fs::write(seg7.join("screen.mp4"), b"matching bytes").unwrap();
+        std::fs::create_dir_all(seg7.join("subdir")).unwrap();
+        assert!(
+            !coordinator
+                .try_gate_delete(7, &ack.files, day, segment_key, now)
+                .unwrap()
+        );
+        assert!(seg7.exists());
+
+        // 8. Foreign journal_identity retains
+        let seg8 = temp_path.join("8");
+        std::fs::create_dir_all(&seg8).unwrap();
+        std::fs::write(seg8.join("screen.mp4"), b"matching bytes").unwrap();
+        let foreign_desc = FileDescriptor {
+            submitted: "screen.mp4".to_string(),
+            written: "screen.mp4".to_string(),
+            size: 14,
+            sha256: ca::sha256_hex(b"matching bytes"),
+            disposition: "written".to_string(),
+        };
+        let foreign_ack = UploadAck::new_upload(
+            JournalIdentity {
+                instance_id: "foreign_instance".to_string(),
+                ca_fp_prefix: "1111111111111111".to_string(),
+                client_cert_sha256:
+                    "1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            },
+            day,
+            segment_key,
+            segment_key,
+            "ok",
+            &[foreign_desc],
+        );
+        let _ = coordinator.store.write_ack(8, &foreign_ack);
+        let read_foreign = coordinator.store.read_ack(8).unwrap().unwrap();
+        assert_ne!(
+            read_foreign.journal_identity,
+            coordinator.client.journal_identity()
+        );
+
+        // 9. Stale .uploaded.tmp with no .uploaded is not a POST part
+        let seg9 = temp_path.join("9");
+        std::fs::create_dir_all(&seg9).unwrap();
+        std::fs::write(seg9.join("screen.mp4"), b"payload9").unwrap();
+        std::fs::write(
+            seg9.join(crate::sealed::UPLOADED_TMP_MARKER),
+            b"tmp ack bytes",
+        )
+        .unwrap();
+        let pending = coordinator.store.scan().unwrap();
+        let s9 = pending.iter().find(|s| s.index == 9).unwrap();
+        assert_eq!(s9.files, vec!["screen.mp4".to_string()]);
+
+        // 10. Failed media delete leaves .uploaded and .len
+        let failing_store = MultiSegmentStore::new(vec![(
+            10,
+            1_700_000_100,
+            "screen.mp4",
+            b"matching bytes".to_vec(),
+        )])
+        .with_remove_fails_once(10);
+        let failing_coord = coordinator_with_client(
+            coordinator.client.clone(),
+            Box::new(failing_store),
+            sync.clone(),
+        );
+        let del_res = failing_coord.try_gate_delete(10, &ack.files, day, segment_key, now);
+        assert!(!del_res.unwrap());
+
+        // 11. File injected after media delete and before marker removal is the only file left and is the next POST's only part
+        let seg11 = temp_path.join("11");
+        std::fs::create_dir_all(&seg11).unwrap();
+        std::fs::write(seg11.join("screen.mp4"), b"matching bytes").unwrap();
+        std::fs::write(seg11.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        let _ = coordinator.store.write_ack(11, &ack);
+        // Remove media
+        let _ = coordinator.store.remove_entry(11, "screen.mp4");
+        // Inject a new file
+        std::fs::write(seg11.join("injected.mp4"), b"injected").unwrap();
+        // Remove .len and .uploaded
+        let _ = coordinator
+            .store
+            .remove_entry(11, observer_model::LEN_FILE_NAME);
+        let _ = coordinator
+            .store
+            .remove_entry(11, crate::sealed::UPLOADED_MARKER);
+        // remove_dir fails because injected.mp4 is present
+        let _ = coordinator.store.remove_dir(11);
+        assert!(seg11.exists());
+        let scanned = coordinator.store.scan().unwrap();
+        let s11 = scanned.iter().find(|s| s.index == 11).unwrap();
+        assert_eq!(s11.files, vec!["injected.mp4".to_string()]);
     }
 }

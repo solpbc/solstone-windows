@@ -40,8 +40,8 @@ const BASELINE_CALLERS: &[BaselineCaller] = &[
     },
     BaselineCaller {
         relative: "src/coordinator.rs",
-        needle: "prove_custody(",
-        v3_surface: "self.client.ingest_manifest().await?",
+        needle: "self.client.ingest(",
+        v3_surface: "self.client.list_segments(",
     },
     BaselineCaller {
         relative: "src/service.rs",

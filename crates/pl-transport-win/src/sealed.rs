@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use observer_model::{AUDIO_FILE_NAME, LEN_FILE_NAME};
 
+use crate::ack::UploadAck;
+
 /// A sealed segment ready to upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedSegment {
@@ -29,11 +31,20 @@ pub struct SealedSegment {
     pub files: Vec<String>,
 }
 
+/// Metadata fact about a single directory entry inside a sealed segment directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntryFact {
+    pub name: String,
+    pub is_file: bool,
+    pub size_bytes: u64,
+}
+
 /// Marker file written into a sealed dir once its upload is confirmed and the
 /// owner's retention policy says to keep the local copy. Its presence means the
 /// segment is **done uploading** — [`SealedStore::scan`] skips it (never
 /// re-uploads) and it lives until the retention window prunes it.
 pub const UPLOADED_MARKER: &str = ".uploaded";
+pub const UPLOADED_TMP_MARKER: &str = ".uploaded.tmp";
 
 /// Source of sealed segments. Real impl scans `%LocalAppData%`; tests use a
 /// temp dir.
@@ -56,6 +67,17 @@ pub trait SealedStore: Send + Sync {
     /// retention prune pass. `files` is not populated — only index + boundary are
     /// needed to decide pruning.
     fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>>;
+
+    /// List all entries inside a sealed segment directory with file type and size.
+    fn list_entries(&self, index: u64) -> std::io::Result<Vec<DirEntryFact>>;
+    /// Remove an individual entry within a sealed segment directory.
+    fn remove_entry(&self, index: u64, name: &str) -> std::io::Result<()>;
+    /// Remove an empty segment directory.
+    fn remove_dir(&self, index: u64) -> std::io::Result<()>;
+    /// Read and parse an upload ack from `.uploaded` if present.
+    fn read_ack(&self, index: u64) -> std::io::Result<Option<UploadAck>>;
+    /// Atomically write an upload ack to `.uploaded.tmp` then rename to `.uploaded`.
+    fn write_ack(&self, index: u64, ack: &UploadAck) -> std::io::Result<()>;
 }
 
 /// The best-effort content type for an observer segment file. The journal stores
@@ -132,6 +154,10 @@ impl LocalSealedStore {
             let Some(index) = parse_sealed_index(&name) else {
                 continue;
             };
+            let tmp_path = entry.path().join(UPLOADED_TMP_MARKER);
+            if tmp_path.exists() {
+                let _ = std::fs::remove_file(tmp_path);
+            }
             let files = list_files(&entry.path())?;
             let is_confirmed = files.iter().any(|f| f == UPLOADED_MARKER);
             if is_confirmed != want_confirmed {
@@ -146,7 +172,9 @@ impl LocalSealedStore {
                 len_secs,
                 files: files
                     .into_iter()
-                    .filter(|f| f != UPLOADED_MARKER && f != LEN_FILE_NAME)
+                    .filter(|f| {
+                        f != UPLOADED_MARKER && f != LEN_FILE_NAME && f != UPLOADED_TMP_MARKER
+                    })
                     .collect(),
             });
         }
@@ -184,6 +212,62 @@ impl SealedStore for LocalSealedStore {
 
     fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>> {
         self.scan_filtered(true)
+    }
+
+    fn list_entries(&self, index: u64) -> std::io::Result<Vec<DirEntryFact>> {
+        let dir = self.segment_dir(index);
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let ft = entry.file_type()?;
+            let is_file = ft.is_file();
+            let size_bytes = if is_file { entry.metadata()?.len() } else { 0 };
+            if let Some(name) = entry.file_name().to_str() {
+                entries.push(DirEntryFact {
+                    name: name.to_string(),
+                    is_file,
+                    size_bytes,
+                });
+            }
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
+    }
+
+    fn remove_entry(&self, index: u64, name: &str) -> std::io::Result<()> {
+        std::fs::remove_file(self.segment_dir(index).join(name))
+    }
+
+    fn remove_dir(&self, index: u64) -> std::io::Result<()> {
+        std::fs::remove_dir(self.segment_dir(index))
+    }
+
+    fn read_ack(&self, index: u64) -> std::io::Result<Option<UploadAck>> {
+        let path = self.segment_dir(index).join(UPLOADED_MARKER);
+        match std::fs::read(path) {
+            Ok(bytes) => match UploadAck::from_bytes(&bytes) {
+                Ok(ack) => Ok(Some(ack)),
+                Err(_) => Ok(None),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn write_ack(&self, index: u64, ack: &UploadAck) -> std::io::Result<()> {
+        use std::io::Write;
+        let dir = self.segment_dir(index);
+        let tmp = dir.join(UPLOADED_TMP_MARKER);
+        let target = dir.join(UPLOADED_MARKER);
+        let bytes = ack
+            .to_bytes()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(tmp, target)?;
+        Ok(())
     }
 }
 
@@ -405,6 +489,91 @@ mod tests {
         // A confirmed segment can still be removed (the prune path).
         store.remove(3).unwrap();
         assert!(store.confirmed().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_entries_remove_entry_and_remove_dir() {
+        let root = temp_root();
+        let seg = root.join("5");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join("screen.mp4"), b"12345").unwrap();
+        std::fs::write(seg.join("audio.flac"), b"123").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        let entries = store.list_entries(5).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0],
+            DirEntryFact {
+                name: "audio.flac".to_string(),
+                is_file: true,
+                size_bytes: 3,
+            }
+        );
+        assert_eq!(
+            entries[1],
+            DirEntryFact {
+                name: "screen.mp4".to_string(),
+                is_file: true,
+                size_bytes: 5,
+            }
+        );
+
+        store.remove_entry(5, "audio.flac").unwrap();
+        let entries_after = store.list_entries(5).unwrap();
+        assert_eq!(entries_after.len(), 1);
+        assert_eq!(entries_after[0].name, "screen.mp4");
+
+        store.remove_entry(5, "screen.mp4").unwrap();
+        store.remove_dir(5).unwrap();
+        assert!(!seg.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_and_read_ack_and_tmp_cleaning_on_scan() {
+        use crate::ack::{JournalIdentity, UploadAck};
+        use observer_pl::ingest::FileDescriptor;
+
+        let root = temp_root();
+        let seg = root.join("6");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join("screen.mp4"), b"12345").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        assert_eq!(store.read_ack(6).unwrap(), None);
+
+        let ack = UploadAck::new_upload(
+            JournalIdentity {
+                instance_id: "inst-1".into(),
+                ca_fp_prefix: "1234".into(),
+                client_cert_sha256: "abcd".into(),
+            },
+            "20260324",
+            "120000_300",
+            "120000_300",
+            "ok",
+            &[FileDescriptor {
+                submitted: "screen.mp4".into(),
+                written: "screen.mp4".into(),
+                size: 5,
+                sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+                disposition: "written".into(),
+            }],
+        );
+
+        store.write_ack(6, &ack).unwrap();
+        let read_back = store.read_ack(6).unwrap();
+        assert_eq!(read_back, Some(ack));
+
+        // Stray .uploaded.tmp is unlinked on scan
+        std::fs::write(seg.join(".uploaded.tmp"), b"stray").unwrap();
+        assert!(seg.join(".uploaded.tmp").exists());
+        let _ = store.scan().unwrap();
+        assert!(!seg.join(".uploaded.tmp").exists());
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

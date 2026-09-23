@@ -73,10 +73,7 @@ fn run(argv: &[&str], root: &Path) -> (serde_json::Value, u8) {
     (value, outcome.exit_code)
 }
 
-fn start_direct_upload_journal(
-    confirmed: bool,
-    payload: &[u8],
-) -> (Credential, std::thread::JoinHandle<()>) {
+fn start_direct_upload_journal(payload: &[u8]) -> (Credential, std::thread::JoinHandle<()>) {
     let (cert, key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
@@ -92,7 +89,27 @@ fn start_direct_upload_journal(
             .unwrap();
         runtime.block_on(async move {
             let listener = TcpListener::from_std(listener).unwrap();
-            serve_direct_upload_journal(listener, acceptor, confirmed, size, &sha256).await;
+            serve_direct_upload_journal(listener, acceptor, size, &sha256).await;
+        });
+    });
+    (direct_credential(pin, port), server)
+}
+
+fn start_direct_unconfirmed_upload_journal() -> (Credential, std::thread::JoinHandle<()>) {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = TcpListener::from_std(listener).unwrap();
+            serve_direct_unconfirmed_upload_journal(listener, acceptor).await;
         });
     });
     (direct_credential(pin, port), server)
@@ -101,42 +118,42 @@ fn start_direct_upload_journal(
 async fn serve_direct_upload_journal(
     listener: TcpListener,
     acceptor: TlsAcceptor,
-    confirmed: bool,
     size: u64,
     sha256: &str,
 ) {
-    let day = "20260617";
     let segment = "143000_300";
-    let file =
-        format!(r#"{{"name":"payload.bin","size":{size},"sha256":"{sha256}","status":"present"}}"#);
-    let day_manifest = if confirmed {
-        format!(r#"{{"version":1,"day":"{day}","segments":{{"{segment}":{{"files":[{file}]}}}}}}"#)
-    } else {
-        format!(r#"{{"version":1,"day":"{day}","segments":{{}}}}"#)
-    };
-    let segments = if confirmed {
-        format!(
-            r#"{{"items":[{{"key":"{segment}","observed":true,"files":[{file}]}}],"total":1,"protocol_version":3}}"#
-        )
-    } else {
-        r#"{"items":[],"total":0,"protocol_version":3}"#.to_string()
-    };
+    let body = format!(
+        r#"{{"status":"ok","segment":"{segment}","file_descriptors":[{{"submitted":"payload.bin","written":"payload.bin","size":{size},"sha256":"{sha256}","disposition":"written"}}]}}"#
+    );
+
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut tls = acceptor.accept(tcp).await.unwrap();
+    let (stream_id, request) = read_framed_request(&mut tls).await;
+    assert!(
+        request.starts_with(b"POST /app/devices/ingest HTTP/1.1\r\n"),
+        "expected route POST /app/devices/ingest, got {:?}",
+        String::from_utf8_lossy(&request)
+    );
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
+    tls.write_all(&frame.encode().unwrap()).await.unwrap();
+    tls.flush().await.unwrap();
+    let _ = tls.shutdown().await;
+}
+
+async fn serve_direct_unconfirmed_upload_journal(listener: TcpListener, acceptor: TlsAcceptor) {
+    let segment = "143000_300";
+    let post_body = format!(r#"{{"status":"ok","segment":"{segment}"}}"#);
+    let list_body = r#"{"items":[],"total":0,"protocol_version":3}"#;
+
     let responses = [
-        (
-            "POST /app/devices/ingest HTTP/1.1\r\n",
-            format!(r#"{{"status":"ok","segment":"{segment}"}}"#),
-        ),
-        (
-            "GET /app/devices/ingest/manifest HTTP/1.1\r\n",
-            format!(r#"{{"days":{{"{day}":{{"segments":1}}}}}}"#),
-        ),
-        (
-            "GET /app/devices/ingest/manifest/20260617 HTTP/1.1\r\n",
-            day_manifest,
-        ),
+        ("POST /app/devices/ingest HTTP/1.1\r\n", post_body),
         (
             "GET /app/devices/ingest/segments/20260617 HTTP/1.1\r\n",
-            segments,
+            list_body.to_string(),
         ),
     ];
 
@@ -468,7 +485,7 @@ fn an_upload_carrier_mismatch_is_a_nonzero_terminal_outcome() {
     let payload = b"carrier-mismatch-payload";
     let payload_path = root.join("payload.bin");
     std::fs::write(&payload_path, payload).unwrap();
-    let (credential, server) = start_direct_upload_journal(true, payload);
+    let (credential, server) = start_direct_upload_journal(payload);
     save_direct_pairing(&root, credential);
 
     let argv = vec![
@@ -498,10 +515,46 @@ fn an_upload_carrier_mismatch_is_a_nonzero_terminal_outcome() {
     assert_eq!(value["evidence"]["confirmed"], true);
     assert_eq!(value["evidence"]["server_submitted_name"], "payload.bin");
     assert_eq!(value["evidence"]["server_size"], payload.len() as u64);
-    assert_eq!(
-        value["evidence"]["server_custody_status"], "present",
-        "custody succeeded before the carrier assertion"
-    );
+    assert_eq!(value["evidence"]["server_disposition"], "written");
+    assert!(value["evidence"]["server_custody_status"].is_null());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// Previous-model disclaimer: Retained under the 12.2.0 receipt model; tests unconfirmed upload outcome.
+#[test]
+fn upload_without_a_custody_witness_has_no_pass_shaped_terminal_outcome() {
+    let root = temp_root("unconfirmed-upload");
+    let payload = b"unconfirmed-upload-payload";
+    let payload_path = root.join("payload.bin");
+    std::fs::write(&payload_path, payload).unwrap();
+    let (credential, server) = start_direct_unconfirmed_upload_journal();
+    save_direct_pairing(&root, credential);
+
+    let argv = vec![
+        "--integration".to_string(),
+        "upload".to_string(),
+        "--deadline-secs".to_string(),
+        "5".to_string(),
+        "--payload".to_string(),
+        payload_path.display().to_string(),
+        "--day".to_string(),
+        "20260617".to_string(),
+        "--segment".to_string(),
+        "143000_300".to_string(),
+        "--carrier".to_string(),
+        "direct".to_string(),
+    ];
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let outcome = outcome_for(&borrowed, &root);
+    let value = outcome_value(&outcome);
+    server.join().unwrap();
+
+    assert_ne!(outcome.exit_code, EXIT_PASS);
+    assert_eq!(value["verdict"], "FAIL");
+    assert_eq!(value["reason"], "custody_not_proven");
+    assert_eq!(value["evidence"]["confirmed"], false);
+    assert!(value["evidence"]["server_disposition"].is_null());
+    assert!(value["evidence"]["server_custody_status"].is_null());
     let _ = std::fs::remove_dir_all(&root);
 }
 

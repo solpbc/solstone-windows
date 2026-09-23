@@ -18,14 +18,14 @@ pub use crate::artifact_fs::{validate_relative_path, UnsafePathReason};
 pub const ADOPTION_SCHEMA_VERSION: u64 = 1;
 pub const CONSUMER_IDENTIFIER: &str = "solstone-windows";
 pub const AUTHORITY_REPOSITORY: &str = "https://github.com/solpbc/solstone-journal";
-pub const AUTHORITY_COMMIT: &str = "5879fa6115129422cbbcb61be051dd8ca9874336";
-pub const BUNDLE_SEMVER: &str = "12.0.0";
-pub const ARCHIVE_SHA256: &str = "28a79ded638dbd30dab44f5f403983ff9e117fa60eeef93cc0398215d7f767a0";
-pub const ARCHIVE_SIZE_BYTES: u64 = 5_623;
+pub const AUTHORITY_COMMIT: &str = "b78ba9eaac8228e65c4b5a3e64d27aefd3ad47cd";
+pub const BUNDLE_SEMVER: &str = "12.2.0";
+pub const ARCHIVE_SHA256: &str = "8939e7fd742ccbbfbfd8974ea405719a3a7c18aba7c5ea0fe7132fd4fa9eecb4";
+pub const ARCHIVE_SIZE_BYTES: u64 = 6_272;
 /// All authority paths are relative to the explicit bundle directory.
 pub const AUTHORITY_MANIFEST_PATH: &str = "manifest.json";
 pub const AUTHORITY_MANIFEST_SHA256: &str =
-    "ad1883d9e6700205cf5d4e4a45c6a3198272e3379ab4936e25f155e32c339776";
+    "6a38b9be1b4e0b9d93edff7120399a5ace0f6aa8edfecaa349e4c98d8100dbe3";
 pub const GENERATOR_IDENTITY: &str =
     "solstone.repository_contracts.client_ingest_contract_bundle.v1";
 pub const BUNDLE_SCHEMA_IDENTITY: &str = "solstone.client-ingest-contract-bundle.schema.v1";
@@ -54,7 +54,7 @@ pub const BUNDLE_FILES: &[FilePin] = &[
     },
     FilePin {
         path: "projection.openapi.json",
-        sha256: "1735105d931b6f6ac427969b842836ebc7c37ef70f7bc5a08a39025152c3249f",
+        sha256: "2fc55fce7f9f7cb5b5dd2da13299acd371231caad9e4d877c6846ca6269c7198",
     },
     FilePin {
         path: "vectors.json",
@@ -62,7 +62,13 @@ pub const BUNDLE_FILES: &[FilePin] = &[
     },
 ];
 
-pub const COMPONENT_CLOSURE: &[&str] = &["Error", "SegmentFile", "SegmentItem", "SegmentsEnvelope"];
+pub const COMPONENT_CLOSURE: &[&str] = &[
+    "Error",
+    "FileDescriptor",
+    "SegmentFile",
+    "SegmentItem",
+    "SegmentsEnvelope",
+];
 pub const CONSUMER_IDENTIFIERS: &[&str] =
     &["solstone-browser", "solstone-linux", "solstone-windows"];
 /// This order is pinned to the authority manifest, which is intentionally not lexical.
@@ -748,7 +754,7 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
                 "id": "openapi.client_ingest_authority",
                 "path": "core/crates/solstone-core-repository-contracts/src/contracts/client_ingest_authority.json",
                 "role": "openapi_source",
-                "sha256": "03595fba0190afb39f15c9f61d3353952e71512f01218c942741135bdb4cf3e0",
+                "sha256": "cc75cc6caa1db1d3b3c36db903f25b188158e0c162745fedb01f1ed3c09c0a1e",
             }]),
         ),
         (
@@ -861,6 +867,27 @@ pub fn verify_projection(path: &Path, mappings: &[OperationMapping]) -> Result<(
     if actual_mappings != expected_mappings {
         return Err(VerifyError::ProjectionMismatch {
             message: "operation method/path set differs from the authority pin".to_owned(),
+        });
+    }
+    let x_vocabularies = projection
+        .get("x-vocabularies")
+        .and_then(Value::as_object)
+        .ok_or_else(|| VerifyError::ProjectionMismatch {
+            message: "x-vocabularies must be an object".to_owned(),
+        })?;
+    let expected_file_descriptor_disposition = serde_json::json!({
+        "classification": "closed",
+        "id": "FileDescriptor.disposition",
+        "source_pointer": "/components/schemas/FileDescriptor/properties/disposition",
+        "unknown_value_behavior": "reject",
+        "values": ["written", "already_held", "received_not_written"],
+    });
+    if x_vocabularies.get("FileDescriptor.disposition")
+        != Some(&expected_file_descriptor_disposition)
+    {
+        return Err(VerifyError::ProjectionMismatch {
+            message: "projection x-vocabularies[\"FileDescriptor.disposition\"] differs from the authority pin"
+                .to_owned(),
         });
     }
     Ok(())

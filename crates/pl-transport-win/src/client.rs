@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::ack::JournalIdentity;
 use crate::credential::{pairing_generation, CasKey, Credential, WindowsTokenTransaction};
 use crate::ordinary_request::OrdinaryRequest;
 use crate::pairing::{map_request_error, map_shared_error, windows_to_shared_credential};
@@ -541,6 +542,10 @@ impl ClientSlot {
     pub fn refusal_stop(&self) -> Option<HandshakeStop> {
         self.load().refusal_stop()
     }
+
+    pub fn journal_identity(&self) -> JournalIdentity {
+        self.load().journal_identity()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -735,6 +740,10 @@ impl ObserverClient {
 
     pub fn home_label(&self) -> &str {
         &self.credential.home_label
+    }
+
+    pub fn journal_identity(&self) -> JournalIdentity {
+        JournalIdentity::from_credential(&self.credential)
     }
 
     /// Upload one segment's files with the protocol-v3 envelope. `segment` is
@@ -939,7 +948,16 @@ impl ObserverClient {
             });
         }
         let status = response.status;
-        let parsed: IngestResponse = serde_json::from_slice(&response.body)?;
+        let body_text = response.body_text();
+        let parsed: IngestResponse = match serde_json::from_slice(&response.body) {
+            Ok(p) => p,
+            Err(_) => {
+                return Err(TransportError::Rejected {
+                    status,
+                    body: body_text,
+                });
+            }
+        };
         let expected_status = match parsed.status {
             IngestStatus::Ok | IngestStatus::Duplicate | IngestStatus::Collision => 200,
             IngestStatus::Conflict => 409,

@@ -8,7 +8,7 @@ this repository's generated AutomationId and state-token contract described in
 `docs/automation-contract.md`.
 
 The adopted authority revision is
-`5879fa6115129422cbbcb61be051dd8ca9874336`, bundle version `12.0.0`. Its
+`b78ba9eaac8228e65c4b5a3e64d27aefd3ad47cd`, bundle version `12.2.0`. Its
 generator identity is
 `solstone.repository_contracts.client_ingest_contract_bundle.v1`; its bundle
 schema identity is `solstone.client-ingest-contract-bundle.schema.v1`.
@@ -84,7 +84,7 @@ vendored export or the client.
 11. Run `make check-observer-contract`, focused crate tests, the host checks,
     and the separately required native Windows evidence.
 
-The 12.0.0 bundle contains four declared payload files, four projected operations,
+The 12.2.0 bundle contains four declared payload files, four projected operations,
 and five fixtures and five vectors (the `ok`, `duplicate`, `collision`,
 `conflict`, and `failed` ingest statuses).
 
@@ -107,8 +107,8 @@ the digests then preserve the identity of those bytes.
 
 ## Upstream follow-ups
 
-The adopted 12.0.0 authority bundle at
-`5879fa6115129422cbbcb61be051dd8ca9874336` audits `solstone-windows` at
+The adopted 12.2.0 authority bundle at
+`b78ba9eaac8228e65c4b5a3e64d27aefd3ad47cd` audits `solstone-windows` at
 `f276076e3554c75d75cbd3616644f46d831c0d90` and no longer lists this consumer
 as `legacy_v2_unmigrated` or a rollout blocker; `solstone-linux` remains the
 rollout target. Pairing and root SSE stay out of projection scope; local

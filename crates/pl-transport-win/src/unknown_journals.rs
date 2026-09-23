@@ -221,7 +221,7 @@ mod tests {
         let cred = test_credential(expected_jid, port, vec![0xAA; 16]);
 
         let client = ObserverClient::new(cred).unwrap();
-        let _ = client.ingest_manifest().await;
+        let _ = client.list_segments("20000101").await;
 
         let mut snapshot = SyncSnapshot::default();
         snapshot.pairing.phase = PairingPhase::Paired;

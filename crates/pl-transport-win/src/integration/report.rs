@@ -349,6 +349,8 @@ pub struct Evidence {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_disposition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub server_custody_status: Option<SegmentFileStatus>,
 }
 

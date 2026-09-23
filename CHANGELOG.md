@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- the solstone app now removes a recording from this PC only after checking your journal's reply against this PC's copy of every file, including recordings kept here for a while. before, a recording kept for a while was removed without that check, so a file added to it after it was sent could be removed without reaching your journal.
+
 ## [2.0.9] - 2026-09-23
 
 ### Changed

@@ -43,4 +43,12 @@ fi
 sed -i '$d' "$TEST_ROOT/crates/pl-transport-win/src/journal_bridge.rs"
 sh "$POLICY" --root "$TEST_ROOT" >/dev/null
 
+printf '%s\n' 'let _ = client.ingest_manifest();' >> "$TEST_ROOT/crates/pl-transport-win/src/coordinator.rs"
+if sh "$POLICY" --root "$TEST_ROOT" >/dev/null 2>&1; then
+  echo "expected policy failure for ingest_manifest in coordinator" >&2
+  exit 1
+fi
+sed -i '$d' "$TEST_ROOT/crates/pl-transport-win/src/coordinator.rs"
+sh "$POLICY" --root "$TEST_ROOT" >/dev/null
+
 echo "spl-ordinary-request-authority-policy tests passed"
