@@ -557,6 +557,20 @@ impl UploadCoordinator {
         self.register_segment_bound(day, segment_key, "received_not_written", now, 86400);
     }
 
+    /// A segment held after a failed delete is not gated again until its hold ends.
+    fn segment_held(&self, day: &str, segment_key: &str, now: u64) -> bool {
+        let key = (
+            self.client.journal_identity(),
+            day.to_owned(),
+            segment_key.to_owned(),
+        );
+        self.segment_bounds
+            .lock()
+            .unwrap()
+            .get(&key)
+            .is_some_and(|bound| bound.until_epoch > now)
+    }
+
     fn try_gate_delete(
         &self,
         index: u64,
@@ -1004,13 +1018,15 @@ impl UploadCoordinator {
                 }
                 Ok((response, metadata)) => {
                     let duration_ms = elapsed_ms(started);
-                    let reason_code = response.reason_code.as_deref().unwrap_or(
-                        match response.status {
-                            IngestStatus::Conflict => "conflict",
-                            IngestStatus::Failed => "failed",
-                            _ => "rejected",
-                        },
-                    );
+                    let reason_code =
+                        response
+                            .reason_code
+                            .as_deref()
+                            .unwrap_or(match response.status {
+                                IngestStatus::Conflict => "conflict",
+                                IngestStatus::Failed => "failed",
+                                _ => "rejected",
+                            });
 
                     if reason_code == "segment_removed" {
                         self.on_segment_removed();
@@ -1101,50 +1117,17 @@ impl UploadCoordinator {
             }
         }
 
-        // In don't-keep mode, retry deletion for any previously confirmed segments that failed removal
-        if self.retention().delete_on_confirm() {
-            if let Ok(confirmed) = self.store.confirmed() {
-                for seg in confirmed {
-                    if let Ok(Some(ack)) = self.store.read_ack(seg.index) {
-                        let bound_key = (
-                            self.client.journal_identity(),
-                            ack.day.clone(),
-                            ack.local_segment.clone(),
-                        );
-                        if let Some(bound) = self.segment_bounds.lock().unwrap().get(&bound_key) {
-                            if bound.until_epoch > now {
-                                continue;
-                            }
-                        }
-                        if self
-                            .try_gate_delete(
-                                seg.index,
-                                &ack.files,
-                                &ack.day,
-                                &ack.local_segment,
-                                now,
-                            )
-                            .is_err()
-                        {
-                            self.register_segment_bound(
-                                &ack.day,
-                                &ack.local_segment,
-                                "media_delete_failed",
-                                now,
-                                3600,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
         // Listing pass: after pending segment POSTs
         let mut candidate_days: Vec<String> = unknown_by_day.keys().cloned().collect();
-        if !self.retention().delete_on_confirm() {
+        // A confirmed directory still on disk is deleted only after the journal's
+        // listing proves it: under don't-keep that is one whose delete-on-confirm
+        // did not finish, under keep-N one past its window.
+        {
             if let Ok(confirmed) = self.store.confirmed() {
                 for seg in confirmed {
-                    if self.retention().should_prune(seg.boundary_epoch_secs, now) {
+                    if self.retention().delete_on_confirm()
+                        || self.retention().should_prune(seg.boundary_epoch_secs, now)
+                    {
                         if let Ok(Some(ack)) = self.store.read_ack(seg.index) {
                             if !candidate_days.contains(&ack.day) {
                                 candidate_days.push(ack.day);
@@ -1261,10 +1244,11 @@ impl UploadCoordinator {
                                     if !proven {
                                         self.on_listing_unproven();
                                         has_unproven = true;
-                                    } else if self.retention().delete_on_confirm()
+                                    } else if (self.retention().delete_on_confirm()
                                         || self
                                             .retention()
-                                            .should_prune(seg.boundary_epoch_secs, now)
+                                            .should_prune(seg.boundary_epoch_secs, now))
+                                        && !self.segment_held(&ack.day, &ack.local_segment, now)
                                     {
                                         let _ = self.try_gate_delete(
                                             seg.index,
@@ -1303,7 +1287,10 @@ impl UploadCoordinator {
                                                 })
                                             })
                                     });
-                                    if proven && self.retention().delete_on_confirm() {
+                                    if proven
+                                        && self.retention().delete_on_confirm()
+                                        && !self.segment_held(&ack.day, &ack.local_segment, now)
+                                    {
                                         let _ = self.try_gate_delete(
                                             seg.index,
                                             &ack.files,
@@ -2719,7 +2706,7 @@ mod tests {
         assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 1);
     }
 
-    // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses receipt-driven confirmation and simulates time advance across ticks.
+    // Name kept for the discovery baseline: the next tick now re-confirms through a proving listing read, not the stored receipt.
     #[tokio::test(start_paused = true)]
     async fn cleanup_remove_failure_is_nonfatal_and_reconfirms_next_tick() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
@@ -2740,21 +2727,23 @@ mod tests {
             vec![
                 accepted_ingest(&key1, file_name, &bytes1, 1),
                 accepted_ingest(&key2, file_name, &bytes2, 1),
-                scripted_ingest(
-                    "duplicate",
-                    None,
-                    Some(&key1),
-                    vec![FileDescriptor {
-                        submitted: file_name.to_string(),
-                        written: file_name.to_string(),
-                        size: bytes1.len() as u64,
-                        sha256: ca::sha256_hex(&bytes1),
-                        disposition: "already_held".to_string(),
-                    }],
-                    2,
+            ],
+            // One listing per tick: the first finds segment 1 held after its failed
+            // delete, the second (after the hold) proves and deletes it.
+            vec![
+                confirmed_segments(
+                    key1.clone(),
+                    file_name,
+                    ca::sha256_hex(&bytes1),
+                    bytes1.len() as u64,
+                ),
+                confirmed_segments(
+                    key1.clone(),
+                    file_name,
+                    ca::sha256_hex(&bytes1),
+                    bytes1.len() as u64,
                 ),
             ],
-            vec![],
         );
         let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
 
@@ -2768,6 +2757,11 @@ mod tests {
         assert_eq!(second, 0);
         assert!(handle.removed(1));
         assert!(handle.pending_indices().is_empty());
+        // The retry is proven by one journal listing, never by the stored receipt
+        // alone, and the segment is not sent again.
+        // Any further POST would find no scripted answer and panic.
+        assert!(client.lists.lock().unwrap().is_empty());
+        assert!(client.ingests.lock().unwrap().is_empty());
     }
 
     // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses retention and simulated time advance.
@@ -3583,36 +3577,28 @@ mod tests {
         let mut bad_sha_ack = ack_file.clone();
         bad_sha_ack.sha256 =
             "0000000000000000000000000000000000000000000000000000000000000000".to_string();
-        assert!(
-            !coordinator
-                .try_gate_delete(1, &[bad_sha_ack], "20231114", "key", 100)
-                .unwrap()
-        );
+        assert!(!coordinator
+            .try_gate_delete(1, &[bad_sha_ack], "20231114", "key", 100)
+            .unwrap());
 
         // 2. Mismatched size -> Ok(false)
         let mut bad_size_ack = ack_file.clone();
         bad_size_ack.size = 999999;
-        assert!(
-            !coordinator
-                .try_gate_delete(1, &[bad_size_ack], "20231114", "key", 100)
-                .unwrap()
-        );
+        assert!(!coordinator
+            .try_gate_delete(1, &[bad_size_ack], "20231114", "key", 100)
+            .unwrap());
 
         // 3. Invalid disposition -> Ok(false)
         let mut bad_disp_ack = ack_file.clone();
         bad_disp_ack.disposition = Some("received_not_written".to_string());
-        assert!(
-            !coordinator
-                .try_gate_delete(1, &[bad_disp_ack], "20231114", "key", 100)
-                .unwrap()
-        );
+        assert!(!coordinator
+            .try_gate_delete(1, &[bad_disp_ack], "20231114", "key", 100)
+            .unwrap());
 
         // 4. Exact match -> Ok(true) and deletes
-        assert!(
-            coordinator
-                .try_gate_delete(1, &[ack_file], "20231114", "key", 100)
-                .unwrap()
-        );
+        assert!(coordinator
+            .try_gate_delete(1, &[ack_file], "20231114", "key", 100)
+            .unwrap());
     }
 
     #[test]
@@ -3659,11 +3645,9 @@ mod tests {
             &[desc],
         );
         let _ = coordinator.store.write_ack(1, &ack);
-        assert!(
-            coordinator
-                .try_gate_delete(1, &ack.files, day, segment_key, now)
-                .unwrap()
-        );
+        assert!(coordinator
+            .try_gate_delete(1, &ack.files, day, segment_key, now)
+            .unwrap());
         assert!(!seg1.exists());
 
         // 2. No ack retains
@@ -3690,11 +3674,9 @@ mod tests {
         let seg5 = temp_path.join("5");
         std::fs::create_dir_all(&seg5).unwrap();
         std::fs::write(seg5.join("screen.mp4"), b"changed bytes").unwrap();
-        assert!(
-            !coordinator
-                .try_gate_delete(5, &ack.files, day, segment_key, now)
-                .unwrap()
-        );
+        assert!(!coordinator
+            .try_gate_delete(5, &ack.files, day, segment_key, now)
+            .unwrap());
         assert!(seg5.exists());
 
         // 6. Extra file retains
@@ -3702,11 +3684,9 @@ mod tests {
         std::fs::create_dir_all(&seg6).unwrap();
         std::fs::write(seg6.join("screen.mp4"), b"matching bytes").unwrap();
         std::fs::write(seg6.join("extra.txt"), b"extra").unwrap();
-        assert!(
-            !coordinator
-                .try_gate_delete(6, &ack.files, day, segment_key, now)
-                .unwrap()
-        );
+        assert!(!coordinator
+            .try_gate_delete(6, &ack.files, day, segment_key, now)
+            .unwrap());
         assert!(seg6.exists());
 
         // 7. Non-regular entry retains
@@ -3714,11 +3694,9 @@ mod tests {
         std::fs::create_dir_all(&seg7).unwrap();
         std::fs::write(seg7.join("screen.mp4"), b"matching bytes").unwrap();
         std::fs::create_dir_all(seg7.join("subdir")).unwrap();
-        assert!(
-            !coordinator
-                .try_gate_delete(7, &ack.files, day, segment_key, now)
-                .unwrap()
-        );
+        assert!(!coordinator
+            .try_gate_delete(7, &ack.files, day, segment_key, now)
+            .unwrap());
         assert!(seg7.exists());
 
         // 8. Foreign journal_identity retains
