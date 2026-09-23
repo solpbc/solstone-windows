@@ -58,8 +58,8 @@ claxon = "0.4"
 # Composition / shell deps.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 anyhow = "1"
-spl-core = { git = "https://github.com/solpbc/spl-rust", rev = "0071355cb1ba91c6838c4c844bb20dc99aa9ce13" }
-spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "0071355cb1ba91c6838c4c844bb20dc99aa9ce13" }
+spl-core = { git = "https://github.com/solpbc/spl-rust", rev = "72f6c1590a698194e689c230300d72c1b84ed9d4" }
+spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "72f6c1590a698194e689c230300d72c1b84ed9d4" }
 
 # Wave-2 transport deps (framed-mTLS observer client). rustls with the ring
 # provider (no cmake/NASM toolchain needed; builds on the Linux dev host and the

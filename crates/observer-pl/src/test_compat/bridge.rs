@@ -17,23 +17,6 @@ mod tests {
         }
     }
 
-    fn request_policy() -> RequestHeaderPolicy {
-        RequestHeaderPolicy::Allow(
-            [
-                "accept",
-                "accept-language",
-                "content-type",
-                "cache-control",
-                "if-none-match",
-                "if-modified-since",
-                "range",
-                "user-agent",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-        )
-    }
     fn request(
         method: &str,
         target: &str,
@@ -125,70 +108,29 @@ mod tests {
     }
 
     #[test]
-    fn authorize_accepts_current_device_delete_only_on_exact_paths() {
-        for path in [
-            "/app/network/api/clients/self",
-            "/app/link/api/clients/self",
-        ] {
-            let head = request(
-                "DELETE",
-                path,
-                Some("127.0.0.1:49152"),
-                &[("Cookie", "__solstone_journal_cap=secret")],
-            );
-            assert_eq!(authorize(&head, b"secret", 49152, &names()), Ok(()));
-        }
-
-        for path in [
-            "/app/network/api/clients/self/",
-            "/app/network/api/clients/sha256:other",
-            "/app/link/api/clients/selfish",
-        ] {
-            let head = request(
-                "DELETE",
-                path,
-                Some("127.0.0.1:49152"),
-                &[("Cookie", "__solstone_journal_cap=secret")],
-            );
-            assert_eq!(
-                authorize(&head, b"secret", 49152, &names()),
-                Err(RejectReason::BadMethod),
-                "{path}"
-            );
-        }
-    }
-
-    #[test]
-    fn authorize_rejects_unsupported_methods() {
-        for method in ["OPTIONS", "PUT", "DELETE"] {
-            let head = authed_request(method, Some("127.0.0.1:49152"), "secret");
-            assert_eq!(
-                authorize(&head, b"secret", 49152, &names()),
-                Err(RejectReason::BadMethod)
-            );
-        }
-    }
-
-    #[test]
-    fn authorize_rejects_caller_auth_headers() {
-        for header in [
-            "Authorization",
-            "X-Solstone-Observer",
-            "X-Solstone-Protocol-Version",
-        ] {
-            let head = request(
-                "GET",
+    fn authorize_admits_any_method_path_and_header_once_the_capability_matches() {
+        for method in ["GET", "PUT", "DELETE", "PATCH", "OPTIONS"] {
+            for path in [
                 "/",
-                Some("127.0.0.1:49152"),
-                &[
-                    ("Cookie", "__solstone_journal_cap=secret"),
-                    (header, "caller-owned"),
-                ],
-            );
-            assert_eq!(
-                authorize(&head, b"secret", 49152, &names()),
-                Err(RejectReason::CallerAuth)
-            );
+                "/app/network/api/clients/self",
+                "/app/network/api/clients/sha256:other",
+            ] {
+                let head = request(
+                    method,
+                    path,
+                    Some("127.0.0.1:49152"),
+                    &[
+                        ("Cookie", "__solstone_journal_cap=secret"),
+                        ("Authorization", "caller-owned"),
+                        ("X-Solstone-Observer", "caller-owned"),
+                    ],
+                );
+                assert_eq!(
+                    authorize(&head, b"secret", 49152, &names()),
+                    Ok(()),
+                    "{method} {path}"
+                );
+            }
         }
     }
 
@@ -200,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn upstream_request_headers_keep_only_allowlist() {
+    fn upstream_request_headers_forward_every_unreserved_header() {
         let head = request(
             "POST",
             "/",
@@ -226,7 +168,7 @@ mod tests {
             ],
         );
 
-        let headers = upstream_request_headers(&head, &names(), &request_policy());
+        let headers = upstream_request_headers(&head, &names());
 
         assert!(headers.contains(&("accept".to_string(), "text/html".to_string())));
         assert!(headers.contains(&("accept-language".to_string(), "en-US".to_string())));
@@ -240,9 +182,11 @@ mod tests {
         assert!(headers.contains(&("range".to_string(), "bytes=0-10".to_string())));
         assert!(headers.contains(&("user-agent".to_string(), "WebView2".to_string())));
         assert!(headers.contains(&("cookie".to_string(), "sid=journal".to_string())));
+        assert!(headers.contains(&("origin".to_string(), "http://127.0.0.1:49152".to_string())));
+        assert!(headers.contains(&("referer".to_string(), "http://127.0.0.1:49152/".to_string())));
         assert!(!headers.iter().any(|(name, _)| matches!(
             name.as_str(),
-            "host" | "origin" | "referer" | "content-length" | "connection" | "authorization"
+            "host" | "content-length" | "connection" | "authorization"
         )));
         assert!(!headers
             .iter()
@@ -260,7 +204,7 @@ mod tests {
             &[("Cookie", "__solstone_journal_cap=secret")],
         );
 
-        let headers = upstream_request_headers(&head, &names(), &request_policy());
+        let headers = upstream_request_headers(&head, &names());
 
         assert!(!headers.iter().any(|(name, _)| name == "cookie"));
     }

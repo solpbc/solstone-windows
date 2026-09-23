@@ -1461,7 +1461,7 @@ async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
     assert_eq!(response_status(&wrong_method), 405);
     assert!(!response_text(&wrong_method).contains("Set-Cookie:"));
 
-    let caller_auth = raw_bridge_request(
+    let with_authorization = raw_bridge_request(
         port,
         "GET",
         &format!("{}?cap={cap}", spl_core::bridge::BOOTSTRAP_ROUTE),
@@ -1471,8 +1471,8 @@ async fn journal_bridge_bootstrap_sets_cookie_and_rejects_wrong_cap() {
         b"",
     )
     .await;
-    assert_eq!(response_status(&caller_auth), 403);
-    assert!(!response_text(&caller_auth).contains("Set-Cookie:"));
+    assert_eq!(response_status(&with_authorization), 302);
+    assert!(response_text(&with_authorization).contains("Set-Cookie:"));
 
     handle.shutdown_and_wait().await;
     upstream.abort();
@@ -1507,22 +1507,6 @@ async fn journal_bridge_authority_rejects_before_upstream() {
             Some(loopback_host(port + 1)),
             Some(cap_cookie(&cap)),
             vec![],
-            403,
-        ),
-        (
-            "OPTIONS",
-            "/journal",
-            Some(loopback_host(port)),
-            Some(cap_cookie(&cap)),
-            vec![],
-            405,
-        ),
-        (
-            "GET",
-            "/journal",
-            Some(loopback_host(port)),
-            Some(cap_cookie(&cap)),
-            vec![("Authorization", "Bearer x")],
             403,
         ),
     ];

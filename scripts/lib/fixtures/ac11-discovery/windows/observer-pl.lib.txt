@@ -1,8 +1,7 @@
 bridge::tests::authorize_accepts_valid_local_request
+bridge::tests::authorize_admits_any_method_path_and_header_once_the_capability_matches
 bridge::tests::authorize_rejects_bad_or_missing_capability
-bridge::tests::authorize_rejects_caller_auth_headers
 bridge::tests::authorize_rejects_host_mismatch_before_anything_else
-bridge::tests::authorize_rejects_unsupported_methods
 bridge::tests::bootstrap_cap_extracts_only_exact_route_query
 bridge::tests::constant_time_compare_basics
 bridge::tests::failure_category_tokens_are_stable
@@ -10,7 +9,7 @@ bridge::tests::parses_request_head_helpers
 bridge::tests::response_headers_filter_and_rewrite
 bridge::tests::rewrite_redirect_handles_relative_journal_foreign_and_spl
 bridge::tests::rewrite_set_cookie_drops_domain_and_secure
-bridge::tests::upstream_request_headers_keep_only_allowlist
+bridge::tests::upstream_request_headers_forward_every_unreserved_header
 bridge::tests::upstream_request_headers_omit_cookie_when_only_capability_cookie_present
 civil::tests::dst_fall_back_fold_can_collide_by_design
 civil::tests::dst_spring_forward_uses_supplied_post_transition_offset
