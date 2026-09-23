@@ -3,7 +3,7 @@
 
 # SPL Pair-Link Definition Bundle
 
-This directory vendors the published SPL pair-link definition bundle (`bundle_semver: 8.0.0`) as immutable, test-only bytes.
+This directory vendors the published SPL pair-link definition bundle (`bundle_semver: 8.0.1`) as immutable, test-only bytes.
 
 - `bundle/`: Immutable authority files. The five JSON documents in this directory must remain byte-identical to their authority pins.
 - `adoption.json`: Consumer adoption metadata record matching the sibling SPL adoption schema.
