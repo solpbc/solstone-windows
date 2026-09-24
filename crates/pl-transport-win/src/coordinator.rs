@@ -476,11 +476,9 @@ impl UploadCoordinator {
         if let Ok(mut snapshot) = self.sync.lock() {
             snapshot.upload.segment_removed_segments =
                 snapshot.upload.segment_removed_segments.saturating_add(1);
-            snapshot.upload.uploaded_segments =
-                snapshot.upload.uploaded_segments.saturating_add(1);
+            snapshot.upload.uploaded_segments = snapshot.upload.uploaded_segments.saturating_add(1);
             snapshot.upload.last_error = None;
-            snapshot.upload.pending_segments =
-                snapshot.upload.pending_segments.saturating_sub(1);
+            snapshot.upload.pending_segments = snapshot.upload.pending_segments.saturating_sub(1);
         }
     }
 
@@ -592,7 +590,8 @@ impl UploadCoordinator {
             let sha = ca::sha256_hex(&bytes);
 
             let matches = expected_files.iter().any(|exp| {
-                if exp.submitted != entry.name || exp.size != entry.size_bytes || exp.sha256 != sha {
+                if exp.submitted != entry.name || exp.size != entry.size_bytes || exp.sha256 != sha
+                {
                     return false;
                 }
                 if let Some(disp) = &exp.disposition {
@@ -720,7 +719,9 @@ impl UploadCoordinator {
                             let remove_sidecar = |name: &str| -> Result<(), ()> {
                                 match self.store.remove_entry(index, name) {
                                     Ok(()) => Ok(()),
-                                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                                        Ok(())
+                                    }
                                     Err(_) => Err(()),
                                 }
                             };
@@ -743,7 +744,9 @@ impl UploadCoordinator {
 
             match UploadAck::from_bytes(&marker_bytes) {
                 Ok(ack) => {
-                    if ack.journal_identity.instance_id == self.client.journal_identity().instance_id {
+                    if ack.journal_identity.instance_id
+                        == self.client.journal_identity().instance_id
+                    {
                         match self.try_gate_delete(index, &ack.files) {
                             Ok(DeleteGate::Blocked) => {
                                 self.set_hold(index, now.saturating_add(3600));
@@ -980,7 +983,10 @@ impl UploadCoordinator {
         self.local_finish(now);
 
         let segments = self.store.scan()?;
-        let pending_count = segments.iter().filter(|s| !self.is_held(s.index, now)).count() as u64;
+        let pending_count = segments
+            .iter()
+            .filter(|s| !self.is_held(s.index, now))
+            .count() as u64;
         self.set_pending(pending_count);
         let mut witnesses = Vec::new();
 
@@ -2396,13 +2402,7 @@ mod tests {
         sync: Arc<Mutex<SyncSnapshot>>,
         local_offset: Arc<dyn LocalOffset>,
     ) -> UploadCoordinator {
-        UploadCoordinator::new_with_client(
-            client,
-            store,
-            sync,
-            300,
-            local_offset,
-        )
+        UploadCoordinator::new_with_client(client, store, sync, 300, local_offset)
     }
 
     fn coordinator_with_client_and_jv(
@@ -2984,10 +2984,8 @@ mod tests {
         let bytes1 = b"first segment".to_vec();
         let bytes2 = b"second segment".to_vec();
         let key1 = civil::segment_key_string_local(boundary1, 0, 300);
-        let store = MultiSegmentStore::new(vec![
-            (1, boundary1, file_name, bytes1.clone()),
-        ])
-        .with_remove_fails_once(1);
+        let store = MultiSegmentStore::new(vec![(1, boundary1, file_name, bytes1.clone())])
+            .with_remove_fails_once(1);
         let handle = store.clone();
         let client = FakeClient::new(
             vec![
@@ -4355,7 +4353,8 @@ mod tests {
     #[tokio::test]
     async fn start_of_tick_quarantined_recount() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-        let store = MultiSegmentStore::new(vec![(1, 1_700_000_100, "screen.mp4", b"data".to_vec())]);
+        let store =
+            MultiSegmentStore::new(vec![(1, 1_700_000_100, "screen.mp4", b"data".to_vec())]);
         store.quarantine(1).unwrap();
         let coordinator = coordinator(Box::new(store), sync.clone());
 

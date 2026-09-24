@@ -310,8 +310,6 @@ pub fn list_mic_devices() -> Vec<observer_mic::MicDeviceRef> {
     capture_wasapi::list_mic_devices()
 }
 
-
-
 // ── Updater intents ──────────────────────────────────────────────────────────
 // User intents for the in-app updater. Like the rest of the IPC surface these
 // only *ask* the engine to act; update state is earned from the Velopack result

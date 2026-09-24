@@ -226,9 +226,8 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        let is_media = name_str != LEN_FILE_NAME
-            && name_str != ".uploaded"
-            && name_str != ".uploaded.tmp";
+        let is_media =
+            name_str != LEN_FILE_NAME && name_str != ".uploaded" && name_str != ".uploaded.tmp";
         if is_media && sealed.join(&name).exists() {
             has_media_collision = true;
         }
