@@ -575,8 +575,9 @@ impl UploadCoordinator {
             .collect();
         match self.try_gate_delete(index, &ack_files) {
             Ok(DeleteGate::Deleted | DeleteGate::Partial) => self.on_segment_removed(),
-            Ok(DeleteGate::Blocked) => self.set_hold(index, now.saturating_add(3600)),
-            Ok(DeleteGate::Stopped) => {}
+            Ok(DeleteGate::Blocked | DeleteGate::Stopped) => {
+                self.set_hold(index, now.saturating_add(3600))
+            }
             Err(e) => {
                 self.set_hold(index, now.saturating_add(3600));
                 tracing::warn!(
@@ -4008,6 +4009,38 @@ mod tests {
             assert_eq!(coordinator.store.scan().unwrap().len(), 0);
             assert_eq!(coordinator.store.list_entries(1).unwrap().len(), 0);
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn segment_removed_with_a_non_regular_entry_is_held_not_posted_again() {
+        let root = TestRoot::new("segment-removed-non-regular");
+        let dir = root.path().join(TEST_INDEX.to_string());
+        std::fs::create_dir_all(dir.join("subdir")).unwrap();
+        std::fs::write(dir.join("screen.mp4"), b"payload").unwrap();
+        let removed = || {
+            Err(TransportError::Rejected {
+                status: 500,
+                body: r#"{"error":"Removed","reason_code":"segment_removed"}"#.to_string(),
+            })
+        };
+        let client = FakeClient::new(vec![removed(), removed()], vec![]);
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            client.clone(),
+            Box::new(FaultStore::new(root.path())),
+            sync.clone(),
+        );
+
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert_eq!(client.posts.lock().unwrap().len(), 1);
+        assert!(coordinator.is_held(TEST_INDEX, coordinator.monotonic_now_epoch_secs()));
+        assert_eq!(sync.lock().unwrap().upload.segment_removed_segments, 0);
+        assert!(dir.join("screen.mp4").exists());
+
+        // The next tick inside the hold makes no request
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert_eq!(client.posts.lock().unwrap().len(), 1);
+        assert_eq!(sync.lock().unwrap().upload.segment_removed_segments, 0);
     }
 
     #[tokio::test(start_paused = true)]
