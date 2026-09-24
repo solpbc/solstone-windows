@@ -4,11 +4,10 @@
 mod support;
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
-use observer_retention::RetentionConfig;
 use pl_transport_win::credential::EndpointAddr;
 use pl_transport_win::relay_pairing::pair_over_relay;
 use pl_transport_win::service::{self, SyncConfig};
@@ -340,7 +339,6 @@ fn service_config(state_path: PathBuf) -> SyncConfig {
         period_secs: 300,
         segments_root: state_path.with_extension("segments"),
         state_path,
-        retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),

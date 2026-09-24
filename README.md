@@ -26,7 +26,6 @@ crates/
   observer-exclusion/      exclusion rules (apps, window titles, private browsing) + redaction
   observer-hotkey/         global pause/resume hotkey model
   observer-mic/            microphone priority, per-device disable, gain
-  observer-retention/      local-cache retention for confirmed-synced segments
   observer-update/         honest update state model for the in-app updater
   observer-log/            rotating file log, redaction helpers, panic logging
   observer-pl/             PL wire protocol types (ingest, reconcile, custody proofs)

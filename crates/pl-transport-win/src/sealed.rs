@@ -39,10 +39,9 @@ pub struct DirEntryFact {
     pub size_bytes: u64,
 }
 
-/// Marker file written into a sealed dir once its upload is confirmed and the
-/// owner's retention policy says to keep the local copy. Its presence means the
-/// segment is **done uploading** — [`SealedStore::scan`] skips it (never
-/// re-uploads) and it lives until the retention window prunes it.
+/// Marker file written into a sealed dir once its upload is confirmed. Its
+/// presence means the journal confirmed the segment — [`SealedStore::scan`] skips
+/// it (never re-uploads) and local finish removes that directory.
 pub const UPLOADED_MARKER: &str = ".uploaded";
 pub const UPLOADED_TMP_MARKER: &str = ".uploaded.tmp";
 
@@ -50,22 +49,20 @@ pub const UPLOADED_TMP_MARKER: &str = ".uploaded.tmp";
 /// temp dir.
 pub trait SealedStore: Send + Sync {
     /// Sealed segments still pending upload (those **without** the confirmed
-    /// marker). Confirmed-but-retained segments are excluded — they are not
-    /// re-uploaded.
+    /// marker). Confirmed segments are excluded — they are not re-uploaded.
     fn scan(&self) -> std::io::Result<Vec<SealedSegment>>;
     fn read_file(&self, index: u64, name: &str) -> std::io::Result<Vec<u8>>;
     fn remove(&self, index: u64) -> std::io::Result<()>;
     /// Move a rejected sealed segment aside without deleting it.
     ///
-    /// The target is `<root>/quarantine/<index>` (bare index, no extension), which
-    /// stays scan-invisible because the top-level `quarantine` directory is not a
+    /// The target is `<root>/quarantine/<index>` (bare index, or `<index>-2`, etc.),
+    /// which stays scan-invisible because the top-level `quarantine` directory is not a
     /// decimal sealed segment name.
     fn quarantine(&self, index: u64) -> std::io::Result<()>;
-    /// Mark a segment confirmed-uploaded (retain locally). Writes [`UPLOADED_MARKER`].
+    /// Mark a segment confirmed-uploaded. Writes [`UPLOADED_MARKER`].
     fn mark_confirmed(&self, index: u64) -> std::io::Result<()>;
-    /// Confirmed-but-retained segments (those **with** the marker), for the
-    /// retention prune pass. `files` is not populated — only index + boundary are
-    /// needed to decide pruning.
+    /// Confirmed segments (those **with** the marker), for the local finish pass.
+    /// `files` is not populated — only index + boundary are needed.
     fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>>;
 
     /// List all entries inside a sealed segment directory with file type and size.
@@ -78,6 +75,10 @@ pub trait SealedStore: Send + Sync {
     fn read_ack(&self, index: u64) -> std::io::Result<Option<UploadAck>>;
     /// Atomically write an upload ack to `.uploaded.tmp` then rename to `.uploaded`.
     fn write_ack(&self, index: u64, ack: &UploadAck) -> std::io::Result<()>;
+    /// Read the modification timestamp of a file in a sealed segment directory.
+    fn modified(&self, index: u64, name: &str) -> std::io::Result<std::time::SystemTime>;
+    /// Count the number of quarantine subdirectories that contain at least one media file.
+    fn quarantined_media_dirs(&self) -> std::io::Result<u64>;
 }
 
 /// The best-effort content type for an observer segment file. The journal stores
@@ -199,9 +200,12 @@ impl SealedStore for LocalSealedStore {
     fn quarantine(&self, index: u64) -> std::io::Result<()> {
         let quarantine = self.root.join("quarantine");
         std::fs::create_dir_all(&quarantine)?;
-        let target = quarantine.join(index.to_string());
-        if target.exists() {
-            std::fs::remove_dir_all(&target)?;
+        let preferred = index.to_string();
+        let mut target = quarantine.join(&preferred);
+        let mut counter = 2;
+        while target.exists() {
+            target = quarantine.join(format!("{preferred}-{counter}"));
+            counter += 1;
         }
         std::fs::rename(self.segment_dir(index), target)
     }
@@ -268,6 +272,45 @@ impl SealedStore for LocalSealedStore {
         drop(file);
         std::fs::rename(tmp, target)?;
         Ok(())
+    }
+
+    fn modified(&self, index: u64, name: &str) -> std::io::Result<std::time::SystemTime> {
+        std::fs::metadata(self.segment_dir(index).join(name))?.modified()
+    }
+
+    fn quarantined_media_dirs(&self) -> std::io::Result<u64> {
+        let quarantine = self.root.join("quarantine");
+        let dir = match std::fs::read_dir(&quarantine) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        let mut count = 0;
+        for entry in dir {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let child_dir = std::fs::read_dir(entry.path())?;
+            let mut has_media = false;
+            for child in child_dir {
+                let child = child?;
+                if !child.file_type()?.is_file() {
+                    continue;
+                }
+                let Some(name) = child.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                if name != LEN_FILE_NAME && name != UPLOADED_MARKER && name != UPLOADED_TMP_MARKER {
+                    has_media = true;
+                    break;
+                }
+            }
+            if has_media {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -573,6 +616,70 @@ mod tests {
         assert!(seg.join(".uploaded.tmp").exists());
         let _ = store.scan().unwrap();
         assert!(!seg.join(".uploaded.tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quarantine_collision_naming() {
+        let root = temp_root();
+        let store = LocalSealedStore::new(&root, 300);
+
+        let seg7 = root.join("7");
+        std::fs::create_dir_all(&seg7).unwrap();
+        std::fs::write(seg7.join("screen.mp4"), b"payload1").unwrap();
+        store.quarantine(7).unwrap();
+        assert!(root.join("quarantine/7").is_dir());
+
+        std::fs::create_dir_all(&seg7).unwrap();
+        std::fs::write(seg7.join("screen.mp4"), b"payload2").unwrap();
+        store.quarantine(7).unwrap();
+        assert!(root.join("quarantine/7-2").is_dir());
+
+        std::fs::create_dir_all(&seg7).unwrap();
+        std::fs::write(seg7.join("screen.mp4"), b"payload3").unwrap();
+        store.quarantine(7).unwrap();
+        assert!(root.join("quarantine/7-3").is_dir());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quarantined_media_dirs_count_and_modified() {
+        let root = temp_root();
+        let store = LocalSealedStore::new(&root, 300);
+
+        assert_eq!(store.quarantined_media_dirs().unwrap(), 0);
+
+        let q1 = root.join("quarantine/1");
+        std::fs::create_dir_all(&q1).unwrap();
+        std::fs::write(q1.join("screen.mp4"), b"media").unwrap();
+
+        let q2 = root.join("quarantine/2-2");
+        std::fs::create_dir_all(&q2).unwrap();
+        std::fs::write(q2.join("audio.flac"), b"media").unwrap();
+
+        // An empty quarantine dir without media files does not count
+        let q3 = root.join("quarantine/3");
+        std::fs::create_dir_all(&q3).unwrap();
+        std::fs::write(q3.join(".len"), b"300").unwrap();
+
+        let q_empty = root.join("quarantine/empty");
+        std::fs::create_dir_all(&q_empty).unwrap();
+
+        let q_partial = root.join("quarantine/partial");
+        std::fs::create_dir_all(&q_partial).unwrap();
+        std::fs::write(q_partial.join("clip.partial"), b"partial").unwrap();
+
+        assert_eq!(store.quarantined_media_dirs().unwrap(), 3);
+
+        // Test modified
+        assert!(store.modified(1, "screen.mp4").is_err());
+        let seg5 = root.join("5");
+        std::fs::create_dir_all(&seg5).unwrap();
+        std::fs::write(seg5.join("test.txt"), b"test").unwrap();
+        assert!(store.modified(5, "test.txt").is_ok());
+        assert!(store.modified(5, "missing.txt").is_err());
 
         let _ = std::fs::remove_dir_all(&root);
     }

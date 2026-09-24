@@ -280,6 +280,29 @@ describe("settings renderer characterization", () => {
     expect(present(ids["settings.mic.gain"]).querySelectorAll("button")).toHaveLength(4);
   });
 
+  it("renders storage route with location, static captions, and no retention selector", () => {
+    const dump = observingDump();
+    app.__test__.setRoute("storage");
+    app.__test__.setHealth(dump);
+    app.__test__.setStorage({
+      root: "C:\\Users\\me\\AppData\\Local\\Solstone\\segments",
+      bytes: 1048576,
+    });
+
+    app.__test__.renderSettings(dump);
+
+    const dirEl = present(ids["settings.status.segmentDir"]);
+    expect(dirEl.textContent).toBe("C:\\Users\\me\\AppData\\Local\\Solstone\\segments");
+    expect(document.body.textContent).toContain(
+      "segments that have not reached your journal yet are never deleted.",
+    );
+    expect(document.body.textContent).toContain(
+      "a segment is a 5-minute local bundle that stays here until your journal receives it.",
+    );
+    expect(document.querySelector('[data-automation-id="settings.retention"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("not available right now.");
+  });
+
   it.each([
     ["never_checked", ["state", "checkNow", "autoCheck", "frequency", "autoDownload"], ["lastChecked", "notes", "download", "install", "retry"]],
     ["available", ["state", "lastChecked", "notes", "checkNow", "download", "autoCheck", "frequency", "autoDownload"], ["install", "retry"]],

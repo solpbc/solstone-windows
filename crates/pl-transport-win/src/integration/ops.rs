@@ -12,13 +12,12 @@
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_model::SyncSnapshot;
 use observer_pl::civil;
 use observer_pl::CAP_COOKIE_NAME;
-use observer_retention::RetentionConfig;
 use spl_core::bridge;
 use spl_core::ca;
 use spl_core::pairlink::{self, ParsedPairLink};
@@ -579,7 +578,6 @@ async fn fetch(
         period_secs: environment.period_secs,
         state_path: environment.state_path.clone(),
         segments_root: environment.segments_root.clone(),
-        retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(FixedOffset(0)),
         journal_version: jv,
         facts_fn: Arc::new(RawDeviceFacts::default),
@@ -859,6 +857,14 @@ impl SealedStore for SingleSegmentStore {
         self.consumed.store(true, Ordering::SeqCst);
         Ok(())
     }
+
+    fn modified(&self, _index: u64, _name: &str) -> std::io::Result<std::time::SystemTime> {
+        Ok(std::time::SystemTime::UNIX_EPOCH)
+    }
+
+    fn quarantined_media_dirs(&self) -> std::io::Result<u64> {
+        Ok(0)
+    }
 }
 
 /// Turn the caller's `YYYYMMDD` + `HHMMSS_LEN` into a boundary instant, then let
@@ -990,7 +996,6 @@ async fn upload(
         Box::new(store),
         sync.clone(),
         environment.period_secs.max(1),
-        Arc::new(RwLock::new(RetentionConfig::default())),
         Arc::new(FixedOffset(offset)),
         jv,
     );

@@ -11,14 +11,13 @@
 //! `observer-model` trait seam (`capture-wgc` / `capture-wasapi`), keeping the
 //! engine itself Windows-agnostic.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
 use observer_model::{
     should_emit, AppPhase, HealthDump, PauseReason, SourceKind, SourceState, SyncSnapshot,
 };
-use observer_retention::RetentionConfig;
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::{CredentialAccess, UploaderSlot};
@@ -179,7 +178,7 @@ fn installed_login_item_owner() -> std::io::Result<Option<std::path::PathBuf>> {
 
 /// Build the sync config from the per-user data layout + the engine's rotation
 /// period (so the uploader derives the same segment keys the writer sealed).
-fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
+fn build_sync_config() -> SyncConfig {
     let host = observer_hostname();
     let journal_version_path = platform_win::local_data_root().join("journal-version.json");
     SyncConfig {
@@ -187,7 +186,6 @@ fn build_sync_config(retention: Arc<RwLock<RetentionConfig>>) -> SyncConfig {
         period_secs: EngineConfig::default().segment_secs,
         state_path: platform_win::local_data_root().join("pairing.json"),
         segments_root: platform_win::segments_dir(),
-        retention,
         local_offset: Arc::new(platform_win::WindowsLocalOffset),
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(
             journal_version_path,
@@ -296,8 +294,6 @@ pub fn run(
             crate::ipc::get_mic_config,
             crate::ipc::set_mic_config,
             crate::ipc::list_mic_devices,
-            crate::ipc::get_retention,
-            crate::ipc::set_retention,
             crate::ipc::update_get,
             crate::ipc::update_check_now,
             crate::ipc::update_download,
@@ -364,13 +360,6 @@ pub fn run(
             let mic =
                 crate::mic::MicController::new(platform_win::local_data_root().join("mic.json"));
 
-            // Cache retention: load the persisted policy and share the handle with
-            // the upload coordinator (via SyncConfig) so it deletes or retains
-            // confirmed segments per the owner's window.
-            let retention = crate::retention::RetentionController::new(
-                platform_win::local_data_root().join("retention.json"),
-            );
-
             let sources = Sources {
                 screen: Box::new(capture_wgc::WgcScreenSource::new(exclusions.rules_handle())),
                 screen_encoder: Box::new(capture_screen_encode::MfScreenEncoder::new()),
@@ -404,7 +393,7 @@ pub fn run(
             // Resume an existing pairing: if a credential is on disk, start the
             // upload loop now. A fresh pairing is started by the
             // `pair` IPC command instead.
-            let sync_config = build_sync_config(retention.config_handle());
+            let sync_config = build_sync_config();
             let mut slot = UploaderSlot::new();
             let mut credential_access = None;
             match PairedState::load(&sync_config.state_path) {
@@ -484,7 +473,6 @@ pub fn run(
             );
             app.manage(hotkey.clone());
             app.manage(mic.clone());
-            app.manage(retention.clone());
 
             let (tray, pause_submenu, mi_resume, mi_restart) =
                 crate::tray::init(app, cmd_tx.clone())?;

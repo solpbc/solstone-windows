@@ -15,7 +15,6 @@ workspace = true
 observer-log.workspace = true
 observer-pl.workspace = true
 observer-model.workspace = true
-observer-retention.workspace = true
 spl-core.workspace = true
 spl-transport.workspace = true
 base64.workspace = true

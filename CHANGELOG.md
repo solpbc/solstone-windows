@@ -6,6 +6,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- the solstone app now always removes a segment from this PC once your journal confirms it has it, or that you removed it from your journal, so the "keep segments" choice in local storage is gone. anything an earlier version kept goes on the first sync after this update, once your journal has confirmed it.
+- the need-attention count now includes every segment set aside on this PC, not only ones since the app last started.
+
+### Fixed
+
+- a segment the app set aside as needing your attention is no longer removed when a later one is set aside under the same name.
+- if the solstone app restarted partway through a segment, a file it saved after the restart could be dropped when an earlier one had the same name. it's now kept, and counted with the segments that need your attention.
+
 ## [2.0.10] - 2026-09-24
 
 ### Fixed

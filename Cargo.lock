@@ -3112,14 +3112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "observer-retention"
-version = "2.0.10"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "observer-sample-timing"
 version = "2.0.10"
 
@@ -3387,7 +3379,6 @@ dependencies = [
  "observer-log",
  "observer-model",
  "observer-pl",
- "observer-retention",
  "observer-segment",
  "platform-win",
  "rcgen",
@@ -4398,7 +4389,6 @@ dependencies = [
  "observer-log",
  "observer-mic",
  "observer-model",
- "observer-retention",
  "observer-state",
  "observer-update",
  "pl-transport-win",

@@ -299,7 +299,6 @@ let exclusionsPersisted = true;
 let hotkeyCapturing = false;
 let latestMic: MicView | null = null;
 let micDevices: MicDeviceRef[] = [];
-let latestRetention: RetentionConfig | null = null;
 let runningApps: RunningApp[] = [];
 let titleDraft = "";
 
@@ -748,7 +747,7 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
 }
 
 // True while the owner is mid-interaction with a control a full rerender would
-// disrupt: an open native <select> popup (the picker / retention / frequency
+// disrupt: an open native <select> popup (the picker / frequency
 // dropdowns), in-progress text entry, or hotkey capture. Distinct from
 // isTextEntryTarget — it reads document.activeElement and includes <select>.
 function isInteractiveControlActive(): boolean {
@@ -1089,6 +1088,7 @@ function storageRow(storage: StorageInfo | null): HTMLElement {
     pathWrap,
     actionButton("open folder", undefined, true, () => void invoke("open_storage_folder")),
   );
+
   return valueRow("stored on this pc", value);
 }
 
@@ -1815,21 +1815,6 @@ interface MicView {
 }
 const MIC_GAIN_LEVELS = [1, 2, 4, 8];
 
-// ── Cache retention (observer-retention) ──────────────────────────────────────
-// How long confirmed-synced local segments are kept. keep_days: 0 = don't keep
-// (delete once synced), -1 = keep forever, N = keep N days then prune.
-interface RetentionConfig {
-  keep_days: number;
-}
-const RETENTION_CHOICES: ReadonlyArray<readonly [number, string]> = [
-  [0, "don't keep (delete once synced)"],
-  [7, "7 days"],
-  [14, "14 days"],
-  [30, "30 days"],
-  [60, "60 days"],
-  [-1, "keep forever"],
-];
-
 // VK options the owner can pick as the main key (the backend validates the combo).
 const HOTKEY_KEYS: ReadonlyArray<readonly [number, string]> = (() => {
   const out: Array<[number, string]> = [];
@@ -2293,55 +2278,6 @@ function renderMicSection(view: MicView): HTMLElement {
   return pane;
 }
 
-function renderRetentionSection(cfg: RetentionConfig): HTMLElement {
-  const pane = section("local storage");
-  pane.append(
-    helpCaption(
-      "after a segment safely reaches your journal, how long should its local copy stay on this computer?",
-    ),
-  );
-  pane.append(
-    helpCaption("a segment is a 5-minute local bundle that stays here until your journal receives it."),
-  );
-
-  const sel = document.createElement("select");
-  sel.dataset.automationId = ids["settings.retention"];
-  sel.setAttribute("aria-label", "how long to keep local segments");
-  sel.classList.add("fluent-control");
-  sel.style.fontSize = "13px";
-  sel.style.padding = "7px 9px";
-  sel.style.border = "1px solid var(--border)";
-  sel.style.borderRadius = "var(--radius-control)";
-  // If the persisted value isn't one of the presets, show it as a custom option
-  // so the picker reflects the real state rather than silently snapping.
-  const known = RETENTION_CHOICES.some(([days]) => days === cfg.keep_days);
-  const choices: ReadonlyArray<readonly [number, string]> = known
-    ? RETENTION_CHOICES
-    : [...RETENTION_CHOICES, [cfg.keep_days, `${cfg.keep_days} days`] as const];
-  for (const [days, label] of choices) {
-    const opt = document.createElement("option");
-    opt.value = String(days);
-    opt.textContent = label;
-    if (days === cfg.keep_days) {
-      opt.selected = true;
-    }
-    sel.append(opt);
-  }
-  sel.onchange = () => {
-    const next: RetentionConfig = { keep_days: Number(sel.value) };
-    latestRetention = next;
-    void invoke("set_retention", { config: next }).catch(() => {});
-  };
-  pane.append(valueRow("keep segments", sel));
-  pane.append(
-    trustFootnote(
-      "segments that have not reached your journal yet are never deleted. only local copies of segments already in your journal are cleared.",
-    ),
-  );
-
-  return pane;
-}
-
 function routeLabel(route: Route): string {
   return ROUTES.find((item) => item.route === route)?.label ?? route;
 }
@@ -2683,8 +2619,14 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
       break;
     case "storage": {
       const location = section("storage location");
-      location.append(storageRow(latestStorage));
-      content.append(location, latestRetention ? renderRetentionSection(latestRetention) : loadingCaption());
+      location.append(
+        storageRow(latestStorage),
+        helpCaption("segments that have not reached your journal yet are never deleted."),
+        helpCaption(
+          "a segment is a 5-minute local bundle that stays here until your journal receives it.",
+        ),
+      );
+      content.append(location);
       break;
     }
     case "updates":
@@ -3445,7 +3387,7 @@ async function boot(): Promise<void> {
     rerender();
     return;
   }
-  const [health, storage, update, exclusions, apps, hotkey, micCfg, mics, retention] = await Promise.all([
+  const [health, storage, update, exclusions, apps, hotkey, micCfg, mics] = await Promise.all([
     invoke<HealthDump>("get_health").catch(() => null),
     invoke<StorageInfo>("storage_info").catch(() => null),
     invoke<UpdateView>("update_get").catch(() => null),
@@ -3454,7 +3396,6 @@ async function boot(): Promise<void> {
     invoke<HotkeyView>("get_hotkey").catch(() => null),
     invoke<MicView>("get_mic_config").catch(() => null),
     invoke<MicDeviceRef[]>("list_mic_devices").catch(() => [] as MicDeviceRef[]),
-    invoke<RetentionConfig>("get_retention").catch(() => null),
   ]);
   setLatestHealth(health);
   latestStorage = storage;
@@ -3464,7 +3405,6 @@ async function boot(): Promise<void> {
   latestHotkey = hotkey;
   latestMic = micCfg;
   micDevices = mics;
-  latestRetention = retention;
   rerender();
 }
 
@@ -3635,9 +3575,6 @@ export const __test__ = {
   setMicDevices(v: MicDeviceRef[]) {
     micDevices = v;
   },
-  setRetention(v: RetentionConfig | null) {
-    latestRetention = v;
-  },
   setRunningApps(v: RunningApp[]) {
     runningApps = v;
   },
@@ -3662,7 +3599,6 @@ export const __test__ = {
     exclusionsPersisted = true;
     latestMic = null;
     micDevices = [];
-    latestRetention = null;
     runningApps = [];
     activeRoute = "home";
     label = "settings";

@@ -16,13 +16,12 @@ mod support;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
 use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::PROTOCOL_VERSION_HEADER;
-use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::service::{self, SyncConfig};
@@ -313,7 +312,6 @@ fn service_config(state_path: PathBuf) -> SyncConfig {
         period_secs: 300,
         segments_root: state_path.with_extension("segments"),
         state_path,
-        retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),

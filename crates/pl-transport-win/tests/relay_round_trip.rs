@@ -16,13 +16,12 @@ use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot, TransportPath};
 use observer_pl::ingest::{FilePart, IngestStatus};
-use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::journal_bridge;
@@ -193,7 +192,6 @@ async fn start_test_bridge(
         period_secs: 300,
         segments_root: state_path.with_extension("segments"),
         state_path,
-        retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
         journal_version,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),

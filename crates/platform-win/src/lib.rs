@@ -204,23 +204,63 @@ fn drop_entry(path: &Path) -> io::Result<()> {
     }
 }
 
+fn next_quarantine_path(quarantine: &Path, preferred_name: &str) -> PathBuf {
+    let mut candidate = quarantine.join(preferred_name);
+    let mut counter = 2;
+    while candidate.exists() {
+        candidate = quarantine.join(format!("{preferred_name}-{counter}"));
+        counter += 1;
+    }
+    candidate
+}
+
 fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
     if !sealed.exists() {
         return fs::rename(incomplete, sealed);
     }
 
+    let mut incoming_entries = Vec::new();
+    let mut has_media_collision = false;
+
     for entry in fs::read_dir(incomplete)? {
         let entry = entry?;
-        let source = entry.path();
-        let target = sealed.join(entry.file_name());
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let is_media = name_str != LEN_FILE_NAME
+            && name_str != ".uploaded"
+            && name_str != ".uploaded.tmp";
+        if is_media && sealed.join(&name).exists() {
+            has_media_collision = true;
+        }
+        incoming_entries.push((entry.path(), name, is_media));
+    }
+
+    if has_media_collision {
+        let segments_root = sealed
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no segments root"))?;
+        let quarantine = segments_root.join("quarantine");
+        fs::create_dir_all(&quarantine)?;
+        let preferred = sealed
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("conflict");
+        let dest = next_quarantine_path(&quarantine, preferred);
+        fs::create_dir_all(&dest)?;
+        for (source, name, is_media) in incoming_entries {
+            let name_str = name.to_string_lossy();
+            if is_media || name_str == LEN_FILE_NAME {
+                fs::rename(source, dest.join(name))?;
+            } else {
+                drop_entry(&source)?;
+            }
+        }
+        return fs::remove_dir(incomplete);
+    }
+
+    for (source, name, _is_media) in incoming_entries {
+        let target = sealed.join(&name);
         if target.exists() {
-            // The warn is the fix: preserve existing merge behavior, but make loss visible.
-            tracing::warn!(
-                target: "recovery",
-                source = %source.display(),
-                target = %target.display(),
-                "seal_or_merge dropping conflicting file (target exists)"
-            );
             drop_entry(&source)?;
         } else {
             fs::rename(&source, target)?;
@@ -898,10 +938,8 @@ impl RecoveryFs for LocalRecoveryFs {
     fn quarantine(&mut self, seg: &StaleSegment) -> Result<(), Self::Error> {
         let quarantine = self.root.join("quarantine");
         fs::create_dir_all(&quarantine)?;
-        let target = quarantine.join(format!("{}.incomplete", seg.key.index));
-        if target.exists() {
-            fs::remove_dir_all(&target)?;
-        }
+        let preferred = format!("{}.incomplete", seg.key.index);
+        let target = next_quarantine_path(&quarantine, &preferred);
         fs::rename(&seg.path, target)
     }
 }
@@ -1413,6 +1451,7 @@ mod tests {
             .filter(|entry| entry.file_name() == AUDIO_FILE_NAME)
             .count();
         assert_eq!(audio_files, 1);
+        assert!(!root.join("quarantine").exists());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1449,6 +1488,7 @@ mod tests {
             fs::read_to_string(sealed.join(LEN_FILE_NAME)).unwrap(),
             "10"
         );
+        assert!(!root.join("quarantine").exists());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1635,6 +1675,74 @@ mod tests {
         assert!(root.join("quarantine/4.incomplete").is_dir());
         assert!(!root.join("3.incomplete").exists());
         assert!(!root.join("4.incomplete").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_quarantine_collision_naming() {
+        let root = temp_root("quarantine-collisions");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("quarantine/5.incomplete")).unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+        let orphan1 = root.join("5.incomplete");
+        fs::create_dir_all(&orphan1).unwrap();
+        let seg1 = StaleSegment {
+            key: key(5),
+            path: absolute_string(&orphan1).unwrap(),
+            has_usable_data: false,
+        };
+        recovery.quarantine(&seg1).unwrap();
+        assert!(root.join("quarantine/5.incomplete-2").is_dir());
+
+        fs::create_dir_all(&orphan1).unwrap();
+        recovery.quarantine(&seg1).unwrap();
+        assert!(root.join("quarantine/5.incomplete-3").is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seal_or_merge_drops_len_conflict_and_quarantines_media_conflict() {
+        let root = temp_root("seal-merge-conflicts");
+        let _ = fs::remove_dir_all(&root);
+        let sealed_dir = root.join("10");
+        fs::create_dir_all(&sealed_dir).unwrap();
+        fs::write(sealed_dir.join(LEN_FILE_NAME), "300").unwrap();
+        fs::write(sealed_dir.join(SCREEN_FILE_NAME), b"original screen").unwrap();
+
+        let incoming = root.join("10.incomplete");
+        fs::create_dir_all(&incoming).unwrap();
+        fs::write(incoming.join(LEN_FILE_NAME), "300").unwrap();
+        fs::write(incoming.join(SCREEN_FILE_NAME), b"conflicting screen").unwrap();
+        fs::write(incoming.join(AUDIO_FILE_NAME), b"new audio").unwrap();
+
+        seal_or_merge(&incoming, &sealed_dir).unwrap();
+
+        assert_eq!(
+            fs::read(sealed_dir.join(SCREEN_FILE_NAME)).unwrap(),
+            b"original screen"
+        );
+        assert_eq!(
+            fs::read_to_string(sealed_dir.join(LEN_FILE_NAME)).unwrap(),
+            "300"
+        );
+        assert!(!sealed_dir.join(AUDIO_FILE_NAME).exists());
+        assert!(!incoming.exists());
+        assert!(root.join("quarantine/10").is_dir());
+        assert_eq!(
+            fs::read(root.join(format!("quarantine/10/{SCREEN_FILE_NAME}"))).unwrap(),
+            b"conflicting screen"
+        );
+        assert_eq!(
+            fs::read(root.join(format!("quarantine/10/{AUDIO_FILE_NAME}"))).unwrap(),
+            b"new audio"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(format!("quarantine/10/{LEN_FILE_NAME}"))).unwrap(),
+            "300"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

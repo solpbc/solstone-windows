@@ -6,10 +6,9 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
-use observer_retention::RetentionConfig;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::CredentialAccess;
@@ -76,7 +75,6 @@ async fn start_windows_bridge(
         period_secs: 300,
         segments_root: state_path.with_extension("segments"),
         state_path,
-        retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
         journal_version: jv.clone(),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),

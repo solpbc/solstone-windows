@@ -482,7 +482,7 @@ pub struct UploadStatus {
     pub uploaded_segments: u64,
     /// Segments whose upload last failed (will be retried with backoff).
     pub failed_segments: u64,
-    /// Segments moved aside after repeated journal rejections.
+    /// The number of quarantine directories on disk that hold media, counted at the start of a sync tick.
     #[serde(default)]
     pub quarantined_segments: u64,
     /// Invalid upload receipts encountered.

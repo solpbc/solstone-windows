@@ -10,10 +10,9 @@
 //! the health dump reflects reality.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use observer_model::{LocalOffset, MarkRenderSpec, PairingPhase, PairingState, SyncSnapshot};
-use observer_retention::RetentionConfig;
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinHandle};
 
@@ -44,9 +43,6 @@ pub struct SyncConfig {
     pub state_path: PathBuf,
     /// The sealed-segments root the uploader drains.
     pub segments_root: PathBuf,
-    /// Owner cache-retention policy (shared, edited over IPC) the upload
-    /// coordinator honors when a segment's upload is confirmed.
-    pub retention: Arc<RwLock<RetentionConfig>>,
     /// Device-local UTC-offset provider used to derive journal segment keys.
     pub local_offset: Arc<dyn LocalOffset>,
     /// Journal version state owner.
@@ -176,7 +172,6 @@ async fn setup_uploader(
         store,
         sync,
         cfg.period_secs,
-        cfg.retention,
         cfg.local_offset,
         cfg.journal_version,
         Some(post_connect),

@@ -9,11 +9,10 @@
 mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use observer_model::{LocalOffset, LocalOffsetError, PairingPhase, SyncSnapshot};
-use observer_retention::RetentionConfig;
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::coordinator::PAIRING_REFUSED_DETAIL;
 use pl_transport_win::credential::PairedState;
@@ -160,7 +159,6 @@ async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
         period_secs: 300,
         segments_root: state_path.with_extension("segments"),
         state_path,
-        retention: Arc::new(RwLock::new(RetentionConfig::default())),
         local_offset: Arc::new(TestOffset),
         journal_version,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
