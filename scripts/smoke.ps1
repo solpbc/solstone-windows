@@ -253,10 +253,12 @@ if (-not $FailInject) {
         if (Test-Path $path) { Remove-Item $path -Force }
     }
 
+    # Each concatenated line is parenthesized: unparenthesized, a multi-line @()
+    # splits 'a' + (b) + 'c' into three elements, so the script never parsed.
     $Tier1Lines = @(
         '$ErrorActionPreference = "Continue"',
-        '$p = Start-Process -FilePath ' + (ConvertTo-PsSingleQuoted $DriverExe) + ' -ArgumentList @("--contract",' + (ConvertTo-PsSingleQuoted $Contract) + ',"--tier1-only","--tier1-timeout-secs",' + (ConvertTo-PsSingleQuoted "$Tier1TimeoutSecs") + ') -Wait -PassThru -RedirectStandardOutput ' + (ConvertTo-PsSingleQuoted $Tier1Log) + ' -RedirectStandardError ' + (ConvertTo-PsSingleQuoted $Tier1Err),
-        '("exit={0}" -f $p.ExitCode) | Set-Content -Path ' + (ConvertTo-PsSingleQuoted $Tier1Result) + ' -Encoding ASCII'
+        ('$p = Start-Process -FilePath ' + (ConvertTo-PsSingleQuoted $DriverExe) + ' -ArgumentList @("--contract",' + (ConvertTo-PsSingleQuoted $Contract) + ',"--tier1-only","--tier1-timeout-secs",' + (ConvertTo-PsSingleQuoted "$Tier1TimeoutSecs") + ') -Wait -PassThru -RedirectStandardOutput ' + (ConvertTo-PsSingleQuoted $Tier1Log) + ' -RedirectStandardError ' + (ConvertTo-PsSingleQuoted $Tier1Err)),
+        ('("exit={0}" -f $p.ExitCode) | Set-Content -Path ' + (ConvertTo-PsSingleQuoted $Tier1Result) + ' -Encoding ASCII')
     )
     Set-Content -Path $Tier1Script -Value $Tier1Lines -Encoding ASCII
     Invoke-InSession1 "solstone-smoke-tier1" "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -File `"$Tier1Script`""
