@@ -4224,13 +4224,19 @@ mod tests {
         std::fs::create_dir_all(&seg3).unwrap();
         let media3 = seg3.join("screen.mp4");
         std::fs::write(&media3, b"payload3").unwrap();
-        let f3_media = std::fs::File::open(&media3).unwrap();
+        let f3_media = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&media3)
+            .unwrap();
         f3_media
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1000))
             .unwrap();
         let marker3 = seg3.join(crate::sealed::UPLOADED_MARKER);
         std::fs::write(&marker3, b"corrupted json 3").unwrap();
-        let f3_marker = std::fs::File::open(&marker3).unwrap();
+        let f3_marker = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker3)
+            .unwrap();
         f3_marker
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(2000))
             .unwrap();
@@ -4240,13 +4246,19 @@ mod tests {
         std::fs::create_dir_all(&seg4).unwrap();
         let media4 = seg4.join("screen.mp4");
         std::fs::write(&media4, b"payload4").unwrap();
-        let f4_media = std::fs::File::open(&media4).unwrap();
+        let f4_media = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&media4)
+            .unwrap();
         f4_media
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(3000))
             .unwrap();
         let marker4 = seg4.join(crate::sealed::UPLOADED_MARKER);
         std::fs::write(&marker4, b"corrupted json 4").unwrap();
-        let f4_marker = std::fs::File::open(&marker4).unwrap();
+        let f4_marker = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker4)
+            .unwrap();
         f4_marker
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(2000))
             .unwrap();
@@ -4256,13 +4268,19 @@ mod tests {
         std::fs::create_dir_all(&seg5).unwrap();
         let media5 = seg5.join("screen.mp4");
         std::fs::write(&media5, b"payload5").unwrap();
-        let f5_media = std::fs::File::open(&media5).unwrap();
+        let f5_media = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&media5)
+            .unwrap();
         f5_media
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1000))
             .unwrap();
         let marker5 = seg5.join(crate::sealed::UPLOADED_MARKER);
         std::fs::write(&marker5, b"").unwrap();
-        let f5_marker = std::fs::File::open(&marker5).unwrap();
+        let f5_marker = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker5)
+            .unwrap();
         f5_marker
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(2000))
             .unwrap();
@@ -4272,13 +4290,19 @@ mod tests {
         std::fs::create_dir_all(&seg6).unwrap();
         let media6 = seg6.join("screen.mp4");
         std::fs::write(&media6, b"payload6").unwrap();
-        let f6_media = std::fs::File::open(&media6).unwrap();
+        let f6_media = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&media6)
+            .unwrap();
         f6_media
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(3000))
             .unwrap();
         let marker6 = seg6.join(crate::sealed::UPLOADED_MARKER);
         std::fs::write(&marker6, b"").unwrap();
-        let f6_marker = std::fs::File::open(&marker6).unwrap();
+        let f6_marker = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker6)
+            .unwrap();
         f6_marker
             .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(2000))
             .unwrap();
