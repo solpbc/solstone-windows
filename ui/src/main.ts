@@ -885,21 +885,6 @@ function microCaption(value: string): HTMLElement {
   return d;
 }
 
-// A bordered-top trust line at the foot of a section (the Updates privacy-footnote
-// register), for the load-bearing covenant copy a trust surface must land.
-function trustFootnote(value: string): HTMLElement {
-  const foot = document.createElement("div");
-  foot.style.marginTop = "16px";
-  foot.style.paddingTop = "12px";
-  foot.style.borderTop = "1px solid var(--border-subtle)";
-  const ft = text("div", value);
-  ft.style.fontSize = "12px";
-  ft.style.color = "var(--fg-subtle)";
-  ft.style.lineHeight = "1.45";
-  foot.append(ft);
-  return foot;
-}
-
 function pill(label: string, severity: Severity): HTMLElement {
   const colors: Record<Severity, { text: string; bg: string; border: string }> = {
     ok: {
