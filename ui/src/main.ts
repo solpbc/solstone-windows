@@ -1073,7 +1073,6 @@ function storageRow(storage: StorageInfo | null): HTMLElement {
     pathWrap,
     actionButton("open folder", undefined, true, () => void invoke("open_storage_folder")),
   );
-
   return valueRow("stored on this pc", value);
 }
 

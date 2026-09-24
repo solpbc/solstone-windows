@@ -557,6 +557,38 @@ impl UploadCoordinator {
         self.register_segment_bound(day, segment_key, "received_not_written", now, 86400);
     }
 
+    /// The journal reports the owner removed this segment: remove the local copy.
+    /// It counts as delivered only once the gate actually removes files; a gate
+    /// that cannot remove them holds the segment for an hour instead of posting
+    /// it again on the next tick.
+    fn finish_segment_removed(&self, index: u64, local_files: &[(String, String, u64)], now: u64) {
+        let ack_files: Vec<AckFile> = local_files
+            .iter()
+            .map(|(name, sha, size)| AckFile {
+                submitted: name.clone(),
+                written: name.clone(),
+                size: *size,
+                sha256: sha.clone(),
+                disposition: None,
+                listing_status: None,
+            })
+            .collect();
+        match self.try_gate_delete(index, &ack_files) {
+            Ok(DeleteGate::Deleted | DeleteGate::Partial) => self.on_segment_removed(),
+            Ok(DeleteGate::Blocked) => self.set_hold(index, now.saturating_add(3600)),
+            Ok(DeleteGate::Stopped) => {}
+            Err(e) => {
+                self.set_hold(index, now.saturating_add(3600));
+                tracing::warn!(
+                    target: "pl_upload",
+                    index,
+                    error = %e,
+                    "segment_removed try_gate_delete failed"
+                );
+            }
+        }
+    }
+
     fn try_gate_delete(
         &self,
         index: u64,
@@ -650,7 +682,9 @@ impl UploadCoordinator {
             }
         }
 
-        // 6. Remove sidecars in order: .len, .uploaded, .uploaded.tmp
+        // 6. Remove sidecars in order: .len, .uploaded, .uploaded.tmp.
+        // `.len` is part of the segment key, so it stays while uncovered media
+        // remains: that media then uploads under the same key as its siblings.
         let remove_sidecar = |name: &str| -> Result<(), DeleteGate> {
             match self.store.remove_entry(index, name) {
                 Ok(()) => Ok(()),
@@ -659,7 +693,7 @@ impl UploadCoordinator {
             }
         };
 
-        if remove_sidecar(observer_model::LEN_FILE_NAME).is_err() {
+        if !has_uncovered_media && remove_sidecar(observer_model::LEN_FILE_NAME).is_err() {
             return Ok(DeleteGate::Blocked);
         }
         if remove_sidecar(UPLOADED_MARKER).is_err() {
@@ -753,6 +787,7 @@ impl UploadCoordinator {
                             }
                             Ok(_) => {}
                             Err(e) => {
+                                self.set_hold(index, now.saturating_add(3600));
                                 tracing::warn!(
                                     target: "pl_upload",
                                     index,
@@ -764,6 +799,7 @@ impl UploadCoordinator {
                     } else {
                         if let Err(e) = self.store.remove_entry(index, UPLOADED_MARKER) {
                             if e.kind() != std::io::ErrorKind::NotFound {
+                                self.set_hold(index, now.saturating_add(3600));
                                 tracing::warn!(
                                     target: "pl_upload",
                                     index,
@@ -1134,6 +1170,7 @@ impl UploadCoordinator {
                                     }
                                     Ok(_) => {}
                                     Err(e) => {
+                                        self.set_hold(segment.index, now.saturating_add(3600));
                                         tracing::warn!(
                                             target: "pl_upload",
                                             index = segment.index,
@@ -1231,7 +1268,6 @@ impl UploadCoordinator {
                             });
 
                     if reason_code == "segment_removed" {
-                        self.on_segment_removed();
                         UploadEvent::new(
                             &segment_key,
                             bytes,
@@ -1241,18 +1277,7 @@ impl UploadCoordinator {
                             Some("segment_removed".to_string()),
                         )
                         .emit();
-                        let ack_files: Vec<AckFile> = local_files
-                            .iter()
-                            .map(|(name, sha, size)| AckFile {
-                                submitted: name.clone(),
-                                written: name.clone(),
-                                size: *size,
-                                sha256: sha.clone(),
-                                disposition: None,
-                                listing_status: None,
-                            })
-                            .collect();
-                        let _ = self.try_gate_delete(segment.index, &ack_files);
+                        self.finish_segment_removed(segment.index, &local_files, now);
                         continue 'segments;
                     }
 
@@ -1285,7 +1310,6 @@ impl UploadCoordinator {
                             .unwrap_or_else(|| format!("http_{status}"));
                         if reason == "segment_removed" {
                             let duration_ms = elapsed_ms(started);
-                            self.on_segment_removed();
                             UploadEvent::new(
                                 &segment_key,
                                 bytes,
@@ -1295,18 +1319,7 @@ impl UploadCoordinator {
                                 Some("segment_removed".to_string()),
                             )
                             .emit();
-                            let ack_files: Vec<AckFile> = local_files
-                                .iter()
-                                .map(|(name, sha, size)| AckFile {
-                                    submitted: name.clone(),
-                                    written: name.clone(),
-                                    size: *size,
-                                    sha256: sha.clone(),
-                                    disposition: None,
-                                    listing_status: None,
-                                })
-                                .collect();
-                            let _ = self.try_gate_delete(segment.index, &ack_files);
+                            self.finish_segment_removed(segment.index, &local_files, now);
                             continue 'segments;
                         }
                     }
@@ -1438,6 +1451,7 @@ impl UploadCoordinator {
                                         }
                                         Ok(_) => {}
                                         Err(e) => {
+                                            self.set_hold(unk.index, now.saturating_add(3600));
                                             tracing::warn!(
                                                 target: "pl_upload",
                                                 index = unk.index,
@@ -2190,6 +2204,8 @@ mod tests {
         lists: Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
         submitted_day: Mutex<Option<String>>,
         stop: Mutex<Option<HandshakeStop>>,
+        /// Every POST as (segment key, part file names).
+        posts: Mutex<Vec<(String, Vec<String>)>>,
     }
 
     impl FakeClient {
@@ -2202,6 +2218,7 @@ mod tests {
                 lists: Mutex::new(VecDeque::from(lists)),
                 submitted_day: Mutex::new(None),
                 stop: Mutex::new(None),
+                posts: Mutex::new(Vec::new()),
             })
         }
     }
@@ -2218,11 +2235,15 @@ mod tests {
 
         fn ingest<'a>(
             &'a self,
-            _segment: &'a str,
+            segment: &'a str,
             day: &'a str,
-            _files: Vec<FilePart>,
+            files: Vec<FilePart>,
         ) -> IngestFuture<'a> {
             *self.submitted_day.lock().unwrap() = Some(day.to_owned());
+            self.posts.lock().unwrap().push((
+                segment.to_owned(),
+                files.iter().map(|part| part.filename.clone()).collect(),
+            ));
             let result = self
                 .ingests
                 .lock()
@@ -2245,6 +2266,216 @@ mod tests {
         fn refusal_stop(&self) -> Option<HandshakeStop> {
             *self.stop.lock().unwrap()
         }
+    }
+
+    /// A journal that refuses every request and counts them, for proving a
+    /// tick reached no journal at all.
+    struct RefusingClient {
+        calls: AtomicUsize,
+    }
+
+    impl RefusingClient {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+            })
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl UploadClient for RefusingClient {
+        fn journal_identity(&self) -> JournalIdentity {
+            JournalIdentity {
+                instance_id: "test".to_string(),
+                ca_fp_prefix: "0000000000000000".to_string(),
+                client_cert_sha256:
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            }
+        }
+
+        fn ingest<'a>(
+            &'a self,
+            _segment: &'a str,
+            _day: &'a str,
+            _files: Vec<FilePart>,
+        ) -> IngestFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err(TransportError::Rejected {
+                    status: 403,
+                    body: "refused".to_string(),
+                })
+            })
+        }
+
+        fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err(TransportError::Rejected {
+                    status: 403,
+                    body: "refused".to_string(),
+                })
+            })
+        }
+    }
+
+    /// A segments root under the system temp dir, removed on drop.
+    struct TestRoot(std::path::PathBuf);
+
+    impl TestRoot {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "sw-test-{tag}-{}-{}",
+                std::process::id(),
+                now_epoch_millis()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A real sealed store with chosen operations made to fail.
+    struct FaultStore {
+        inner: crate::sealed::LocalSealedStore,
+        fail_list_entries: bool,
+        fail_remove_dir: bool,
+        fail_remove_marker: bool,
+    }
+
+    impl FaultStore {
+        fn new(root: &std::path::Path) -> Self {
+            Self {
+                inner: crate::sealed::LocalSealedStore::new(root, 300),
+                fail_list_entries: false,
+                fail_remove_dir: false,
+                fail_remove_marker: false,
+            }
+        }
+    }
+
+    impl SealedStore for FaultStore {
+        fn scan(&self) -> std::io::Result<Vec<SealedSegment>> {
+            self.inner.scan()
+        }
+
+        fn read_file(&self, index: u64, name: &str) -> std::io::Result<Vec<u8>> {
+            self.inner.read_file(index, name)
+        }
+
+        fn remove(&self, index: u64) -> std::io::Result<()> {
+            self.inner.remove(index)
+        }
+
+        fn quarantine(&self, index: u64) -> std::io::Result<()> {
+            self.inner.quarantine(index)
+        }
+
+        fn mark_confirmed(&self, index: u64) -> std::io::Result<()> {
+            self.inner.mark_confirmed(index)
+        }
+
+        fn confirmed(&self) -> std::io::Result<Vec<SealedSegment>> {
+            self.inner.confirmed()
+        }
+
+        fn list_entries(&self, index: u64) -> std::io::Result<Vec<DirEntryFact>> {
+            if self.fail_list_entries {
+                return Err(std::io::Error::other("list failed"));
+            }
+            self.inner.list_entries(index)
+        }
+
+        fn remove_entry(&self, index: u64, name: &str) -> std::io::Result<()> {
+            if self.fail_remove_marker && name == UPLOADED_MARKER {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "marker locked",
+                ));
+            }
+            self.inner.remove_entry(index, name)
+        }
+
+        fn remove_dir(&self, index: u64) -> std::io::Result<()> {
+            if self.fail_remove_dir {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "directory locked",
+                ));
+            }
+            self.inner.remove_dir(index)
+        }
+
+        fn read_ack(&self, index: u64) -> std::io::Result<Option<UploadAck>> {
+            self.inner.read_ack(index)
+        }
+
+        fn write_ack(&self, index: u64, ack: &UploadAck) -> std::io::Result<()> {
+            self.inner.write_ack(index, ack)
+        }
+
+        fn modified(&self, index: u64, name: &str) -> std::io::Result<SystemTime> {
+            self.inner.modified(index, name)
+        }
+
+        fn quarantined_media_dirs(&self) -> std::io::Result<u64> {
+            self.inner.quarantined_media_dirs()
+        }
+    }
+
+    /// Index whose boundary is 1_700_000_100 at the 300 s period.
+    const TEST_INDEX: u64 = 5_666_667;
+
+    fn test_identity(instance_id: &str, client_cert_sha256: &str) -> JournalIdentity {
+        JournalIdentity {
+            instance_id: instance_id.to_string(),
+            ca_fp_prefix: "0000000000000000".to_string(),
+            client_cert_sha256: client_cert_sha256.to_string(),
+        }
+    }
+
+    fn written_descriptor(name: &str, bytes: &[u8]) -> FileDescriptor {
+        FileDescriptor {
+            submitted: name.to_string(),
+            written: name.to_string(),
+            size: bytes.len() as u64,
+            sha256: ca::sha256_hex(bytes),
+            disposition: "written".to_string(),
+        }
+    }
+
+    fn write_marker(dir: &std::path::Path, identity: JournalIdentity, files: &[FileDescriptor]) {
+        let ack = UploadAck::new_upload(
+            identity,
+            "20231114",
+            "120000_300",
+            "120000_300",
+            "ok",
+            files,
+        );
+        std::fs::write(dir.join(UPLOADED_MARKER), ack.to_bytes().unwrap()).unwrap();
+    }
+
+    fn set_mtime(path: &std::path::Path, secs: u64) {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
     }
 
     struct CancelAfterFirstListClient {
@@ -3716,7 +3947,8 @@ mod tests {
             assert!(snapshot.upload.last_error.is_some());
         }
 
-        // 4. remove_entry failure on segment_removed retries on next tick without 1-hour hold
+        // 4. remove_entry failure on segment_removed is not delivered yet: the segment
+        // is held for an hour, not posted again, then removed and counted once
         {
             let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
             let boundary = 1_700_000_100;
@@ -3745,23 +3977,34 @@ mod tests {
                 ],
                 vec![],
             );
-            let coordinator = coordinator_with_client(client, Box::new(store), sync.clone());
+            let coordinator =
+                coordinator_with_client(client.clone(), Box::new(store), sync.clone());
 
             let confirmed1 = coordinator.tick().await.unwrap();
             assert_eq!(confirmed1, 0);
             let snap1 = sync.lock().unwrap().clone();
-            assert_eq!(snap1.upload.uploaded_segments, 1);
+            assert_eq!(snap1.upload.uploaded_segments, 0);
+            assert_eq!(snap1.upload.segment_removed_segments, 0);
             let entries1 = coordinator.store.list_entries(1).unwrap();
             assert!(entries1
                 .iter()
                 .any(|e| e.name == observer_model::LEN_FILE_NAME));
-            assert!(!coordinator.is_held(1, now_epoch_secs()));
+            assert!(coordinator.is_held(1, coordinator.monotonic_now_epoch_secs()));
 
-            // Immediate next tick retries and successfully removes
+            // The next tick inside the hold makes no request
             let confirmed2 = coordinator.tick().await.unwrap();
             assert_eq!(confirmed2, 0);
-            let snap2 = sync.lock().unwrap().clone();
-            assert_eq!(snap2.upload.uploaded_segments, 2);
+            assert_eq!(client.posts.lock().unwrap().len(), 1);
+            assert_eq!(sync.lock().unwrap().upload.uploaded_segments, 0);
+
+            // After the hold the retry removes the segment and counts it once
+            tokio::time::advance(Duration::from_secs(3601)).await;
+            let confirmed3 = coordinator.tick().await.unwrap();
+            assert_eq!(confirmed3, 0);
+            assert_eq!(client.posts.lock().unwrap().len(), 2);
+            let snap3 = sync.lock().unwrap().clone();
+            assert_eq!(snap3.upload.uploaded_segments, 1);
+            assert_eq!(snap3.upload.segment_removed_segments, 1);
             assert_eq!(coordinator.store.scan().unwrap().len(), 0);
             assert_eq!(coordinator.store.list_entries(1).unwrap().len(), 0);
         }
@@ -3965,19 +4208,8 @@ mod tests {
 
     #[test]
     fn local_sealed_store_gate_tests() {
-        struct TempDir(std::path::PathBuf);
-        impl Drop for TempDir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let temp_path = std::path::PathBuf::from(format!(
-            "/var/tmp/sw-test-{}-{}",
-            std::process::id(),
-            now_epoch_millis()
-        ));
-        std::fs::create_dir_all(&temp_path).unwrap();
-        let _guard = TempDir(temp_path.clone());
+        let root = TestRoot::new("gate");
+        let temp_path = root.path().to_path_buf();
 
         let store = crate::sealed::LocalSealedStore::new(&temp_path, 300);
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
@@ -4042,16 +4274,24 @@ mod tests {
         );
         assert!(seg5.exists());
 
-        // 6. Extra file retains media (Partial)
+        // 6. Extra file: covered media and the marker go, the extra file and .len stay (Partial)
         let seg6 = temp_path.join("6");
         std::fs::create_dir_all(&seg6).unwrap();
         std::fs::write(seg6.join("screen.mp4"), b"matching bytes").unwrap();
         std::fs::write(seg6.join("extra.mp4"), b"extra").unwrap();
+        std::fs::write(seg6.join(observer_model::LEN_FILE_NAME), "297").unwrap();
+        let _ = coordinator.store.write_ack(6, &ack);
         assert_eq!(
             coordinator.try_gate_delete(6, &ack.files).unwrap(),
             DeleteGate::Partial
         );
-        assert!(seg6.exists());
+        assert!(!seg6.join("screen.mp4").exists());
+        assert!(seg6.join("extra.mp4").exists());
+        assert!(!seg6.join(crate::sealed::UPLOADED_MARKER).exists());
+        assert_eq!(
+            std::fs::read_to_string(seg6.join(observer_model::LEN_FILE_NAME)).unwrap(),
+            "297"
+        );
 
         // 7. Non-regular entry stops (Stopped)
         let seg7 = temp_path.join("7");
@@ -4123,47 +4363,12 @@ mod tests {
         );
         let del_res = failing_coord.try_gate_delete(10, &ack.files).unwrap();
         assert_eq!(del_res, DeleteGate::Blocked);
-
-        // 11. File injected after media delete and before marker removal is the only file left and is the next POST's only part
-        let seg11 = temp_path.join("11");
-        std::fs::create_dir_all(&seg11).unwrap();
-        std::fs::write(seg11.join("screen.mp4"), b"matching bytes").unwrap();
-        std::fs::write(seg11.join(observer_model::LEN_FILE_NAME), "300").unwrap();
-        let _ = coordinator.store.write_ack(11, &ack);
-        // Remove media
-        let _ = coordinator.store.remove_entry(11, "screen.mp4");
-        // Inject a new file
-        std::fs::write(seg11.join("injected.mp4"), b"injected").unwrap();
-        // Remove .len and .uploaded
-        let _ = coordinator
-            .store
-            .remove_entry(11, observer_model::LEN_FILE_NAME);
-        let _ = coordinator
-            .store
-            .remove_entry(11, crate::sealed::UPLOADED_MARKER);
-        // remove_dir fails because injected.mp4 is present
-        let _ = coordinator.store.remove_dir(11);
-        assert!(seg11.exists());
-        let scanned = coordinator.store.scan().unwrap();
-        let s11 = scanned.iter().find(|s| s.index == 11).unwrap();
-        assert_eq!(s11.files, vec!["injected.mp4".to_string()]);
     }
 
     #[test]
     fn local_finish_handles_all_marker_classes() {
-        struct TempDir(std::path::PathBuf);
-        impl Drop for TempDir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let temp_path = std::path::PathBuf::from(format!(
-            "/var/tmp/sw-test-lf-{}-{}",
-            std::process::id(),
-            now_epoch_millis()
-        ));
-        std::fs::create_dir_all(&temp_path).unwrap();
-        let _guard = TempDir(temp_path.clone());
+        let root = TestRoot::new("lf");
+        let temp_path = root.path().to_path_buf();
 
         let store = crate::sealed::LocalSealedStore::new(&temp_path, 300);
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
@@ -4408,5 +4613,293 @@ mod tests {
         // Index 1 was held and skipped, index 2 was processed, so pending_segments is now 0
         assert_eq!(snapshot.upload.pending_segments, 0);
         assert_eq!(snapshot.upload.uploaded_segments, 1);
+    }
+
+    #[tokio::test]
+    async fn partial_gate_keeps_len_and_the_next_tick_posts_the_extra_file_under_the_original_key()
+    {
+        let root = TestRoot::new("partial");
+        let boundary = TEST_INDEX * 300;
+        let dir = root.path().join(TEST_INDEX.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("screen.mp4"), b"covered").unwrap();
+        std::fs::write(dir.join("extra.mp4"), b"extra").unwrap();
+        std::fs::write(dir.join(observer_model::LEN_FILE_NAME), "297").unwrap();
+        write_marker(
+            &dir,
+            test_identity(
+                "test",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            &[written_descriptor("screen.mp4", b"covered")],
+        );
+
+        let key = civil::segment_key_string_local(boundary, 0, 297);
+        assert_ne!(key, civil::segment_key_string_local(boundary, 0, 300));
+        let client = FakeClient::new(
+            vec![accepted_ingest(&key, "extra.mp4", b"extra", 1)],
+            vec![],
+        );
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            client.clone(),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            sync.clone(),
+        );
+
+        coordinator.local_finish(coordinator.monotonic_now_epoch_secs());
+        assert!(!dir.join("screen.mp4").exists());
+        assert!(dir.join("extra.mp4").exists());
+        assert!(!dir.join(UPLOADED_MARKER).exists());
+        assert!(!dir.join(UPLOADED_TMP_MARKER).exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join(observer_model::LEN_FILE_NAME)).unwrap(),
+            "297"
+        );
+        assert!(client.posts.lock().unwrap().is_empty());
+
+        assert_eq!(coordinator.tick().await.unwrap(), 1);
+        assert_eq!(
+            *client.posts.lock().unwrap(),
+            vec![(key, vec!["extra.mp4".to_string()])]
+        );
+        assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn markerless_dirs_without_media_are_removed_and_never_pending() {
+        let root = TestRoot::new("nomedia");
+        let len_only = root.path().join("1");
+        std::fs::create_dir_all(&len_only).unwrap();
+        std::fs::write(len_only.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        let empty = root.path().join("2");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let client = RefusingClient::new();
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            client.clone(),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            sync.clone(),
+        );
+
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert!(!len_only.exists());
+        assert!(!empty.exists());
+        assert_eq!(sync.lock().unwrap().upload.pending_segments, 0);
+        assert_eq!(client.calls(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn markerless_dirs_without_media_that_cannot_be_removed_stay_out_of_pending() {
+        let root = TestRoot::new("nomedia-held");
+        let len_only = root.path().join("1");
+        std::fs::create_dir_all(&len_only).unwrap();
+        std::fs::write(len_only.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        let empty = root.path().join("2");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let mut store = FaultStore::new(root.path());
+        store.fail_remove_dir = true;
+        let client = RefusingClient::new();
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
+
+        for _ in 0..2 {
+            assert_eq!(coordinator.tick().await.unwrap(), 0);
+            assert!(len_only.exists());
+            assert!(empty.exists());
+            // Both directories are still scannable, yet neither counts as pending.
+            assert_eq!(coordinator.store.scan().unwrap().len(), 2);
+            let now = coordinator.monotonic_now_epoch_secs();
+            assert!(coordinator.is_held(1, now));
+            assert!(coordinator.is_held(2, now));
+            assert_eq!(sync.lock().unwrap().upload.pending_segments, 0);
+            tokio::time::advance(Duration::from_secs(1800)).await;
+        }
+        assert_eq!(client.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn same_instance_ack_with_a_new_client_certificate_finishes_locally_without_the_journal()
+    {
+        let root = TestRoot::new("newcert");
+        let dir = root.path().join(TEST_INDEX.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("screen.mp4"), b"payload").unwrap();
+        std::fs::write(dir.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        write_marker(
+            &dir,
+            test_identity(
+                "test",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            &[written_descriptor("screen.mp4", b"payload")],
+        );
+
+        let client = RefusingClient::new();
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            client.clone(),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            sync.clone(),
+        );
+
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert!(!dir.exists());
+        assert_eq!(client.calls(), 0);
+        assert_eq!(sync.lock().unwrap().upload.pending_segments, 0);
+    }
+
+    #[tokio::test]
+    async fn foreign_instance_ack_is_resent_to_the_current_journal_and_removed_on_its_receipt() {
+        let root = TestRoot::new("foreign");
+        let boundary = TEST_INDEX * 300;
+        let dir = root.path().join(TEST_INDEX.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("screen.mp4"), b"payload").unwrap();
+        std::fs::write(dir.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        write_marker(
+            &dir,
+            test_identity(
+                "foreign_instance",
+                "1111111111111111111111111111111111111111111111111111111111111111",
+            ),
+            &[written_descriptor("screen.mp4", b"payload")],
+        );
+
+        let key = civil::segment_key_string_local(boundary, 0, 300);
+        let client = FakeClient::new(
+            vec![accepted_ingest(&key, "screen.mp4", b"payload", 1)],
+            vec![],
+        );
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            client.clone(),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            sync.clone(),
+        );
+
+        coordinator.local_finish(coordinator.monotonic_now_epoch_secs());
+        assert!(!dir.join(UPLOADED_MARKER).exists());
+        assert!(dir.join("screen.mp4").exists());
+        assert!(dir.join(observer_model::LEN_FILE_NAME).exists());
+        assert!(client.posts.lock().unwrap().is_empty());
+
+        assert_eq!(coordinator.tick().await.unwrap(), 1);
+        assert_eq!(
+            *client.posts.lock().unwrap(),
+            vec![(key, vec!["screen.mp4".to_string()])]
+        );
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn empty_marker_with_newer_media_leaves_that_file_pending() {
+        let root = TestRoot::new("emptymarker");
+        let dir = root.path().join(TEST_INDEX.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let media = dir.join("screen.mp4");
+        std::fs::write(&media, b"payload").unwrap();
+        set_mtime(&media, 3000);
+        let marker = dir.join(UPLOADED_MARKER);
+        std::fs::write(&marker, b"").unwrap();
+        set_mtime(&marker, 2000);
+
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            RefusingClient::new(),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            sync,
+        );
+        assert!(coordinator.store.scan().unwrap().is_empty());
+
+        coordinator.local_finish(coordinator.monotonic_now_epoch_secs());
+        let pending = coordinator.store.scan().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].index, TEST_INDEX);
+        assert_eq!(pending[0].files, vec!["screen.mp4".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn gate_io_errors_hold_the_segment_for_an_hour() {
+        // Local finish: the gate cannot list the directory.
+        {
+            let root = TestRoot::new("gate-err-lf");
+            let dir = root.path().join("1");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("screen.mp4"), b"payload").unwrap();
+            write_marker(
+                &dir,
+                test_identity(
+                    "test",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                ),
+                &[written_descriptor("screen.mp4", b"payload")],
+            );
+            let mut store = FaultStore::new(root.path());
+            store.fail_list_entries = true;
+            let coordinator = coordinator_with_client(
+                RefusingClient::new(),
+                Box::new(store),
+                Arc::new(Mutex::new(SyncSnapshot::default())),
+            );
+            let now = coordinator.monotonic_now_epoch_secs();
+            coordinator.local_finish(now);
+            assert!(coordinator.is_held(1, now));
+            assert!(dir.join("screen.mp4").exists());
+        }
+
+        // Local finish: a foreign marker cannot be removed.
+        {
+            let root = TestRoot::new("gate-err-foreign");
+            let dir = root.path().join("1");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("screen.mp4"), b"payload").unwrap();
+            write_marker(
+                &dir,
+                test_identity(
+                    "foreign_instance",
+                    "1111111111111111111111111111111111111111111111111111111111111111",
+                ),
+                &[written_descriptor("screen.mp4", b"payload")],
+            );
+            let mut store = FaultStore::new(root.path());
+            store.fail_remove_marker = true;
+            let coordinator = coordinator_with_client(
+                RefusingClient::new(),
+                Box::new(store),
+                Arc::new(Mutex::new(SyncSnapshot::default())),
+            );
+            let now = coordinator.monotonic_now_epoch_secs();
+            coordinator.local_finish(now);
+            assert!(coordinator.is_held(1, now));
+            assert!(dir.join(UPLOADED_MARKER).exists());
+        }
+
+        // Tick: the receipt is recorded but the gate cannot list the directory.
+        {
+            let root = TestRoot::new("gate-err-tick");
+            let boundary = TEST_INDEX * 300;
+            let dir = root.path().join(TEST_INDEX.to_string());
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("screen.mp4"), b"payload").unwrap();
+            let key = civil::segment_key_string_local(boundary, 0, 300);
+            let client = FakeClient::new(
+                vec![accepted_ingest(&key, "screen.mp4", b"payload", 1)],
+                vec![],
+            );
+            let mut store = FaultStore::new(root.path());
+            store.fail_list_entries = true;
+            let coordinator = coordinator_with_client(
+                client.clone(),
+                Box::new(store),
+                Arc::new(Mutex::new(SyncSnapshot::default())),
+            );
+            assert_eq!(coordinator.tick().await.unwrap(), 1);
+            assert!(coordinator.is_held(TEST_INDEX, coordinator.monotonic_now_epoch_secs()));
+            assert!(dir.join(UPLOADED_MARKER).exists());
+            assert!(dir.join("screen.mp4").exists());
+        }
     }
 }
