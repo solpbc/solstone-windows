@@ -1,16 +1,16 @@
 # solstone-windows
 
-A Windows-native observer for [solstone](https://solstone.app): a per-user,
-non-elevated, tray-resident app that gathers screen and system audio — plus the
-microphone when one is present — into local, owner-controlled segments for the
-owner's journal.
+The solstone app for windows, part of [solstone](https://solstone.app): a
+per-user, non-elevated tray app. It takes in what you share with it (your
+screen, system audio, and your microphone when one is present), and all of it
+goes into your journal.
 
 ## Status
 
-Shipped alpha. Live screen + system-audio + microphone capture, the tray shell,
-pairing and upload to a journal, signed Velopack packaging with delta
-auto-updates, and the FlaUI smoke gate are all in place and releasing (see
-[CHANGELOG.md](CHANGELOG.md)). It is a pairing client, not a journal host.
+Shipped alpha. Screen, system audio and microphone intake, the tray shell,
+pairing with a journal, signed Velopack packaging with delta updates, and
+the FlaUI smoke gate are all in place and releasing (see
+[CHANGELOG.md](CHANGELOG.md)). It pairs with a journal; it does not run one.
 
 ## Layout
 
@@ -38,9 +38,13 @@ spikes/                reference-only code (excluded from the build)
 
 ## Privacy
 
-The observer writes local, owner-controlled data for the owner's journal. There
-is no analytics, telemetry, tracking, or crash reporting, and nothing phones
-home. State is always earned: the app never shows "on" unless it truly is.
+Everything the app takes in is written locally first, then goes into your
+journal. There is no analytics, telemetry, tracking, or crash reporting. The app
+reaches your journal directly or through a relay (by default the one sol pbc
+runs at link.solstone.app). The only other request it makes on its own is an
+update check to updates.solstone.app, which carries no app version or install
+id. If you turn on automatic downloads, the update itself comes from the same
+place. State is always earned: the app never shows "on" unless it truly is.
 
 ## Build & test
 
