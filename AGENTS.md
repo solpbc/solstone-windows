@@ -1,33 +1,34 @@
 # solstone-windows
 
-Development guide for the Windows-native solstone observer. This file is the
-canonical agent guide; `CLAUDE.md` is a symlink to it.
+Development guide for coding agents working in this repository. This file is the
+canonical agent guide; `CLAUDE.md` is a symlink to it. It holds directives and
+engineering context for changing the code here, not a description of the
+product.
 
 ## 1. Project Overview
 
-`solstone-windows` is the Windows-native solstone observer: per-user,
-non-elevated, tray-resident. It gathers screen and system audio — plus the
-microphone when one is present — into 5-minute clock-boundary segments on local
-disk for the owner's journal. It is a **pairing client, not a journal host**: it
-pairs to an existing journal and uploads (a later wave). Public open source.
+This repo builds the Windows tray app (`solstone-windows-app`): per-user,
+non-elevated, one process per session. It writes screen and system-audio
+segments (plus the microphone when one is present) on 5-minute clock boundaries
+to local disk and, once paired with a journal, uploads them to it. It is a
+**pairing client, not a journal host**: journal behavior lives in the journal's
+own repo, not here.
 
-Keep every visible file clean of private operational context, internal paths,
-personal machine names, and unreleasable history. Reference only the public
-charter and license.
+This is a public open-source repo. Keep every visible file clean of private
+operational context, internal paths, personal machine names, and unreleasable
+history. Reference only the public charter and license.
 
 ## 2. Principles
 
-- **KISS / YAGNI.** Wave 1 is a validated skeleton. Stubs are minimal and
-  compiling; do not add speculative machinery. The reserved Wave-2 crates are
-  named, not built.
+- **KISS / YAGNI.** Build for a current requirement only; do not add
+  speculative machinery, options, or crates for a case that does not exist yet.
 - **Honest state, always earned.** Never render `observing` / `ok` unless the
   durable fact is true. `AppPhase::Observing` is *computed* by the reducer, never
   settable. "No microphone input device" is a first-class `SourceState`, not an
   error.
-- **Privacy is architecture / data covenant.** No analytics, telemetry, tracking
-  SDKs, crash reporters, or phone-home — ever. Enforced by the privacy denylist
-  in `deny.toml`. The observer writes local, owner-controlled data; nothing
-  leaves the machine except the owner's own upload to their own journal.
+- **Privacy is architecture.** Never add analytics, telemetry, tracking SDKs,
+  crash reporters, or phone-home; the privacy denylist in `deny.toml` enforces
+  it at the dependency-graph level (§ 8).
 - **Quarantine the platform.** Direct `windows` / `windows-rs` use in shipped
   code stays in the audited, target-gated platform-tier crates
   (`capture-screen-encode`, `capture-wgc`, `capture-wasapi`, `platform-win`,
@@ -53,8 +54,8 @@ charter and license.
   `observer-contract` crate; the state-token vocabulary derives from the
   `observer-model` enums.
 - **Per-user, single-process.** `%LocalAppData%`, no UAC, one per-session named
-  mutex. Capture runs in-process for Wave 1; the separate capture-worker split is
-  a deferred, named escape hatch — do not build it without a soak-instability
+  mutex. Capture runs in-process; the separate capture-worker split is a
+  deferred, named escape hatch — do not build it without a soak-instability
   reason.
 
 ## 3. Commands
@@ -247,10 +248,10 @@ See `docs/lifecycle-matrix.md` for the full table.
 ## 7. Packaging & release
 
 Velopack, per-user `%LocalAppData%`, no UAC. The **primary update feed is R2** at
-`updates.solstone.app/solstone-windows/` — a privacy-clean,
-no-analytics static surface, so each user's scheduled update check stays a
-bare first-party manifest GET on our own surface with **no query string** (no app
-version, no app id, no per-user identifier) rather than hitting a third party.
+`updates.solstone.app/solstone-windows/`. Keep every update check (scheduled,
+manual, `--check-update`) a bare manifest GET to it with **no query string** (no
+app version, no app id, no per-user identifier), and never point it at a
+third-party update host.
 (The updater neutralizes Velopack's per-install staging id — see
 `src-tauri/src/update.rs`.) R2 is the authoritative update feed. A GitHub
 Releases mirror (a tagged `v<version>` release with the artifacts + the
@@ -308,8 +309,8 @@ fail-closed; only the aggregate provenance publisher may publish finalized bytes
 Release transparency is the post-delivery evidence publisher. It archives the
 full retained candidate plus evidence before exposing only manifests, proofs,
 the signed hash-chained entry, the derived ledger, and the signed latest
-pointer at `transparency.solstone.app`; artifact bytes never reach that public
-surface. The operator supplies storage, credential, archive-channel, secret-key,
+pointer at `transparency.solstone.app`; artifact bytes must never reach that
+public surface. The operator supplies storage, credential, archive-channel, secret-key,
 and trust-anchor locations through the documented environment. The public
 trust-anchor filename `solpbc-transparency-1.pub` and served location
 `releases/keys/solpbc-transparency-1.pub` are contract; rotation increments the
