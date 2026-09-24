@@ -8,8 +8,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
-- the solstone app now removes a recording from this PC only after checking your journal's reply against this PC's copy of every file, including recordings kept here for a while. before, a recording kept for a while was removed without that check, so a file added to it after it was sent could be removed without reaching your journal.
-- a portable copy of the solstone app from this release on (the zip download, or scoop) no longer switches which copy starts when you sign in to windows, if you also set the app up with its installer or winget. if an older portable copy switched it, quit the solstone app from its tray menu, update that copy (download the new zip, or run `scoop update solstone`), then open the copy you set up with the installer or winget to switch it back.
+- the solstone app now removes a segment from this PC only after checking your journal's reply against this PC's copy of every file in it. before, if you set local storage to keep segments for a number of days, a segment past that many days was removed without that check, so a file added to it later could be removed before it reached your journal.
+- if you set up the solstone app with its installer or winget, a portable copy from this release on (the zip download, or Scoop) no longer switches which copy starts when you sign in to windows. if an older portable copy switched it, quit the solstone app from its tray menu, update that copy (download the new zip, or run `scoop update solstone`), then open the copy you set up with the installer or winget to switch it back.
 
 ## [2.0.9] - 2026-09-23
 
