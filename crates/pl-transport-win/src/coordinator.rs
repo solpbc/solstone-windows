@@ -733,7 +733,7 @@ impl UploadCoordinator {
                                 self.set_hold(index, now.saturating_add(3600));
                                 continue;
                             }
-                            if let Err(_) = self.store.remove_dir(index) {
+                            if self.store.remove_dir(index).is_err() {
                                 self.set_hold(index, now.saturating_add(3600));
                             }
                         }
@@ -848,10 +848,8 @@ impl UploadCoordinator {
                     }
 
                     let remaining = self.store.list_entries(index).unwrap_or_default();
-                    if remaining.is_empty() {
-                        if let Err(_) = self.store.remove_dir(index) {
-                            self.set_hold(index, now.saturating_add(3600));
-                        }
+                    if remaining.is_empty() && self.store.remove_dir(index).is_err() {
+                        self.set_hold(index, now.saturating_add(3600));
                     }
                 }
             }
