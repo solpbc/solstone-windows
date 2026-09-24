@@ -25,11 +25,13 @@ echo === npm ci --offline (ui) ===
 call npm --prefix ui ci --offline || exit /b 1
 echo === npm run build (ui -^> ui/dist) ===
 call npm --prefix ui run build || exit /b 1
+echo === cargo test --locked -p solstone-windows-app ===
+cargo test --locked -p solstone-windows-app || exit /b 1
 :: --features custom-protocol so this verify build serves the embedded ui/dist
 :: (not the Vite devUrl) and the Settings/About windows actually render - a plain
 :: cargo build leaves the webview pointed at a dead dev server. See win-package.cmd.
 echo === cargo build --locked -p solstone-windows-app --features custom-protocol ===
 cargo build --locked -p solstone-windows-app --features custom-protocol || exit /b 1
 
-echo === WIN_APP_BUILD_OK: native Windows app build passed after UI build; package install sign and smoke not run ===
+echo === WIN_APP_BUILD_OK: native Windows app tests and build passed after UI build; package install sign and smoke not run ===
 exit /b 0

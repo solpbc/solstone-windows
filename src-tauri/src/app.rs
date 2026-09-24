@@ -4,8 +4,9 @@
 //! App composition root.
 //!
 //! Wires the tray and the IPC command surface, ensures the per-user autostart
-//! login item, then runs the tray-resident event loop. No window is auto-shown;
-//! Settings/About are created on demand (see [`crate::windows`]). The capture
+//! login item for the copy that owns it, then runs the tray-resident event
+//! loop. No window is auto-shown; Settings/About are created on demand (see
+//! [`crate::windows`]). The capture
 //! engine is constructed here with the concrete platform sources injected at the
 //! `observer-model` trait seam (`capture-wgc` / `capture-wasapi`), keeping the
 //! engine itself Windows-agnostic.
@@ -63,6 +64,117 @@ fn current_raw_facts() -> pl_transport_win::RawDeviceFacts {
         app_id: Some("app.solstone.windows".to_string()),
         app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
     }
+}
+
+/// Ensure the per-user login item for the copy that owns it. Run on every launch
+/// (not gated on a one-shot install signal) and idempotent: it writes only when
+/// the entry is missing or stale, so it self-heals an unregistered install.
+/// Velopack's locator — the same one the updater relies on — decides which copy
+/// this is:
+///
+/// - **installed** (Setup / winget): always owns the entry;
+/// - **portable** (the ZIP, and so every scoop install, which carries Velopack's
+///   `.portable` marker): claims it only when it does not already name an
+///   installed copy, so scoop owners keep autostart but a portable copy never
+///   displaces an install;
+/// - **anything else** (a dev build, a copied binary): never touches it.
+fn ensure_owned_login_item() {
+    use velopack::locator::{auto_locate_app_manifest, LocationContext};
+
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            tracing::warn!(
+                target: "lifecycle",
+                component = "autostart",
+                outcome = "current_exe_failed",
+                error = %error,
+                "autostart ensure"
+            );
+            return;
+        }
+    };
+    match auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone())) {
+        Ok(locator) if locator.get_is_portable() => match installed_login_item_owner() {
+            Ok(None) => {}
+            Ok(Some(owner)) => {
+                tracing::info!(
+                    target: "lifecycle",
+                    component = "autostart",
+                    outcome = "skipped_portable",
+                    owner = %owner.display(),
+                    "autostart ensure"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "lifecycle",
+                    component = "autostart",
+                    outcome = "failed",
+                    error = %error,
+                    "autostart ensure"
+                );
+                return;
+            }
+        },
+        Ok(_) => {}
+        Err(error) => {
+            tracing::info!(
+                target: "lifecycle",
+                component = "autostart",
+                outcome = "skipped_not_installed",
+                error = %error,
+                "autostart ensure"
+            );
+            return;
+        }
+    }
+    match platform_win::autostart::ensure_login_item(
+        platform_win::autostart::LOGIN_ITEM_NAME,
+        &exe,
+        &[observer_model::FROM_AUTOSTART_ARG],
+    ) {
+        Ok(platform_win::autostart::EnsureOutcome::Registered) => tracing::info!(
+            target: "lifecycle",
+            component = "autostart",
+            outcome = "registered",
+            "autostart ensure"
+        ),
+        Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => tracing::info!(
+            target: "lifecycle",
+            component = "autostart",
+            outcome = "already_current",
+            "autostart ensure"
+        ),
+        Err(error) => tracing::warn!(
+            target: "lifecycle",
+            component = "autostart",
+            outcome = "failed",
+            error = %error,
+            "autostart ensure"
+        ),
+    }
+}
+
+/// The installed (non-portable) copy the login item currently names, if that
+/// executable still exists. An unreadable entry is an error, never "no owner",
+/// so a portable copy does not overwrite what it could not read.
+fn installed_login_item_owner() -> std::io::Result<Option<std::path::PathBuf>> {
+    use velopack::locator::{auto_locate_app_manifest, LocationContext};
+
+    let Some(command) =
+        platform_win::autostart::login_item_command(platform_win::autostart::LOGIN_ITEM_NAME)?
+    else {
+        return Ok(None);
+    };
+    let Some(exe) = platform_win::autostart::login_item_executable(&command) else {
+        return Ok(None);
+    };
+    let installed = exe.is_file()
+        && auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone()))
+            .is_ok_and(|locator| !locator.get_is_portable());
+    Ok(installed.then_some(exe))
 }
 
 /// Build the sync config from the per-user data layout + the engine's rotation
@@ -199,6 +311,13 @@ pub fn run(
             crate::ipc::open_storage_folder,
         ])
         .setup(move |app| {
+            // Ensure the per-user autostart login item so the tray-resident
+            // observer relaunches at the next login, for the copy that owns
+            // it (see `ensure_owned_login_item`). Before the single-instance
+            // check, so opening the installed app while another copy runs
+            // still takes the entry back. A failure is logged, never fatal.
+            ensure_owned_login_item();
+
             match crate::lifecycle::acquire_single_instance() {
                 platform_win::InstanceLock::AlreadyRunning => {
                     tracing::info!(
@@ -231,51 +350,6 @@ pub fn run(
                         "single instance"
                     );
                 }
-            }
-
-            // Ensure the per-user autostart login item so the tray-resident
-            // observer relaunches at the next login. Run on every launch (not
-            // gated on a one-shot install signal) and idempotent: it writes only
-            // when the entry is missing or stale, so it self-heals an unregistered
-            // install and re-points the entry if the executable path moved. A
-            // failure is logged, never fatal.
-            match std::env::current_exe() {
-                Ok(exe) => match platform_win::autostart::ensure_login_item(
-                    platform_win::autostart::LOGIN_ITEM_NAME,
-                    &exe,
-                    &[observer_model::FROM_AUTOSTART_ARG],
-                ) {
-                    Ok(platform_win::autostart::EnsureOutcome::Registered) => {
-                        tracing::info!(
-                            target: "lifecycle",
-                            component = "autostart",
-                            outcome = "registered",
-                            "autostart ensure"
-                        );
-                    }
-                    Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => {
-                        tracing::info!(
-                            target: "lifecycle",
-                            component = "autostart",
-                            outcome = "already_current",
-                            "autostart ensure"
-                        );
-                    }
-                    Err(error) => tracing::warn!(
-                        target: "lifecycle",
-                        component = "autostart",
-                        outcome = "failed",
-                        error = %error,
-                        "autostart ensure"
-                    ),
-                },
-                Err(error) => tracing::warn!(
-                    target: "lifecycle",
-                    component = "autostart",
-                    outcome = "current_exe_failed",
-                    error = %error,
-                    "autostart ensure"
-                ),
             }
 
             // Capture-exclusion rules: load persisted owner policy and share the

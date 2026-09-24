@@ -14,6 +14,13 @@
 # render beacon (Tier R). Tier 1 drives native chrome by AutomationId, but it is
 # advisory and never decides SMOKE_OK/SMOKE_FAIL.
 #
+# Native proof runs on a shared box, so it puts back what it changes, pass or
+# fail: it records the HKCU Run\Solstone login item and any running app before
+# launch, then stops the instance it started, relaunches what was running (via a
+# Session-1 task, as the launch itself is), and restores the login item. It also requires the installed app under test to
+# have registered its own login item - the owner-visible "comes back after
+# reboot" behavior.
+#
 # -FailInject: after the app reaches observing, stop the Windows Audio service so
 # the (required) system-audio source faults, then assert the observer honestly
 # leaves observing. Needs privilege to stop the service; if unavailable, the
@@ -113,16 +120,52 @@ Write-Host "app: $AppExe"
 # Helper: register + fire a low-privilege scheduled task into the interactive
 # Session 1 (the validated mechanism; an SSH/Session-0 process cannot start a GUI
 # or drive UIA in Session 1 directly).
-function Invoke-InSession1([string]$name, [string]$exe, [string]$args) {
+# Not `$args`: that is PowerShell's automatic variable, and a parameter by that
+# name arrives empty, which silently dropped every argument passed here.
+function Invoke-InSession1([string]$name, [string]$exe, [string]$arguments) {
     $start = (Get-Date).AddMinutes(5)
     $startDate = $start.ToString("MM/dd/yyyy", [System.Globalization.CultureInfo]::InvariantCulture)
     $startTime = $start.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
-    schtasks /Create /TN $name /TR "`"$exe`" $args" /SC ONCE /ST $startTime /SD $startDate /RL LIMITED /IT /F | Out-Null
+    schtasks /Create /TN $name /TR "`"$exe`" $arguments" /SC ONCE /ST $startTime /SD $startDate /RL LIMITED /IT /F | Out-Null
     schtasks /Run /TN $name | Out-Null
 }
 function Remove-Task([string]$name) { schtasks /Delete /TN $name /F 2>$null | Out-Null }
 function ConvertTo-PsSingleQuoted([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
 
+$RunSubKey = "Software\Microsoft\Windows\CurrentVersion\Run"
+$RunValueName = "Solstone"
+function Get-RunValue {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($RunSubKey)
+    if ($null -eq $key) { return $null }
+    try {
+        if (@($key.GetValueNames()) -notcontains $RunValueName) { return $null }
+        return [pscustomobject]@{
+            Data = $key.GetValue($RunValueName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            Kind = $key.GetValueKind($RunValueName)
+        }
+    } finally { $key.Dispose() }
+}
+function Set-RunValue($value) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($RunSubKey)
+    try {
+        if ($null -eq $value) { $key.DeleteValue($RunValueName, $false) }
+        else { $key.SetValue($RunValueName, $value.Data, $value.Kind) }
+    } finally { $key.Dispose() }
+}
+function Get-AppProcesses { return @(Get-CimInstance Win32_Process -Filter "Name = 'solstone-windows-app.exe'") }
+
+# Native proof: record what the cleanup below puts back.
+if ($NativeProofMode) {
+    $OriginalRunValue = Get-RunValue
+    $OriginalApps = @(Get-AppProcesses | Where-Object { $_.ExecutablePath } | ForEach-Object {
+        [pscustomobject]@{ Exe = $_.ExecutablePath; CommandLine = $_.CommandLine }
+    })
+}
+$SmokeExit = 0
+$SmokeSkipped = $false
+$SmokeFailure = $null
+$AppReached = $false
+try {
 # Launch the observer in Session 1 with --open-view settings so the Settings
 # webview actually opens -- the Tier-R render gate then polls /healthz for the
 # per-view render beacon (views.settings == rendered). The single-instance mutex
@@ -158,9 +201,9 @@ if ($FailInject) {
     catch {
         # Exit 3 = SKIPPED, distinct from pass (0) and fail (1): a validation mode
         # that could not inject must not report green.
-        Write-Warning "could not stop Audiosrv ($_): live fail-injection needs privilege; SKIPPED (exit 3) -- selftest covers the decision logic"
-        Remove-Task "solstone-smoke-app"
-        exit 3
+        $SmokeExit = 3
+        $SmokeSkipped = $true
+        throw "could not stop Audiosrv ($_): live fail-injection needs privilege; SKIPPED (exit 3) -- selftest covers the decision logic"
     }
     $GateArgs += "--fail-inject"
 }
@@ -176,24 +219,27 @@ $GateExit = $LASTEXITCODE
 if ($FailInject) { try { Start-Service -Name Audiosrv } catch {} }
 
 if ($GateExit -ne 0) {
-    Remove-Task "solstone-smoke-app"
-    Write-Host "SMOKE_FAIL (gate exit $GateExit)"
-    exit $GateExit
+    $SmokeExit = $GateExit
+    throw "gate exit $GateExit"
 }
 
+$AppReached = $true
 if ($NativeProofMode) {
+    $VersionGate = Join-Path $PSScriptRoot "lib\smoke-version-gate.ps1"
+    . $VersionGate
     try {
-        $VersionGate = Join-Path $PSScriptRoot "lib\smoke-version-gate.ps1"
-        . $VersionGate
-        try {
-            $HealthResponse = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
-        } catch {
-            throw "native-proof launched app /healthz was unreachable after the health/render gate passed; inspect the launched Session-1 app and retry"
-        }
-        Assert-NativeProofHealthVersion -Body ([string]$HealthResponse.Content) -ExpectedVersion $ExpectedVersion
+        $HealthResponse = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
     } catch {
-        Remove-Task "solstone-smoke-app"
-        throw
+        throw "native-proof launched app /healthz was unreachable after the health/render gate passed; inspect the launched Session-1 app and retry"
+    }
+    Assert-NativeProofHealthVersion -Body ([string]$HealthResponse.Content) -ExpectedVersion $ExpectedVersion
+
+    # The installed app owns the login item: by the time it is observing it has
+    # pointed HKCU Run\Solstone at itself.
+    $ExpectedRunCommand = '"' + $AppExe + '" --from-autostart'
+    $RunValue = Get-RunValue
+    if ($null -eq $RunValue -or $RunValue.Data -ne $ExpectedRunCommand) {
+        throw "native-proof installed app did not register its login item: HKCU Run\$RunValueName is '$($RunValue.Data)', expected '$ExpectedRunCommand'"
     }
 }
 
@@ -234,8 +280,68 @@ if (-not $FailInject) {
     }
     Remove-Task "solstone-smoke-tier1"
 }
+} catch {
+    $SmokeFailure = "$_"
+    if ($SmokeExit -eq 0) { $SmokeExit = 1 }
+}
 
+# Cleanup runs pass or fail. Remove-Task is best-effort (the task may never
+# have been created); the native-proof restore is checked.
+$ErrorActionPreference = "Continue"
+schtasks /End /TN "solstone-smoke-tier1" 2>$null | Out-Null
+Remove-Task "solstone-smoke-tier1"
 Remove-Task "solstone-smoke-app"
+if ($FailInject) { try { Start-Service -Name Audiosrv } catch {} }
+if ($NativeProofMode) {
+    $CleanupErrors = @()
+    # The proof root is fresh per run, so its path identifies our instance exactly.
+    $Launched = @(Get-AppProcesses | Where-Object { $_.ExecutablePath -and ([string]$_.ExecutablePath).Equals($AppExe, [StringComparison]::OrdinalIgnoreCase) })
+    foreach ($p in $Launched) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $deadline -and @(Get-AppProcesses | Where-Object { $_.ProcessId -in $Launched.ProcessId }).Count -gt 0) {
+        Start-Sleep -Seconds 1
+    }
+    if ($AppReached -and $Launched.Count -eq 0) {
+        # The gate saw the app serving /healthz, so an empty match is a failed lookup, not a clean exit.
+        $CleanupErrors += "could not identify the launched app by its path to stop it"
+    }
+    if (@(Get-AppProcesses | Where-Object { $_.ProcessId -in $Launched.ProcessId -or ([string]$_.ExecutablePath).Equals($AppExe, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+        $CleanupErrors += "the launched app did not exit"
+    }
+    $i = 0
+    foreach ($app in $OriginalApps) {
+        $i++
+        $appArgs = if ($app.CommandLine -match '^\s*(?:"[^"]*"|\S+)\s*(?<rest>.*)$') { $Matches.rest } else { "" }
+        try { Invoke-InSession1 "solstone-smoke-relaunch-$i" $app.Exe $appArgs }
+        catch { $CleanupErrors += "could not relaunch $($app.Exe): $_" }
+    }
+    if ($OriginalApps.Count -gt 0) {
+        Start-Sleep -Seconds 5
+        for ($j = 1; $j -le $i; $j++) { Remove-Task "solstone-smoke-relaunch-$j" }
+        foreach ($app in $OriginalApps) {
+            if (@(Get-AppProcesses | Where-Object { $_.ExecutablePath -eq $app.Exe }).Count -eq 0) {
+                $CleanupErrors += "relaunched $($app.Exe) is not running"
+            }
+        }
+    }
+    # Restore the login item last, after any relaunched copy has re-ensured its own.
+    try { Set-RunValue $OriginalRunValue } catch { $CleanupErrors += "could not restore HKCU Run\${RunValueName}: $_" }
+    $RestoredRunValue = Get-RunValue
+    if (($null -eq $OriginalRunValue) -ne ($null -eq $RestoredRunValue) -or
+        ($null -ne $OriginalRunValue -and ($RestoredRunValue.Data -ne $OriginalRunValue.Data -or $RestoredRunValue.Kind -ne $OriginalRunValue.Kind))) {
+        $CleanupErrors += "HKCU Run\$RunValueName did not return to its original value"
+    }
+    if ($CleanupErrors.Count -gt 0) {
+        $CleanupMessage = "native-proof cleanup failed: " + ($CleanupErrors -join "; ")
+        $SmokeFailure = if ($null -eq $SmokeFailure) { $CleanupMessage } else { "$SmokeFailure; $CleanupMessage" }
+        $SmokeExit = 1
+        $SmokeSkipped = $false
+    }
+}
 
+if ($null -ne $SmokeFailure) {
+    if ($SmokeSkipped) { Write-Warning $SmokeFailure } else { Write-Host "SMOKE_FAIL ($SmokeFailure)" }
+    exit $SmokeExit
+}
 Write-Host "SMOKE_OK"
 exit 0

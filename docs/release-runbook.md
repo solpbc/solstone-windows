@@ -33,8 +33,8 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
   Cargo metadata version, full lowercase `EXPECTED_RELEASE_COMMIT`, local
   lineage, allowed `main`/`__swsync` ref, clean source state, and SHA-256 of both
   `Cargo.lock` and `ui/package-lock.json`.
-- The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; first-run
-  registers the per-user autostart login item.
+- The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; the app
+  registers the per-user autostart login item on launch (`AGENTS.md` § 6).
 - `THIRD_PARTY_NOTICES.md` is packed beside the app and installed at
   `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
 - `RUST_DEPENDENCY_NOTICES.txt` is packed beside the app and installed at

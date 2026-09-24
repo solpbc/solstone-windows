@@ -12,20 +12,23 @@
 //! Two properties matter:
 //!
 //! - **Idempotent.** A single named value means re-registering overwrites in
-//!   place — there is never a second, duplicate entry across updates. Removal on
-//!   uninstall deletes that one value.
-//! - **Ensured on launch, not on a one-shot signal.** Registration is meant to be
-//!   called on every normal startup, guarded by a read so it only writes when the
-//!   entry is missing or stale. Tying registration to a single post-install
-//!   callback leaves the observer silently unregistered whenever the first launch
-//!   after install isn't the installer-spawned one; ensuring on launch is
-//!   self-healing and also re-points the entry if the executable path moves.
+//!   place — there is never a second, duplicate entry across updates. The
+//!   uninstall hook removes that one value, but only while it still names the
+//!   executable being uninstalled.
+//! - **Ensured on launch, not on a one-shot signal.** The app calls
+//!   registration on every normal startup, guarded by a read so it only writes
+//!   when the entry is missing or stale. Tying registration to a single
+//!   post-install callback leaves the observer silently unregistered whenever the
+//!   first launch after install isn't the installer-spawned one; ensuring on
+//!   launch is self-healing. Deciding *which* copy may register (an installed
+//!   copy over a portable one, never a dev build) is the caller's job; this
+//!   module only owns the registry value.
 //!
 //! The executable path is quoted so a profile path containing spaces (e.g.
 //! `C:\Users\Jane Doe\…`) is parsed by the shell as a single token.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The per-user autostart key. `HKCU` only — never `HKLM`, never elevated.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -45,8 +48,7 @@ pub enum EnsureOutcome {
 }
 
 /// The `Run` command string for an executable launched with optional args. The
-/// executable path is quoted; args are appended verbatim (the observer passes
-/// none today).
+/// executable path is quoted; args are appended verbatim.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn run_command(exe: &Path, args: &[&str]) -> String {
     let mut command = format!("\"{}\"", exe.display());
@@ -55,6 +57,14 @@ fn run_command(exe: &Path, args: &[&str]) -> String {
         command.push_str(arg);
     }
     command
+}
+
+/// The executable a login-item command names: the quoted path that
+/// [`run_command`] writes first. `None` for a command in any other shape.
+pub fn login_item_executable(command: &str) -> Option<PathBuf> {
+    let rest = command.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    (end > 0).then(|| PathBuf::from(&rest[..end]))
 }
 
 /// Ensure the per-user login item points at `exe` (with `args`). Reads first and
@@ -97,20 +107,26 @@ pub fn login_item_command(name: &str) -> io::Result<Option<String>> {
     }
 }
 
-/// Remove the per-user login item. Idempotent: returns `Ok(false)` when there was
-/// nothing to remove. Called from the Velopack uninstall hook so no stale `Run`
-/// entry survives the app's removal.
+/// Remove the per-user login item only while it still names `exe` (with
+/// `args`), so uninstalling one copy never deletes an entry that points at
+/// another. Idempotent: returns `Ok(false)` when the entry is absent or names a
+/// different command. Called from the Velopack uninstall hook.
 #[cfg(windows)]
-pub fn remove_login_item(name: &str) -> io::Result<bool> {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+pub fn remove_login_item_if_matches(name: &str, exe: &Path, args: &[&str]) -> io::Result<bool> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
     use winreg::RegKey;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let run = match hkcu.open_subkey_with_flags(RUN_SUBKEY, KEY_SET_VALUE) {
+    let run = match hkcu.open_subkey_with_flags(RUN_SUBKEY, KEY_QUERY_VALUE | KEY_SET_VALUE) {
         Ok(run) => run,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
+    let current: Option<String> = run.get_value(name).ok();
+    // Windows paths are case-insensitive, so a case-only difference is the same command.
+    if !current.is_some_and(|command| command.eq_ignore_ascii_case(&run_command(exe, args))) {
+        return Ok(false);
+    }
     match run.delete_value(name) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -132,14 +148,13 @@ pub fn login_item_command(_name: &str) -> io::Result<Option<String>> {
 }
 
 #[cfg(not(windows))]
-pub fn remove_login_item(_name: &str) -> io::Result<bool> {
+pub fn remove_login_item_if_matches(_name: &str, _exe: &Path, _args: &[&str]) -> io::Result<bool> {
     Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn run_command_quotes_the_executable_path() {
@@ -161,6 +176,19 @@ mod tests {
         assert_eq!(command, r#""C:\app.exe" --from-autostart"#);
     }
 
+    #[test]
+    fn login_item_executable_reads_the_quoted_path_run_command_writes() {
+        let exe = PathBuf::from(r"C:\Users\Jane Doe\AppData\Local\Solstone\current\app.exe");
+        assert_eq!(
+            login_item_executable(&run_command(&exe, &["--from-autostart"])),
+            Some(exe.clone())
+        );
+        assert_eq!(login_item_executable(&run_command(&exe, &[])), Some(exe));
+        assert_eq!(login_item_executable(r"C:\app.exe --from-autostart"), None);
+        assert_eq!(login_item_executable(r#""C:\app.exe"#), None);
+        assert_eq!(login_item_executable(r#""" --from-autostart"#), None);
+    }
+
     // The HKCU round-trip runs only on Windows (the build box): write, read back,
     // confirm idempotency, then remove and confirm removal is idempotent. Uses a
     // throwaway value name so it never touches the real `Solstone` entry, and
@@ -173,7 +201,7 @@ mod tests {
             PathBuf::from(r"C:\Users\test\AppData\Local\Solstone\current\solstone-windows-app.exe");
 
         // Clean slate.
-        let _ = remove_login_item(&name);
+        let _ = remove_login_item_if_matches(&name, &exe, &[]);
         assert_eq!(login_item_command(&name).unwrap(), None);
 
         // First ensure writes the entry.
@@ -193,18 +221,24 @@ mod tests {
             EnsureOutcome::AlreadyCurrent
         );
 
-        // A changed path re-registers in place.
-        let exe2 = PathBuf::from(
-            r"C:\Users\test\AppData\Local\Solstone\current\solstone-windows-app.exe ",
-        );
+        // Another copy's uninstall cannot remove the entry this one owns.
+        let other =
+            PathBuf::from(r"C:\Users\test\Downloads\Solstone\current\solstone-windows-app.exe");
+        assert!(!remove_login_item_if_matches(&name, &other, &[]).unwrap());
         assert_eq!(
-            ensure_login_item(&name, &exe2, &[]).unwrap(),
-            EnsureOutcome::Registered
+            login_item_command(&name).unwrap().as_deref(),
+            Some(expected.as_str())
         );
 
-        // Remove deletes it; a second remove is a clean no-op.
-        assert_eq!(remove_login_item(&name).unwrap(), true);
+        // A stale entry (e.g. one a pre-fix portable copy wrote) is re-pointed in
+        // place, and then only the copy it now names can remove it.
+        assert_eq!(
+            ensure_login_item(&name, &other, &[]).unwrap(),
+            EnsureOutcome::Registered
+        );
+        assert!(!remove_login_item_if_matches(&name, &exe, &[]).unwrap());
+        assert!(remove_login_item_if_matches(&name, &other, &[]).unwrap());
         assert_eq!(login_item_command(&name).unwrap(), None);
-        assert_eq!(remove_login_item(&name).unwrap(), false);
+        assert!(!remove_login_item_if_matches(&name, &other, &[]).unwrap());
     }
 }

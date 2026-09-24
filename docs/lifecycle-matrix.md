@@ -8,7 +8,7 @@ shell is a pure renderer of the engine's honest `HealthDump`.
 
 | Surface | Mechanism | Used for |
 |---|---|---|
-| **Production** | per-user login/startup item into interactive Session 1 (autostart plugin / Velopack first-run hook) | normal operation |
+| **Production** | per-user `HKCU\…\Run` login item into interactive Session 1, ensured on each launch by the copy that owns it (the installed app over a portable one, never a dev build; see `AGENTS.md` § 6) | normal operation |
 | **Test** | low-privilege scheduled task (`LogonType=Interactive`) into Session 1 | the FlaUI smoke only |
 
 ## Single instance

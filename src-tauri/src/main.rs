@@ -36,15 +36,21 @@ fn main() -> ExitCode {
     // Velopack-aware entry — MUST run first. For the installer lifecycle args
     // (--veloapp-install / -updated / -obsolete / -uninstall) `run()` acts and
     // terminates the process. The uninstall fast-callback removes the per-user
-    // autostart login item so no stale `Run` entry survives the app's removal
-    // (registration itself is ensured idempotently on every normal launch, in the
-    // Tauri setup). For a normal launch (no veloapp arg) `run()` is a no-op and
-    // falls through to the CLI surface / GUI below.
+    // autostart login item so no stale `Run` entry survives the app's removal —
+    // only while the entry still names this executable, so it never deletes an
+    // entry pointing at another copy (registration itself is ensured on every
+    // normal launch by the copy that owns it, in the Tauri setup). For a normal
+    // launch (no veloapp arg) `run()` is a no-op and falls through to the CLI
+    // surface / GUI below.
     VelopackApp::build()
         .on_before_uninstall_fast_callback(|_version| {
-            let _ = platform_win::autostart::remove_login_item(
-                platform_win::autostart::LOGIN_ITEM_NAME,
-            );
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = platform_win::autostart::remove_login_item_if_matches(
+                    platform_win::autostart::LOGIN_ITEM_NAME,
+                    &exe,
+                    &[observer_model::FROM_AUTOSTART_ARG],
+                );
+            }
         })
         .run();
 

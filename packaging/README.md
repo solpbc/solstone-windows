@@ -21,9 +21,9 @@ coexistence model. winget manifest reference: [`winget/`](winget/).
 ## Layout
 
 - `hooks/`: the Velopack lifecycle handlers the app must be aware of
-  (`--veloapp-install`, `--veloapp-update`, `--veloapp-obsolete`, `--veloapp-firstrun`).
-  First-run registers the per-user autostart login item; the app being
-  Velopack-aware is what makes the install hooks exit 0.
+  (`--veloapp-install`, `--veloapp-updated`, `--veloapp-obsolete`, `--veloapp-uninstall`).
+  The app being Velopack-aware is what makes the install hooks exit 0. Autostart
+  is registered by the app on launch, not by a hook (`AGENTS.md` § 6).
 - `signing/`: release-artifact code signing (DigiCert KeyLocker / `smctl` via
   Velopack's `--signTemplate`). `SOLSTONE_SIGN=1` selects the signed finalizer
   transaction; its resolver-selected authentication and signing actions use the

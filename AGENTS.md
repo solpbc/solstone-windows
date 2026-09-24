@@ -222,11 +222,16 @@ See `docs/observer-contract-adoption.md`.
 
 - **Production launch:** a per-user login item into interactive Session 1 — a
   single named value under the `HKCU\…\CurrentVersion\Run` key (no admin, no
-  machine-wide `HKLM`, no scheduled task). It is *ensured idempotently on every
-  launch* (write-only-when-missing-or-stale, so it self-heals and never
-  duplicates) by `platform_win::autostart`, not tied to a one-shot install
-  signal; the Velopack uninstall hook removes it. **Test launch:** low-privilege
-  scheduled task (`LogonType=Interactive`) into Session 1 (FlaUI smoke only).
+  machine-wide `HKLM`, no scheduled task). The copy that owns it *ensures it
+  idempotently on every launch* (write-only-when-missing-or-stale, so it
+  self-heals and never duplicates) via `platform_win::autostart`, not tied to a
+  one-shot install signal. The app uses Velopack's locator to decide who may
+  write it: the installed copy always does; a portable copy (the ZIP, and so
+  every scoop install) only when the value does not already name an installed
+  copy; a dev build or copied binary never does. The Velopack uninstall hook
+  removes it only while it still names the executable being uninstalled. **Test
+  launch:** low-privilege scheduled task (`LogonType=Interactive`) into Session
+  1 (FlaUI smoke only).
   Never conflate them.
 - **Handlers:** lock/unlock pause+resume; display-change re-acquires the screen
   source; power suspend/resume pause+resume. A required-source fault drops out of
@@ -235,7 +240,7 @@ See `docs/observer-contract-adoption.md`.
   Settings on the first and exits.
 - **Velopack hooks** the app must handle: `--veloapp-install`, `--veloapp-updated`,
   `--veloapp-obsolete`, `--veloapp-uninstall` (the uninstall fast-callback removes
-  the autostart login item). The app must be Velopack-aware so the hooks exit 0.
+  the autostart login item it owns). The app must be Velopack-aware so the hooks exit 0.
 
 See `docs/lifecycle-matrix.md` for the full table.
 

@@ -14,9 +14,8 @@
 #   --veloapp-obsolete     this version is being superseded
 #   --veloapp-uninstall    the app is being removed
 #
-# First launch after install is signaled by the VELOPACK_FIRSTRUN env var, which
-# fires `on_first_run` in main.rs (registering the per-user autostart login item)
-# and then CONTINUES to the tray - it is not a separate process exit.
+# Autostart does not ride a first-run signal: the app ensures its per-user
+# login item on every normal launch (see AGENTS.md section 6).
 #
 # This file remains as living documentation of that contract and as a no-op log if
 # ever invoked manually. The binary (src-tauri/src/main.rs) owns the dispatch;
@@ -31,7 +30,7 @@ switch ($Phase) {
     "updated"   { Write-Host "velopack: updated (handled in-process by the EXE)" }
     "obsolete"  { Write-Host "velopack: obsolete (handled in-process by the EXE)" }
     "uninstall" { Write-Host "velopack: uninstall (handled in-process by the EXE)" }
-    "firstrun"  { Write-Host "velopack: firstrun - autostart registers in the EXE (VELOPACK_FIRSTRUN)" }
+    "firstrun"  { Write-Host "velopack: firstrun (autostart is ensured by the EXE on launch)" }
     default     { Write-Host "velopack: documentation-only hook; no phase action" }
 }
 exit 0

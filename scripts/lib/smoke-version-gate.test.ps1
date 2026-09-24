@@ -51,7 +51,7 @@ $LaunchIndex = $SmokeSource.IndexOf('Invoke-InSession1 "solstone-smoke-app" $App
 $GateBannerIndex = $SmokeSource.IndexOf('Write-Host "=== run health/render gate in Session 0 ==="', $LaunchIndex)
 $GateIndex = $SmokeSource.IndexOf('& $DriverExe @GateArgs', $GateBannerIndex)
 $GateFailureIndex = $SmokeSource.IndexOf('if ($GateExit -ne 0)', $GateIndex)
-$GateExitIndex = $SmokeSource.IndexOf('exit $GateExit', $GateFailureIndex)
+$GateExitIndex = $SmokeSource.IndexOf('$SmokeExit = $GateExit', $GateFailureIndex)
 $VersionIndex = $SmokeSource.IndexOf('Assert-NativeProofHealthVersion', $GateExitIndex)
 $Tier1Index = $SmokeSource.IndexOf('if (-not $FailInject)', $VersionIndex)
 Assert-True (
