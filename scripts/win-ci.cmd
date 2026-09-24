@@ -53,6 +53,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\preflight-releas
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\lock-guard.test.ps1 || exit /b 1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\package-entrypoints.test.ps1 || exit /b 1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\smoke-version-gate.test.ps1 || exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\lib\native-proof-host-state.test.ps1 || exit /b 1
 call scripts\lib\preflight-toolchain.test.cmd || exit /b 1
 call scripts\preflight-toolchain.cmd || exit /b 1
 

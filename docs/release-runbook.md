@@ -421,6 +421,21 @@ The selected smoke must run with fallback disabled, emit the load-bearing
 version from `/healthz`. Post-smoke strict validation and companion bytes must be
 unchanged.
 
+Setup registers the proof's copy with the signed-in user whatever `LOCALAPPDATA`
+says: it rewrites `HKCU\...\Uninstall\Solstone` and the Desktop and Start Menu
+shortcuts to point into the proof root. So `scripts/native-proof-host-state.ps1`
+brackets setup through smoke. Before setup it records the Uninstall entry, the
+`Run\Solstone` login item and the top-level shortcuts in the Desktop, Start Menu
+Programs and Startup folders into `<proof root>.host-state.json`, beside the
+proof root. After smoke, or after whichever step from setup on failed, it puts
+them back and then checks the result: the entry and login item must equal what
+was recorded, a shortcut the proof created must be gone, a shortcut it repointed
+must have its recorded bytes, and no shortcut, Uninstall entry or login item may
+still name the proof root.
+A failed capture stops the proof before setup. A failed restore fails the proof
+and names the proof's own failure too, if there was one. The before and after
+report is in `<proof root>.host-state.json.log`.
+
 Success atomically writes
 `target/release-evidence/<VERSION>/windows-native-proof.json`. The receipt records
 only normalized identity, hashes, explicit install/smoke success, isolated-clean

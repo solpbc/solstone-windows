@@ -16,9 +16,10 @@ use support::{
     VELOPACK_NUPKG_ENTRY_NAMES, VELOPACK_PORTABLE_ENTRY_NAMES, VERSION,
 };
 use xtask::native_release_proof::{
-    prove_native, NativeProofRuntime, STEP_10_REVALIDATE, STEP_11_RECEIPT, STEP_11_RECEIPT_STAGED,
-    STEP_1_CLASSIFY, STEP_2_IDENTITY, STEP_3_TOOLS, STEP_4_CONTAINERS, STEP_5_INSTALL_ROOT,
-    STEP_5_ROOT_READY, STEP_6_INSTALL, STEP_7_INSTALLED_IDENTITY, STEP_8_DUMP_STATE, STEP_9_SMOKE,
+    prove_native, NativeProofRuntime, STEP_10_HOST_STATE_RESTORE, STEP_10_REVALIDATE,
+    STEP_11_RECEIPT, STEP_11_RECEIPT_STAGED, STEP_1_CLASSIFY, STEP_2_IDENTITY, STEP_3_TOOLS,
+    STEP_4_CONTAINERS, STEP_5_INSTALL_ROOT, STEP_5_ROOT_READY, STEP_6_HOST_STATE_CAPTURE,
+    STEP_6_INSTALL, STEP_7_INSTALLED_IDENTITY, STEP_8_DUMP_STATE, STEP_9_SMOKE,
 };
 use xtask::release_clock::FixedClock;
 use xtask::release_finalizer::finalize;
@@ -195,6 +196,12 @@ fn assert_witness_order(events: &[WitnessEvent]) {
     let step_4 = phase_index(events, STEP_4_CONTAINERS);
     let step_5 = phase_index(events, STEP_5_INSTALL_ROOT);
     let root_ready = phase_index(events, STEP_5_ROOT_READY);
+    let host_state_capture_step = phase_index(events, STEP_6_HOST_STATE_CAPTURE);
+    let host_state_capture = invocation_index(events, |program, args| {
+        program == Path::new(POWERSHELL)
+            && action_uses_script(args, Path::new("scripts/native-proof-host-state.ps1"))
+            && args.windows(2).any(|pair| pair == ["-Mode", "Capture"])
+    });
     let step_6 = phase_index(events, STEP_6_INSTALL);
     let installer = invocation_index(events, |program, args| {
         program.ends_with(format!("solstone-setup-{VERSION}.exe"))
@@ -211,6 +218,12 @@ fn assert_witness_order(events: &[WitnessEvent]) {
             && args.iter().any(|arg| arg == "scripts/smoke.ps1")
             && args.iter().any(|arg| arg == "-DisableInstalledFallback")
     });
+    let host_state_restore_step = phase_index(events, STEP_10_HOST_STATE_RESTORE);
+    let host_state_restore = invocation_index(events, |program, args| {
+        program == Path::new(POWERSHELL)
+            && action_uses_script(args, Path::new("scripts/native-proof-host-state.ps1"))
+            && args.windows(2).any(|pair| pair == ["-Mode", "Restore"])
+    });
     let step_10 = phase_index(events, STEP_10_REVALIDATE);
     let step_11 = phase_index(events, STEP_11_RECEIPT);
     let receipt_staged = phase_index(events, STEP_11_RECEIPT_STAGED);
@@ -222,6 +235,8 @@ fn assert_witness_order(events: &[WitnessEvent]) {
         step_4,
         step_5,
         root_ready,
+        host_state_capture_step,
+        host_state_capture,
         step_6,
         installer,
         step_7,
@@ -229,6 +244,8 @@ fn assert_witness_order(events: &[WitnessEvent]) {
         dump_state,
         step_9,
         smoke,
+        host_state_restore_step,
+        host_state_restore,
         step_10,
         step_11,
         receipt_staged,

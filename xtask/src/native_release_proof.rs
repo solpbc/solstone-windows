@@ -42,6 +42,7 @@ const SOURCE_RUST_NOTICES: &str = "RUST_DEPENDENCY_NOTICES.txt";
 const NUPKG_RUST_NOTICES: &str = "lib/app/RUST_DEPENDENCY_NOTICES.txt";
 const INSTALLED_RUST_NOTICES: &str = "current/RUST_DEPENDENCY_NOTICES.txt";
 const PROOF_ROOT: &str = "target/release-native-proof";
+const HOST_STATE_SCRIPT: &str = "scripts/native-proof-host-state.ps1";
 const PROOF_TEMP_ATTEMPTS: usize = 16;
 
 pub const STEP_1_CLASSIFY: &str = "native-proof.step-1.classify";
@@ -50,10 +51,12 @@ pub const STEP_3_TOOLS: &str = "native-proof.step-3.tools";
 pub const STEP_4_CONTAINERS: &str = "native-proof.step-4.containers";
 pub const STEP_5_INSTALL_ROOT: &str = "native-proof.step-5.install-root";
 pub const STEP_5_ROOT_READY: &str = "native-proof.step-5.install-root-ready";
+pub const STEP_6_HOST_STATE_CAPTURE: &str = "native-proof.step-6.host-state-capture";
 pub const STEP_6_INSTALL: &str = "native-proof.step-6.install";
 pub const STEP_7_INSTALLED_IDENTITY: &str = "native-proof.step-7.installed-identity";
 pub const STEP_8_DUMP_STATE: &str = "native-proof.step-8.dump-state";
 pub const STEP_9_SMOKE: &str = "native-proof.step-9.smoke";
+pub const STEP_10_HOST_STATE_RESTORE: &str = "native-proof.step-10.host-state-restore";
 pub const STEP_10_REVALIDATE: &str = "native-proof.step-10.revalidate";
 pub const STEP_11_RECEIPT: &str = "native-proof.step-11.receipt";
 pub const STEP_11_RECEIPT_STAGED: &str = "native-proof.step-11.receipt-staged";
@@ -98,6 +101,7 @@ pub enum NativeProofError {
     RustNoticeContainerBaseline,
     ProofRoot,
     PreexistingInstalledApp,
+    HostStateCapture,
     SetupInvocation,
     SetupFailed,
     InstalledAppMissing,
@@ -114,6 +118,9 @@ pub enum NativeProofError {
     SmokeInvocation,
     SmokeFailed,
     SmokeEvidenceMissing,
+    /// The box's registration of its real install could not be put back. Carries
+    /// the proof's own failure when there was one, so neither is hidden.
+    HostStateRestore(Option<Box<NativeProofError>>),
     PostSmokeClassification,
     CandidateMutated,
     NoticeSourceChanged,
@@ -212,6 +219,10 @@ impl fmt::Display for NativeProofError {
                 formatter,
                 "native proof isolated root already contains the canonical app; use a newly empty proof root and retry"
             ),
+            Self::HostStateCapture => write!(
+                formatter,
+                "native proof could not record the box's Solstone uninstall entry, login item and shortcuts before setup; nothing was installed, so repair scripts/native-proof-host-state.ps1 and retry"
+            ),
             Self::SetupInvocation => write!(
                 formatter,
                 "native proof could not invoke the candidate's canonical setup executable; restore that exact setup and retry"
@@ -276,6 +287,16 @@ impl fmt::Display for NativeProofError {
                 formatter,
                 "native proof smoke did not emit literal SMOKE_OK; restore the load-bearing health/render gate and retry"
             ),
+            Self::HostStateRestore(proof) => {
+                write!(
+                    formatter,
+                    "native proof could not put back the box's Solstone uninstall entry, login item and shortcuts; read the .host-state.json.log beside the proof root under target/release-native-proof and repair the box by hand before another proof"
+                )?;
+                match proof {
+                    Some(proof) => write!(formatter, " (the proof had already failed: {proof})"),
+                    None => Ok(()),
+                }
+            }
             Self::PostSmokeClassification => write!(
                 formatter,
                 "native proof candidate failed strict validation after smoke; restore immutable finalized candidate bytes and retry"
@@ -463,138 +484,162 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     require_absent(&installed_app)?;
     require_empty_proof_root(&local_app_data)?;
 
-    record_step(runner, STEP_6_INSTALL)?;
-    let setup_relative = names.setup();
-    let setup_bytes = candidate
-        .read(setup_relative, "native proof setup executable")
-        .map_err(|_| NativeProofError::SetupInvocation)?;
-    let setup_sha256 = sha256_hex(&setup_bytes);
-    let setup_program = child_process_path_text(&candidate.canonical_path().join(setup_relative))
-        .ok_or(NativeProofError::SetupInvocation)?;
-    let install_root_text =
-        child_process_path_text(&install_root).ok_or(NativeProofError::SetupInvocation)?;
-    let local_app_data_text =
-        child_process_path_text(&local_app_data).ok_or(NativeProofError::SetupInvocation)?;
-    let isolated_env = BTreeMap::from([("LOCALAPPDATA".to_owned(), local_app_data_text)]);
-    let install_output = runner
-        .run(
-            Path::new(&setup_program),
-            &[
-                "--silent".to_owned(),
-                "--installto".to_owned(),
-                install_root_text,
-            ],
-            None,
-            Some(&isolated_env),
-        )
-        .map_err(|_| NativeProofError::SetupInvocation)?;
-    if install_output.status != 0 {
-        return Err(NativeProofError::SetupFailed);
-    }
-    match fs::symlink_metadata(&installed_app) {
-        Ok(_) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Err(NativeProofError::InstalledAppMissing)
+    // Setup registers the proof's copy with the signed-in user whatever
+    // LOCALAPPDATA says (the Uninstall entry and both shortcuts), so everything
+    // from setup through smoke is bracketed by a capture and a restore of that
+    // registration, pass or fail.
+    record_step(runner, STEP_6_HOST_STATE_CAPTURE)?;
+    let host_state = HostStateGuard::new(&checkout, &selection, &local_app_data)?;
+    host_state.capture(runner)?;
+    let installed = (|| {
+        record_step(runner, STEP_6_INSTALL)?;
+        let setup_relative = names.setup();
+        let setup_bytes = candidate
+            .read(setup_relative, "native proof setup executable")
+            .map_err(|_| NativeProofError::SetupInvocation)?;
+        let setup_sha256 = sha256_hex(&setup_bytes);
+        let setup_program =
+            child_process_path_text(&candidate.canonical_path().join(setup_relative))
+                .ok_or(NativeProofError::SetupInvocation)?;
+        let install_root_text =
+            child_process_path_text(&install_root).ok_or(NativeProofError::SetupInvocation)?;
+        let local_app_data_text =
+            child_process_path_text(&local_app_data).ok_or(NativeProofError::SetupInvocation)?;
+        let isolated_env = BTreeMap::from([("LOCALAPPDATA".to_owned(), local_app_data_text)]);
+        let install_output = runner
+            .run(
+                Path::new(&setup_program),
+                &[
+                    "--silent".to_owned(),
+                    "--installto".to_owned(),
+                    install_root_text,
+                ],
+                None,
+                Some(&isolated_env),
+            )
+            .map_err(|_| NativeProofError::SetupInvocation)?;
+        if install_output.status != 0 {
+            return Err(NativeProofError::SetupFailed);
         }
-        Err(_) => return Err(NativeProofError::InstalledAppInvalid),
-    }
+        match fs::symlink_metadata(&installed_app) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Err(NativeProofError::InstalledAppMissing)
+            }
+            Err(_) => return Err(NativeProofError::InstalledAppInvalid),
+        }
 
-    record_step(runner, STEP_7_INSTALLED_IDENTITY)?;
-    let installed_root = ContainedRoot::new(
-        &install_root,
-        "native proof install root",
-        UnixModePolicy::AllowExecute,
-    )
-    .map_err(|_| NativeProofError::InstalledAppInvalid)?;
-    let installed_bytes = installed_root
-        .read(INSTALLED_EXECUTABLE, "native proof installed executable")
+        record_step(runner, STEP_7_INSTALLED_IDENTITY)?;
+        let installed_root = ContainedRoot::new(
+            &install_root,
+            "native proof install root",
+            UnixModePolicy::AllowExecute,
+        )
         .map_err(|_| NativeProofError::InstalledAppInvalid)?;
-    let installed_evidence = executable_evidence(&installed_bytes)?;
-    if installed_evidence != finalization_receipt.packaged_executable
-        || installed_evidence != nupkg
-        || installed_evidence != portable
-    {
-        return Err(NativeProofError::InstalledBaselineMismatch);
-    }
-    let installed_notice_bytes = installed_root
-        .read(
-            INSTALLED_NOTICE,
-            "native proof installed third-party notice",
-        )
-        .map_err(|_| NativeProofError::InstalledNoticeInvalid)?;
-    let installed_notice =
-        byte_evidence(&installed_notice_bytes).ok_or(NativeProofError::InstalledNoticeInvalid)?;
-    if installed_notice != source_notice
-        || installed_notice != nupkg_notice
-        || installed_notice != portable_notice
-    {
-        return Err(NativeProofError::InstalledNoticeBaselineMismatch);
-    }
-    let installed_rust_notice_bytes = installed_root
-        .read(
-            INSTALLED_RUST_NOTICES,
-            "native proof installed Rust dependency notices",
-        )
-        .map_err(|_| NativeProofError::InstalledRustNoticeInvalid)?;
-    let installed_rust_notice = byte_evidence(&installed_rust_notice_bytes)
-        .ok_or(NativeProofError::InstalledRustNoticeInvalid)?;
-    if installed_rust_notice != source_rust_notice
-        || installed_rust_notice != nupkg_rust_notice
-        || installed_rust_notice != portable_rust_notice
-    {
-        return Err(NativeProofError::InstalledRustNoticeBaselineMismatch);
-    }
+        let installed_bytes = installed_root
+            .read(INSTALLED_EXECUTABLE, "native proof installed executable")
+            .map_err(|_| NativeProofError::InstalledAppInvalid)?;
+        let installed_evidence = executable_evidence(&installed_bytes)?;
+        if installed_evidence != finalization_receipt.packaged_executable
+            || installed_evidence != nupkg
+            || installed_evidence != portable
+        {
+            return Err(NativeProofError::InstalledBaselineMismatch);
+        }
+        let installed_notice_bytes = installed_root
+            .read(
+                INSTALLED_NOTICE,
+                "native proof installed third-party notice",
+            )
+            .map_err(|_| NativeProofError::InstalledNoticeInvalid)?;
+        let installed_notice = byte_evidence(&installed_notice_bytes)
+            .ok_or(NativeProofError::InstalledNoticeInvalid)?;
+        if installed_notice != source_notice
+            || installed_notice != nupkg_notice
+            || installed_notice != portable_notice
+        {
+            return Err(NativeProofError::InstalledNoticeBaselineMismatch);
+        }
+        let installed_rust_notice_bytes = installed_root
+            .read(
+                INSTALLED_RUST_NOTICES,
+                "native proof installed Rust dependency notices",
+            )
+            .map_err(|_| NativeProofError::InstalledRustNoticeInvalid)?;
+        let installed_rust_notice = byte_evidence(&installed_rust_notice_bytes)
+            .ok_or(NativeProofError::InstalledRustNoticeInvalid)?;
+        if installed_rust_notice != source_rust_notice
+            || installed_rust_notice != nupkg_rust_notice
+            || installed_rust_notice != portable_rust_notice
+        {
+            return Err(NativeProofError::InstalledRustNoticeBaselineMismatch);
+        }
 
-    record_step(runner, STEP_8_DUMP_STATE)?;
-    let installed_app_program =
-        child_process_path_text(&installed_app).ok_or(NativeProofError::DumpStateInvocation)?;
-    let dump = runner
-        .run(
-            Path::new(&installed_app_program),
-            &["--dump-state".to_owned()],
-            None,
-            Some(&isolated_env),
-        )
-        .map_err(|_| NativeProofError::DumpStateInvocation)?;
-    if dump.status != 0 {
-        return Err(NativeProofError::DumpStateFailed);
-    }
-    validate_dump_state_version(&dump.stdout, &manifest.version)?;
+        record_step(runner, STEP_8_DUMP_STATE)?;
+        let installed_app_program =
+            child_process_path_text(&installed_app).ok_or(NativeProofError::DumpStateInvocation)?;
+        let dump = runner
+            .run(
+                Path::new(&installed_app_program),
+                &["--dump-state".to_owned()],
+                None,
+                Some(&isolated_env),
+            )
+            .map_err(|_| NativeProofError::DumpStateInvocation)?;
+        if dump.status != 0 {
+            return Err(NativeProofError::DumpStateFailed);
+        }
+        validate_dump_state_version(&dump.stdout, &manifest.version)?;
 
-    record_step(runner, STEP_9_SMOKE)?;
-    let smoke_args = substitute_action(
-        &selection.actions.native_smoke,
-        &BTreeMap::from([
-            (
-                "{installed_exe}",
-                child_process_path_text(&installed_app).ok_or(NativeProofError::SmokeInvocation)?,
-            ),
-            ("{expected_version}", manifest.version.clone()),
-            (
-                "{expected_sha256}",
-                finalization_receipt.packaged_executable.sha256.clone(),
-            ),
-            (
-                "{dotnet_path}",
-                child_process_path_text(&selection.tools.dotnet.path)
-                    .ok_or(NativeProofError::SmokeInvocation)?,
-            ),
-        ]),
-    )?;
-    let smoke = runner
-        .run(
-            &selection.actions.native_smoke.program,
-            &smoke_args,
-            None,
-            Some(&isolated_env),
-        )
-        .map_err(|_| NativeProofError::SmokeInvocation)?;
-    if smoke.status != 0 {
-        return Err(NativeProofError::SmokeFailed);
-    }
-    if !has_literal_line(&smoke.stdout, "SMOKE_OK") {
-        return Err(NativeProofError::SmokeEvidenceMissing);
-    }
+        record_step(runner, STEP_9_SMOKE)?;
+        let smoke_args = substitute_action(
+            &selection.actions.native_smoke,
+            &BTreeMap::from([
+                (
+                    "{installed_exe}",
+                    child_process_path_text(&installed_app)
+                        .ok_or(NativeProofError::SmokeInvocation)?,
+                ),
+                ("{expected_version}", manifest.version.clone()),
+                (
+                    "{expected_sha256}",
+                    finalization_receipt.packaged_executable.sha256.clone(),
+                ),
+                (
+                    "{dotnet_path}",
+                    child_process_path_text(&selection.tools.dotnet.path)
+                        .ok_or(NativeProofError::SmokeInvocation)?,
+                ),
+            ]),
+        )?;
+        let smoke = runner
+            .run(
+                &selection.actions.native_smoke.program,
+                &smoke_args,
+                None,
+                Some(&isolated_env),
+            )
+            .map_err(|_| NativeProofError::SmokeInvocation)?;
+        if smoke.status != 0 {
+            return Err(NativeProofError::SmokeFailed);
+        }
+        if !has_literal_line(&smoke.stdout, "SMOKE_OK") {
+            return Err(NativeProofError::SmokeEvidenceMissing);
+        }
+        Ok((setup_sha256, installed_evidence))
+    })();
+    let restore_phase = record_step(runner, STEP_10_HOST_STATE_RESTORE);
+    let restored = host_state.restore(runner);
+    let (setup_sha256, installed_evidence) = match (installed, restored, restore_phase) {
+        (installed, Err(()), _) => {
+            return Err(NativeProofError::HostStateRestore(
+                installed.err().map(Box::new),
+            ))
+        }
+        (Err(error), Ok(()), _) => return Err(error),
+        (Ok(_), Ok(()), Err(error)) => return Err(error),
+        (Ok(installed), Ok(()), Ok(())) => installed,
+    };
 
     record_step(runner, STEP_10_REVALIDATE)?;
     rust_release_manifest::validate_release_dir_with_facts(release_dir, runtime.facts)
@@ -657,6 +702,80 @@ pub fn prove_native<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         manifest_sha256,
         receipt_relative_path,
     })
+}
+
+/// Runs `scripts/native-proof-host-state.ps1` under the resolver-selected
+/// PowerShell. Its state file sits beside the proof root, never inside it,
+/// because the proof root must be empty when setup runs.
+struct HostStateGuard {
+    program: PathBuf,
+    script: String,
+    state: String,
+    proof_root: String,
+}
+
+impl HostStateGuard {
+    fn new(
+        checkout: &ContainedRoot,
+        selection: &ReleaseToolSelection,
+        local_app_data: &Path,
+    ) -> Result<Self, NativeProofError> {
+        let name = local_app_data
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or(NativeProofError::HostStateCapture)?;
+        let state = local_app_data.with_file_name(format!("{name}.host-state.json"));
+        Ok(Self {
+            program: selection.tools.powershell.path.clone(),
+            script: child_process_path_text(&checkout.canonical_path().join(HOST_STATE_SCRIPT))
+                .ok_or(NativeProofError::HostStateCapture)?,
+            state: child_process_path_text(&state).ok_or(NativeProofError::HostStateCapture)?,
+            proof_root: child_process_path_text(local_app_data)
+                .ok_or(NativeProofError::HostStateCapture)?,
+        })
+    }
+
+    fn args(&self, mode: &str) -> Vec<String> {
+        let mut args = vec![
+            "-NoProfile".to_owned(),
+            "-ExecutionPolicy".to_owned(),
+            "Bypass".to_owned(),
+            "-File".to_owned(),
+            self.script.clone(),
+            "-Mode".to_owned(),
+            mode.to_owned(),
+            "-StatePath".to_owned(),
+            self.state.clone(),
+        ];
+        if mode == "Restore" {
+            args.extend(["-ProofRoot".to_owned(), self.proof_root.clone()]);
+        }
+        args
+    }
+
+    fn capture<R: CommandRunner + ?Sized>(&self, runner: &R) -> Result<(), NativeProofError> {
+        match runner.run(&self.program, &self.args("Capture"), None, None) {
+            Ok(output)
+                if output.status == 0
+                    && has_literal_line(&output.stdout, "HOST_STATE_CAPTURED") =>
+            {
+                Ok(())
+            }
+            _ => Err(NativeProofError::HostStateCapture),
+        }
+    }
+
+    fn restore<R: CommandRunner + ?Sized>(&self, runner: &R) -> Result<(), ()> {
+        match runner.run(&self.program, &self.args("Restore"), None, None) {
+            Ok(output)
+                if output.status == 0
+                    && has_literal_line(&output.stdout, "HOST_STATE_RESTORED") =>
+            {
+                Ok(())
+            }
+            _ => Err(()),
+        }
+    }
 }
 
 fn read_matching_finalization_receipt(

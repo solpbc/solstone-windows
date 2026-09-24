@@ -338,6 +338,10 @@ pub enum NativeProofMutation {
     SmokeMutatesArtifact,
     SmokeMutatesManifest,
     SmokeMutatesSourceNotice,
+    HostStateCaptureFailure,
+    HostStateRestoreFailure,
+    HostStateRestoreMissingOk,
+    SmokeFailureAndHostStateRestoreFailure,
     ReceiptPromotionRace,
 }
 
@@ -1144,6 +1148,11 @@ impl CommandRunner for FakeReleaseRunner {
             Some(POWERSHELL) if args.iter().any(|arg| arg == "scripts/smoke.ps1") => {
                 self.run_native_smoke(args, env)
             }
+            Some(POWERSHELL)
+                if action_uses_script(args, Path::new("scripts/native-proof-host-state.ps1")) =>
+            {
+                self.run_native_host_state(args, env)
+            }
             Some(program) if Path::new(program) == self.native_setup_path() => {
                 self.run_native_installer(args, env)
             }
@@ -1258,6 +1267,73 @@ impl FakeReleaseRunner {
         Ok(Self::output(Vec::new()))
     }
 
+    /// Stands in for the host-state guard: capture writes the state file beside
+    /// a fresh proof root, and restore requires that file and the same root.
+    fn run_native_host_state(
+        &self,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        if env.is_some() {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        let state = PathBuf::from(argument_after(args, "-StatePath")?);
+        let proof_root = state
+            .to_str()
+            .and_then(|text| text.strip_suffix(".host-state.json"))
+            .map(PathBuf::from)
+            .ok_or(CommandRunnerError::UnexpectedInvocation)?;
+        if proof_root.parent()
+            != Some(
+                self.checkout
+                    .join(format!("target/release-native-proof/{VERSION}"))
+                    .as_path(),
+            )
+        {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        match argument_after(args, "-Mode")? {
+            "Capture" => {
+                if args.iter().any(|arg| arg == "-ProofRoot")
+                    || state.exists()
+                    || !proof_root.is_dir()
+                    || fs::read_dir(&proof_root)
+                        .map_err(|_| CommandRunnerError::UnexpectedInvocation)?
+                        .next()
+                        .is_some()
+                {
+                    return Err(CommandRunnerError::UnexpectedInvocation);
+                }
+                if self.native_proof_mutation == NativeProofMutation::HostStateCaptureFailure {
+                    return Ok(Self::failure(b"host state could not be read"));
+                }
+                fs::write(&state, b"{}").map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+                Ok(Self::output(
+                    b"host-state before: recorded\nHOST_STATE_CAPTURED\n".to_vec(),
+                ))
+            }
+            "Restore" => {
+                if Path::new(argument_after(args, "-ProofRoot")?) != proof_root || !state.is_file()
+                {
+                    return Err(CommandRunnerError::UnexpectedInvocation);
+                }
+                match self.native_proof_mutation {
+                    NativeProofMutation::HostStateRestoreFailure
+                    | NativeProofMutation::SmokeFailureAndHostStateRestoreFailure => {
+                        Ok(Self::failure(b"shortcut still points into the proof root"))
+                    }
+                    NativeProofMutation::HostStateRestoreMissingOk => {
+                        Ok(Self::output(b"host-state after: restored\n".to_vec()))
+                    }
+                    _ => Ok(Self::output(
+                        b"host-state after: restored\nHOST_STATE_RESTORED\n".to_vec(),
+                    )),
+                }
+            }
+            _ => Err(CommandRunnerError::UnexpectedInvocation),
+        }
+    }
+
     fn run_native_smoke(
         &self,
         args: &[String],
@@ -1293,7 +1369,10 @@ impl FakeReleaseRunner {
             return Err(CommandRunnerError::UnexpectedInvocation);
         }
         match self.native_proof_mutation {
-            NativeProofMutation::SmokeFailure => Ok(Self::failure(b"health/render failed")),
+            NativeProofMutation::SmokeFailure
+            | NativeProofMutation::SmokeFailureAndHostStateRestoreFailure => {
+                Ok(Self::failure(b"health/render failed"))
+            }
             NativeProofMutation::SmokeMissingOk => {
                 Ok(Self::output(b"health/render gate passed\n".to_vec()))
             }

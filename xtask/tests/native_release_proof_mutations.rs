@@ -19,9 +19,10 @@ use support::{
     POWERSHELL, SIGNED_APP_BYTES, VERSION,
 };
 use xtask::native_release_proof::{
-    prove_native, NativeProofError, NativeProofRuntime, STEP_10_REVALIDATE, STEP_11_RECEIPT,
-    STEP_11_RECEIPT_STAGED, STEP_1_CLASSIFY, STEP_2_IDENTITY, STEP_3_TOOLS, STEP_4_CONTAINERS,
-    STEP_5_ROOT_READY, STEP_6_INSTALL, STEP_7_INSTALLED_IDENTITY, STEP_8_DUMP_STATE, STEP_9_SMOKE,
+    prove_native, NativeProofError, NativeProofRuntime, STEP_10_HOST_STATE_RESTORE,
+    STEP_10_REVALIDATE, STEP_11_RECEIPT, STEP_11_RECEIPT_STAGED, STEP_1_CLASSIFY, STEP_2_IDENTITY,
+    STEP_3_TOOLS, STEP_4_CONTAINERS, STEP_5_ROOT_READY, STEP_6_HOST_STATE_CAPTURE, STEP_6_INSTALL,
+    STEP_7_INSTALLED_IDENTITY, STEP_8_DUMP_STATE, STEP_9_SMOKE,
 };
 use xtask::release_clock::{Clock, ClockError, FixedClock, UtcTimestamp};
 use xtask::release_container::{ContainerKind, ReleaseContainerError};
@@ -549,6 +550,57 @@ fn smoke_selection_and_green_evidence_are_fail_closed() {
 }
 
 #[test]
+fn host_state_is_captured_before_setup_and_restored_pass_or_fail() {
+    run_case(
+        "host-state-capture-failure",
+        SelectionMode::Signed,
+        NativeProofMutation::HostStateCaptureFailure,
+        |_| {},
+        NativeProofError::HostStateCapture,
+        "could not record the box's Solstone uninstall entry",
+        STEP_6_HOST_STATE_CAPTURE,
+        SeamExpectation {
+            resolver: true,
+            installer: false,
+            smoke: false,
+        },
+    );
+    for (label, mutation) in [
+        (
+            "host-state-restore-failure",
+            NativeProofMutation::HostStateRestoreFailure,
+        ),
+        (
+            "host-state-restore-missing-literal-ok",
+            NativeProofMutation::HostStateRestoreMissingOk,
+        ),
+    ] {
+        run_case(
+            label,
+            SelectionMode::Signed,
+            mutation,
+            |_| {},
+            NativeProofError::HostStateRestore(None),
+            "could not put back the box's Solstone uninstall entry",
+            STEP_9_SMOKE,
+            SeamExpectation::all(),
+        );
+    }
+    // A failed restore after a failed proof reports both, so fixing the box
+    // does not hide why the proof failed.
+    run_case(
+        "smoke-and-host-state-restore-failure",
+        SelectionMode::Signed,
+        NativeProofMutation::SmokeFailureAndHostStateRestoreFailure,
+        |_| {},
+        NativeProofError::HostStateRestore(Some(Box::new(NativeProofError::SmokeFailed))),
+        "the proof had already failed: native proof explicit-binary health/render smoke failed",
+        STEP_9_SMOKE,
+        SeamExpectation::all(),
+    );
+}
+
+#[test]
 fn candidate_mutation_during_smoke_invalidates_proof() {
     run_case(
         "smoke-mutates-artifact",
@@ -747,6 +799,7 @@ fn run_case(
     assert_private_diagnostic(&error, prepared.checkout.root());
     let events = prepared.proof_events();
     assert_last_step(&events, last_step);
+    assert_host_state_bracket(&events, label);
     assert_eq!(
         has_resolver(&events),
         seams.resolver,
@@ -831,12 +884,67 @@ fn assert_private_diagnostic(error: &NativeProofError, checkout: &Path) {
     }
 }
 
+/// The last step the proof reached. The host-state restore is excluded: it runs
+/// after every failure from setup on, and `assert_host_state_bracket` checks it.
 fn assert_last_step(events: &[WitnessEvent], expected: &str) {
     let last = events.iter().rev().find_map(|event| match event {
-        WitnessEvent::Phase(phase) => Some(phase.as_str()),
-        WitnessEvent::Invocation { .. } => None,
+        WitnessEvent::Phase(phase) if phase != STEP_10_HOST_STATE_RESTORE => Some(phase.as_str()),
+        WitnessEvent::Phase(_) | WitnessEvent::Invocation { .. } => None,
     });
     assert_eq!(last, Some(expected));
+}
+
+/// Setup never runs without a capture before it, and once setup has run the
+/// restore follows every native action, whether the proof passed or failed.
+fn assert_host_state_bracket(events: &[WitnessEvent], label: &str) {
+    let positions = |predicate: &dyn Fn(&Path, &[String]) -> bool| -> Vec<usize> {
+        events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match event {
+                WitnessEvent::Invocation { program, args, .. } if predicate(program, args) => {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let host_state = |mode: &'static str| {
+        move |program: &Path, args: &[String]| {
+            program == Path::new(POWERSHELL)
+                && action_uses_script(args, Path::new("scripts/native-proof-host-state.ps1"))
+                && args
+                    .windows(2)
+                    .any(|pair| pair[0] == "-Mode" && pair[1] == mode)
+        }
+    };
+    let captures = positions(&host_state("Capture"));
+    let restores = positions(&host_state("Restore"));
+    let native_actions = positions(&|program: &Path, args: &[String]| {
+        (program.ends_with(format!("solstone-setup-{VERSION}.exe"))
+            && args.first().map(String::as_str) == Some("--silent"))
+            || program.ends_with("solstone-windows-app.exe")
+            || (program == Path::new(POWERSHELL)
+                && args.iter().any(|arg| arg == "scripts/smoke.ps1"))
+    });
+    assert!(captures.len() <= 1, "{label} captured host state twice");
+    assert!(restores.len() <= 1, "{label} restored host state twice");
+    match (native_actions.first(), native_actions.last()) {
+        (Some(first), Some(last)) => {
+            assert!(
+                captures.first().is_some_and(|capture| capture < first),
+                "{label} ran setup without capturing host state first"
+            );
+            assert!(
+                restores.first().is_some_and(|restore| restore > last),
+                "{label} did not restore host state after its native actions"
+            );
+        }
+        _ => assert!(
+            restores.is_empty(),
+            "{label} restored host state without having run setup"
+        ),
+    }
 }
 
 fn has_resolver(events: &[WitnessEvent]) -> bool {

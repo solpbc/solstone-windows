@@ -19,7 +19,9 @@
 # launch, then stops the instance it started, relaunches what was running (via a
 # Session-1 task, as the launch itself is), and restores the login item. It also requires the installed app under test to
 # have registered its own login item - the owner-visible "comes back after
-# reboot" behavior.
+# reboot" behavior. The Uninstall entry and shortcuts that Setup.exe repoints are
+# not this script's: xtask brackets setup and smoke with
+# scripts\native-proof-host-state.ps1, which puts those back.
 #
 # -FailInject: after the app reaches observing, stop the Windows Audio service so
 # the (required) system-audio source faults, then assert the observer honestly
