@@ -16,24 +16,36 @@ the FlaUI smoke gate are all in place and releasing (see
 
 ```text
 crates/
-  observer-model/      shared vocabulary + source traits + the HealthDump payload
-  observer-segment/    5-minute clock-boundary rotation math
-  observer-state/      honest state reducer (Observing is computed, never set)
-  observer-health/     --dump-state / /healthz serialization
-  observer-recovery/   incomplete-segment scan and finalize
-  observer-lifecycle/  backoff + circuit-breaker restart policy
-  observer-contract/   AutomationId source of truth + contract generator
-  capture-wgc/         Windows.Graphics.Capture screen source
-  capture-wasapi/      WASAPI system audio + microphone
-  platform-win/        session/power, single-instance, %LocalAppData%, fs
-  capture-engine/      the orchestrator (Tauri-agnostic, host-testable)
-src-tauri/             the tray-resident binary
-ui/                    the WebView2 front-end (vanilla TS + Vite)
-xtask/                 the workspace task runner
-harness/               the net48 FlaUI smoke driver
-packaging/             Velopack config + hooks + signing seam
-docs/                  architecture, contract, runbook, lifecycle
-spikes/                reference-only code (excluded from the build)
+  observer-model/          shared vocabulary + source traits + the HealthDump payload
+  observer-segment/        5-minute clock-boundary rotation math
+  observer-state/          honest state reducer (Observing is computed, never set)
+  observer-health/         --dump-state / /healthz serialization
+  observer-recovery/       incomplete-segment scan and finalize
+  observer-lifecycle/      backoff + circuit-breaker restart policy
+  observer-contract/       AutomationId source of truth + contract generator
+  observer-exclusion/      exclusion rules (apps, window titles, private browsing) + redaction
+  observer-hotkey/         global pause/resume hotkey model
+  observer-mic/            microphone priority, per-device disable, gain
+  observer-retention/      local-cache retention for confirmed-synced segments
+  observer-update/         honest update state model for the in-app updater
+  observer-log/            rotating file log, redaction helpers, panic logging
+  observer-pl/             PL wire protocol types (ingest, reconcile, custody proofs)
+  observer-nv12/           RGBA/BGRA to NV12 conversion for the screen encoder
+  observer-audio/          seal-time audio transform: downmix, resample, FLAC
+  observer-sample-timing/  video sample timestamps from frame arrivals
+  capture-screen-encode/   Media Foundation H.264 screen encoder
+  capture-wgc/             Windows.Graphics.Capture screen source
+  capture-wasapi/          WASAPI system audio + microphone
+  platform-win/            session/power, single-instance, %LocalAppData%, fs
+  pl-transport-win/        mTLS PL transport, pairing, upload coordination
+  capture-engine/          the orchestrator (Tauri-agnostic, host-testable)
+src-tauri/                 the tray-resident binary
+ui/                        the WebView2 front-end (vanilla TS + Vite)
+xtask/                     the workspace task runner
+harness/                   the net48 FlaUI smoke driver
+packaging/                 Velopack config + hooks + signing seam
+docs/                      architecture, contract, runbook, lifecycle
+spikes/                    reference-only code (excluded from the build)
 ```
 
 ## Privacy

@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Windows screen H.264 encoder seam. Part 1 exposes an inert stub; Media Foundation implementation follows in part 2."
+description = "Windows screen H.264 encoder over Media Foundation (IMFSinkWriter); an inert stub on non-Windows hosts."
 
 [lints]
 workspace = true
