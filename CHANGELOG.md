@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.10] - 2026-09-24
+
 ### Fixed
 
 - the solstone app now removes a segment from this PC only after checking your journal's reply against this PC's copy of every file in it. before, if you set local storage to keep segments for a number of days, a segment past that many days was removed without that check, so a file added to it later could be removed before it reached your journal.
