@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.11] - 2026-09-25
+
 ### Changed
 
 - the solstone app now always removes a segment from this PC once your journal confirms it has it, or that you removed it from your journal, so the "keep segments" choice in local storage is gone. anything an earlier version kept goes on the first sync after this update, once your journal has confirmed it.
