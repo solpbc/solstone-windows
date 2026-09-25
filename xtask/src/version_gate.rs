@@ -20,6 +20,7 @@ const WINGET_VERSION: &str = "packaging/winget/solpbc.Solstone.yaml";
 const WINGET_INSTALLER: &str = "packaging/winget/solpbc.Solstone.installer.yaml";
 const WINGET_LOCALE: &str = "packaging/winget/solpbc.Solstone.locale.en-US.yaml";
 const SCOOP_MANIFEST: &str = "packaging/scoop/solstone.json";
+const CHANGELOG: &str = "CHANGELOG.md";
 
 #[derive(Clone, Copy)]
 enum SurfaceParser {
@@ -67,9 +68,14 @@ pub struct SurfaceMismatch {
 
 impl SurfaceMismatch {
     pub fn diagnostic(&self) -> String {
+        let authority = if self.field == "ReleaseNotes" {
+            "CHANGELOG.md"
+        } else {
+            "cargo metadata solstone-windows-app"
+        };
         format!(
-            "ERROR: version-gate mismatch: expected {} from cargo metadata {}, actual {} at {} field {}.",
-            self.expected, APP_PACKAGE, self.actual, self.relative_file, self.field
+            "ERROR: version-gate mismatch: expected {} from {}, actual {} at {} field {}.",
+            self.expected, authority, self.actual, self.relative_file, self.field
         )
     }
 }
@@ -135,6 +141,7 @@ pub fn run(root: &Path, cargo: &OsStr) -> Result<String, VersionGateError> {
             }
         }
     }
+    check_winget_release_metadata(root, &version, &mut mismatches);
 
     if mismatches.is_empty() {
         Ok(version)
@@ -285,6 +292,121 @@ fn check_installer_basename(root: &Path, version: &str, mismatches: &mut Vec<Sur
         WINGET_INSTALLER,
         "Installers[].InstallerUrl asset basename",
     );
+}
+
+fn check_winget_release_metadata(
+    root: &Path,
+    version: &str,
+    mismatches: &mut Vec<SurfaceMismatch>,
+) {
+    let expected_url =
+        format!("https://github.com/solpbc/solstone-windows/releases/tag/v{version}");
+    let expected_notes = match read_surface(root.join(CHANGELOG)) {
+        Ok(changelog) => changelog_notes(&changelog, version),
+        Err(_) => None,
+    };
+    if expected_notes.is_none() {
+        record_mismatch(
+            mismatches,
+            version,
+            missing(),
+            CHANGELOG,
+            "versioned release notes",
+        );
+    }
+
+    let locale = read_surface(root.join(WINGET_LOCALE));
+    let actual_notes = match &locale {
+        Ok(contents) => locale_notes(contents),
+        Err(actual) => actual.clone(),
+    };
+    if let Some(expected_notes) = expected_notes {
+        let expected_label = format!("release notes for {version}");
+        let actual = if actual_notes == expected_notes {
+            expected_label.clone()
+        } else if actual_notes == missing() || actual_notes.starts_with("<invalid:") {
+            actual_notes
+        } else {
+            "<different from CHANGELOG.md>".to_owned()
+        };
+        record_mismatch(
+            mismatches,
+            &expected_label,
+            actual,
+            WINGET_LOCALE,
+            "ReleaseNotes",
+        );
+    }
+
+    let actual_url = match locale {
+        Ok(contents) => {
+            let values: Vec<_> = contents
+                .lines()
+                .filter_map(|line| line.strip_prefix("ReleaseNotesUrl:").map(str::trim))
+                .collect();
+            match values.as_slice() {
+                [] | [""] => missing(),
+                [value] => matching_unquote(value)
+                    .map(str::to_owned)
+                    .unwrap_or_else(invalid),
+                _ => invalid("duplicate ReleaseNotesUrl"),
+            }
+        }
+        Err(actual) => actual,
+    };
+    record_mismatch(
+        mismatches,
+        &expected_url,
+        actual_url,
+        WINGET_LOCALE,
+        "ReleaseNotesUrl",
+    );
+}
+
+fn changelog_notes(changelog: &str, version: &str) -> Option<String> {
+    let heading = format!("## [{version}]");
+    let mut lines = changelog.lines().skip_while(|line| {
+        !line
+            .strip_prefix(&heading)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(' '))
+    });
+    lines.next()?;
+    let notes: Vec<_> = lines
+        .take_while(|line| !line.starts_with("## ["))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.strip_prefix("### ").unwrap_or(line))
+        .collect();
+    (!notes.is_empty()).then(|| notes.join("\n"))
+}
+
+fn locale_notes(locale: &str) -> String {
+    let mut notes_fields = locale
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("ReleaseNotes:"));
+    let Some((index, field)) = notes_fields.next() else {
+        return missing();
+    };
+    if notes_fields.next().is_some() {
+        return invalid("duplicate ReleaseNotes");
+    }
+    if field.trim() != "ReleaseNotes: |-" {
+        return invalid("ReleaseNotes must be a literal block");
+    }
+    let notes: Vec<_> = locale
+        .lines()
+        .skip(index + 1)
+        .take_while(|line| line.starts_with("  ") || line.is_empty())
+        .filter_map(|line| line.strip_prefix("  "))
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if notes.is_empty() {
+        missing()
+    } else {
+        notes.join("\n")
+    }
 }
 
 fn installer_basename(value: &str) -> String {

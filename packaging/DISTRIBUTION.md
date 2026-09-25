@@ -1,10 +1,12 @@
 # Distribution channels
 
 solstone for Windows has three distribution channels, all intended to point at the
-**same finalized signed artifacts**. Direct publication is currently locked;
-release publication belongs to the aggregate provenance publisher. R2 at
+**same finalized signed artifacts**. Direct publication scripts are locked.
+The aggregate provenance publisher handles R2 and GitHub; package-manager
+submissions are hand-run from the reviewed manifests in this repo. R2 at
 `updates.solstone.app/solstone-windows/` is the authoritative update feed; any
-GitHub Releases mirror is optional and non-authoritative.
+GitHub Releases is non-authoritative for app updates but is required for the
+package-manager download URLs.
 
 | Channel | Artifact | Who owns updates |
 |---------|----------|------------------|
@@ -14,16 +16,16 @@ GitHub Releases mirror is optional and non-authoritative.
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to
 `%LocalAppData%\Solstone` with no elevation, and registers an Add/Remove-Programs
-entry that winget uses for version detection. Released 0.2.11's ARP name is `sol`;
+entry that winget uses for version detection. Released 2.0.11's ARP name is `sol`;
 the next release's is `solstone`. Correlation is anchored to the stable ProductCode
 `Solstone`, not the changing DisplayName. This repo omits DisplayName; the published
-0.2.11 manifest in microsoft/winget-pkgs stays artifact-accurate and is untouched.
+2.0.11 manifest in microsoft/winget-pkgs keeps the artifact-accurate ProductCode.
 
 ## The manifests live in this repo
 
 **`packaging/winget/` and `packaging/scoop/` are authoritative manifest inputs.**
-Edit and review the copies here. Whole-manifest consumption belongs to the aggregate provenance publisher
-rather than scripts that patch selected fields of live copies.
+Edit and review the copies here, then submit the whole checked manifest to each
+package repository. Do not patch selected fields of a live copy.
 
 This is worth stating loudly because it was not true until 2026-07-13, and the
 silence cost us. Both publish scripts used to be *version bumpers*: they took the
@@ -45,8 +47,8 @@ defects came out of that single shape:
   longer exists. `publish-scoop.sh` only ever touched version/url/hash, so it never
   noticed.
 
-**The rule that prevents a fourth: aggregate publication must push the whole
-manifest from this repo, never patch selected fields of the live one.**
+**The rule that prevents a fourth: package submissions use the whole checked
+manifest from this repo, never patched fields from a live copy.**
 
 ## Release boundary
 
@@ -64,12 +66,14 @@ it does not publish or replace candidate validation.
 
 `make publish`, `make publish-r2`, `make publish-winget`, `make publish-scoop`, and
 their `publish-packages` aggregate are deliberate fail-closed guards. They accept no
-version override and perform no authentication or transport. Release publication
-belongs to the aggregate provenance publisher.
+version override and perform no authentication or transport. R2 and GitHub
+publication belong to the aggregate provenance publisher; package-channel
+publication is hand-run below.
 
-After aggregate publication, **`make check-channels`** remains read-only. It derives
-the expected version from Cargo metadata, reports live winget/scoop state, and exits
-non-zero on drift; it never repairs or publishes.
+After aggregate publication, **`make check-channels`** remains read-only. Its
+`xtask version-gate` prerequisite verifies that the winget locale carries the
+current `CHANGELOG.md` release notes and matching GitHub release URL. It then
+reports live winget/scoop versions and artifact hashes; it never repairs or publishes.
 
 ## winget
 
@@ -77,10 +81,19 @@ Manifests live in the community repo `microsoft/winget-pkgs` under
 `manifests/s/solpbc/Solstone/<version>/` — **not** the Microsoft Store (no Store
 account / MSIX). Our source of truth is [`winget/`](winget/).
 
-The direct winget script is locked. Winget still requires a PR to the community
-repository; the aggregate provenance publisher will own that submission after
-the finalized candidate assets and provenance exist. Winget's pipeline validates schema,
-hash, and an interactive Windows-Sandbox install before a moderator/bot merges.
+The direct winget script is locked. After the finalized signed installer and
+GitHub release exist, fill the installer URL and hash, copy the versioned
+`CHANGELOG.md` notes into `ReleaseNotes` (headings without `###`) and set
+`ReleaseNotesUrl` to the matching GitHub release. Run
+`cargo run --locked -q -p xtask -- version-gate` and `make check-channels`
+from the release source. Submit the **checked three manifests** from
+`packaging/winget/` in one PR to `microsoft/winget-pkgs`, or update the existing
+PR for that version. Do not copy a partially filled locale manifest. Winget's
+pipeline validates schema, hash, and an interactive Windows-Sandbox install
+before a moderator/bot merges. Read the PR's metadata warnings too: validation
+success does not establish that release notes survived the submission. Compare
+all three PR files byte-for-byte with these checked source manifests before
+treating submission as done.
 
 - **Keep Actions disabled on the fork.** The fork inherits winget-pkgs' workflows, and
   every branch push triggers its Spell Checking run — which fails on package jargon and

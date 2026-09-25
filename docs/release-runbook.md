@@ -335,12 +335,18 @@ the wait into release planning, don't block on it.
 - **winget (`microsoft/winget-pkgs`).** Submission and review are external and
   variable. Do not block the authoritative R2 release on moderator timing, and
   do not close/reopen or push empty commits to nudge a pending submission.
+  After the GitHub release exists, copy its versioned `CHANGELOG.md` block into
+  `packaging/winget/solpbc.Solstone.locale.en-US.yaml` as `ReleaseNotes` and set
+  `ReleaseNotesUrl` to that release. Run `cargo run --locked -q -p xtask --
+  version-gate`, then submit all three checked manifests in one PR. The
+  package-channel step is hand-run; see `packaging/DISTRIBUTION.md`.
 - **scoop**: bucket PR, lighter process.
-- **After aggregate publication, run `make check-channels`**: it derives the
-  expected version from Cargo metadata, reads the live channels, and exits non-zero
-  on drift. It does not repair drift; release publication belongs to the aggregate
-  provenance publisher. Manifest inputs remain in-repo
-  (`packaging/winget/`, `packaging/scoop/`); see `packaging/DISTRIBUTION.md`.
+- **After aggregate publication, run `make check-channels`** from the release
+  source: it checks the winget locale's notes and release URL against the current
+  `CHANGELOG.md` block, derives the expected version from Cargo metadata, and
+  checks live channel versions and artifact hashes. It does not repair drift.
+  The aggregate publisher handles R2 and GitHub; package-channel updates use
+  the hand-run steps in `packaging/DISTRIBUTION.md`.
 - **Chocolatey**: a third channel (enterprise/IT-admin reach) we have **not** adopted;
   its community repo is also human-moderated. Evaluate deliberately, below winget/scoop.
 

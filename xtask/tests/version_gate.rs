@@ -17,6 +17,7 @@ const WINGET_VERSION: &str = "packaging/winget/solpbc.Solstone.yaml";
 const WINGET_INSTALLER: &str = "packaging/winget/solpbc.Solstone.installer.yaml";
 const WINGET_LOCALE: &str = "packaging/winget/solpbc.Solstone.locale.en-US.yaml";
 const SCOOP_MANIFEST: &str = "packaging/scoop/solstone.json";
+const RELEASE_NOTES_URL: &str = "https://github.com/solpbc/solstone-windows/releases/tag/v0.2.11";
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 
@@ -60,9 +61,10 @@ impl Fixture {
                 "PackageIdentifier: solpbc.Solstone\nPackageVersion: {VERSION}\nInstallers:\n  - Architecture: x64\n    InstallerUrl: 'https://fixtures.invalid/unrelated/v999/solstone-setup-{VERSION}.exe'\n    InstallerSha256: deliberately-not-a-version\n"
             ),
         );
+        fixture.write_locale(VERSION, "Fixed\n  - kept every segment");
         fixture.write(
-            WINGET_LOCALE,
-            &format!("PackageIdentifier: solpbc.Solstone\nPackageVersion: {VERSION}\n"),
+            "CHANGELOG.md",
+            &format!("## [Unreleased]\n\n## [{VERSION}] - 2026-09-25\n\n### Fixed\n\n- kept every segment\n\n## [0.2.10] - 2026-09-24\n"),
         );
         fixture.write(
             SCOOP_MANIFEST,
@@ -101,6 +103,13 @@ impl Fixture {
             fs::create_dir_all(parent).expect("create fixture parent");
         }
         fs::write(path, contents).expect("write fixture surface");
+    }
+
+    fn write_locale(&self, version: &str, notes: &str) {
+        self.write(
+            WINGET_LOCALE,
+            &format!("PackageIdentifier: solpbc.Solstone\nPackageVersion: {version}\nReleaseNotes: |-\n  {notes}\nReleaseNotesUrl: {RELEASE_NOTES_URL}\n"),
+        );
     }
 
     fn set_metadata(&self, value: serde_json::Value) {
@@ -296,7 +305,11 @@ fn every_winget_package_version_drift_names_the_exact_manifest() {
                 ),
             );
         } else {
-            fixture.write(path, "PackageVersion: 0.2.10\n");
+            if path == WINGET_LOCALE {
+                fixture.write_locale("0.2.10", "Fixed\n  - kept every segment");
+            } else {
+                fixture.write(path, "PackageVersion: 0.2.10\n");
+            }
         }
 
         let output = fixture.run();
@@ -305,6 +318,75 @@ fn every_winget_package_version_drift_names_the_exact_manifest() {
             &diagnostic(VERSION, "0.2.10", path, "PackageVersion"),
         );
     }
+}
+
+#[test]
+fn winget_locale_must_carry_current_changelog_notes_and_release_url() {
+    let fixture = Fixture::good();
+    fixture.write(WINGET_LOCALE, &format!("PackageVersion: {VERSION}\n"));
+    assert_surface_failure(
+        &fixture.run(),
+        &format!(
+            "{}{}",
+            diagnostic(
+                &format!("release notes for {VERSION}"),
+                "<missing>",
+                WINGET_LOCALE,
+                "ReleaseNotes"
+            ),
+            diagnostic(
+                RELEASE_NOTES_URL,
+                "<missing>",
+                WINGET_LOCALE,
+                "ReleaseNotesUrl"
+            )
+        ),
+    );
+
+    let fixture = Fixture::good();
+    fixture.write_locale(VERSION, "Fixed\n  - stale text");
+    assert_surface_failure(
+        &fixture.run(),
+        &diagnostic(
+            &format!("release notes for {VERSION}"),
+            "<different from CHANGELOG.md>",
+            WINGET_LOCALE,
+            "ReleaseNotes",
+        ),
+    );
+
+    let fixture = Fixture::good();
+    fixture.write(
+        WINGET_LOCALE,
+        &format!("PackageVersion: {VERSION}\nReleaseNotes: |-\n  Fixed\n  - kept every segment\nReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v0.2.10\n"),
+    );
+    assert_surface_failure(
+        &fixture.run(),
+        &diagnostic(
+            RELEASE_NOTES_URL,
+            "https://github.com/solpbc/solstone-windows/releases/tag/v0.2.10",
+            WINGET_LOCALE,
+            "ReleaseNotesUrl",
+        ),
+    );
+}
+
+#[test]
+fn winget_notes_require_a_matching_versioned_changelog_section() {
+    let fixture = Fixture::good();
+    fixture.write(
+        "CHANGELOG.md",
+        "## [0.2.110] - 2026-09-25\n\n### Fixed\n\n- wrong version\n",
+    );
+    assert_surface_failure(
+        &fixture.run(),
+        &diagnostic(
+            VERSION,
+            "<missing>",
+            "CHANGELOG.md",
+            "versioned release notes",
+        ),
+    );
 }
 
 #[test]
@@ -498,8 +580,13 @@ fn unknown_or_incomplete_cli_arguments_exit_two_with_usage() {
 }
 
 fn diagnostic(expected: &str, actual: &str, file: &str, field: &str) -> String {
+    let authority = if field == "ReleaseNotes" {
+        "CHANGELOG.md"
+    } else {
+        "cargo metadata solstone-windows-app"
+    };
     format!(
-        "ERROR: version-gate mismatch: expected {expected} from cargo metadata solstone-windows-app, actual {actual} at {file} field {field}.\n"
+        "ERROR: version-gate mismatch: expected {expected} from {authority}, actual {actual} at {file} field {field}.\n"
     )
 }
 
