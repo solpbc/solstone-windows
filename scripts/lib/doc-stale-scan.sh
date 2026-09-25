@@ -97,6 +97,8 @@ while IFS= read -r relative; do
                           command_unit) {
       if (unit == "") return
       lower = tolower(unit)
+      # A release check named version-gate is not a claim that GitHub gates publication.
+      gsub(/version-gate/, "versiongate", lower)
 
       authority_feed = lower ~ /authoritative/ || lower ~ /primary[^.!?]*feed/ || lower ~ /update[[:space:]]+feed/ || lower ~ /serves?[^.!?]*feed/ || lower ~ /hosts?[^.!?]*feed/
       authority = lower ~ /github/ && authority_feed
@@ -110,7 +112,7 @@ while IFS= read -r relative; do
       mirror_required = (lower ~ /github/ && required_signal) || mirror_linked
       mirror_qualified = lower ~ /(optional|non-authoritative|non authoritative)/ || lower ~ /(not|never|no)[^.!?]*((^|[^[:alpha:]])(required|blocks?|gates?)([^[:alpha:]]|$)|must[[:space:]]+succeed|cannot[[:space:]]+release)/ || lower ~ /cannot[[:space:]]+gate/ || lower ~ /does not[^.!?]*(block|gate|require)/ || lower ~ /must[[:space:]]+not/
       if (mirror_required && !mirror_qualified) {
-        report("required-mirror", "state that the GitHub mirror is optional, non-authoritative, and cannot gate release")
+        report("required-mirror", "state that R2 is authoritative and GitHub cannot gate release; package-manager URLs may require GitHub assets")
       }
 
       cargo_position = index(lower, "cargo build")

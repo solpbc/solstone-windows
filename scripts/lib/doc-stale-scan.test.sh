@@ -39,6 +39,16 @@ ASSERTIONS=$((ASSERTIONS + 1))
 assert_contains "positive scanned-file count" "$good_output" "scanned 1 eligible files"
 assert_contains "good result" "$good_output" "no violations"
 
+PACKAGE_CHANNEL=$TMP_ROOT/package-channel
+mkdir "$PACKAGE_CHANNEL"
+printf '%s\n\n%s\n' \
+  'GitHub Releases is required for winget and Scoop download URLs but non-authoritative for app updates; R2 remains authoritative, and GitHub does not gate that publication.' \
+  'Run version-gate to verify that ReleaseNotesUrl names the GitHub release for this version.' \
+  > "$PACKAGE_CHANNEL/package-channel.md"
+package_output=$(sh "$SCANNER" --root "$PACKAGE_CHANNEL" package-channel.md 2>&1) || fail "qualified package-channel instruction must pass"
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains "package-channel result" "$package_output" "no violations"
+
 AUTHORITY=$TMP_ROOT/authority
 mkdir "$AUTHORITY"
 printf '%s\n' 'GitHub Releases serves the authoritative update feed for Windows.' > "$AUTHORITY/authority.md"

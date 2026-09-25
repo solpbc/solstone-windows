@@ -343,7 +343,7 @@ the wait into release planning, don't block on it.
 - **scoop**: bucket PR, lighter process.
 - **After aggregate publication, run `make check-channels`** from the release
   source: it checks the winget locale's notes and release URL against the current
-  `CHANGELOG.md` block, derives the expected version from Cargo metadata, and
+  `CHANGELOG.md` section, derives the expected version from Cargo metadata, and
   checks live channel versions and artifact hashes. It does not repair drift.
   The aggregate publisher handles R2 and GitHub; package-channel updates use
   the hand-run steps in `packaging/DISTRIBUTION.md`.
