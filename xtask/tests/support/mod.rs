@@ -74,7 +74,30 @@ pub const SMCTL: &str = r"C:\fake-tools\smctl.exe";
 pub const SIGNTOOL: &str = "/fake-tools/signtool";
 #[cfg(windows)]
 pub const SIGNTOOL: &str = r"C:\fake-tools\signtool.exe";
-pub const UNSIGNED_APP_BYTES: &[u8] = b"inert unsigned release executable";
+/// The fake release build's executable: a minimal PE32+ header whose
+/// `SizeOfStackReserve` meets the finalizer's main-thread stack check. The rest of
+/// the fake pipeline treats these bytes as opaque.
+pub const UNSIGNED_APP_BYTES: &[u8] = &pe_header_with_stack_reserve(8 * 1024 * 1024);
+/// The same header at the MSVC default reserve that closed 2.0.11 on pair.
+pub const DEFAULT_STACK_APP_BYTES: &[u8] = &pe_header_with_stack_reserve(1024 * 1024);
+
+const fn pe_header_with_stack_reserve(reserve: u64) -> [u8; 0x100] {
+    let mut bytes = [0_u8; 0x100];
+    bytes[0] = b'M';
+    bytes[1] = b'Z';
+    bytes[0x3c] = 0x80;
+    bytes[0x80] = b'P';
+    bytes[0x81] = b'E';
+    bytes[0x98] = 0x0b;
+    bytes[0x99] = 0x02;
+    let reserve = reserve.to_le_bytes();
+    let mut index = 0;
+    while index < 8 {
+        bytes[0xe0 + index] = reserve[index];
+        index += 1;
+    }
+    bytes
+}
 pub const SIGNED_APP_BYTES: &[u8] = b"inert signed release executable";
 pub const THIRD_PARTY_NOTICE_BYTES: &[u8] = include_bytes!("../../../THIRD_PARTY_NOTICES.md");
 pub const RUST_DEPENDENCY_NOTICE_BYTES: &[u8] =
@@ -270,6 +293,7 @@ pub enum RunnerMutation {
     SigningAuthFailure,
     NpmCiFailure,
     CargoBuildNoOutput,
+    CargoBuildDefaultStack,
     VpkMissingOutput,
     VpkExtraOutput,
     VpkDefaultSetupConflict,
@@ -861,9 +885,14 @@ impl FakeReleaseRunner {
                     .ok_or(CommandRunnerError::UnexpectedInvocation)?;
                 fs::create_dir_all(Path::new(cargo_target).join("release"))
                     .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+                let executable = if self.mutation == RunnerMutation::CargoBuildDefaultStack {
+                    DEFAULT_STACK_APP_BYTES
+                } else {
+                    UNSIGNED_APP_BYTES
+                };
                 fs::write(
                     Path::new(cargo_target).join("release/solstone-windows-app.exe"),
-                    UNSIGNED_APP_BYTES,
+                    executable,
                 )
                 .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
                 Ok(Self::output(Vec::new()))

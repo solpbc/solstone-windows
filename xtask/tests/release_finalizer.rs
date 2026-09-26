@@ -1617,6 +1617,24 @@ fn late_source_lock_and_post_hash_mutations_block_promotion() {
 }
 
 #[test]
+fn a_build_at_the_default_main_thread_stack_is_refused() {
+    let checkout = FakeReleaseCheckout::new("default-main-thread-stack", false);
+    let runner =
+        FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::CargoBuildDefaultStack);
+    assert_engine_failure(
+        &checkout,
+        &runner,
+        request(SelectionMode::Unsigned, false),
+        FinalizeError::MainThreadStack {
+            reserve: Some(1024 * 1024),
+        },
+        PHASE_4_BUILD,
+        false,
+        false,
+    );
+}
+
+#[test]
 fn stale_build_output_and_missing_offline_npm_cache_cannot_be_reused() {
     let checkout = FakeReleaseCheckout::new("stale-executable", false);
     fs::write(
