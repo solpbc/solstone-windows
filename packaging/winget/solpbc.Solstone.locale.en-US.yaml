@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.11
+PackageVersion: 2.0.12
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,12 +22,8 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Changed
-  - the solstone app now always removes a segment from this PC once your journal confirms it has it, or that you removed it from your journal, so the "keep segments" choice in local storage is gone. anything an earlier version kept goes on the first sync after this update, once your journal has confirmed it.
-  - the need-attention count now includes every segment set aside on this PC, not only ones since the app last started.
   Fixed
-  - a segment the app set aside as needing your attention is no longer removed when a later one is set aside under the same name.
-  - if the solstone app restarted partway through a segment, a file it saved after the restart could be dropped when an earlier one had the same name. it's now kept, and counted with the segments that need your attention.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.11
+  - pressing pair to connect this PC to your journal no longer closes the solstone app.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.12
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

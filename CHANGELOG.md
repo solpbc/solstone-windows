@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.12] - 2026-09-26
+
 ### Fixed
 
 - pressing pair to connect this PC to your journal no longer closes the solstone app.
