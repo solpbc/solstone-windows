@@ -162,6 +162,18 @@ pub async fn pair(
     state: tauri::State<'_, crate::app::AppState>,
     link: String,
 ) -> Result<(), String> {
+    // Tauri builds and moves this future on the main thread before the runtime
+    // polls it. With the handshake and the uploader hand-off inline it was large
+    // enough to overflow that thread when the owner pressed pair. Boxing keeps the
+    // future Tauri moves down to the arguments and one pointer.
+    Box::pin(pair_session(app, &state, link)).await
+}
+
+async fn pair_session(
+    app: tauri::AppHandle,
+    state: &crate::app::AppState,
+    link: String,
+) -> Result<(), String> {
     // Snapshot everything needed by the uploader; the slot lock below serializes
     // the pairing handshake and replacement so concurrent pair attempts cannot
     // spawn competing uploaders.

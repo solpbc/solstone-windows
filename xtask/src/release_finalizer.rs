@@ -118,6 +118,9 @@ pub enum FinalizeError {
         output_truncated: bool,
     },
     BuildArtifact,
+    MainThreadStack {
+        reserve: Option<u64>,
+    },
     ThirdPartyNotice,
     RustDependencyNotice,
     DeltaSeed,
@@ -225,6 +228,17 @@ impl fmt::Display for FinalizeError {
                 formatter,
                 "the release build did not produce one stable contained app executable; repair the selected Cargo build and restart"
             ),
+            Self::MainThreadStack { reserve } => match reserve {
+                Some(reserve) => write!(
+                    formatter,
+                    "the app executable reserves {reserve} bytes of main-thread stack, below the required {}; restore the /STACK link argument in src-tauri/build.rs and restart",
+                    crate::pe_stack::MAIN_THREAD_STACK_RESERVE
+                ),
+                None => write!(
+                    formatter,
+                    "the app executable's main-thread stack reserve could not be read from its PE header; repair the selected Cargo build and restart"
+                ),
+            },
             Self::ThirdPartyNotice => write!(
                 formatter,
                 "the third-party notice is missing, empty, or changed before packaging; restore THIRD_PARTY_NOTICES.md and restart"
@@ -590,6 +604,14 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         STAGED_EXECUTABLE,
         FinalizeError::BuildArtifact,
     )?;
+    let staged_executable =
+        ContainedRoot::new(&paths.stage, "Velopack stage", UnixModePolicy::AllowExecute)
+            .and_then(|stage| stage.read(STAGED_EXECUTABLE, "staged app executable"))
+            .map_err(|_| FinalizeError::BuildArtifact)?;
+    let reserve = crate::pe_stack::stack_reserve(&staged_executable);
+    if reserve.is_none_or(|reserve| reserve < crate::pe_stack::MAIN_THREAD_STACK_RESERVE) {
+        return Err(FinalizeError::MainThreadStack { reserve });
+    }
     let notice_bytes = checkout
         .read(STAGED_NOTICE, "third-party notice")
         .map_err(|_| FinalizeError::ThirdPartyNotice)?;

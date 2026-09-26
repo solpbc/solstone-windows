@@ -14,5 +14,15 @@ fn main() {
         println!("cargo:rustc-env=SOLSTONE_SOURCE_COMMIT={commit}");
     }
 
+    // Tauri dispatches IPC on the main thread: an async command's whole future is
+    // built and moved there before the runtime polls it. At the MSVC default 1 MiB
+    // reserve, pressing pair overflowed that thread ("thread 'main' has overflowed
+    // its stack") and closed the app. Reserve 8 MiB. Windows commits stack pages
+    // lazily, so the reserve costs address space, not memory. The release finalizer
+    // refuses a build whose executable reserves less (`MAIN_THREAD_STACK_RESERVE`).
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bin=solstone-windows-app=/STACK:8388608");
+    }
+
     tauri_build::build();
 }

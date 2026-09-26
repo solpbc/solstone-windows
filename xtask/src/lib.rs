@@ -5,6 +5,7 @@ pub mod advisory_audit;
 pub mod artifact_fs;
 pub mod native_release_proof;
 pub mod observer_contract;
+pub mod pe_stack;
 pub mod purity;
 pub mod release_advisory;
 pub mod release_clock;
