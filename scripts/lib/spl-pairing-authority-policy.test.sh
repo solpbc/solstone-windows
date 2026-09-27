@@ -24,19 +24,19 @@ setup_clean_fixture() {
   mkdir -p "$TEST_ROOT/src-tauri/src"
   cat <<'EOF' > "$TEST_ROOT/Cargo.toml"
 [workspace.dependencies]
-spl-core = { git = "https://github.com/solpbc/spl-rust", rev = "72f6c1590a698194e689c230300d72c1b84ed9d4" }
-spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "72f6c1590a698194e689c230300d72c1b84ed9d4" }
+spl-core = { git = "https://github.com/solpbc/spl-rust", rev = "f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea" }
+spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea" }
 EOF
   cat <<'EOF' > "$TEST_ROOT/Cargo.lock"
 [[package]]
 name = "spl-core"
 version = "0.1.0"
-source = "git+https://github.com/solpbc/spl-rust?rev=72f6c1590a698194e689c230300d72c1b84ed9d4#72f6c1590a698194e689c230300d72c1b84ed9d4"
+source = "git+https://github.com/solpbc/spl-rust?rev=f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea#f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea"
 
 [[package]]
 name = "spl-transport"
 version = "0.1.0"
-source = "git+https://github.com/solpbc/spl-rust?rev=72f6c1590a698194e689c230300d72c1b84ed9d4#72f6c1590a698194e689c230300d72c1b84ed9d4"
+source = "git+https://github.com/solpbc/spl-rust?rev=f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea#f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea"
 EOF
   touch "$TEST_ROOT/crates/observer-pl/src/lib.rs"
   touch "$TEST_ROOT/crates/pl-transport-win/src/pairing.rs"
@@ -69,7 +69,7 @@ setup_clean_fixture
 cat <<'EOF' > "$TEST_ROOT/Cargo.toml"
 [workspace.dependencies]
 spl-core = { git = "https://github.com/solpbc/spl-rust", tag = "v0.7.2" }
-spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "72f6c1590a698194e689c230300d72c1b84ed9d4" }
+spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea" }
 EOF
 if sh "$POLICY_SCRIPT" --root "$TEST_ROOT" >/dev/null 2>&1; then
   echo "expected policy failure when tag= is used in Cargo.toml" >&2
@@ -81,7 +81,7 @@ setup_clean_fixture
 cat <<'EOF' > "$TEST_ROOT/Cargo.toml"
 [workspace.dependencies]
 spl-core = { git = "https://github.com/solpbc/spl-rust", branch = "main" }
-spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "72f6c1590a698194e689c230300d72c1b84ed9d4" }
+spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea" }
 EOF
 if sh "$POLICY_SCRIPT" --root "$TEST_ROOT" >/dev/null 2>&1; then
   echo "expected policy failure when branch= is used in Cargo.toml" >&2
@@ -93,7 +93,7 @@ setup_clean_fixture
 cat <<'EOF' > "$TEST_ROOT/Cargo.toml"
 [workspace.dependencies]
 spl-core = { path = "../spl-core" }
-spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "72f6c1590a698194e689c230300d72c1b84ed9d4" }
+spl-transport = { git = "https://github.com/solpbc/spl-rust", rev = "f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea" }
 EOF
 if sh "$POLICY_SCRIPT" --root "$TEST_ROOT" >/dev/null 2>&1; then
   echo "expected policy failure when path= is used in Cargo.toml" >&2

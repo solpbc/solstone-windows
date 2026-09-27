@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- security fix: when you paired this PC while your journal's private network was on, even over your own wifi, the solstone app sent your pairing link's one-time secret through the relay before checking it had reached your journal, so someone who could sit where the relay sits could have read the secret and used it to pair their own device. it now checks first that it's talking to your journal. please install this update before you pair again. if you paired this way, open your journal's network app and remove any device you don't recognize, including under "nothing added yet".
+
 ## [2.0.12] - 2026-09-26
 
 ### Fixed

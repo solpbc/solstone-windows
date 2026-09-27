@@ -73,7 +73,12 @@ fn leaf_config(signer: &TestCa) -> ServerConfig {
         .unwrap()
         .with_no_client_auth()
         .with_single_cert(
-            vec![CertificateDer::from(cert.der().to_vec())],
+            // The home presents its CA after the leaf, and the relay pin is
+            // checked against that chain inside the handshake.
+            vec![
+                CertificateDer::from(cert.der().to_vec()),
+                CertificateDer::from(signer.cert.der().to_vec()),
+            ],
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
         )
         .unwrap()
