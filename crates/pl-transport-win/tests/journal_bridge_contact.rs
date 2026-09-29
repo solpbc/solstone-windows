@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use std::sync::{Arc, Mutex};
 
-use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
+use observer_model::{LocalOffset, LocalOffsetError, LocalZone, SyncSnapshot};
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::CredentialAccess;
@@ -49,8 +49,11 @@ fn paired_state() -> PairedState {
 struct TestOffset;
 
 impl LocalOffset for TestOffset {
-    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
-        Ok(0)
+    fn local_zone(&self, _epoch_secs: u64) -> Result<LocalZone, LocalOffsetError> {
+        Ok(LocalZone {
+            utc_offset_seconds: 0,
+            tz: None,
+        })
     }
 }
 

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
+use observer_model::{LocalOffset, LocalOffsetError, LocalZone, SyncSnapshot};
 use pl_transport_win::credential::EndpointAddr;
 use pl_transport_win::relay_pairing::pair_over_relay;
 use pl_transport_win::service::{self, SyncConfig};
@@ -327,8 +327,11 @@ fn temp_pairing_path(name: &str) -> PathBuf {
 struct TestOffset;
 
 impl LocalOffset for TestOffset {
-    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
-        Ok(0)
+    fn local_zone(&self, _epoch_secs: u64) -> Result<LocalZone, LocalOffsetError> {
+        Ok(LocalZone {
+            utc_offset_seconds: 0,
+            tz: None,
+        })
     }
 }
 

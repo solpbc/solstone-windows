@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot, TransportPath};
+use observer_model::{LocalOffset, LocalOffsetError, LocalZone, SyncSnapshot, TransportPath};
 use observer_pl::ingest::{FilePart, IngestStatus};
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
@@ -175,8 +175,11 @@ fn temp_pairing_path(name: &str) -> PathBuf {
 struct TestOffset;
 
 impl LocalOffset for TestOffset {
-    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
-        Ok(0)
+    fn local_zone(&self, _epoch_secs: u64) -> Result<LocalZone, LocalOffsetError> {
+        Ok(LocalZone {
+            utc_offset_seconds: 0,
+            tz: None,
+        })
     }
 }
 
@@ -223,6 +226,7 @@ async fn relay_probe(client: &ObserverClient) -> Result<(), TransportError> {
                 content_type: "application/octet-stream".into(),
                 bytes: vec![1],
             }],
+            None,
         )
         .await
         .map(|_| ())
@@ -1343,7 +1347,7 @@ async fn run_complete_observer_ingest(
     let client =
         relay_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
     let (response, metadata) = client
-        .ingest("143000_300", "20260729", production_ingest_files())
+        .ingest("143000_300", "20260729", production_ingest_files(), None)
         .await
         .unwrap();
     let artifacts = server.await.unwrap();
@@ -1366,7 +1370,7 @@ async fn run_interrupted_observer_ingest(
     let client =
         relay_client(observer_relay_credential(pin, 9, origin, token)).with_observer(observer);
     let error = client
-        .ingest("143000_300", "20260729", production_ingest_files())
+        .ingest("143000_300", "20260729", production_ingest_files(), None)
         .await
         .unwrap_err();
     let outcome = InterruptedClientOutcome::Transport(transport_error_code(&error));
@@ -1431,6 +1435,7 @@ async fn observer_contract_authority_relay_v3_operations_have_identical_mtls_onl
                     bytes: filename.as_bytes().to_vec(),
                 })
                 .collect(),
+            None,
         )
         .await
         .unwrap();
@@ -1498,6 +1503,7 @@ async fn observer_contract_authority_relay_status_vectors_use_documented_http_ma
                     content_type: "audio/wav".into(),
                     bytes: vec![1],
                 }],
+                None,
             )
             .await
             .expect("documented status response parses");

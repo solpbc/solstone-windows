@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use observer_model::LocalZone;
+use observer_pl::civil;
 use observer_pl::ingest::{
     prove_custody, CustodyFailure, CustodyProof, CustodySource, DayManifest, DayManifestSegment,
     FilePart, IngestManifest, IngestMultipart, IngestMultipartError, IngestResponse, IngestStatus,
@@ -124,6 +126,104 @@ fn multipart_derives_the_envelope_file_list_and_uses_a_text_envelope_part() {
     assert!(!body.contains("name=\"envelope\"; filename="));
     assert!(!body.contains("platform"));
     assert_eq!(body.matches("name=\"files\"").count(), 2);
+}
+
+#[test]
+fn envelope_meta_reports_the_injected_zone_and_offset() {
+    let cases = [
+        (1_768_503_600_u64, -25_200_i64, Some("America/Denver")),
+        (1_784_138_400, -21_600, Some("America/Denver")),
+        (1_768_458_600, 19_800, Some("Asia/Kolkata")),
+    ];
+    for (boundary, offset, tz) in cases {
+        let value = zoned_envelope(boundary, offset, tz.map(str::to_owned));
+        assert_eq!(value["meta"]["tz"], tz.unwrap());
+        assert_eq!(value["meta"]["utc_offset_seconds"].as_i64(), Some(offset));
+        assert_zone_inverse(&value, boundary, offset);
+        let raw = serde_json::to_string(&value).unwrap();
+        assert!(raw.contains(&format!(
+            r#""meta":{{"tz":"{tz}","utc_offset_seconds":{offset}}}"#,
+            tz = tz.unwrap()
+        )));
+        assert!(!raw.contains("name=\"meta\""));
+    }
+
+    let missed = zoned_envelope(1_768_458_600, 19_800, None);
+    assert!(missed["meta"].get("tz").is_none());
+    assert_eq!(missed["meta"]["utc_offset_seconds"].as_i64(), Some(19_800));
+    assert_zone_inverse(&missed, 1_768_458_600, 19_800);
+    let missed_raw = serde_json::to_string(&missed).unwrap();
+    assert!(missed_raw.contains(r#""meta":{"utc_offset_seconds":19800}"#));
+    assert!(!missed_raw.contains("\"tz\""));
+
+    for rejected in ["Mountain Standard Time", "MST", ""] {
+        let value = zoned_envelope(1_768_458_600, 19_800, Some(rejected.to_owned()));
+        assert!(value["meta"].get("tz").is_none());
+        assert_eq!(value["meta"]["utc_offset_seconds"].as_i64(), Some(19_800));
+        assert_eq!(value["day"], "20260115");
+        assert_eq!(value["segment"], "120000_300");
+    }
+}
+
+fn sample_files() -> Vec<FilePart> {
+    vec![
+        FilePart {
+            filename: "screen-unique.mp4".into(),
+            content_type: "video/mp4".into(),
+            bytes: b"screen".to_vec(),
+        },
+        FilePart {
+            filename: "audio-unique.flac".into(),
+            content_type: "audio/flac".into(),
+            bytes: b"audio".to_vec(),
+        },
+    ]
+}
+
+fn zoned_envelope(boundary: u64, offset: i64, tz: Option<String>) -> serde_json::Value {
+    let day = civil::day_string_local(boundary, offset);
+    let segment = civil::segment_key_string_local(boundary, offset, 300);
+    let plain = IngestMultipart::new("v3-boundary", &day, &segment, sample_files()).unwrap();
+    let zoned = IngestMultipart::new("v3-boundary", &day, &segment, sample_files())
+        .unwrap()
+        .with_zone(&LocalZone {
+            utc_offset_seconds: offset,
+            tz,
+        });
+    let plain_value = envelope_json(&plain.serialize().unwrap());
+    let zoned_value = envelope_json(&zoned.serialize().unwrap());
+    assert_eq!(zoned_value["day"], plain_value["day"]);
+    assert_eq!(zoned_value["segment"], plain_value["segment"]);
+    assert_eq!(zoned_value["files"], plain_value["files"]);
+    assert!(plain_value.get("meta").is_none());
+    let body = String::from_utf8(zoned.serialize().unwrap()).unwrap();
+    assert!(!body.contains("name=\"meta\""));
+    zoned_value
+}
+
+fn envelope_json(body: &[u8]) -> serde_json::Value {
+    let text = std::str::from_utf8(body).unwrap();
+    let marker = "name=\"envelope\"\r\nContent-Type: application/json\r\n\r\n";
+    let start = text.find(marker).unwrap() + marker.len();
+    let rest = &text[start..];
+    let end = rest.find("\r\n--").unwrap();
+    serde_json::from_str(&rest[..end]).unwrap()
+}
+
+fn assert_zone_inverse(value: &serde_json::Value, boundary: u64, offset: i64) {
+    let day = value["day"].as_str().unwrap();
+    let segment = value["segment"].as_str().unwrap();
+    let hhmmss = segment.split('_').next().unwrap();
+    let year: i64 = day[0..4].parse().unwrap();
+    let month: u32 = day[4..6].parse().unwrap();
+    let dom: u32 = day[6..8].parse().unwrap();
+    let hour: u32 = hhmmss[0..2].parse().unwrap();
+    let minute: u32 = hhmmss[2..4].parse().unwrap();
+    let second: u32 = hhmmss[4..6].parse().unwrap();
+    assert_eq!(
+        civil::epoch_from_local_parts(year, month, dom, hour, minute, second, offset),
+        Some(boundary)
+    );
 }
 
 #[test]

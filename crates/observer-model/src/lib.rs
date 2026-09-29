@@ -725,11 +725,59 @@ pub trait Clock: Send + Sync {
     fn now_epoch_secs(&self) -> u64;
 }
 
-/// Device-local UTC-offset seam. The Windows impl lives in `platform-win`
+/// Offset and optional IANA id from one [`LocalOffset`] lookup.
+///
+/// `day` / `segment` are derived from `utc_offset_seconds` only. `tz` is the
+/// IANA id of that same zone when the platform accepted a real mapping. A later
+/// upload calls the provider again; this is not a zone saved at capture time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalZone {
+    /// Signed local-minus-UTC offset in seconds, east-positive, for the instant
+    /// that was looked up.
+    pub utc_offset_seconds: i64,
+    /// IANA id of that same zone. `None` when no real mapping was accepted.
+    pub tz: Option<String>,
+}
+
+/// Device-local zone seam. The Windows impl lives in `platform-win`
 /// (windows-rs quarantine); off-Windows it is an honest error, never UTC.
 pub trait LocalOffset: Send + Sync + std::fmt::Debug {
-    /// Signed local-minus-UTC offset in seconds, DST-correct for `epoch_secs`.
-    fn local_offset_secs(&self, epoch_secs: u64) -> Result<i64, LocalOffsetError>;
+    /// Zone facts for `epoch_secs` from one lookup.
+    fn local_zone(&self, epoch_secs: u64) -> Result<LocalZone, LocalOffsetError>;
+}
+
+/// Return `mapped` when it is an IANA time zone id this client will send.
+///
+/// Accepts `Area/Location` ids (`America/Denver`, `Asia/Tokyo`, `Asia/Kolkata`)
+/// and the literal `UTC`. Omits empty strings, Windows zone names
+/// (`Mountain Standard Time`), and abbreviations (`MST`).
+pub fn accept_iana_tz(mapped: &str) -> Option<&str> {
+    if mapped == "UTC" {
+        return Some(mapped);
+    }
+    let mut parts = mapped.split('/');
+    let (Some(area), Some(location)) = (parts.next(), parts.next()) else {
+        return None;
+    };
+    if !is_iana_area(area) || !is_iana_component(location) {
+        return None;
+    }
+    if parts.all(is_iana_component) {
+        Some(mapped)
+    } else {
+        None
+    }
+}
+
+fn is_iana_area(part: &str) -> bool {
+    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphabetic())
+}
+
+fn is_iana_component(part: &str) -> bool {
+    !part.is_empty()
+        && part
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'-'))
 }
 
 /// Why a local-offset lookup failed. Payload-free so no host-specific string
@@ -823,6 +871,17 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use strum::IntoEnumIterator;
+
+    #[test]
+    fn accept_iana_tz_keeps_real_ids_and_omits_windows_names() {
+        assert_eq!(accept_iana_tz("America/Denver"), Some("America/Denver"));
+        assert_eq!(accept_iana_tz("Asia/Tokyo"), Some("Asia/Tokyo"));
+        assert_eq!(accept_iana_tz("Asia/Kolkata"), Some("Asia/Kolkata"));
+        assert_eq!(accept_iana_tz("UTC"), Some("UTC"));
+        assert_eq!(accept_iana_tz("Mountain Standard Time"), None);
+        assert_eq!(accept_iana_tz("MST"), None);
+        assert_eq!(accept_iana_tz(""), None);
+    }
 
     fn px(x: usize, y: usize) -> [u8; 4] {
         [

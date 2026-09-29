@@ -17,7 +17,7 @@ use crate::credential::{pairing_generation, CasKey, Credential, WindowsTokenTran
 use crate::ordinary_request::OrdinaryRequest;
 use crate::pairing::{map_request_error, map_shared_error, windows_to_shared_credential};
 use crate::{ObserverHandle, TransportError};
-use observer_model::TransportPath;
+use observer_model::{LocalZone, TransportPath};
 use observer_pl::ingest::{
     DayManifest, FilePart, IngestManifest, IngestMultipart, IngestResponse, IngestStatus,
     SegmentsEnvelope,
@@ -747,16 +747,21 @@ impl ObserverClient {
     }
 
     /// Upload one segment's files with the protocol-v3 envelope. `segment` is
-    /// `HHMMSS_LEN`, `day` is `YYYYMMDD`.
+    /// `HHMMSS_LEN`, `day` is `YYYYMMDD`. `zone` is the lookup that produced
+    /// those keys; `None` leaves the envelope without a `meta` key.
     pub async fn ingest(
         &self,
         segment: &str,
         day: &str,
         files: Vec<FilePart>,
+        zone: Option<&LocalZone>,
     ) -> Result<(IngestResponse, SendMetadata), TransportError> {
         let boundary = self.next_boundary();
-        let request = IngestMultipart::new(boundary, day, segment, files)
+        let mut request = IngestMultipart::new(boundary, day, segment, files)
             .map_err(|error| TransportError::Ingest(error.to_string()))?;
+        if let Some(zone) = zone {
+            request = request.with_zone(zone);
+        }
         let body = request.serialize()?;
 
         let mut headers = self.v3_headers();

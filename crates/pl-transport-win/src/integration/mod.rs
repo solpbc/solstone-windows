@@ -244,8 +244,14 @@ pub(crate) fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
 pub(crate) struct FixedOffset(pub i64);
 
 impl observer_model::LocalOffset for FixedOffset {
-    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, observer_model::LocalOffsetError> {
-        Ok(self.0)
+    fn local_zone(
+        &self,
+        _epoch_secs: u64,
+    ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
+        Ok(observer_model::LocalZone {
+            utc_offset_seconds: self.0,
+            tz: None,
+        })
     }
 }
 
@@ -467,8 +473,12 @@ mod tests {
     fn fixed_offset_is_stable_across_instants() {
         use observer_model::LocalOffset as _;
         let offset = FixedOffset(0);
-        assert_eq!(offset.local_offset_secs(0).unwrap(), 0);
-        assert_eq!(offset.local_offset_secs(1_781_706_600).unwrap(), 0);
+        let first = offset.local_zone(0).unwrap();
+        let second = offset.local_zone(1_781_706_600).unwrap();
+        assert_eq!(first.utc_offset_seconds, 0);
+        assert_eq!(second.utc_offset_seconds, 0);
+        assert_eq!(first.tz, None);
+        assert_eq!(second.tz, None);
     }
 
     #[test]

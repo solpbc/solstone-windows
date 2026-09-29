@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use observer_model::{LocalOffset, LocalOffsetError, PairingPhase, SyncSnapshot};
+use observer_model::{LocalOffset, LocalOffsetError, LocalZone, PairingPhase, SyncSnapshot};
 use pl_transport_win::client::ObserverClient;
 use pl_transport_win::coordinator::PAIRING_REFUSED_DETAIL;
 use pl_transport_win::credential::PairedState;
@@ -110,8 +110,11 @@ async fn access_denied_stops_the_sync_client_and_certificate_unknown_does_not() 
 struct TestOffset;
 
 impl LocalOffset for TestOffset {
-    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
-        Ok(0)
+    fn local_zone(&self, _epoch_secs: u64) -> Result<LocalZone, LocalOffsetError> {
+        Ok(LocalZone {
+            utc_offset_seconds: 0,
+            tz: None,
+        })
     }
 }
 

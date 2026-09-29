@@ -300,6 +300,7 @@ async fn all_eight_production_helpers_use_the_shared_ordinary_request_authority(
                 content_type: "application/octet-stream".into(),
                 bytes: vec![1, 2, 3],
             }],
+            None,
         )
         .await
         .unwrap();

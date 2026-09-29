@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use observer_model::{accept_iana_tz, LocalZone};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -30,6 +31,15 @@ struct IngestEnvelope {
     day: String,
     segment: String,
     files: Vec<EnvelopeFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meta: Option<IngestMeta>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct IngestMeta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tz: Option<String>,
+    utc_offset_seconds: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -75,12 +85,31 @@ impl IngestMultipart {
                     submitted: file.filename.clone(),
                 })
                 .collect(),
+            meta: None,
         };
         Ok(Self {
             boundary: boundary.into(),
             envelope,
             files,
         })
+    }
+
+    /// Attach the zone used to compute `day` and `segment` on this attempt.
+    ///
+    /// Callers that never call this leave the envelope without a `meta` key.
+    /// `tz` is omitted unless [`accept_iana_tz`] accepts it; the offset is still
+    /// sent. A later attempt passes a new zone rather than reusing this one.
+    pub fn with_zone(mut self, zone: &LocalZone) -> Self {
+        let tz = zone
+            .tz
+            .as_deref()
+            .and_then(accept_iana_tz)
+            .map(str::to_owned);
+        self.envelope.meta = Some(IngestMeta {
+            tz,
+            utc_offset_seconds: zone.utc_offset_seconds,
+        });
+        self
     }
 
     /// Multipart content type, including this request's boundary.

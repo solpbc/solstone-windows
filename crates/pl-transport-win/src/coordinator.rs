@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use observer_model::{LocalOffset, PairingPhase, SyncSnapshot, TransportPath};
+use observer_model::{LocalOffset, LocalZone, PairingPhase, SyncSnapshot, TransportPath};
 use observer_pl::civil;
 use observer_pl::ingest::{
     validate_receipt, FilePart, IngestResponse, IngestStatus, LocalFile, ReceiptFault,
@@ -148,6 +148,7 @@ trait UploadClient: Send + Sync {
         segment: &'a str,
         day: &'a str,
         files: Vec<FilePart>,
+        zone: Option<&'a LocalZone>,
     ) -> IngestFuture<'a>;
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a>;
@@ -170,8 +171,9 @@ impl UploadClient for ObserverClient {
         segment: &'a str,
         day: &'a str,
         files: Vec<FilePart>,
+        zone: Option<&'a LocalZone>,
     ) -> IngestFuture<'a> {
-        Box::pin(ObserverClient::ingest(self, segment, day, files))
+        Box::pin(ObserverClient::ingest(self, segment, day, files, zone))
     }
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
@@ -193,9 +195,10 @@ impl UploadClient for ClientSlot {
         segment: &'a str,
         day: &'a str,
         files: Vec<FilePart>,
+        zone: Option<&'a LocalZone>,
     ) -> IngestFuture<'a> {
         let client = self.load();
-        Box::pin(async move { client.ingest(segment, day, files).await })
+        Box::pin(async move { client.ingest(segment, day, files, zone).await })
     }
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
@@ -1050,11 +1053,10 @@ impl UploadCoordinator {
             }
 
             let offset_started = Instant::now();
-            let offset = match self
-                .local_offset
-                .local_offset_secs(segment.boundary_epoch_secs)
-            {
-                Ok(offset) => offset,
+            // This attempt's lookup names the keys and the envelope together.
+            // A retry calls the provider again; the zone is not stored at seal.
+            let zone = match self.local_offset.local_zone(segment.boundary_epoch_secs) {
+                Ok(zone) => zone,
                 Err(_) => {
                     let error = TransportError::LocalOffset;
                     UploadEvent::new(
@@ -1070,6 +1072,7 @@ impl UploadCoordinator {
                     return Err(error);
                 }
             };
+            let offset = zone.utc_offset_seconds;
             let day = civil::day_string_local(segment.boundary_epoch_secs, offset);
             let segment_key = civil::segment_key_string_local(
                 segment.boundary_epoch_secs,
@@ -1124,7 +1127,8 @@ impl UploadCoordinator {
             let bytes = parts.iter().map(|part| part.bytes.len() as u64).sum();
 
             let started = Instant::now();
-            match self.client.ingest(&segment_key, &day, parts).await {
+            let ingest = self.client.ingest(&segment_key, &day, parts, Some(&zone));
+            match ingest.await {
                 Ok((response, metadata)) if response.status.is_accepted() => {
                     let duration_ms = elapsed_ms(started);
                     let local = local_files
@@ -1615,11 +1619,14 @@ mod tests {
     struct FixedOffset(i64);
 
     impl observer_model::LocalOffset for FixedOffset {
-        fn local_offset_secs(
+        fn local_zone(
             &self,
             _epoch_secs: u64,
-        ) -> Result<i64, observer_model::LocalOffsetError> {
-            Ok(self.0)
+        ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
+            Ok(observer_model::LocalZone {
+                utc_offset_seconds: self.0,
+                tz: None,
+            })
         }
     }
 
@@ -1627,10 +1634,10 @@ mod tests {
     struct FailingOffset;
 
     impl observer_model::LocalOffset for FailingOffset {
-        fn local_offset_secs(
+        fn local_zone(
             &self,
             _epoch_secs: u64,
-        ) -> Result<i64, observer_model::LocalOffsetError> {
+        ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
             Err(observer_model::LocalOffsetError::Lookup)
         }
     }
@@ -1651,17 +1658,47 @@ mod tests {
     }
 
     impl observer_model::LocalOffset for FailOnceOffset {
-        fn local_offset_secs(
+        fn local_zone(
             &self,
             _epoch_secs: u64,
-        ) -> Result<i64, observer_model::LocalOffsetError> {
+        ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
             let mut failed = self.failed.lock().unwrap();
             if !*failed {
                 *failed = true;
                 Err(observer_model::LocalOffsetError::Lookup)
             } else {
-                Ok(self.offset)
+                Ok(observer_model::LocalZone {
+                    utc_offset_seconds: self.offset,
+                    tz: None,
+                })
             }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedZone {
+        zones: Mutex<VecDeque<observer_model::LocalZone>>,
+    }
+
+    impl ScriptedZone {
+        fn new(zones: Vec<observer_model::LocalZone>) -> Self {
+            Self {
+                zones: Mutex::new(VecDeque::from(zones)),
+            }
+        }
+    }
+
+    impl observer_model::LocalOffset for ScriptedZone {
+        fn local_zone(
+            &self,
+            _epoch_secs: u64,
+        ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
+            Ok(self
+                .zones
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted zone"))
         }
     }
 
@@ -2205,8 +2242,17 @@ mod tests {
         lists: Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
         submitted_day: Mutex<Option<String>>,
         stop: Mutex<Option<HandshakeStop>>,
-        /// Every POST as (segment key, part file names).
-        posts: Mutex<Vec<(String, Vec<String>)>>,
+        /// Every POST, including the zone that named that attempt.
+        posts: Mutex<Vec<PostedIngest>>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct PostedIngest {
+        segment: String,
+        files: Vec<String>,
+        day: String,
+        tz: Option<String>,
+        utc_offset_seconds: i64,
     }
 
     impl FakeClient {
@@ -2239,12 +2285,17 @@ mod tests {
             segment: &'a str,
             day: &'a str,
             files: Vec<FilePart>,
+            zone: Option<&'a observer_model::LocalZone>,
         ) -> IngestFuture<'a> {
+            let zone = zone.expect("coordinator passes the attempt zone");
             *self.submitted_day.lock().unwrap() = Some(day.to_owned());
-            self.posts.lock().unwrap().push((
-                segment.to_owned(),
-                files.iter().map(|part| part.filename.clone()).collect(),
-            ));
+            self.posts.lock().unwrap().push(PostedIngest {
+                segment: segment.to_owned(),
+                files: files.iter().map(|part| part.filename.clone()).collect(),
+                day: day.to_owned(),
+                tz: zone.tz.clone(),
+                utc_offset_seconds: zone.utc_offset_seconds,
+            });
             let result = self
                 .ingests
                 .lock()
@@ -2302,6 +2353,7 @@ mod tests {
             _segment: &'a str,
             _day: &'a str,
             _files: Vec<FilePart>,
+            _zone: Option<&'a observer_model::LocalZone>,
         ) -> IngestFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
@@ -2524,6 +2576,7 @@ mod tests {
             _segment: &'a str,
             day: &'a str,
             _files: Vec<FilePart>,
+            _zone: Option<&'a observer_model::LocalZone>,
         ) -> IngestFuture<'a> {
             *self.submitted_day.lock().unwrap() = Some(day.to_owned());
             let result = self
@@ -3518,7 +3571,7 @@ mod tests {
         let bytes = b"segment bytes".to_vec();
         let segment_key = civil::segment_key_string_local(boundary, 0, 300);
         assert!(matches!(
-            FailingOffset.local_offset_secs(boundary),
+            FailingOffset.local_zone(boundary),
             Err(observer_model::LocalOffsetError::Lookup)
         ));
         let client = FakeClient::new(
@@ -3547,6 +3600,80 @@ mod tests {
         let second_snapshot = sync.lock().unwrap().clone();
         assert_eq!(second_snapshot.upload.uploaded_segments, 1);
         assert_eq!(second_snapshot.upload.last_error_reason, None);
+    }
+
+    #[tokio::test]
+    async fn retry_recomputes_keys_and_zone_together() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_768_503_600;
+        let file_name = "display_1_screen.mp4";
+        let bytes = b"segment bytes".to_vec();
+        let first_zone = observer_model::LocalZone {
+            utc_offset_seconds: -25_200,
+            tz: Some("America/Denver".to_string()),
+        };
+        let second_zone = observer_model::LocalZone {
+            utc_offset_seconds: 32_400,
+            tz: Some("Asia/Tokyo".to_string()),
+        };
+        let second_key =
+            civil::segment_key_string_local(boundary, second_zone.utc_offset_seconds, 300);
+        let client = FakeClient::new(
+            vec![
+                Err(TransportError::Io(std::io::Error::other("disconnected"))),
+                accepted_ingest(&second_key, file_name, &bytes, 1),
+            ],
+            vec![],
+        );
+        let coordinator = coordinator_with_client_and_offset(
+            client.clone(),
+            Box::new(OneSegmentStore::new(boundary, file_name, bytes)),
+            sync,
+            Arc::new(ScriptedZone::new(vec![
+                first_zone.clone(),
+                second_zone.clone(),
+            ])),
+        );
+
+        let first = coordinator.tick().await;
+        assert!(matches!(first, Err(TransportError::Io(_))));
+        let second = coordinator.tick().await.unwrap();
+        assert_eq!(second, 1);
+
+        let posts = client.posts.lock().unwrap().clone();
+        assert_eq!(posts.len(), 2);
+        assert_posted(&posts[0], boundary, &first_zone);
+        assert_posted(&posts[1], boundary, &second_zone);
+        assert_ne!(posts[0].segment, posts[1].segment);
+        assert_ne!(posts[0].tz, posts[1].tz);
+    }
+
+    fn assert_posted(post: &PostedIngest, boundary: u64, zone: &observer_model::LocalZone) {
+        let day = civil::day_string_local(boundary, zone.utc_offset_seconds);
+        let segment = civil::segment_key_string_local(boundary, zone.utc_offset_seconds, 300);
+        assert_eq!(post.day, day);
+        assert_eq!(post.segment, segment);
+        assert_eq!(post.tz, zone.tz);
+        assert_eq!(post.utc_offset_seconds, zone.utc_offset_seconds);
+        let hhmmss = segment.split('_').next().unwrap();
+        let year: i64 = day[0..4].parse().unwrap();
+        let month: u32 = day[4..6].parse().unwrap();
+        let dom: u32 = day[6..8].parse().unwrap();
+        let hour: u32 = hhmmss[0..2].parse().unwrap();
+        let minute: u32 = hhmmss[2..4].parse().unwrap();
+        let second: u32 = hhmmss[4..6].parse().unwrap();
+        assert_eq!(
+            civil::epoch_from_local_parts(
+                year,
+                month,
+                dom,
+                hour,
+                minute,
+                second,
+                zone.utc_offset_seconds
+            ),
+            Some(boundary)
+        );
     }
 
     // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
@@ -4694,7 +4821,13 @@ mod tests {
         assert_eq!(coordinator.tick().await.unwrap(), 1);
         assert_eq!(
             *client.posts.lock().unwrap(),
-            vec![(key, vec!["extra.mp4".to_string()])]
+            vec![PostedIngest {
+                segment: key,
+                files: vec!["extra.mp4".to_string()],
+                day: civil::day_string_local(boundary, 0),
+                tz: None,
+                utc_offset_seconds: 0,
+            }]
         );
         assert!(!dir.exists());
     }
@@ -4822,7 +4955,13 @@ mod tests {
         assert_eq!(coordinator.tick().await.unwrap(), 1);
         assert_eq!(
             *client.posts.lock().unwrap(),
-            vec![(key, vec!["screen.mp4".to_string()])]
+            vec![PostedIngest {
+                segment: key,
+                files: vec!["screen.mp4".to_string()],
+                day: civil::day_string_local(boundary, 0),
+                tz: None,
+                utc_offset_seconds: 0,
+            }]
         );
         assert!(!dir.exists());
     }

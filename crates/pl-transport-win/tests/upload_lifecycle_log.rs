@@ -52,7 +52,7 @@ async fn lan_ingest_reports_shared_direct_outcome() {
     }];
 
     let (_response, metadata) = client
-        .ingest("120000_300", "20260702", files)
+        .ingest("120000_300", "20260702", files, None)
         .await
         .unwrap();
     let _request = server.await.unwrap();
@@ -92,7 +92,7 @@ async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
         },
     ];
 
-    client.ingest(segment, day, files).await.unwrap();
+    client.ingest(segment, day, files, None).await.unwrap();
     let request = String::from_utf8(server.await.unwrap()).unwrap();
     assert!(request.starts_with("POST /app/devices/ingest HTTP/1.1\r\n"));
     assert!(!request.contains("X-Solstone-Observer:"));

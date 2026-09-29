@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use observer_model::{LocalOffset, LocalOffsetError, SyncSnapshot};
+use observer_model::{LocalOffset, LocalOffsetError, LocalZone, SyncSnapshot};
 use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::PROTOCOL_VERSION_HEADER;
 use pl_transport_win::client::ObserverClient;
@@ -289,8 +289,11 @@ fn signing_ca() -> (rcgen::Certificate, KeyPair) {
 struct TestOffset;
 
 impl LocalOffset for TestOffset {
-    fn local_offset_secs(&self, _epoch_secs: u64) -> Result<i64, LocalOffsetError> {
-        Ok(0)
+    fn local_zone(&self, _epoch_secs: u64) -> Result<LocalZone, LocalOffsetError> {
+        Ok(LocalZone {
+            utc_offset_seconds: 0,
+            tz: None,
+        })
     }
 }
 
@@ -1209,7 +1212,7 @@ async fn protocol_v3_ingest_captures_envelope_and_conflict_status() {
         .collect();
     let (client, server) =
         start_client_with_response("200 OK", br#"{"status":"ok","segment":"080000_600"}"#).await;
-    let (response, _) = client.ingest(segment, day, files).await.unwrap();
+    let (response, _) = client.ingest(segment, day, files, None).await.unwrap();
     assert_eq!(response.status, IngestStatus::Ok);
     let request = server.await.unwrap();
     assert!(v3_upload_capture_matches(
@@ -1227,6 +1230,7 @@ async fn protocol_v3_ingest_captures_envelope_and_conflict_status() {
                 content_type: "audio/wav".into(),
                 bytes: vec![9],
             }],
+            None,
         )
         .await
         .unwrap();
@@ -1255,6 +1259,7 @@ async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_on
                     bytes: filename.as_bytes().to_vec(),
                 })
                 .collect(),
+            None,
         )
         .await
         .unwrap();
@@ -1352,6 +1357,7 @@ async fn observer_contract_authority_direct_status_vectors_use_documented_http_m
                     content_type: "audio/wav".into(),
                     bytes: vec![1],
                 }],
+                None,
             )
             .await
             .expect("documented status response parses");
