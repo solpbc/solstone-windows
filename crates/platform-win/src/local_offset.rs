@@ -126,13 +126,22 @@ type UcalGetTimeZoneIdForWindowsId = unsafe extern "system" fn(
 #[cfg(windows)]
 fn iana_id_for_windows_zone(name: &[u16]) -> Option<String> {
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::FreeLibrary;
-    use windows::Win32::System::LibraryLoader::LoadLibraryW;
+    use windows::Win32::Foundation::{FreeLibrary, HANDLE};
+    use windows::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 
     if name.is_empty() {
         return None;
     }
-    let module = unsafe { LoadLibraryW(PCWSTR(ICU_DLL.as_ptr())) }.ok()?;
+    // System ICU only: a bare-name load would also search the app's own,
+    // possibly user-writable, directory.
+    let module = unsafe {
+        LoadLibraryExW(
+            PCWSTR(ICU_DLL.as_ptr()),
+            HANDLE::default(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    }
+    .ok()?;
     let mapped = unsafe { icu_windows_zone_id(module, name) };
     let _ = unsafe { FreeLibrary(module) };
     accept_iana_tz(&mapped?).map(str::to_owned)
