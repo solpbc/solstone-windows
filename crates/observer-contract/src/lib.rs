@@ -175,14 +175,8 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
         ("settings.pairing.mark", settings::PAIRING_MARK),
-        (
-            "settings.pairing.markCard",
-            settings::PAIRING_MARK_CARD,
-        ),
-        (
-            "settings.pairing.confirmYes",
-            settings::PAIRING_CONFIRM_YES,
-        ),
+        ("settings.pairing.markCard", settings::PAIRING_MARK_CARD),
+        ("settings.pairing.confirmYes", settings::PAIRING_CONFIRM_YES),
         (
             "settings.pairing.confirmReject",
             settings::PAIRING_CONFIRM_REJECT,

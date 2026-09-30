@@ -500,7 +500,9 @@ async fn direct_shared_request_caps_use_exact_assembled_wire_lengths() {
             if over_cap {
                 assert!(matches!(
                     result,
-                    Err(pl_transport_win::client::RouteError::Transport(TransportError::Mux(MuxError::CapExceeded)))
+                    Err(pl_transport_win::client::RouteError::Transport(
+                        TransportError::Mux(MuxError::CapExceeded)
+                    ))
                 ));
             } else {
                 assert!(

@@ -46,8 +46,8 @@ async fn lan_ingest_reports_shared_direct_outcome() {
         direct_credential(pin, port),
         Arc::new(std::sync::atomic::AtomicBool::new(true)),
     )
-        .unwrap()
-        .with_observer(Some(observer.clone()));
+    .unwrap()
+    .with_observer(Some(observer.clone()));
     let files = vec![FilePart {
         filename: "display_1_screen.mp4".into(),
         content_type: "video/mp4".into(),

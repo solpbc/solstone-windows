@@ -5,9 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use observer_model::{
-    SyncSnapshot, MARK_REJECTED_DETAIL, PAIRING_CANCELLED_DETAIL,
-};
+use observer_model::{SyncSnapshot, MARK_REJECTED_DETAIL, PAIRING_CANCELLED_DETAIL};
 
 use crate::access::CredentialAccess;
 use crate::answer::{answer_path, read_answer, write_answer};
@@ -93,7 +91,9 @@ pub async fn answer(
             // 3. DELETE sha256: + hex of DER from spl_transport::tls::parse_certs
             if let Some(access) = access_guard.as_ref() {
                 let client = access.client_slot().load();
-                if let Ok(certs) = spl_transport::tls::parse_certs(&client.credential().client_cert_pem) {
+                if let Ok(certs) =
+                    spl_transport::tls::parse_certs(&client.credential().client_cert_pem)
+                {
                     if let Some(cert) = certs.first() {
                         let der_hex = spl_core::ca::sha256_hex(cert.as_ref());
                         let client_id = format!("sha256:{der_hex}");

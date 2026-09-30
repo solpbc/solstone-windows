@@ -154,116 +154,119 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
                 }
             };
 
-    let url = handle.bootstrap_url();
-    tracing::info!(
-        target: "window",
-        label = "journal",
-        bridge_port = handle.port(),
-        "journal bridge started"
-    );
-    match state.journal_bridge.lock() {
-        Ok(mut guard) => {
-            if let Some(old) = guard.take() {
-                old.begin_shutdown();
-            }
-            *guard = Some(handle);
-        }
-        Err(_) => {
-            handle.begin_shutdown();
-            tracing::warn!(
+            let url = handle.bootstrap_url();
+            tracing::info!(
                 target: "window",
                 label = "journal",
-                outcome = "open_failed",
-                "window open"
+                bridge_port = handle.port(),
+                "journal bridge started"
             );
-            return Err(OpenJournalError::OpenFailed);
-        }
-    }
-
-    let page_loaded = Arc::new(Notify::new());
-    let page_load_started = Arc::new(AtomicBool::new(false));
-    let window = match build_journal_window_on_main_thread(
-        app,
-        url.clone(),
-        page_loaded.clone(),
-        page_load_started.clone(),
-    )
-    .await
-    {
-        Ok(window) => window,
-        Err(error) => {
-            tracing::warn!(
-                target: "window",
-                label = "journal",
-                error = %error,
-                "journal window construction failed"
-            );
-            shutdown_journal_bridge(&state);
-            log_journal_open_failed();
-            return Err(OpenJournalError::OpenFailed);
-        }
-    };
-    log_journal_window_state(&window, "built");
-    let started = Instant::now();
-    let navigated = tokio::time::timeout(JOURNAL_READY_TIMEOUT, page_loaded.notified())
-        .await
-        .is_ok();
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    let usable_reason = journal_window_is_usable(&window);
-    let usable = usable_reason.is_none();
-    if !navigated || !usable {
-        let bridge_contacted = state
-            .journal_bridge
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|handle| handle.contacted()))
-            .unwrap_or(false);
-        let page_started = page_load_started.load(Ordering::Relaxed);
-        let mode = classify_journal_open_failure(navigated, page_started, bridge_contacted, usable);
-        let url = window
-            .url()
-            .map(|u| strip_cap(u.as_str()))
-            .unwrap_or_else(|_| "url_error".to_string());
-        tracing::warn!(
-            target: "window",
-            label = "journal",
-            mode = mode.token(),
-            usable_failure_reason = usable_reason.as_ref().map(UsableFailureReason::token).unwrap_or("none"),
-            bridge_contacted,
-            page_load_started = page_started,
-            navigated,
-            usable,
-            url = %url,
-            elapsed_ms,
-            "journal open failed"
-        );
-        log_journal_window_state(&window, "readiness_failed");
-        window.close().ok();
-        shutdown_journal_bridge(&state);
-        log_journal_open_failed();
-        return Err(OpenJournalError::OpenFailed);
-    }
-
-    let teardown_app = app.clone();
-    window.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            if let Some(state) = teardown_app.try_state::<crate::app::AppState>() {
-                if let Ok(mut guard) = state.journal_bridge.lock() {
-                    if let Some(handle) = guard.take() {
-                        handle.begin_shutdown();
+            match state.journal_bridge.lock() {
+                Ok(mut guard) => {
+                    if let Some(old) = guard.take() {
+                        old.begin_shutdown();
                     }
+                    *guard = Some(handle);
+                }
+                Err(_) => {
+                    handle.begin_shutdown();
+                    tracing::warn!(
+                        target: "window",
+                        label = "journal",
+                        outcome = "open_failed",
+                        "window open"
+                    );
+                    return Err(OpenJournalError::OpenFailed);
                 }
             }
-        }
-    });
 
-    tracing::info!(
-        target: "window",
-        label = "journal",
-        action = "create",
-        "window open"
-    );
-    Ok(())
+            let page_loaded = Arc::new(Notify::new());
+            let page_load_started = Arc::new(AtomicBool::new(false));
+            let window = match build_journal_window_on_main_thread(
+                app,
+                url.clone(),
+                page_loaded.clone(),
+                page_load_started.clone(),
+            )
+            .await
+            {
+                Ok(window) => window,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "window",
+                        label = "journal",
+                        error = %error,
+                        "journal window construction failed"
+                    );
+                    shutdown_journal_bridge(&state);
+                    log_journal_open_failed();
+                    return Err(OpenJournalError::OpenFailed);
+                }
+            };
+            log_journal_window_state(&window, "built");
+            let started = Instant::now();
+            let navigated = tokio::time::timeout(JOURNAL_READY_TIMEOUT, page_loaded.notified())
+                .await
+                .is_ok();
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let usable_reason = journal_window_is_usable(&window);
+            let usable = usable_reason.is_none();
+            if !navigated || !usable {
+                let bridge_contacted = state
+                    .journal_bridge
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.as_ref().map(|handle| handle.contacted()))
+                    .unwrap_or(false);
+                let page_started = page_load_started.load(Ordering::Relaxed);
+                let mode = classify_journal_open_failure(navigated, page_started, bridge_contacted, usable);
+                let url = window
+                    .url()
+                    .map(|u| strip_cap(u.as_str()))
+                    .unwrap_or_else(|_| "url_error".to_string());
+                tracing::warn!(
+                    target: "window",
+                    label = "journal",
+                    mode = mode.token(),
+                    usable_failure_reason = usable_reason.as_ref().map(UsableFailureReason::token).unwrap_or("none"),
+                    bridge_contacted,
+                    page_load_started = page_started,
+                    navigated,
+                    usable,
+                    url = %url,
+                    elapsed_ms,
+                    "journal open failed"
+                );
+                log_journal_window_state(&window, "readiness_failed");
+                window.close().ok();
+                shutdown_journal_bridge(&state);
+                log_journal_open_failed();
+                return Err(OpenJournalError::OpenFailed);
+            }
+
+            let teardown_app = app.clone();
+            window.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    if let Some(state) = teardown_app.try_state::<crate::app::AppState>() {
+                        if let Ok(mut guard) = state.journal_bridge.lock() {
+                            if let Some(handle) = guard.take() {
+                                handle.begin_shutdown();
+                            }
+                        }
+                    }
+                }
+            });
+
+            tracing::info!(
+                target: "window",
+                label = "journal",
+                action = "create",
+                "window open"
+            );
+            Ok(())
+        },
+    )
+    .await
 }
 
 fn shutdown_journal_bridge(state: &crate::app::AppState) {

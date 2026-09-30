@@ -136,12 +136,10 @@ fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-type IngestFuture<'a> = Pin<
-    Box<dyn Future<Output = Result<(IngestResponse, SendMetadata), RouteError>> + Send + 'a>,
->;
-type ListSegmentsFuture<'a> = Pin<
-    Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), RouteError>> + Send + 'a>,
->;
+type IngestFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(IngestResponse, SendMetadata), RouteError>> + Send + 'a>>;
+type ListSegmentsFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), RouteError>> + Send + 'a>>;
 
 trait UploadClient: Send + Sync {
     fn ingest<'a>(
@@ -955,11 +953,7 @@ impl UploadCoordinator {
             .remove(&index);
     }
 
-    pub async fn run(
-        self,
-        mut cancel: watch::Receiver<SlotExit>,
-        wake: Arc<tokio::sync::Notify>,
-    ) {
+    pub async fn run(self, mut cancel: watch::Receiver<SlotExit>, wake: Arc<tokio::sync::Notify>) {
         let tick_cancel = cancel.clone();
         let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
         let exit_reason = loop {
@@ -3124,7 +3118,10 @@ mod tests {
         let result = coordinator.tick().await;
         let snapshot = sync.lock().unwrap().clone();
 
-        assert!(matches!(result, Err(RouteError::Transport(TransportError::Io(_)))));
+        assert!(matches!(
+            result,
+            Err(RouteError::Transport(TransportError::Io(_)))
+        ));
         assert_eq!(client.ingests.lock().unwrap().len(), 1);
         assert_eq!(snapshot.upload.quarantined_segments, 0);
         assert_eq!(snapshot.upload.recent_error_count, 1);
@@ -3236,7 +3233,10 @@ mod tests {
         }
         assert!(matches!(
             coordinator.tick().await,
-            Err(RouteError::Transport(TransportError::Rejected { status: 403, .. }))
+            Err(RouteError::Transport(TransportError::Rejected {
+                status: 403,
+                ..
+            }))
         ));
         let snapshot = sync.lock().unwrap().clone();
 
@@ -3264,7 +3264,10 @@ mod tests {
         let result = coordinator.tick().await;
         let snapshot = sync.lock().unwrap().clone();
 
-        assert!(matches!(result, Err(RouteError::Transport(TransportError::Io(_)))));
+        assert!(matches!(
+            result,
+            Err(RouteError::Transport(TransportError::Io(_)))
+        ));
         assert_eq!(snapshot.upload.quarantined_segments, 0);
         assert_eq!(snapshot.upload.recent_error_count, 1);
     }
@@ -3557,13 +3560,10 @@ mod tests {
 
             let result = coordinator.tick().await;
             assert_eq!(
-                result
-                    .as_ref()
-                    .err()
-                    .map(|error| match error {
-                        RouteError::Transport(e) => transport_error_code(e).to_string(),
-                        RouteError::AwaitingConfirmation => "awaiting_confirmation".to_string(),
-                    }),
+                result.as_ref().err().map(|error| match error {
+                    RouteError::Transport(e) => transport_error_code(e).to_string(),
+                    RouteError::AwaitingConfirmation => "awaiting_confirmation".to_string(),
+                }),
                 Some(expected_code.to_string())
             );
             assert!(
@@ -3686,7 +3686,10 @@ mod tests {
         );
 
         let first = coordinator.tick().await;
-        assert!(matches!(first, Err(RouteError::Transport(TransportError::LocalOffset))));
+        assert!(matches!(
+            first,
+            Err(RouteError::Transport(TransportError::LocalOffset))
+        ));
         let first_snapshot = sync.lock().unwrap().clone();
         assert_eq!(
             first_snapshot.upload.last_error_reason.as_deref(),
@@ -3736,7 +3739,10 @@ mod tests {
         );
 
         let first = coordinator.tick().await;
-        assert!(matches!(first, Err(RouteError::Transport(TransportError::Io(_)))));
+        assert!(matches!(
+            first,
+            Err(RouteError::Transport(TransportError::Io(_)))
+        ));
         let second = coordinator.tick().await.unwrap();
         assert_eq!(second, 1);
 
@@ -4383,7 +4389,10 @@ mod tests {
         let res = coordinator.tick().await;
         assert!(matches!(
             res,
-            Err(RouteError::Transport(TransportError::Rejected { status: 403, .. }))
+            Err(RouteError::Transport(TransportError::Rejected {
+                status: 403,
+                ..
+            }))
         ));
         let snapshot = sync.lock().unwrap().clone();
         assert_eq!(snapshot.upload.listing_refusals, 0);

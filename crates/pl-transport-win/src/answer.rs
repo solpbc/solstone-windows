@@ -50,9 +50,8 @@ pub fn encode_answer(state: &AnswerState) -> Result<Vec<u8>, StorageError> {
 
 /// Parse canonical answer bytes. Rejects any deviation, extra whitespace, or invalid digest.
 pub fn parse_answer(bytes: &[u8]) -> Result<AnswerState, StorageError> {
-    let s = std::str::from_utf8(bytes).map_err(|e| {
-        StorageError::WriteFailed(std::io::Error::new(ErrorKind::InvalidData, e))
-    })?;
+    let s = std::str::from_utf8(bytes)
+        .map_err(|e| StorageError::WriteFailed(std::io::Error::new(ErrorKind::InvalidData, e)))?;
     let s = s.strip_suffix('\n').ok_or_else(|| {
         StorageError::WriteFailed(std::io::Error::new(
             ErrorKind::InvalidData,
@@ -153,7 +152,8 @@ pub fn settle_grandfather(
             match crate::credential::PairedState::load(state_path) {
                 Ok(paired) => {
                     let (confirmed, rejected) = if let Some(cred) = paired.credential {
-                        let digest = crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+                        let digest =
+                            crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
                         (digest, String::new())
                     } else {
                         (String::new(), String::new())
@@ -220,12 +220,14 @@ pub async fn settle_rejected_on_launch(
                 return false;
             };
 
-            let cert_digest = crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+            let cert_digest =
+                crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
             if cert_digest == rejected_digest {
                 // Matching rejected pairing found. Attempt one retire_client
                 if let Ok(der_certs) = spl_transport::tls::parse_certs(&cred.client_cert_pem) {
                     if let Some(der) = der_certs.first() {
-                        let client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der.as_ref()));
+                        let client_id =
+                            format!("sha256:{}", spl_core::ca::sha256_hex(der.as_ref()));
                         if let Ok(client) = crate::client::ObserverClient::new(
                             cred.clone(),
                             Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -330,7 +332,11 @@ mod tests {
         let bytes = encode_answer(&populated).expect("encode populated");
         assert_eq!(
             bytes,
-            format!("{{\"confirmed\":\"{}\",\"rejected\":\"{}\"}}\n", hex64_1, hex64_2).into_bytes()
+            format!(
+                "{{\"confirmed\":\"{}\",\"rejected\":\"{}\"}}\n",
+                hex64_1, hex64_2
+            )
+            .into_bytes()
         );
         let parsed = parse_answer(&bytes).expect("parse populated");
         assert_eq!(parsed, populated);

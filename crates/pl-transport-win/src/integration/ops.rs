@@ -383,7 +383,10 @@ pub async fn pair(
 
     let ans_path = crate::answer::answer_path(&environment.state_path);
     let prior_ans_bytes = std::fs::read(&ans_path).ok();
-    let mut ans_state = crate::answer::read_answer(&ans_path).ok().flatten().unwrap_or_default();
+    let mut ans_state = crate::answer::read_answer(&ans_path)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let digest = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
     ans_state.confirmed = digest;
 
@@ -482,17 +485,17 @@ pub fn client_for(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(confirmed_matches)),
     )
     .map(|client| {
-            client
-                .with_state_path(environment.state_path.clone())
-                .with_observer(observer)
-        })
-        .map_err(|error| {
-            Failure::transport(
-                Phase::Precondition,
-                &error,
-                "the stored credential could not be loaded into a client",
-            )
-        })
+        client
+            .with_state_path(environment.state_path.clone())
+            .with_observer(observer)
+    })
+    .map_err(|error| {
+        Failure::transport(
+            Phase::Precondition,
+            &error,
+            "the stored credential could not be loaded into a client",
+        )
+    })
 }
 
 fn now_secs() -> u64 {

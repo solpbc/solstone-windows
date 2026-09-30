@@ -103,8 +103,7 @@ async fn write_response(
                     && frame.flags & FLAG_WINDOW != 0
                     && frame.payload.len() == 4
                 {
-                    credit +=
-                        i64::from(u32::from_be_bytes(frame.payload[..4].try_into().unwrap()));
+                    credit += i64::from(u32::from_be_bytes(frame.payload[..4].try_into().unwrap()));
                 }
             }
         }
@@ -609,10 +608,7 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
     assert_eq!(delete_received.lock().unwrap().len(), 1);
     let delete_req = &delete_received.lock().unwrap()[0];
     let der_certs = spl_transport::tls::parse_certs(&cred.client_cert_pem).unwrap();
-    let expected_client_id = format!(
-        "sha256:{}",
-        spl_core::ca::sha256_hex(der_certs[0].as_ref())
-    );
+    let expected_client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der_certs[0].as_ref()));
     assert!(delete_req.contains(&expected_client_id));
 
     // pairing.json deleted, segments remain, phase is NotPaired(MARK_REJECTED_DETAIL)
@@ -920,9 +916,19 @@ async fn mark_confirmation_pair_mark_gates_the_save() {
         matches!(&failure, pl_transport_win::integration::report::Failure::Assertion { reason, .. } if reason == "mark_mismatch")
     );
     assert!(!env.state_path.exists(), "pairing.json must be absent");
-    assert!(!env.state_tmp_path().exists(), "pairing.json.tmp must be absent");
-    assert!(!answer_path(&env.state_path).exists(), "answer file must be unchanged");
-    assert_eq!(delete_paths.lock().unwrap().len(), 1, "exactly one DELETE request");
+    assert!(
+        !env.state_tmp_path().exists(),
+        "pairing.json.tmp must be absent"
+    );
+    assert!(
+        !answer_path(&env.state_path).exists(),
+        "answer file must be unchanged"
+    );
+    assert_eq!(
+        delete_paths.lock().unwrap().len(),
+        1,
+        "exactly one DELETE request"
+    );
     let delete_path = delete_paths.lock().unwrap()[0].clone();
     assert!(
         delete_path.starts_with("/app/network/api/clients/sha256:"),
@@ -965,15 +971,21 @@ async fn mark_confirmation_pair_mark_gates_the_save() {
     assert!(env.state_path.exists(), "pairing.json must exist");
 
     let ans_path = answer_path(&env.state_path);
-    let ans_state = read_answer(&ans_path).unwrap().expect("answer state must exist");
+    let ans_state = read_answer(&ans_path)
+        .unwrap()
+        .expect("answer state must exist");
     let paired = PairedState::load(&env.state_path).unwrap();
     let cred = paired.credential.as_ref().unwrap();
     let digest = JournalIdentity::from_credential(cred).client_cert_sha256;
     assert_eq!(ans_state.confirmed, digest);
 
     // 5. Client built by client_for can ingest (gate is open)
-    let client = pl_transport_win::integration::ops::client_for(&env, &paired, None).expect("client_for");
-    assert!(client.gate_open(), "gate must be open for confirmed pairing");
+    let client =
+        pl_transport_win::integration::ops::client_for(&env, &paired, None).expect("client_for");
+    assert!(
+        client.gate_open(),
+        "gate must be open for confirmed pairing"
+    );
     let (response, _) = client
         .ingest("000000_300", "20260930", test_file_parts(), None)
         .await
@@ -1074,4 +1086,3 @@ async fn mark_confirmation_metadata_routes_dial_while_awaiting() {
 
     server_task.abort();
 }
-

@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- this is a security fix: after you pair, the app now asks you to confirm your journal's mark, and nothing waiting on this PC goes to the journal until you confirm it's your journal. before, what was waiting could start going to the journal as soon as pairing finished, before you could check the mark, even to a journal that wasn't yours. if you paired before this update, you won't be asked.
+
 ## [2.0.14] - 2026-09-30
 
 ### Changed

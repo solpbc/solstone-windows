@@ -2478,7 +2478,10 @@ async fn reachable_lan_rejection_never_dials_relay() {
 
     assert!(matches!(
         err,
-        pl_transport_win::client::RouteError::Transport(TransportError::Rejected { status: 503, .. })
+        pl_transport_win::client::RouteError::Transport(TransportError::Rejected {
+            status: 503,
+            ..
+        })
     ));
     let _ = server.await.unwrap();
     assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
@@ -2490,7 +2493,10 @@ async fn lan_only_no_endpoint_still_returns_no_endpoint() {
     let mut credential = observer_credential(vec![0; 16], 7657);
     credential.endpoints.clear();
     assert!(matches!(
-        ObserverClient::new(credential, Arc::new(std::sync::atomic::AtomicBool::new(true))),
+        ObserverClient::new(
+            credential,
+            Arc::new(std::sync::atomic::AtomicBool::new(true))
+        ),
         Err(TransportError::NoEndpoint)
     ));
 }
@@ -3202,11 +3208,8 @@ async fn test_adapter_3xx_redirect_on_get_clients_self_and_get_relay_access() {
     .await;
 
     let cred = observer_credential(server.pin.clone(), server.port);
-    let client = ObserverClient::new(
-        cred,
-        Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    )
-    .unwrap();
+    let client =
+        ObserverClient::new(cred, Arc::new(std::sync::atomic::AtomicBool::new(true))).unwrap();
 
     let meta_res = client.get_clients_self().await.unwrap();
     assert_eq!(meta_res.status, 302);
@@ -3413,11 +3416,8 @@ async fn test_adapter_oversize_response_body_rejected() {
     .await;
 
     let cred = observer_credential(server.pin.clone(), server.port);
-    let client = ObserverClient::new(
-        cred,
-        Arc::new(std::sync::atomic::AtomicBool::new(true)),
-    )
-    .unwrap();
+    let client =
+        ObserverClient::new(cred, Arc::new(std::sync::atomic::AtomicBool::new(true))).unwrap();
 
     let err = client.get_clients_self().await.unwrap_err();
     assert!(matches!(
@@ -3467,8 +3467,8 @@ async fn test_adapter_relay_access_ready() {
         cred.clone(),
         Arc::new(std::sync::atomic::AtomicBool::new(true)),
     )
-        .unwrap()
-        .with_state_path(state_path.clone());
+    .unwrap()
+    .with_state_path(state_path.clone());
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
@@ -3553,8 +3553,8 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
         cred.clone(),
         Arc::new(std::sync::atomic::AtomicBool::new(true)),
     )
-        .unwrap()
-        .with_state_path(state_path.clone());
+    .unwrap()
+    .with_state_path(state_path.clone());
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);

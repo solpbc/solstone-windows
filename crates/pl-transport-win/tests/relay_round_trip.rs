@@ -1391,7 +1391,9 @@ async fn run_interrupted_observer_ingest(
         .await
         .unwrap_err();
     let outcome = match &error {
-        RouteError::Transport(err) => InterruptedClientOutcome::Transport(transport_error_code(err)),
+        RouteError::Transport(err) => {
+            InterruptedClientOutcome::Transport(transport_error_code(err))
+        }
         RouteError::AwaitingConfirmation => panic!("unexpected AwaitingConfirmation"),
     };
     let artifacts = server.await.unwrap();

@@ -77,11 +77,11 @@ pub(crate) fn publish_unknown_journals(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::client::ObserverClient;
     use crate::credential::{Credential, EndpointAddr};
     use observer_model::PairingPhase;
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use std::sync::Arc;
 
     fn test_credential(instance_id: &str, port: u16, pin: Vec<u8>) -> Credential {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -107,11 +107,8 @@ mod tests {
     #[test]
     fn invalid_expected_jid_publishes_empty_list_and_preserves_phase() {
         let cred = test_credential("test", 1234, vec![0; 16]);
-        let client = ObserverClient::new(
-            cred,
-            Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        )
-        .unwrap();
+        let client =
+            ObserverClient::new(cred, Arc::new(std::sync::atomic::AtomicBool::new(true))).unwrap();
         let mut snapshot = SyncSnapshot::default();
         snapshot.pairing.phase = PairingPhase::Paired;
 
@@ -174,11 +171,8 @@ mod tests {
     fn valid_expected_jid_with_empty_sightings_publishes_empty_list() {
         let valid_jid = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
         let cred = test_credential(valid_jid, 1234, vec![0; 16]);
-        let client = ObserverClient::new(
-            cred,
-            Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        )
-        .unwrap();
+        let client =
+            ObserverClient::new(cred, Arc::new(std::sync::atomic::AtomicBool::new(true))).unwrap();
         let mut snapshot = SyncSnapshot::default();
         snapshot.pairing.phase = PairingPhase::Paired;
 
@@ -229,11 +223,8 @@ mod tests {
         let expected_jid = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
         let cred = test_credential(expected_jid, port, vec![0xAA; 16]);
 
-        let client = ObserverClient::new(
-            cred,
-            Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        )
-        .unwrap();
+        let client =
+            ObserverClient::new(cred, Arc::new(std::sync::atomic::AtomicBool::new(true))).unwrap();
         let _ = client.list_segments("20000101").await;
 
         let mut snapshot = SyncSnapshot::default();

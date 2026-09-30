@@ -446,7 +446,8 @@ mod tests {
         assert_eq!(s.pairing.mark, None);
 
         // 2. Bound when unconfirmed -> AwaitingConfirmation
-        let binding = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+        let binding =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
         publish_pairing(
             &sync,
             &confirmation,

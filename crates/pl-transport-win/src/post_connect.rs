@@ -1113,11 +1113,8 @@ mod tests {
             pairing_generation: p_gen,
             access_mutation_generation: 0,
         };
-        let client = ObserverClient::new(
-            cred,
-            Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        )
-        .unwrap()
+        let client = ObserverClient::new(cred, Arc::new(std::sync::atomic::AtomicBool::new(true)))
+            .unwrap()
             .with_state_path(path.clone())
             .with_cas_key(cas);
         let slot = ClientSlot::new(Arc::new(client));
