@@ -155,6 +155,7 @@ pub struct PostConnectController {
     facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
     deadline: Duration,
     state: Mutex<PostConnectState>,
+    pass_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl PostConnectController {
@@ -175,6 +176,24 @@ impl PostConnectController {
             facts_fn,
             deadline: DEFAULT_POST_CONNECT_DEADLINE,
             state: Mutex::new(PostConnectState::default()),
+            pass_tasks: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Quiesce active post-connect tasks and refuse follow-up passes without retiring credentials.
+    pub async fn quiesce(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.burst_phase = BurstPhase::Quiesced;
+            state.pending_metadata = None;
+            state.pending_access_trigger = false;
+        }
+        let handles = {
+            let mut tasks = self.pass_tasks.lock().unwrap();
+            std::mem::take(&mut *tasks)
+        };
+        for handle in handles {
+            let _ = handle.await;
         }
     }
 
@@ -420,7 +439,7 @@ impl PostConnectController {
         let metadata = self.clone();
         let metadata_token = start.token;
         let metadata_journal_version_token = start.journal_version_token;
-        tokio::spawn(async move {
+        let h1 = tokio::spawn(async move {
             let deadline = metadata.deadline;
             if tokio::time::timeout(
                 deadline,
@@ -438,7 +457,7 @@ impl PostConnectController {
 
         let access = self.clone();
         let access_token = start.token;
-        tokio::spawn(async move {
+        let h2 = tokio::spawn(async move {
             let deadline = access.deadline;
             let job = async {
                 if let Some((validated, cas)) = access.fetch_access_outcome(&start.paired_id).await
@@ -455,6 +474,11 @@ impl PostConnectController {
                 access.start_pass(next);
             }
         });
+
+        if let Ok(mut tasks) = self.pass_tasks.lock() {
+            tasks.push(h1);
+            tasks.push(h2);
+        }
     }
 
     /// Release a lane only when this completion owns its exact claim. The
@@ -1089,8 +1113,11 @@ mod tests {
             pairing_generation: p_gen,
             access_mutation_generation: 0,
         };
-        let client = ObserverClient::new(cred)
-            .unwrap()
+        let client = ObserverClient::new(
+            cred,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap()
             .with_state_path(path.clone())
             .with_cas_key(cas);
         let slot = ClientSlot::new(Arc::new(client));

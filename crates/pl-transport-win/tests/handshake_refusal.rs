@@ -73,7 +73,11 @@ fn other_refusal() -> CertificateError {
 async fn access_denied_stops_the_sync_client_and_certificate_unknown_does_not() {
     let (pin, port, accepted, journal) =
         refusing_journal(CertificateError::ApplicationVerificationFailure).await;
-    let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+    let client = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
 
     assert!(client.ingest_manifest().await.is_err());
     assert_eq!(client.refusal_stop(), Some(HandshakeStop::TlsAccessDenied));
@@ -87,7 +91,11 @@ async fn access_denied_stops_the_sync_client_and_certificate_unknown_does_not() 
     journal.abort();
 
     let (pin, port, accepted, journal) = refusing_journal(other_refusal()).await;
-    let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+    let client = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     assert!(client.ingest_manifest().await.is_err());
     assert_eq!(client.refusal_stop(), None);
     let dials = accepted.load(Ordering::SeqCst);
@@ -100,7 +108,11 @@ async fn access_denied_stops_the_sync_client_and_certificate_unknown_does_not() 
 
     // Any other refusal counts toward the bound but does not stop at once.
     let (pin, port, _, journal) = refusing_journal(CertificateError::UnknownIssuer).await;
-    let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+    let client = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     assert!(client.ingest_manifest().await.is_err());
     assert_eq!(client.refusal_stop(), None);
     journal.abort();
@@ -145,7 +157,7 @@ async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
     let (pin, port, _, journal) =
         refusing_journal(CertificateError::ApplicationVerificationFailure).await;
     let paired = PairedState {
-        credential: Some(direct_credential(pin, port)),
+        credential: Some(direct_credential(pin.clone(), port)),
         ..Default::default()
     };
     let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -157,6 +169,8 @@ async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
         state_path.with_file_name(format!("handshake-refusal-jv-{unique}.json")),
     ));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let cred = direct_credential(pin, port);
+    let binding = pl_transport_win::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
     let cfg = SyncConfig {
         device_label: "handshake-refusal-test".into(),
         period_secs: 300,
@@ -165,6 +179,7 @@ async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
         local_offset: Arc::new(TestOffset),
         journal_version,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(binding)),
     };
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
     let handle = pl_transport_win::journal_bridge::start(access)

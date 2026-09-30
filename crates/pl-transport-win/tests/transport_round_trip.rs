@@ -318,6 +318,7 @@ fn service_config(state_path: PathBuf) -> SyncConfig {
         local_offset: Arc::new(TestOffset),
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(String::new())),
     }
 }
 
@@ -459,7 +460,11 @@ async fn start_client_with_response(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_response(listener, acceptor, status, body));
-    let client = ObserverClient::new(observer_credential(pin, port)).unwrap();
+    let client = ObserverClient::new(
+        observer_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     (client, server)
 }
 
@@ -1383,7 +1388,7 @@ async fn observer_contract_authority_direct_v3_reads_fail_closed_on_non_success(
         let (client, server) = start_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.ingest_manifest().await,
-            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+            Err(pl_transport_win::RouteError::Transport(TransportError::Rejected { status: actual, .. })) if actual == status
         ));
         assert!(v3_read_capture_matches(
             &server.await.unwrap(),
@@ -1394,7 +1399,7 @@ async fn observer_contract_authority_direct_v3_reads_fail_closed_on_non_success(
         let (client, server) = start_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.ingest_manifest_day("20260820").await,
-            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+            Err(pl_transport_win::RouteError::Transport(TransportError::Rejected { status: actual, .. })) if actual == status
         ));
         assert!(v3_read_capture_matches(
             &server.await.unwrap(),
@@ -1405,7 +1410,7 @@ async fn observer_contract_authority_direct_v3_reads_fail_closed_on_non_success(
         let (client, server) = start_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.list_segments("20260820").await,
-            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+            Err(pl_transport_win::RouteError::Transport(TransportError::Rejected { status: actual, .. })) if actual == status
         ));
         assert!(v3_read_capture_matches(
             &server.await.unwrap(),
@@ -2436,8 +2441,11 @@ async fn reachable_lan_success_never_dials_relay() {
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_empty_segments(listener, acceptor));
     let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
-    let client =
-        ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token")).unwrap();
+    let client = ObserverClient::new(
+        observer_relay_credential(pin, port, origin, "old-token"),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
 
     client.list_segments("20260729").await.unwrap();
 
@@ -2460,12 +2468,18 @@ async fn reachable_lan_rejection_never_dials_relay() {
         b"{\"error\":\"busy\"}",
     ));
     let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
-    let client =
-        ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token")).unwrap();
+    let client = ObserverClient::new(
+        observer_relay_credential(pin, port, origin, "old-token"),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
 
     let err = client.list_segments("20260729").await.unwrap_err();
 
-    assert!(matches!(err, TransportError::Rejected { status: 503, .. }));
+    assert!(matches!(
+        err,
+        pl_transport_win::client::RouteError::Transport(TransportError::Rejected { status: 503, .. })
+    ));
     let _ = server.await.unwrap();
     assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
     relay_task.abort();
@@ -2476,7 +2490,7 @@ async fn lan_only_no_endpoint_still_returns_no_endpoint() {
     let mut credential = observer_credential(vec![0; 16], 7657);
     credential.endpoints.clear();
     assert!(matches!(
-        ObserverClient::new(credential),
+        ObserverClient::new(credential, Arc::new(std::sync::atomic::AtomicBool::new(true))),
         Err(TransportError::NoEndpoint)
     ));
 }
@@ -2490,8 +2504,11 @@ async fn transient_lan_fault_then_success_absorbed_before_relay() {
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_drop_then_empty_segments(listener, acceptor));
     let (origin, relay_accepts, relay_task) = spawn_counting_relay().await;
-    let client =
-        ObserverClient::new(observer_relay_credential(pin, port, origin, "old-token")).unwrap();
+    let client = ObserverClient::new(
+        observer_relay_credential(pin, port, origin, "old-token"),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
 
     client.list_segments("20260729").await.unwrap();
 
@@ -2811,7 +2828,11 @@ async fn test_adapter_metadata_get_put_on_first_send() {
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
-    let client = ObserverClient::new(cred.clone()).unwrap();
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
@@ -2919,7 +2940,11 @@ async fn test_adapter_metadata_keeps_prior_publication_when_relay_is_retired() {
     let state_path = temp_state_path("metadata-retired-preserves-prior");
     paired_state(credential.clone()).save(&state_path).unwrap();
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(
-        ObserverClient::new(credential.clone()).unwrap(),
+        ObserverClient::new(
+            credential.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap(),
     ));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
@@ -3107,7 +3132,11 @@ async fn test_adapter_clients_self_404_no_put() {
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
-    let client = ObserverClient::new(cred.clone()).unwrap();
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
@@ -3173,7 +3202,11 @@ async fn test_adapter_3xx_redirect_on_get_clients_self_and_get_relay_access() {
     .await;
 
     let cred = observer_credential(server.pin.clone(), server.port);
-    let client = ObserverClient::new(cred).unwrap();
+    let client = ObserverClient::new(
+        cred,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
 
     let meta_res = client.get_clients_self().await.unwrap();
     assert_eq!(meta_res.status, 302);
@@ -3241,7 +3274,11 @@ async fn test_adapter_metadata_409_conflict_retry() {
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
-    let client = ObserverClient::new(cred.clone()).unwrap();
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
@@ -3315,7 +3352,11 @@ async fn test_adapter_corrupt_json_get_no_put() {
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
-    let client = ObserverClient::new(cred.clone()).unwrap();
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
@@ -3372,7 +3413,11 @@ async fn test_adapter_oversize_response_body_rejected() {
     .await;
 
     let cred = observer_credential(server.pin.clone(), server.port);
-    let client = ObserverClient::new(cred).unwrap();
+    let client = ObserverClient::new(
+        cred,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
 
     let err = client.get_clients_self().await.unwrap_err();
     assert!(matches!(
@@ -3418,7 +3463,10 @@ async fn test_adapter_relay_access_ready() {
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
-    let client = ObserverClient::new(cred.clone())
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
         .unwrap()
         .with_state_path(state_path.clone());
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
@@ -3501,7 +3549,10 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
-    let client = ObserverClient::new(cred.clone())
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
         .unwrap()
         .with_state_path(state_path.clone());
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
@@ -3649,7 +3700,11 @@ async fn test_adapter_unchanged_snapshot_no_second_put() {
     let paired = paired_state(cred.clone());
     paired.save(&state_path).unwrap();
 
-    let client = ObserverClient::new(cred.clone()).unwrap();
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let facts = Arc::new(|| pl_transport_win::device_metadata::RawDeviceFacts {
@@ -3752,12 +3807,14 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
     let observer = spl_transport::observe::OperationObserver::new();
     let access =
         CredentialAccess::bind(&paired, &cfg, sync.clone(), Some(observer.clone())).unwrap();
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(pl_transport_win::slot::SlotExit::Run);
+    let wake = Arc::new(tokio::sync::Notify::new());
     let uploader = tokio::spawn(service::run_uploader(
         access.clone(),
         cfg.clone(),
         sync.clone(),
         cancel_rx,
+        wake,
     ));
     let handle = journal_bridge::start_observed_with_facts(access.clone())
         .await
@@ -3832,7 +3889,7 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
         .is_none());
 
     handle.shutdown_and_wait().await;
-    let _ = cancel_tx.send(true);
+    let _ = cancel_tx.send(pl_transport_win::slot::SlotExit::Shutdown);
     tokio::time::timeout(Duration::from_secs(3), uploader)
         .await
         .expect("uploader should stop")

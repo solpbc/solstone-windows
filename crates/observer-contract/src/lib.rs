@@ -75,6 +75,11 @@ pub mod settings {
     /// The paired journal's own visual mark, shown once paired — the same mark
     /// comparison primitive the unknown-journal detail card uses.
     pub const PAIRING_MARK: &str = "settings.pairing.mark";
+    pub const PAIRING_MARK_CARD: &str = "settings.pairing.markCard";
+    pub const PAIRING_CONFIRM_YES: &str = "settings.pairing.confirmYes";
+    pub const PAIRING_CONFIRM_REJECT: &str = "settings.pairing.confirmReject";
+    pub const PAIRING_CONFIRM_CONTINUE: &str = "settings.pairing.confirmContinue";
+    pub const PAIRING_CONFIRM_CANCEL: &str = "settings.pairing.confirmCancel";
     pub const JOURNAL_OPEN: &str = "settings.journal.open";
     pub const JOURNAL_UNAVAILABLE: &str = "settings.journal.unavailable";
     pub const UNKNOWN_JOURNAL_LIST: &str = "settings.unknown-journal.list";
@@ -170,6 +175,26 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
         ("settings.pairing.mark", settings::PAIRING_MARK),
+        (
+            "settings.pairing.markCard",
+            settings::PAIRING_MARK_CARD,
+        ),
+        (
+            "settings.pairing.confirmYes",
+            settings::PAIRING_CONFIRM_YES,
+        ),
+        (
+            "settings.pairing.confirmReject",
+            settings::PAIRING_CONFIRM_REJECT,
+        ),
+        (
+            "settings.pairing.confirmContinue",
+            settings::PAIRING_CONFIRM_CONTINUE,
+        ),
+        (
+            "settings.pairing.confirmCancel",
+            settings::PAIRING_CONFIRM_CANCEL,
+        ),
         ("settings.journal.open", settings::JOURNAL_OPEN),
         (
             "settings.journal.unavailable",

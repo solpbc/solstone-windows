@@ -89,13 +89,14 @@ interface SourceReport {
   device?: string | null;
 }
 
-type PairingPhase = "not_paired" | "pairing" | "paired" | "failed";
+type PairingPhase = "not_paired" | "pairing" | "awaiting_confirmation" | "paired" | "failed";
 
 interface PairingState {
   phase: PairingPhase;
   journal_label: string | null;
   detail: string | null;
   mark?: MarkRenderSpec | null;
+  binding?: string;
 }
 
 interface UploadStatus {
@@ -1006,6 +1007,8 @@ function pairingPhaseLabel(pairing: PairingState): string {
       return "not paired";
     case "pairing":
       return "pairing…";
+    case "awaiting_confirmation":
+      return "waiting for you to confirm your journal's mark";
     case "paired":
       return pairing.journal_label ? `paired with ${pairing.journal_label}` : "paired";
     case "failed":
@@ -1083,6 +1086,7 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
       label = "not paired — pair to sync your journal";
       break;
     case "pairing":
+    case "awaiting_confirmation":
     case "failed":
       label = pairingPhaseLabel(sync.pairing);
       break;
@@ -1100,6 +1104,16 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
 function renderJournalOpenSection(dump: HealthDump): HTMLElement {
   const pane = section("your journal");
   const pairing = dump.sync.pairing;
+
+  if (pairing.phase === "awaiting_confirmation") {
+    pane.append(
+      automation(
+        text("div", "confirm your journal's mark to open it"),
+        ids["settings.journal.unavailable"],
+      ),
+    );
+    return pane;
+  }
 
   if (pairing.phase !== "paired") {
     journalOpenError = false;
@@ -1140,6 +1154,50 @@ function renderJournalOpenSection(dump: HealthDump): HTMLElement {
   return pane;
 }
 
+function render48pxMarkTile(icon: MarkIconSpec): HTMLElement {
+  const tile = document.createElement("div");
+  tile.setAttribute("aria-hidden", "true");
+  tile.style.display = "inline-flex";
+  tile.style.alignItems = "center";
+  tile.style.justifyContent = "center";
+  tile.style.width = "48px";
+  tile.style.height = "48px";
+  tile.style.borderRadius = "10px";
+  tile.style.border = `2px solid ${icon.color.hex}`;
+  tile.style.background = `${icon.color.hex}1f`;
+  tile.style.boxSizing = "border-box";
+  if (icon.rot === 45) {
+    tile.style.transform = "rotate(45deg)";
+  }
+
+  const parser = new DOMParser();
+  const svgDoc = parser.parseFromString(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`,
+    "image/svg+xml",
+  );
+  const svgEl = svgDoc.documentElement;
+  tile.append(document.importNode(svgEl, true));
+  return tile;
+}
+
+function render48pxUnavailableTile(): HTMLElement {
+  const tile = document.createElement("div");
+  tile.setAttribute("aria-hidden", "true");
+  tile.style.display = "inline-flex";
+  tile.style.alignItems = "center";
+  tile.style.justifyContent = "center";
+  tile.style.width = "48px";
+  tile.style.height = "48px";
+  tile.style.borderRadius = "10px";
+  tile.style.border = "2px dashed #6E6453";
+  tile.style.background = "none";
+  tile.style.boxSizing = "border-box";
+  tile.style.fontSize = "20px";
+  tile.style.color = "#6E6453";
+  tile.textContent = "?";
+  return tile;
+}
+
 function renderPairingSection(dump: HealthDump): HTMLElement {
   const pairing = dump.sync.pairing;
   const pane = section("pairing");
@@ -1157,6 +1215,174 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     ),
   );
 
+  if (pairing.phase === "awaiting_confirmation") {
+    const card = document.createElement("div");
+    card.classList.add("fluent-card");
+    card.style.marginTop = "12px";
+    card.style.padding = "16px";
+    card.style.border = "1px solid var(--border)";
+    card.style.borderRadius = "var(--radius-control)";
+    card.style.background = "var(--fill)";
+    automation(card, ids["settings.pairing.markCard"]);
+    card.setAttribute("role", "img");
+    card.setAttribute("tabindex", "-1");
+
+    if (pairing.mark) {
+      const spec = pairing.mark;
+      const ariaName = `${spec.icon1.color.name}, ${spec.icon2.color.name} · ${spec.words[0].toLowerCase()} ${spec.words[1].toLowerCase()}`;
+      card.setAttribute("aria-label", ariaName);
+
+      const emphasis = text("div", "does this match your journal?");
+      emphasis.style.fontWeight = "600";
+      emphasis.style.fontSize = "14px";
+      emphasis.style.marginBottom = "4px";
+
+      const subtle = text(
+        "div",
+        "your journal shows this same mark in its network app. it should match, exactly.",
+      );
+      subtle.style.fontSize = "12px";
+      subtle.style.color = "var(--fg-subtle)";
+      subtle.style.marginBottom = "14px";
+
+      const markRow = document.createElement("div");
+      markRow.style.display = "inline-flex";
+      markRow.style.alignItems = "center";
+      markRow.style.gap = "10px";
+      markRow.style.marginBottom = "14px";
+
+      const words = renderMarkWords(spec.words[0], spec.words[1]);
+      words.setAttribute("aria-hidden", "true");
+
+      markRow.append(render48pxMarkTile(spec.icon1), render48pxMarkTile(spec.icon2), words);
+
+      const btnRow = document.createElement("div");
+      btnRow.style.display = "flex";
+      btnRow.style.justifyContent = "flex-end";
+      btnRow.style.gap = "8px";
+      btnRow.style.marginTop = "8px";
+
+      const rejectBtn = actionButton(
+        "that doesn't match",
+        ids["settings.pairing.confirmReject"],
+        true,
+        async () => {
+          if (pairingBusy) return;
+          pairingBusy = true;
+          try {
+            await invoke("answer_pairing", { binding: pairing.binding ?? "", action: "reject" });
+          } catch {
+            // Handled via pairing status updates
+          } finally {
+            pairingBusy = false;
+          }
+        },
+        pairingBusy,
+        "standard",
+      );
+
+      const confirmBtn = actionButton(
+        "yes, this is my journal",
+        ids["settings.pairing.confirmYes"],
+        true,
+        async () => {
+          if (pairingBusy) return;
+          pairingBusy = true;
+          try {
+            await invoke("answer_pairing", { binding: pairing.binding ?? "", action: "confirm" });
+          } catch {
+            // Handled via pairing status updates
+          } finally {
+            pairingBusy = false;
+          }
+        },
+        pairingBusy,
+        "accent",
+      );
+
+      btnRow.append(rejectBtn, confirmBtn);
+      card.append(emphasis, subtle, markRow, btnRow);
+    } else {
+      card.setAttribute("aria-label", "your journal's mark, unavailable right now");
+
+      const markRow = document.createElement("div");
+      markRow.style.display = "inline-flex";
+      markRow.style.alignItems = "center";
+      markRow.style.gap = "10px";
+      markRow.style.marginBottom = "14px";
+
+      const words = renderMarkWords("mark", "unavailable");
+      words.setAttribute("aria-hidden", "true");
+
+      markRow.append(render48pxUnavailableTile(), render48pxUnavailableTile(), words);
+
+      const emphasis = text("div", "couldn't verify");
+      emphasis.style.fontWeight = "600";
+      emphasis.style.fontSize = "14px";
+      emphasis.style.marginBottom = "4px";
+
+      const subtle = text(
+        "div",
+        "this PC couldn't work out your journal's mark, so there's nothing to compare. continue only if you're sure the link came from your journal.",
+      );
+      subtle.style.fontSize = "12px";
+      subtle.style.color = "var(--fg-subtle)";
+      subtle.style.marginBottom = "14px";
+
+      const btnRow = document.createElement("div");
+      btnRow.style.display = "flex";
+      btnRow.style.justifyContent = "flex-end";
+      btnRow.style.gap = "8px";
+      btnRow.style.marginTop = "8px";
+
+      const cancelBtn = actionButton(
+        "cancel pairing",
+        ids["settings.pairing.confirmCancel"],
+        true,
+        async () => {
+          if (pairingBusy) return;
+          pairingBusy = true;
+          try {
+            await invoke("answer_pairing", { binding: pairing.binding ?? "", action: "cancel" });
+          } catch {
+            // Handled via pairing status updates
+          } finally {
+            pairingBusy = false;
+          }
+        },
+        pairingBusy,
+        "standard",
+      );
+
+      const continueBtn = actionButton(
+        "continue anyway",
+        ids["settings.pairing.confirmContinue"],
+        true,
+        async () => {
+          if (pairingBusy) return;
+          pairingBusy = true;
+          try {
+            await invoke("answer_pairing", { binding: pairing.binding ?? "", action: "confirm" });
+          } catch {
+            // Handled via pairing status updates
+          } finally {
+            pairingBusy = false;
+          }
+        },
+        pairingBusy,
+        "accent",
+      );
+
+      btnRow.append(cancelBtn, continueBtn);
+      card.append(markRow, emphasis, subtle, btnRow);
+    }
+
+    pane.append(card);
+    card.focus();
+    setTimeout(() => card.focus(), 0);
+    return pane;
+  }
+
   if (pairing.phase === "paired" && pairing.mark) {
     pane.append(
       valueRow(
@@ -1164,6 +1390,28 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
         automation(renderMarkChip(pairing.mark), ids["settings.pairing.mark"]),
       ),
     );
+  }
+
+  if (pairing.phase === "not_paired") {
+    if (pairing.detail === "mark_rejected") {
+      const msg = text(
+        "div",
+        "you said this mark doesn't match the one your journal shows, so this PC isn't paired, and nothing it has kept went to that journal through this link. you may have pasted the wrong link, or something isn't right. paste a fresh link from your journal, or email support@solstone.app and we'll help.",
+      );
+      msg.style.fontSize = "12px";
+      msg.style.color = "var(--fg-subtle)";
+      msg.style.margin = "8px 0";
+      pane.append(msg);
+    } else if (pairing.detail === "pairing_cancelled") {
+      const msg = text(
+        "div",
+        "pairing cancelled. nothing this PC has kept went to that journal through this link. paste a fresh link from your journal when you're ready.",
+      );
+      msg.style.fontSize = "12px";
+      msg.style.color = "var(--fg-subtle)";
+      msg.style.margin = "8px 0";
+      pane.append(msg);
+    }
   }
 
   const inputRow = document.createElement("div");
@@ -2330,6 +2578,7 @@ function syncSummary(sync: SyncSnapshot): string {
     case "not_paired":
       return "pair to deliver to your journal";
     case "pairing":
+    case "awaiting_confirmation":
     case "failed":
       return pairingPhaseLabel(sync.pairing);
     case "paired": {
@@ -2720,6 +2969,7 @@ function renderSettings(dump: HealthDump): void {
     focusPaneTitleOnRender = false;
     root.querySelector<HTMLElement>(".settings-pane-title")?.focus();
   }
+  root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`)?.focus();
 }
 
 function sanitizeJournalVersion(raw: unknown): string | null {
@@ -2880,9 +3130,12 @@ function actionButton(
   enabled: boolean,
   onClick: () => void,
   busy = false,
+  variant: "standard" | "accent" = "accent",
 ): HTMLButtonElement {
   const effEnabled = enabled && !busy;
   const b = document.createElement("button");
+  b.setAttribute("type", "button");
+  b.type = "button";
   b.textContent = labelText;
   b.disabled = !effEnabled;
   if (busy) {
@@ -2891,13 +3144,14 @@ function actionButton(
   if (automationId) {
     b.dataset.automationId = automationId;
   }
-  b.classList.add(effEnabled ? "fluent-accent" : "fluent-control");
+  const isAccent = variant === "accent";
+  b.classList.add(effEnabled ? (isAccent ? "fluent-accent" : "fluent-control") : "fluent-control");
   b.style.fontSize = "13px";
   b.style.padding = "6px 12px";
-  b.style.border = effEnabled ? "1px solid var(--accent)" : "1px solid var(--border)";
+  b.style.border = effEnabled ? (isAccent ? "1px solid var(--accent)" : "1px solid var(--border)") : "1px solid var(--border)";
   b.style.borderRadius = "var(--radius-control)";
-  b.style.background = effEnabled ? "var(--accent)" : "var(--fill)";
-  b.style.color = effEnabled ? "var(--accent-fg)" : "var(--muted)";
+  b.style.background = effEnabled ? (isAccent ? "var(--accent)" : "var(--fill)") : "var(--fill)";
+  b.style.color = effEnabled ? (isAccent ? "var(--accent-fg)" : "var(--fg)") : "var(--muted)";
   b.style.cursor = effEnabled ? "pointer" : "default";
   if (effEnabled) {
     b.onclick = onClick;

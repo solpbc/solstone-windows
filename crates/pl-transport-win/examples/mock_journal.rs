@@ -90,6 +90,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
     paired.save(&args.pairing_out)?;
+    let answer_path = pl_transport_win::answer::answer_path(&args.pairing_out);
+    let digest = paired
+        .credential
+        .as_ref()
+        .map(|c| pl_transport_win::ack::JournalIdentity::from_credential(c).client_cert_sha256)
+        .unwrap_or_default();
+    let ans = pl_transport_win::answer::AnswerState {
+        confirmed: digest,
+        rejected: String::new(),
+    };
+    pl_transport_win::answer::write_answer(&answer_path, &ans)?;
     write_ready_file(&args.ready_file, port, &args.marker)?;
     println!(
         "MOCK_JOURNAL_READY port={} pairing={} transcript={}",

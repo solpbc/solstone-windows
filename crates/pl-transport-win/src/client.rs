@@ -143,7 +143,7 @@ mod tests {
             pairing_generation: pairing_generation(&credential.client_cert_pem),
             access_mutation_generation: 0,
         };
-        let client = ObserverClient::new(credential)
+        let client = ObserverClient::new(credential, Arc::new(AtomicBool::new(true)))
             .unwrap()
             .with_state_path(path.clone())
             .with_cas_key(initial_cas);
@@ -180,7 +180,7 @@ mod tests {
         let path = temp_pairing_path();
         save_credential(&path, &credential);
         let client = Arc::new(
-            ObserverClient::new(credential)
+            ObserverClient::new(credential, Arc::new(AtomicBool::new(true)))
                 .unwrap()
                 .with_state_path(path.clone()),
         );
@@ -228,7 +228,7 @@ mod tests {
             access_mutation_generation: 0,
         };
         let client = Arc::new(
-            ObserverClient::new(credential)
+            ObserverClient::new(credential, Arc::new(AtomicBool::new(true)))
                 .unwrap()
                 .with_state_path(path.clone())
                 .with_cas_key(initial_cas),
@@ -356,7 +356,7 @@ mod tests {
         credential.relay_origin = Some(format!("http://127.0.0.1:{relay_port}"));
         let path = temp_pairing_path();
         save_credential(&path, &credential);
-        let client = ObserverClient::new(credential)
+        let client = ObserverClient::new(credential, Arc::new(AtomicBool::new(true)))
             .unwrap()
             .with_state_path(path.clone());
 
@@ -548,6 +548,14 @@ impl ClientSlot {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RouteError {
+    #[error("awaiting mark confirmation")]
+    AwaitingConfirmation,
+    #[error(transparent)]
+    Transport(#[from] TransportError),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SendMetadata {
     pub path: TransportPath,
@@ -569,11 +577,12 @@ pub struct ObserverClient {
     transport: spl_transport::TransportClient,
     /// Handshake refusals for this pairing, kept across access rebuilds.
     refusals: Arc<std::sync::Mutex<RefusalTracker>>,
+    gate: Arc<AtomicBool>,
 }
 
 impl ObserverClient {
     /// Build the Windows adapter around the shared transport client.
-    pub fn new(credential: Credential) -> Result<Self, TransportError> {
+    pub fn new(credential: Credential, gate: Arc<AtomicBool>) -> Result<Self, TransportError> {
         let pairing_gen = pairing_generation(&credential.client_cert_pem);
         let relay_enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
         Self::build(
@@ -587,7 +596,16 @@ impl ObserverClient {
             Arc::new(RelayFence::new(relay_enabled)),
             1,
             Arc::new(std::sync::Mutex::new(RefusalTracker::new())),
+            gate,
         )
+    }
+
+    pub fn open_gate(&self) {
+        self.gate.store(true, Ordering::Release);
+    }
+
+    pub fn gate_open(&self) -> bool {
+        self.gate.load(Ordering::Acquire)
     }
 
     fn build(
@@ -598,6 +616,7 @@ impl ObserverClient {
         relay_fence: Arc<RelayFence>,
         incarnation: u64,
         refusals: Arc<std::sync::Mutex<RefusalTracker>>,
+        gate: Arc<AtomicBool>,
     ) -> Result<Self, TransportError> {
         let transaction = Arc::new(WindowsTokenTransaction::new(
             state_path.clone(),
@@ -640,6 +659,7 @@ impl ObserverClient {
             token_transaction: transaction,
             transport,
             refusals,
+            gate,
         })
     }
 
@@ -663,6 +683,7 @@ impl ObserverClient {
             incumbent.relay_fence.clone(),
             incarnation,
             incumbent.refusals.clone(),
+            incumbent.gate.clone(),
         )
     }
 
@@ -746,6 +767,35 @@ impl ObserverClient {
         JournalIdentity::from_credential(&self.credential)
     }
 
+    pub async fn retire_client(&self, client_id: &str) -> Result<(), TransportError> {
+        let (response, _) = match self
+            .ordinary_request(
+                OrdinaryRequest::ClientsRetireDelete,
+                Some(client_id),
+                &self.v3_headers(),
+                b"",
+            )
+            .await
+        {
+            Ok(res) => res,
+            Err(RouteError::Transport(e)) => return Err(e),
+            Err(RouteError::AwaitingConfirmation) => {
+                return Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "awaiting mark confirmation",
+                )))
+            }
+        };
+        if response.status == 200 || response.status == 204 || response.status == 404 {
+            Ok(())
+        } else {
+            Err(TransportError::Rejected {
+                status: response.status,
+                body: response.body_text(),
+            })
+        }
+    }
+
     /// Upload one segment's files with the protocol-v3 envelope. `segment` is
     /// `HHMMSS_LEN`, `day` is `YYYYMMDD`. `zone` is the lookup that produced
     /// those keys; `None` leaves the envelope without a `meta` key.
@@ -755,14 +805,14 @@ impl ObserverClient {
         day: &str,
         files: Vec<FilePart>,
         zone: Option<&LocalZone>,
-    ) -> Result<(IngestResponse, SendMetadata), TransportError> {
+    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
         let boundary = self.next_boundary();
         let mut request = IngestMultipart::new(boundary, day, segment, files)
             .map_err(|error| TransportError::Ingest(error.to_string()))?;
         if let Some(zone) = zone {
             request = request.with_zone(zone);
         }
-        let body = request.serialize()?;
+        let body = request.serialize().map_err(TransportError::from)?;
 
         let mut headers = self.v3_headers();
         headers.push(("Content-Type".to_string(), request.content_type()));
@@ -775,7 +825,7 @@ impl ObserverClient {
     }
 
     /// Read the root manifest used by protocol-v3 custody proof.
-    pub async fn ingest_manifest(&self) -> Result<(IngestManifest, SendMetadata), TransportError> {
+    pub async fn ingest_manifest(&self) -> Result<(IngestManifest, SendMetadata), RouteError> {
         let headers = self.v3_headers();
         let (response, metadata) = self
             .ordinary_request(OrdinaryRequest::IngestManifestGet, None, &headers, b"")
@@ -787,7 +837,7 @@ impl ObserverClient {
     pub async fn ingest_manifest_day(
         &self,
         day: &str,
-    ) -> Result<(DayManifest, SendMetadata), TransportError> {
+    ) -> Result<(DayManifest, SendMetadata), RouteError> {
         let headers = self.v3_headers();
         let (response, metadata) = self
             .ordinary_request(
@@ -804,7 +854,7 @@ impl ObserverClient {
     pub async fn list_segments(
         &self,
         day: &str,
-    ) -> Result<(SegmentsEnvelope, SendMetadata), TransportError> {
+    ) -> Result<(SegmentsEnvelope, SendMetadata), RouteError> {
         let headers = self.v3_headers();
         let (response, metadata) = self
             .ordinary_request(
@@ -822,9 +872,19 @@ impl ObserverClient {
         let fetch = async {
             let mut headers = self.v3_headers();
             headers.push(("Cache-Control".into(), "no-cache".into()));
-            let (response, _) = self
+            let (response, _) = match self
                 .ordinary_request(OrdinaryRequest::SystemStatusGet, None, &headers, b"")
-                .await?;
+                .await
+            {
+                Ok(res) => res,
+                Err(RouteError::Transport(e)) => return Err(e),
+                Err(RouteError::AwaitingConfirmation) => {
+                    return Err(TransportError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "awaiting mark confirmation",
+                    )))
+                }
+            };
             if response.status != 200 {
                 return Err(TransportError::Rejected {
                     status: response.status,
@@ -869,7 +929,16 @@ impl ObserverClient {
         headers: Vec<(String, String)>,
         body: &[u8],
     ) -> Result<HttpResponse, TransportError> {
-        let (response, _) = self.ordinary_request(route, None, &headers, body).await?;
+        let (response, _) = match self.ordinary_request(route, None, &headers, body).await {
+            Ok(res) => res,
+            Err(RouteError::Transport(e)) => return Err(e),
+            Err(RouteError::AwaitingConfirmation) => {
+                return Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "awaiting mark confirmation",
+                )))
+            }
+        };
         if response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
             return Err(TransportError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -882,18 +951,27 @@ impl ObserverClient {
     async fn ordinary_request(
         &self,
         route: OrdinaryRequest,
-        day: Option<&str>,
+        target: Option<&str>,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<(HttpResponse, SendMetadata), TransportError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 8);
+    ) -> Result<(HttpResponse, SendMetadata), RouteError> {
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 9);
         let spec = route.spec();
-        let path = route.path(day);
+        if spec.gated && !self.gate_open() {
+            return Err(RouteError::AwaitingConfirmation);
+        }
+        let path = match route {
+            OrdinaryRequest::IngestManifestDayGet | OrdinaryRequest::IngestSegmentsDayGet => {
+                route.path(target, None)
+            }
+            OrdinaryRequest::ClientsRetireDelete => route.path(None, target),
+            _ => route.path(None, None),
+        };
         let observer = self.observer.clone();
         // A stopped pairing does not dial: the journal refused this device, or
         // other refusals went on too long. Re-pairing builds a new client.
         if let Some(stop) = self.refusal_stop() {
-            return Err(map_shared_error(stop.error()));
+            return Err(RouteError::Transport(map_shared_error(stop.error())));
         }
         let result = self
             .transport
@@ -914,7 +992,7 @@ impl ObserverClient {
             response,
             path: selected_path,
             attempts,
-        } = result.map_err(map_request_error)?;
+        } = result.map_err(|e| RouteError::Transport(map_request_error(e)))?;
         let path = map_selected_path(selected_path);
         Ok((
             HttpResponse {

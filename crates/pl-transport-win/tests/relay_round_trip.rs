@@ -27,7 +27,7 @@ use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
 use pl_transport_win::journal_bridge;
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::{
-    transport_error_code, ClientSlot, CredentialAccess, RelayError, TransportError,
+    transport_error_code, ClientSlot, CredentialAccess, RelayError, RouteError, TransportError,
 };
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::ClientConfig;
@@ -190,6 +190,11 @@ async fn start_test_bridge(
     sync: Arc<Mutex<SyncSnapshot>>,
 ) -> journal_bridge::JournalBridgeHandle {
     paired.save(&state_path).unwrap();
+    let binding = paired
+        .credential
+        .as_ref()
+        .map(|c| pl_transport_win::ack::JournalIdentity::from_credential(c).client_cert_sha256)
+        .unwrap_or_default();
     let cfg = SyncConfig {
         device_label: "relay-test".into(),
         period_secs: 300,
@@ -198,6 +203,7 @@ async fn start_test_bridge(
         local_offset: Arc::new(TestOffset),
         journal_version,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(binding)),
     };
     let access = CredentialAccess::bind(paired, &cfg, sync, None).unwrap();
     journal_bridge::start(access).await.unwrap()
@@ -211,9 +217,12 @@ fn relay_client(credential: Credential) -> ObserverClient {
     }
     .save(&path)
     .unwrap();
-    ObserverClient::new(credential)
-        .unwrap()
-        .with_state_path(path)
+    ObserverClient::new(
+        credential,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap()
+    .with_state_path(path)
 }
 
 async fn relay_probe(client: &ObserverClient) -> Result<(), TransportError> {
@@ -230,6 +239,10 @@ async fn relay_probe(client: &ObserverClient) -> Result<(), TransportError> {
         )
         .await
         .map(|_| ())
+        .map_err(|e| match e {
+            pl_transport_win::client::RouteError::Transport(t) => t,
+            pl_transport_win::client::RouteError::AwaitingConfirmation => panic!("gate open"),
+        })
 }
 
 fn relay_bridge_state(credential: Credential) -> PairedState {
@@ -1334,7 +1347,11 @@ async fn relay_client_with_response(
     let (pin, acceptor) = tls_pair_with_pin();
     let (origin, server) = spawn_response_relay(acceptor, status, body, None, 4096).await;
     let token = mint_jwt(epoch_secs(), epoch_secs() + 10_000);
-    let client = ObserverClient::new(observer_relay_credential(pin, 9, origin, token)).unwrap();
+    let client = ObserverClient::new(
+        observer_relay_credential(pin, 9, origin, token),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     (client, server)
 }
 
@@ -1373,7 +1390,10 @@ async fn run_interrupted_observer_ingest(
         .ingest("143000_300", "20260729", production_ingest_files(), None)
         .await
         .unwrap_err();
-    let outcome = InterruptedClientOutcome::Transport(transport_error_code(&error));
+    let outcome = match &error {
+        RouteError::Transport(err) => InterruptedClientOutcome::Transport(transport_error_code(err)),
+        RouteError::AwaitingConfirmation => panic!("unexpected AwaitingConfirmation"),
+    };
     let artifacts = server.await.unwrap();
     (artifacts, outcome)
 }
@@ -1528,7 +1548,7 @@ async fn observer_contract_authority_relay_v3_reads_fail_closed_on_non_success()
         let (client, server) = relay_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.ingest_manifest().await,
-            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+            Err(RouteError::Transport(TransportError::Rejected { status: actual, .. })) if actual == status
         ));
         assert!(v3_read_capture_matches(
             &server.await.unwrap(),
@@ -1539,7 +1559,7 @@ async fn observer_contract_authority_relay_v3_reads_fail_closed_on_non_success()
         let (client, server) = relay_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.ingest_manifest_day("20260820").await,
-            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+            Err(RouteError::Transport(TransportError::Rejected { status: actual, .. })) if actual == status
         ));
         assert!(v3_read_capture_matches(
             &server.await.unwrap(),
@@ -1550,7 +1570,7 @@ async fn observer_contract_authority_relay_v3_reads_fail_closed_on_non_success()
         let (client, server) = relay_client_with_response(text, br#"{}"#).await;
         assert!(matches!(
             client.list_segments("20260820").await,
-            Err(TransportError::Rejected { status: actual, .. }) if actual == status
+            Err(RouteError::Transport(TransportError::Rejected { status: actual, .. })) if actual == status
         ));
         assert!(v3_read_capture_matches(
             &server.await.unwrap(),
@@ -2034,7 +2054,13 @@ async fn relay_only_credential_can_be_disabled_without_retaining_an_old_adapter(
     let mut credential =
         observer_relay_credential(pin, 7657, "http://127.0.0.1:1".into(), mint_jwt(100, 200));
     credential.endpoints.clear();
-    let client = Arc::new(ObserverClient::new(credential.clone()).unwrap());
+    let client = Arc::new(
+        ObserverClient::new(
+            credential.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap(),
+    );
     let slot = pl_transport_win::client::ClientSlot::new(client);
     let cas = slot.load().current_cas_key().unwrap();
     slot.disable_relay();
@@ -2047,7 +2073,7 @@ async fn relay_only_credential_can_be_disabled_without_retaining_an_old_adapter(
     ));
     assert!(matches!(
         slot.load().ingest_manifest().await,
-        Err(TransportError::RelayDisabled)
+        Err(RouteError::Transport(TransportError::RelayDisabled))
     ));
 }
 
@@ -2471,9 +2497,12 @@ async fn cancelled_shared_refresh_still_latches_windows_publication_before_next_
     competing.credential.as_mut().unwrap().client_cert_pem = "competing-cert".into();
     competing.save(&path).unwrap();
     let client = Arc::new(
-        ObserverClient::new(credential)
-            .unwrap()
-            .with_state_path(path.clone()),
+        ObserverClient::new(
+            credential,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap()
+        .with_state_path(path.clone()),
     );
     let slot = ClientSlot::new(client.clone());
     let publication_owner = slot.publication_owner();
@@ -2548,9 +2577,12 @@ async fn concurrent_relay_only_request_after_publication_latch_makes_no_relay_di
     competing.credential.as_mut().unwrap().client_cert_pem = "competing-cert".into();
     competing.save(&path).unwrap();
     let client = Arc::new(
-        ObserverClient::new(credential)
-            .unwrap()
-            .with_state_path(path.clone()),
+        ObserverClient::new(
+            credential,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap()
+        .with_state_path(path.clone()),
     );
     let slot = ClientSlot::new(client.clone());
     let publication_owner = slot.publication_owner();

@@ -28,9 +28,14 @@ export const automationContract = {
     "settings.mic.active": "settings.mic.active",
     "settings.mic.devices": "settings.mic.devices",
     "settings.mic.gain": "settings.mic.gain",
+    "settings.pairing.confirmCancel": "settings.pairing.confirmCancel",
+    "settings.pairing.confirmContinue": "settings.pairing.confirmContinue",
+    "settings.pairing.confirmReject": "settings.pairing.confirmReject",
+    "settings.pairing.confirmYes": "settings.pairing.confirmYes",
     "settings.pairing.input": "settings.pairing.input",
     "settings.pairing.journal": "settings.pairing.journal",
     "settings.pairing.mark": "settings.pairing.mark",
+    "settings.pairing.markCard": "settings.pairing.markCard",
     "settings.pairing.state": "settings.pairing.state",
     "settings.pairing.submit": "settings.pairing.submit",
     "settings.sources.mic.state": "settings.sources.mic.state",
@@ -88,6 +93,7 @@ export const automationContract = {
       "write_failed"
     ],
     "pairing_phase": [
+      "awaiting_confirmation",
       "failed",
       "not_paired",
       "paired",

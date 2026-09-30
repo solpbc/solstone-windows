@@ -107,6 +107,8 @@ mod tests {
 
     /// Every view reachable by `--open-view` needs a control verb, or a second
     /// launch silently opens the wrong one.
+    /// Every view reachable by `--open-view` needs a control verb, or a second
+    /// launch silently opens the wrong one.
     #[test]
     fn every_view_has_a_surface_verb() {
         for view in observer_model::View::ALL {
@@ -120,5 +122,68 @@ mod tests {
                 view.label()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn mark_confirmation_open_journal_while_awaiting_opens_settings() {
+        let mut settings_opened = false;
+        let mut bridge_called = false;
+        let result = crate::windows::dispatch_open_journal(
+            observer_model::PairingPhase::AwaitingConfirmation,
+            || async {
+                settings_opened = true;
+                Ok(())
+            },
+            || async {
+                bridge_called = true;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(settings_opened);
+        assert!(!bridge_called);
+    }
+
+    #[tokio::test]
+    async fn mark_confirmation_open_journal_flag_while_awaiting_opens_settings() {
+        let mut settings_opened = false;
+        let mut bridge_called = false;
+        let result = crate::windows::dispatch_open_journal(
+            observer_model::PairingPhase::AwaitingConfirmation,
+            || async {
+                settings_opened = true;
+                Ok(())
+            },
+            || async {
+                bridge_called = true;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(settings_opened);
+        assert!(!bridge_called);
+    }
+
+    #[tokio::test]
+    async fn mark_confirmation_signaled_open_journal_while_awaiting_opens_settings() {
+        let mut settings_opened = false;
+        let mut bridge_called = false;
+        let result = crate::windows::dispatch_open_journal(
+            observer_model::PairingPhase::AwaitingConfirmation,
+            || async {
+                settings_opened = true;
+                Ok(())
+            },
+            || async {
+                bridge_called = true;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(settings_opened);
+        assert!(!bridge_called);
     }
 }

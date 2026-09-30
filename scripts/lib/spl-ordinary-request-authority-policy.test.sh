@@ -51,4 +51,12 @@ fi
 sed -i '$d' "$TEST_ROOT/crates/pl-transport-win/src/coordinator.rs"
 sh "$POLICY" --root "$TEST_ROOT" >/dev/null
 
+sed -i '/async fn retire_client/d' "$TEST_ROOT/crates/pl-transport-win/src/client.rs"
+if sh "$POLICY" --root "$TEST_ROOT" >/dev/null 2>&1; then
+  echo "expected policy failure for missing retire_client" >&2
+  exit 1
+fi
+cp "$ROOT/crates/pl-transport-win/src/client.rs" "$TEST_ROOT/crates/pl-transport-win/src/"
+sh "$POLICY" --root "$TEST_ROOT" >/dev/null
+
 echo "spl-ordinary-request-authority-policy tests passed"

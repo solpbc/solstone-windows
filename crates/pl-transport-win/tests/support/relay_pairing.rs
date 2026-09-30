@@ -60,7 +60,7 @@ impl TestCa {
     }
 }
 
-fn leaf_config(signer: &TestCa) -> ServerConfig {
+pub(crate) fn leaf_config(signer: &TestCa) -> ServerConfig {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let mut params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
     params.is_ca = IsCa::NoCa;
@@ -106,6 +106,7 @@ pub(crate) struct MockState {
     pub(crate) pair_request: Mutex<Option<PairRequest>>,
     pub(crate) raw_pair_request_body: Mutex<Option<Vec<u8>>>,
     pub(crate) omit_local_endpoints: Mutex<bool>,
+    pub(crate) local_endpoint_override: Mutex<Option<(String, u16)>>,
 }
 
 impl MockState {
@@ -126,6 +127,7 @@ impl MockState {
             pair_request: Mutex::new(None),
             raw_pair_request_body: Mutex::new(None),
             omit_local_endpoints: Mutex::new(false),
+            local_endpoint_override: Mutex::new(None),
         }
     }
 
@@ -385,7 +387,9 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
         "home_label": "Home",
         "fingerprint": fingerprint,
     });
-    if !*state.omit_local_endpoints.lock().unwrap() {
+    if let Some((ip, port)) = state.local_endpoint_override.lock().unwrap().clone() {
+        response["local_endpoints"] = json!([{"ip": ip, "port": port, "scope": "lan"}]);
+    } else if !*state.omit_local_endpoints.lock().unwrap() {
         response["local_endpoints"] = json!([{"ip":"10.0.0.2","port":7657,"scope":"lan"}]);
     }
     if !matches!(state.home_mode, HomeMode::MissingHomeAttestation) {

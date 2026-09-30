@@ -39,6 +39,9 @@ $DriverExe = Join-Path $DriverPublish "solstone-driver.exe"
 $PairingPath = Join-Path $env:LOCALAPPDATA "Solstone\pairing.json"
 $PairingBackup = Join-Path $OutputDir "pairing.backup"
 $PairingAbsent = Join-Path $OutputDir "pairing.absent"
+$AnswerPath = Join-Path $env:LOCALAPPDATA "Solstone\pairing-answer.json"
+$AnswerBackup = Join-Path $OutputDir "pairing-answer.backup"
+$AnswerAbsent = Join-Path $OutputDir "pairing-answer.absent"
 $Transcript = Join-Path $OutputDir "mock-transcript.ndjson"
 $ReadyFile = Join-Path $OutputDir "mock-ready.json"
 $MockOut = Join-Path $OutputDir "mock.stdout.log"
@@ -57,6 +60,7 @@ $Session1Trace = Join-Path $OutputDir "session1.trace"
 $Marker = "SOLSTONE_JOURNAL_LIVE_$([guid]::NewGuid().ToString('N'))"
 $MockProc = $null
 $HadPairing = $false
+$HadAnswer = $false
 
 function ConvertTo-PsSingleQuoted([string]$value) {
     return "'" + $value.Replace("'", "''") + "'"
@@ -178,6 +182,12 @@ try {
         [System.IO.File]::WriteAllBytes($PairingBackup, [System.IO.File]::ReadAllBytes($PairingPath))
     } else {
         Set-Content -Path $PairingAbsent -Value "absent" -Encoding ASCII
+    }
+    if (Test-Path $AnswerPath) {
+        $HadAnswer = $true
+        [System.IO.File]::WriteAllBytes($AnswerBackup, [System.IO.File]::ReadAllBytes($AnswerPath))
+    } else {
+        Set-Content -Path $AnswerAbsent -Value "absent" -Encoding ASCII
     }
 
     Write-Host "=== build + publish the net48 driver ==="
@@ -389,6 +399,12 @@ finally {
         Copy-Item -Path $PairingBackup -Destination $PairingPath -Force
     } else {
         Remove-Item -Path $PairingPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($HadAnswer) {
+        New-Item -Path (Split-Path -Parent $AnswerPath) -ItemType Directory -Force | Out-Null
+        Copy-Item -Path $AnswerBackup -Destination $AnswerPath -Force
+    } else {
+        Remove-Item -Path $AnswerPath -Force -ErrorAction SilentlyContinue
     }
     if ($MockProc -and -not $MockProc.HasExited) {
         Stop-Process -Id $MockProc.Id -Force -ErrorAction SilentlyContinue

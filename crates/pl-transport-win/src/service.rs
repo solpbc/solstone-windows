@@ -28,7 +28,7 @@ use crate::{cancelled, pairing, transport_error_code, TransportError};
 /// The paired journal's own mark, for the given instance id. Reuses the same
 /// primitive the unknown-journal comparison uses for "your journal" — `None`
 /// only for a placeholder/test instance id that isn't a real journal id.
-fn journal_mark(instance_id: &str) -> Option<MarkRenderSpec> {
+pub(crate) fn journal_mark(instance_id: &str) -> Option<MarkRenderSpec> {
     mark_spec_for_jid(instance_id)
 }
 
@@ -49,14 +49,130 @@ pub struct SyncConfig {
     pub journal_version: Arc<JournalVersionController>,
     /// Device facts resampler for post-connect publication.
     pub facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
+    /// Process-local confirmation digest cache.
+    pub confirmation: Arc<Mutex<String>>,
 }
 
-fn set_pairing(sync: &Arc<Mutex<SyncSnapshot>>, state: PairingState) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundKind {
+    Paired,
+    Failed { detail: Option<String> },
+}
+
+#[derive(Debug, Clone)]
+pub enum PairingWrite {
+    BeginCeremony,
+    Bound {
+        binding: String,
+        label: String,
+        mark: Option<MarkRenderSpec>,
+        kind: BoundKind,
+    },
+    NotPaired {
+        detail: Option<String>,
+    },
+}
+
+pub fn publish_pairing(
+    sync: &Arc<Mutex<SyncSnapshot>>,
+    confirmation: &Arc<Mutex<String>>,
+    write: PairingWrite,
+) {
     if let Ok(mut snapshot) = sync.lock() {
-        snapshot.pairing = state;
+        match write {
+            PairingWrite::BeginCeremony => {
+                snapshot.pairing = PairingState {
+                    phase: PairingPhase::Pairing,
+                    journal_label: None,
+                    detail: None,
+                    mark: None,
+                    binding: String::new(),
+                };
+            }
+            PairingWrite::NotPaired { detail } => {
+                snapshot.pairing = PairingState {
+                    phase: PairingPhase::NotPaired,
+                    journal_label: None,
+                    detail,
+                    mark: None,
+                    binding: String::new(),
+                };
+            }
+            PairingWrite::Bound {
+                binding,
+                label,
+                mark,
+                kind,
+            } => {
+                let snapshot_binding = snapshot.pairing.binding.clone();
+                let confirmed = confirmation.lock().unwrap();
+                let matches_confirmed = !confirmed.is_empty() && *confirmed == binding;
+
+                if !snapshot_binding.is_empty() {
+                    if snapshot_binding != binding {
+                        return;
+                    }
+                    if !matches_confirmed {
+                        return;
+                    }
+                    match kind {
+                        BoundKind::Paired => {
+                            snapshot.pairing = PairingState {
+                                phase: PairingPhase::Paired,
+                                journal_label: Some(label),
+                                detail: None,
+                                mark,
+                                binding,
+                            };
+                        }
+                        BoundKind::Failed { detail } => {
+                            snapshot.pairing = PairingState {
+                                phase: PairingPhase::Failed,
+                                journal_label: Some(label),
+                                detail,
+                                mark,
+                                binding,
+                            };
+                        }
+                    }
+                } else {
+                    match kind {
+                        BoundKind::Paired => {
+                            if matches_confirmed {
+                                snapshot.pairing = PairingState {
+                                    phase: PairingPhase::Paired,
+                                    journal_label: Some(label),
+                                    detail: None,
+                                    mark,
+                                    binding,
+                                };
+                            } else {
+                                snapshot.pairing = PairingState {
+                                    phase: PairingPhase::AwaitingConfirmation,
+                                    journal_label: Some(label),
+                                    detail: None,
+                                    mark,
+                                    binding,
+                                };
+                            }
+                        }
+                        BoundKind::Failed { detail } => {
+                            snapshot.pairing = PairingState {
+                                phase: PairingPhase::Failed,
+                                journal_label: None,
+                                detail,
+                                mark: None,
+                                binding: String::new(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
+#[cfg(test)]
 fn failed_pairing_state(error: &TransportError) -> PairingState {
     PairingState {
         phase: PairingPhase::Failed,
@@ -72,30 +188,31 @@ pub async fn pair(
     cfg: &SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
 ) -> Result<PairedState, TransportError> {
-    set_pairing(
-        &sync,
-        PairingState {
-            phase: PairingPhase::Pairing,
-            ..Default::default()
-        },
-    );
+    publish_pairing(&sync, &cfg.confirmation, PairingWrite::BeginCeremony);
 
     match pair_inner(link, cfg).await {
-        Ok((paired, journal_label, mark)) => {
+        Ok((paired, journal_label, mark, binding)) => {
             cfg.journal_version.clear(&sync);
-            set_pairing(
+            publish_pairing(
                 &sync,
-                PairingState {
-                    phase: PairingPhase::Paired,
-                    journal_label: Some(journal_label),
-                    detail: None,
+                &cfg.confirmation,
+                PairingWrite::Bound {
+                    binding,
+                    label: journal_label,
                     mark,
+                    kind: BoundKind::Paired,
                 },
             );
             Ok(paired)
         }
         Err(e) => {
-            set_pairing(&sync, failed_pairing_state(&e));
+            publish_pairing(
+                &sync,
+                &cfg.confirmation,
+                PairingWrite::NotPaired {
+                    detail: Some(transport_error_code(&e)),
+                },
+            );
             Err(e)
         }
     }
@@ -104,16 +221,17 @@ pub async fn pair(
 async fn pair_inner(
     link: &str,
     cfg: &SyncConfig,
-) -> Result<(PairedState, String, Option<MarkRenderSpec>), TransportError> {
+) -> Result<(PairedState, String, Option<MarkRenderSpec>, String), TransportError> {
     let credential = pairing::pair_from_link(link, &cfg.device_label).await?;
     let journal_label = credential.home_label.clone();
     let mark = journal_mark(&credential.instance_id);
+    let binding = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
     let paired = PairedState {
         credential: Some(credential),
         ..Default::default()
     };
     paired.save(&cfg.state_path)?;
-    Ok((paired, journal_label, mark))
+    Ok((paired, journal_label, mark, binding))
 }
 
 /// Run the upload coordinator for an already-paired observer until `cancel`
@@ -122,7 +240,8 @@ pub async fn run_uploader(
     access: CredentialAccess,
     cfg: SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
-    cancel: watch::Receiver<bool>,
+    cancel: watch::Receiver<crate::slot::SlotExit>,
+    wake: Arc<tokio::sync::Notify>,
 ) {
     let coordinator = match setup_uploader(access, cfg, sync.clone()).await {
         Ok(coordinator) => coordinator,
@@ -138,7 +257,7 @@ pub async fn run_uploader(
         }
     };
 
-    let coordinator_task = tokio::spawn(coordinator.run(cancel.clone()));
+    let coordinator_task = tokio::spawn(coordinator.run(cancel.clone(), wake));
     await_coordinator(&sync, cancel, coordinator_task).await;
 }
 
@@ -152,14 +271,16 @@ async fn setup_uploader(
     let client = client_slot.load();
     let journal_label = client.home_label().to_string();
     let mark = journal_mark(&client.credential().instance_id);
+    let binding = client.journal_identity().client_cert_sha256;
 
-    set_pairing(
+    publish_pairing(
         &sync,
-        PairingState {
-            phase: PairingPhase::Paired,
-            journal_label: Some(journal_label),
-            detail: None,
+        &cfg.confirmation,
+        PairingWrite::Bound {
+            binding,
+            label: journal_label,
             mark,
+            kind: BoundKind::Paired,
         },
     );
 
@@ -177,12 +298,13 @@ async fn setup_uploader(
         Some(post_connect),
         access.journal_version_token(),
         Some(access.post_connect_token()),
+        cfg.confirmation.clone(),
     ))
 }
 
 async fn await_coordinator(
     sync: &Arc<Mutex<SyncSnapshot>>,
-    mut external_cancel: watch::Receiver<bool>,
+    mut external_cancel: watch::Receiver<crate::slot::SlotExit>,
     mut coordinator_task: JoinHandle<()>,
 ) {
     tokio::select! {
@@ -255,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn await_coordinator_marks_panicked_task_dead() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-        let (_external_tx, external_rx) = watch::channel(false);
+        let (_external_tx, external_rx) = watch::channel(crate::slot::SlotExit::Run);
 
         let coordinator_task = tokio::spawn(async {
             panic!("boom");
@@ -278,7 +400,7 @@ mod tests {
     #[tokio::test]
     async fn await_coordinator_marks_clean_early_exit_as_stopped() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-        let (_external_tx, external_rx) = watch::channel(false);
+        let (_external_tx, external_rx) = watch::channel(crate::slot::SlotExit::Run);
 
         let coordinator_task = tokio::spawn(async {});
         await_coordinator(&sync, external_rx, coordinator_task).await;
@@ -294,17 +416,95 @@ mod tests {
     #[tokio::test]
     async fn await_coordinator_does_not_mark_external_cancellation_dead() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-        let (external_tx, external_rx) = watch::channel(false);
+        let (external_tx, external_rx) = watch::channel(crate::slot::SlotExit::Run);
         let mut task_cancel = external_rx.clone();
         let coordinator_task = tokio::spawn(async move {
             crate::cancelled(&mut task_cancel).await;
         });
 
-        external_tx.send(true).unwrap();
+        external_tx.send(crate::slot::SlotExit::Shutdown).unwrap();
         await_coordinator(&sync, external_rx, coordinator_task).await;
 
         let snapshot = sync.lock().unwrap().clone();
         assert_eq!(snapshot.upload.last_error, None);
         assert_eq!(snapshot.upload.recent_error_count, 0);
+    }
+
+    #[test]
+    fn mark_confirmation_publish_pairing_transitions() {
+        use observer_model::PairingPhase;
+
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let confirmation = Arc::new(Mutex::new(String::new()));
+
+        // 1. BeginCeremony
+        publish_pairing(&sync, &confirmation, PairingWrite::BeginCeremony);
+        let s = sync.lock().unwrap().clone();
+        assert_eq!(s.pairing.phase, PairingPhase::Pairing);
+        assert_eq!(s.pairing.binding, "");
+        assert_eq!(s.pairing.journal_label, None);
+        assert_eq!(s.pairing.mark, None);
+
+        // 2. Bound when unconfirmed -> AwaitingConfirmation
+        let binding = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+        publish_pairing(
+            &sync,
+            &confirmation,
+            PairingWrite::Bound {
+                binding: binding.clone(),
+                label: "journal-1".to_string(),
+                mark: None,
+                kind: BoundKind::Paired,
+            },
+        );
+        let s = sync.lock().unwrap().clone();
+        assert_eq!(s.pairing.phase, PairingPhase::AwaitingConfirmation);
+        assert_eq!(s.pairing.binding, binding);
+        assert_eq!(s.pairing.journal_label.as_deref(), Some("journal-1"));
+
+        // 3. Bound when confirmed -> Paired
+        *confirmation.lock().unwrap() = binding.clone();
+        publish_pairing(
+            &sync,
+            &confirmation,
+            PairingWrite::Bound {
+                binding: binding.clone(),
+                label: "journal-1".to_string(),
+                mark: None,
+                kind: BoundKind::Paired,
+            },
+        );
+        let s = sync.lock().unwrap().clone();
+        assert_eq!(s.pairing.phase, PairingPhase::Paired);
+        assert_eq!(s.pairing.binding, binding);
+
+        // 4. Mismatched binding write dropped
+        publish_pairing(
+            &sync,
+            &confirmation,
+            PairingWrite::Bound {
+                binding: "other_binding".to_string(),
+                label: "other-journal".to_string(),
+                mark: None,
+                kind: BoundKind::Paired,
+            },
+        );
+        let s = sync.lock().unwrap().clone();
+        assert_eq!(s.pairing.phase, PairingPhase::Paired);
+        assert_eq!(s.pairing.binding, binding);
+        assert_eq!(s.pairing.journal_label.as_deref(), Some("journal-1"));
+
+        // 5. NotPaired
+        publish_pairing(
+            &sync,
+            &confirmation,
+            PairingWrite::NotPaired {
+                detail: Some("pair_link".to_string()),
+            },
+        );
+        let s = sync.lock().unwrap().clone();
+        assert_eq!(s.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(s.pairing.binding, "");
+        assert_eq!(s.pairing.detail.as_deref(), Some("pair_link"));
     }
 }

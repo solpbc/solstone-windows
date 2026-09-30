@@ -81,6 +81,7 @@ async fn start_windows_bridge(
         local_offset: Arc::new(TestOffset),
         journal_version: jv.clone(),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(String::new())),
     };
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
     let handle = pl_transport_win::journal_bridge::start(access)

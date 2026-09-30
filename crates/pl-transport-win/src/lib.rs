@@ -23,6 +23,7 @@
 
 pub mod access;
 pub mod ack;
+pub mod answer;
 pub mod client;
 pub mod coordinator;
 pub mod credential;
@@ -36,8 +37,9 @@ pub mod post_connect;
 pub mod relay_pairing;
 pub mod sealed;
 pub mod service;
+pub mod session;
 pub mod slot;
-pub(crate) mod unknown_journals;
+pub mod unknown_journals;
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -68,13 +70,13 @@ use spl_core::mux::MuxError;
 use thiserror::Error;
 
 pub use access::CredentialAccess;
-pub use client::{ClientSlot, ObserverClient};
+pub use client::{ClientSlot, ObserverClient, RouteError};
 pub use credential::{CasKey, Credential, PairedState, StorageError};
 pub use device_metadata::{RawDeviceFacts, ReportedMetadata};
 pub use journal_version::{JournalVersionController, JournalVersionSessionToken};
 pub use post_connect::{PostConnectController, PostConnectSessionToken};
 pub use service::run_uploader;
-pub use slot::UploaderSlot;
+pub use slot::{SlotExit, UploaderSlot};
 
 /// Optional shared operation observer. `None` in the GUI.
 pub type ObserverHandle = Option<Arc<spl_transport::observe::OperationObserver>>;
@@ -82,10 +84,14 @@ pub type ObserverHandle = Option<Arc<spl_transport::observe::OperationObserver>>
 /// Default upload poll interval when there is nothing to do.
 pub const DEFAULT_UPLOAD_INTERVAL_SECS: u64 = 5;
 
-pub(crate) async fn cancelled(rx: &mut tokio::sync::watch::Receiver<bool>) {
-    while !*rx.borrow() {
+pub(crate) async fn cancelled(rx: &mut tokio::sync::watch::Receiver<SlotExit>) -> SlotExit {
+    loop {
+        let current = *rx.borrow();
+        if current != SlotExit::Run {
+            return current;
+        }
         if rx.changed().await.is_err() {
-            break;
+            return SlotExit::Shutdown;
         }
     }
 }

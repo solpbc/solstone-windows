@@ -192,6 +192,8 @@ fn response_body(request: &[u8]) -> &'static [u8] {
         br#"{"items":[],"total":0,"protocol_version":3}"#
     } else if request.starts_with("GET /api/system/status ") {
         br#"{"version":{"current":"2026.9.14"}}"#
+    } else if request.starts_with("DELETE /app/network/api/clients/") {
+        b""
     } else {
         br#"{}"#
     }
@@ -203,7 +205,7 @@ async fn serve_ordinary_routes(
     accepts: Arc<AtomicUsize>,
 ) -> Vec<Vec<u8>> {
     let mut requests = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..9 {
         let (tcp, _) = listener.accept().await.unwrap();
         accepts.fetch_add(1, Ordering::SeqCst);
         let mut tls = acceptor.accept(tcp).await.unwrap();
@@ -257,7 +259,11 @@ async fn ordinary_client() -> (ObserverClient, Arc<AtomicUsize>, JoinHandle<Vec<
         accepts.clone(),
     ));
     (
-        ObserverClient::new(direct_credential(pin, port)).unwrap(),
+        ObserverClient::new(
+            direct_credential(pin, port),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap(),
         accepts,
         server,
     )
@@ -282,7 +288,7 @@ async fn assert_no_relay_tcp_dial(listener: &TcpListener) {
 }
 
 #[tokio::test]
-async fn all_eight_production_helpers_use_the_shared_ordinary_request_authority() {
+async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority() {
     let (client, accepts, server) = ordinary_client().await;
 
     client.get_clients_self().await.unwrap();
@@ -309,9 +315,13 @@ async fn all_eight_production_helpers_use_the_shared_ordinary_request_authority(
     client.ingest_manifest_day(DAY).await.unwrap();
     client.list_segments(DAY).await.unwrap();
     assert_eq!(client.system_status().await.unwrap(), "2026.9.14");
+    client
+        .retire_client("sha256:0123456789abcdef")
+        .await
+        .unwrap();
 
     let requests = server.await.unwrap();
-    assert_eq!(accepts.load(Ordering::SeqCst), 8);
+    assert_eq!(accepts.load(Ordering::SeqCst), 9);
     let targets: Vec<_> = requests
         .iter()
         .map(|request| {
@@ -333,6 +343,7 @@ async fn all_eight_production_helpers_use_the_shared_ordinary_request_authority(
             "GET /app/devices/ingest/manifest/20260914 HTTP/1.1",
             "GET /app/devices/ingest/segments/20260914 HTTP/1.1",
             "GET /api/system/status HTTP/1.1",
+            "DELETE /app/network/api/clients/sha256:0123456789abcdef HTTP/1.1",
         ]
     );
     for request in &requests {
@@ -358,7 +369,13 @@ async fn relay_fencing_does_not_block_a_reachable_direct_ordinary_request() {
         TlsAcceptor::from(Arc::new(server_config(cert, key))),
         accepts.clone(),
     ));
-    let client = Arc::new(ObserverClient::new(direct_credential(pin, port)).unwrap());
+    let client = Arc::new(
+        ObserverClient::new(
+            direct_credential(pin, port),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap(),
+    );
     let slot = ClientSlot::new(client);
 
     slot.disable_relay();
@@ -382,7 +399,11 @@ async fn direct_replay_safe_helpers_retry_before_and_during_request_writes() {
             drop_point,
             http_response_with_total(256, br#"{"items":[],"total":0,"protocol_version":3}"#, b' '),
         ));
-        let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+        let client = ObserverClient::new(
+            direct_credential(pin, port),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap();
 
         client.list_segments(DAY).await.unwrap();
         server.await.unwrap();
@@ -407,14 +428,18 @@ async fn direct_forbid_after_write_never_retries_partial_or_complete_put() {
             accepts.clone(),
             drop_point,
         ));
-        let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+        let client = ObserverClient::new(
+            direct_credential(pin, port),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap();
 
-        let error = client
+        let transport_error = client
             .put_clients_self(br#"{"label":"desk"}"#)
             .await
             .unwrap_err();
-        assert!(matches!(error, TransportError::ReplayUnsafe));
-        assert_eq!(transport_error_code(&error), "replay_unsafe");
+        assert!(matches!(transport_error, TransportError::ReplayUnsafe));
+        assert_eq!(transport_error_code(&transport_error), "replay_unsafe");
         server.await.unwrap();
         assert_eq!(
             accepts.load(Ordering::SeqCst),
@@ -456,18 +481,26 @@ async fn direct_shared_request_caps_use_exact_assembled_wire_lengths() {
                     let _ = serve_direct_once(listener, acceptor, server_accepts, response).await;
                 })
             };
-            let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+            let client = ObserverClient::new(
+                direct_credential(pin, port),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            )
+            .unwrap();
 
             let result = if manifest {
                 client.ingest_manifest().await.map(|_| ())
             } else {
-                client.get_clients_self().await.map(|_| ())
+                client
+                    .get_clients_self()
+                    .await
+                    .map(|_| ())
+                    .map_err(pl_transport_win::client::RouteError::Transport)
             };
             server.await.unwrap();
             if over_cap {
                 assert!(matches!(
                     result,
-                    Err(TransportError::Mux(MuxError::CapExceeded))
+                    Err(pl_transport_win::client::RouteError::Transport(TransportError::Mux(MuxError::CapExceeded)))
                 ));
             } else {
                 assert!(
@@ -486,7 +519,13 @@ async fn stale_slot_incarnation_blocks_old_relay_only_helper_without_a_relay_dia
     let relay_pin = spl_core::ca::sha256(relay_cert.as_ref())[..16].to_vec();
     let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let credential = relay_only_credential(relay_pin, relay_listener.local_addr().unwrap().port());
-    let old = Arc::new(ObserverClient::new(credential.clone()).unwrap());
+    let old = Arc::new(
+        ObserverClient::new(
+            credential.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap(),
+    );
     let slot = ClientSlot::new(old.clone());
     let cas = old.current_cas_key().unwrap();
     slot.replace_from_incumbent(credential, cas).unwrap();
@@ -507,7 +546,11 @@ async fn stale_slot_incarnation_blocks_old_relay_only_helper_without_a_relay_dia
         TlsAcceptor::from(Arc::new(server_config(cert, key))),
         accepts.clone(),
     ));
-    let direct = ObserverClient::new(direct_credential(pin, port)).unwrap();
+    let direct = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     assert_eq!(direct.system_status().await.unwrap(), "2026.9.14");
     server.await.unwrap();
     assert_eq!(accepts.load(Ordering::SeqCst), 1);
@@ -519,7 +562,13 @@ async fn retired_slot_blocks_relay_only_helper_without_a_relay_dial() {
     let relay_pin = spl_core::ca::sha256(relay_cert.as_ref())[..16].to_vec();
     let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let credential = relay_only_credential(relay_pin, relay_listener.local_addr().unwrap().port());
-    let client = Arc::new(ObserverClient::new(credential).unwrap());
+    let client = Arc::new(
+        ObserverClient::new(
+            credential,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap(),
+    );
     let slot = ClientSlot::new(client.clone());
     slot.retire();
 
@@ -539,7 +588,11 @@ async fn retired_slot_blocks_relay_only_helper_without_a_relay_dial() {
         TlsAcceptor::from(Arc::new(server_config(cert, key))),
         accepts.clone(),
     ));
-    let direct = ObserverClient::new(direct_credential(pin, port)).unwrap();
+    let direct = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     assert_eq!(direct.system_status().await.unwrap(), "2026.9.14");
     server.await.unwrap();
     assert_eq!(accepts.load(Ordering::SeqCst), 1);

@@ -52,6 +52,7 @@ impl Operation {
 pub enum OperationArgs {
     Pair {
         carrier: Carrier,
+        mark: (String, String),
     },
     Roundtrip {
         carrier: Carrier,
@@ -280,9 +281,25 @@ pub fn parse<S: AsRef<str>>(args: &[S]) -> Result<Command, ArgError> {
     };
 
     let args_for_operation = match operation {
-        Operation::Pair => OperationArgs::Pair {
-            carrier: parse_carrier(args, name)?,
-        },
+        Operation::Pair => {
+            let carrier = parse_carrier(args, name)?;
+            let raw_mark = required(args, "--mark", name)?;
+            let words: Vec<&str> = raw_mark
+                .split(|c: char| c.is_whitespace() || c == '·' || c == '.')
+                .filter(|s| !s.is_empty())
+                .collect();
+            if words.len() != 2 {
+                return Err(ArgError::new(
+                    "arg_bad_value",
+                    name,
+                    "--mark must be two words",
+                ));
+            }
+            OperationArgs::Pair {
+                carrier,
+                mark: (words[0].to_lowercase(), words[1].to_lowercase()),
+            }
+        }
         Operation::Roundtrip => OperationArgs::Roundtrip {
             carrier: parse_carrier(args, name)?,
         },

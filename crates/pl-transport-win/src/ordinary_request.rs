@@ -22,20 +22,22 @@ pub(crate) enum OrdinaryRequest {
     IngestManifestDayGet,
     IngestSegmentsDayGet,
     SystemStatusGet,
+    ClientsRetireDelete,
 }
 
 /// One route's transport authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OrdinaryRequestSpec {
     pub(crate) method: &'static str,
-    /// Static route or a `<day>` pattern for dynamic civil-day routes.
+    /// Static route or a `<day>`/`<client-id>` pattern for dynamic routes.
     pub(crate) path_pattern: &'static str,
     pub(crate) replay: ReplayPolicy,
     pub(crate) response_cap: usize,
+    pub(crate) gated: bool,
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
         Self::RelayAccessGet,
@@ -44,6 +46,7 @@ impl OrdinaryRequest {
         Self::IngestManifestDayGet,
         Self::IngestSegmentsDayGet,
         Self::SystemStatusGet,
+        Self::ClientsRetireDelete,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
@@ -53,53 +56,68 @@ impl OrdinaryRequest {
                 path_pattern: "/app/network/api/clients/self",
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
             },
             Self::ClientsSelfPut => OrdinaryRequestSpec {
                 method: "PUT",
                 path_pattern: "/app/network/api/clients/self",
                 replay: ReplayPolicy::ForbidAfterWrite,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
             },
             Self::RelayAccessGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: "/app/network/api/relay/access",
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
             },
             Self::IngestPost => OrdinaryRequestSpec {
                 method: "POST",
                 path_pattern: paths::INGEST,
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: spl_core::mux::MAX_ASSEMBLED_BYTES,
+                gated: true,
             },
             Self::IngestManifestGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: paths::INGEST_MANIFEST,
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: spl_core::mux::MAX_ASSEMBLED_BYTES,
+                gated: true,
             },
             Self::IngestManifestDayGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: "/app/devices/ingest/manifest/<day>",
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: spl_core::mux::MAX_ASSEMBLED_BYTES,
+                gated: true,
             },
             Self::IngestSegmentsDayGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: "/app/devices/ingest/segments/<day>",
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: spl_core::mux::MAX_ASSEMBLED_BYTES,
+                gated: true,
             },
             Self::SystemStatusGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: "/api/system/status",
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
+            Self::ClientsRetireDelete => OrdinaryRequestSpec {
+                method: "DELETE",
+                path_pattern: "/app/network/api/clients/<client-id>",
+                replay: ReplayPolicy::ForbidAfterWrite,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
             },
         }
     }
 
-    pub(crate) fn path(self, day: Option<&str>) -> String {
+    pub(crate) fn path(self, day: Option<&str>, client_id: Option<&str>) -> String {
         match self {
             Self::IngestManifestDayGet => {
                 format!(
@@ -115,6 +133,12 @@ impl OrdinaryRequest {
                     day.expect("day route requires a day")
                 )
             }
+            Self::ClientsRetireDelete => {
+                format!(
+                    "/app/network/api/clients/{}",
+                    client_id.expect("retire route requires a client id")
+                )
+            }
             _ => self.spec().path_pattern.to_string(),
         }
     }
@@ -125,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_is_the_exact_eight_route_inventory() {
+    fn registry_is_the_exact_nine_route_inventory() {
         let expected = [
             (
                 OrdinaryRequest::ClientsSelfGet,
@@ -133,6 +157,7 @@ mod tests {
                 "/app/network/api/clients/self",
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
             ),
             (
                 OrdinaryRequest::ClientsSelfPut,
@@ -140,6 +165,7 @@ mod tests {
                 "/app/network/api/clients/self",
                 ReplayPolicy::ForbidAfterWrite,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
             ),
             (
                 OrdinaryRequest::RelayAccessGet,
@@ -147,6 +173,7 @@ mod tests {
                 "/app/network/api/relay/access",
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
             ),
             (
                 OrdinaryRequest::IngestPost,
@@ -154,6 +181,7 @@ mod tests {
                 paths::INGEST,
                 ReplayPolicy::ReplaySafe,
                 spl_core::mux::MAX_ASSEMBLED_BYTES,
+                true,
             ),
             (
                 OrdinaryRequest::IngestManifestGet,
@@ -161,6 +189,7 @@ mod tests {
                 paths::INGEST_MANIFEST,
                 ReplayPolicy::ReplaySafe,
                 spl_core::mux::MAX_ASSEMBLED_BYTES,
+                true,
             ),
             (
                 OrdinaryRequest::IngestManifestDayGet,
@@ -168,6 +197,7 @@ mod tests {
                 "/app/devices/ingest/manifest/<day>",
                 ReplayPolicy::ReplaySafe,
                 spl_core::mux::MAX_ASSEMBLED_BYTES,
+                true,
             ),
             (
                 OrdinaryRequest::IngestSegmentsDayGet,
@@ -175,6 +205,7 @@ mod tests {
                 "/app/devices/ingest/segments/<day>",
                 ReplayPolicy::ReplaySafe,
                 spl_core::mux::MAX_ASSEMBLED_BYTES,
+                true,
             ),
             (
                 OrdinaryRequest::SystemStatusGet,
@@ -182,19 +213,33 @@ mod tests {
                 "/api/system/status",
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
+            (
+                OrdinaryRequest::ClientsRetireDelete,
+                "DELETE",
+                "/app/network/api/clients/<client-id>",
+                ReplayPolicy::ForbidAfterWrite,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
             ),
         ];
 
         assert_eq!(OrdinaryRequest::ALL, expected.map(|(route, ..)| route));
-        for (route, method, path_pattern, replay, response_cap) in expected {
+        for (route, method, path_pattern, replay, response_cap, gated) in expected {
             assert_eq!(route.spec().method, method);
             assert_eq!(route.spec().path_pattern, path_pattern);
             assert_eq!(route.spec().replay, replay);
             assert_eq!(route.spec().response_cap, response_cap);
+            assert_eq!(route.spec().gated, gated);
         }
         assert_eq!(
-            OrdinaryRequest::IngestManifestDayGet.path(Some("20260914")),
+            OrdinaryRequest::IngestManifestDayGet.path(Some("20260914"), None),
             "/app/devices/ingest/manifest/20260914"
+        );
+        assert_eq!(
+            OrdinaryRequest::ClientsRetireDelete.path(None, Some("sha256:0123456789abcdef")),
+            "/app/network/api/clients/sha256:0123456789abcdef"
         );
     }
 }

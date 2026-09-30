@@ -23,10 +23,17 @@ async fn observation_is_inert() {
 
         let (cert, _key) = self_signed();
         let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
-        let client = ObserverClient::new(direct_credential(pin, port))
-            .unwrap()
-            .with_observer(observer.clone());
-        let error = client.list_segments("20260729").await.unwrap_err();
+        let client = ObserverClient::new(
+            direct_credential(pin, port),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap()
+        .with_observer(observer.clone());
+        let route_error = client.list_segments("20260729").await.unwrap_err();
+        let error = match route_error {
+            pl_transport_win::client::RouteError::Transport(e) => e,
+            pl_transport_win::client::RouteError::AwaitingConfirmation => panic!("gate open"),
+        };
         assert!(matches!(
             error,
             pl_transport_win::TransportError::Io(_) | pl_transport_win::TransportError::Tls(_)

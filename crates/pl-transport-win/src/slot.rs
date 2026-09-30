@@ -4,37 +4,59 @@
 //! Single-slot uploader supervisor.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 
 const TEARDOWN_BUDGET: Duration = Duration::from_secs(5);
 
+/// Exit signals sent to the uploader task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotExit {
+    Run,
+    Quiesce,
+    Shutdown,
+}
+
 pub struct UploaderSlot {
     active: Option<Active>,
+    wake: Arc<Notify>,
 }
 
 struct Active {
-    cancel: watch::Sender<bool>,
+    cancel: watch::Sender<SlotExit>,
     task: JoinHandle<()>,
 }
 
 impl UploaderSlot {
     pub fn new() -> Self {
-        Self { active: None }
+        Self {
+            active: None,
+            wake: Arc::new(Notify::new()),
+        }
     }
 
-    /// Signal the incumbent, wait briefly for cooperative teardown, then spawn
-    /// the replacement. The timeout is a responsiveness budget: the old task is
-    /// detached on timeout and is never aborted.
+    /// Wake notification handle for the upload loop.
+    pub fn wake(&self) -> Arc<Notify> {
+        self.wake.clone()
+    }
+
+    /// Kick the uploader loop immediately.
+    pub fn kick(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Signal the incumbent with `Shutdown`, wait briefly for cooperative teardown,
+    /// then spawn the replacement.
     pub async fn replace<F, Fut>(&mut self, build: F)
     where
-        F: FnOnce(watch::Receiver<bool>) -> Fut + Send,
+        F: FnOnce(watch::Receiver<SlotExit>) -> Fut + Send,
         Fut: Future<Output = ()> + Send + 'static,
     {
         if let Some(prev) = self.active.take() {
-            let _ = prev.cancel.send(true);
+            let _ = prev.cancel.send(SlotExit::Shutdown);
             if tokio::time::timeout(TEARDOWN_BUDGET, prev.task)
                 .await
                 .is_err()
@@ -47,9 +69,26 @@ impl UploaderSlot {
             }
         }
 
-        let (cancel, rx) = watch::channel(false);
+        let (cancel, rx) = watch::channel(SlotExit::Run);
         let task = tokio::spawn(build(rx));
         self.active = Some(Active { cancel, task });
+    }
+
+    /// Quiesce and stop the active uploader task without calling post_connect retirement.
+    pub async fn stop(&mut self) {
+        if let Some(prev) = self.active.take() {
+            let _ = prev.cancel.send(SlotExit::Quiesce);
+            if tokio::time::timeout(TEARDOWN_BUDGET, prev.task)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    target: "sync",
+                    reason = "uploader_stop_timeout",
+                    "uploader stop timed out"
+                );
+            }
+        }
     }
 }
 
@@ -62,12 +101,24 @@ impl Default for UploaderSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     use tokio::sync::mpsc;
 
     fn log_snapshot(log: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
         log.lock().unwrap().clone()
+    }
+
+    async fn wait_exit(rx: &mut watch::Receiver<SlotExit>) -> SlotExit {
+        loop {
+            let current = *rx.borrow();
+            if current != SlotExit::Run {
+                return current;
+            }
+            if rx.changed().await.is_err() {
+                return SlotExit::Shutdown;
+            }
+        }
     }
 
     #[tokio::test]
@@ -81,7 +132,7 @@ mod tests {
         slot.replace(move |mut cancel| async move {
             a_log.lock().unwrap().push(1);
             let _ = a_tick_tx.send(1);
-            crate::cancelled(&mut cancel).await;
+            let _ = wait_exit(&mut cancel).await;
             a_log.lock().unwrap().push(10);
         })
         .await;
@@ -92,7 +143,7 @@ mod tests {
         slot.replace(move |mut cancel| async move {
             b_log.lock().unwrap().push(2);
             let _ = b_tick_tx.send(2);
-            crate::cancelled(&mut cancel).await;
+            let _ = wait_exit(&mut cancel).await;
         })
         .await;
         assert_eq!(tick_rx.recv().await, Some(2));
@@ -100,7 +151,7 @@ mod tests {
         assert_eq!(log_snapshot(&log), vec![1, 10, 2]);
 
         let active = slot.active.take().expect("active replacement");
-        let _ = active.cancel.send(true);
+        let _ = active.cancel.send(SlotExit::Shutdown);
         active.task.await.unwrap();
     }
 
@@ -113,7 +164,7 @@ mod tests {
             loop {
                 let _ = tick_tx.send(7);
                 tokio::select! {
-                    _ = crate::cancelled(&mut cancel) => break,
+                    _ = wait_exit(&mut cancel) => break,
                     _ = tokio::time::sleep(Duration::from_millis(1)) => {}
                 }
             }
@@ -121,12 +172,11 @@ mod tests {
         .await;
 
         assert_eq!(tick_rx.recv().await, Some(7));
-        // Simulates pairing failing before the app calls replace.
         assert_eq!(tick_rx.recv().await, Some(7));
         assert!(slot.active.is_some());
 
         let active = slot.active.take().expect("incumbent still active");
-        let _ = active.cancel.send(true);
+        let _ = active.cancel.send(SlotExit::Shutdown);
         active.task.await.unwrap();
     }
 }

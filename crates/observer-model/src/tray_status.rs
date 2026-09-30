@@ -71,6 +71,10 @@ pub fn classify_tray(
         },
         AppPhase::Observing => match sync.pairing.phase {
             PairingPhase::Pairing => (TrayVisual::Connecting, "connecting".to_string()),
+            PairingPhase::AwaitingConfirmation => (
+                TrayVisual::Paused,
+                "solstone · waiting for you to confirm your journal's mark".to_string(),
+            ),
             PairingPhase::NotPaired | PairingPhase::Failed => (
                 TrayVisual::Paused,
                 "on, not connected to a journal".to_string(),
@@ -450,5 +454,25 @@ mod tests {
         let (_, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None);
         assert_eq!(tooltip, "connecting");
         assert!(!tooltip.contains('\n'));
+    }
+
+    #[test]
+    fn mark_confirmation_classify_tray_awaiting_confirmation_tooltip() {
+        let awaiting_sync = sync(PairingPhase::AwaitingConfirmation);
+        let (visual, tooltip) = classify_tray(AppPhase::Observing, &awaiting_sync, None, None);
+        assert_eq!(visual, TrayVisual::Paused);
+        assert_eq!(
+            tooltip,
+            "solstone · waiting for you to confirm your journal's mark"
+        );
+
+        let mut with_sighting = awaiting_sync;
+        with_sighting.unknown_journals = vec![sighting(Some("10.0.0.1:443"))];
+        let (visual, tooltip) = classify_tray(AppPhase::Observing, &with_sighting, None, None);
+        assert_eq!(visual, TrayVisual::Paused);
+        assert_eq!(
+            tooltip,
+            "solstone · waiting for you to confirm your journal's mark\nunknown journal seen at 10.0.0.1:443"
+        );
     }
 }

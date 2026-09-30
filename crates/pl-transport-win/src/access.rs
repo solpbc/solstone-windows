@@ -28,6 +28,7 @@ pub struct CredentialAccess {
     journal_version_token: JournalVersionSessionToken,
     journal_version: Arc<JournalVersionController>,
     sync: Arc<Mutex<SyncSnapshot>>,
+    confirmation: Arc<Mutex<String>>,
 }
 
 impl CredentialAccess {
@@ -38,7 +39,11 @@ impl CredentialAccess {
         observer: ObserverHandle,
     ) -> Result<Self, TransportError> {
         let credential = paired.credential.clone().ok_or(TransportError::NotPaired)?;
-        let client = ObserverClient::new(credential.clone())?
+        let binding = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
+        let confirmed = cfg.confirmation.lock().unwrap();
+        let gate_open = !confirmed.is_empty() && *confirmed == binding;
+        let gate = Arc::new(std::sync::atomic::AtomicBool::new(gate_open));
+        let client = ObserverClient::new(credential.clone(), gate)?
             .with_state_path(cfg.state_path.clone())
             .with_cas_key(CasKey {
                 pairing_generation: pairing_generation(&credential.client_cert_pem),
@@ -65,6 +70,7 @@ impl CredentialAccess {
             journal_version_token,
             journal_version: cfg.journal_version.clone(),
             sync,
+            confirmation: cfg.confirmation.clone(),
         })
     }
 
@@ -94,6 +100,10 @@ impl CredentialAccess {
 
     pub(crate) fn sync(&self) -> Arc<Mutex<SyncSnapshot>> {
         self.sync.clone()
+    }
+
+    pub(crate) fn confirmation(&self) -> Arc<Mutex<String>> {
+        self.confirmation.clone()
     }
 
     /// Retire this authority before publishing a same-home re-pair replacement.

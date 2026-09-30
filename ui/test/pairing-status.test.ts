@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { automationContract } from "../src/lib/contract";
 import * as app from "../src/main";
-import { notPairedDump } from "./fixtures";
+import { notPairedDump, sampleMarkSpec } from "./fixtures";
 
 const ids = automationContract.automation_ids;
 
@@ -317,4 +317,129 @@ describe("failed pairing status sentences", () => {
       expect(present(ids["settings.pairing.input"])).not.toBeNull();
     },
   );
+});
+
+describe("awaiting mark confirmation", () => {
+  beforeEach(() => {
+    resetRoot();
+  });
+
+  function awaitingConfirmationDump(mark?: ReturnType<typeof sampleMarkSpec> | null) {
+    const base = notPairedDump();
+    return {
+      ...base,
+      sync: {
+        ...base.sync,
+        pairing: {
+          ...base.sync.pairing,
+          phase: "awaiting_confirmation" as const,
+          journal_label: "my-journal",
+          detail: null,
+          mark: mark !== undefined ? mark : null,
+          binding: "abc123binding",
+        },
+      },
+    };
+  }
+
+  it("paints waiting for you to confirm your journal's mark on all four pairing-status sites", () => {
+    const dump = awaitingConfirmationDump(null);
+
+    // Home route
+    resetRoot();
+    app.__test__.setRoute("home");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    const homeGlance = homeJournalCardGlance();
+    expect(homeGlance).toBe("waiting for you to confirm your journal's mark");
+    expect(homeGlance).not.toContain("paired with");
+
+    const homeStrip = homeStatusStripJournalValue();
+    expect(homeStrip).toBe("waiting for you to confirm your journal's mark");
+    expect(homeStrip).not.toContain("paired with");
+
+    // Journal route
+    resetRoot();
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    const paneStatus = present(ids["settings.pairing.state"]).textContent ?? "";
+    expect(paneStatus).toBe("waiting for you to confirm your journal's mark");
+    expect(paneStatus).not.toContain("paired with");
+
+    const syncStatus = present(ids["settings.status.upload.state"]).textContent ?? "";
+    expect(syncStatus).toBe("waiting for you to confirm your journal's mark");
+    expect(syncStatus).not.toContain("paired with");
+  });
+
+  it("renders mark confirmation card when mark is present with accessible name, focus, and non-default buttons", () => {
+    const mark = sampleMarkSpec("liquefy", "smock", "#3b82f6");
+    const dump = awaitingConfirmationDump(mark);
+
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    const card = present(ids["settings.pairing.markCard"]);
+    expect(card.getAttribute("role")).toBe("img");
+    expect(card.getAttribute("tabindex")).toBe("-1");
+    expect(card.getAttribute("aria-label")).toBe("blue, purple · liquefy smock");
+    expect(document.activeElement).toBe(card);
+
+    expect(card.textContent).toContain("does this match your journal?");
+    expect(card.textContent).toContain(
+      "your journal shows this same mark in its network app. it should match, exactly.",
+    );
+
+    const rejectBtn = present(ids["settings.pairing.confirmReject"]) as HTMLButtonElement;
+    expect(rejectBtn.textContent).toBe("that doesn't match");
+    expect(rejectBtn.getAttribute("type")).toBe("button");
+    expect(rejectBtn.type).toBe("button");
+    expect(rejectBtn.classList.contains("fluent-control")).toBe(true);
+
+    const yesBtn = present(ids["settings.pairing.confirmYes"]) as HTMLButtonElement;
+    expect(yesBtn.textContent).toBe("yes, this is my journal");
+    expect(yesBtn.getAttribute("type")).toBe("button");
+    expect(yesBtn.type).toBe("button");
+    expect(yesBtn.classList.contains("fluent-accent")).toBe(true);
+
+    expect(byId(ids["settings.pairing.confirmContinue"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmCancel"])).toBeNull();
+  });
+
+  it("renders unreadable mark card when mark is absent with accessible name and non-default buttons", () => {
+    const dump = awaitingConfirmationDump(null);
+
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    const card = present(ids["settings.pairing.markCard"]);
+    expect(card.getAttribute("role")).toBe("img");
+    expect(card.getAttribute("tabindex")).toBe("-1");
+    expect(card.getAttribute("aria-label")).toBe("your journal's mark, unavailable right now");
+    expect(document.activeElement).toBe(card);
+
+    expect(card.textContent).toContain("couldn't verify");
+    expect(card.textContent).toContain(
+      "this PC couldn't work out your journal's mark, so there's nothing to compare. continue only if you're sure the link came from your journal.",
+    );
+
+    const cancelBtn = present(ids["settings.pairing.confirmCancel"]) as HTMLButtonElement;
+    expect(cancelBtn.textContent).toBe("cancel pairing");
+    expect(cancelBtn.getAttribute("type")).toBe("button");
+    expect(cancelBtn.type).toBe("button");
+    expect(cancelBtn.classList.contains("fluent-control")).toBe(true);
+
+    const continueBtn = present(ids["settings.pairing.confirmContinue"]) as HTMLButtonElement;
+    expect(continueBtn.textContent).toBe("continue anyway");
+    expect(continueBtn.getAttribute("type")).toBe("button");
+    expect(continueBtn.type).toBe("button");
+    expect(continueBtn.classList.contains("fluent-accent")).toBe(true);
+
+    expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmReject"])).toBeNull();
+  });
 });

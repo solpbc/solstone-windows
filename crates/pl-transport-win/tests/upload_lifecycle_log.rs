@@ -42,7 +42,10 @@ async fn lan_ingest_reports_shared_direct_outcome() {
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_ingest(listener, acceptor));
     let observer = OperationObserver::new();
-    let client = ObserverClient::new(direct_credential(pin, port))
+    let client = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
         .unwrap()
         .with_observer(Some(observer.clone()));
     let files = vec![FilePart {
@@ -78,7 +81,11 @@ async fn observer_contract_authority_upload_reuses_ingest_capture_seam() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_ingest(listener, acceptor));
-    let client = ObserverClient::new(direct_credential(pin, port)).unwrap();
+    let client = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap();
     let files = vec![
         FilePart {
             filename: "screen.png".to_owned(),

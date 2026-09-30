@@ -179,17 +179,56 @@ async fn pair_session(
     // spawn competing uploaders.
     let cfg = state.sync_config.clone();
     let sync = state.sync.clone();
-    let mut slot = state.uploader_slot.lock().await;
 
     tracing::info!(
         target: "sync",
         pair_link = %observer_log::redact_pair_link(&link),
         "pairing attempt"
     );
-    let paired = match pl_transport_win::service::pair(&link, &cfg, sync.clone()).await {
-        Ok(paired) => {
+
+    let app_handle = app.clone();
+    let journal_bridge = state.journal_bridge.clone();
+    let journal_open_lock = state.journal_open_lock.clone();
+
+    let shutdown_bridge = move || {
+        let journal_bridge = journal_bridge.clone();
+        async move {
+            let bridge = journal_bridge
+                .lock()
+                .ok()
+                .and_then(|mut bridge| bridge.take());
+            if let Some(bridge) = bridge {
+                bridge.shutdown_and_wait().await;
+            }
+        }
+    };
+
+    let close_journal_window = move || {
+        let app_handle = app_handle.clone();
+        let journal_open_lock = journal_open_lock.clone();
+        async move {
+            let _guard = journal_open_lock.lock().await;
+            if let Some(window) = app_handle.get_webview_window("journal") {
+                let _ = window.close();
+            }
+        }
+    };
+
+    let result = pl_transport_win::session::pair(
+        &link,
+        &cfg,
+        sync,
+        &state.uploader_slot,
+        &state.credential_access,
+        shutdown_bridge,
+        close_journal_window,
+    )
+    .await;
+
+    match result {
+        Ok(_) => {
             tracing::info!(target: "sync", outcome = "paired", "pairing result");
-            paired
+            Ok(())
         }
         Err(error) => {
             let error = error.to_string();
@@ -199,42 +238,57 @@ async fn pair_session(
                 error = %observer_log::redact_secret("pairing-error", &error),
                 "pairing result"
             );
-            return Err(error);
+            Err(error)
         }
+    }
+}
+
+/// Answer the confirmation gate for an awaiting pairing.
+#[tauri::command]
+pub async fn answer_pairing(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+    binding: String,
+    action: String,
+) -> Result<(), String> {
+    let act = match action.as_str() {
+        "confirm" => pl_transport_win::session::PairingAction::Confirm,
+        "reject" => pl_transport_win::session::PairingAction::Reject,
+        "cancel" => pl_transport_win::session::PairingAction::Cancel,
+        _ => return Err(format!("unknown pairing action: {action}")),
     };
 
-    let access = pl_transport_win::CredentialAccess::bind(&paired, &cfg, sync.clone(), None)
-        .map_err(|error| error.to_string())?;
-    let _journal_open_guard = state.journal_open_lock.lock().await;
-    {
-        let mut current = state.credential_access.lock().await;
-        if let Some(previous) = current.take() {
-            previous.retire();
-        }
-        *current = Some(access.clone());
-    }
-    let bridge = state
-        .journal_bridge
-        .lock()
-        .ok()
-        .and_then(|mut bridge| bridge.take());
-    if let Some(bridge) = bridge {
-        bridge.shutdown_and_wait().await;
-    }
-    if let Some(window) = app.get_webview_window("journal") {
-        let _ = window.close();
-    }
-    drop(_journal_open_guard);
+    let cfg = state.sync_config.clone();
+    let sync = state.sync.clone();
 
-    tracing::info!(
-        target: "sync",
-        source = "fresh_pair",
-        "uploader started"
-    );
-    slot.replace(move |rx| async move {
-        pl_transport_win::run_uploader(access, cfg, sync, rx).await;
-    })
-    .await;
+    pl_transport_win::session::answer(
+        act,
+        &binding,
+        &cfg,
+        &sync,
+        &state.credential_access,
+        &state.uploader_slot,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if act == pl_transport_win::session::PairingAction::Reject
+        || act == pl_transport_win::session::PairingAction::Cancel
+    {
+        let _journal_open_guard = state.journal_open_lock.lock().await;
+        let bridge = state
+            .journal_bridge
+            .lock()
+            .ok()
+            .and_then(|mut bridge| bridge.take());
+        if let Some(bridge) = bridge {
+            bridge.shutdown_and_wait().await;
+        }
+        if let Some(window) = app.get_webview_window("journal") {
+            let _ = window.close();
+        }
+    }
+
     Ok(())
 }
 

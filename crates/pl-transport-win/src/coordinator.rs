@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use observer_model::{LocalOffset, LocalZone, PairingPhase, SyncSnapshot, TransportPath};
+use observer_model::{LocalOffset, LocalZone, SyncSnapshot, TransportPath};
 use observer_pl::civil;
 use observer_pl::ingest::{
     validate_receipt, FilePart, IngestResponse, IngestStatus, LocalFile, ReceiptFault,
@@ -32,10 +32,11 @@ use spl_transport::handshake::HandshakeStop;
 use tokio::sync::watch;
 
 use crate::ack::{AckFile, JournalIdentity, UploadAck};
-use crate::client::{ClientSlot, ObserverClient, SendMetadata};
+use crate::client::{ClientSlot, ObserverClient, RouteError, SendMetadata};
 use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
 use crate::post_connect::PostConnectController;
 use crate::sealed::{content_type_for, SealedStore, UPLOADED_MARKER, UPLOADED_TMP_MARKER};
+use crate::slot::SlotExit;
 use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
 const MAX_BACKOFF_SECS: u64 = 300;
@@ -136,10 +137,10 @@ fn elapsed_ms(started: Instant) -> u64 {
 }
 
 type IngestFuture<'a> = Pin<
-    Box<dyn Future<Output = Result<(IngestResponse, SendMetadata), TransportError>> + Send + 'a>,
+    Box<dyn Future<Output = Result<(IngestResponse, SendMetadata), RouteError>> + Send + 'a>,
 >;
 type ListSegmentsFuture<'a> = Pin<
-    Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), TransportError>> + Send + 'a>,
+    Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), RouteError>> + Send + 'a>,
 >;
 
 trait UploadClient: Send + Sync {
@@ -352,6 +353,7 @@ pub struct UploadCoordinator {
     segment_bounds: Mutex<HashMap<(JournalIdentity, String, String), SegmentBound>>,
     delete_holds: Mutex<HashMap<u64, u64>>,
     day_bounds: Mutex<HashMap<String, DayListingBound>>,
+    confirmation: Arc<Mutex<String>>,
 }
 
 /// An upload confirmed by receipt validation or day listing.
@@ -361,6 +363,9 @@ pub struct ConfirmedUpload {
     pub files: Vec<AckFile>,
     pub metadata: SendMetadata,
 }
+
+pub static TEST_AWAITING_HOLD: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>> =
+    Mutex::new(None);
 
 impl UploadCoordinator {
     pub fn new(
@@ -388,6 +393,7 @@ impl UploadCoordinator {
             segment_bounds: Mutex::new(HashMap::new()),
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
+            confirmation: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -402,6 +408,7 @@ impl UploadCoordinator {
         post_connect: Option<Arc<PostConnectController>>,
         version_generation: JournalVersionSessionToken,
         post_connect_generation: Option<crate::post_connect::PostConnectSessionToken>,
+        confirmation: Arc<Mutex<String>>,
     ) -> Self {
         Self {
             client: Arc::new(client_slot.clone()),
@@ -420,6 +427,7 @@ impl UploadCoordinator {
             segment_bounds: Mutex::new(HashMap::new()),
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
+            confirmation,
         }
     }
 
@@ -448,6 +456,7 @@ impl UploadCoordinator {
             segment_bounds: Mutex::new(HashMap::new()),
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
+            confirmation: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -946,22 +955,38 @@ impl UploadCoordinator {
             .remove(&index);
     }
 
-    pub async fn run(self, mut cancel: watch::Receiver<bool>) {
+    pub async fn run(
+        self,
+        mut cancel: watch::Receiver<SlotExit>,
+        wake: Arc<tokio::sync::Notify>,
+    ) {
         let tick_cancel = cancel.clone();
         let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
-        loop {
+        let exit_reason = loop {
             tokio::select! {
-                _ = cancelled(&mut cancel) => break,
+                biased;
+                exit = cancelled(&mut cancel) => break exit,
+                _ = wake.notified() => {
+                    match self.tick_with_cancel(&tick_cancel).await {
+                        Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
+                        Err(RouteError::AwaitingConfirmation) => {}
+                        Err(RouteError::Transport(_)) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
+                    }
+                }
                 _ = tokio::time::sleep(Duration::from_secs(backoff)) => {
                     match self.tick_with_cancel(&tick_cancel).await {
                         Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
-                        Err(_) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
+                        Err(RouteError::AwaitingConfirmation) => {}
+                        Err(RouteError::Transport(_)) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
                     }
                 }
             }
-        }
+        };
         if let (Some(pc), Some(token)) = (&self.post_connect, self.post_connect_generation) {
-            pc.shutdown(token);
+            match exit_reason {
+                SlotExit::Quiesce => pc.quiesce().await,
+                _ => pc.shutdown(token),
+            }
         }
     }
 
@@ -973,41 +998,65 @@ impl UploadCoordinator {
 
     /// One pass: upload + reconcile every sealed segment currently on disk.
     /// Returns the number of segments confirmed landed this pass.
-    pub async fn tick(&self) -> Result<usize, TransportError> {
-        let (_tx, rx) = watch::channel(false);
+    pub async fn tick(&self) -> Result<usize, RouteError> {
+        let (_tx, rx) = watch::channel(SlotExit::Run);
         self.tick_with_cancel(&rx).await
     }
 
     /// One pass returning confirmed uploads.
-    pub async fn tick_with_witness(&self) -> Result<Vec<ConfirmedUpload>, TransportError> {
-        let (_tx, rx) = watch::channel(false);
+    pub async fn tick_with_witness(&self) -> Result<Vec<ConfirmedUpload>, RouteError> {
+        let (_tx, rx) = watch::channel(SlotExit::Run);
         let result = self.tick_inner(&rx).await;
         match &result {
             Ok(_) => self.note_tick_success(),
-            Err(error) => self.note_tick_failure(error),
+            Err(RouteError::AwaitingConfirmation) => {
+                if let Ok(mut snapshot) = self.sync.lock() {
+                    if let Some(slot) = &self.client_slot {
+                        let client = slot.load();
+                        crate::unknown_journals::publish_unknown_journals(
+                            &mut snapshot,
+                            client.transport_client(),
+                            &client.credential().instance_id,
+                        );
+                    }
+                }
+            }
+            Err(RouteError::Transport(error)) => self.note_tick_failure(error),
         }
         result
     }
 
     async fn tick_with_cancel(
         &self,
-        cancel: &watch::Receiver<bool>,
-    ) -> Result<usize, TransportError> {
+        cancel: &watch::Receiver<SlotExit>,
+    ) -> Result<usize, RouteError> {
         let result = self
             .tick_inner(cancel)
             .await
             .map(|witnesses| witnesses.len());
         match &result {
             Ok(_) => self.note_tick_success(),
-            Err(error) => self.note_tick_failure(error),
+            Err(RouteError::AwaitingConfirmation) => {
+                if let Ok(mut snapshot) = self.sync.lock() {
+                    if let Some(slot) = &self.client_slot {
+                        let client = slot.load();
+                        crate::unknown_journals::publish_unknown_journals(
+                            &mut snapshot,
+                            client.transport_client(),
+                            &client.credential().instance_id,
+                        );
+                    }
+                }
+            }
+            Err(RouteError::Transport(error)) => self.note_tick_failure(error),
         }
         result
     }
 
     async fn tick_inner(
         &self,
-        cancel: &watch::Receiver<bool>,
-    ) -> Result<Vec<ConfirmedUpload>, TransportError> {
+        cancel: &watch::Receiver<SlotExit>,
+    ) -> Result<Vec<ConfirmedUpload>, RouteError> {
         let now = self.monotonic_now_epoch_secs();
 
         // Recount quarantined media dirs first
@@ -1020,7 +1069,10 @@ impl UploadCoordinator {
         // Run local finish pass
         self.local_finish(now);
 
-        let segments = self.store.scan()?;
+        let segments = self
+            .store
+            .scan()
+            .map_err(|e| RouteError::Transport(TransportError::Io(e)))?;
         let pending_count = segments
             .iter()
             .filter(|s| !self.is_held(s.index, now))
@@ -1037,7 +1089,7 @@ impl UploadCoordinator {
         let mut unknown_by_day: HashMap<String, Vec<UnknownSegmentFact>> = HashMap::new();
 
         'segments: for segment in segments {
-            if *cancel.borrow() {
+            if *cancel.borrow() != SlotExit::Run {
                 break 'segments;
             }
 
@@ -1069,7 +1121,7 @@ impl UploadCoordinator {
                     )
                     .emit();
                     self.on_error(&error);
-                    return Err(error);
+                    return Err(RouteError::Transport(error));
                 }
             };
             let offset = zone.utc_offset_seconds;
@@ -1307,7 +1359,15 @@ impl UploadCoordinator {
                     self.on_error(&error);
                     continue 'segments;
                 }
-                Err(e) => {
+                Err(RouteError::AwaitingConfirmation) => {
+                    let hold = TEST_AWAITING_HOLD.lock().unwrap().take();
+                    if let Some((entered, release)) = hold {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    return Err(RouteError::AwaitingConfirmation);
+                }
+                Err(RouteError::Transport(e)) => {
                     if let TransportError::Rejected { status, ref body } = e {
                         let reason = serde_json::from_str::<serde_json::Value>(body)
                             .ok()
@@ -1342,7 +1402,7 @@ impl UploadCoordinator {
                     self.on_error(&e);
 
                     if is_device_scoped_refusal(&e) {
-                        return Err(e);
+                        return Err(RouteError::Transport(e));
                     }
                     if is_attributable_rejection(&e) {
                         self.register_reject(segment.index);
@@ -1361,7 +1421,7 @@ impl UploadCoordinator {
                             | TransportError::NoEndpoint
                             | TransportError::Json(_)
                     ) {
-                        return Err(e);
+                        return Err(RouteError::Transport(e));
                     }
                     if let TransportError::Rejected { status, ref body } = e {
                         let reason = serde_json::from_str::<serde_json::Value>(body)
@@ -1371,7 +1431,7 @@ impl UploadCoordinator {
                         self.register_segment_error(&day, &segment_key, &reason, now);
                         continue 'segments;
                     }
-                    return Err(e);
+                    return Err(RouteError::Transport(e));
                 }
             }
         }
@@ -1479,10 +1539,13 @@ impl UploadCoordinator {
                         }
                     }
                 }
-                Err(e) => {
+                Err(RouteError::AwaitingConfirmation) => {
+                    return Err(RouteError::AwaitingConfirmation);
+                }
+                Err(RouteError::Transport(e)) => {
                     self.on_error(&e);
                     if is_device_scoped_refusal(&e) {
-                        return Err(e);
+                        return Err(RouteError::Transport(e));
                     }
                     if matches!(
                         e,
@@ -1491,7 +1554,7 @@ impl UploadCoordinator {
                             | TransportError::NoEndpoint
                             | TransportError::Json(_)
                     ) {
-                        return Err(e);
+                        return Err(RouteError::Transport(e));
                     }
                     if let TransportError::Rejected { .. } = e {
                         self.on_listing_refusal();
@@ -1502,7 +1565,7 @@ impl UploadCoordinator {
                             },
                         );
                     } else {
-                        return Err(e);
+                        return Err(RouteError::Transport(e));
                     }
                 }
             }
@@ -1573,22 +1636,48 @@ impl UploadCoordinator {
         let was_healthy = if let Ok(mut snapshot) = self.sync.lock() {
             let healthy = snapshot.upload.recent_error_count == 0;
             snapshot.upload.record_failure(&transport_error_code(err));
-            if stopped {
-                snapshot.pairing.phase = PairingPhase::Failed;
-                snapshot.pairing.detail = Some(PAIRING_REFUSED_DETAIL.to_string());
-            }
-            if let Some(slot) = &self.client_slot {
+            healthy
+        } else {
+            false
+        };
+        if stopped {
+            let (binding, label, mark) = if let Some(slot) = &self.client_slot {
                 let client = slot.load();
+                (
+                    client.journal_identity().client_cert_sha256,
+                    client.home_label().to_string(),
+                    crate::service::journal_mark(&client.credential().instance_id),
+                )
+            } else {
+                (
+                    self.client.journal_identity().client_cert_sha256,
+                    String::new(),
+                    None,
+                )
+            };
+            crate::service::publish_pairing(
+                &self.sync,
+                &self.confirmation,
+                crate::service::PairingWrite::Bound {
+                    binding,
+                    label,
+                    mark,
+                    kind: crate::service::BoundKind::Failed {
+                        detail: Some(PAIRING_REFUSED_DETAIL.to_string()),
+                    },
+                },
+            );
+        }
+        if let Some(slot) = &self.client_slot {
+            let client = slot.load();
+            if let Ok(mut snapshot) = self.sync.lock() {
                 crate::unknown_journals::publish_unknown_journals(
                     &mut snapshot,
                     client.transport_client(),
                     &client.credential().instance_id,
                 );
             }
-            healthy
-        } else {
-            false
-        };
+        }
         if was_healthy {
             if let Some(jv) = &self.journal_version {
                 jv.mark_session_disconnected(self.version_generation, &self.sync);
@@ -1606,7 +1695,7 @@ mod tests {
     use std::collections::{HashSet, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use observer_model::RECENT_ERROR_COUNT_MAX;
+    use observer_model::{PairingPhase, RECENT_ERROR_COUNT_MAX};
     use observer_pl::ingest::{
         FileDescriptor, FileDescriptors, SegmentFile, SegmentFileStatus, SegmentItem,
     };
@@ -2302,7 +2391,7 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .expect("scripted ingest result");
-            Box::pin(async move { result })
+            Box::pin(async move { result.map_err(RouteError::from) })
         }
 
         fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
@@ -2312,7 +2401,7 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .expect("scripted list result");
-            Box::pin(async move { result })
+            Box::pin(async move { result.map_err(RouteError::from) })
         }
 
         fn refusal_stop(&self) -> Option<HandshakeStop> {
@@ -2357,20 +2446,20 @@ mod tests {
         ) -> IngestFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
-                Err(TransportError::Rejected {
+                Err(RouteError::Transport(TransportError::Rejected {
                     status: 403,
                     body: "refused".to_string(),
-                })
+                }))
             })
         }
 
         fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
-                Err(TransportError::Rejected {
+                Err(RouteError::Transport(TransportError::Rejected {
                     status: 403,
                     body: "refused".to_string(),
-                })
+                }))
             })
         }
     }
@@ -2534,7 +2623,7 @@ mod tests {
     struct CancelAfterFirstListClient {
         ingests: Mutex<VecDeque<Result<(IngestResponse, SendMetadata), TransportError>>>,
         lists: Mutex<VecDeque<Result<(SegmentsEnvelope, SendMetadata), TransportError>>>,
-        cancel: watch::Sender<bool>,
+        cancel: watch::Sender<SlotExit>,
         ingest_count: Arc<AtomicUsize>,
         list_count: AtomicUsize,
         submitted_day: Mutex<Option<String>>,
@@ -2544,7 +2633,7 @@ mod tests {
         fn new(
             ingests: Vec<Result<(IngestResponse, SendMetadata), TransportError>>,
             lists: Vec<Result<(SegmentsEnvelope, SendMetadata), TransportError>>,
-            cancel: watch::Sender<bool>,
+            cancel: watch::Sender<SlotExit>,
         ) -> Arc<Self> {
             Arc::new(Self {
                 ingests: Mutex::new(VecDeque::from(ingests)),
@@ -2591,9 +2680,9 @@ mod tests {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 let count = ingest_count.fetch_add(1, Ordering::SeqCst);
                 if count == 0 {
-                    let _ = cancel.send(true);
+                    let _ = cancel.send(SlotExit::Shutdown);
                 }
-                result
+                result.map_err(RouteError::from)
             })
         }
 
@@ -2608,9 +2697,9 @@ mod tests {
             let cancel = self.cancel.clone();
             Box::pin(async move {
                 if should_cancel {
-                    let _ = cancel.send(true);
+                    let _ = cancel.send(SlotExit::Shutdown);
                 }
-                result
+                result.map_err(RouteError::from)
             })
         }
     }
@@ -2644,7 +2733,13 @@ mod tests {
     }
 
     fn dummy_client() -> Arc<ObserverClient> {
-        Arc::new(ObserverClient::new(dummy_credential()).unwrap())
+        Arc::new(
+            ObserverClient::new(
+                dummy_credential(),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            )
+            .unwrap(),
+        )
     }
 
     fn coordinator(
@@ -2711,6 +2806,7 @@ mod tests {
             segment_bounds: Mutex::new(HashMap::new()),
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
+            confirmation: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -3028,7 +3124,7 @@ mod tests {
         let result = coordinator.tick().await;
         let snapshot = sync.lock().unwrap().clone();
 
-        assert!(matches!(result, Err(TransportError::Io(_))));
+        assert!(matches!(result, Err(RouteError::Transport(TransportError::Io(_)))));
         assert_eq!(client.ingests.lock().unwrap().len(), 1);
         assert_eq!(snapshot.upload.quarantined_segments, 0);
         assert_eq!(snapshot.upload.recent_error_count, 1);
@@ -3140,7 +3236,7 @@ mod tests {
         }
         assert!(matches!(
             coordinator.tick().await,
-            Err(TransportError::Rejected { status: 403, .. })
+            Err(RouteError::Transport(TransportError::Rejected { status: 403, .. }))
         ));
         let snapshot = sync.lock().unwrap().clone();
 
@@ -3168,7 +3264,7 @@ mod tests {
         let result = coordinator.tick().await;
         let snapshot = sync.lock().unwrap().clone();
 
-        assert!(matches!(result, Err(TransportError::Io(_))));
+        assert!(matches!(result, Err(RouteError::Transport(TransportError::Io(_)))));
         assert_eq!(snapshot.upload.quarantined_segments, 0);
         assert_eq!(snapshot.upload.recent_error_count, 1);
     }
@@ -3191,7 +3287,7 @@ mod tests {
             (3, boundary3, file_name, bytes3),
         ]);
         let handle = store.clone();
-        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (cancel_tx, cancel_rx) = watch::channel(SlotExit::Run);
         let client = CancelAfterFirstListClient::new(
             vec![accepted_ingest(&key1, file_name, &bytes1, 1)],
             vec![],
@@ -3199,7 +3295,8 @@ mod tests {
         );
         let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
 
-        let run_task = tokio::spawn(coordinator.run(cancel_rx));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let run_task = tokio::spawn(coordinator.run(cancel_rx, wake));
         tokio::time::advance(Duration::from_secs(DEFAULT_UPLOAD_INTERVAL_SECS)).await;
         tokio::time::advance(Duration::from_secs(1)).await;
         run_task.await.unwrap();
@@ -3463,7 +3560,10 @@ mod tests {
                 result
                     .as_ref()
                     .err()
-                    .map(|error| transport_error_code(error).to_string()),
+                    .map(|error| match error {
+                        RouteError::Transport(e) => transport_error_code(e).to_string(),
+                        RouteError::AwaitingConfirmation => "awaiting_confirmation".to_string(),
+                    }),
                 Some(expected_code.to_string())
             );
             assert!(
@@ -3586,7 +3686,7 @@ mod tests {
         );
 
         let first = coordinator.tick().await;
-        assert!(matches!(first, Err(TransportError::LocalOffset)));
+        assert!(matches!(first, Err(RouteError::Transport(TransportError::LocalOffset))));
         let first_snapshot = sync.lock().unwrap().clone();
         assert_eq!(
             first_snapshot.upload.last_error_reason.as_deref(),
@@ -3636,7 +3736,7 @@ mod tests {
         );
 
         let first = coordinator.tick().await;
-        assert!(matches!(first, Err(TransportError::Io(_))));
+        assert!(matches!(first, Err(RouteError::Transport(TransportError::Io(_)))));
         let second = coordinator.tick().await.unwrap();
         assert_eq!(second, 1);
 
@@ -3828,12 +3928,12 @@ mod tests {
 
         assert!(matches!(
             coordinator.tick().await,
-            Err(TransportError::Json(_))
+            Err(RouteError::Transport(TransportError::Json(_)))
         ));
         tokio::time::advance(Duration::from_secs(3601)).await;
         assert!(matches!(
             coordinator.tick().await,
-            Err(TransportError::Json(_))
+            Err(RouteError::Transport(TransportError::Json(_)))
         ));
         assert!(!*removed.lock().unwrap());
         assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
@@ -4283,7 +4383,7 @@ mod tests {
         let res = coordinator.tick().await;
         assert!(matches!(
             res,
-            Err(TransportError::Rejected { status: 403, .. })
+            Err(RouteError::Transport(TransportError::Rejected { status: 403, .. }))
         ));
         let snapshot = sync.lock().unwrap().clone();
         assert_eq!(snapshot.upload.listing_refusals, 0);

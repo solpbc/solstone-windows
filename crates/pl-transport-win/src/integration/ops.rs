@@ -43,7 +43,7 @@ use crate::{ObserverHandle, TransportError};
 use spl_transport::observe::OperationObserver;
 
 /// The result of one operation: how it failed (if it did) and what it earned.
-type OpResult = (Option<Failure>, Evidence);
+pub type OpResult = (Option<Failure>, Evidence);
 
 // The shipped binary's main thread reserves 1 MiB (measured as 0x100000, the
 // MSVC default, with no /STACK override), and the full relay pairing path
@@ -115,13 +115,14 @@ fn execute_inner(
     let handle = shared_observer(&observer);
     runtime.block_on(async move {
         match &command.args {
-            OperationArgs::Pair { carrier } => {
+            OperationArgs::Pair { carrier, mark } => {
                 pair(
                     command,
                     environment,
                     handle,
                     link.unwrap_or_default(),
                     *carrier,
+                    mark.clone(),
                 )
                 .await
             }
@@ -249,12 +250,13 @@ fn ceremony_residue(
     }
 }
 
-async fn pair(
+pub async fn pair(
     command: &Command,
     environment: &Environment,
     observer: ObserverHandle,
     link: String,
     carrier: Carrier,
+    mark: (String, String),
 ) -> OpResult {
     let mut evidence = Evidence {
         state_written: Some(false),
@@ -328,20 +330,101 @@ async fn pair(
         Ok(Ok(credential)) => credential,
     };
 
+    let expected_mark = crate::unknown_journals::mark_spec_for_jid(&credential.instance_id);
+    let matches_mark = match &expected_mark {
+        Some(spec) => {
+            spec.words[0].eq_ignore_ascii_case(&mark.0)
+                && spec.words[1].eq_ignore_ascii_case(&mark.1)
+        }
+        None => false,
+    };
+
+    if !matches_mark {
+        let mut delete_success = false;
+        if let Ok(der_certs) = spl_transport::tls::parse_certs(&credential.client_cert_pem) {
+            if let Some(der) = der_certs.first() {
+                let client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der.as_ref()));
+                if let Ok(client) = ObserverClient::new(
+                    credential.clone(),
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                ) {
+                    if let Ok(Ok(())) = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        client.retire_client(&client_id),
+                    )
+                    .await
+                    {
+                        delete_success = true;
+                    }
+                }
+            }
+        }
+        let residue_journal = if delete_success {
+            Residue::None
+        } else {
+            Residue::Present
+        };
+        evidence.remote_residue = Some(ceremony_residue(carrier, &observer, residue_journal));
+        evidence.local_residue_cleared = Some(clear_local_credential(environment));
+        return (
+            Some(Failure::assertion(
+                Phase::Validate,
+                "mark_mismatch",
+                "the supplied mark did not match the journal's mark",
+            )),
+            evidence,
+        );
+    }
+
     // Journal identity issuance succeeded. Enrollment is optional, and even a
     // legacy token cannot prove whether an older relay retained a device row.
     let residue = ceremony_residue(carrier, &observer, Residue::Present);
     evidence.remote_residue = Some(residue);
+
+    let ans_path = crate::answer::answer_path(&environment.state_path);
+    let prior_ans_bytes = std::fs::read(&ans_path).ok();
+    let mut ans_state = crate::answer::read_answer(&ans_path).ok().flatten().unwrap_or_default();
+    let digest = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
+    ans_state.confirmed = digest;
+
+    if let Err(e) = crate::answer::write_answer(&ans_path, &ans_state) {
+        evidence.local_residue_cleared = Some(clear_local_credential(environment));
+        let terr = TransportError::from(e);
+        return (
+            Some(Failure::transport(
+                Phase::Persist,
+                &terr,
+                "the answer state could not be written to the profile",
+            )),
+            evidence,
+        );
+    }
 
     let paired = PairedState {
         credential: Some(credential),
         ..Default::default()
     };
     if let Some(deadline) = budget.checkpoint(Phase::Persist) {
+        match prior_ans_bytes {
+            Some(bytes) => {
+                let _ = std::fs::write(&ans_path, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&ans_path);
+            }
+        }
         evidence.local_residue_cleared = Some(clear_local_credential(environment));
         return (Some(deadline), evidence);
     }
     if let Err(error) = paired.save(&environment.state_path) {
+        match prior_ans_bytes {
+            Some(bytes) => {
+                let _ = std::fs::write(&ans_path, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&ans_path);
+            }
+        }
         evidence.local_residue_cleared = Some(clear_local_credential(environment));
         return (
             Some(Failure::transport(
@@ -376,7 +459,7 @@ fn load_credential(environment: &Environment) -> Result<PairedState, Failure> {
     Ok(paired)
 }
 
-fn client_for(
+pub fn client_for(
     environment: &Environment,
     paired: &PairedState,
     observer: ObserverHandle,
@@ -388,8 +471,17 @@ fn client_for(
             "this operation needs a paired credential",
         )
     })?;
-    ObserverClient::new(credential)
-        .map(|client| {
+    let ans_path = crate::answer::answer_path(&environment.state_path);
+    let digest = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
+    let confirmed_matches = match crate::answer::read_answer(&ans_path) {
+        Ok(Some(ans)) => ans.confirmed == digest,
+        _ => false,
+    };
+    ObserverClient::new(
+        credential,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(confirmed_matches)),
+    )
+    .map(|client| {
             client
                 .with_state_path(environment.state_path.clone())
                 .with_observer(observer)
@@ -444,14 +536,19 @@ async fn roundtrip(
     {
         Err(deadline) => return (Some(deadline), evidence),
         Ok(Err(error)) => {
-            return (
-                Some(Failure::transport(
+            let failure = match &error {
+                crate::client::RouteError::Transport(e) => Failure::transport(
                     Phase::ListSegments,
-                    &error,
+                    e,
                     "the authenticated segment-list request did not complete",
-                )),
-                evidence,
-            )
+                ),
+                crate::client::RouteError::AwaitingConfirmation => Failure::error(
+                    Phase::ListSegments,
+                    "awaiting_confirmation",
+                    "the operation is awaiting mark confirmation",
+                ),
+            };
+            return (Some(failure), evidence);
         }
         Ok(Ok((listed, _))) => {
             evidence.segments_listed = Some(true);
@@ -573,6 +670,11 @@ async fn fetch(
     let jv = Arc::new(crate::journal_version::JournalVersionController::new(
         jv_path,
     ));
+    let binding = paired
+        .credential
+        .as_ref()
+        .map(|c| crate::ack::JournalIdentity::from_credential(c).client_cert_sha256)
+        .unwrap_or_default();
     let cfg = SyncConfig {
         device_label: environment.device_label.clone(),
         period_secs: environment.period_secs,
@@ -581,6 +683,7 @@ async fn fetch(
         local_offset: Arc::new(FixedOffset(0)),
         journal_version: jv,
         facts_fn: Arc::new(RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(binding)),
     };
     let access = match CredentialAccess::bind(&paired, &cfg, sync.clone(), observer) {
         Ok(access) => access,
@@ -617,6 +720,11 @@ async fn fetch(
                     Phase::BridgeStart,
                     "not_paired",
                     "the profile has no credential for the bridge",
+                ),
+                journal_bridge::BridgeStartError::AwaitingConfirmation => Failure::error(
+                    Phase::BridgeStart,
+                    "awaiting_confirmation",
+                    "the journal bridge is awaiting mark confirmation",
                 ),
             };
             return (Some(failure), evidence);
@@ -1014,14 +1122,19 @@ async fn upload(
     let confirmed = match ticked {
         Err(deadline) => return (Some(deadline), evidence),
         Ok(Err(error)) => {
-            return (
-                Some(Failure::transport(
+            let failure = match &error {
+                crate::client::RouteError::Transport(e) => Failure::transport(
                     Phase::Ingest,
-                    &error,
+                    e,
                     "the production uploader could not deliver the segment",
-                )),
-                evidence,
-            )
+                ),
+                crate::client::RouteError::AwaitingConfirmation => Failure::error(
+                    Phase::Ingest,
+                    "awaiting_confirmation",
+                    "the operation is awaiting mark confirmation",
+                ),
+            };
+            return (Some(failure), evidence);
         }
         Ok(Ok(confirmed)) => confirmed,
     };
@@ -1529,6 +1642,7 @@ mod tests {
             max_dials: None,
             args: OperationArgs::Pair {
                 carrier: Carrier::Relay,
+                mark: ("word1".to_string(), "word2".to_string()),
             },
         }
     }
@@ -1578,6 +1692,7 @@ mod tests {
             Some(OperationObserver::new()),
             link.clone(),
             Carrier::Relay,
+            ("word1".to_string(), "word2".to_string()),
         ));
 
         let failure = failure.expect("an unreachable relay cannot pair");
@@ -1615,6 +1730,7 @@ mod tests {
             Some(OperationObserver::new()),
             link.clone(),
             Carrier::Relay,
+            ("word1".to_string(), "word2".to_string()),
         ));
 
         let rendered = format!("{failure:?}{evidence:?}");
@@ -1646,6 +1762,7 @@ mod tests {
             Some(observer.clone()),
             link,
             Carrier::Relay,
+            ("word1".to_string(), "word2".to_string()),
         ));
 
         let failure = failure.expect("a direct link cannot satisfy relay");
@@ -1685,6 +1802,7 @@ mod tests {
                 Some(observer.clone()),
                 link.clone(),
                 Carrier::Relay,
+                ("word1".to_string(), "word2".to_string()),
             ));
             let failure = failure.expect("an unparseable link cannot pair");
             assert_eq!(failure.phase(), Phase::Validate);
@@ -1714,6 +1832,7 @@ mod tests {
             Some(observer.clone()),
             unreachable_relay_link(),
             Carrier::Relay,
+            ("word1".to_string(), "word2".to_string()),
         ));
 
         let failure = failure.expect("a non-empty profile fails closed");

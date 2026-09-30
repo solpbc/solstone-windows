@@ -163,21 +163,24 @@ fn windows_opener_attaches_complete_v3_header_set() {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("test key");
     let params = CertificateParams::new(vec!["observer.test".to_string()]).expect("test cert");
     let cert = params.self_signed(&key).expect("self-signed test cert");
-    let client = ObserverClient::new(Credential {
-        client_key_pem: key.serialize_pem(),
-        client_cert_pem: cert.pem(),
-        ca_chain_pem: vec![cert.pem()],
-        ca_fp_prefix: vec![0; 16],
-        instance_id: "test-instance".into(),
-        home_label: "Home".into(),
-        endpoints: vec![EndpointAddr {
-            host: "127.0.0.1".into(),
-            port: 1,
-        }],
-        relay_origin: None,
-        device_token: None,
-        device_token_expires_at: None,
-    })
+    let client = ObserverClient::new(
+        Credential {
+            client_key_pem: key.serialize_pem(),
+            client_cert_pem: cert.pem(),
+            ca_chain_pem: vec![cert.pem()],
+            ca_fp_prefix: vec![0; 16],
+            instance_id: "test-instance".into(),
+            home_label: "Home".into(),
+            endpoints: vec![EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: 1,
+            }],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        },
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
     .expect("observer client");
     let slot = ClientSlot::new(Arc::new(client));
 

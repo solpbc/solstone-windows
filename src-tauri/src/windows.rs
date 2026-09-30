@@ -77,47 +77,82 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Dispatch opening journal based on pairing phase.
+pub async fn dispatch_open_journal<FSettings, FBridge, FutSettings, FutBridge>(
+    phase: observer_model::PairingPhase,
+    on_settings: FSettings,
+    on_bridge: FBridge,
+) -> Result<(), OpenJournalError>
+where
+    FSettings: FnOnce() -> FutSettings,
+    FutSettings: std::future::Future<Output = Result<(), OpenJournalError>>,
+    FBridge: FnOnce() -> FutBridge,
+    FutBridge: std::future::Future<Output = Result<(), OpenJournalError>>,
+{
+    match observer_model::journal_open_choice(phase) {
+        observer_model::JournalOpenChoice::Settings => on_settings().await,
+        observer_model::JournalOpenChoice::Bridge => on_bridge().await,
+    }
+}
+
 /// Open (or focus) the paired journal window.
 pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError> {
     let state = app.state::<crate::app::AppState>();
-    let _open_guard = state.journal_open_lock.lock().await;
-
-    if let Some(window) = app.get_webview_window("journal") {
-        window.set_focus().ok();
-        tracing::info!(
-            target: "window",
-            label = "journal",
-            action = "focus_existing",
-            "window open"
-        );
-        return Ok(());
-    }
-
-    let access = state
-        .credential_access
+    let phase = state
+        .sync
         .lock()
-        .await
-        .clone()
-        .ok_or(OpenJournalError::Unpaired)?;
+        .map(|s| s.pairing.phase)
+        .unwrap_or(observer_model::PairingPhase::NotPaired);
 
-    let handle = match pl_transport_win::journal_bridge::start_with_facts(access).await {
-        Ok(handle) => handle,
-        Err(pl_transport_win::journal_bridge::BridgeStartError::NotReady) => {
-            return Err(OpenJournalError::Unpaired);
-        }
-        Err(
-            pl_transport_win::journal_bridge::BridgeStartError::Bind(_)
-            | pl_transport_win::journal_bridge::BridgeStartError::Client(_),
-        ) => {
-            tracing::warn!(
-                target: "window",
-                label = "journal",
-                outcome = "open_failed",
-                "window open"
-            );
-            return Err(OpenJournalError::OpenFailed);
-        }
-    };
+    dispatch_open_journal(
+        phase,
+        || async {
+            let _ = open_settings(app);
+            Ok(())
+        },
+        || async {
+            let _open_guard = state.journal_open_lock.lock().await;
+
+            if let Some(window) = app.get_webview_window("journal") {
+                window.set_focus().ok();
+                tracing::info!(
+                    target: "window",
+                    label = "journal",
+                    action = "focus_existing",
+                    "window open"
+                );
+                return Ok(());
+            }
+
+            let access = state
+                .credential_access
+                .lock()
+                .await
+                .clone()
+                .ok_or(OpenJournalError::Unpaired)?;
+
+            let handle = match pl_transport_win::journal_bridge::start_with_facts(access).await {
+                Ok(handle) => handle,
+                Err(pl_transport_win::journal_bridge::BridgeStartError::AwaitingConfirmation) => {
+                    let _ = open_settings(app);
+                    return Ok(());
+                }
+                Err(pl_transport_win::journal_bridge::BridgeStartError::NotReady) => {
+                    return Err(OpenJournalError::Unpaired);
+                }
+                Err(
+                    pl_transport_win::journal_bridge::BridgeStartError::Bind(_)
+                    | pl_transport_win::journal_bridge::BridgeStartError::Client(_),
+                ) => {
+                    tracing::warn!(
+                        target: "window",
+                        label = "journal",
+                        outcome = "open_failed",
+                        "window open"
+                    );
+                    return Err(OpenJournalError::OpenFailed);
+                }
+            };
 
     let url = handle.bootstrap_url();
     tracing::info!(

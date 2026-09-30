@@ -104,6 +104,7 @@ impl Drop for JournalBridgeHandle {
 
 #[derive(Debug)]
 pub enum BridgeStartError {
+    AwaitingConfirmation,
     NotReady,
     Client(TransportError),
     Bind(std::io::Error),
@@ -140,8 +141,11 @@ pub async fn start_observed_with_facts(
     access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
     let client_slot = access.client_slot();
-    let endpoint_hosts = client_slot
-        .load()
+    let client = client_slot.load();
+    if !client.gate_open() {
+        return Err(BridgeStartError::AwaitingConfirmation);
+    }
+    let endpoint_hosts = client
         .credential()
         .endpoints
         .iter()
@@ -230,6 +234,7 @@ struct BridgeLifecycle {
     post_connect_token: crate::PostConnectSessionToken,
     sync: Arc<Mutex<observer_model::SyncSnapshot>>,
     client_slot: ClientSlot,
+    confirmation: Arc<Mutex<String>>,
 }
 
 impl BridgeLifecycle {
@@ -243,6 +248,7 @@ impl BridgeLifecycle {
             post_connect_token: access.post_connect_token(),
             sync: access.sync(),
             client_slot: access.client_slot(),
+            confirmation: access.confirmation(),
         }
     }
 
@@ -250,14 +256,25 @@ impl BridgeLifecycle {
         if !self.active.load(Ordering::Acquire) {
             return;
         }
+        if status.terminal_reason.is_some() {
+            let client = self.client_slot.load();
+            let binding = client.journal_identity().client_cert_sha256;
+            let label = client.home_label().to_string();
+            let mark = crate::service::journal_mark(&client.credential().instance_id);
+            crate::service::publish_pairing(
+                &self.sync,
+                &self.confirmation,
+                crate::service::PairingWrite::Bound {
+                    binding,
+                    label,
+                    mark,
+                    kind: crate::service::BoundKind::Failed {
+                        detail: Some(crate::coordinator::PAIRING_REFUSED_DETAIL.to_string()),
+                    },
+                },
+            );
+        }
         if let Ok(mut snapshot) = self.sync.lock() {
-            if status.terminal_reason.is_some() {
-                // The journal refused this device, or refusals went on too long:
-                // the bridge has stopped dialing for this pairing.
-                snapshot.pairing.phase = observer_model::PairingPhase::Failed;
-                snapshot.pairing.detail =
-                    Some(crate::coordinator::PAIRING_REFUSED_DETAIL.to_string());
-            }
             let client = self.client_slot.load();
             crate::unknown_journals::publish_unknown_journals(
                 &mut snapshot,

@@ -242,17 +242,30 @@ pub enum StorageError {
     Crypto(String),
 }
 
+impl From<StorageError> for TransportError {
+    fn from(err: StorageError) -> Self {
+        match err {
+            StorageError::Transport(e) => e,
+            StorageError::WriteFailed(e) | StorageError::DurabilityUncertain(e) => {
+                TransportError::Io(e)
+            }
+            StorageError::Crypto(msg) => TransportError::Crypto(msg),
+            StorageError::CasMismatch => TransportError::Pairing("cas mismatch".to_string()),
+        }
+    }
+}
+
 static PAIRING_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(target_os = "linux")]
-fn sync_published_path(path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn sync_published_path(path: &Path) -> Result<(), std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::File::open(parent)?.sync_all()
 }
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn publish_staged_file(staged: &Path, destination: &Path) -> Result<(), StorageError> {
+pub(crate) fn publish_staged_file(staged: &Path, destination: &Path) -> Result<(), StorageError> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -286,12 +299,12 @@ fn publish_staged_file(staged: &Path, destination: &Path) -> Result<(), StorageE
 }
 
 #[cfg(not(windows))]
-fn publish_staged_file(staged: &Path, destination: &Path) -> Result<(), StorageError> {
+pub(crate) fn publish_staged_file(staged: &Path, destination: &Path) -> Result<(), StorageError> {
     std::fs::rename(staged, destination).map_err(StorageError::WriteFailed)
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn sync_published_path(_path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn sync_published_path(_path: &Path) -> Result<(), std::io::Error> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "durable publication sync is unsupported on this platform",

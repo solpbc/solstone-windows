@@ -374,10 +374,29 @@ pub enum PairingPhase {
     NotPaired,
     /// A pairing handshake is in progress.
     Pairing,
+    /// Handshake succeeded, awaiting owner confirmation of the journal mark.
+    AwaitingConfirmation,
     /// Paired with a credential: the observer can upload to the journal.
     Paired,
     /// The last pairing attempt failed; carries a detail in [`PairingState`].
     Failed,
+}
+
+pub const MARK_REJECTED_DETAIL: &str = "mark_rejected";
+pub const PAIRING_CANCELLED_DETAIL: &str = "pairing_cancelled";
+
+/// How `--open-journal` / tray Open Journal should route based on honest pairing phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalOpenChoice {
+    Settings,
+    Bridge,
+}
+
+pub fn journal_open_choice(phase: PairingPhase) -> JournalOpenChoice {
+    match phase {
+        PairingPhase::AwaitingConfirmation => JournalOpenChoice::Settings,
+        _ => JournalOpenChoice::Bridge,
+    }
 }
 
 /// Render-readiness of one of our webview views. `Rendered` is *earned*: only our
@@ -442,13 +461,16 @@ pub struct PairingState {
     pub phase: PairingPhase,
     /// The paired journal's human label, when known.
     pub journal_label: Option<String>,
-    /// A failure detail when `phase` is `Failed`.
+    /// A failure detail when `phase` is `Failed` or `NotPaired`.
     pub detail: Option<String>,
     /// The paired journal's own visual mark, earned at pairing success and on
     /// every reconnect — the same primitive the unknown-journal comparison
     /// uses for "your journal". `None` until computed, like `journal_label`.
     #[serde(default)]
     pub mark: Option<MarkRenderSpec>,
+    /// Digest identifying the bound credential for confirmation matching.
+    #[serde(default)]
+    pub binding: String,
 }
 
 /// The honest upload/sync state surfaced in the health dump. Counts are earned
@@ -1417,5 +1439,20 @@ mod tests {
         cleared.sync.unknown_journals.clear();
         assert!(should_emit(&with_sighting, &cleared));
         assert_eq!(cleared.sync.pairing, base.sync.pairing);
+    }
+
+    #[test]
+    fn mark_confirmation_should_emit_triggers_on_awaiting_transition() {
+        let base = base_dump();
+        let mut awaiting = base.clone();
+        awaiting.sync.pairing.phase = PairingPhase::AwaitingConfirmation;
+        awaiting.sync.pairing.binding = "0123456789abcdef".into();
+        assert!(should_emit(&base, &awaiting));
+
+        let mut paired = awaiting.clone();
+        paired.sync.pairing.phase = PairingPhase::Paired;
+        assert!(should_emit(&awaiting, &paired));
+
+        assert!(!should_emit(&awaiting, &awaiting));
     }
 }
