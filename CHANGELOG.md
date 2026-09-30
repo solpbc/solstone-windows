@@ -6,6 +6,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.14] - 2026-09-30
+
+### Changed
+
+- segments from this PC now reach your journal with this PC's time zone attached.
+
 ## [2.0.13] - 2026-09-28
 
 ### Fixed
