@@ -127,7 +127,7 @@ type UcalGetTimeZoneIdForWindowsId = unsafe extern "system" fn(
 fn iana_id_for_windows_zone(name: &[u16]) -> Option<String> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{FreeLibrary, HANDLE};
-    use windows::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
+    use windows::Win32::System::LibraryLoader::{LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
 
     if name.is_empty() {
         return None;
