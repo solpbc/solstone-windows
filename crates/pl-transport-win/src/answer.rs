@@ -134,6 +134,7 @@ pub fn write_answer(path: &Path, state: &AnswerState) -> Result<(), StorageError
 /// - If `pairing.json` is present and readable: writes `confirmed` = that PEM digest, `rejected` = empty.
 /// - If `pairing.json` is absent: writes both empty.
 /// - If `pairing.json` is unreadable: writes nothing.
+///
 /// If `pairing-answer.json` is already present: writes nothing.
 pub fn settle_grandfather(
     state_path: &Path,
@@ -244,10 +245,8 @@ pub async fn settle_rejected_on_launch(
                 // Delete pairing.json and pairing.json.tmp
                 let tmp = state_path.with_extension("json.tmp");
                 let mut delete_ok = true;
-                if state_path.exists() {
-                    if std::fs::remove_file(state_path).is_err() {
-                        delete_ok = false;
-                    }
+                if state_path.exists() && std::fs::remove_file(state_path).is_err() {
+                    delete_ok = false;
                 }
                 if tmp.exists() {
                     let _ = std::fs::remove_file(&tmp);

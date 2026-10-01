@@ -114,10 +114,8 @@ pub async fn answer(
             // 5. Delete state_path and state_path.with_extension("json.tmp")
             let tmp = cfg.state_path.with_extension("json.tmp");
             let mut primary_deleted = true;
-            if cfg.state_path.exists() {
-                if std::fs::remove_file(&cfg.state_path).is_err() {
-                    primary_deleted = false;
-                }
+            if cfg.state_path.exists() && std::fs::remove_file(&cfg.state_path).is_err() {
+                primary_deleted = false;
             }
             if tmp.exists() {
                 let _ = std::fs::remove_file(&tmp);

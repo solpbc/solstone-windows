@@ -608,6 +608,7 @@ impl ObserverClient {
         self.gate.load(Ordering::Acquire)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         credential: Credential,
         state_path: Arc<std::sync::Mutex<Option<PathBuf>>>,

@@ -59,6 +59,8 @@ pub enum BoundKind {
     Failed { detail: Option<String> },
 }
 
+// The mark spec is large. This value is moved once into publish_pairing and is not stored.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum PairingWrite {
     BeginCeremony,
