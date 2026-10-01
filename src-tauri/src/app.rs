@@ -347,9 +347,12 @@ pub fn run(
                     } else {
                         true
                     };
-                    app.handle()
-                        .exit(control_client_exit_code(acknowledged));
-                    return Ok(());
+                    // The pinned Wry runtime turns RequestExit(code) into
+                    // ControlFlow::Exit, losing a nonzero acknowledgement
+                    // result. This instance owns no engine or capture tasks:
+                    // clean up Tauri before returning the exact client result.
+                    app.handle().cleanup_before_exit();
+                    std::process::exit(control_client_exit_code(acknowledged));
                 }
                 platform_win::InstanceLock::Acquired => {
                     tracing::info!(
