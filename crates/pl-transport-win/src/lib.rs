@@ -41,15 +41,18 @@ pub mod session;
 pub mod slot;
 pub mod unknown_journals;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "transport-tests"))]
+pub mod test_completion;
+
+#[cfg(all(test, feature = "transport-tests"))]
 #[allow(dead_code)]
 #[path = "test_compat/connection.rs"]
 mod connection;
-#[cfg(test)]
+#[cfg(all(test, feature = "transport-tests"))]
 #[allow(dead_code)]
 #[path = "test_compat/journal_bridge_carrier.rs"]
 mod journal_bridge_carrier;
-#[cfg(test)]
+#[cfg(all(test, feature = "transport-tests"))]
 #[allow(dead_code)]
 #[path = "test_compat/relay.rs"]
 mod relay;
@@ -57,7 +60,7 @@ mod relay;
 #[allow(dead_code)]
 #[path = "test_compat/relay_http.rs"]
 mod relay_http;
-#[cfg(test)]
+#[cfg(all(test, feature = "transport-tests"))]
 #[allow(dead_code)]
 #[path = "test_compat/spki_pin.rs"]
 mod spki_pin;

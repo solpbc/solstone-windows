@@ -694,6 +694,7 @@ mod tests {
         assert_eq!(s.pairing.detail.as_deref(), Some("pair_link"));
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn service_pair_unreachable_journal_publishes_failed_phase_with_error_code() {
         let dir =

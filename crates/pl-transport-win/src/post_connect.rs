@@ -156,6 +156,8 @@ pub struct PostConnectController {
     deadline: Duration,
     state: Mutex<PostConnectState>,
     pass_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    #[cfg(any(test, feature = "transport-tests"))]
+    last_attempt: tokio::sync::watch::Sender<Option<crate::test_completion::Attempt>>,
 }
 
 impl PostConnectController {
@@ -177,6 +179,8 @@ impl PostConnectController {
             deadline: DEFAULT_POST_CONNECT_DEADLINE,
             state: Mutex::new(PostConnectState::default()),
             pass_tasks: Mutex::new(Vec::new()),
+            #[cfg(any(test, feature = "transport-tests"))]
+            last_attempt: tokio::sync::watch::channel(None).0,
         }
     }
 
@@ -443,24 +447,55 @@ impl PostConnectController {
         }
     }
 
+    /// Retained processing receipt for the most recently started test pass.
+    /// Capture after triggering; the ticket stays bound to that exact epoch.
+    #[cfg(any(test, feature = "transport-tests"))]
+    pub fn capture_attempt(&self) -> Option<crate::test_completion::Attempt> {
+        self.last_attempt.borrow().clone()
+    }
+
+    /// Wait for the first test pass without relying on task scheduling or a request poll.
+    #[cfg(any(test, feature = "transport-tests"))]
+    pub async fn await_started_attempt(&self) -> crate::test_completion::Attempt {
+        let mut receiver = self.last_attempt.subscribe();
+        loop {
+            if let Some(attempt) = receiver.borrow_and_update().clone() {
+                return attempt;
+            }
+            receiver
+                .changed()
+                .await
+                .expect("controller owns the attempt channel");
+        }
+    }
+
     fn start_pass(self: &Arc<Self>, start: PassStart) {
+        #[cfg(any(test, feature = "transport-tests"))]
+        let (metadata_completion, access_completion) = {
+            let (attempt, metadata, access) = crate::test_completion::Attempt::new(start.token);
+            self.last_attempt.send_replace(Some(attempt));
+            (metadata, access)
+        };
         let metadata = self.clone();
         let metadata_token = start.token;
         let metadata_journal_version_token = start.journal_version_token;
         let h1 = tokio::spawn(async move {
             let deadline = metadata.deadline;
-            if tokio::time::timeout(
+            let result = tokio::time::timeout(
                 deadline,
                 metadata.execute_metadata_job(metadata_token, metadata_journal_version_token),
             )
-            .await
-            .is_err()
-            {
+            .await;
+            if result.is_err() {
                 tracing::warn!(target: "sync", "post-connect metadata job timed out after {:?}", deadline);
             }
+            #[cfg(any(test, feature = "transport-tests"))]
+            let outcome = completion_outcome(&result, metadata.attempt_is_current(metadata_token));
             if let Some(next) = metadata.finish_pass_lane(metadata_token, true) {
                 metadata.start_pass(next);
             }
+            #[cfg(any(test, feature = "transport-tests"))]
+            metadata_completion.finish(outcome);
         });
 
         let access = self.clone();
@@ -468,19 +503,27 @@ impl PostConnectController {
         let h2 = tokio::spawn(async move {
             let deadline = access.deadline;
             let job = async {
-                if let Some((validated, cas)) = access.fetch_access_outcome(&start.paired_id).await
-                {
-                    access
-                        .apply_relay_access_outcome(validated, &access_token, cas)
-                        .await;
+                match access.fetch_access_outcome(&start.paired_id).await {
+                    Ok(Some((validated, cas))) => {
+                        access
+                            .apply_relay_access_outcome(validated, &access_token, cas)
+                            .await
+                    }
+                    Ok(None) => true,
+                    Err(()) => false,
                 }
             };
-            if tokio::time::timeout(deadline, job).await.is_err() {
+            let result = tokio::time::timeout(deadline, job).await;
+            if result.is_err() {
                 tracing::warn!(target: "sync", "post-connect relay access job timed out");
             }
+            #[cfg(any(test, feature = "transport-tests"))]
+            let outcome = completion_outcome(&result, access.attempt_is_current(access_token));
             if let Some(next) = access.finish_pass_lane(access_token, false) {
                 access.start_pass(next);
             }
+            #[cfg(any(test, feature = "transport-tests"))]
+            access_completion.finish(outcome);
         });
 
         if let Ok(mut tasks) = self.pass_tasks.lock() {
@@ -626,13 +669,13 @@ impl PostConnectController {
         &self,
         token: (u64, u64, u64),
         journal_version_token: Option<(u64, u64, u64)>,
-    ) {
+    ) -> bool {
         let client = self.client_slot.load();
         let get_resp = match client.get_clients_self().await {
             Ok(resp) => resp,
             Err(_) => {
                 tracing::debug!(target: "sync", reason = "transport", "metadata GET failed");
-                return;
+                return false;
             }
         };
 
@@ -641,35 +684,35 @@ impl PostConnectController {
             self.fallback_journal_version(&client, token, journal_version_token)
                 .await;
             tracing::debug!(target: "sync", "metadata GET returned 404 (old home); skipping PUT");
-            return;
+            return true;
         }
 
         if get_resp.status != 200 {
             tracing::warn!(target: "sync", status = get_resp.status, "metadata GET non-success");
-            return;
+            return true;
         }
 
         let parsed: MetadataGetResponse = match serde_json::from_slice(&get_resp.body) {
             Ok(p) => p,
             Err(_) => {
                 tracing::warn!(target: "sync", reason = "invalid_response", "metadata GET rejected");
-                return;
+                return true;
             }
         };
 
         if parsed.protocol_version != 1 {
             tracing::warn!(target: "sync", ver = parsed.protocol_version, "unsupported metadata protocol version");
-            return;
+            return true;
         }
 
         if !self.attempt_is_current(token) {
-            return;
+            return true;
         }
         self.publish_journal_metadata(&parsed, token, journal_version_token)
             .await;
 
         if !self.attempt_is_current(token) {
-            return;
+            return true;
         }
 
         let current = sanitize_facts(&(self.facts_fn)());
@@ -679,13 +722,13 @@ impl PostConnectController {
             if self.attempt_is_current(token) {
                 self.state.lock().unwrap().last_published_metadata = Some(current.clone());
             }
-            return;
+            return true;
         }
 
         // Generation fence before PUT side-effect
         if !self.attempt_is_current(token) {
             tracing::debug!(target: "sync", "metadata PUT skipped due to stale session token");
-            return;
+            return true;
         }
 
         // Send PUT
@@ -695,14 +738,14 @@ impl PostConnectController {
             reported: &current,
         }) {
             Ok(b) => b,
-            Err(_) => return,
+            Err(_) => return true,
         };
 
         let put_resp = match client.put_clients_self(&put_body).await {
             Ok(r) => r,
             Err(_) => {
                 tracing::warn!(target: "sync", reason = "transport", "metadata PUT failed");
-                return;
+                return false;
             }
         };
 
@@ -711,17 +754,17 @@ impl PostConnectController {
                 Ok(response) => response,
                 Err(_) => {
                     tracing::warn!(target: "sync", reason = "invalid_response", "metadata PUT rejected");
-                    return;
+                    return true;
                 }
             };
             if !self.attempt_is_current(token) {
-                return;
+                return true;
             }
             self.publish_journal_metadata(parsed_put.resource(), token, journal_version_token)
                 .await;
             let mut state = self.state.lock().unwrap();
             state.last_published_metadata = Some(current.clone());
-            return;
+            return true;
         }
 
         // HTTP 409 Conflict handling: re-read GET and retry at most once with newest pending snapshot
@@ -729,25 +772,26 @@ impl PostConnectController {
             tracing::debug!(target: "sync", "metadata PUT 409 conflict, retrying with newest snapshot");
             let retry_get = match client.get_clients_self().await {
                 Ok(r) if r.status == 200 => r,
-                _ => return,
+                Ok(_) => return true,
+                Err(_) => return false,
             };
             let retry_parsed: MetadataGetResponse = match serde_json::from_slice(&retry_get.body) {
                 Ok(p) => p,
-                Err(_) => return,
+                Err(_) => return true,
             };
 
             if retry_parsed.protocol_version != 1 {
-                return;
+                return true;
             }
             if !self.attempt_is_current(token) {
-                return;
+                return true;
             }
             self.publish_journal_metadata(&retry_parsed, token, journal_version_token)
                 .await;
 
             let newest_snapshot = {
                 if !self.attempt_is_current(token) {
-                    return;
+                    return true;
                 }
                 sanitize_facts(&(self.facts_fn)())
             };
@@ -755,7 +799,7 @@ impl PostConnectController {
             if retry_parsed.reported.as_ref() == Some(&newest_snapshot) {
                 let mut state = self.state.lock().unwrap();
                 state.last_published_metadata = Some(newest_snapshot);
-                return;
+                return true;
             }
 
             let retry_put_body = match serde_json::to_vec(&MetadataPutRequest {
@@ -764,10 +808,14 @@ impl PostConnectController {
                 reported: &newest_snapshot,
             }) {
                 Ok(b) => b,
-                Err(_) => return,
+                Err(_) => return true,
             };
 
-            if let Ok(retry_put_resp) = client.put_clients_self(&retry_put_body).await {
+            let retry_put_resp = match client.put_clients_self(&retry_put_body).await {
+                Ok(response) => response,
+                Err(_) => return false,
+            };
+            {
                 if retry_put_resp.status == 200 {
                     let parsed_put: MetadataPutResponse = match serde_json::from_slice(
                         &retry_put_resp.body,
@@ -775,11 +823,11 @@ impl PostConnectController {
                         Ok(response) => response,
                         Err(_) => {
                             tracing::warn!(target: "sync", reason = "invalid_response", "metadata retry PUT rejected");
-                            return;
+                            return true;
                         }
                     };
                     if !self.attempt_is_current(token) {
-                        return;
+                        return true;
                     }
                     self.publish_journal_metadata(
                         parsed_put.resource(),
@@ -792,26 +840,27 @@ impl PostConnectController {
                 }
             }
         }
+        true
     }
 
     async fn fetch_access_outcome(
         &self,
         paired_instance_id: &str,
-    ) -> Option<(Option<ValidatedReadyAccess>, CasKey)> {
+    ) -> Result<Option<(Option<ValidatedReadyAccess>, CasKey)>, ()> {
         let client = self.client_slot.load();
-        let captured_cas = client.current_cas_key()?;
+        let captured_cas = client.current_cas_key().ok_or(())?;
         let resp = match client.get_relay_access().await {
             Ok(r) => r,
             Err(_) => {
                 tracing::debug!(target: "sync", reason = "transport", "relay access GET failed");
-                return None;
+                return Err(());
             }
         };
 
         // 404, 503, or other non-success -> preserve existing cache and LAN
         if resp.status != 200 {
             tracing::debug!(target: "sync", status = resp.status, "relay access GET returned non-success");
-            return None;
+            return Ok(None);
         }
 
         let now_secs = SystemTime::now()
@@ -824,10 +873,10 @@ impl PostConnectController {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(target: "sync", reason = ?e, "relay access validation failed");
-                    return None;
+                    return Ok(None);
                 }
             };
-        Some((validated, captured_cas))
+        Ok(Some((validated, captured_cas)))
     }
 
     pub(crate) async fn apply_relay_access_outcome(
@@ -835,12 +884,12 @@ impl PostConnectController {
         validated: Option<ValidatedReadyAccess>,
         token: &(u64, u64, u64),
         captured_cas: CasKey,
-    ) {
+    ) -> bool {
         let this = self.clone();
         let token = *token;
         #[cfg(test)]
         let failpoint = FS_FAIL_POINT.with(|f| f.get());
-        let _ = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             FS_FAIL_POINT.with(|f| f.set(failpoint));
             let owner = this.client_slot.publication_owner();
@@ -849,7 +898,8 @@ impl PostConnectController {
             #[cfg(test)]
             FS_FAIL_POINT.with(|f| f.set(0));
         })
-        .await;
+        .await
+        .is_ok()
     }
 
     fn apply_relay_access_outcome_owned(
@@ -1048,6 +1098,22 @@ impl PostConnectController {
     }
 }
 
+#[cfg(any(test, feature = "transport-tests"))]
+fn completion_outcome(
+    result: &Result<bool, tokio::time::error::Elapsed>,
+    current: bool,
+) -> crate::test_completion::Outcome {
+    use crate::test_completion::Outcome;
+    if !current {
+        return Outcome::Cancelled;
+    }
+    match result {
+        Ok(true) => Outcome::Processed,
+        Ok(false) => Outcome::Failed,
+        Err(_) => Outcome::TimedOut,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1142,6 +1208,17 @@ mod tests {
         let disconnect_called = Arc::new(AtomicBool::new(false));
 
         (Arc::new(controller), slot, path, disconnect_called)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completion_reports_deadline_and_stale_epoch_without_a_socket() {
+        use crate::test_completion::Outcome;
+        let result =
+            tokio::time::timeout(Duration::from_secs(15), std::future::pending::<bool>()).await;
+        assert_eq!(completion_outcome(&result, true), Outcome::TimedOut);
+        assert_eq!(completion_outcome(&Ok(true), false), Outcome::Cancelled);
+        assert_eq!(completion_outcome(&Ok(false), true), Outcome::Failed);
+        assert_eq!(completion_outcome(&Ok(true), true), Outcome::Processed);
     }
 
     #[test]
@@ -1719,6 +1796,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn test_shared_burst_allows_one_follow_up_then_requires_external_trigger() {
         let (controller, slot, path, _) = test_setup(false);
@@ -1790,7 +1868,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn quiesce_aborts_active_pass_tasks_and_returns_promptly() {
         let (controller, _slot, path, _called) = test_setup(false);
         let forever_task = tokio::spawn(async {

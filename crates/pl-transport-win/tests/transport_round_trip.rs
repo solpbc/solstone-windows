@@ -2554,29 +2554,23 @@ impl ScriptedJournalServer {
     }
 }
 
-async fn wait_for_journal_requests(
+fn assert_journal_requests(
     server: &ScriptedJournalServer,
     method: &str,
     path: &str,
-    count: usize,
+    minimum: usize,
 ) {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let seen = server
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|request| request.method == method && request.path == path)
-                .count();
-            if seen >= count {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("expected scripted journal request");
+    let observed = server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request.method == method && request.path == path)
+        .count();
+    assert!(
+        observed >= minimum,
+        "expected {minimum} completed {method} {path} requests, observed {observed}"
+    );
 }
 
 fn parse_raw_http_request(bytes: &[u8]) -> (String, String, HashMap<String, String>, Vec<u8>) {
@@ -2806,6 +2800,34 @@ fn mint_test_jwt_v2(instance_id: &str, exp: i64) -> String {
     format!("{header}.{payload}.testsig")
 }
 
+// The outer bound protects this full execution. Expiry is inconclusive, never
+// transport success; the controller retains its unchanged production deadline.
+async fn wait_for_post_connect(controller: &pl_transport_win::PostConnectController) {
+    use pl_transport_win::test_completion::Outcome;
+    tokio::time::timeout(
+        pl_transport_win::post_connect::DEFAULT_POST_CONNECT_DEADLINE + Duration::from_secs(5),
+        async {
+            let mut attempt = controller.await_started_attempt().await;
+            // The production controller admits one common follow-up, never a third pass.
+            for _ in 0..2 {
+                let token = attempt.token;
+                assert_eq!(
+                    attempt.wait().await,
+                    (Outcome::Processed, Outcome::Processed),
+                    "post-connect processing failed or was cancelled for {token:?}"
+                );
+                attempt = controller.capture_attempt().expect("retained pass receipt");
+                if attempt.token == token {
+                    return;
+                }
+            }
+            panic!("post-connect burst did not quiesce after its admitted follow-up");
+        },
+    )
+    .await
+    .expect("inconclusive full execution: post-connect completion not received");
+}
+
 #[tokio::test]
 async fn test_adapter_metadata_get_put_on_first_send() {
     let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
@@ -2871,16 +2893,8 @@ async fn test_adapter_metadata_get_put_on_first_send() {
     controller.begin_session(&cred);
     controller.trigger();
 
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if controller.last_published_metadata().is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("metadata publication did not complete in time");
+    wait_for_post_connect(&controller).await;
+    assert!(controller.last_published_metadata().is_some());
 
     let requests = server.requests.lock().unwrap().clone();
     let get_req = requests
@@ -2980,13 +2994,8 @@ async fn test_adapter_metadata_keeps_prior_publication_when_relay_is_retired() {
     ));
     let session = controller.begin_session(&credential);
     controller.trigger();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while controller.last_published_metadata().is_none() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("initial metadata publication did not complete");
+    wait_for_post_connect(&controller).await;
+    assert!(controller.last_published_metadata().is_some());
     let published = controller.last_published_metadata();
 
     // The follow-up uses the same production controller, but its direct peer is
@@ -3000,7 +3009,20 @@ async fn test_adapter_metadata_keeps_prior_publication_when_relay_is_retired() {
         matches!(error, TransportError::RelayRetired),
         "retired fence yielded {error:?}"
     );
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let attempt = controller
+        .capture_attempt()
+        .expect("retired follow-up pass");
+    let (metadata, access) = tokio::time::timeout(Duration::from_secs(20), attempt.wait())
+        .await
+        .expect("inconclusive retired-pass execution");
+    assert_ne!(
+        metadata,
+        pl_transport_win::test_completion::Outcome::Processed
+    );
+    assert_ne!(
+        access,
+        pl_transport_win::test_completion::Outcome::Processed
+    );
     assert_eq!(controller.last_published_metadata(), published);
 
     let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
@@ -3051,20 +3073,13 @@ async fn test_adapter_metadata_version_fallback_preserves_journal_name() {
     let controller = access.post_connect();
     controller.trigger();
 
-    wait_for_journal_requests(&server, "GET", "/api/system/status", 1).await;
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let persisted = std::fs::read_to_string(&jv_path).unwrap_or_default();
-            if persisted.contains("\"version\": \"9.9.9\"")
-                && persisted.contains("\"journal_name\": \"Home Journal\"")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("version fallback did not persist the journal name and version");
+    wait_for_post_connect(&controller).await;
+    assert_journal_requests(&server, "GET", "/api/system/status", 1);
+    let persisted = std::fs::read_to_string(&jv_path).unwrap_or_default();
+    assert!(
+        persisted.contains("\"version\": \"9.9.9\"")
+            && persisted.contains("\"journal_name\": \"Home Journal\"")
+    );
 
     server.abort();
     let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
@@ -3109,20 +3124,13 @@ async fn test_adapter_malformed_put_keeps_validated_get_journal_cache() {
     let controller = access.post_connect();
     controller.trigger();
 
-    wait_for_journal_requests(&server, "PUT", "/app/network/api/clients/self", 1).await;
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let persisted = std::fs::read_to_string(&jv_path).unwrap_or_default();
-            if persisted.contains("\"version\": \"1.0.0\"")
-                && persisted.contains("\"journal_name\": \"Home Journal\"")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("validated GET journal metadata was not retained");
+    wait_for_post_connect(&controller).await;
+    assert_journal_requests(&server, "PUT", "/app/network/api/clients/self", 1);
+    let persisted = std::fs::read_to_string(&jv_path).unwrap_or_default();
+    assert!(
+        persisted.contains("\"version\": \"1.0.0\"")
+            && persisted.contains("\"journal_name\": \"Home Journal\"")
+    );
     assert!(controller.last_published_metadata().is_none());
 
     server.abort();
@@ -3175,7 +3183,8 @@ async fn test_adapter_clients_self_404_no_put() {
     controller.begin_session(&cred);
     controller.trigger();
 
-    wait_for_journal_requests(&server, "GET", "/app/network/api/clients/self", 1).await;
+    wait_for_post_connect(&controller).await;
+    assert_journal_requests(&server, "GET", "/app/network/api/clients/self", 1);
 
     let requests = server.requests.lock().unwrap().clone();
     let gets = requests
@@ -3314,16 +3323,8 @@ async fn test_adapter_metadata_409_conflict_retry() {
     controller.begin_session(&cred);
     controller.trigger();
 
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if controller.last_published_metadata().is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("409 retry did not succeed in time");
+    wait_for_post_connect(&controller).await;
+    assert!(controller.last_published_metadata().is_some());
 
     let requests = server.requests.lock().unwrap().clone();
     let puts: Vec<_> = requests
@@ -3392,7 +3393,8 @@ async fn test_adapter_corrupt_json_get_no_put() {
     controller.begin_session(&cred);
     controller.trigger();
 
-    wait_for_journal_requests(&server, "GET", "/app/network/api/clients/self", 1).await;
+    wait_for_post_connect(&controller).await;
+    assert_journal_requests(&server, "GET", "/app/network/api/clients/self", 1);
 
     let requests = server.requests.lock().unwrap().clone();
     let gets = requests
@@ -3495,16 +3497,8 @@ async fn test_adapter_relay_access_ready() {
     controller.begin_session(&cred);
     controller.trigger();
 
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if slot.load().credential().relay_origin.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("relay access ready did not apply in time");
+    wait_for_post_connect(&controller).await;
+    assert!(slot.load().credential().relay_origin.is_some());
 
     let loaded = PairedState::load(&state_path).unwrap();
     assert_eq!(loaded.access_mutation_generation, 1);
@@ -3583,7 +3577,8 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
     // 1. 404 response preserves cached credentials
     mode.store(0, Ordering::SeqCst);
     controller.trigger();
-    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 1).await;
+    wait_for_post_connect(&controller).await;
+    assert_journal_requests(&server, "GET", "/app/network/api/relay/access", 1);
     assert_eq!(
         slot.load().credential().relay_origin.as_deref(),
         Some("https://relay.cached.app")
@@ -3603,7 +3598,8 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
     mode.store(1, Ordering::SeqCst);
     controller.mark_session_disconnected(session);
     controller.note_connected(session);
-    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 2).await;
+    wait_for_post_connect(&controller).await;
+    assert_journal_requests(&server, "GET", "/app/network/api/relay/access", 2);
     assert_eq!(
         slot.load().credential().relay_origin.as_deref(),
         Some("https://relay.cached.app")
@@ -3623,22 +3619,14 @@ async fn test_adapter_relay_access_404_503_and_not_configured() {
     mode.store(2, Ordering::SeqCst);
     controller.mark_session_disconnected(session);
     controller.note_connected(session);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let disk_cleared = PairedState::load(&state_path)
-                .ok()
-                .and_then(|state| state.credential)
-                .is_some_and(|credential| {
-                    credential.relay_origin.is_none() && credential.device_token.is_none()
-                });
-            if slot.load().credential().relay_origin.is_none() && disk_cleared {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("not_configured did not clear credentials in time");
+    wait_for_post_connect(&controller).await;
+    let disk_cleared = PairedState::load(&state_path)
+        .ok()
+        .and_then(|state| state.credential)
+        .is_some_and(|credential| {
+            credential.relay_origin.is_none() && credential.device_token.is_none()
+        });
+    assert!(slot.load().credential().relay_origin.is_none() && disk_cleared);
 
     assert!(slot.load().credential().relay_origin.is_none());
     assert!(slot.load().credential().device_token.is_none());
@@ -3738,22 +3726,15 @@ async fn test_adapter_unchanged_snapshot_no_second_put() {
 
     // 1st trigger sends PUT
     controller.trigger();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if controller.last_published_metadata().is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_post_connect(&controller).await;
+    assert!(controller.last_published_metadata().is_some());
 
     assert_eq!(put_count.load(Ordering::SeqCst), 1);
 
     // 2nd trigger with unchanged facts issues GET, sees match, does NOT send 2nd PUT
     controller.trigger();
-    wait_for_journal_requests(&server, "GET", "/app/network/api/clients/self", 2).await;
+    wait_for_post_connect(&controller).await;
+    assert_journal_requests(&server, "GET", "/app/network/api/clients/self", 2);
 
     assert_eq!(
         put_count.load(Ordering::SeqCst),
@@ -3833,18 +3814,10 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
         .await
         .unwrap();
 
-    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 1).await;
+    wait_for_post_connect(&access.post_connect()).await;
+    assert_journal_requests(&server, "GET", "/app/network/api/relay/access", 1);
     let slot = access.client_slot();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if slot.load().credential().device_token.as_deref() == Some(token.as_str()) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("ready access did not replace the shared slot");
+    assert!(slot.load().credential().device_token.as_deref() == Some(token.as_str()));
     assert_eq!(
         PairedState::load(&state_path)
             .unwrap()
@@ -3868,7 +3841,8 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
     )
     .await;
 
-    wait_for_journal_requests(&server, "GET", "/app/status", 1).await;
+    wait_for_post_connect(&access.post_connect()).await;
+    assert_journal_requests(&server, "GET", "/app/status", 1);
     assert!(
         observer.snapshot().direct_successes > counts_before_bridge.direct_successes,
         "the bridge must use the observer retained across the ready replacement"
@@ -3876,17 +3850,9 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
 
     mode.store(1, Ordering::SeqCst);
     access.post_connect().trigger();
-    wait_for_journal_requests(&server, "GET", "/app/network/api/relay/access", 2).await;
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if slot.load().credential().relay_origin.is_none() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("not_configured did not disable the shared relay slot");
+    wait_for_post_connect(&access.post_connect()).await;
+    assert_journal_requests(&server, "GET", "/app/network/api/relay/access", 2);
+    assert!(slot.load().credential().relay_origin.is_none());
 
     // The same replacement authority now refuses relay credentials while its
     // LAN adapter continues serving requests with the attached observer.

@@ -71,7 +71,7 @@ call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul || ( echo ERROR: vc
 echo === cargo build --locked (workspace, minus app) ===
 cargo build --locked --workspace --exclude solstone-windows-app || exit /b 1
 echo === cargo test --locked (workspace, minus app) ===
-cargo test --locked --workspace --exclude solstone-windows-app --features pl-transport-win/awaiting-hold -- --skip transparency || exit /b 1
+cargo test --locked --workspace --exclude solstone-windows-app --features pl-transport-win/awaiting-hold,pl-transport-win/transport-tests -- --skip transparency || exit /b 1
 
 :: The Tauri app crate embeds ui/dist at compile time, so the webview bundle is
 :: built first. --features custom-protocol makes the binary serve that embedded

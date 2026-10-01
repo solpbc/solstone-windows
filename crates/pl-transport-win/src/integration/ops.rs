@@ -1197,13 +1197,19 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[cfg(feature = "transport-tests")]
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    #[cfg(feature = "transport-tests")]
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    #[cfg(feature = "transport-tests")]
     use spl_core::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
+    #[cfg(feature = "transport-tests")]
     use tokio::net::TcpListener;
+    #[cfg(feature = "transport-tests")]
     use tokio_rustls::TlsAcceptor;
 
     // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
+    #[cfg(feature = "transport-tests")]
     #[test]
     fn upload_without_a_custody_witness_has_no_pass_shaped_terminal_outcome() {
         let root = temp_root("upload-unconfirmed");
@@ -1322,6 +1328,7 @@ mod tests {
     // Deliberate build-unit-local overlap with tests/support/journal_fake.rs:
     // in-crate tests cannot import an integration-test module, and this fixture
     // needs only two requests decoded through FLAG_CLOSE.
+    #[cfg(feature = "transport-tests")]
     fn roundtrip_server_config() -> (rustls::ServerConfig, Vec<u8>) {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
@@ -1340,6 +1347,7 @@ mod tests {
         (config, pin)
     }
 
+    #[cfg(feature = "transport-tests")]
     fn roundtrip_credential(pin: Vec<u8>, port: u16) -> crate::credential::Credential {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let params = CertificateParams::new(vec!["observer.test".to_string()]).unwrap();
@@ -1361,6 +1369,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "transport-tests")]
     async fn read_closed_stream_id(
         tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
     ) -> Option<u32> {
@@ -1380,16 +1389,19 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "transport-tests")]
     async fn advance_past_roundtrip_budget() {
         tokio::time::advance(Duration::from_secs(8)).await;
         tokio::task::yield_now().await;
     }
 
+    #[cfg(feature = "transport-tests")]
     async fn fault_past_roundtrip_budget(faulted: &AtomicBool) {
         faulted.store(true, Ordering::SeqCst);
         advance_past_roundtrip_budget().await;
     }
 
+    #[cfg(feature = "transport-tests")]
     async fn serve_delayed_roundtrip(
         listener: TcpListener,
         acceptor: TlsAcceptor,
@@ -1428,6 +1440,7 @@ mod tests {
         let _ = tls.shutdown().await;
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test(start_paused = true)]
     async fn roundtrip_budget_bounds_the_segment_list_request() {
         let root = temp_root("roundtrip-budget");

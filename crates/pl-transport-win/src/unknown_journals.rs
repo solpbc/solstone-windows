@@ -181,6 +181,7 @@ mod tests {
         assert_eq!(snapshot.pairing.phase, PairingPhase::Paired);
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn unknown_journal_sighting_populates_snapshot_marks_without_mutating_pairing_phase() {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};

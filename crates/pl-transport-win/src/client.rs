@@ -174,6 +174,7 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    #[cfg(feature = "transport-tests")]
     #[test]
     fn retired_refresh_waiting_for_publication_cannot_change_disk() {
         let credential = relay_credential();
@@ -218,6 +219,7 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test(flavor = "current_thread")]
     async fn cancelled_refresh_waiter_keeps_disk_token_and_live_cas_publication_owned() {
         let credential = relay_credential();
@@ -347,6 +349,7 @@ mod tests {
         assert_eq!(SharedRelayFence::permit(&stale, 2), RelayPermit::Retired);
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn rejected_transaction_stops_relay_only_requests_before_any_relay_dial() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

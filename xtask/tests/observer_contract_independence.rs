@@ -179,54 +179,77 @@ fn scan_for_contract_reference(path: &Path, logical_path: &Path) {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn observer_contract_make_target_is_locked_offline_and_ordered() {
-    let makefile = fs::read_to_string(repo_root().join("Makefile")).expect("read Makefile");
-    let start = makefile
-        .find("check-observer-contract: preflight-toolchain")
-        .expect("observer contract target");
-    let tail = &makefile[start..];
-    let end = tail[1..]
-        .find("\n\n")
-        .map(|index| index + 1)
-        .unwrap_or(tail.len());
-    let target = &tail[..end];
-    for line in target.lines().filter(|line| line.contains("$(CARGO)")) {
-        assert!(line.contains("CARGO_NET_OFFLINE=true"), "{line}");
-        assert!(line.contains("--locked"), "{line}");
-    }
-    for required in [
-        "observer-contract check",
-        "-p xtask",
-        "-p observer-pl",
-        "-p pl-transport-win",
-        "--test transport_round_trip",
-    ] {
-        assert!(target.contains(required), "target lacks {required}");
-    }
-    assert!(makefile.contains(".PHONY:") && makefile.contains("check-observer-contract"));
-    let help = makefile.split("# Local dev-tooling").next().unwrap();
-    assert!(help.contains("check-observer-contract"));
-    let purity = makefile
-        .find("$(CARGO) run --locked -q -p xtask -- purity-check")
-        .unwrap();
-    let observer = makefile[purity..]
-        .find("$(MAKE) check-observer-contract")
-        .map(|index| index + purity)
-        .unwrap();
-    let workspace_tests = makefile[observer..]
-        .find("$(CARGO) test --locked --workspace $(REMOTE_CRATES)")
-        .map(|index| index + observer)
-        .unwrap();
-    assert!(purity < observer && observer < workspace_tests);
-    let lower = target.to_ascii_lowercase();
-    assert!(lower.contains("local offline") && lower.contains("structural/behavioral"));
-    for unsupported_claim in [
-        "live-journal",
-        "package proof",
-        "smoke proof",
-        "release proof",
-    ] {
-        assert!(!lower.contains(unsupported_claim));
+fn observer_contract_command_boundary_is_offline_locked_and_propagates_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = tempfile::tempdir().unwrap();
+    let fake_cargo = scratch.path().join("cargo-fixture");
+    fs::write(
+        &fake_cargo,
+        r#"#!/bin/sh
+set -eu
+printf '%s' "${CARGO_NET_OFFLINE-unset}" >> "$CALLS_PATH"
+for argument in "$@"; do printf '\t%s' "$argument" >> "$CALLS_PATH"; done
+printf '\n' >> "$CALLS_PATH"
+count=$(wc -l < "$CALLS_PATH")
+if [ "$count" -eq "$FAIL_AT" ]; then exit 17; fi
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    for fail_at in 0..=4 {
+        let calls_path = scratch.path().join(format!("calls-{fail_at}"));
+        let output = Command::new("make")
+            .current_dir(repo_root())
+            .args([
+                "--no-print-directory",
+                "-o",
+                "preflight-toolchain",
+                "check-observer-contract",
+            ])
+            .arg(format!("CARGO={}", fake_cargo.display()))
+            .env("CALLS_PATH", &calls_path)
+            .env("FAIL_AT", fail_at.to_string())
+            .output()
+            .expect("run the actual make command boundary");
+        assert_eq!(
+            output.status.success(),
+            fail_at == 0,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let calls = fs::read_to_string(calls_path).unwrap();
+        let rows: Vec<Vec<&str>> = calls
+            .lines()
+            .map(|line| line.split('\t').collect())
+            .collect();
+        assert_eq!(
+            rows.len(),
+            if fail_at == 0 { 4 } else { fail_at },
+            "failure must stop every later required command"
+        );
+        for (row, package) in rows
+            .iter()
+            .zip(["xtask", "xtask", "observer-pl", "pl-transport-win"])
+        {
+            assert_eq!(row[0], "true", "contract command must resolve offline");
+            assert!(
+                row.contains(&"--locked"),
+                "contract command must preserve its lock"
+            );
+            let selected = row.windows(2).find(|pair| pair[0] == "-p").unwrap();
+            assert_eq!(selected[1], package);
+            if package == "pl-transport-win" {
+                assert!(
+                    row.contains(&"--lib"),
+                    "routine contract behavior uses library tests"
+                );
+                assert!(
+                    !row.iter().any(|value| value.contains("transport-tests")),
+                    "routine contract gate cannot activate live fixtures"
+                );
+            }
+        }
     }
 }

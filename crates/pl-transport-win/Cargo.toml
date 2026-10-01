@@ -33,6 +33,7 @@ tracing.workspace = true
 
 [features]
 awaiting-hold = []
+transport-tests = []
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem"] }
@@ -43,3 +44,47 @@ rcgen = { workspace = true, features = ["x509-parser"] }
 observer-segment.workspace = true
 platform-win.workspace = true
 xtask = { path = "../../xtask" }
+
+[[test]]
+name = "handshake_refusal"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "integration_mode"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "integration_worker_stack"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "journal_bridge_contact"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "mark_confirmation"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "observation_inertness"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "ordinary_request_authority"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "relay_pairing_round_trip"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "relay_round_trip"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "transport_round_trip"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "upload_lifecycle_log"
+required-features = ["transport-tests"]

@@ -47,7 +47,7 @@ if [ -n "$CANDIDATE" ]; then
   for baseline in "$BASE/union"/*.txt; do
     name=$(basename "$baseline")
     [ -f "$CANDIDATE/union/$name" ] || fail "candidate missing $name"
-    missing=$(comm -23 "$baseline" "$CANDIDATE/union/$name" || true)
+    missing=$(comm -23 "$baseline" "$CANDIDATE/union/$name")
     [ -z "$missing" ] || fail "candidate dropped baseline cases from $name: $missing"
   done
   echo "ac11-discovery-policy: candidate is a baseline superset"
@@ -59,16 +59,24 @@ for baseline in "$BASE/linux"/*.txt; do
   package=${name%%.*}
   target=${name#*.}
   target=${target%.txt}
-  if [ "$target" = lib ]; then
-    actual=$(cargo test --locked -p "$package" --lib -- --list | sed -n 's/: test$//p' | sort -u)
-  else
-    actual=$(cargo test --locked -p "$package" --test "$target" -- --list | sed -n 's/: test$//p' | sort -u)
-  fi
   actual_file=$(mktemp /var/tmp/ac11-discovery-current.XXXXXX)
-  trap 'rm -f "$actual_file"' EXIT HUP INT TERM
-  printf '%s\n' "$actual" > "$actual_file"
-  missing=$(comm -23 "$baseline" "$actual_file" || true)
-  rm -f "$actual_file"
+  raw_file=$(mktemp /var/tmp/ac11-discovery-raw.XXXXXX)
+  names_file=$(mktemp /var/tmp/ac11-discovery-names.XXXXXX)
+  trap 'rm -f "$actual_file" "$raw_file" "$names_file"' EXIT HUP INT TERM
+  set --
+  # Full discovery retains every baseline case, without executing fixtures.
+  if [ "$package" = pl-transport-win ]; then
+    set -- --features awaiting-hold,transport-tests
+  fi
+  if [ "$target" = lib ]; then
+    cargo test --locked -p "$package" "$@" --lib -- --list > "$raw_file" || fail "Cargo discovery failed: $name"
+  else
+    cargo test --locked -p "$package" "$@" --test "$target" -- --list > "$raw_file" || fail "Cargo discovery failed: $name"
+  fi
+  sed -n 's/: test$//p' "$raw_file" > "$names_file"
+  sort -u "$names_file" > "$actual_file"
+  missing=$(comm -23 "$baseline" "$actual_file")
+  rm -f "$actual_file" "$raw_file" "$names_file"
   trap - EXIT HUP INT TERM
   [ -z "$missing" ] || fail "Linux discovery dropped $name: $missing"
 done

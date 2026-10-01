@@ -3,17 +3,24 @@
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "transport-tests")]
     use std::io;
+    #[cfg(feature = "transport-tests")]
     use std::time::Duration;
 
+    #[cfg(feature = "transport-tests")]
     use spl_transport::relay_pairing::enroll_device;
-    use spl_transport::{
-        same_relay_origin, validate_relay_origin, RelayControlEndpoint, TransportError,
-    };
+    use spl_transport::{same_relay_origin, validate_relay_origin};
+    #[cfg(feature = "transport-tests")]
+    use spl_transport::{RelayControlEndpoint, TransportError};
+    #[cfg(feature = "transport-tests")]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[cfg(feature = "transport-tests")]
     use tokio::net::{TcpListener, TcpStream};
+    #[cfg(feature = "transport-tests")]
     use tokio::sync::oneshot;
 
+    #[cfg(feature = "transport-tests")]
     async fn read_control_request(stream: &mut TcpStream) {
         let mut request = Vec::new();
         let mut buffer = [0u8; 1024];
@@ -27,6 +34,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "transport-tests")]
     async fn listener() -> (TcpListener, String) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -38,6 +46,7 @@ mod tests {
         (listener, origin)
     }
 
+    #[cfg(feature = "transport-tests")]
     fn rejected(error: TransportError, status: u16) {
         assert!(matches!(
             error,
@@ -48,6 +57,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn chunked_response_split_across_reads_waits_for_eof() {
         let (listener, origin) = listener().await;
@@ -133,6 +143,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test(start_paused = true)]
     async fn total_deadline_cancels_blocked_write_and_progressing_reads() {
         let (listener, origin) = listener().await;
@@ -160,6 +171,7 @@ mod tests {
         server.abort();
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn complete_chunked_response_returns_without_eof() {
         let (listener, origin) = listener().await;
@@ -182,6 +194,7 @@ mod tests {
         server.await.expect("control server");
     }
 
+    #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn control_body_limit_and_framing_errors_return_fixed_classifications() {
         for response in [

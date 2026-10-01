@@ -123,6 +123,11 @@ build: preflight-toolchain
 test: preflight-toolchain
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES) --features pl-transport-win/awaiting-hold -- --skip transparency
 
+# Explicit real TCP/TLS/process execution; native win-ci activates the same feature.
+.PHONY: test-transport
+test-transport: preflight-toolchain
+	$(CARGO) test --locked -p pl-transport-win --features awaiting-hold,transport-tests
+
 # Host-testable deterministic/package/publication policy checks on the Linux host.
 test-scripts:
 	sh scripts/lib/deterministic-gates.test.sh
@@ -205,8 +210,7 @@ check-observer-contract: preflight-toolchain
 	CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- observer-contract check
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p xtask observer_contract
 	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p observer-pl observer_contract_authority
-	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win observer_contract_authority
-	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win --test transport_round_trip
+	CARGO_NET_OFFLINE=true $(CARGO) test --locked -p pl-transport-win --lib
 
 # Offline schema, semantic, ledger, current-bundle, and deterministic-render gate.
 check-rust-release-manifest: preflight-toolchain

@@ -25,4 +25,26 @@ sh "$POLICY" --root "$ROOT" --candidate "$CANDIDATE" >/dev/null
 # denominator; it does not harvest a replacement denominator after migration.
 sh "$POLICY" --root "$ROOT" >/dev/null
 
+# A complete-looking list followed by a failed Cargo command is still failure.
+mkdir -p "$CANDIDATE/bin"
+cat > "$CANDIDATE/bin/cargo" <<'EOF'
+#!/bin/sh
+set -eu
+package=''; target=lib
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -p) package=$2; shift 2 ;;
+    --test) target=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+sed 's/$/: test/' "$AC11_BASE/$package.$target.txt"
+exit 17
+EOF
+chmod +x "$CANDIDATE/bin/cargo"
+if PATH="$CANDIDATE/bin:$PATH" AC11_BASE="$ROOT/scripts/lib/fixtures/ac11-discovery/linux" sh "$POLICY" --root "$ROOT" >/dev/null 2>&1; then
+  echo "complete discovery with failed Cargo status unexpectedly passed" >&2
+  exit 1
+fi
+
 echo "ac11-discovery-policy tests passed"

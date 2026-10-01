@@ -47,15 +47,15 @@ history. Reference only the public charter and license.
   and `--apply-update` installs the staged one (the CLI analogs of the in-app
   check / relaunch-to-install); atomic `make` verbs wrap every multi-step
   operation. Never hand-chain `cargo build` → `vpk pack` or any publication
-  transport — invoke the packaging verb; release publication belongs to the aggregate provenance publisher.
+  transport; invoke the packaging verb; release publication belongs to the aggregate provenance publisher.
 - **Shared protocols are code.** The AutomationId identifiers and the
   health/state token vocabulary are a generated, committed,
-  drift-gated `automation-contract.json` — not prose. The source of truth is the
+  drift-gated `automation-contract.json`; not prose. The source of truth is the
   `observer-contract` crate; the state-token vocabulary derives from the
   `observer-model` enums.
 - **Per-user, single-process.** `%LocalAppData%`, no UAC, one per-session named
   mutex. Capture runs in-process; the separate capture-worker split is a
-  deferred, named escape hatch — do not build it without a soak-instability
+  deferred, named escape hatch; do not build it without a soak-instability
   reason.
 
 ## 3. Commands
@@ -64,7 +64,8 @@ history. Reference only the public charter and license.
 |---|---|
 | `make rust-toolchain` | idempotently install the exact pinned Rust toolchain, rustfmt, clippy, and Windows MSVC target |
 | `make build` | `cargo build` the binary + `npm run build` the webview → `ui/dist` |
-| `make test` | `cargo test --workspace` (the pure tier runs off-Windows too) |
+| `make test` | repository-local workspace tests; real transport and process fixtures require the full test lane |
+| `make test-transport` | explicit host execution of all transport tests, including TCP/TLS peers and process fixtures |
 | `make ci` | the code-landing gate, repository-local: host fmt/clippy/contract/tests · Windows-target check · offline locked bans/licenses/sources · UI/shell tests; no remote host |
 | `make check-windows-target` | `cargo check` every crate for `x86_64-pc-windows-msvc` from any host, except the two whose graph compiles C with MSVC tools (`pl-transport-win`, the app) |
 | `make ci-full` | the operator gate on the final tree: `make ci`, then `check-release-advisory-config`, then `win-host-ci` (native build/test, app crate included); coding agents run `make ci` only |
@@ -96,7 +97,7 @@ history. Reference only the public charter and license.
 | `make rust-notices-check` | Host evidence | Committed `RUST_DEPENDENCY_NOTICES.txt` matches `Cargo.lock` via `packaging/rust-notices/index.json`. Crate license reproduction, not a prebuilt-binary determination; see `packaging/rust-notices/` |
 | `make check-rust-release-manifest` | Host evidence | Offline exact-schema and semantic self-check with no environment selector; `MANIFEST=<path>` verifies one manifest and its named sibling bytes without claiming completeness; `RELEASE_DIR=<path>` classifies one exact flat current-only bundle |
 | `make publish-transparency RELEASE_DIR=<candidate>` | Host-orchestrated publication | Re-validates a snapshot, retains candidate artifact bytes only through the operator archive channel, and publishes an immutable signed entry plus derived mutable pointers through conditional HTTP operations; host tests use fakes and do not prove a real bucket |
-| `make win-host-ci` → `scripts/win-ci.cmd` (in `make ci-full`) | Native-target evidence | Windows build/test for the workspace, then the UI build and the app crate's tests and `custom-protocol` binary, plus contract and purity checks; the caller matches the box's reported HEAD, `Cargo.lock` SHA-256, and `ui/package-lock.json` SHA-256 to the transferred binding; no app package, install, sign, or smoke |
+| `make win-host-ci` → `scripts/win-ci.cmd` (in `make ci-full`) | Native-target evidence | Windows build/test for the workspace with the full transport tests enabled, then the UI build and the app crate's tests and `custom-protocol` binary, plus contract and purity checks; the caller matches the box's reported HEAD, `Cargo.lock` SHA-256, and `ui/package-lock.json` SHA-256 to the transferred binding; no app package, install, sign, or smoke |
 | `make package` / `scripts/win-package.cmd` | Package-finalization evidence | One source-bound transaction builds, packs, optionally signs and verifies, renders evidence, and atomically promotes the exact current-only candidate; it does not install, smoke, or publish |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | Native-proof orchestration | Strictly classifies one signed candidate before resolving native action tools, then installs and explicitly smokes its bytes; read-only checkout-fact acquisition precedes classification, fake action seams are host-tested, and a green real receipt is box evidence |
 | `make publish-origin ...` | Host-orchestrated release-origin publication | Re-validates the exact eight-file candidate, signed-verification finalization receipt, packaged executable digest, and exact clean source commit, then validates a clearance document bound to the candidate/channel; a fail-closed R2 mutex serializes the channel, versioned archive/live objects use conditional create and refuse byte changes, each mutable object also uses snapshot-ETag compare-and-swap, `releases.win.json` is conditionally promoted last, and every live public GET is byte-compared before an atomic receipt. CI exercises ordering, mocked 412 conflicts including stale-feed refusal, lock exclusion, interruption/retry, immutability and refusal paths against fakes; only an approved live run proves R2 |
@@ -128,7 +129,7 @@ unstaged tracked working tree into a uniquely named, verified bundle on the
 CAS-guarded stable `refs/heads/__swsync` ref. A common-directory flock serializes
 overlapping runs; `flock` is required on the Linux driver host, with no unlocked
 fallback. The caller ships the bundle over SSH as `swbuild.bundle` (git bundle +
-scp — no rsync); the box bootstrap hard-checks it out under `~/swbuild` and runs
+scp; no rsync); the box bootstrap hard-checks it out under `~/swbuild` and runs
 `scripts/win-ci.cmd`. The transferred
 `target/win-host-ci-source-binding.json` carries the exact snapshot commit plus
 the SHA-256 of `Cargo.lock` and `ui/package-lock.json`. Before byte-changing work,
@@ -222,11 +223,17 @@ authority-derived conformance tests do not enter the production dependency or
 packaging graph. This authority bundle is distinct from the generated
 AutomationId/state-token contract above.
 
+Routine observer-client contract verification checks the pinned bundle and local
+behavior without opening transport sockets. `make test-transport` runs the live
+transport conformance tests on the host; native `win-ci.cmd` enables the same
+`pl-transport-win/transport-tests` feature. These tests require explicit full
+validation and remain part of `make ci-full`.
+
 See `docs/observer-contract-adoption.md`.
 
 ## 6. Lifecycle
 
-- **Production launch:** a per-user login item into interactive Session 1 — a
+- **Production launch:** a per-user login item into interactive Session 1; a
   single named value under the `HKCU\…\CurrentVersion\Run` key (no admin, no
   machine-wide `HKLM`, no scheduled task). The copy that owns it *ensures it
   idempotently on every launch* (write-only-when-missing-or-stale, so it
@@ -257,15 +264,15 @@ Velopack, per-user `%LocalAppData%`, no UAC. The **primary update feed is R2** a
 manual, `--check-update`) a bare manifest GET to it with **no query string** (no
 app version, no app id, no per-user identifier), and never point it at a
 third-party update host.
-(The updater neutralizes Velopack's per-install staging id — see
+(The updater neutralizes Velopack's per-install staging id; see
 `src-tauri/src/update.rs`.) R2 is the authoritative update feed. A GitHub
 Releases mirror (a tagged `v<version>` release with the artifacts + the
 `CHANGELOG.md ## [<version>]` notes attached) is optional and non-authoritative;
 its success cannot gate authoritative publication, update delivery, or release
 evidence. Direct R2, GitHub, winget, and scoop publication entry points are
 fail-closed: release publication belongs to the aggregate provenance publisher.
-That future component publishes each finalized signed release to R2 as the
-authoritative feed and may optionally mirror it to GitHub. No GitHub mirror is
+The aggregate origin publisher publishes each finalized signed release to R2 as the
+authoritative feed. No GitHub mirror is
 required, and a missing or failed mirror never blocks a release.
 The in-app updater fetches `releases.win.json` via a query-free first-party
 manifest GET (a small custom Velopack `UpdateSource`); package downloads still
@@ -372,7 +379,7 @@ publish, and all direct publication entry points remain fail-closed.
 - Banned surveillance verbs describing the app in owner-visible copy: watch,
   capture, record, monitor, track, collect.
 - **Code identifiers keep technical terms verbatim** (`capture-engine`,
-  `ScreenSource`, the `capture-wgc` crate) — `capture`/`observer` are fine in
+  `ScreenSource`, the `capture-wgc` crate); `capture`/`observer` are fine in
   code, never in owner-visible copy.
 
 ## 10. SPDX Source Headers
