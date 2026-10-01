@@ -273,16 +273,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "not paired routes to the bridge, which reports unpaired; this expectation is not the product behaviour"]
-    async fn open_journal_while_not_paired_opens_settings() {
+    async fn open_journal_while_not_paired_reports_unpaired() {
         let state = test_app_state(None);
         state.sync.lock().unwrap().pairing.phase = observer_model::PairingPhase::NotPaired;
         let surface = FakeJournalSurface::new();
 
         let result = crate::windows::open_journal(&state, &surface, None).await;
-        assert!(result.is_ok());
-        assert_eq!(surface.settings_opened.load(Ordering::SeqCst), 1);
-        assert_eq!(surface.journal_focused.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            result,
+            Err(crate::windows::OpenJournalError::Unpaired)
+        ));
+        assert_eq!(surface.settings_opened.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -330,6 +331,16 @@ mod tests {
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages.push(KeyUsagePurpose::DigitalSignature);
         params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        (cert, key)
+    }
+
+    /// The certificate the fake journal presents on the pairing connection. The
+    /// pairing link pins it, so it is self-signed, and it is a server leaf: the
+    /// pin verifier checks it as an end-entity certificate, which a CA is not.
+    fn journal_tls_leaf() -> (rcgen::Certificate, KeyPair) {
+        let params = CertificateParams::new(vec!["spl.local".to_string()]).unwrap();
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let cert = params.self_signed(&key).unwrap();
         (cert, key)
@@ -434,7 +445,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "the fake journal fixture fails its TLS handshake (certificate unknown); repair the fixture"]
     async fn pairing_and_open_journal_interleaving_bounded_5s() {
         let probe = Arc::new(crate::windows::OpenPairProbe::new());
         let state = Arc::new(test_app_state(Some(probe.clone())));
@@ -442,7 +452,7 @@ mod tests {
         let surface = Arc::new(FakeJournalSurface::new());
 
         let (signing_cert, signing_key) = signing_ca();
-        let (server_cert, server_key) = signing_ca();
+        let (server_cert, server_key) = journal_tls_leaf();
         let server_pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
         let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -493,13 +503,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "the fake journal fixture fails its TLS handshake (certificate unknown); repair the fixture"]
     async fn pairing_success_closes_journal_surface_twin() {
         let state = Arc::new(test_app_state(None));
         let surface = Arc::new(FakeJournalSurface::new());
 
         let (signing_cert, signing_key) = signing_ca();
-        let (server_cert, server_key) = signing_ca();
+        let (server_cert, server_key) = journal_tls_leaf();
         let server_pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
         let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
