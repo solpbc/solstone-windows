@@ -1450,7 +1450,6 @@ WIN_REMOTE_HOST=fake@example.invalid \
   GIT="$FAKE_GIT" \
   SCP="$FAKE_SCP" \
   SSH="$FAKE_SSH" \
-  EXPECTED_RELEASE_COMMIT= \
   FAKE_RUN_ID=1 \
   sh "$REPO_ROOT/scripts/win-host-ci.sh" >"$lock_output_one" 2>&1 &
 lock_pid_one=$!
@@ -1478,7 +1477,6 @@ WIN_REMOTE_HOST=fake@example.invalid \
   GIT="$FAKE_GIT" \
   SCP="$FAKE_SCP" \
   SSH="$FAKE_SSH" \
-  EXPECTED_RELEASE_COMMIT= \
   FAKE_RUN_ID=2 \
   sh "$REPO_ROOT/scripts/win-host-ci.sh" >"$lock_output_two" 2>&1 &
 lock_pid_two=$!
