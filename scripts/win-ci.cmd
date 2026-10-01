@@ -4,10 +4,12 @@
 ::
 :: Windows build-box CI runner. Activates the MSVC dev environment, then runs the
 :: source binding, native preflight self-test, toolchain preflight, build,
-:: workspace tests, contract drift check, and purity check, then emits the three
-:: source-binding acknowledgements for identity verification.
-:: This is the remote-mill ship-gate (the live FlaUI smoke + lifecycle matrix are
-:: operator-direct per the wave plan, not part of this run).
+:: workspace tests, the app crate's UI build, tests and binary, contract drift
+:: check, and purity check, then emits the three source-binding
+:: acknowledgements for identity verification.
+:: This is the native leg of `make ci-full`, run by the operator on the final
+:: tree (the live FlaUI smoke + lifecycle matrix are operator-direct, not part
+:: of this run).
 ::
 :: Invoked on the build box via `cmd.exe /c` (the box default SSH shell is
 :: PowerShell, and vcvars only sets env in a cmd session). Run from the repo root
@@ -65,14 +67,23 @@ for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Mi
 if not defined VSINSTALL ( echo ERROR: VS Build Tools with VC.Tools.x86.x64 not found & exit /b 1 )
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul || ( echo ERROR: vcvarsall failed & exit /b 1 )
 
-:: The fast iterate-loop gate: build + test the library/platform crates (incl. the
-:: windows-rs tier), then check contract drift and purity. The Tauri app crate is
-:: excluded here because its build needs the npm frontend + an icon asset - those
-:: build in the heavier operator-direct `make package` path, not this iterate loop.
+:: Build + test the library/platform crates (incl. the windows-rs tier) natively.
 echo === cargo build --locked (workspace, minus app) ===
 cargo build --locked --workspace --exclude solstone-windows-app || exit /b 1
 echo === cargo test --locked (workspace, minus app) ===
 cargo test --locked --workspace --exclude solstone-windows-app --features pl-transport-win/awaiting-hold -- --skip transparency || exit /b 1
+
+:: The Tauri app crate embeds ui/dist at compile time, so the webview bundle is
+:: built first. --features custom-protocol makes the binary serve that embedded
+:: bundle rather than the Vite devUrl, matching what the package builds.
+echo === npm ci --offline (ui) ===
+call npm --prefix ui ci --offline || exit /b 1
+echo === npm run build (ui -^> ui/dist) ===
+call npm --prefix ui run build || exit /b 1
+echo === cargo test --locked -p solstone-windows-app ===
+cargo test --locked -p solstone-windows-app || exit /b 1
+echo === cargo build --locked -p solstone-windows-app --features custom-protocol ===
+cargo build --locked -p solstone-windows-app --features custom-protocol || exit /b 1
 echo === cargo xtask contract --locked --check ===
 cargo run --locked -q -p xtask -- contract --check || exit /b 1
 echo === cargo xtask purity-check --locked ===
@@ -83,5 +94,5 @@ cargo run --locked -q -p xtask -- rust-notices check || exit /b 1
 echo WIN_CI_HEAD=%WIN_CI_HEAD%
 echo WIN_CI_CARGO_LOCK_SHA256=%WIN_CI_CARGO_LOCK_SHA256%
 echo WIN_CI_UI_LOCK_SHA256=%WIN_CI_UI_LOCK_SHA256%
-echo === WIN_CI_OK: native Windows build and test passed for workspace excluding solstone-windows-app; contract and purity checks passed; app package install sign and smoke not run ===
+echo === WIN_CI_OK: native Windows build and test passed for the workspace and the app crate; contract and purity checks passed; package install sign and smoke not run ===
 exit /b 0

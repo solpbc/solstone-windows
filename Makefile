@@ -20,6 +20,12 @@ TAURI_BIN := solstone-windows-app
 # which cover the cross-platform crates only (pure tier + capture-engine).
 REMOTE_CRATES := --exclude $(TAURI_BIN) --exclude capture-wgc --exclude capture-wasapi --exclude platform-win --exclude capture-screen-encode
 
+# The local Windows-target check compiles every crate except these two, whose
+# graph builds `ring`'s C sources and needs the MSVC tools only the build box
+# has. ci-full builds and tests both natively there.
+WIN_TARGET := x86_64-pc-windows-msvc
+WIN_TARGET_NATIVE_C_CRATES := --exclude $(TAURI_BIN) --exclude pl-transport-win
+
 # Remote build host. The Windows-only toolchain (Rust-MSVC, windows-rs, Tauri,
 # Velopack, FlaUI) builds on a Windows build box; code + git stay on the dev host
 # and only the build/test runs remotely, streamed back. Transport is git: a bundle
@@ -36,17 +42,18 @@ TRANSPARENCY_ACTIVATED ?= 0
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny provision-advisory-cargo-home preflight-release-tools build test ui-test \
-	        test-scripts gate-minisign ci audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
+	        test-scripts gate-minisign ci ci-full check-windows-target audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live brand-sync help
 
 help:
-	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny provision-advisory-cargo-home build test ci audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
+	@echo "verbs: install ui-deps-update rust-toolchain provision-cargo-deny provision-advisory-cargo-home build test ci ci-full check-windows-target audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer smoke screenshots journal-live run clean"
 	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT, SOLSTONE_ADVISORY_TREE_SHA256, and the signed mirror packet environment)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "delivery: publish-origin CANDIDATE_DIR=<candidate> FINALIZATION_RECEIPT=<json> SOURCE_CHECKOUT=<exact-source-tree> CLEARANCE=<json> PUBLICATION_RECEIPT=<json>"
-	@echo "ci = local fast checks + the remote Windows build/test; needs WIN_REMOTE_HOST=user@host"
+	@echo "ci = repository-local code-landing checks; no remote host, network, or private mirror"
+	@echo "ci-full = ci + release advisory config + the native Windows build/test, app crate included; needs WIN_REMOTE_HOST=user@host and SOLSTONE_ADVISORY_MIRROR_LOCATOR"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
 # locally we only set up the UI's JS deps when present. Run during local workspace setup.
@@ -137,14 +144,15 @@ ui-test:
 	npm --prefix ui ci --offline
 	npm --prefix ui run test
 
-# The one CI surface for the engineer: cheap, host-independent checks run locally
-# and fail fast, then the real Windows build + test runs on the build box. One
-# flow. fmt/deny/contract/purity are host-independent; clippy + test cover the
-# cross-platform crates (pure tier + capture-engine). The windows-only crates are
-# built and tested remotely by win-host-ci.
+# Code-landing gate: repository-local, fast, deterministic. fmt/deny/contract/
+# purity are host-independent; clippy + test cover the cross-platform crates
+# (pure tier + capture-engine); check-windows-target compiles the Windows-only
+# code for the Windows target. It never reaches a remote host, the network, or
+# the private advisory mirror. What it does not prove is printed at the end.
 ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) fmt --all --check
 	$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
+	$(MAKE) check-windows-target
 	$(CARGO) run --locked -q -p xtask -- contract --check
 	$(CARGO) run --locked -q -p xtask -- purity-check
 	$(CARGO) run --locked -q -p xtask -- rust-notices check
@@ -152,9 +160,22 @@ ci: preflight-toolchain preflight-cargo-deny
 	MANIFEST= RELEASE_DIR= $(MAKE) check-rust-release-manifest
 	$(CARGO) test --locked --workspace $(REMOTE_CRATES) --features pl-transport-win/awaiting-hold -- --skip transparency
 	$(CARGO) deny --offline --locked check bans licenses sources
-	$(MAKE) check-release-advisory-config
 	$(MAKE) ui-test
 	$(MAKE) test-scripts
+	@echo "ci: not run here: native Windows build/test, the app crate ($(TAURI_BIN)), pl-transport-win on Windows, release advisory config (make ci-full); package, install, sign, smoke"
+
+# Windows-target compile of every crate whose build needs no MSVC tools, from
+# any host. Catches Windows-only (cfg(windows)) type errors that the host build
+# never compiles. The two native-C crates are compiled natively by ci-full.
+check-windows-target: preflight-toolchain
+	$(CARGO) check --locked --target $(WIN_TARGET) --workspace $(WIN_TARGET_NATIVE_C_CRATES)
+
+# Full operator gate on the final tree: the code-landing gate, the release
+# advisory config against the private mirror, then the native Windows build and
+# test on the build box, app crate included. Coding agents run `make ci` only.
+ci-full:
+	$(MAKE) ci
+	$(MAKE) check-release-advisory-config
 	$(MAKE) win-host-ci
 
 # Verify the signed advisory packet and self-contained bundle, then check the
@@ -463,7 +484,7 @@ require-win-remote-host:
 sync-win-host: require-win-remote-host
 	@WIN_REMOTE_HOST="$(WIN_REMOTE_HOST)" GIT="$(GIT)" SCP="$(SCP)" sh scripts/sync-win-host.sh
 
-# Run native preflights, build, tests, contract, and purity; accept only the exact transferred snapshot HEAD.
+# Native leg of ci-full: preflights, workspace and app-crate build and tests, contract, and purity; accept only the exact transferred snapshot HEAD.
 # The live FlaUI smoke + lifecycle matrix are operator-direct, not part of this.
 win-host-ci: require-win-remote-host
 	@WIN_REMOTE_HOST="$(WIN_REMOTE_HOST)" GIT="$(GIT)" SCP="$(SCP)" SSH="$(SSH)" sh scripts/win-host-ci.sh

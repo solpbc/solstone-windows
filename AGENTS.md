@@ -65,7 +65,9 @@ history. Reference only the public charter and license.
 | `make rust-toolchain` | idempotently install the exact pinned Rust toolchain, rustfmt, clippy, and Windows MSVC target |
 | `make build` | `cargo build` the binary + `npm run build` the webview → `ui/dist` |
 | `make test` | `cargo test --workspace` (the pure tier runs off-Windows too) |
-| `make ci` | host fmt/clippy/contract/tests · offline locked bans/licenses/sources · UI/shell tests · native Windows build/test |
+| `make ci` | the code-landing gate, repository-local: host fmt/clippy/contract/tests · Windows-target check · offline locked bans/licenses/sources · UI/shell tests; no remote host and no network |
+| `make check-windows-target` | `cargo check` every crate for `x86_64-pc-windows-msvc` from any host, except the two whose graph compiles C with MSVC tools (`pl-transport-win`, the app) |
+| `make ci-full` | the operator gate on the final tree: `make ci`, then `check-release-advisory-config`, then `win-host-ci` (native build/test, app crate included); coding agents run `make ci` only |
 | `make audit` | verify the signed advisory packet and self-contained bundle, then check advisories against the locked graph offline |
 | `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
@@ -87,22 +89,25 @@ history. Reference only the public charter and license.
 
 | Repository entry point | Evidence class | Exact claim |
 |---|---|---|
-| `make test`, `make ui-test`, `make test-scripts`, and the local Rust legs of `make ci` | Host evidence | Linux-host formatting, compilation/tests for the host-testable subset, UI tests, and shell policy; no Windows compilation |
+| `make test`, `make ui-test`, `make test-scripts`, and the host Rust legs of `make ci` | Host evidence | Linux-host formatting, compilation/tests for the host-testable subset, UI tests, and shell policy |
+| `make check-windows-target` (in `make ci`) | Cross-target compile evidence | Type-checks Windows-only (`cfg(windows)`) code for the Windows target without MSVC tools; no linking, no tests, and not `pl-transport-win` or the app crate |
 | `make audit` | Host evidence | Verifies the pinned signing identity and fresh receipt, proves a self-contained bundle advertises only `HEAD` and `refs/heads/main` at the signed commit, materializes one full clean isolated checkout, and runs the pinned cargo-deny offline; temporary database bytes are removed before the success witness is emitted as a single line of canonical JSON |
 | `make purity-check` | Cross-target classification evidence | Enumerates every workspace member from `cargo metadata` and inspects each exactly once with `cargo tree --target all --all-features -e normal,build`; the Windows family is forbidden in each strict member's shipped (normal+build) graph. Dev-only reachability is out of scope because dev-dependencies never ship; the reviewed Windows-capable set includes platform/composition/app members and `xtask` build tooling. Unknown or stale exceptions fail. This does not compile or link MSVC code |
 | `make rust-notices-check` | Host evidence | Committed `RUST_DEPENDENCY_NOTICES.txt` matches `Cargo.lock` via `packaging/rust-notices/index.json`. Crate license reproduction, not a prebuilt-binary determination; see `packaging/rust-notices/` |
 | `make check-rust-release-manifest` | Host evidence | Offline exact-schema and semantic self-check with no environment selector; `MANIFEST=<path>` verifies one manifest and its named sibling bytes without claiming completeness; `RELEASE_DIR=<path>` classifies one exact flat current-only bundle |
 | `make publish-transparency RELEASE_DIR=<candidate>` | Host-orchestrated publication | Re-validates a snapshot, retains candidate artifact bytes only through the operator archive channel, and publishes an immutable signed entry plus derived mutable pointers through conditional HTTP operations; host tests use fakes and do not prove a real bucket |
-| `make win-host-ci` → `scripts/win-ci.cmd` | Native-target evidence | Windows build/test for the workspace excluding the app, plus contract and purity checks; the caller matches the box's reported HEAD, `Cargo.lock` SHA-256, and `ui/package-lock.json` SHA-256 to the transferred binding; no app package, install, sign, or smoke |
-| `scripts/win-app-build.cmd` | Native app-build evidence | Builds the UI and Windows app binary; no package, install, sign, or smoke |
+| `make win-host-ci` → `scripts/win-ci.cmd` (in `make ci-full`) | Native-target evidence | Windows build/test for the workspace, then the UI build and the app crate's tests and `custom-protocol` binary, plus contract and purity checks; the caller matches the box's reported HEAD, `Cargo.lock` SHA-256, and `ui/package-lock.json` SHA-256 to the transferred binding; no app package, install, sign, or smoke |
 | `make package` / `scripts/win-package.cmd` | Package-finalization evidence | One source-bound transaction builds, packs, optionally signs and verifies, renders evidence, and atomically promotes the exact current-only candidate; it does not install, smoke, or publish |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | Native-proof orchestration | Strictly classifies one signed candidate before resolving native action tools, then installs and explicitly smokes its bytes; read-only checkout-fact acquisition precedes classification, fake action seams are host-tested, and a green real receipt is box evidence |
 | `make publish-origin ...` | Host-orchestrated release-origin publication | Re-validates the exact eight-file candidate, signed-verification finalization receipt, packaged executable digest, and exact clean source commit, then validates a clearance document bound to the candidate/channel; a fail-closed R2 mutex serializes the channel, versioned archive/live objects use conditional create and refuse byte changes, each mutable object also uses snapshot-ETag compare-and-swap, `releases.win.json` is conditionally promoted last, and every live public GET is byte-compared before an atomic receipt. CI exercises ordering, mocked 412 conflicts including stale-feed refusal, lock exclusion, interruption/retry, immutability and refusal paths against fakes; only an approved live run proves R2 |
 
-Linux has no compiling cross-target MSVC check because it cannot link the
-Windows MSVC target. `make ci` is a composite gate and still needs npm plus
-`WIN_REMOTE_HOST`; it is not an offline gate. Only its cargo-deny
-bans/licenses/sources sub-gate is offline.
+Linux cannot link the Windows MSVC target, and `ring`'s build script needs the
+MSVC tools, so the host cross-target check type-checks without linking and skips
+the two crates whose graph compiles `ring`. `make ci` needs npm and the warmed
+cargo and npm caches but no remote host, network, or private mirror. Its
+cargo-deny bans/licenses/sources sub-gate is offline. `make ci-full` adds the
+native build box (`WIN_REMOTE_HOST`) and the private advisory mirror
+(`SOLSTONE_ADVISORY_MIRROR_LOCATOR`).
 
 All gated project dependency resolution holds `Cargo.lock` with `--locked`. The
 one deliberate dependency-update path is `cargo update -p <crate>`: review and
@@ -116,8 +121,8 @@ inside the five audited platform crates named above; crate-wide
 `#![allow(unsafe_code)]` is forbidden.
 
 **Off-Windows dev host:** the Rust-MSVC / windows-rs / Tauri toolchain only builds
-on Windows, so on a non-Windows dev host run the gate on the Windows build box with
-`WIN_REMOTE_HOST=user@host make win-host-ci`. It refuses untracked non-ignored
+on Windows, so on a non-Windows dev host the native leg runs on the Windows build
+box: `WIN_REMOTE_HOST=user@host make ci-full`, or `make win-host-ci` alone. It refuses untracked non-ignored
 files and an unmerged index, then snapshots the exact committed, staged, and
 unstaged tracked working tree into a uniquely named, verified bundle on the
 CAS-guarded stable `refs/heads/__swsync` ref. A common-directory flock serializes

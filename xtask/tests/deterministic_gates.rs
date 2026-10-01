@@ -84,7 +84,7 @@ fn every_gated_cargo_resolution_is_locked() {
         "Makefile must contain exactly the fmt and clean non-resolving cargo invocations"
     );
 
-    for path in ["scripts/win-ci.cmd", "scripts/win-app-build.cmd"] {
+    for path in ["scripts/win-ci.cmd"] {
         let text = read(&root, path);
         let mut invocations = 0;
         for (index, line) in text.lines().enumerate() {
@@ -184,7 +184,6 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
         "scripts/preflight-toolchain.cmd",
         "scripts/lib/preflight-toolchain.test.cmd",
         "scripts/win-ci.cmd",
-        "scripts/win-app-build.cmd",
         "scripts/win-package.cmd",
     ] {
         let text = read(&root, path);
@@ -226,7 +225,7 @@ fn dependency_and_release_lockdown_topology_is_static() {
     assert!(makefile.contains("ui-deps-update:\n\tnpm --prefix ui install"));
     assert!(makefile.contains("build: preflight-toolchain\n\tnpm --prefix ui ci --offline"));
     assert!(makefile.contains("ui-test:\n\tnpm --prefix ui ci --offline"));
-    assert!(read(&root, "scripts/win-app-build.cmd").contains("--prefix ui ci --offline"));
+    assert!(read(&root, "scripts/win-ci.cmd").contains("--prefix ui ci --offline"));
     assert!(!read(&root, "scripts/win-package.cmd").contains("--prefix ui ci --offline"));
     assert!(makefile.contains("EXPECTED_RELEASE_COMMIT is required"));
     assert!(makefile.contains("-File scripts/package.ps1"));
