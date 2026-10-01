@@ -405,8 +405,7 @@ pub fn run(
             let mut slot = UploaderSlot::new();
             let credential_access = tauri::async_runtime::block_on(
                 pl_transport_win::service::launch_resume(&sync_config, &sync, &mut slot),
-            )
-            .unwrap_or(None);
+            );
 
             app.manage(AppState {
                 commands: cmd_tx.clone(),

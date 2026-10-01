@@ -220,7 +220,7 @@ mod tests {
 
         crate::app::AppState {
             commands: cmd_tx,
-            health: Arc::new(std::sync::Mutex::new(observer_model::HealthDump::default())),
+            health: Arc::new(std::sync::Mutex::new(crate::health::not_running_snapshot())),
             sync: Arc::new(std::sync::Mutex::new(
                 observer_model::SyncSnapshot::default(),
             )),
