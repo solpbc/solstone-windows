@@ -279,6 +279,7 @@ where
             pause: self.state.pause_snapshot(now),
             views: Default::default(),
             pump_degraded: false,
+            listener_faults: observer_model::ListenerFaults::default(),
         }
     }
 
@@ -778,6 +779,8 @@ where
             dump.views = shared.views.clone();
             // `pump_degraded` is app-owned like `views`; carry it forward too.
             dump.pump_degraded = shared.pump_degraded;
+            // `listener_faults` is app-owned like `pump_degraded`; carry it forward too.
+            dump.listener_faults = shared.listener_faults.clone();
             *shared = dump.clone();
         }
         self.health_tx.send_replace(dump);
@@ -850,6 +853,7 @@ where
             pause: None,
             views: Default::default(),
             pump_degraded: false,
+            listener_faults: observer_model::ListenerFaults::default(),
         }
     }
 }
@@ -1723,6 +1727,81 @@ mod tests {
     }
 
     #[test]
+    fn refresh_health_carries_listener_faults_forward() {
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start();
+        let handle = engine.health_handle();
+        handle.lock().unwrap().listener_faults.health = Some("bind: error".into());
+        handle.lock().unwrap().listener_faults.control = Some("serve: error".into());
+
+        assert!(engine.health_dump().listener_faults.health.is_none());
+        engine.refresh_health();
+
+        assert_eq!(
+            handle.lock().unwrap().listener_faults.health.as_deref(),
+            Some("bind: error")
+        );
+        assert_eq!(
+            engine
+                .health_watch()
+                .borrow()
+                .listener_faults
+                .control
+                .as_deref(),
+            Some("serve: error")
+        );
+
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
+        assert_eq!(engine.health_watch().borrow().app_state, AppPhase::Paused);
+        assert_eq!(
+            engine
+                .health_watch()
+                .borrow()
+                .listener_faults
+                .health
+                .as_deref(),
+            Some("bind: error")
+        );
+        assert_eq!(
+            engine
+                .health_watch()
+                .borrow()
+                .listener_faults
+                .control
+                .as_deref(),
+            Some("serve: error")
+        );
+
+        handle.lock().unwrap().listener_faults = observer_model::ListenerFaults::default();
+        engine.apply_command(EngineCommand::Resume);
+        assert_eq!(
+            engine.health_watch().borrow().app_state,
+            AppPhase::Observing
+        );
+        assert!(engine
+            .health_watch()
+            .borrow()
+            .listener_faults
+            .health
+            .is_none());
+        assert!(engine
+            .health_watch()
+            .borrow()
+            .listener_faults
+            .control
+            .is_none());
+    }
+
+    #[test]
     fn rotation_preserves_every_audio_chunk_once_and_splits_segments() {
         let clock = FakeClock::new(299);
         let segment_fs = FakeSegmentFs::default();
@@ -2342,6 +2421,7 @@ mod tests {
             pause: None,
             views: Default::default(),
             pump_degraded: false,
+            listener_faults: observer_model::ListenerFaults::default(),
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

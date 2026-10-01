@@ -132,6 +132,7 @@ mod tests {
             pause: None,
             views: BTreeMap::new(),
             pump_degraded: false,
+            listener_faults: observer_model::ListenerFaults::default(),
         };
         let url = report_url(&dump);
         assert!(url.starts_with("https://support.solstone.app/#report=v1&app=solstone+for+windows"));

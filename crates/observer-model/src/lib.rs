@@ -636,7 +636,20 @@ pub struct PauseSnapshot {
     pub seconds_remaining: Option<u64>,
 }
 
+/// App-owned loopback listener faults. The engine never computes these; refresh
+/// carries them forward like `pump_degraded`. A clear field means that listener
+/// has not reported a bind or terminal serve failure. This is not an app phase
+/// and not a source fault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ListenerFaults {
+    #[serde(default)]
+    pub health: Option<String>,
+    #[serde(default)]
+    pub control: Option<String>,
+}
+
 /// Storage persistence fault surfaced separately from capture-source state.
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageHealth {
     pub detail: String,
@@ -688,6 +701,9 @@ pub struct HealthDump {
     /// writes it once.
     #[serde(default)]
     pub pump_degraded: bool,
+    /// App-owned loopback listener faults. Carried forward like `pump_degraded`.
+    #[serde(default)]
+    pub listener_faults: ListenerFaults,
 }
 
 /// True when `next` differs from `previous` in a way the Settings/About UI
@@ -888,6 +904,146 @@ impl core::fmt::Display for SourceError {
 
 impl std::error::Error for SourceError {}
 
+// ── Presence classification ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    Absent,
+    Present,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMutexView {
+    Exists,
+    Missing,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppPopulation {
+    Holder,
+    Empty,
+    Unavailable,
+}
+
+pub fn classify_presence(mutex: SessionMutexView, population: AppPopulation) -> Presence {
+    if population == AppPopulation::Holder || mutex == SessionMutexView::Exists {
+        Presence::Present
+    } else if population == AppPopulation::Empty {
+        Presence::Absent
+    } else {
+        Presence::Unknown
+    }
+}
+
+// ── Control protocol & client ────────────────────────────────────────────────
+
+pub const CONTROL_ACK: &[u8] = b"ok\n";
+
+pub const OPEN_JOURNAL_VERB: &[u8] = b"open-journal\n";
+pub const SURFACE_ABOUT_VERB: &[u8] = b"surface-about\n";
+pub const SURFACE_SETTINGS_VERB: &[u8] = b"surface-settings\n";
+
+pub trait ControlActions {
+    fn open_settings(&self);
+    fn open_about(&self);
+    fn open_journal(&self);
+}
+
+pub fn dispatch_control<A: ControlActions>(buf: &[u8], actions: &A) -> bool {
+    if buf.starts_with(OPEN_JOURNAL_VERB) {
+        actions.open_journal();
+        true
+    } else if buf.starts_with(SURFACE_ABOUT_VERB) {
+        actions.open_about();
+        true
+    } else if buf.starts_with(SURFACE_SETTINGS_VERB) {
+        actions.open_settings();
+        true
+    } else {
+        false
+    }
+}
+
+pub fn control_ack_after_dispatch<A: ControlActions>(
+    buf: &[u8],
+    actions: &A,
+) -> Option<&'static [u8]> {
+    if dispatch_control(buf, actions) {
+        Some(CONTROL_ACK)
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlClientError {
+    Connect,
+    Timeout,
+    Foreign,
+    Io,
+}
+
+pub fn control_client_exit_code(acknowledged: bool) -> i32 {
+    if acknowledged {
+        0
+    } else {
+        1
+    }
+}
+
+pub fn send_control(
+    addr: std::net::SocketAddr,
+    verb: &[u8],
+    connect_timeout: std::time::Duration,
+    io_timeout: std::time::Duration,
+) -> Result<(), ControlClientError> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect_timeout(&addr, connect_timeout)
+        .map_err(|_| ControlClientError::Connect)?;
+    stream
+        .set_write_timeout(Some(io_timeout))
+        .map_err(|_| ControlClientError::Io)?;
+    stream
+        .set_read_timeout(Some(io_timeout))
+        .map_err(|_| ControlClientError::Io)?;
+
+    stream.write_all(verb).map_err(|_| ControlClientError::Io)?;
+
+    let mut response = Vec::new();
+    let mut buf = [0u8; 16];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                if response == CONTROL_ACK {
+                    return Ok(());
+                } else {
+                    return Err(ControlClientError::Foreign);
+                }
+            }
+            Ok(n) => {
+                response.extend_from_slice(&buf[..n]);
+                if response == CONTROL_ACK {
+                    return Ok(());
+                }
+                if !CONTROL_ACK.starts_with(&response) {
+                    return Err(ControlClientError::Foreign);
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                return Err(ControlClientError::Timeout);
+            }
+            Err(_) => return Err(ControlClientError::Io),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,6 +1154,7 @@ mod tests {
             }),
             views: BTreeMap::new(),
             pump_degraded: false,
+            listener_faults: ListenerFaults::default(),
         }
     }
 
@@ -1167,6 +1324,14 @@ mod tests {
         next.views
             .insert("settings".into(), ViewRenderState::Rendered);
         assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.listener_faults.health = Some("bind: permission denied".into());
+        assert!(should_emit(&base, &next));
+
+        let mut next = base.clone();
+        next.listener_faults.control = Some("serve: accept failed".into());
+        assert!(should_emit(&base, &next));
     }
 
     #[test]
@@ -1195,6 +1360,7 @@ mod tests {
             pause: None,
             views: BTreeMap::new(),
             pump_degraded: false,
+            listener_faults: ListenerFaults::default(),
         };
 
         let empty_json = serde_json::to_string(&dump).unwrap();
@@ -1454,5 +1620,253 @@ mod tests {
         assert!(should_emit(&awaiting, &paired));
 
         assert!(!should_emit(&awaiting, &awaiting));
+    }
+
+    #[test]
+    fn presence_classification_table() {
+        assert_eq!(
+            classify_presence(SessionMutexView::Missing, AppPopulation::Unavailable),
+            Presence::Unknown
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Failed, AppPopulation::Unavailable),
+            Presence::Unknown
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Exists, AppPopulation::Unavailable),
+            Presence::Present
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Missing, AppPopulation::Holder),
+            Presence::Present
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Failed, AppPopulation::Holder),
+            Presence::Present
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Exists, AppPopulation::Holder),
+            Presence::Present
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Missing, AppPopulation::Empty),
+            Presence::Absent
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Failed, AppPopulation::Empty),
+            Presence::Absent
+        );
+        assert_eq!(
+            classify_presence(SessionMutexView::Exists, AppPopulation::Empty),
+            Presence::Present
+        );
+    }
+
+    #[test]
+    fn surface_verbs_are_distinguishable() {
+        assert_ne!(SURFACE_SETTINGS_VERB, SURFACE_ABOUT_VERB);
+        assert!(!SURFACE_ABOUT_VERB.starts_with(SURFACE_SETTINGS_VERB));
+        assert!(!SURFACE_SETTINGS_VERB.starts_with(SURFACE_ABOUT_VERB));
+    }
+
+    #[test]
+    fn every_view_has_a_surface_verb() {
+        for view in View::ALL {
+            let verb: &[u8] = match view {
+                View::Settings => SURFACE_SETTINGS_VERB,
+                View::About => SURFACE_ABOUT_VERB,
+            };
+            assert!(
+                verb.ends_with(b"\n"),
+                "{} verb must be newline-terminated",
+                view.label()
+            );
+        }
+    }
+
+    struct MockActions {
+        settings: std::sync::atomic::AtomicUsize,
+        about: std::sync::atomic::AtomicUsize,
+        journal: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockActions {
+        fn new() -> Self {
+            Self {
+                settings: std::sync::atomic::AtomicUsize::new(0),
+                about: std::sync::atomic::AtomicUsize::new(0),
+                journal: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ControlActions for MockActions {
+        fn open_settings(&self) {
+            self.settings
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn open_about(&self) {
+            self.about.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn open_journal(&self) {
+            self.journal
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn control_dispatch_and_ack() {
+        let actions = MockActions::new();
+        assert!(dispatch_control(b"open-journal\n", &actions));
+        assert_eq!(actions.journal.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            control_ack_after_dispatch(b"open-journal\n", &actions),
+            Some(CONTROL_ACK)
+        );
+
+        assert!(dispatch_control(b"surface-about\n", &actions));
+        assert_eq!(actions.about.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            control_ack_after_dispatch(b"surface-about\n", &actions),
+            Some(CONTROL_ACK)
+        );
+
+        assert!(dispatch_control(b"surface-settings\n", &actions));
+        assert_eq!(
+            actions.settings.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            control_ack_after_dispatch(b"surface-settings\n", &actions),
+            Some(CONTROL_ACK)
+        );
+
+        assert!(!dispatch_control(b"unknown-verb\n", &actions));
+        assert_eq!(
+            control_ack_after_dispatch(b"unknown-verb\n", &actions),
+            None
+        );
+    }
+
+    #[test]
+    fn control_client_exit_code_values() {
+        assert_eq!(control_client_exit_code(true), 0);
+        assert_eq!(control_client_exit_code(false), 1);
+    }
+
+    #[test]
+    fn send_control_socket_round_trips() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let connect_timeout = Duration::from_millis(500);
+        let io_timeout = Duration::from_millis(500);
+
+        // Success: server uses control_ack_after_dispatch
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 64];
+                let n = stream.read(&mut buf).unwrap();
+                let actions = MockActions::new();
+                if let Some(ack) = control_ack_after_dispatch(&buf[..n], &actions) {
+                    stream.write_all(ack).unwrap();
+                }
+            });
+            assert!(send_control(addr, OPEN_JOURNAL_VERB, connect_timeout, io_timeout).is_ok());
+            handle.join().unwrap();
+        }
+
+        // Empty EOF fails
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf);
+                // drop stream without writing -> empty EOF
+            });
+            assert_eq!(
+                send_control(addr, OPEN_JOURNAL_VERB, connect_timeout, io_timeout),
+                Err(ControlClientError::Foreign)
+            );
+            handle.join().unwrap();
+        }
+
+        // no\n fails
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf);
+                stream.write_all(b"no\n").unwrap();
+            });
+            assert_eq!(
+                send_control(addr, OPEN_JOURNAL_VERB, connect_timeout, io_timeout),
+                Err(ControlClientError::Foreign)
+            );
+            handle.join().unwrap();
+        }
+
+        // bare ok without newline fails on EOF
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf);
+                stream.write_all(b"ok").unwrap();
+            });
+            assert_eq!(
+                send_control(addr, OPEN_JOURNAL_VERB, connect_timeout, io_timeout),
+                Err(ControlClientError::Foreign)
+            );
+            handle.join().unwrap();
+        }
+
+        // ok\nEXTRA fails
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf);
+                stream.write_all(b"ok\nEXTRA").unwrap();
+            });
+            assert_eq!(
+                send_control(addr, OPEN_JOURNAL_VERB, connect_timeout, io_timeout),
+                Err(ControlClientError::Foreign)
+            );
+            handle.join().unwrap();
+        }
+
+        // Timeout fails (server doesn't respond)
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                let (_stream, _) = listener.accept().unwrap();
+                thread::sleep(Duration::from_millis(200));
+            });
+            assert_eq!(
+                send_control(
+                    addr,
+                    OPEN_JOURNAL_VERB,
+                    connect_timeout,
+                    Duration::from_millis(50)
+                ),
+                Err(ControlClientError::Timeout)
+            );
+            handle.join().unwrap();
+        }
     }
 }

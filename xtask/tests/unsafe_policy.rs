@@ -99,6 +99,18 @@ const APPROVED_NODES: &[ApprovedNode] = &[
     },
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::Fn,
+        name: "probe_app_presence",
+        owner: None,
+    },
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::Mod,
+        name: "win_presence_tests",
+        owner: None,
+    },
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::Mod,
         name: "notification_pump",
         owner: None,

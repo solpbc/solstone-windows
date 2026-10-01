@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
 use observer_model::{
-    should_emit, AppPhase, HealthDump, PauseReason, SourceKind, SourceState, SyncSnapshot,
+    control_client_exit_code, should_emit, AppPhase, HealthDump, PauseReason, SourceKind,
+    SourceState, SyncSnapshot,
 };
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::SyncConfig;
@@ -329,22 +330,25 @@ pub fn run(
                         outcome = "already_running",
                         "single instance"
                     );
-                    if open_journal_on_launch {
-                        let _ = crate::control::signal_open_journal();
+                    let acknowledged = if open_journal_on_launch {
+                        crate::control::signal_open_journal()
                     } else if let Some(view) = open_view {
                         // `--open-view` has to mean the same thing whether or not
                         // the app is already running. This branch used to fall
                         // through to the surface verb, so `--open-view about`
                         // against a live instance opened Settings and reported
                         // nothing wrong -- the flag lied rather than failed.
-                        let _ = match view {
+                        match view {
                             observer_model::View::Settings => crate::control::signal_surface(),
                             observer_model::View::About => crate::control::signal_surface_about(),
-                        };
+                        }
                     } else if surface_on_launch {
-                        let _ = crate::control::signal_surface();
-                    }
-                    app.handle().exit(0);
+                        crate::control::signal_surface()
+                    } else {
+                        true
+                    };
+                    app.handle()
+                        .exit(control_client_exit_code(acknowledged));
                     return Ok(());
                 }
                 platform_win::InstanceLock::Acquired => {
@@ -455,24 +459,38 @@ pub fn run(
             tauri::async_runtime::spawn({
                 let health = health.clone();
                 async move {
-                    match tokio::net::TcpListener::bind(("127.0.0.1", crate::health::HEALTH_PORT))
-                        .await
+                    match tokio::net::TcpListener::bind((
+                        observer_contract::LOOPBACK_HOST,
+                        observer_contract::HEALTH_PORT,
+                    ))
+                    .await
                     {
                         Ok(listener) => {
-                            if let Err(error) = capture_engine::serve_health(listener, health).await {
+                            if let Err(error) = capture_engine::serve_health(listener, health.clone()).await
+                            {
                                 tracing::error!(
                                     target: "health",
                                     error = %error,
                                     "health server exited"
+                                );
+                                crate::health::record_listener_fault(
+                                    &health,
+                                    crate::health::ListenerSlot::Health,
+                                    format!("serve: {error}"),
                                 );
                             }
                         }
                         Err(error) => {
                             tracing::error!(
                                 target: "health",
-                                port = crate::health::HEALTH_PORT,
+                                port = observer_contract::HEALTH_PORT,
                                 error = %error,
                                 "health server bind failed"
+                            );
+                            crate::health::record_listener_fault(
+                                &health,
+                                crate::health::ListenerSlot::Health,
+                                format!("bind: {error}"),
                             );
                         }
                     }
@@ -481,22 +499,39 @@ pub fn run(
 
             tauri::async_runtime::spawn({
                 let app = app.handle().clone();
+                let health = health.clone();
                 async move {
                     match tokio::net::TcpListener::bind((
-                        "127.0.0.1",
-                        crate::control::CONTROL_PORT,
+                        observer_contract::LOOPBACK_HOST,
+                        observer_contract::CONTROL_PORT,
                     ))
                     .await
                     {
                         Ok(listener) => {
-                            crate::control::serve(app, listener).await;
+                            if let Err(error) = crate::control::serve(app, listener).await {
+                                tracing::error!(
+                                    target: "control",
+                                    error = %error,
+                                    "control server exited"
+                                );
+                                crate::health::record_listener_fault(
+                                    &health,
+                                    crate::health::ListenerSlot::Control,
+                                    format!("serve: {error}"),
+                                );
+                            }
                         }
                         Err(error) => {
                             tracing::error!(
                                 target: "control",
-                                port = crate::control::CONTROL_PORT,
+                                port = observer_contract::CONTROL_PORT,
                                 error = %error,
                                 "control server bind failed"
+                            );
+                            crate::health::record_listener_fault(
+                                &health,
+                                crate::health::ListenerSlot::Control,
+                                format!("bind: {error}"),
                             );
                         }
                     }
@@ -555,6 +590,10 @@ pub fn run(
                         .lock()
                         .map(|health| health.pump_degraded)
                         .unwrap_or_default();
+                    let listener_faults = health
+                        .lock()
+                        .map(|health| health.listener_faults.clone())
+                        .unwrap_or_default();
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -570,6 +609,7 @@ pub fn run(
                         pause: None,
                         views,
                         pump_degraded,
+                        listener_faults,
                     };
                     log_health_transitions(previous.as_ref(), &terminal);
                     if let Ok(mut health) = health.lock() {

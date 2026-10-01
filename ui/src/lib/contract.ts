@@ -78,6 +78,17 @@ export const automationContract = {
     "tray.menu.resume": "tray.menu.resume",
     "tray.root": "tray.root"
   },
+  "endpoints": {
+    "control": {
+      "host": "127.0.0.1",
+      "port": 47248
+    },
+    "health": {
+      "host": "127.0.0.1",
+      "path": "/healthz",
+      "port": 47247
+    }
+  },
   "state_tokens": {
     "app_phase": [
       "error",

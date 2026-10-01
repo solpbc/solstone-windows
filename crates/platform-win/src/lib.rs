@@ -331,6 +331,174 @@ pub fn acquire_single_instance(name: &str) -> InstanceLock {
     }
 }
 
+/// Read-only probe for application process presence via session mutex and process snapshot.
+#[cfg(not(windows))]
+pub fn probe_app_presence(
+    _mutex_name: &str,
+    _image_name: &str,
+) -> (
+    observer_model::SessionMutexView,
+    observer_model::AppPopulation,
+) {
+    (
+        observer_model::SessionMutexView::Failed,
+        observer_model::AppPopulation::Unavailable,
+    )
+}
+
+/// Read-only probe for application process presence via session mutex and process snapshot.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn probe_app_presence(
+    mutex_name: &str,
+    image_name: &str,
+) -> (
+    observer_model::SessionMutexView,
+    observer_model::AppPopulation,
+) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES,
+    };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+
+    let mutex_view = {
+        let full_name = format!("Local\\{mutex_name}");
+        let wide: Vec<u16> = full_name.encode_utf16().chain(Some(0)).collect();
+        let handle =
+            unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(wide.as_ptr())) };
+        match handle {
+            Ok(h) => {
+                let _ = unsafe { CloseHandle(h) };
+                observer_model::SessionMutexView::Exists
+            }
+            Err(error) => {
+                let code = error.code();
+                if code == ERROR_FILE_NOT_FOUND.into() {
+                    observer_model::SessionMutexView::Missing
+                } else if code == ERROR_ACCESS_DENIED.into() {
+                    observer_model::SessionMutexView::Exists
+                } else {
+                    observer_model::SessionMutexView::Failed
+                }
+            }
+        }
+    };
+
+    let app_population = {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        match snapshot {
+            Ok(handle) => {
+                let mut entry = PROCESSENTRY32W {
+                    dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                    ..Default::default()
+                };
+                let mut found = false;
+                let mut error_occurred = false;
+                let walking = match unsafe { Process32FirstW(handle, &mut entry) } {
+                    Ok(()) => true,
+                    Err(error) => {
+                        if error.code() != ERROR_NO_MORE_FILES.into() {
+                            error_occurred = true;
+                        }
+                        false
+                    }
+                };
+
+                while walking {
+                    let len = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                    if exe_name.eq_ignore_ascii_case(image_name) {
+                        found = true;
+                        break;
+                    }
+                    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+                    match unsafe { Process32NextW(handle, &mut entry) } {
+                        Ok(()) => {}
+                        Err(error) => {
+                            if error.code() != ERROR_NO_MORE_FILES.into() {
+                                error_occurred = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+                let _ = unsafe { CloseHandle(handle) };
+
+                if found {
+                    observer_model::AppPopulation::Holder
+                } else if error_occurred {
+                    observer_model::AppPopulation::Unavailable
+                } else {
+                    observer_model::AppPopulation::Empty
+                }
+            }
+            Err(_) => observer_model::AppPopulation::Unavailable,
+        }
+    };
+
+    (mutex_view, app_population)
+}
+
+#[cfg(all(test, windows))]
+#[allow(unsafe_code)]
+mod win_presence_tests {
+    use super::*;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE,
+    };
+
+    #[test]
+    fn probe_random_mutex_is_missing_and_does_not_create() {
+        let name = format!("SolstoneNonExistentTestMutex_{}", std::process::id());
+        let (mutex_view, _) = probe_app_presence(&name, "nonexistent.exe");
+        assert_eq!(mutex_view, observer_model::SessionMutexView::Missing);
+
+        let full_name = format!("Local\\{name}");
+        let wide: Vec<u16> = full_name.encode_utf16().chain(Some(0)).collect();
+        let handle =
+            unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(wide.as_ptr())) };
+        assert!(handle.is_err());
+    }
+
+    #[test]
+    fn probe_test_created_mutex_is_exists_then_missing() {
+        let name = format!("SolstonePresenceTestMutex_{}", std::process::id());
+        let full_name = format!("Local\\{name}");
+        let wide: Vec<u16> = full_name.encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe { CreateMutexW(None, true, PCWSTR(wide.as_ptr())) }.unwrap();
+
+        let (mutex_view, _) = probe_app_presence(&name, "nonexistent.exe");
+        assert_eq!(mutex_view, observer_model::SessionMutexView::Exists);
+
+        unsafe {
+            let _ = CloseHandle(handle);
+        };
+
+        let (mutex_view_after, _) = probe_app_presence(&name, "nonexistent.exe");
+        assert_eq!(mutex_view_after, observer_model::SessionMutexView::Missing);
+    }
+
+    #[test]
+    fn probe_nonexistent_image_population_is_empty() {
+        let (_, pop) = probe_app_presence(
+            "nonexistent_mutex",
+            "definitely_not_a_real_process_name_12345.exe",
+        );
+        assert_eq!(pop, observer_model::AppPopulation::Empty);
+    }
+}
+
 /// A session/power lifecycle notification the pump can deliver to the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemNotification {

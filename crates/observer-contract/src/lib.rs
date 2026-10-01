@@ -33,6 +33,12 @@ use strum::IntoEnumIterator;
 /// Header value pinned as the first key of the generated artifact.
 pub const GENERATED_BANNER: &str = "DO NOT EDIT — run make contract";
 
+/// Fixed loopback ports outside the default Windows dynamic range.
+pub const LOOPBACK_HOST: &str = "127.0.0.1";
+pub const HEALTH_PORT: u16 = 47247;
+pub const HEALTH_PATH: &str = "/healthz";
+pub const CONTROL_PORT: u16 = 47248;
+
 // ── AutomationId source of truth ─────────────────────────────────────────────
 // Namespaced identifiers. Renaming any of these is a compile-time break for
 // every consumer that imports the const, and a contract-diff for the harness.
@@ -322,6 +328,25 @@ fn source_status_tokens() -> Vec<String> {
     v
 }
 
+#[derive(Serialize)]
+struct EndpointControl {
+    host: &'static str,
+    port: u16,
+}
+
+#[derive(Serialize)]
+struct EndpointHealth {
+    host: &'static str,
+    path: &'static str,
+    port: u16,
+}
+
+#[derive(Serialize)]
+struct Endpoints {
+    control: EndpointControl,
+    health: EndpointHealth,
+}
+
 /// The whole contract document, in the exact key order it serializes (BTreeMap
 /// + `_generated` sorting first under ASCII).
 #[derive(Serialize)]
@@ -329,6 +354,7 @@ struct Contract {
     #[serde(rename = "_generated")]
     generated: &'static str,
     automation_ids: BTreeMap<&'static str, &'static str>,
+    endpoints: Endpoints,
     state_tokens: BTreeMap<&'static str, Vec<String>>,
 }
 
@@ -338,6 +364,17 @@ pub fn generate_contract() -> String {
     let contract = Contract {
         generated: GENERATED_BANNER,
         automation_ids: automation_ids(),
+        endpoints: Endpoints {
+            control: EndpointControl {
+                host: LOOPBACK_HOST,
+                port: CONTROL_PORT,
+            },
+            health: EndpointHealth {
+                host: LOOPBACK_HOST,
+                path: HEALTH_PATH,
+                port: HEALTH_PORT,
+            },
+        },
         state_tokens: state_tokens(),
     };
     let mut out = serde_json::to_string_pretty(&contract)
@@ -350,6 +387,7 @@ pub fn generate_contract() -> String {
 mod tests {
     use super::*;
     use observer_model::SourceState;
+    use serde_json::Value;
 
     #[test]
     fn first_key_is_the_generated_banner() {
@@ -377,6 +415,38 @@ mod tests {
         assert!(json.contains("\"observing\""));
         assert!(json.contains("\"no_input_device\""));
         assert!(json.contains("\"system_audio\""));
+    }
+
+    #[test]
+    fn generated_endpoints_match_constants() {
+        let json = generate_contract();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["endpoints"]["control"]["host"].as_str(),
+            Some(LOOPBACK_HOST)
+        );
+        assert_eq!(
+            value["endpoints"]["control"]["port"].as_u64(),
+            Some(CONTROL_PORT as u64)
+        );
+        assert_eq!(
+            value["endpoints"]["health"]["host"].as_str(),
+            Some(LOOPBACK_HOST)
+        );
+        assert_eq!(
+            value["endpoints"]["health"]["path"].as_str(),
+            Some(HEALTH_PATH)
+        );
+        assert_eq!(
+            value["endpoints"]["health"]["port"].as_u64(),
+            Some(HEALTH_PORT as u64)
+        );
+        assert!(value["automation_ids"]["settings.window.root"].is_string());
+        assert!(value["state_tokens"]["app_phase"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("observing")));
     }
 
     /// If a `SourceState` variant is added/removed, this fails until

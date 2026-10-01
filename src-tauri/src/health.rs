@@ -12,15 +12,32 @@
 //! querying `127.0.0.1` only is part of the data covenant: health stays local to
 //! the owner's machine.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use observer_health::to_pretty_json;
-use observer_model::{AppPhase, HealthDump};
+use observer_contract::{HEALTH_PORT, LOOPBACK_HOST};
+use observer_health::{decide_dump, fetch_health_response, to_pretty_json, DumpChoice};
+use observer_model::{classify_presence, AppPhase, HealthDump, Presence};
 
-/// Fixed loopback health port in the IANA dynamic/private range.
-pub const HEALTH_PORT: u16 = 49247;
+pub(crate) enum ListenerSlot {
+    Health,
+    Control,
+}
+
+pub(crate) fn record_listener_fault(
+    health: &Arc<Mutex<HealthDump>>,
+    slot: ListenerSlot,
+    message: String,
+) {
+    let Ok(mut dump) = health.lock() else {
+        return;
+    };
+    match slot {
+        ListenerSlot::Health => dump.listener_faults.health = Some(message),
+        ListenerSlot::Control => dump.listener_faults.control = Some(message),
+    }
+}
 
 /// Honest snapshot for a process that is not currently running.
 pub fn not_running_snapshot() -> HealthDump {
@@ -39,31 +56,52 @@ pub fn not_running_snapshot() -> HealthDump {
         pause: None,
         views: Default::default(),
         pump_degraded: false,
+        listener_faults: observer_model::ListenerFaults::default(),
     }
 }
+
+#[derive(Debug)]
+pub enum DumpStateError {
+    Unavailable { presence: Presence },
+    Serialize(serde_json::Error),
+}
+
+impl std::fmt::Display for DumpStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable { presence } => {
+                let label = match presence {
+                    Presence::Present => "present",
+                    Presence::Unknown => "unknown",
+                    Presence::Absent => "absent",
+                };
+                write!(f, "health endpoint unavailable (presence: {label})")
+            }
+            Self::Serialize(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for DumpStateError {}
 
 /// Render the current snapshot as the canonical `--dump-state` / `/healthz` JSON.
-pub fn dump_state_json() -> Result<String, serde_json::Error> {
-    if let Some(body) = query_running_app() {
-        Ok(body)
-    } else {
-        to_pretty_json(&not_running_snapshot())
+pub fn dump_state_json() -> Result<String, DumpStateError> {
+    let (mutex, population) =
+        platform_win::probe_app_presence("Solstone", "solstone-windows-app.exe");
+    let presence = classify_presence(mutex, population);
+    let host: std::net::Ipv4Addr = LOOPBACK_HOST
+        .parse()
+        .expect("loopback host is an IPv4 address");
+    let query = fetch_health_response(
+        SocketAddr::from((host, HEALTH_PORT)),
+        Duration::from_millis(500),
+        Duration::from_secs(2),
+    );
+    match decide_dump(query, presence) {
+        DumpChoice::Live(dump) => to_pretty_json(&dump).map_err(DumpStateError::Serialize),
+        DumpChoice::NotRunning => {
+            to_pretty_json(&not_running_snapshot()).map_err(DumpStateError::Serialize)
+        }
+        DumpChoice::Failed => Err(DumpStateError::Unavailable { presence }),
     }
-}
-
-fn query_running_app() -> Option<String> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], HEALTH_PORT));
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
-    let timeout = Some(Duration::from_secs(2));
-    stream.set_read_timeout(timeout).ok()?;
-    stream.set_write_timeout(timeout).ok()?;
-    stream
-        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .ok()?;
-
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).ok()?;
-    let response = String::from_utf8(response).ok()?;
-    let (_, body) = response.split_once("\r\n\r\n")?;
-    (!body.is_empty()).then(|| body.to_string())
 }

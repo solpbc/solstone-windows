@@ -29,6 +29,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
+$ContractPath = Join-Path $Root "automation-contract.json"
+$ContractJson = Get-Content -LiteralPath $ContractPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$HealthEndpoint = $ContractJson.endpoints.health
+if (-not $HealthEndpoint.host -or -not $HealthEndpoint.port -or -not $HealthEndpoint.path) {
+    throw "automation contract is missing the health endpoint"
+}
+$HealthUrl = "http://$($HealthEndpoint.host):$($HealthEndpoint.port)$($HealthEndpoint.path)"
+$HealthUrlPs = $HealthUrl.Replace("'", "''")
 if (-not $OutputDir) { $OutputDir = Join-Path $Root "target\screenshots" }
 New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
 
@@ -67,7 +75,6 @@ public static class W {
 "@
 try { [void][W]::SetProcessDPIAware() } catch {}
 $tk = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-$health = "http://127.0.0.1:49247/healthz"
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Remove-Item "$OutputDir\DONE" -Force -ErrorAction SilentlyContinue
 
@@ -116,7 +123,7 @@ Get-Process solstone-windows-app -EA SilentlyContinue | Stop-Process -Force -EA 
 Set-Content "$OutputDir\DONE" -Value "ok" -Encoding ASCII
 '@
 
-$prelude = "`$AppExe = '$AppExe'`r`n`$OutputDir = '$OutputDir'`r`n`$TimeoutSecs = $TimeoutSecs`r`n"
+$prelude = "`$AppExe = '$AppExe'`r`n`$OutputDir = '$OutputDir'`r`n`$TimeoutSecs = $TimeoutSecs`r`n`$health = '$HealthUrlPs'`r`n"
 $s1 = Join-Path $env:TEMP "solstone-capture-session1.ps1"
 $s1cmd = Join-Path $env:TEMP "solstone-capture-session1.cmd"
 Set-Content -Path $s1 -Value ($prelude + $body) -Encoding ASCII

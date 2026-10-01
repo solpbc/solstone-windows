@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::io::Write;
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::time::Duration;
 
+use observer_contract::{CONTROL_PORT, LOOPBACK_HOST};
+use observer_model::{
+    control_ack_after_dispatch, send_control, ControlActions, OPEN_JOURNAL_VERB,
+    SURFACE_ABOUT_VERB, SURFACE_SETTINGS_VERB,
+};
 use tokio::io::AsyncReadExt;
 
-pub const CONTROL_PORT: u16 = 49248;
-
-const OPEN_JOURNAL_VERB: &[u8] = b"open-journal\n";
-const SURFACE_VERB: &[u8] = b"surface-settings\n";
-const SURFACE_ABOUT_VERB: &[u8] = b"surface-about\n";
-
 pub fn signal_surface() -> bool {
-    signal(SURFACE_VERB)
+    signal(SURFACE_SETTINGS_VERB)
 }
 
 pub fn signal_open_journal() -> bool {
@@ -29,35 +27,57 @@ pub fn signal_surface_about() -> bool {
 }
 
 fn signal(verb: &[u8]) -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], CONTROL_PORT));
-    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
-    let timeout = Some(Duration::from_secs(2));
-    if stream.set_read_timeout(timeout).is_err() {
-        return false;
-    }
-    if stream.set_write_timeout(timeout).is_err() {
-        return false;
-    }
-
-    stream.write_all(verb).is_ok()
+    let addr: SocketAddr = format!("{LOOPBACK_HOST}:{CONTROL_PORT}")
+        .parse()
+        .expect("valid loopback socket addr");
+    send_control(
+        addr,
+        verb,
+        Duration::from_millis(500),
+        Duration::from_secs(2),
+    )
+    .is_ok()
 }
 
 pub(crate) fn control_requests_open_journal(buf: &[u8]) -> bool {
     buf.starts_with(OPEN_JOURNAL_VERB)
 }
 
-pub async fn serve(app: tauri::AppHandle, listener: tokio::net::TcpListener) {
+struct TauriControlActions {
+    app: tauri::AppHandle,
+}
+
+impl ControlActions for TauriControlActions {
+    fn open_settings(&self) {
+        let app = self.app.clone();
+        std::thread::spawn(move || {
+            let _ = crate::windows::open_settings(&app);
+        });
+    }
+
+    fn open_about(&self) {
+        let app = self.app.clone();
+        std::thread::spawn(move || {
+            let _ = crate::windows::open_about(&app);
+        });
+    }
+
+    fn open_journal(&self) {
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            use tauri::Manager;
+            let state = app.state::<crate::app::AppState>();
+            open_journal_from_control(&state, &app, Some(&app)).await;
+        });
+    }
+}
+
+pub async fn serve(
+    app: tauri::AppHandle,
+    listener: tokio::net::TcpListener,
+) -> std::io::Result<()> {
     loop {
-        let (stream, _) = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-        };
+        let (stream, _) = listener.accept().await?;
         let app = app.clone();
         tokio::spawn(async move {
             handle_connection(app, stream).await;
@@ -81,26 +101,17 @@ pub(crate) async fn open_journal_from_control<S: crate::windows::JournalSurface>
 }
 
 async fn handle_connection(app: tauri::AppHandle, mut stream: tokio::net::TcpStream) {
+    use tokio::io::AsyncWriteExt;
+
     let mut buf = [0_u8; 64];
     let read = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf)).await;
     let n = match read {
         Ok(Ok(n)) => n,
         _ => return,
     };
-    if control_requests_open_journal(&buf[..n]) {
-        tokio::spawn(async move {
-            use tauri::Manager;
-            let state = app.state::<crate::app::AppState>();
-            open_journal_from_control(&state, &app, Some(&app)).await;
-        });
-    } else if buf[..n].starts_with(SURFACE_ABOUT_VERB) {
-        std::thread::spawn(move || {
-            let _ = crate::windows::open_about(&app);
-        });
-    } else if buf[..n].starts_with(SURFACE_VERB) {
-        std::thread::spawn(move || {
-            let _ = crate::windows::open_settings(&app);
-        });
+    let actions = TauriControlActions { app };
+    if let Some(ack) = control_ack_after_dispatch(&buf[..n], &actions) {
+        let _ = stream.write_all(ack).await;
     }
 }
 
@@ -119,34 +130,6 @@ mod tests {
         KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
     };
     use spl_core::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
-
-    /// The two surface verbs must not prefix-match each other: `handle_connection`
-    /// dispatches on `starts_with`, so a shared prefix would route About to
-    /// Settings and reintroduce exactly the silent-wrong-window bug this verb
-    /// was added to fix.
-    #[test]
-    fn surface_verbs_are_distinguishable() {
-        assert_ne!(SURFACE_VERB, SURFACE_ABOUT_VERB);
-        assert!(!SURFACE_ABOUT_VERB.starts_with(SURFACE_VERB));
-        assert!(!SURFACE_VERB.starts_with(SURFACE_ABOUT_VERB));
-    }
-
-    /// Every view reachable by `--open-view` needs a control verb, or a second
-    /// launch silently opens the wrong one.
-    #[test]
-    fn every_view_has_a_surface_verb() {
-        for view in observer_model::View::ALL {
-            let verb: &[u8] = match view {
-                observer_model::View::Settings => SURFACE_VERB,
-                observer_model::View::About => SURFACE_ABOUT_VERB,
-            };
-            assert!(
-                verb.ends_with(b"\n"),
-                "{} verb must be newline-terminated",
-                view.label()
-            );
-        }
-    }
 
     struct FakeJournalSurface {
         settings_opened: AtomicUsize,

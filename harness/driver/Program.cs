@@ -69,6 +69,16 @@ namespace Solstone.Harness
                 if (opts.Selftest) return Selftest();
 
                 var contract = Contract.Load(opts.ContractPath);
+                if (string.IsNullOrEmpty(opts.HealthUrl))
+                {
+                    var resolved = contract.HealthUrl();
+                    if (string.IsNullOrEmpty(resolved))
+                    {
+                        Console.Error.WriteLine("[driver] contract has no health endpoint; pass --health-url");
+                        return UsageError;
+                    }
+                    opts.HealthUrl = resolved;
+                }
                 var observing = contract.ObservingToken(); // from state_tokens.app_phase
                 Log($"observing token = '{observing}'; health url = {opts.HealthUrl}; timeout = {opts.TimeoutSecs}s");
 
@@ -313,6 +323,15 @@ namespace Solstone.Harness
             failures += Expect("fail-inject: dishonest observing NOT a drop",
                 !(Health.AppState(observingDump) != "observing"));
 
+            failures += Expect("sample contract has no compiled health url", c.HealthUrl() == null);
+            var endpointContract = Contract.Parse(
+                "{\"_generated\":\"x\",\"automation_ids\":{\"settings.window.root\":\"settings.window.root\"},"
+                + "\"state_tokens\":{\"app_phase\":[\"observing\"],\"view_render_state\":[\"rendered\"]},"
+                + "\"endpoints\":{\"health\":{\"host\":\"127.0.0.1\",\"port\":9,\"path\":\"/healthz\"}}}");
+            failures += Expect(
+                "health url from endpoints",
+                endpointContract.HealthUrl() == "http://127.0.0.1:9/healthz");
+
             if (failures == 0) { Log("SELFTEST OK"); return Ok; }
             Log($"SELFTEST FAILED ({failures} checks)");
             return SelftestFailed;
@@ -338,7 +357,7 @@ namespace Solstone.Harness
     internal sealed class Options
     {
         public string ContractPath = "";
-        public string HealthUrl = "http://127.0.0.1:49247/healthz";
+        public string HealthUrl = "";
         public int TimeoutSecs = 60;
         public bool FailInject;
         public bool Selftest;
@@ -391,12 +410,23 @@ namespace Solstone.Harness
         private readonly System.Collections.Generic.Dictionary<string, object> _ids;
         private readonly object[] _appPhase;
         private readonly object[] _viewRenderState;
+        private readonly string _healthUrl;
 
-        private Contract(System.Collections.Generic.Dictionary<string, object> ids, object[] appPhase, object[] viewRenderState)
+        private Contract(
+            System.Collections.Generic.Dictionary<string, object> ids,
+            object[] appPhase,
+            object[] viewRenderState,
+            string healthUrl)
         {
             _ids = ids;
             _appPhase = appPhase;
             _viewRenderState = viewRenderState;
+            _healthUrl = healthUrl;
+        }
+
+        public string? HealthUrl()
+        {
+            return string.IsNullOrEmpty(_healthUrl) ? null : _healthUrl;
         }
 
         public static Contract Load(string path)
@@ -412,7 +442,25 @@ namespace Solstone.Harness
             var tokens = (System.Collections.Generic.Dictionary<string, object>)root["state_tokens"];
             var appPhase = (object[])tokens["app_phase"];
             var viewRenderState = (object[])tokens["view_render_state"];
-            return new Contract(ids, appPhase, viewRenderState);
+            var healthUrl = "";
+            if (root.TryGetValue("endpoints", out var endpointsObj)
+                && endpointsObj is System.Collections.Generic.Dictionary<string, object> endpoints
+                && endpoints.TryGetValue("health", out var healthObj)
+                && healthObj is System.Collections.Generic.Dictionary<string, object> health
+                && health.TryGetValue("host", out var hostObj)
+                && health.TryGetValue("port", out var portObj)
+                && health.TryGetValue("path", out var pathObj)
+                && hostObj != null
+                && portObj != null
+                && pathObj != null)
+            {
+                var port = Convert.ToInt32(portObj, System.Globalization.CultureInfo.InvariantCulture);
+                healthUrl = "http://" + hostObj
+                    + ":"
+                    + port.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + pathObj;
+            }
+            return new Contract(ids, appPhase, viewRenderState, healthUrl);
         }
 
         // The observing token, read from the model-derived app_phase vocabulary.

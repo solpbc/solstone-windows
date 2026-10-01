@@ -62,7 +62,12 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Driver = Join-Path $Root "harness\driver\Driver.csproj"
 $Contract = Join-Path $Root "automation-contract.json"
 $Publish = Join-Path $Root "harness\driver\bin\publish"
-$HealthUrl = "http://127.0.0.1:49247/healthz"
+$ContractJson = Get-Content -LiteralPath $Contract -Raw -Encoding UTF8 | ConvertFrom-Json
+$HealthEndpoint = $ContractJson.endpoints.health
+if (-not $HealthEndpoint.host -or -not $HealthEndpoint.port -or -not $HealthEndpoint.path) {
+    throw "automation contract is missing the health endpoint"
+}
+$HealthUrl = "http://$($HealthEndpoint.host):$($HealthEndpoint.port)$($HealthEndpoint.path)"
 
 # Native proof uses only the resolver-selected dotnet. Default operator smoke
 # retains its PATH/default-location discovery when no explicit path is supplied.
