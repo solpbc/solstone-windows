@@ -52,7 +52,7 @@ help:
 	@echo "release: package runs the source-bound provenance transaction -> target/release-candidate/<VERSION>/ (requires EXPECTED_RELEASE_COMMIT, SOLSTONE_ADVISORY_TREE_SHA256, and the signed mirror packet environment)"
 	@echo "proof: prove-rust-release-native RELEASE_DIR=<candidate> installs and smokes one exact signed candidate"
 	@echo "delivery: publish-origin CANDIDATE_DIR=<candidate> FINALIZATION_RECEIPT=<json> SOURCE_CHECKOUT=<exact-source-tree> CLEARANCE=<json> PUBLICATION_RECEIPT=<json>"
-	@echo "ci = repository-local code-landing checks; no remote host, network, or private mirror"
+	@echo "ci = repository-local code-landing checks; no remote host or private advisory mirror"
 	@echo "ci-full = ci + release advisory config + the native Windows build/test, app crate included; needs WIN_REMOTE_HOST=user@host and SOLSTONE_ADVISORY_MIRROR_LOCATOR"
 
 # Local dev-tooling setup. The Rust/MSVC toolchain is remote (see win-host-ci);
@@ -147,8 +147,8 @@ ui-test:
 # Code-landing gate: repository-local, fast, deterministic. fmt/deny/contract/
 # purity are host-independent; clippy + test cover the cross-platform crates
 # (pure tier + capture-engine); check-windows-target compiles the Windows-only
-# code for the Windows target. It never reaches a remote host, the network, or
-# the private advisory mirror. What it does not prove is printed at the end.
+# code for the Windows target. It never reaches a remote host or the private
+# advisory mirror. What it does not prove is printed at the end.
 ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) fmt --all --check
 	$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings

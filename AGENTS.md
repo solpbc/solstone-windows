@@ -65,7 +65,7 @@ history. Reference only the public charter and license.
 | `make rust-toolchain` | idempotently install the exact pinned Rust toolchain, rustfmt, clippy, and Windows MSVC target |
 | `make build` | `cargo build` the binary + `npm run build` the webview → `ui/dist` |
 | `make test` | `cargo test --workspace` (the pure tier runs off-Windows too) |
-| `make ci` | the code-landing gate, repository-local: host fmt/clippy/contract/tests · Windows-target check · offline locked bans/licenses/sources · UI/shell tests; no remote host and no network |
+| `make ci` | the code-landing gate, repository-local: host fmt/clippy/contract/tests · Windows-target check · offline locked bans/licenses/sources · UI/shell tests; no remote host |
 | `make check-windows-target` | `cargo check` every crate for `x86_64-pc-windows-msvc` from any host, except the two whose graph compiles C with MSVC tools (`pl-transport-win`, the app) |
 | `make ci-full` | the operator gate on the final tree: `make ci`, then `check-release-advisory-config`, then `win-host-ci` (native build/test, app crate included); coding agents run `make ci` only |
 | `make audit` | verify the signed advisory packet and self-contained bundle, then check advisories against the locked graph offline |
@@ -104,7 +104,7 @@ history. Reference only the public charter and license.
 Linux cannot link the Windows MSVC target, and `ring`'s build script needs the
 MSVC tools, so the host cross-target check type-checks without linking and skips
 the two crates whose graph compiles `ring`. `make ci` needs npm and the warmed
-cargo and npm caches but no remote host, network, or private mirror. Its
+cargo and npm caches, but no remote host or private advisory mirror. Its
 cargo-deny bans/licenses/sources sub-gate is offline. `make ci-full` adds the
 native build box (`WIN_REMOTE_HOST`) and the private advisory mirror
 (`SOLSTONE_ADVISORY_MIRROR_LOCATOR`).
