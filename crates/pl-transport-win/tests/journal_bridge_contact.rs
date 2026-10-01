@@ -65,6 +65,13 @@ async fn start_windows_bridge(
     Arc<Mutex<SyncSnapshot>>,
 ) {
     let paired = paired_state();
+    let binding = paired
+        .credential
+        .as_ref()
+        .map(|credential| {
+            pl_transport_win::ack::JournalIdentity::from_credential(credential).client_cert_sha256
+        })
+        .unwrap_or_default();
     let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
     let state_path = std::path::PathBuf::from("/var/tmp").join(format!(
         "journal-bridge-contact-{name}-{}-{unique}.json",
@@ -81,7 +88,7 @@ async fn start_windows_bridge(
         local_offset: Arc::new(TestOffset),
         journal_version: jv.clone(),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
-        confirmation: Arc::new(Mutex::new(String::new())),
+        confirmation: Arc::new(Mutex::new(binding)),
     };
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
     let handle = pl_transport_win::journal_bridge::start(access)

@@ -55,8 +55,13 @@ const BASELINE_CALLERS: &[BaselineCaller] = &[
     },
     BaselineCaller {
         relative: "../../src-tauri/src/ipc.rs",
-        needle: "pl_transport_win::run_uploader",
-        v3_surface: "pl_transport_win::run_uploader",
+        needle: "pl_transport_win::session::pair",
+        v3_surface: "pl_transport_win::session::pair",
+    },
+    BaselineCaller {
+        relative: "../../src-tauri/src/ipc.rs",
+        needle: "pl_transport_win::session::answer",
+        v3_surface: "pl_transport_win::session::answer",
     },
     BaselineCaller {
         relative: "../../src-tauri/src/app.rs",

@@ -37,6 +37,7 @@ fn run_child() -> ! {
     let root = temp_root(std::process::id());
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
+    let mark = std::env::var("SOLSTONE_INTEGRATION_STACK_MARK").unwrap();
     let args = [
         "--integration".to_string(),
         "pair".to_string(),
@@ -44,6 +45,8 @@ fn run_child() -> ! {
         "5".to_string(),
         "--carrier".to_string(),
         "relay".to_string(),
+        "--mark".to_string(),
+        mark,
     ];
     let selection = integration::selected(&args).unwrap();
     let environment = environment(&root);
@@ -83,11 +86,15 @@ async fn integration_pair_emits_one_envelope_from_one_mib_caller_stack() {
     let link = relay_form_link(&origin, &PAIR_SECRET, &state.json_ca.spki_pin());
     let fragment = link.split_once('#').unwrap().1.to_string();
     let child_link = link.clone();
+    let jid = support::relay_pairing::jid_for_ca(&state.json_ca);
+    let mark_spec = pl_transport_win::unknown_journals::mark_spec_for_jid(&jid).unwrap();
+    let mark_arg = format!("{}.{}", mark_spec.words[0], mark_spec.words[1]);
 
     let (output, child_id) = tokio::task::spawn_blocking(move || {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST_NAME, "--nocapture"])
             .env(CHILD_ENV, "1")
+            .env("SOLSTONE_INTEGRATION_STACK_MARK", mark_arg)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

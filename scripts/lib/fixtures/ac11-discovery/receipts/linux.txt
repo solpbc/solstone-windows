@@ -287,7 +287,7 @@ journal_version::tests::newer_value_on_reconnect_replaces_old_value: test
 journal_version::tests::same_identity_pairing_clears_and_rejects_old_completion_and_disconnect: test
 journal_version::tests::terminal_transport_errors_preserve_durable_version_and_withhold_freshness: test
 journal_version::tests::version_only_publish_preserves_journal_name_across_reconstruction: test
-ordinary_request::tests::registry_is_the_exact_eight_route_inventory: test
+ordinary_request::tests::registry_is_the_exact_nine_route_inventory: test
 pairing::tests::error_mapper_covers_all_shared_variants_without_secret_leakage: test
 pairing::tests::pairing_adapter_never_emits_shared_tls_extra_tokens: test
 pairing::tests::usable_route_gate_matches_transport_constructor_predicate: test
@@ -365,7 +365,7 @@ observation_is_inert: test
 
 1 test, 0 benchmarks
      Running tests/ordinary_request_authority.rs (target/debug/deps/ordinary_request_authority-4fe55879eb24bbe5)
-all_eight_production_helpers_use_the_shared_ordinary_request_authority: test
+all_nine_production_helpers_use_the_shared_ordinary_request_authority: test
 direct_forbid_after_write_never_retries_partial_or_complete_put: test
 direct_replay_safe_helpers_retry_before_and_during_request_writes: test
 direct_shared_request_caps_use_exact_assembled_wire_lengths: test

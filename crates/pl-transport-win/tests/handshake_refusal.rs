@@ -156,8 +156,10 @@ async fn open_journal_request(handle: &pl_transport_win::journal_bridge::Journal
 async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
     let (pin, port, _, journal) =
         refusing_journal(CertificateError::ApplicationVerificationFailure).await;
+    let cred = direct_credential(pin, port);
+    let binding = pl_transport_win::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
     let paired = PairedState {
-        credential: Some(direct_credential(pin.clone(), port)),
+        credential: Some(cred),
         ..Default::default()
     };
     let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -169,8 +171,6 @@ async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
         state_path.with_file_name(format!("handshake-refusal-jv-{unique}.json")),
     ));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-    let cred = direct_credential(pin, port);
-    let binding = pl_transport_win::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
     let cfg = SyncConfig {
         device_label: "handshake-refusal-test".into(),
         period_secs: 300,

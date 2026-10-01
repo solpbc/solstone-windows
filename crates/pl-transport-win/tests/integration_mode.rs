@@ -178,12 +178,15 @@ async fn serve_direct_unconfirmed_upload_journal(listener: TcpListener, acceptor
 }
 
 fn save_direct_pairing(root: &Path, credential: Credential) {
+    let env = environment(root);
     PairedState {
         credential: Some(credential),
         ..Default::default()
     }
-    .save(&environment(root).state_path)
+    .save(&env.state_path)
     .unwrap();
+    let cache = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    pl_transport_win::answer::settle_grandfather(&env.state_path, &cache).unwrap();
 }
 
 const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

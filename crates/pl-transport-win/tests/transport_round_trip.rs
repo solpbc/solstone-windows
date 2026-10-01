@@ -430,6 +430,14 @@ async fn start_test_bridge(
 ) -> journal_bridge::JournalBridgeHandle {
     let mut cfg = service_config(state_path);
     cfg.journal_version = journal_version;
+    let binding = paired
+        .credential
+        .as_ref()
+        .map(|credential| {
+            pl_transport_win::ack::JournalIdentity::from_credential(credential).client_cert_sha256
+        })
+        .unwrap_or_default();
+    *cfg.confirmation.lock().unwrap() = binding;
     let access = CredentialAccess::bind(paired, &cfg, sync, None).unwrap();
     journal_bridge::start(access).await.unwrap()
 }
@@ -1136,7 +1144,7 @@ async fn service_pair_persists_credential_without_register_request() {
     assert!(PairedState::load(&state_path).unwrap().credential.is_some());
     assert_eq!(
         sync.lock().unwrap().pairing.phase,
-        observer_model::PairingPhase::Paired
+        observer_model::PairingPhase::AwaitingConfirmation
     );
 
     let requests = [server.await.unwrap()];
@@ -3804,6 +3812,8 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
     let (jv, sync) = test_jv_and_sync("carrier-trigger");
     let mut cfg = service_config(state_path.clone());
     cfg.journal_version = jv;
+    let binding = pl_transport_win::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+    *cfg.confirmation.lock().unwrap() = binding;
     let observer = spl_transport::observe::OperationObserver::new();
     let access =
         CredentialAccess::bind(&paired, &cfg, sync.clone(), Some(observer.clone())).unwrap();

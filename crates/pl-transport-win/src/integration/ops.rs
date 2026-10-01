@@ -1241,6 +1241,8 @@ mod tests {
         }
         .save(&environment.state_path)
         .unwrap();
+        let cache = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        crate::answer::settle_grandfather(&environment.state_path, &cache).unwrap();
 
         let argv = vec![
             "--integration".to_string(),
@@ -1430,6 +1432,8 @@ mod tests {
             ..Default::default()
         };
         paired.save(&environment.state_path).unwrap();
+        let cache = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        crate::answer::settle_grandfather(&environment.state_path, &cache).unwrap();
         let fixture_faulted = Arc::new(AtomicBool::new(false));
 
         // Tokio cannot auto-advance paused time while a blocking task is
