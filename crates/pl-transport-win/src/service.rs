@@ -142,8 +142,24 @@ pub fn publish_pairing(
                     return;
                 }
 
+                // An empty snapshot binding still publishes a bound failure for
+                // the current pairing: paired, awaiting confirmation, or
+                // unpaired while confirmation names this binding. A ceremony,
+                // an already-failed attempt, and an unpaired snapshot that
+                // does not name this binding are not that pairing.
                 if matches!(kind, BoundKind::Failed { .. }) && snapshot_binding.is_empty() {
-                    return;
+                    let confirmed_this = {
+                        let confirmed = confirmation.lock().unwrap();
+                        !confirmed.is_empty() && *confirmed == binding
+                    };
+                    let current = matches!(
+                        snapshot.pairing.phase,
+                        PairingPhase::Paired | PairingPhase::AwaitingConfirmation
+                    ) || (snapshot.pairing.phase == PairingPhase::NotPaired
+                        && confirmed_this);
+                    if !current {
+                        return;
+                    }
                 }
 
                 let confirmed = confirmation.lock().unwrap();
