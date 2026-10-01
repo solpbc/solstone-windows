@@ -507,7 +507,7 @@ fn now_secs() -> u64 {
 
 // ── roundtrip ────────────────────────────────────────────────────────────────
 
-async fn roundtrip(
+pub async fn roundtrip(
     command: &Command,
     environment: &Environment,
     observer: ObserverHandle,
@@ -643,7 +643,7 @@ fn capability_from_bootstrap(response: &spl_core::http::HttpResponse) -> Option<
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn fetch(
+pub async fn fetch(
     command: &Command,
     environment: &Environment,
     observer: ObserverHandle,
@@ -678,6 +678,11 @@ async fn fetch(
         .as_ref()
         .map(|c| crate::ack::JournalIdentity::from_credential(c).client_cert_sha256)
         .unwrap_or_default();
+    let ans_path = crate::answer::answer_path(&environment.state_path);
+    let confirmed = match crate::answer::read_answer(&ans_path) {
+        Ok(Some(ans)) if ans.confirmed == binding => binding,
+        _ => String::new(),
+    };
     let cfg = SyncConfig {
         device_label: environment.device_label.clone(),
         period_secs: environment.period_secs,
@@ -686,7 +691,10 @@ async fn fetch(
         local_offset: Arc::new(FixedOffset(0)),
         journal_version: jv,
         facts_fn: Arc::new(RawDeviceFacts::default),
-        confirmation: Arc::new(Mutex::new(binding)),
+        confirmation: Arc::new(Mutex::new(confirmed)),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
     let access = match CredentialAccess::bind(&paired, &cfg, sync.clone(), observer) {
         Ok(access) => access,
@@ -1003,7 +1011,7 @@ pub(crate) fn earned_boundary(day: &str, segment: &str, offset: i64) -> Option<(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn upload(
+pub async fn upload(
     command: &Command,
     environment: &Environment,
     observer: ObserverHandle,

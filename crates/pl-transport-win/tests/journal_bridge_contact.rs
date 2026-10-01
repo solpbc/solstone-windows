@@ -73,7 +73,7 @@ async fn start_windows_bridge(
         })
         .unwrap_or_default();
     let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let state_path = std::path::PathBuf::from("/var/tmp").join(format!(
+    let state_path = std::env::temp_dir().join(format!(
         "journal-bridge-contact-{name}-{}-{unique}.json",
         std::process::id()
     ));
@@ -89,6 +89,9 @@ async fn start_windows_bridge(
         journal_version: jv.clone(),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(binding)),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
     let handle = pl_transport_win::journal_bridge::start(access)
@@ -233,5 +236,43 @@ async fn bridge_shutdown_stops_subscription_and_marks_sessions_disconnected() {
     assert!(
         !sync.lock().unwrap().journal_version_fresh,
         "shutdown must retire the status task and mark its journal session disconnected"
+    );
+}
+
+#[tokio::test]
+async fn bridge_returns_awaiting_confirmation_when_unconfirmed() {
+    let paired = paired_state();
+    let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let state_path = std::env::temp_dir().join(format!(
+        "journal-bridge-awaiting-{}-{unique}.json",
+        std::process::id()
+    ));
+    let jv_path = state_path.with_file_name("journal-version-awaiting.json");
+    let jv = Arc::new(pl_transport_win::JournalVersionController::new(jv_path));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let cfg = SyncConfig {
+        device_label: "bridge-awaiting-test".into(),
+        period_secs: 300,
+        segments_root: state_path.with_extension("segments"),
+        state_path,
+        local_offset: Arc::new(TestOffset),
+        journal_version: jv.clone(),
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(String::new())),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+    let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
+    let err = pl_transport_win::journal_bridge::start(access)
+        .await
+        .err()
+        .expect("must fail");
+    assert!(
+        matches!(
+            err,
+            pl_transport_win::journal_bridge::BridgeStartError::AwaitingConfirmation
+        ),
+        "bridge start must return AwaitingConfirmation when gate is closed"
     );
 }

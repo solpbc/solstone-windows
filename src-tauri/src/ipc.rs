@@ -90,8 +90,11 @@ pub async fn open_about(app: tauri::AppHandle) -> Result<(), String> {
 /// Open (create-or-focus) the native journal window backed by the loopback bridge.
 /// Refuses before creating any listener/window when not paired.
 #[tauri::command]
-pub async fn open_journal(app: tauri::AppHandle) -> Result<(), String> {
-    crate::windows::open_journal(&app)
+pub async fn open_journal(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<(), String> {
+    crate::windows::open_journal(&state, &app, Some(&app))
         .await
         .map_err(|e| e.token().to_string())
 }
@@ -166,11 +169,11 @@ pub async fn pair(
     // polls it. With the handshake and the uploader hand-off inline it was large
     // enough to overflow that thread when the owner pressed pair. Boxing keeps the
     // future Tauri moves down to the arguments and one pointer.
-    Box::pin(pair_session(app, &state, link)).await
+    Box::pin(pair_session(&app, &state, link)).await
 }
 
-async fn pair_session(
-    app: tauri::AppHandle,
+pub async fn pair_session<S: crate::windows::JournalSurface>(
+    surface: &S,
     state: &crate::app::AppState,
     link: String,
 ) -> Result<(), String> {
@@ -186,9 +189,7 @@ async fn pair_session(
         "pairing attempt"
     );
 
-    let app_handle = app.clone();
     let journal_bridge = state.journal_bridge.clone();
-    let journal_open_lock = state.journal_open_lock.clone();
 
     let shutdown_bridge = move || {
         let journal_bridge = journal_bridge.clone();
@@ -203,14 +204,23 @@ async fn pair_session(
         }
     };
 
-    let close_journal_window = move || {
-        let app_handle = app_handle.clone();
-        let journal_open_lock = journal_open_lock.clone();
-        async move {
-            let _guard = journal_open_lock.lock().await;
-            if let Some(window) = app_handle.get_webview_window("journal") {
-                let _ = window.close();
-            }
+    // Pair holds journal-open across the handshake, so an open waits behind pairing.
+    #[cfg(test)]
+    if let Some(probe) = &state.probe {
+        probe.pair_at_lock.notify_one();
+        probe.release_pair.notified().await;
+        probe
+            .pair_entered_lock
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let journal_open_guard = state.journal_open_lock.lock().await;
+
+    let close_journal_window = {
+        let surface_ref = surface;
+        move || {
+            let _guard = journal_open_guard;
+            surface_ref.close_journal();
+            async move {}
         }
     };
 
@@ -251,6 +261,15 @@ pub async fn answer_pairing(
     binding: String,
     action: String,
 ) -> Result<(), String> {
+    answer_pairing_surface(&app, &state, binding, action).await
+}
+
+pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
+    surface: &S,
+    state: &crate::app::AppState,
+    binding: String,
+    action: String,
+) -> Result<(), String> {
     let act = match action.as_str() {
         "confirm" => pl_transport_win::session::PairingAction::Confirm,
         "reject" => pl_transport_win::session::PairingAction::Reject,
@@ -284,9 +303,7 @@ pub async fn answer_pairing(
         if let Some(bridge) = bridge {
             bridge.shutdown_and_wait().await;
         }
-        if let Some(window) = app.get_webview_window("journal") {
-            let _ = window.close();
-        }
+        surface.close_journal();
     }
 
     Ok(())

@@ -57,6 +57,13 @@ tauri-plugin-opener = "2"
 velopack = { version = "=1.2.0", features = ["public-utils"] }
 url = "2"
 
+[dev-dependencies]
+rcgen = { workspace = true, features = ["x509-parser"] }
+tokio-rustls.workspace = true
+rustls.workspace = true
+spl-core.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
+
 [features]
 # Default keeps the custom protocol off; release builds enable as needed.
 custom-protocol = ["tauri/custom-protocol"]

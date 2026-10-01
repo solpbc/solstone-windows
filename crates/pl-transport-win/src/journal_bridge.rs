@@ -235,6 +235,7 @@ struct BridgeLifecycle {
     sync: Arc<Mutex<observer_model::SyncSnapshot>>,
     client_slot: ClientSlot,
     confirmation: Arc<Mutex<String>>,
+    tombstone: Arc<Mutex<Option<String>>>,
 }
 
 impl BridgeLifecycle {
@@ -249,6 +250,7 @@ impl BridgeLifecycle {
             sync: access.sync(),
             client_slot: access.client_slot(),
             confirmation: access.confirmation(),
+            tombstone: access.tombstone(),
         }
     }
 
@@ -264,6 +266,7 @@ impl BridgeLifecycle {
             crate::service::publish_pairing(
                 &self.sync,
                 &self.confirmation,
+                &self.tombstone,
                 crate::service::PairingWrite::Bound {
                     binding,
                     label,

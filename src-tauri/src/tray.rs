@@ -138,7 +138,9 @@ pub fn init(
             observer_contract::tray::MENU_OPEN_JOURNAL => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = crate::windows::open_journal(&app).await;
+                    use tauri::Manager;
+                    let state = app.state::<crate::app::AppState>();
+                    open_journal_from_menu(&state, &app, Some(&app)).await;
                 });
             }
             observer_contract::tray::MENU_OPEN_SETTINGS => {
@@ -207,4 +209,12 @@ fn icon_for(visual: TrayVisual) -> Image<'static> {
         TrayVisual::Error => include_bytes!("../icons/tray/error.ico").as_slice(),
     };
     Image::from_bytes(bytes).expect("bundled tray icon is a valid ICO")
+}
+
+pub(crate) async fn open_journal_from_menu<S: crate::windows::JournalSurface>(
+    state: &crate::app::AppState,
+    surface: &S,
+    app: Option<&tauri::AppHandle>,
+) {
+    let _ = crate::windows::open_journal(state, surface, app).await;
 }

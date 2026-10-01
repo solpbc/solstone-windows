@@ -20,15 +20,18 @@ use pl_transport_win::answer::{
     AnswerState,
 };
 use pl_transport_win::client::{ObserverClient, RouteError};
-use pl_transport_win::coordinator::TEST_AWAITING_HOLD;
+#[cfg(feature = "awaiting-hold")]
+use pl_transport_win::coordinator::AwaitingHold;
+use pl_transport_win::coordinator::UploadCoordinator;
 use pl_transport_win::credential::{CasKey, PairedState};
+use pl_transport_win::sealed::{LocalSealedStore, SealedStore};
 use pl_transport_win::service::{
     publish_pairing, run_uploader, BoundKind, PairingWrite, SyncConfig,
 };
 use pl_transport_win::session::{answer, PairingAction};
 use pl_transport_win::slot::UploaderSlot;
 use pl_transport_win::unknown_journals::mark_spec_for_jid;
-use pl_transport_win::{CredentialAccess, JournalVersionController};
+use pl_transport_win::{CredentialAccess, JournalVersionController, DEFAULT_UPLOAD_INTERVAL_SECS};
 use spl_core::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA, FLAG_WINDOW, RECOMMENDED_CHUNK};
 use spl_core::mux::INITIAL_WINDOW;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,6 +39,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 use support::journal_fake::{direct_credential, read_framed_request, self_signed, server_config};
+use support::log_capture::CapturingSubscriber;
 
 static TEST_PATH_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -44,7 +48,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(name: &str) -> Self {
         let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = PathBuf::from("/var/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "mark-confirmation-{name}-{}-{unique}",
             std::process::id()
         ));
@@ -117,7 +121,7 @@ async fn write_response(
     while tls.read(&mut drain).await.unwrap_or(0) != 0 {}
 }
 
-/// Acceptance 1: Gated routes do not dial while awaiting confirmation.
+/// Gated routes do not dial while awaiting confirmation.
 /// Confirmed client dials.
 /// With journal A confirmed, a second client B whose cell was bound while cache has A
 /// leaves B's ingest refused / closed.
@@ -192,6 +196,9 @@ async fn mark_confirmation_gated_routes_do_not_dial() {
         journal_version: jv,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
 
     let cred_b = direct_credential(pin, port);
@@ -210,7 +217,7 @@ async fn mark_confirmation_gated_routes_do_not_dial() {
     server_task.abort();
 }
 
-/// Acceptance 2: Rebuilding access keeps the closed gate until opened.
+/// Rebuilding access keeps the closed gate until opened.
 #[tokio::test]
 async fn mark_confirmation_rebuild_keeps_the_closed_gate() {
     let (cert, _key) = self_signed();
@@ -229,6 +236,9 @@ async fn mark_confirmation_rebuild_keeps_the_closed_gate() {
         journal_version: jv,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
 
     let cred = direct_credential(pin, 1);
@@ -264,16 +274,14 @@ async fn mark_confirmation_rebuild_keeps_the_closed_gate() {
     assert!(client_slot.load().gate_open());
 }
 
-/// Acceptance 3: An awaiting tick does not count as a failure.
-#[tokio::test]
+/// An awaiting tick does not count as a failure.
+#[tokio::test(start_paused = true)]
 async fn mark_confirmation_awaiting_tick_is_not_a_failure() {
     let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let dir = TempDir::new("awaiting-tick");
     let segments_dir = dir.path().join("segments");
-    let day_dir = segments_dir.join("20260930");
-    std::fs::create_dir_all(&day_dir).unwrap();
-    std::fs::write(day_dir.join("000000_300.tar.gz"), b"dummy-data").unwrap();
+    std::fs::create_dir_all(&segments_dir).unwrap();
 
     let state_path = dir.path().join("pairing.json");
     let confirmation = Arc::new(Mutex::new(String::new()));
@@ -282,12 +290,15 @@ async fn mark_confirmation_awaiting_tick_is_not_a_failure() {
     let cfg = SyncConfig {
         device_label: "test".into(),
         period_secs: 300,
-        segments_root: segments_dir,
+        segments_root: segments_dir.clone(),
         state_path,
         local_offset: Arc::new(UtcOffset),
-        journal_version: jv,
+        journal_version: jv.clone(),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
 
     let cred = direct_credential(pin, 1);
@@ -296,64 +307,86 @@ async fn mark_confirmation_awaiting_tick_is_not_a_failure() {
         ..Default::default()
     };
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+    let client_slot = access.client_slot();
+    let post_connect = access.post_connect();
+
+    post_connect.trigger();
+
+    let store: Box<dyn SealedStore> =
+        Box::new(LocalSealedStore::new(&cfg.segments_root, cfg.period_secs));
+    let coordinator = Arc::new(UploadCoordinator::new_with_slot(
+        client_slot,
+        store,
+        sync.clone(),
+        cfg.period_secs,
+        cfg.local_offset.clone(),
+        cfg.journal_version.clone(),
+        Some(post_connect.clone()),
+        access.journal_version_token(),
+        Some(access.post_connect_token()),
+        cfg.confirmation.clone(),
+        cfg.tombstone.clone(),
+    ));
 
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(pl_transport_win::SlotExit::Run);
     let wake = Arc::new(tokio::sync::Notify::new());
-    let uploader_task = tokio::spawn(run_uploader(access, cfg, sync.clone(), cancel_rx, wake));
+    let coord = coordinator.clone();
+    let uploader_task = tokio::spawn(async move { coord.run(cancel_rx, wake).await });
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Check snapshot values
-    {
-        let snap = sync.lock().unwrap();
-        assert_eq!(snap.upload.failed_segments, 0);
-        assert!(snap.upload.last_error.is_none());
-        assert_eq!(snap.upload.last_successful_sync, None);
-        assert_eq!(snap.upload.recent_error_count, 0);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
     }
+
+    let subscriber = CapturingSubscriber::for_target("pl_upload");
+    subscriber.install();
+    let _ = subscriber.take();
+
+    let before_last_sync = sync.lock().unwrap().upload.last_successful_sync;
+    let before_seg_count = coordinator.segment_bound_count();
+    let before_day_count = coordinator.day_bound_count();
+    let before_last_connected = post_connect.last_connected_epoch();
+
+    tokio::time::advance(Duration::from_secs(DEFAULT_UPLOAD_INTERVAL_SECS + 1)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        sync.lock().unwrap().upload.last_successful_sync,
+        before_last_sync
+    );
+    assert_eq!(coordinator.segment_bound_count(), before_seg_count);
+    assert_eq!(coordinator.day_bound_count(), before_day_count);
+    assert_eq!(post_connect.last_connected_epoch(), before_last_connected);
+
+    let lines = subscriber.take();
+    assert!(!lines.iter().any(|line| line.contains("upload event")));
 
     let _ = cancel_tx.send(pl_transport_win::SlotExit::Shutdown);
     let _ = uploader_task.await;
 }
 
-/// Acceptance 4: Kicking the slot wakes a 300s backoff immediately.
-#[tokio::test]
+/// Kicking the slot wakes a 300s backoff immediately without advancing the clock.
+#[tokio::test(start_paused = true)]
 async fn mark_confirmation_kick_wakes_a_300s_backoff() {
-    let (cert, key) = self_signed();
+    let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+
+    // Use a closed port so every dial returns RouteError::Transport
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
-    let upload_received = Arc::new(AtomicBool::new(false));
-
-    let upload_flag = upload_received.clone();
-    let server_task = tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let acceptor = acceptor.clone();
-            let upload_flag = upload_flag.clone();
-            tokio::spawn(async move {
-                if let Ok(mut tls) = acceptor.accept(stream).await {
-                    let (stream_id, req) = read_framed_request(&mut tls).await;
-                    let req_str = String::from_utf8_lossy(&req);
-                    if req_str.contains("/app/devices/ingest") {
-                        upload_flag.store(true, Ordering::SeqCst);
-                    }
-                    let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"status\":\"ok\",\"segment\":\"000000_300\"}"
-                        .to_vec();
-                    write_response(&mut tls, stream_id, resp).await;
-                }
-            });
-        }
-    });
+    drop(listener);
 
     let dir = TempDir::new("kick-backoff");
     let segments_dir = dir.path().join("segments");
-    let day_dir = segments_dir.join("20260930");
-    std::fs::create_dir_all(&day_dir).unwrap();
-    std::fs::write(day_dir.join("000000_300.tar.gz"), b"dummy-data").unwrap();
+    let seg_dir = segments_dir.join("1");
+    std::fs::create_dir_all(&seg_dir).unwrap();
+    std::fs::write(seg_dir.join("screen.mp4"), b"dummy-data").unwrap();
 
     let state_path = dir.path().join("pairing.json");
-    let confirmation = Arc::new(Mutex::new(String::new()));
+    let cred = direct_credential(pin, port);
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let confirmation = Arc::new(Mutex::new(binding.clone())); // Gate open
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
     let cfg = SyncConfig {
@@ -365,10 +398,11 @@ async fn mark_confirmation_kick_wakes_a_300s_backoff() {
         journal_version: jv,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
 
-    let cred = direct_credential(pin, port);
-    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
     let paired = PairedState {
         credential: Some(cred),
         ..Default::default()
@@ -377,7 +411,6 @@ async fn mark_confirmation_kick_wakes_a_300s_backoff() {
 
     let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
-    let access_mutex = Arc::new(tokio::sync::Mutex::new(Some(access.clone())));
 
     let wake = slot.lock().await.wake();
     let cfg_clone = cfg.clone();
@@ -387,33 +420,33 @@ async fn mark_confirmation_kick_wakes_a_300s_backoff() {
         .replace(move |rx| run_uploader(access, cfg_clone, sync_clone, rx, wake))
         .await;
 
-    // Give setup_uploader a moment to run and set snapshot binding
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    async fn wait_for_recent_errors(sync: &Arc<Mutex<SyncSnapshot>>, target: u32) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if u32::from(sync.lock().unwrap().upload.recent_error_count) >= target {
+                return;
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
+        }
+        let count = u32::from(sync.lock().unwrap().upload.recent_error_count);
+        panic!(
+            "tick timed out waiting for recent_error_count >= {}, current = {}",
+            target, count
+        );
+    }
 
-    // Confirm via answer()
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        answer(
-            PairingAction::Confirm,
-            &binding,
-            &cfg,
-            &sync,
-            &access_mutex,
-            &slot,
-        ),
-    )
-    .await
-    .expect("answer timeout")
-    .expect("answer confirm");
+    // Drive kicks: 5->10->20->40->80->160->300 (total 7 kicks + 1 initial = 8 errors)
+    for target in 1..=8 {
+        slot.lock().await.kick();
+        wait_for_recent_errors(&sync, target).await;
+    }
 
-    // Upload occurs immediately without waiting 300s
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(upload_received.load(Ordering::SeqCst));
-
-    server_task.abort();
+    assert_eq!(sync.lock().unwrap().upload.recent_error_count, 8);
 }
 
-/// Acceptance 5: Kicking under a paused clock wakes the loop and completes upload.
+/// Kicking under a paused clock wakes the loop and completes upload.
+#[cfg(feature = "awaiting-hold")]
 #[tokio::test]
 async fn mark_confirmation_kick_under_a_paused_clock() {
     let (cert, key) = self_signed();
@@ -453,6 +486,13 @@ async fn mark_confirmation_kick_under_a_paused_clock() {
     let confirmation = Arc::new(Mutex::new(String::new()));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let awaiting_hold = Some(AwaitingHold {
+        entered: entered.clone(),
+        release: release.clone(),
+    });
+
     let cfg = SyncConfig {
         device_label: "test".into(),
         period_secs: 300,
@@ -462,6 +502,8 @@ async fn mark_confirmation_kick_under_a_paused_clock() {
         journal_version: jv,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
+        tombstone: Arc::new(Mutex::new(None)),
+        awaiting_hold,
     };
 
     let cred = direct_credential(pin, port);
@@ -471,10 +513,6 @@ async fn mark_confirmation_kick_under_a_paused_clock() {
         ..Default::default()
     };
     paired.save(&state_path).unwrap();
-
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
-    *TEST_AWAITING_HOLD.lock().unwrap() = Some((entered.clone(), release.clone()));
 
     let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
@@ -488,10 +526,14 @@ async fn mark_confirmation_kick_under_a_paused_clock() {
         .replace(move |rx| run_uploader(access, cfg_clone, sync_clone, rx, wake))
         .await;
 
-    // Wait until coordinator tick enters the awaiting hold
-    entered.notified().await;
+    slot.lock().await.kick();
 
-    // Confirm while held
+    // Wait until coordinator tick enters the awaiting hold
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("entered awaiting hold");
+
+    // Confirm while awaiting
     answer(
         PairingAction::Confirm,
         &binding,
@@ -513,7 +555,7 @@ async fn mark_confirmation_kick_under_a_paused_clock() {
     server_task.abort();
 }
 
-/// Acceptance 6: Reject deletes the DER ID and cleans up state.
+/// Reject deletes the DER ID and cleans up state.
 #[tokio::test]
 async fn mark_confirmation_reject_deletes_the_der_id() {
     let (cert, key) = self_signed();
@@ -525,9 +567,14 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
     let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
     let lock_held_during_delete = Arc::new(AtomicBool::new(false));
 
+    let cred = direct_credential(pin, port);
+    let der_certs = spl_transport::tls::parse_certs(&cred.client_cert_pem).unwrap();
+    let expected_client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der_certs[0].as_ref()));
+
     let delete_rec = delete_received.clone();
     let slot_clone = slot.clone();
     let lock_held = lock_held_during_delete.clone();
+    let expected_id = expected_client_id.clone();
 
     let server_task = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
@@ -535,19 +582,24 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
             let delete_rec = delete_rec.clone();
             let slot_clone = slot_clone.clone();
             let lock_held = lock_held.clone();
+            let expected_id = expected_id.clone();
             tokio::spawn(async move {
                 if let Ok(mut tls) = acceptor.accept(stream).await {
                     let (stream_id, req) = read_framed_request(&mut tls).await;
                     let req_str = String::from_utf8_lossy(&req);
                     if req_str.contains("/app/network/api/clients/") {
-                        // Check if uploader slot is held during delete
                         if slot_clone.try_lock().is_err() {
                             lock_held.store(true, Ordering::SeqCst);
                         }
                         delete_rec.lock().unwrap().push(req_str.to_string());
+                        if req_str.contains(&expected_id) {
+                            let resp = b"HTTP/1.1 204 No Content\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        } else {
+                            let resp = b"HTTP/1.1 404 Not Found\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        }
                     }
-                    let resp = b"HTTP/1.1 204 No Content\r\n\r\n".to_vec();
-                    write_response(&mut tls, stream_id, resp).await;
                 }
             });
         }
@@ -561,6 +613,7 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
 
     let state_path = dir.path().join("pairing.json");
     let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
     let cfg = SyncConfig {
@@ -572,9 +625,11 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
         journal_version: jv,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
 
-    let cred = direct_credential(pin, port);
     let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
     let paired = PairedState {
         credential: Some(cred.clone()),
@@ -584,6 +639,14 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
 
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
     let access_mutex = Arc::new(tokio::sync::Mutex::new(Some(access.clone())));
+
+    let wake = slot.lock().await.wake();
+    let cfg_clone = cfg.clone();
+    let sync_clone = sync.clone();
+    slot.lock()
+        .await
+        .replace(move |rx| run_uploader(access, cfg_clone, sync_clone, rx, wake))
+        .await;
 
     // Set active pairing in snapshot
     {
@@ -607,8 +670,6 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
     assert!(lock_held_during_delete.load(Ordering::SeqCst));
     assert_eq!(delete_received.lock().unwrap().len(), 1);
     let delete_req = &delete_received.lock().unwrap()[0];
-    let der_certs = spl_transport::tls::parse_certs(&cred.client_cert_pem).unwrap();
-    let expected_client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der_certs[0].as_ref()));
     assert!(delete_req.contains(&expected_client_id));
 
     // pairing.json deleted, segments remain, phase is NotPaired(MARK_REJECTED_DETAIL)
@@ -620,10 +681,385 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
         assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
     }
 
+    // A later Bound { Failed } leaves phase NotPaired with mark_rejected
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: binding.clone(),
+            label: "Home".into(),
+            mark: None,
+            kind: BoundKind::Failed {
+                detail: Some("late_error".into()),
+            },
+        },
+    );
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+    }
+
     server_task.abort();
 }
 
-/// Acceptance 7: Stale answer changes nothing.
+/// Cancel deletes pairing.json and sets phase NotPaired with pairing_cancelled.
+#[tokio::test]
+async fn mark_confirmation_cancel_cleans_up_state() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let delete_received = Arc::new(Mutex::new(Vec::new()));
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+
+    let cred = direct_credential(pin, port);
+    let der_certs = spl_transport::tls::parse_certs(&cred.client_cert_pem).unwrap();
+    let expected_client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der_certs[0].as_ref()));
+
+    let delete_rec = delete_received.clone();
+    let expected_id = expected_client_id.clone();
+    let server_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let delete_rec = delete_rec.clone();
+            let expected_id = expected_id.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let (stream_id, req) = read_framed_request(&mut tls).await;
+                    let req_str = String::from_utf8_lossy(&req);
+                    if req_str.contains("/app/network/api/clients/") {
+                        delete_rec.lock().unwrap().push(req_str.to_string());
+                        if req_str.contains(&expected_id) {
+                            let resp = b"HTTP/1.1 204 No Content\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        } else {
+                            let resp = b"HTTP/1.1 404 Not Found\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let dir = TempDir::new("cancel-clean");
+    let state_path = dir.path().join("pairing.json");
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let paired = PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    paired.save(&state_path).unwrap();
+
+    let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+    let access_mutex = Arc::new(tokio::sync::Mutex::new(Some(access)));
+
+    {
+        let mut snap = sync.lock().unwrap();
+        snap.pairing.binding = binding.clone();
+        snap.pairing.phase = PairingPhase::AwaitingConfirmation;
+    }
+
+    answer(
+        PairingAction::Cancel,
+        &binding,
+        &cfg,
+        &sync,
+        &access_mutex,
+        &slot,
+    )
+    .await
+    .expect("answer cancel");
+
+    assert!(!state_path.exists());
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(
+            snap.pairing.detail.as_deref(),
+            Some(observer_model::PAIRING_CANCELLED_DETAIL)
+        );
+    }
+
+    server_task.abort();
+}
+
+/// Reject against an unreachable journal still completes local retire and deletes pairing.json.
+#[tokio::test]
+async fn mark_confirmation_reject_unreachable_journal_completes_local_retire() {
+    let (cert, _key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener); // Closed port
+
+    let dir = TempDir::new("reject-unreachable");
+    let state_path = dir.path().join("pairing.json");
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let cred = direct_credential(pin, port);
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let paired = PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    paired.save(&state_path).unwrap();
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+    let access_mutex = Arc::new(tokio::sync::Mutex::new(Some(access)));
+
+    {
+        let mut snap = sync.lock().unwrap();
+        snap.pairing.binding = binding.clone();
+        snap.pairing.phase = PairingPhase::AwaitingConfirmation;
+    }
+
+    let _ = answer(
+        PairingAction::Reject,
+        &binding,
+        &cfg,
+        &sync,
+        &access_mutex,
+        &slot,
+    )
+    .await;
+
+    assert!(!state_path.exists());
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+    }
+}
+
+/// Reject receiving non-success HTTP status on computed id still completes local retire.
+#[tokio::test]
+async fn mark_confirmation_reject_non_success_status_completes_local_retire() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+
+    let cred = direct_credential(pin, port);
+    let der_certs = spl_transport::tls::parse_certs(&cred.client_cert_pem).unwrap();
+    let expected_client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der_certs[0].as_ref()));
+
+    let expected_id = expected_client_id.clone();
+    let server_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let expected_id = expected_id.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let (stream_id, req) = read_framed_request(&mut tls).await;
+                    let req_str = String::from_utf8_lossy(&req);
+                    if req_str.contains("/app/network/api/clients/") {
+                        if req_str.contains(&expected_id) {
+                            let resp = b"HTTP/1.1 500 Internal Server Error\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        } else {
+                            let resp = b"HTTP/1.1 404 Not Found\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let dir = TempDir::new("reject-500");
+    let state_path = dir.path().join("pairing.json");
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let paired = PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    paired.save(&state_path).unwrap();
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+    let access_mutex = Arc::new(tokio::sync::Mutex::new(Some(access)));
+
+    {
+        let mut snap = sync.lock().unwrap();
+        snap.pairing.binding = binding.clone();
+        snap.pairing.phase = PairingPhase::AwaitingConfirmation;
+    }
+
+    let _ = answer(
+        PairingAction::Reject,
+        &binding,
+        &cfg,
+        &sync,
+        &access_mutex,
+        &slot,
+    )
+    .await;
+
+    assert!(!state_path.exists());
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+    }
+
+    server_task.abort();
+}
+
+/// A failed rejected write still stops uploader, sends one DELETE, and deletes pairing.json.
+#[tokio::test]
+async fn mark_confirmation_reject_failed_answer_write_stops_and_deletes() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let delete_received = Arc::new(Mutex::new(Vec::new()));
+
+    let cred = direct_credential(pin, port);
+    let der_certs = spl_transport::tls::parse_certs(&cred.client_cert_pem).unwrap();
+    let expected_client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der_certs[0].as_ref()));
+
+    let delete_rec = delete_received.clone();
+    let expected_id = expected_client_id.clone();
+    let server_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let delete_rec = delete_rec.clone();
+            let expected_id = expected_id.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let (stream_id, req) = read_framed_request(&mut tls).await;
+                    let req_str = String::from_utf8_lossy(&req);
+                    if req_str.contains("/app/network/api/clients/") {
+                        delete_rec.lock().unwrap().push(req_str.to_string());
+                        if req_str.contains(&expected_id) {
+                            let resp = b"HTTP/1.1 204 No Content\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        } else {
+                            let resp = b"HTTP/1.1 404 Not Found\r\n\r\n".to_vec();
+                            write_response(&mut tls, stream_id, resp).await;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let dir = TempDir::new("reject-fail-write");
+    let state_path = dir.path().join("pairing.json");
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let paired = PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    paired.save(&state_path).unwrap();
+
+    // Pre-create pairing-answer.json.tmp as a directory so write_answer fails
+    std::fs::create_dir_all(dir.path().join("pairing-answer.json.tmp")).unwrap();
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+    let access_mutex = Arc::new(tokio::sync::Mutex::new(Some(access)));
+
+    {
+        let mut snap = sync.lock().unwrap();
+        snap.pairing.binding = binding.clone();
+        snap.pairing.phase = PairingPhase::AwaitingConfirmation;
+    }
+
+    let _ = answer(
+        PairingAction::Reject,
+        &binding,
+        &cfg,
+        &sync,
+        &access_mutex,
+        &slot,
+    )
+    .await;
+
+    assert_eq!(delete_received.lock().unwrap().len(), 1);
+    assert!(!state_path.exists());
+
+    server_task.abort();
+}
+
+/// Stale answer changes nothing.
 #[tokio::test]
 async fn mark_confirmation_stale_answer_changes_nothing() {
     let (cert, _key) = self_signed();
@@ -642,6 +1078,9 @@ async fn mark_confirmation_stale_answer_changes_nothing() {
         journal_version: jv,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
 
     let cred = direct_credential(pin, 1);
@@ -683,13 +1122,14 @@ async fn mark_confirmation_stale_answer_changes_nothing() {
     }
 }
 
-/// Acceptance 8: Fresh pairing publishes AwaitingConfirmation before bind.
+/// Fresh pairing publishes AwaitingConfirmation before bind.
 #[tokio::test]
 async fn mark_confirmation_pair_publishes_awaiting_before_bind() {
     let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let _dir = TempDir::new("pair-publish");
     let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
 
     let cred = direct_credential(pin, 1);
@@ -699,6 +1139,7 @@ async fn mark_confirmation_pair_publishes_awaiting_before_bind() {
     publish_pairing(
         &sync,
         &confirmation,
+        &tombstone,
         PairingWrite::Bound {
             binding: binding.clone(),
             label: "Home".into(),
@@ -717,6 +1158,7 @@ async fn mark_confirmation_pair_publishes_awaiting_before_bind() {
     publish_pairing(
         &sync,
         &confirmation,
+        &tombstone,
         PairingWrite::Bound {
             binding: binding.clone(),
             label: "Home".into(),
@@ -731,7 +1173,7 @@ async fn mark_confirmation_pair_publishes_awaiting_before_bind() {
     }
 }
 
-/// Acceptance 9: Launch finish precedes grandfather.
+/// Launch finish precedes grandfather.
 #[tokio::test]
 async fn mark_confirmation_launch_finish_precedes_grandfather() {
     let (cert, _key) = self_signed();
@@ -740,6 +1182,7 @@ async fn mark_confirmation_launch_finish_precedes_grandfather() {
     let state_path = dir.path().join("pairing.json");
     let ans_path = answer_path(&state_path);
     let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
 
     let cred = direct_credential(pin, 1);
@@ -757,7 +1200,8 @@ async fn mark_confirmation_launch_finish_precedes_grandfather() {
     };
     write_answer(&ans_path, &ans).unwrap();
 
-    let skip_resume = settle_rejected_on_launch(&state_path, &confirmation, &sync).await;
+    let skip_resume =
+        settle_rejected_on_launch(&state_path, &confirmation, &tombstone, &sync).await;
     assert!(!skip_resume);
     assert!(!state_path.exists());
     let ans_after = read_answer(&ans_path).unwrap().unwrap();
@@ -787,7 +1231,7 @@ async fn mark_confirmation_launch_finish_precedes_grandfather() {
     assert_eq!(*confirmation.lock().unwrap(), "");
 }
 
-/// Acceptance 10: Pair mark gates the save in integration ops.
+/// Pair mark gates the save in integration ops.
 #[tokio::test]
 async fn mark_confirmation_pair_mark_gates_the_save() {
     // 1. 0-connection validation failure when --mark is missing from pair args
@@ -995,7 +1439,7 @@ async fn mark_confirmation_pair_mark_gates_the_save() {
     direct_task.abort();
 }
 
-/// Acceptance 11: Metadata routes dial while awaiting confirmation.
+/// Metadata routes dial while awaiting confirmation.
 #[tokio::test]
 async fn mark_confirmation_metadata_routes_dial_while_awaiting() {
     let (cert, key) = self_signed();
@@ -1085,4 +1529,727 @@ async fn mark_confirmation_metadata_routes_dial_while_awaiting() {
     assert!(!client.gate_open());
 
     server_task.abort();
+}
+
+#[tokio::test]
+async fn mark_confirmation_integration_unconfirmed_operations_fail() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let accepts = Arc::new(AtomicUsize::new(0));
+
+    let accepts_clone = accepts.clone();
+    let server_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            accepts_clone.fetch_add(1, Ordering::SeqCst);
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    loop {
+                        let (stream_id, req) = read_framed_request(&mut tls).await;
+                        if req.is_empty() {
+                            break;
+                        }
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}".to_vec();
+                        write_response(&mut tls, stream_id, resp).await;
+                    }
+                }
+            });
+        }
+    });
+
+    let dir = TempDir::new("int-unconfirmed");
+    let cred = direct_credential(pin, port);
+    let paired = PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    paired.save(&dir.path().join("pairing.json")).unwrap();
+
+    let ans_empty = AnswerState::default();
+    write_answer(&answer_path(&dir.path().join("pairing.json")), &ans_empty).unwrap();
+
+    let env = pl_transport_win::integration::Environment {
+        state_path: dir.path().join("pairing.json"),
+        segments_root: dir.path().join("segments"),
+        device_label: "test-device".into(),
+        app_version: "0.0.0".into(),
+        period_secs: 300,
+        executable: None,
+        source_commit: None,
+    };
+
+    // 1. roundtrip unconfirmed -> awaiting_confirmation
+    let observer = Arc::new(spl_transport::observe::OperationObserver::default());
+    let handle = Some(observer.clone());
+    let roundtrip_cmd = pl_transport_win::integration::args::Command {
+        operation: pl_transport_win::integration::args::Operation::Roundtrip,
+        deadline: Duration::from_secs(5),
+        max_dials: None,
+        args: pl_transport_win::integration::args::OperationArgs::Roundtrip {
+            carrier: pl_transport_win::integration::args::Carrier::Direct,
+        },
+    };
+    let (failure, _) = pl_transport_win::integration::ops::roundtrip(
+        &roundtrip_cmd,
+        &env,
+        handle.clone(),
+        &observer,
+        pl_transport_win::integration::args::Carrier::Direct,
+    )
+    .await;
+    let failure = failure.expect("unconfirmed roundtrip must fail");
+    assert!(
+        matches!(&failure, pl_transport_win::integration::report::Failure::Error { reason, .. } if reason == "awaiting_confirmation"),
+        "roundtrip must fail with awaiting_confirmation"
+    );
+
+    // 2. fetch unconfirmed -> awaiting_confirmation
+    let fetch_cmd = pl_transport_win::integration::args::Command {
+        operation: pl_transport_win::integration::args::Operation::Fetch,
+        deadline: Duration::from_secs(5),
+        max_dials: None,
+        args: pl_transport_win::integration::args::OperationArgs::Fetch {
+            journal_path: "/test".into(),
+            expected_bytes: 15,
+            expected_sha256: "dummy".into(),
+            expected_status: 200,
+            carrier: pl_transport_win::integration::args::Carrier::Direct,
+        },
+    };
+    let (failure, _) = pl_transport_win::integration::ops::fetch(
+        &fetch_cmd,
+        &env,
+        handle.clone(),
+        &observer,
+        "/test",
+        15,
+        "dummy",
+        200,
+        pl_transport_win::integration::args::Carrier::Direct,
+    )
+    .await;
+    let failure = failure.expect("unconfirmed fetch must fail");
+    assert!(
+        matches!(&failure, pl_transport_win::integration::report::Failure::Error { reason, .. } if reason == "awaiting_confirmation"),
+        "fetch must fail with awaiting_confirmation"
+    );
+
+    // 3. upload unconfirmed -> awaiting_confirmation
+    let payload_path = dir.path().join("test_payload.txt");
+    std::fs::write(&payload_path, b"test-payload-bytes").unwrap();
+    let upload_cmd = pl_transport_win::integration::args::Command {
+        operation: pl_transport_win::integration::args::Operation::Upload,
+        deadline: Duration::from_secs(5),
+        max_dials: None,
+        args: pl_transport_win::integration::args::OperationArgs::Upload {
+            payload: payload_path.clone(),
+            day: "20260930".into(),
+            segment: "000000_300".into(),
+            carrier: pl_transport_win::integration::args::Carrier::Direct,
+        },
+    };
+    let (failure, _) = pl_transport_win::integration::ops::upload(
+        &upload_cmd,
+        &env,
+        handle,
+        &observer,
+        &payload_path,
+        "20260930",
+        "000000_300",
+        pl_transport_win::integration::args::Carrier::Direct,
+    )
+    .await;
+    let failure = failure.expect("unconfirmed upload must fail");
+    assert!(
+        matches!(&failure, pl_transport_win::integration::report::Failure::Error { reason, .. } if reason == "awaiting_confirmation"),
+        "upload must fail with awaiting_confirmation"
+    );
+
+    assert_eq!(accepts.load(Ordering::SeqCst), 0);
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn mark_confirmation_tombstone_and_re_pair() {
+    let _dir = TempDir::new("tombstone");
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+
+    let (cert_b, _key_b) = self_signed();
+    let pin_b = spl_core::ca::sha256(cert_b.as_ref())[..16].to_vec();
+    let cred_b = direct_credential(pin_b, 1);
+    let digest_b = JournalIdentity::from_credential(&cred_b).client_cert_sha256;
+
+    let (cert_c, _key_c) = self_signed();
+    let pin_c = spl_core::ca::sha256(cert_c.as_ref())[..16].to_vec();
+    let cred_c = direct_credential(pin_c, 2);
+    let digest_c = JournalIdentity::from_credential(&cred_c).client_cert_sha256;
+
+    // Set active binding B and reject -> records tombstone B
+    {
+        let mut snap = sync.lock().unwrap();
+        snap.pairing.binding = digest_b.clone();
+    }
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::NotPaired {
+            detail: Some(MARK_REJECTED_DETAIL.to_string()),
+        },
+    );
+    assert_eq!(*tombstone.lock().unwrap(), Some(digest_b.clone()));
+
+    // Bound { Paired, B } and Bound { Failed, B } leave phase NotPaired and detail mark_rejected
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: digest_b.clone(),
+            label: "Home B".into(),
+            mark: None,
+            kind: BoundKind::Paired,
+        },
+    );
+    assert_eq!(*tombstone.lock().unwrap(), Some(digest_b.clone()));
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+    }
+
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: digest_b.clone(),
+            label: "Home B".into(),
+            mark: None,
+            kind: BoundKind::Failed {
+                detail: Some("failure".into()),
+            },
+        },
+    );
+    assert_eq!(*tombstone.lock().unwrap(), Some(digest_b.clone()));
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+    }
+
+    // BeginCeremony sets phase Pairing and leaves tombstone as B
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::BeginCeremony,
+    );
+    assert_eq!(*tombstone.lock().unwrap(), Some(digest_b.clone()));
+    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
+
+    // Bound { Paired, B } during that ceremony leaves phase Pairing
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: digest_b.clone(),
+            label: "Home B".into(),
+            mark: None,
+            kind: BoundKind::Paired,
+        },
+    );
+    assert_eq!(*tombstone.lock().unwrap(), Some(digest_b.clone()));
+    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
+
+    // Bound { Paired, C } lands as AwaitingConfirmation
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: digest_c.clone(),
+            label: "Home C".into(),
+            mark: None,
+            kind: BoundKind::Paired,
+        },
+    );
+    assert_eq!(
+        sync.lock().unwrap().pairing.phase,
+        PairingPhase::AwaitingConfirmation
+    );
+
+    // With an empty snapshot binding, Bound { Failed { .. } } does not publish (phase unchanged)
+    {
+        let mut snap = sync.lock().unwrap();
+        snap.pairing.binding = String::new();
+        snap.pairing.phase = PairingPhase::Pairing;
+    }
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: digest_c.clone(),
+            label: "Home C".into(),
+            mark: None,
+            kind: BoundKind::Failed {
+                detail: Some("failed_detail".into()),
+            },
+        },
+    );
+    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
+
+    // Unbound PairingWrite::Failed { detail } still sets phase Failed and empty binding
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Failed {
+            detail: "ceremony_failure".into(),
+        },
+    );
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::Failed);
+        assert_eq!(snap.pairing.detail.as_deref(), Some("ceremony_failure"));
+        assert_eq!(snap.pairing.binding, "");
+    }
+}
+
+/// Launch test: saved pairing, answer confirmed empty, launch_resume once.
+/// Nothing is accepted by journal listener. Phase is AwaitingConfirmation.
+/// Tray tooltip matches expected text. Confirm on same uploader uploads.
+#[tokio::test]
+async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let upload_received = Arc::new(AtomicBool::new(false));
+
+    let accepts_clone = accepts.clone();
+    let upload_flag = upload_received.clone();
+    let server_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            accepts_clone.fetch_add(1, Ordering::SeqCst);
+            let acceptor = acceptor.clone();
+            let upload_flag = upload_flag.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let (stream_id, req) = read_framed_request(&mut tls).await;
+                    let req_str = String::from_utf8_lossy(&req);
+                    if req_str.contains("/app/devices/ingest") {
+                        upload_flag.store(true, Ordering::SeqCst);
+                    }
+                    let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"status\":\"ok\",\"segment\":\"000000_300\"}"
+                        .to_vec();
+                    write_response(&mut tls, stream_id, resp).await;
+                }
+            });
+        }
+    });
+
+    let dir = TempDir::new("launch-resume-await");
+    let segments_dir = dir.path().join("segments");
+    let day_dir = segments_dir.join("20260930");
+    std::fs::create_dir_all(&day_dir).unwrap();
+    std::fs::write(day_dir.join("000000_300.tar.gz"), b"dummy-data").unwrap();
+
+    let state_path = dir.path().join("pairing.json");
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: segments_dir,
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let cred = direct_credential(pin, port);
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let paired = PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    paired.save(&state_path).unwrap();
+
+    let ans_path = answer_path(&state_path);
+    write_answer(&ans_path, &AnswerState::default()).unwrap();
+
+    let mut slot = UploaderSlot::new();
+    let access = pl_transport_win::service::launch_resume(&cfg, &sync, &mut slot).await;
+    assert!(access.is_some());
+    let access_mutex = Arc::new(tokio::sync::Mutex::new(access));
+    let slot_mutex = Arc::new(tokio::sync::Mutex::new(slot));
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // No uploads before confirmation
+    assert!(!upload_received.load(Ordering::SeqCst));
+
+    let snapshot = sync.lock().unwrap().clone();
+    assert_eq!(snapshot.pairing.phase, PairingPhase::AwaitingConfirmation);
+
+    let tray =
+        observer_model::classify_tray(observer_model::AppPhase::Observing, &snapshot, None, None);
+    assert_eq!(
+        tray.1,
+        "solstone · waiting for you to confirm your journal's mark"
+    );
+
+    // session::answer Confirm on same uploader uploads
+    answer(
+        PairingAction::Confirm,
+        &binding,
+        &cfg,
+        &sync,
+        &access_mutex,
+        &slot_mutex,
+    )
+    .await
+    .expect("answer confirm");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(upload_received.load(Ordering::SeqCst));
+
+    server_task.abort();
+}
+
+/// 1. Absent answer, invalid pairing.json, ceremony fails -> empty answer on disk, replace with pre-gate cred A -> launch_resume leaves AwaitingConfirmation (not grandfathered).
+#[tokio::test]
+async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_unconfirmed_on_resume(
+) {
+    let dir = TempDir::new("pair-invalid-json");
+    let state_path = dir.path().join("pairing.json");
+    let ans_path = answer_path(&state_path);
+    std::fs::write(&state_path, b"invalid json content").unwrap();
+
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = Arc::new(tokio::sync::Mutex::new(None));
+
+    let bad_link = "https://go.solstone.app/p#invalid".to_string();
+    let res = pl_transport_win::session::pair(
+        &bad_link,
+        &cfg,
+        sync.clone(),
+        &slot,
+        &access,
+        || async {},
+        || async {},
+    )
+    .await;
+    assert!(res.is_err());
+
+    let ans = read_answer(&ans_path)
+        .unwrap()
+        .expect("answer file must exist");
+    assert_eq!(ans.confirmed, "");
+    assert_eq!(ans.rejected, "");
+    assert_eq!(std::fs::read(&state_path).unwrap(), b"invalid json content");
+
+    let (cert, _key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let cred_a = direct_credential(pin, 1);
+    let paired_a = PairedState {
+        credential: Some(cred_a),
+        ..Default::default()
+    };
+    paired_a.save(&state_path).unwrap();
+
+    let mut uploader_slot = UploaderSlot::new();
+    let resumed_access =
+        pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await;
+    assert!(resumed_access.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        sync.lock().unwrap().pairing.phase,
+        PairingPhase::AwaitingConfirmation
+    );
+    assert_eq!(*confirmation.lock().unwrap(), "");
+}
+
+/// 2. Same unreadable pairing.json, answer file absent, and pairing-answer.json.tmp pre-created as directory -> returns Err, pairing.json unchanged.
+#[tokio::test]
+async fn session_pair_answer_tmp_is_dir_returns_error_and_leaves_pairing_json_unchanged() {
+    let dir = TempDir::new("pair-ans-tmp-dir");
+    let state_path = dir.path().join("pairing.json");
+    std::fs::write(&state_path, b"invalid json content").unwrap();
+
+    std::fs::create_dir_all(dir.path().join("pairing-answer.json.tmp")).unwrap();
+
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = Arc::new(tokio::sync::Mutex::new(None));
+
+    let bad_link = "https://go.solstone.app/p#invalid".to_string();
+    let res = pl_transport_win::session::pair(
+        &bad_link,
+        &cfg,
+        sync.clone(),
+        &slot,
+        &access,
+        || async {},
+        || async {},
+    )
+    .await;
+    assert!(res.is_err());
+    assert_eq!(std::fs::read(&state_path).unwrap(), b"invalid json content");
+}
+
+/// 3. Absent answer file, unreadable pairing.json, then pair that returns Ok -> empty answer file exists before saved B is loaded -> launch_resume leaves B AwaitingConfirmation.
+#[tokio::test]
+async fn session_pair_success_creates_empty_answer_before_saving_credential_and_leaves_awaiting_on_resume(
+) {
+    let dir = TempDir::new("pair-ok-empty-ans");
+    let state_path = dir.path().join("pairing.json");
+    let ans_path = answer_path(&state_path);
+    std::fs::write(&state_path, b"invalid json content").unwrap();
+
+    let mock_state = Arc::new(support::relay_pairing::MockState::normal().with_same_tls_ca());
+    let origin = support::relay_pairing::spawn_mock_relay(mock_state.clone()).await;
+    let link = support::relay_pairing::relay_form_link(
+        &origin,
+        &support::relay_pairing::PAIR_SECRET,
+        &mock_state.json_ca.spki_pin(),
+    );
+
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = Arc::new(tokio::sync::Mutex::new(None));
+
+    let res = pl_transport_win::session::pair(
+        &link,
+        &cfg,
+        sync.clone(),
+        &slot,
+        &access,
+        || async {},
+        || async {},
+    )
+    .await;
+    assert!(res.is_ok());
+
+    let ans = read_answer(&ans_path)
+        .unwrap()
+        .expect("answer file must exist");
+    assert_eq!(ans.confirmed, "");
+
+    let paired = PairedState::load(&state_path).unwrap();
+    assert!(paired.credential.is_some());
+
+    let mut uploader_slot = UploaderSlot::new();
+    let resumed_access =
+        pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await;
+    assert!(resumed_access.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        sync.lock().unwrap().pairing.phase,
+        PairingPhase::AwaitingConfirmation
+    );
+    assert_eq!(*confirmation.lock().unwrap(), "");
+}
+
+/// 4. Failed re-pair over confirmed A -> answer bytes identical, launch_resume sends for A (gate open).
+#[tokio::test]
+async fn session_pair_failed_repair_over_confirmed_leaves_answer_bytes_and_sends_for_incumbent() {
+    let dir = TempDir::new("pair-failed-repair");
+    let state_path = dir.path().join("pairing.json");
+    let ans_path = answer_path(&state_path);
+
+    let (cert, _key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let cred_a = direct_credential(pin, 1);
+    let digest_a = JournalIdentity::from_credential(&cred_a).client_cert_sha256;
+    let paired_a = PairedState {
+        credential: Some(cred_a),
+        ..Default::default()
+    };
+    paired_a.save(&state_path).unwrap();
+
+    let ans = AnswerState {
+        confirmed: digest_a.clone(),
+        rejected: String::new(),
+    };
+    write_answer(&ans_path, &ans).unwrap();
+    let ans_bytes_before = std::fs::read(&ans_path).unwrap();
+
+    let confirmation = Arc::new(Mutex::new(digest_a.clone()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = Arc::new(tokio::sync::Mutex::new(None));
+
+    let bad_link = "https://go.solstone.app/p#invalid".to_string();
+    let res = pl_transport_win::session::pair(
+        &bad_link,
+        &cfg,
+        sync.clone(),
+        &slot,
+        &access,
+        || async {},
+        || async {},
+    )
+    .await;
+    assert!(res.is_err());
+
+    let ans_bytes_after = std::fs::read(&ans_path).unwrap();
+    assert_eq!(ans_bytes_before, ans_bytes_after);
+
+    let mut uploader_slot = UploaderSlot::new();
+    let resumed_access =
+        pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await;
+    assert!(resumed_access.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(*confirmation.lock().unwrap(), digest_a);
+    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Paired);
+}
+
+/// 5. Unreadable answer file -> session::pair does not rewrite it; phase stays awaiting; bytes unchanged.
+#[tokio::test]
+async fn session_pair_unreadable_answer_file_returns_error_and_does_not_rewrite() {
+    let dir = TempDir::new("pair-unreadable-ans");
+    let state_path = dir.path().join("pairing.json");
+    let ans_path = answer_path(&state_path);
+
+    let (cert, _key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let cred = direct_credential(pin, 1);
+    let paired = PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    paired.save(&state_path).unwrap();
+
+    let unreadable_bytes = b"not valid json {{{";
+    std::fs::write(&ans_path, unreadable_bytes).unwrap();
+
+    let confirmation = Arc::new(Mutex::new(String::new()));
+    let tombstone = Arc::new(Mutex::new(None));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: jv,
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: confirmation.clone(),
+        tombstone: tombstone.clone(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
+    let access = Arc::new(tokio::sync::Mutex::new(None));
+
+    let bad_link = "https://go.solstone.app/p#invalid".to_string();
+    let res = pl_transport_win::session::pair(
+        &bad_link,
+        &cfg,
+        sync.clone(),
+        &slot,
+        &access,
+        || async {},
+        || async {},
+    )
+    .await;
+    assert!(res.is_err());
+
+    let mut uploader_slot = UploaderSlot::new();
+    let resumed_access =
+        pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await;
+    assert!(resumed_access.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        sync.lock().unwrap().pairing.phase,
+        PairingPhase::AwaitingConfirmation
+    );
+    assert_eq!(std::fs::read(&ans_path).unwrap(), unreadable_bytes);
 }

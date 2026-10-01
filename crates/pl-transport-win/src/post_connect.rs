@@ -192,9 +192,17 @@ impl PostConnectController {
             let mut tasks = self.pass_tasks.lock().unwrap();
             std::mem::take(&mut *tasks)
         };
+        for handle in &handles {
+            handle.abort();
+        }
         for handle in handles {
             let _ = handle.await;
         }
+    }
+
+    /// The connection epoch of the last observed successful connection burst, if any.
+    pub fn last_connected_epoch(&self) -> Option<u64> {
+        self.state.lock().unwrap().last_connected_epoch
     }
 
     /// Set a custom execution deadline for post-connect jobs (useful in tests).
@@ -476,6 +484,7 @@ impl PostConnectController {
         });
 
         if let Ok(mut tasks) = self.pass_tasks.lock() {
+            tasks.retain(|h| !h.is_finished());
             tasks.push(h1);
             tasks.push(h2);
         }
@@ -1777,6 +1786,21 @@ mod tests {
             controller.state.lock().unwrap().burst_phase,
             BurstPhase::FirstPass
         );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn quiesce_aborts_active_pass_tasks_and_returns_promptly() {
+        let (controller, _slot, path, _called) = test_setup(false);
+        let forever_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(1000)).await;
+        });
+        controller.pass_tasks.lock().unwrap().push(forever_task);
+
+        let started = tokio::time::Instant::now();
+        controller.quiesce().await;
+        assert!(started.elapsed() < Duration::from_secs(2));
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

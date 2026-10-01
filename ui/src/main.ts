@@ -266,6 +266,7 @@ let latestUpdate: UpdateView | null = null;
 let activeRoute: Route = "home";
 let renderBeaconFired = false;
 let focusPaneTitleOnRender = false;
+let markCardFocused = false;
 // Set when a background event (health/update stream) wants a full rerender but an
 // interactive control is active; the next flush or any direct rerender consumes it,
 // coalescing many deferred events into a single repaint.
@@ -1217,20 +1218,26 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
 
   if (pairing.phase === "awaiting_confirmation") {
     const card = document.createElement("div");
-    card.classList.add("fluent-card");
     card.style.marginTop = "12px";
-    card.style.padding = "16px";
-    card.style.border = "1px solid var(--border)";
-    card.style.borderRadius = "var(--radius-control)";
-    card.style.background = "var(--fill)";
-    automation(card, ids["settings.pairing.markCard"]);
-    card.setAttribute("role", "img");
-    card.setAttribute("tabindex", "-1");
+
+    const markRow = document.createElement("div");
+    markRow.classList.add("fluent-card");
+    markRow.style.display = "inline-flex";
+    markRow.style.alignItems = "center";
+    markRow.style.gap = "10px";
+    markRow.style.padding = "16px";
+    markRow.style.border = "1px solid var(--border)";
+    markRow.style.borderRadius = "var(--radius-control)";
+    markRow.style.background = "var(--fill)";
+    markRow.style.marginBottom = "14px";
+    automation(markRow, ids["settings.pairing.markCard"]);
+    markRow.setAttribute("role", "img");
+    markRow.setAttribute("tabindex", "-1");
 
     if (pairing.mark) {
       const spec = pairing.mark;
-      const ariaName = `${spec.icon1.color.name}, ${spec.icon2.color.name} · ${spec.words[0].toLowerCase()} ${spec.words[1].toLowerCase()}`;
-      card.setAttribute("aria-label", ariaName);
+      const ariaName = `${spec.icon1.color.name.toLowerCase()}, ${spec.icon2.color.name.toLowerCase()} · ${spec.words[0].toLowerCase()} ${spec.words[1].toLowerCase()}`;
+      markRow.setAttribute("aria-label", ariaName);
 
       const emphasis = text("div", "does this match your journal?");
       emphasis.style.fontWeight = "600";
@@ -1244,12 +1251,6 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       subtle.style.fontSize = "12px";
       subtle.style.color = "var(--fg-subtle)";
       subtle.style.marginBottom = "14px";
-
-      const markRow = document.createElement("div");
-      markRow.style.display = "inline-flex";
-      markRow.style.alignItems = "center";
-      markRow.style.gap = "10px";
-      markRow.style.marginBottom = "14px";
 
       const words = renderMarkWords(spec.words[0], spec.words[1]);
       words.setAttribute("aria-hidden", "true");
@@ -1303,13 +1304,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       btnRow.append(rejectBtn, confirmBtn);
       card.append(emphasis, subtle, markRow, btnRow);
     } else {
-      card.setAttribute("aria-label", "your journal's mark, unavailable right now");
-
-      const markRow = document.createElement("div");
-      markRow.style.display = "inline-flex";
-      markRow.style.alignItems = "center";
-      markRow.style.gap = "10px";
-      markRow.style.marginBottom = "14px";
+      markRow.setAttribute("aria-label", "your journal's mark, unavailable right now");
 
       const words = renderMarkWords("mark", "unavailable");
       words.setAttribute("aria-hidden", "true");
@@ -1378,8 +1373,6 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     }
 
     pane.append(card);
-    card.focus();
-    setTimeout(() => card.focus(), 0);
     return pane;
   }
 
@@ -2968,8 +2961,12 @@ function renderSettings(dump: HealthDump): void {
   if (focusPaneTitleOnRender) {
     focusPaneTitleOnRender = false;
     root.querySelector<HTMLElement>(".settings-pane-title")?.focus();
+  } else if (!markCardFocused && dump.sync?.pairing?.phase === "awaiting_confirmation") {
+    markCardFocused = true;
+    root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`)?.focus();
+  } else if (dump.sync?.pairing?.phase !== "awaiting_confirmation") {
+    markCardFocused = false;
   }
-  root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`)?.focus();
 }
 
 function sanitizeJournalVersion(raw: unknown): string | null {
@@ -3842,6 +3839,7 @@ export const __test__ = {
     label = "settings";
     renderBeaconFired = false;
     focusPaneTitleOnRender = false;
+    markCardFocused = false;
     pendingRerender = false;
     lastCheckedEl = null;
     pauseStatusEls = [];

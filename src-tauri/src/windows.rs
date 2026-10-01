@@ -95,9 +95,61 @@ where
     }
 }
 
+pub trait JournalSurface: Send + Sync {
+    fn open_settings(&self) -> tauri::Result<()>;
+    fn focus_journal_if_present(&self) -> bool;
+    fn close_journal(&self);
+}
+
+impl JournalSurface for tauri::AppHandle {
+    fn open_settings(&self) -> tauri::Result<()> {
+        open_settings(self)
+    }
+
+    fn focus_journal_if_present(&self) -> bool {
+        if let Some(window) = self.get_webview_window("journal") {
+            window.set_focus().ok();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn close_journal(&self) {
+        if let Some(window) = self.get_webview_window("journal") {
+            window.close().ok();
+        }
+    }
+}
+
+#[cfg(test)]
+pub struct OpenPairProbe {
+    pub open_holds: tokio::sync::Notify,
+    pub release_open: tokio::sync::Notify,
+    pub pair_at_lock: tokio::sync::Notify,
+    pub release_pair: tokio::sync::Notify,
+    pub pair_entered_lock: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl OpenPairProbe {
+    pub fn new() -> Self {
+        Self {
+            open_holds: tokio::sync::Notify::new(),
+            release_open: tokio::sync::Notify::new(),
+            pair_at_lock: tokio::sync::Notify::new(),
+            release_pair: tokio::sync::Notify::new(),
+            pair_entered_lock: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
 /// Open (or focus) the paired journal window.
-pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError> {
-    let state = app.state::<crate::app::AppState>();
+pub async fn open_journal<S: JournalSurface>(
+    state: &crate::app::AppState,
+    surface: &S,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), OpenJournalError> {
     let phase = state
         .sync
         .lock()
@@ -107,14 +159,13 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
     dispatch_open_journal(
         phase,
         || async {
-            let _ = open_settings(app);
+            let _ = surface.open_settings();
             Ok(())
         },
         || async {
             let _open_guard = state.journal_open_lock.lock().await;
 
-            if let Some(window) = app.get_webview_window("journal") {
-                window.set_focus().ok();
+            if surface.focus_journal_if_present() {
                 tracing::info!(
                     target: "window",
                     label = "journal",
@@ -122,6 +173,14 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
                     "window open"
                 );
                 return Ok(());
+            }
+
+            #[cfg(test)]
+            if phase == observer_model::PairingPhase::Paired {
+                if let Some(probe) = &state.probe {
+                    probe.open_holds.notify_one();
+                    probe.release_open.notified().await;
+                }
             }
 
             let access = state
@@ -134,7 +193,7 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
             let handle = match pl_transport_win::journal_bridge::start_with_facts(access).await {
                 Ok(handle) => handle,
                 Err(pl_transport_win::journal_bridge::BridgeStartError::AwaitingConfirmation) => {
-                    let _ = open_settings(app);
+                    let _ = surface.open_settings();
                     return Ok(());
                 }
                 Err(pl_transport_win::journal_bridge::BridgeStartError::NotReady) => {
@@ -180,6 +239,11 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
                 }
             }
 
+            let app = match app {
+                Some(app) => app,
+                None => return Ok(()),
+            };
+
             let page_loaded = Arc::new(Notify::new());
             let page_load_started = Arc::new(AtomicBool::new(false));
             let window = match build_journal_window_on_main_thread(
@@ -198,7 +262,7 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
                         error = %error,
                         "journal window construction failed"
                     );
-                    shutdown_journal_bridge(&state);
+                    shutdown_journal_bridge(state);
                     log_journal_open_failed();
                     return Err(OpenJournalError::OpenFailed);
                 }
@@ -239,7 +303,7 @@ pub async fn open_journal(app: &tauri::AppHandle) -> Result<(), OpenJournalError
                 );
                 log_journal_window_state(&window, "readiness_failed");
                 window.close().ok();
-                shutdown_journal_bridge(&state);
+                shutdown_journal_bridge(state);
                 log_journal_open_failed();
                 return Err(OpenJournalError::OpenFailed);
             }

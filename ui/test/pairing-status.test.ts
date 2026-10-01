@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 
 import { automationContract } from "../src/lib/contract";
 import * as app from "../src/main";
 import { notPairedDump, sampleMarkSpec } from "./fixtures";
 
 const ids = automationContract.automation_ids;
+const invokeMock = vi.mocked(invoke);
 
 const PAIR_LINK =
   "that pairing link isn't one the solstone app can read. show a new pairing code on your journal and try again.";
@@ -376,6 +378,8 @@ describe("awaiting mark confirmation", () => {
 
   it("renders mark confirmation card when mark is present with accessible name, focus, and non-default buttons", () => {
     const mark = sampleMarkSpec("liquefy", "smock", "#3b82f6");
+    mark.icon1.color.name = "Blue";
+    mark.icon2.color.name = "Amber";
     const dump = awaitingConfirmationDump(mark);
 
     app.__test__.setRoute("journal");
@@ -385,11 +389,11 @@ describe("awaiting mark confirmation", () => {
     const card = present(ids["settings.pairing.markCard"]);
     expect(card.getAttribute("role")).toBe("img");
     expect(card.getAttribute("tabindex")).toBe("-1");
-    expect(card.getAttribute("aria-label")).toBe("blue, purple · liquefy smock");
+    expect(card.getAttribute("aria-label")).toBe("blue, amber · liquefy smock");
     expect(document.activeElement).toBe(card);
 
-    expect(card.textContent).toContain("does this match your journal?");
-    expect(card.textContent).toContain(
+    expect(card.parentElement?.textContent).toContain("does this match your journal?");
+    expect(card.parentElement?.textContent).toContain(
       "your journal shows this same mark in its network app. it should match, exactly.",
     );
 
@@ -404,6 +408,11 @@ describe("awaiting mark confirmation", () => {
     expect(yesBtn.getAttribute("type")).toBe("button");
     expect(yesBtn.type).toBe("button");
     expect(yesBtn.classList.contains("fluent-accent")).toBe(true);
+
+    expect(card.contains(rejectBtn)).toBe(false);
+    expect(card.contains(yesBtn)).toBe(false);
+    expect(rejectBtn.getAttribute("aria-hidden")).toBeNull();
+    expect(yesBtn.getAttribute("aria-hidden")).toBeNull();
 
     expect(byId(ids["settings.pairing.confirmContinue"])).toBeNull();
     expect(byId(ids["settings.pairing.confirmCancel"])).toBeNull();
@@ -422,8 +431,8 @@ describe("awaiting mark confirmation", () => {
     expect(card.getAttribute("aria-label")).toBe("your journal's mark, unavailable right now");
     expect(document.activeElement).toBe(card);
 
-    expect(card.textContent).toContain("couldn't verify");
-    expect(card.textContent).toContain(
+    expect(card.parentElement?.textContent).toContain("couldn't verify");
+    expect(card.parentElement?.textContent).toContain(
       "this PC couldn't work out your journal's mark, so there's nothing to compare. continue only if you're sure the link came from your journal.",
     );
 
@@ -439,7 +448,70 @@ describe("awaiting mark confirmation", () => {
     expect(continueBtn.type).toBe("button");
     expect(continueBtn.classList.contains("fluent-accent")).toBe(true);
 
+    expect(card.contains(cancelBtn)).toBe(false);
+    expect(card.contains(continueBtn)).toBe(false);
+    expect(cancelBtn.getAttribute("aria-hidden")).toBeNull();
+    expect(continueBtn.getAttribute("aria-hidden")).toBeNull();
+
     expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
     expect(byId(ids["settings.pairing.confirmReject"])).toBeNull();
+  });
+
+  it("does not render pairing input while awaiting and enter key does not invoke pair or answer", () => {
+    invokeMock.mockReset();
+    const dump = awaitingConfirmationDump(null);
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    expect(byId(ids["settings.pairing.input"])).toBeNull();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    const pairCalls = invokeMock.mock.calls.filter(
+      ([cmd]) => cmd === "pair" || cmd === "answer_pairing",
+    );
+    expect(pairCalls.length).toBe(0);
+  });
+
+  it("retains focus on subsequent renders when focus was moved away from mark card", () => {
+    const mark = sampleMarkSpec("liquefy", "smock", "#3b82f6");
+    const dump = awaitingConfirmationDump(mark);
+
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    const card = present(ids["settings.pairing.markCard"]);
+    expect(document.activeElement).toBe(card);
+
+    document.body.tabIndex = -1;
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    app.__test__.renderSettings(dump);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("renders not paired for not_paired phase even with pair_link detail", () => {
+    const base = notPairedDump();
+    const dump = {
+      ...base,
+      sync: {
+        ...base.sync,
+        pairing: {
+          ...base.sync.pairing,
+          phase: "not_paired" as const,
+          detail: "pair_link",
+        },
+      },
+    };
+
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    const text = present(ids["settings.pairing.state"]).textContent ?? "";
+    expect(text).toBe("not paired");
   });
 });

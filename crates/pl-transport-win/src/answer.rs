@@ -203,6 +203,7 @@ pub fn settle_grandfather(
 pub async fn settle_rejected_on_launch(
     state_path: &Path,
     confirmation: &Arc<Mutex<String>>,
+    tombstone: &Arc<Mutex<Option<String>>>,
     sync: &Arc<Mutex<observer_model::SyncSnapshot>>,
 ) -> bool {
     let apath = answer_path(state_path);
@@ -259,6 +260,7 @@ pub async fn settle_rejected_on_launch(
                     crate::service::publish_pairing(
                         sync,
                         confirmation,
+                        tombstone,
                         crate::service::PairingWrite::NotPaired { detail: None },
                     );
                     false
@@ -292,9 +294,10 @@ mod tests {
     struct TestDir(PathBuf);
     impl TestDir {
         fn new(name: &str) -> Self {
-            let p = PathBuf::from("/var/tmp").join(format!(
-                "pl-transport-{}-{}",
+            let p = std::env::temp_dir().join(format!(
+                "pl-transport-{}-{}-{}",
                 name,
+                std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()

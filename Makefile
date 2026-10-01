@@ -114,7 +114,7 @@ build: preflight-toolchain
 # Local cross-platform tests (pure tier + capture-engine), host-testable, no live
 # target. The windows-only crates test remotely via win-host-ci.
 test: preflight-toolchain
-	$(CARGO) test --locked --workspace $(REMOTE_CRATES) -- --skip transparency
+	$(CARGO) test --locked --workspace $(REMOTE_CRATES) --features pl-transport-win/awaiting-hold -- --skip transparency
 
 # Host-testable deterministic/package/publication policy checks on the Linux host.
 test-scripts:
@@ -150,7 +150,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) run --locked -q -p xtask -- rust-notices check
 	$(MAKE) check-observer-contract
 	MANIFEST= RELEASE_DIR= $(MAKE) check-rust-release-manifest
-	$(CARGO) test --locked --workspace $(REMOTE_CRATES) -- --skip transparency
+	$(CARGO) test --locked --workspace $(REMOTE_CRATES) --features pl-transport-win/awaiting-hold -- --skip transparency
 	$(CARGO) deny --offline --locked check bans licenses sources
 	$(MAKE) check-release-advisory-config
 	$(MAKE) ui-test

@@ -333,6 +333,13 @@ struct DayListingBound {
     until_epoch: u64,
 }
 
+#[cfg(feature = "awaiting-hold")]
+#[derive(Debug, Clone)]
+pub struct AwaitingHold {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
 /// Drives sealed segments to the journal and reconciles them.
 pub struct UploadCoordinator {
     client: Arc<dyn UploadClient>,
@@ -352,6 +359,9 @@ pub struct UploadCoordinator {
     delete_holds: Mutex<HashMap<u64, u64>>,
     day_bounds: Mutex<HashMap<String, DayListingBound>>,
     confirmation: Arc<Mutex<String>>,
+    tombstone: Arc<Mutex<Option<String>>>,
+    #[cfg(feature = "awaiting-hold")]
+    awaiting_hold: Option<AwaitingHold>,
 }
 
 /// An upload confirmed by receipt validation or day listing.
@@ -361,9 +371,6 @@ pub struct ConfirmedUpload {
     pub files: Vec<AckFile>,
     pub metadata: SendMetadata,
 }
-
-pub static TEST_AWAITING_HOLD: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>> =
-    Mutex::new(None);
 
 impl UploadCoordinator {
     pub fn new(
@@ -392,6 +399,9 @@ impl UploadCoordinator {
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
             confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
         }
     }
 
@@ -407,6 +417,7 @@ impl UploadCoordinator {
         version_generation: JournalVersionSessionToken,
         post_connect_generation: Option<crate::post_connect::PostConnectSessionToken>,
         confirmation: Arc<Mutex<String>>,
+        tombstone: Arc<Mutex<Option<String>>>,
     ) -> Self {
         Self {
             client: Arc::new(client_slot.clone()),
@@ -426,6 +437,9 @@ impl UploadCoordinator {
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
             confirmation,
+            tombstone,
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
         }
     }
 
@@ -455,7 +469,24 @@ impl UploadCoordinator {
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
             confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
         }
+    }
+
+    #[cfg(feature = "awaiting-hold")]
+    pub fn with_awaiting_hold(mut self, hold: Option<AwaitingHold>) -> Self {
+        self.awaiting_hold = hold;
+        self
+    }
+
+    pub fn segment_bound_count(&self) -> usize {
+        self.segment_bounds.lock().map(|b| b.len()).unwrap_or(0)
+    }
+
+    pub fn day_bound_count(&self) -> usize {
+        self.day_bounds.lock().map(|b| b.len()).unwrap_or(0)
     }
 
     fn monotonic_now_epoch_secs(&self) -> u64 {
@@ -953,7 +984,7 @@ impl UploadCoordinator {
             .remove(&index);
     }
 
-    pub async fn run(self, mut cancel: watch::Receiver<SlotExit>, wake: Arc<tokio::sync::Notify>) {
+    pub async fn run(&self, mut cancel: watch::Receiver<SlotExit>, wake: Arc<tokio::sync::Notify>) {
         let tick_cancel = cancel.clone();
         let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
         let exit_reason = loop {
@@ -1051,6 +1082,25 @@ impl UploadCoordinator {
         &self,
         cancel: &watch::Receiver<SlotExit>,
     ) -> Result<Vec<ConfirmedUpload>, RouteError> {
+        if let Some(slot) = &self.client_slot {
+            if !slot.load().gate_open() {
+                #[cfg(feature = "awaiting-hold")]
+                if let Some(ref hold) = self.awaiting_hold {
+                    hold.entered.notify_one();
+                    if tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        hold.release.notified(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        panic!("awaiting hold hook was not released within 5s");
+                    }
+                }
+                return Err(RouteError::AwaitingConfirmation);
+            }
+        }
+
         let now = self.monotonic_now_epoch_secs();
 
         // Recount quarantined media dirs first
@@ -1354,11 +1404,6 @@ impl UploadCoordinator {
                     continue 'segments;
                 }
                 Err(RouteError::AwaitingConfirmation) => {
-                    let hold = TEST_AWAITING_HOLD.lock().unwrap().take();
-                    if let Some((entered, release)) = hold {
-                        entered.notify_one();
-                        release.notified().await;
-                    }
                     return Err(RouteError::AwaitingConfirmation);
                 }
                 Err(RouteError::Transport(e)) => {
@@ -1652,6 +1697,7 @@ impl UploadCoordinator {
             crate::service::publish_pairing(
                 &self.sync,
                 &self.confirmation,
+                &self.tombstone,
                 crate::service::PairingWrite::Bound {
                     binding,
                     label,
@@ -2801,6 +2847,9 @@ mod tests {
             delete_holds: Mutex::new(HashMap::new()),
             day_bounds: Mutex::new(HashMap::new()),
             confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
         }
     }
 
@@ -3299,7 +3348,7 @@ mod tests {
         let coordinator = coordinator_with_client(client.clone(), Box::new(store), sync.clone());
 
         let wake = Arc::new(tokio::sync::Notify::new());
-        let run_task = tokio::spawn(coordinator.run(cancel_rx, wake));
+        let run_task = tokio::spawn(async move { coordinator.run(cancel_rx, wake).await });
         tokio::time::advance(Duration::from_secs(DEFAULT_UPLOAD_INTERVAL_SECS)).await;
         tokio::time::advance(Duration::from_secs(1)).await;
         run_task.await.unwrap();

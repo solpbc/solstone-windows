@@ -43,6 +43,8 @@ pub struct AppState {
     pub journal_bridge: Arc<Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>>,
     /// Capture-exclusion rules controller (shared with the WGC screen source).
     pub exclusions: crate::exclusions::ExclusionController,
+    #[cfg(test)]
+    pub probe: Option<Arc<crate::windows::OpenPairProbe>>,
 }
 
 /// The observer's device label for the pairing CSR, best-effort.
@@ -193,6 +195,9 @@ fn build_sync_config() -> SyncConfig {
         )),
         facts_fn: Arc::new(current_raw_facts),
         confirmation: Arc::new(Mutex::new(String::new())),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     }
 }
 
@@ -397,65 +402,11 @@ pub fn run(
             // upload loop now. A fresh pairing is started by the
             // `pair` IPC command instead.
             let sync_config = build_sync_config();
-            let skip_resume = tauri::async_runtime::block_on(
-                pl_transport_win::answer::settle_rejected_on_launch(
-                    &sync_config.state_path,
-                    &sync_config.confirmation,
-                    &sync,
-                ),
-            );
-            let _ = pl_transport_win::answer::settle_grandfather(
-                &sync_config.state_path,
-                &sync_config.confirmation,
-            );
             let mut slot = UploaderSlot::new();
-            let mut credential_access = None;
-            if !skip_resume {
-                match PairedState::load(&sync_config.state_path) {
-                    Ok(paired) if paired.is_paired() => {
-                        let cfg = sync_config.clone();
-                        let sync_for_sync = sync.clone();
-                        match CredentialAccess::bind(&paired, &cfg, sync.clone(), None) {
-                            Ok(access) => {
-                                credential_access = Some(access.clone());
-                                tracing::info!(
-                                    target: "sync",
-                                    source = "resume",
-                                    "uploader started"
-                                );
-                                let wake = slot.wake();
-                                tauri::async_runtime::block_on(slot.replace(move |rx| async move {
-                                    pl_transport_win::run_uploader(
-                                        access,
-                                        cfg,
-                                        sync_for_sync,
-                                        rx,
-                                        wake,
-                                    )
-                                    .await;
-                                }));
-                            }
-                            Err(error) => {
-                                let error = error.to_string();
-                                tracing::warn!(
-                                    target: "sync",
-                                    error = %observer_log::redact_secret("pairing-load-error", &error),
-                                    "pairing state load failed"
-                                );
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        let error = error.to_string();
-                        tracing::warn!(
-                            target: "sync",
-                            error = %observer_log::redact_secret("pairing-load-error", &error),
-                            "pairing state load failed"
-                        );
-                    }
-                }
-            }
+            let credential_access = tauri::async_runtime::block_on(
+                pl_transport_win::service::launch_resume(&sync_config, &sync, &mut slot),
+            )
+            .unwrap_or(None);
 
             app.manage(AppState {
                 commands: cmd_tx.clone(),
@@ -468,6 +419,8 @@ pub fn run(
                 journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
                 journal_bridge: Arc::new(Mutex::new(None)),
                 exclusions,
+                #[cfg(test)]
+                probe: None,
             });
 
             // In-app updater: construct the Velopack-backed controller (honest
@@ -688,14 +641,8 @@ pub fn run(
             if open_journal_on_launch {
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(error) = crate::windows::open_journal(&handle).await {
-                        tracing::warn!(
-                            target: "window",
-                            label = "journal",
-                            error = error.token(),
-                            "open-journal failed"
-                        );
-                    }
+                    let state = handle.state::<crate::app::AppState>();
+                    open_journal_from_launch(&state, &handle, Some(&handle)).await;
                 });
             } else {
                 match open_view {
@@ -729,4 +676,19 @@ pub fn run(
             }
         }
     });
+}
+
+pub(crate) async fn open_journal_from_launch<S: crate::windows::JournalSurface>(
+    state: &crate::app::AppState,
+    surface: &S,
+    app: Option<&tauri::AppHandle>,
+) {
+    if let Err(error) = crate::windows::open_journal(state, surface, app).await {
+        tracing::warn!(
+            target: "window",
+            label = "journal",
+            error = error.token(),
+            "open-journal failed"
+        );
+    }
 }

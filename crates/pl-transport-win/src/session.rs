@@ -35,10 +35,19 @@ pub async fn answer(
     let mut slot = slot_mutex.lock().await;
     let mut access_guard = access_mutex.lock().await;
 
-    // Stale: if binding != snapshot.pairing.binding, return before any file write,
-    // cache write, open_gate, kick, retire, DELETE, or credential delete.
-    let snapshot_binding = sync.lock().unwrap().pairing.binding.clone();
-    if snapshot_binding != binding {
+    // Stale: if binding is empty, doesn't match snapshot binding, or phase is not
+    // AwaitingConfirmation, return before any file write, cache write, open_gate, kick,
+    // retire, DELETE, or credential delete.
+    if binding.is_empty() {
+        return Ok(());
+    }
+    let (snapshot_binding, snapshot_phase) = {
+        let snap = sync.lock().unwrap();
+        (snap.pairing.binding.clone(), snap.pairing.phase)
+    };
+    if snapshot_binding != binding
+        || snapshot_phase != observer_model::PairingPhase::AwaitingConfirmation
+    {
         return Ok(());
     }
 
@@ -63,6 +72,7 @@ pub async fn answer(
                 publish_pairing(
                     sync,
                     &cfg.confirmation,
+                    &cfg.tombstone,
                     PairingWrite::Bound {
                         binding: binding.to_string(),
                         label,
@@ -91,17 +101,19 @@ pub async fn answer(
             // 3. DELETE sha256: + hex of DER from spl_transport::tls::parse_certs
             if let Some(access) = access_guard.as_ref() {
                 let client = access.client_slot().load();
-                if let Ok(certs) =
-                    spl_transport::tls::parse_certs(&client.credential().client_cert_pem)
-                {
-                    if let Some(cert) = certs.first() {
-                        let der_hex = spl_core::ca::sha256_hex(cert.as_ref());
-                        let client_id = format!("sha256:{der_hex}");
-                        let _ = tokio::time::timeout(
-                            RETIRE_CLIENT_TIMEOUT,
-                            client.retire_client(&client_id),
-                        )
-                        .await;
+                if client.journal_identity().client_cert_sha256 == binding {
+                    if let Ok(certs) =
+                        spl_transport::tls::parse_certs(&client.credential().client_cert_pem)
+                    {
+                        if let Some(cert) = certs.first() {
+                            let der_hex = spl_core::ca::sha256_hex(cert.as_ref());
+                            let client_id = format!("sha256:{der_hex}");
+                            let _ = tokio::time::timeout(
+                                RETIRE_CLIENT_TIMEOUT,
+                                client.retire_client(&client_id),
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -130,6 +142,7 @@ pub async fn answer(
             publish_pairing(
                 sync,
                 &cfg.confirmation,
+                &cfg.tombstone,
                 PairingWrite::NotPaired {
                     detail: Some(detail.to_string()),
                 },
@@ -165,12 +178,15 @@ where
             }
         }
         Ok(None) => {
-            crate::answer::settle_grandfather(&cfg.state_path, &cfg.confirmation)
-                .map_err(TransportError::from)?;
+            let _ = crate::answer::settle_grandfather(&cfg.state_path, &cfg.confirmation);
         }
         Err(_) => {
             // Unreadable answer file is not rewritten and is not a pair failure
         }
+    }
+
+    if let Ok(None) = read_answer(&ans_path) {
+        write_answer(&ans_path, &crate::answer::AnswerState::default())?;
     }
 
     let paired = crate::service::pair(link, cfg, sync.clone()).await?;

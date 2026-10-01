@@ -29,6 +29,7 @@ pub struct CredentialAccess {
     journal_version: Arc<JournalVersionController>,
     sync: Arc<Mutex<SyncSnapshot>>,
     confirmation: Arc<Mutex<String>>,
+    tombstone: Arc<Mutex<Option<String>>>,
 }
 
 impl CredentialAccess {
@@ -71,6 +72,7 @@ impl CredentialAccess {
             journal_version: cfg.journal_version.clone(),
             sync,
             confirmation: cfg.confirmation.clone(),
+            tombstone: cfg.tombstone.clone(),
         })
     }
 
@@ -104,6 +106,10 @@ impl CredentialAccess {
 
     pub(crate) fn confirmation(&self) -> Arc<Mutex<String>> {
         self.confirmation.clone()
+    }
+
+    pub(crate) fn tombstone(&self) -> Arc<Mutex<Option<String>>> {
+        self.tombstone.clone()
     }
 
     /// Retire this authority before publishing a same-home re-pair replacement.

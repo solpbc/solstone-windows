@@ -204,6 +204,9 @@ async fn start_test_bridge(
         journal_version,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(binding)),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
     let access = CredentialAccess::bind(paired, &cfg, sync, None).unwrap();
     journal_bridge::start(access).await.unwrap()

@@ -163,7 +163,7 @@ async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
         ..Default::default()
     };
     let unique = TEST_PATH_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let state_path = std::path::PathBuf::from("/var/tmp").join(format!(
+    let state_path = std::env::temp_dir().join(format!(
         "handshake-refusal-{}-{unique}.json",
         std::process::id()
     ));
@@ -180,6 +180,9 @@ async fn a_bridge_the_journal_refused_marks_the_pairing_refused() {
         journal_version,
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(binding)),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     };
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
     let handle = pl_transport_win::journal_bridge::start(access)

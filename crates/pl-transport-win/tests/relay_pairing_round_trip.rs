@@ -346,6 +346,9 @@ fn service_config(state_path: PathBuf) -> SyncConfig {
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(std::sync::Mutex::new(String::new())),
+        tombstone: Arc::new(std::sync::Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
     }
 }
 

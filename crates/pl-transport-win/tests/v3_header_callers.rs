@@ -65,8 +65,8 @@ const BASELINE_CALLERS: &[BaselineCaller] = &[
     },
     BaselineCaller {
         relative: "../../src-tauri/src/app.rs",
-        needle: "pl_transport_win::run_uploader",
-        v3_surface: "pl_transport_win::run_uploader",
+        needle: "pl_transport_win::service::launch_resume",
+        v3_surface: "pl_transport_win::service::launch_resume",
     },
     BaselineCaller {
         relative: "src/client.rs",
