@@ -1324,6 +1324,12 @@ async fn mark_confirmation_pair_mark_gates_the_save() {
         &state.json_ca.spki_pin(),
     );
 
+    // The first pairing advertises an address whose TCP listener never completes
+    // TLS, just as an unreachable advertised address can exhaust retirement.
+    let stale_lan = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    *state.local_endpoint_override.lock().unwrap() =
+        Some(("127.0.0.1".into(), stale_lan.local_addr().unwrap().port()));
+
     let dir = TempDir::new("pair-mark");
     let env = pl_transport_win::integration::Environment {
         state_path: dir.path().join("pairing.json"),
@@ -1369,11 +1375,21 @@ async fn mark_confirmation_pair_mark_gates_the_save() {
         "answer file must be unchanged"
     );
     assert_eq!(
-        delete_paths.lock().unwrap().len(),
+        state.delete_paths.lock().unwrap().len(),
         1,
         "exactly one DELETE request"
     );
-    let delete_path = delete_paths.lock().unwrap()[0].clone();
+    assert!(
+        delete_paths.lock().unwrap().is_empty(),
+        "retirement used the direct path"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), stale_lan.accept())
+            .await
+            .is_err(),
+        "retirement dialed stale LAN"
+    );
+    let delete_path = state.delete_paths.lock().unwrap()[0].clone();
     assert!(
         delete_path.starts_with("/app/network/api/clients/sha256:"),
         "DELETE path must be /app/network/api/clients/sha256:..., got {delete_path}"
@@ -1383,6 +1399,8 @@ async fn mark_confirmation_pair_mark_gates_the_save() {
         pl_transport_win::integration::report::Residue::None,
         "journal_pairing_identity must be None on 404 delete"
     );
+
+    *state.local_endpoint_override.lock().unwrap() = Some(("127.0.0.1".into(), direct_port));
 
     // 4. Match run: matching --mark (any case, middot allowed) writes confirmed and saves pairing.json
     let parsed_cmd = pl_transport_win::integration::args::parse(&[

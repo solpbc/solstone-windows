@@ -107,6 +107,7 @@ pub(crate) struct MockState {
     pub(crate) raw_pair_request_body: Mutex<Option<Vec<u8>>>,
     pub(crate) omit_local_endpoints: Mutex<bool>,
     pub(crate) local_endpoint_override: Mutex<Option<(String, u16)>>,
+    pub(crate) delete_paths: Mutex<Vec<String>>,
 }
 
 impl MockState {
@@ -128,6 +129,7 @@ impl MockState {
             raw_pair_request_body: Mutex::new(None),
             omit_local_endpoints: Mutex::new(false),
             local_endpoint_override: Mutex::new(None),
+            delete_paths: Mutex::new(Vec::new()),
         }
     }
 
@@ -356,6 +358,19 @@ async fn serve_home_pair(stream: DuplexStream, state: Arc<MockState>) -> io::Res
     }
 
     let request_text = String::from_utf8_lossy(&request);
+    if request_text.starts_with("DELETE /app/network/api/clients/") {
+        let path = request_text
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        state.delete_paths.lock().unwrap().push(path);
+        write_pl_response(&mut tls, 404, json!({"error":"not_found"})).await?;
+        return Ok(());
+    }
     let expected_pair_token = state.expected_pair_token.lock().unwrap().clone();
     assert!(request_text.starts_with(&format!(
         "POST /app/network/pair?token={expected_pair_token} "

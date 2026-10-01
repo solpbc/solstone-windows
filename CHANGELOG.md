@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- when you pair through your journal's private network and choose "that doesn't match", the app now uses that connection to remove this PC from your journal. before, removal could time out, leaving the PC listed.
+
 ## [2.0.15] - 2026-10-01
 
 ### Fixed

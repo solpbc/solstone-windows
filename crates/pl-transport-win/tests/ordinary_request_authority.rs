@@ -536,6 +536,10 @@ async fn stale_slot_incarnation_blocks_old_relay_only_helper_without_a_relay_dia
         old.system_status().await,
         Err(TransportError::RelayRetired)
     ));
+    assert!(matches!(
+        old.retire_client("sha256:0123456789abcdef").await,
+        Err(TransportError::RelayRetired)
+    ));
     assert_no_relay_tcp_dial(&relay_listener).await;
 
     let (cert, key) = self_signed();
@@ -576,6 +580,10 @@ async fn retired_slot_blocks_relay_only_helper_without_a_relay_dial() {
 
     assert!(matches!(
         client.system_status().await,
+        Err(TransportError::RelayRetired)
+    ));
+    assert!(matches!(
+        client.retire_client("sha256:0123456789abcdef").await,
         Err(TransportError::RelayRetired)
     ));
     assert_no_relay_tcp_dial(&relay_listener).await;

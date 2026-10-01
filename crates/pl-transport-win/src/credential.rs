@@ -481,6 +481,13 @@ impl WindowsTokenTransaction {
         TokenCommit::Unchanged
     }
 
+    fn indeterminate(&self) -> TokenCommit {
+        // Every transport for this incarnation must remain disabled when the
+        // durable token state cannot be established, including retirement.
+        self.relay_fence.mark_relay_ineligible(self.incarnation);
+        TokenCommit::Indeterminate
+    }
+
     fn committed(&self, generation: u64) -> TokenCommit {
         *self.cas_key.lock().unwrap() = Some(CasKey {
             pairing_generation: self.pairing_generation,
@@ -498,7 +505,7 @@ impl WindowsTokenTransaction {
     ) -> TokenCommit {
         let state = match PairedState::load(path) {
             Ok(state) => state,
-            Err(_) => return TokenCommit::Indeterminate,
+            Err(_) => return self.indeterminate(),
         };
         let Some(credential) = state.credential else {
             return self.unchanged();
@@ -530,7 +537,7 @@ impl TokenTransaction for WindowsTokenTransaction {
         };
         let state = match PairedState::load(&path) {
             Ok(state) => state,
-            Err(_) => return TokenCommit::Indeterminate,
+            Err(_) => return self.indeterminate(),
         };
         let Some(credential) = state.credential else {
             return self.unchanged();
@@ -917,11 +924,15 @@ mod tests {
         }
 
         let missing = temp_pairing_path("token-transaction-unresolved-readback");
-        let (missing_transaction, _fence) = token_transaction(&missing, &state);
+        let (missing_transaction, missing_fence) = token_transaction(&missing, &state);
         std::fs::write(&missing, b"not durable pairing state").unwrap();
         assert_eq!(
             missing_transaction.classify_readback(&missing, 1, "fresh-token", 100),
             TokenCommit::Indeterminate
+        );
+        assert_eq!(
+            SharedRelayFence::permit(missing_fence.as_ref(), 1),
+            RelayPermit::Disabled
         );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

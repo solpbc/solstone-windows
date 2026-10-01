@@ -578,6 +578,9 @@ pub struct ObserverClient {
     relay_fence: Arc<RelayFence>,
     pub(crate) token_transaction: Arc<WindowsTokenTransaction>,
     transport: spl_transport::TransportClient,
+    /// Bounded device retirement skips potentially stale LAN addresses while
+    /// sharing the same publication transaction and lifecycle fence.
+    retirement_transport: Option<spl_transport::TransportClient>,
     /// Handshake refusals for this pairing, kept across access rebuilds.
     refusals: Arc<std::sync::Mutex<RefusalTracker>>,
     gate: Arc<AtomicBool>,
@@ -635,6 +638,23 @@ impl ObserverClient {
             incarnation,
         };
         let shared_credential = windows_to_shared_credential(&credential);
+        let retirement_transport = if matches!(
+            (shared_credential.relay_origin.as_deref(), shared_credential.device_token.as_deref()),
+            (Some(origin), Some(token)) if !origin.is_empty() && !token.is_empty()
+        ) {
+            let mut relay_credential = shared_credential.clone();
+            relay_credential.endpoints.clear();
+            relay_credential.local_endpoints = None;
+            Some(
+                spl_transport::TransportClient::new_relay_only_with_publication(
+                    relay_credential,
+                    publication.clone(),
+                )
+                .map_err(map_shared_error)?,
+            )
+        } else {
+            None
+        };
         let transport = if !shared_credential.endpoints.is_empty() {
             spl_transport::TransportClient::new_with_publication(shared_credential, publication)
         } else if matches!(
@@ -662,6 +682,7 @@ impl ObserverClient {
             relay_fence,
             token_transaction: transaction,
             transport,
+            retirement_transport,
             refusals,
             gate,
         })
@@ -977,8 +998,14 @@ impl ObserverClient {
         if let Some(stop) = self.refusal_stop() {
             return Err(RouteError::Transport(map_shared_error(stop.error())));
         }
-        let result = self
-            .transport
+        let transport = if matches!(route, OrdinaryRequest::ClientsRetireDelete) {
+            self.retirement_transport
+                .as_ref()
+                .unwrap_or(&self.transport)
+        } else {
+            &self.transport
+        };
+        let result = transport
             .request(
                 spec.method,
                 &path,
