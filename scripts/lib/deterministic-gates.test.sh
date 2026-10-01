@@ -8,8 +8,19 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 ASSERTIONS=0
 TMP_ROOT=""
+lock_pid_one=
+lock_pid_two=
 
 cleanup() {
+  # Release a held fixture even when an assertion fails, then reap its drivers.
+  if [ -n "${FAKE_LOCK_RELEASE:-}" ]; then
+    : > "$FAKE_LOCK_RELEASE"
+  fi
+  for fixture_pid in "$lock_pid_one" "$lock_pid_two"; do
+    if [ -n "$fixture_pid" ]; then
+      wait "$fixture_pid" || :
+    fi
+  done
   if [ -n "$TMP_ROOT" ]; then
     rm -rf "$TMP_ROOT"
   fi
@@ -531,7 +542,14 @@ set -eu
 if [ -n "${FAKE_LOCK_WITNESS:-}" ]; then
   printf '%s-start\n' "$FAKE_RUN_ID" >> "$FAKE_LOCK_WITNESS"
   printf '%s-ssh-start\n' "$FAKE_RUN_ID" >> "$FAKE_WITNESS"
-  sleep 0.2
+  if [ "$FAKE_RUN_ID" = 1 ]; then
+    poll=0
+    while [ ! -f "$FAKE_LOCK_RELEASE" ]; do
+      [ "$poll" -lt 1200 ] || exit 73
+      poll=$((poll + 1))
+      sleep 0.05
+    done
+  fi
   printf '%s-end\n' "$FAKE_RUN_ID" >> "$FAKE_LOCK_WITNESS"
   printf '%s-ssh-end\n' "$FAKE_RUN_ID" >> "$FAKE_WITNESS"
 fi
@@ -1420,10 +1438,12 @@ assert_not_contains \
 
 reset_fake_transfer "orchestrator-lock"
 FAKE_LOCK_WITNESS=$FAKE_CASE_DIR/lock-witness
+FAKE_LOCK_RELEASE=$FAKE_CASE_DIR/release-first
 : > "$FAKE_LOCK_WITNESS"
-export FAKE_LOCK_WITNESS
+export FAKE_LOCK_WITNESS FAKE_LOCK_RELEASE
 lock_output_one=$FAKE_CASE_DIR/output-1
 lock_output_two=$FAKE_CASE_DIR/output-2
+: > "$lock_output_two"
 WIN_REMOTE_HOST=fake@example.invalid \
   WIN_CI_BINDING_FILE="$FAKE_BINDING_FILE" \
   GIT="$FAKE_GIT" \
@@ -1434,15 +1454,22 @@ WIN_REMOTE_HOST=fake@example.invalid \
 lock_pid_one=$!
 lock_started=0
 lock_poll=0
-while [ "$lock_poll" -lt 100 ]; do
+while [ "$lock_poll" -lt 400 ]; do
   if grep -q '^1-start$' "$FAKE_LOCK_WITNESS"; then
     lock_started=1
     break
   fi
   lock_poll=$((lock_poll + 1))
-  sleep 0.01
+  sleep 0.05
 done
+if [ "$lock_started" -ne 1 ]; then
+  cat "$lock_output_one" >&2
+fi
 assert_eq "first orchestrator reaches locked SSH phase" "1" "$lock_started"
+if flock -n "$FAKE_GIT_COMMON_DIR/solstone-win-host-ci.lock" true; then
+  fail "first orchestrator must hold the real lock throughout fake SSH"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
 WIN_REMOTE_HOST=fake@example.invalid \
   WIN_CI_BINDING_FILE="$FAKE_BINDING_FILE" \
   GIT="$FAKE_GIT" \
@@ -1451,16 +1478,35 @@ WIN_REMOTE_HOST=fake@example.invalid \
   FAKE_RUN_ID=2 \
   sh "$REPO_ROOT/scripts/win-host-ci.sh" >"$lock_output_two" 2>&1 &
 lock_pid_two=$!
+# The first fake SSH stays in the critical section until the second driver
+# announces its lock attempt. Startup speed does not determine contention.
+lock_attempted=0
+lock_poll=0
+while [ "$lock_poll" -lt 400 ]; do
+  if grep -q '^win-host-ci: waiting for lock ' "$lock_output_two"; then
+    lock_attempted=1
+    break
+  fi
+  lock_poll=$((lock_poll + 1))
+  sleep 0.05
+done
+if [ "$lock_attempted" -ne 1 ]; then
+  cat "$lock_output_two" >&2
+fi
+assert_eq "second orchestrator attempts the held lock" "1" "$lock_attempted"
+: > "$FAKE_LOCK_RELEASE"
 if wait "$lock_pid_one"; then
   lock_status_one=0
 else
   lock_status_one=$?
 fi
+lock_pid_one=
 if wait "$lock_pid_two"; then
   lock_status_two=0
 else
   lock_status_two=$?
 fi
+lock_pid_two=
 assert_eq "first serialized orchestrator succeeds" "0" "$lock_status_one"
 assert_eq "second serialized orchestrator succeeds" "0" "$lock_status_two"
 assert_eq \
