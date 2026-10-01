@@ -38,9 +38,9 @@ pub struct AppState {
     pub credential_access: tokio::sync::Mutex<Option<CredentialAccess>>,
     /// Serializes journal opens so parallel user triggers do not race the single
     /// Tauri window label and surface a spurious duplicate-label failure.
-    pub journal_open_lock: tokio::sync::Mutex<()>,
+    pub journal_open_lock: Arc<tokio::sync::Mutex<()>>,
     /// Per-window loopback bridge backing the external journal window.
-    pub journal_bridge: Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>,
+    pub journal_bridge: Arc<Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>>,
     /// Capture-exclusion rules controller (shared with the WGC screen source).
     pub exclusions: crate::exclusions::ExclusionController,
 }
@@ -465,8 +465,8 @@ pub fn run(
                 _shutdown: Mutex::new(Some(shutdown_tx)),
                 uploader_slot: tokio::sync::Mutex::new(slot),
                 credential_access: tokio::sync::Mutex::new(credential_access),
-                journal_open_lock: tokio::sync::Mutex::new(()),
-                journal_bridge: Mutex::new(None),
+                journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
+                journal_bridge: Arc::new(Mutex::new(None)),
                 exclusions,
             });
 
