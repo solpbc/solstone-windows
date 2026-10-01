@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.14
+PackageVersion: 2.0.15
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,8 +22,8 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Changed
-  - segments from this PC now reach your journal with this PC's time zone attached.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.14
+  Fixed
+  - this is a security fix: after you pair, the app now asks you to confirm your journal's mark, and nothing waiting on this PC goes to the journal until you confirm it's your journal. before, what was waiting could start going to the journal as soon as pairing finished, before you could check the mark, even to a journal that wasn't yours. if you paired before this update, you won't be asked.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.15
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
