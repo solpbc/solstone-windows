@@ -1786,11 +1786,33 @@ async fn mark_confirmation_tombstone_and_re_pair() {
         PairingPhase::AwaitingConfirmation
     );
 
-    // With an empty snapshot binding, Bound { Failed { .. } } does not publish (phase unchanged)
+    // Non-empty matching Bound { Failed } publishes Failed phase with that detail and binding
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: digest_c.clone(),
+            label: "Home C".into(),
+            mark: None,
+            kind: BoundKind::Failed {
+                detail: Some("journal_refused".into()),
+            },
+        },
+    );
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::Failed);
+        assert_eq!(snap.pairing.detail.as_deref(), Some("journal_refused"));
+        assert_eq!(snap.pairing.binding, digest_c);
+    }
+
+    // With an empty snapshot binding, Bound { Failed } does not publish (phase and detail unchanged)
     {
         let mut snap = sync.lock().unwrap();
         snap.pairing.binding = String::new();
-        snap.pairing.phase = PairingPhase::Pairing;
+        snap.pairing.phase = PairingPhase::NotPaired;
+        snap.pairing.detail = Some(MARK_REJECTED_DETAIL.into());
     }
     publish_pairing(
         &sync,
@@ -1805,7 +1827,12 @@ async fn mark_confirmation_tombstone_and_re_pair() {
             },
         },
     );
-    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+        assert_eq!(snap.pairing.binding, "");
+    }
 
     // Unbound PairingWrite::Failed { detail } still sets phase Failed and empty binding
     publish_pairing(

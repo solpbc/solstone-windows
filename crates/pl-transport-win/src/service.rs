@@ -142,9 +142,7 @@ pub fn publish_pairing(
                     return;
                 }
 
-                if matches!(kind, BoundKind::Failed { .. })
-                    && snapshot.pairing.phase == PairingPhase::Pairing
-                {
+                if matches!(kind, BoundKind::Failed { .. }) && snapshot_binding.is_empty() {
                     return;
                 }
 
