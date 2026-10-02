@@ -370,14 +370,20 @@ mod imp {
     // --- status, owner actions, update -------------------------------------
 
     /// `--apply-update`'s step before applying (see
-    /// [`request_quiesce_from_running_app`]).
+    /// [`request_quiesce_from_running_app`]). Prints what happened, including
+    /// why the running app could not be asked; the apply goes ahead either way.
     pub fn quiesce_before_cli_apply() {
-        match request_quiesce_from_running_app() {
-            Some(closed) => {
-                println!("--apply-update: browser hosts quiesced (all closed: {closed})")
-            }
-            None => println!("--apply-update: no running app endpoint to quiesce"),
-        }
+        let line = match request_quiesce_from_running_app() {
+            Ok(closed) => format!("browser hosts quiesced (all closed: {closed})"),
+            Err(reason) => format!("browser hosts not quiesced: {reason}"),
+        };
+        println!("--apply-update: {line}");
+        // The CLI has no file log, and a GUI-subsystem console can drop stdout:
+        // leave the outcome where an operator can read it after the apply.
+        let _ = std::fs::write(
+            intake_root().join("update-quiesce.txt"),
+            format!("{} {line}\n", now_ms()),
+        );
     }
 
     /// The status the app last published (counts and states only; never page
@@ -444,16 +450,23 @@ mod imp {
     }
 
     /// `--apply-update` runs as its own process: ask the running app, over its
-    /// own pipe, to quiesce first. `None` when no app is listening.
-    pub fn request_quiesce_from_running_app() -> Option<bool> {
+    /// own pipe, to quiesce first. `Err` names why it could not be asked.
+    pub fn request_quiesce_from_running_app() -> Result<bool, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .ok()?;
+            .map_err(|e| format!("runtime: {e}"))?;
         runtime.block_on(async {
-            let name = platform_win::browser_pipe::pipe_name().ok()?;
-            let pipe = platform_win::browser_pipe::connect(&name).await.ok()??;
-            relay::request_quiesce(pipe).await
+            let name =
+                platform_win::browser_pipe::pipe_name().map_err(|e| format!("pipe name: {e}"))?;
+            let pipe = match platform_win::browser_pipe::connect(&name).await {
+                Ok(Some(pipe)) => pipe,
+                Ok(None) => return Err("no running app endpoint".to_string()),
+                Err(e) => return Err(format!("connect: {e}")),
+            };
+            relay::request_quiesce(pipe)
+                .await
+                .ok_or_else(|| "no reply from the running app".to_string())
         })
     }
 
