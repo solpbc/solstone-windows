@@ -600,3 +600,63 @@ async fn a_pause_outranks_a_full_spool() {
     });
     assert_eq!(hub.status().capture, "paused");
 }
+
+/// A journal view whose upload switches the app to another journal mid-flight,
+/// then fails: the old journal's failure must not land on the new generation.
+struct SwitchingJournal {
+    hub: Arc<Hub>,
+}
+
+impl Journal for SwitchingJournal {
+    fn identity(&self) -> Option<&str> {
+        Some(JOURNAL_A)
+    }
+
+    async fn upload(&self, _entry: &OutboxEntry, _body: Vec<u8>) -> UploadOutcome {
+        self.hub.update_gates(paired(JOURNAL_B));
+        UploadOutcome::Failed("relay_unavailable")
+    }
+}
+
+#[tokio::test]
+async fn an_old_journals_failure_finishing_after_a_switch_is_not_reported() {
+    let rig = rig(false);
+    rig.hub.update_gates(paired(JOURNAL_A));
+    let (mut c, ack) = handshake(&rig.hub, "chrome", "production").await;
+    let generation = ack["destination_generation"].as_str().unwrap().to_string();
+    c.send(&batch(&generation, 1, snapshot("c1", "x"))).await;
+    c.recv_skipping_state().await;
+    rig.clock.store(T0 + 300_000, Ordering::SeqCst);
+    rig.hub.tick();
+    let switching = SwitchingJournal {
+        hub: Arc::clone(&rig.hub),
+    };
+    deliver_once(&rig.hub, &switching).await;
+    let st = rig.hub.status();
+    assert_eq!(st.failure, None);
+    assert_ne!(st.delivery, "failed");
+}
+
+#[tokio::test]
+async fn a_held_mark_clears_a_previous_failure() {
+    let rig = rig(false);
+    rig.hub.update_gates(paired(JOURNAL_A));
+    let (mut c, ack) = handshake(&rig.hub, "chrome", "production").await;
+    let generation = ack["destination_generation"].as_str().unwrap().to_string();
+    c.send(&batch(&generation, 1, snapshot("c1", "x"))).await;
+    c.recv_skipping_state().await;
+    rig.clock.store(T0 + 300_000, Ordering::SeqCst);
+    rig.hub.tick();
+    let failing = FakeJournal {
+        outcome: UploadOutcome::Failed("relay_unavailable"),
+        ..journal(JOURNAL_A)
+    };
+    deliver_once(&rig.hub, &failing).await;
+    assert_eq!(rig.hub.status().delivery, "failed");
+    let held = FakeJournal {
+        outcome: UploadOutcome::Held,
+        ..journal(JOURNAL_A)
+    };
+    deliver_once(&rig.hub, &held).await;
+    assert_eq!(rig.hub.status().delivery, "kept_locally");
+}

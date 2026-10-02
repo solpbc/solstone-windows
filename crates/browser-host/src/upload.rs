@@ -60,36 +60,47 @@ pub async fn deliver_once<J: Journal>(hub: &Hub, journal: &J) -> PassSummary {
     if hub.identity().as_deref() != Some(identity) {
         return summary;
     }
+    // A pass reports only against the generation it started on: an upload to a
+    // previous journal that finishes after a switch must not mark the new one.
+    let report = |failure: Option<&'static str>| {
+        if hub.identity().as_deref() == Some(identity) {
+            hub.set_delivery_failure(failure);
+        }
+    };
     let entries = hub.outbox();
     summary.remaining = entries.len();
     for entry in entries {
         let body = match std::fs::read(entry.pages_path()) {
             Ok(body) => body,
             Err(_) => {
-                hub.set_delivery_failure(Some("local_io"));
+                report(Some("local_io"));
                 return summary;
             }
         };
         if body.len() as u64 != entry.size {
-            hub.set_delivery_failure(Some("local_io"));
+            report(Some("local_io"));
             return summary;
         }
         match journal.upload(&entry, body).await {
             UploadOutcome::Delivered => {
                 if hub.delivered(&entry).is_err() {
-                    hub.set_delivery_failure(Some("local_io"));
+                    report(Some("local_io"));
                     return summary;
                 }
                 summary.delivered += 1;
                 summary.remaining -= 1;
             }
-            UploadOutcome::Held => return summary,
+            // Held (the journal mark is unanswered) is not a failure.
+            UploadOutcome::Held => {
+                report(None);
+                return summary;
+            }
             UploadOutcome::Failed(code) => {
-                hub.set_delivery_failure(Some(code));
+                report(Some(code));
                 return summary;
             }
         }
     }
-    hub.set_delivery_failure(None);
+    report(None);
     summary
 }
