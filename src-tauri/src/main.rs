@@ -41,6 +41,18 @@ fn main() -> ExitCode {
         return code;
     }
 
+    // `VelopackApp::run` below applies a downloaded update before it returns
+    // (killing every process under `current\`): ask the running app to send its
+    // browser hosts away first. Velopack's own hook invocations skip this.
+    #[cfg(feature = "browser-host")]
+    if !early_args
+        .first()
+        .is_some_and(|a| a.starts_with("--veloapp-"))
+        && update::startup_apply_pending()
+    {
+        browser::quiesce_before_apply();
+    }
+
     // Velopack-aware entry — MUST run first after host mode. For the installer lifecycle args
     // (--veloapp-install / -updated / -obsolete / -uninstall) `run()` acts and
     // terminates the process. The uninstall fast-callback removes the per-user

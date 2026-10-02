@@ -163,6 +163,17 @@ fn build_manager() -> Option<UpdateManager> {
     build_manager_with_feed(FEED_URL)
 }
 
+/// Whether `VelopackApp::run` is about to apply a downloaded update: a local
+/// full package newer than this install (Velopack's own test), in a process
+/// Velopack did not just restart (it never auto-applies there).
+#[cfg(feature = "browser-host")]
+pub fn startup_apply_pending() -> bool {
+    if std::env::var_os("VELOPACK_RESTART").is_some() {
+        return false;
+    }
+    build_manager().is_some_and(|m| m.get_update_pending_restart().is_some())
+}
+
 /// Extract `--update-feed <url>` from CLI args for `--check-update` and `--apply-update`.
 /// Rejects missing, empty, equals-form (`--update-feed=...`), and query-string URLs.
 fn parse_update_feed_arg(args: &[String]) -> Result<Option<&str>, &'static str> {
@@ -277,11 +288,6 @@ pub fn apply_pending_cli(args: &[String]) -> std::process::ExitCode {
                 "--apply-update: applying staged {} and relaunching…",
                 asset.Version
             );
-            // The running app's browser hosts run this same executable: ask it,
-            // over its own pipe, to send them away before Velopack swaps
-            // `current\`. No app running means no hosts to wait for.
-            #[cfg(feature = "browser-host")]
-            crate::browser::quiesce_before_cli_apply();
             if let Err(e) = manager.apply_updates_and_restart(&asset) {
                 eprintln!("--apply-update: apply failed: {e}");
                 return ExitCode::FAILURE;

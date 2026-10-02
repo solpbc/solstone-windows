@@ -369,17 +369,21 @@ mod imp {
 
     // --- status, owner actions, update -------------------------------------
 
-    /// `--apply-update`'s step before applying (see
-    /// [`request_quiesce_from_running_app`]). Prints what happened, including
-    /// why the running app could not be asked; the apply goes ahead either way.
-    pub fn quiesce_before_cli_apply() {
+    /// Velopack's startup step (`VelopackApp::run`) applies a downloaded update
+    /// before it returns, and the apply kills every process under `current\`,
+    /// browser hosts included. Every launch of this exe passes through it
+    /// (`--apply-update`, a relaunch, a second launch), so `main` calls this
+    /// first when an apply is pending: the running app is asked to send its
+    /// hosts away (see [`request_quiesce_from_running_app`]), as the in-app
+    /// install does. Prints what happened; the apply goes ahead either way.
+    pub fn quiesce_before_apply() {
         let line = match request_quiesce_from_running_app() {
             Ok(closed) => format!("browser hosts quiesced (all closed: {closed})"),
             Err(reason) => format!("browser hosts not quiesced: {reason}"),
         };
-        println!("--apply-update: {line}");
-        // The CLI has no file log, and a GUI-subsystem console can drop stdout:
-        // leave the outcome where an operator can read it after the apply.
+        println!("update: {line}");
+        // No file log exists this early, and a GUI-subsystem console can drop
+        // stdout: leave the outcome where an operator can read it afterwards.
         let _ = std::fs::write(
             intake_root().join("update-quiesce.txt"),
             format!("{} {line}\n", now_ms()),
