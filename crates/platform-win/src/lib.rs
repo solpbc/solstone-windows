@@ -37,6 +37,10 @@ pub mod browser_pipe;
 /// Native-messaging host registration (HKCU, safe `winreg`).
 pub mod browser_registration;
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod journal_document_filter;
+
 pub use local_offset::WindowsLocalOffset;
 
 /// The per-user data root: `%LocalAppData%\Solstone`. Falls back to a temp path

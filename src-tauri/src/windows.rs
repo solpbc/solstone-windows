@@ -418,7 +418,12 @@ fn build_journal_window(
     let parsed: tauri::Url = url.parse().map_err(tauri::Error::InvalidUrl)?;
     let origin = journal_window::JournalOrigin::from_url(&parsed)
         .ok_or(tauri::Error::InvalidWebviewUrl("journal bootstrap origin"))?;
-    let builder = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(parsed))
+    #[cfg(windows)]
+    let bootstrap_url = parsed.clone();
+    // wry Navigates during build, before with_webview; construct on about:blank,
+    // then navigate the bootstrap URL only after comprehensive filtering is installed.
+    let placeholder = tauri::Url::parse("about:blank").expect("valid placeholder URL");
+    let builder = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(placeholder))
         .title("your journal")
         .inner_size(1100.0, 800.0)
         .min_inner_size(640.0, 480.0)
@@ -438,9 +443,10 @@ fn build_journal_window(
     };
     let navigation_origin = origin.clone();
     let navigation_app = app.clone();
-    let new_window_origin = origin;
+    let new_window_origin = origin.clone();
     let new_window_app = app.clone();
-    let window = builder
+    let page_load_origin = origin.clone();
+    let builder = builder
         // Locked Tauri 2.11.2 (`tauri-runtime-wry` 2.11.2) parses the URI before
         // these callbacks. A main-frame navigation whose URI fails `Url::parse` is
         // allowed (`unwrap_or(true)`) and never reaches `on_navigation`. A new-window
@@ -523,7 +529,13 @@ fn build_journal_window(
             tauri::webview::NewWindowResponse::Deny
         })
         .on_page_load(move |_window, payload| {
-            if payload.event() == PageLoadEvent::Started {
+            let kind = match payload.event() {
+                PageLoadEvent::Started => journal_window::PageLoadKind::Started,
+                PageLoadEvent::Finished => journal_window::PageLoadKind::Finished,
+            };
+            let effect =
+                journal_window::page_load_effect(&page_load_origin, kind, payload.url().as_str());
+            if effect.page_started {
                 page_load_started.store(true, Ordering::Relaxed);
             }
             tracing::info!(
@@ -535,23 +547,85 @@ fn build_journal_window(
                 },
                 "journal page load"
             );
-            if payload.event() == PageLoadEvent::Finished {
+            if effect.ready {
                 page_loaded.notify_one();
             }
-        })
-        .build()?;
+        });
 
-    window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(1100.0, 800.0)))?;
-    window.center().ok();
-    window.show()?;
-    window.set_focus().ok();
-    tracing::info!(
-        target: "window",
-        label = "journal",
-        visible_after_show = ?window.is_visible().ok(),
-        "journal window shown"
-    );
-    Ok(window)
+    #[cfg(not(windows))]
+    {
+        let effect =
+            journal_window::filter_install_effect(journal_window::FilterInstall::MissingInterface);
+        debug_assert!(effect.fail_closed && !effect.navigate);
+        drop(builder);
+        return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+    }
+
+    #[cfg(windows)]
+    {
+        let window = builder.build()?;
+        let installed = Arc::new(std::sync::Mutex::new(None));
+        let installed_for_callback = Arc::clone(&installed);
+        let window_for_callback = window.clone();
+        let with_webview_result = window.with_webview(move |webview| {
+            let terminate_window = window_for_callback.clone();
+            let install = platform_win::journal_document_filter::install_document_filter(
+                webview.controller(),
+                webview.environment(),
+                origin,
+                move |_fault| {
+                    terminate_window.close().ok();
+                },
+            );
+            *installed_for_callback
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(install);
+        });
+        if with_webview_result.is_err() {
+            window.close().ok();
+            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+        }
+
+        let installed = installed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let window_still_present = app.get_webview_window("journal").is_some();
+        let effect = journal_window::deferred_install_effect(window_still_present, installed);
+        if !window_still_present {
+            window.close().ok();
+            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+        }
+        if effect.navigate {
+            if window.navigate(bootstrap_url).is_err() {
+                window.close().ok();
+                return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+            }
+        } else {
+            window.close().ok();
+            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+        }
+
+        if let Err(error) =
+            window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(1100.0, 800.0)))
+        {
+            window.close().ok();
+            return Err(error);
+        }
+        window.center().ok();
+        if let Err(error) = window.show() {
+            window.close().ok();
+            return Err(error);
+        }
+        window.set_focus().ok();
+        tracing::info!(
+            target: "window",
+            label = "journal",
+            visible_after_show = ?window.is_visible().ok(),
+            "journal window shown"
+        );
+        Ok(window)
+    }
 }
 
 fn log_journal_handoff(url: &tauri::Url, outcome: &'static str) {

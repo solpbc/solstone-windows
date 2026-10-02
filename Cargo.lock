@@ -3508,6 +3508,7 @@ dependencies = [
 name = "platform-win"
 version = "2.0.16"
 dependencies = [
+ "journal-window",
  "observer-audio",
  "observer-hotkey",
  "observer-model",
@@ -3516,7 +3517,9 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "webview2-com",
  "windows 0.58.0",
+ "windows-core 0.61.2",
  "winreg",
 ]
 
