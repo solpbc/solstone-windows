@@ -67,6 +67,8 @@ spl-core.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 
 [features]
+# The browser extension's native host is on in this build (the launch switch).
+default = ["browser-host"]
 # Default keeps the custom protocol off; release builds enable as needed.
 custom-protocol = ["tauri/custom-protocol"]
 # The browser extension's native host: host mode, the same-user endpoint,
