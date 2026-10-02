@@ -189,7 +189,30 @@ where
         write_answer(&ans_path, &crate::answer::AnswerState::default())?;
     }
 
-    let paired = crate::service::pair(link, cfg, sync.clone()).await?;
+    let paired = match crate::service::pair(link, cfg, sync.clone()).await {
+        Ok(paired) => paired,
+        Err(error) => {
+            // A failed ceremony has not replaced the live authority. Project
+            // that incumbent again rather than displaying the attempt as the
+            // committed pairing. publish_pairing still derives the mark gate
+            // from this credential's binding and the owner's saved answer.
+            if let Some(access) = access_guard.as_ref() {
+                let client = access.client_slot().load();
+                publish_pairing(
+                    &sync,
+                    &cfg.confirmation,
+                    &cfg.tombstone,
+                    PairingWrite::Bound {
+                        binding: client.journal_identity().client_cert_sha256.clone(),
+                        label: client.home_label().to_string(),
+                        mark: mark_spec_for_jid(&client.credential().instance_id),
+                        kind: BoundKind::Paired,
+                    },
+                );
+            }
+            return Err(error);
+        }
+    };
 
     let access = CredentialAccess::bind(&paired, cfg, sync.clone(), None)?;
     if let Some(previous) = access_guard.take() {

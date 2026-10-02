@@ -2164,16 +2164,28 @@ async fn session_pair_success_creates_empty_answer_before_saving_credential_and_
     assert_eq!(*confirmation.lock().unwrap(), "");
 }
 
-/// 4. Failed re-pair over confirmed A -> answer bytes identical, launch_resume sends for A (gate open).
+/// A failed re-pair keeps the live incumbent, its display, and its sending gate.
 #[tokio::test]
 async fn session_pair_failed_repair_over_confirmed_leaves_answer_bytes_and_sends_for_incumbent() {
+    assert_failed_repair_preserves_incumbent(true).await;
+}
+
+#[tokio::test]
+async fn session_pair_failed_repair_over_awaiting_keeps_the_mark_gate_closed() {
+    assert_failed_repair_preserves_incumbent(false).await;
+}
+
+async fn assert_failed_repair_preserves_incumbent(confirmed: bool) {
     let dir = TempDir::new("pair-failed-repair");
     let state_path = dir.path().join("pairing.json");
     let ans_path = answer_path(&state_path);
 
-    let (cert, _key) = self_signed();
+    let (cert, key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
-    let cred_a = direct_credential(pin, 1);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let cred_a = direct_credential(pin, port);
     let digest_a = JournalIdentity::from_credential(&cred_a).client_cert_sha256;
     let paired_a = PairedState {
         credential: Some(cred_a),
@@ -2182,13 +2194,18 @@ async fn session_pair_failed_repair_over_confirmed_leaves_answer_bytes_and_sends
     paired_a.save(&state_path).unwrap();
 
     let ans = AnswerState {
-        confirmed: digest_a.clone(),
+        confirmed: if confirmed {
+            digest_a.clone()
+        } else {
+            String::new()
+        },
         rejected: String::new(),
     };
     write_answer(&ans_path, &ans).unwrap();
     let ans_bytes_before = std::fs::read(&ans_path).unwrap();
 
-    let confirmation = Arc::new(Mutex::new(digest_a.clone()));
+    let pairing_bytes_before = std::fs::read(&state_path).unwrap();
+    let confirmation = Arc::new(Mutex::new(ans.confirmed.clone()));
     let tombstone = Arc::new(Mutex::new(None));
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
     let jv = Arc::new(JournalVersionController::new(dir.path().join("jv.json")));
@@ -2207,7 +2224,21 @@ async fn session_pair_failed_repair_over_confirmed_leaves_answer_bytes_and_sends
     };
 
     let slot = Arc::new(tokio::sync::Mutex::new(UploaderSlot::new()));
-    let access = Arc::new(tokio::sync::Mutex::new(None));
+    let incumbent = CredentialAccess::bind(&paired_a, &cfg, sync.clone(), None).unwrap();
+    let client = incumbent.client_slot().load();
+    publish_pairing(
+        &sync,
+        &confirmation,
+        &tombstone,
+        PairingWrite::Bound {
+            binding: digest_a.clone(),
+            label: client.home_label().to_string(),
+            mark: mark_spec_for_jid(&client.credential().instance_id),
+            kind: BoundKind::Paired,
+        },
+    );
+    let pairing_before = sync.lock().unwrap().pairing.clone();
+    let access = Arc::new(tokio::sync::Mutex::new(Some(incumbent)));
 
     let bad_link = "https://go.solstone.app/p#invalid".to_string();
     let res = pl_transport_win::session::pair(
@@ -2221,17 +2252,40 @@ async fn session_pair_failed_repair_over_confirmed_leaves_answer_bytes_and_sends
     )
     .await;
     assert!(res.is_err());
+    assert_eq!(sync.lock().unwrap().pairing, pairing_before);
+    assert_eq!(std::fs::read(&state_path).unwrap(), pairing_bytes_before);
+    assert!(Arc::ptr_eq(
+        &client,
+        &access.lock().await.as_ref().unwrap().client_slot().load()
+    ));
+    assert_eq!(client.gate_open(), confirmed);
 
     let ans_bytes_after = std::fs::read(&ans_path).unwrap();
     assert_eq!(ans_bytes_before, ans_bytes_after);
 
-    let mut uploader_slot = UploaderSlot::new();
-    let resumed_access =
-        pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await;
-    assert!(resumed_access.is_some());
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(*confirmation.lock().unwrap(), digest_a);
-    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Paired);
+    if confirmed {
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut tls = acceptor.accept(stream).await.unwrap();
+            let (stream_id, request) = read_framed_request(&mut tls).await;
+            assert!(request
+                .windows(b"video-frame-bytes".len())
+                .any(|w| w == b"video-frame-bytes"));
+            let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}".to_vec();
+            write_response(&mut tls, stream_id, response).await;
+        });
+        client
+            .ingest("000000_300", "20260930", test_file_parts(), None)
+            .await
+            .unwrap();
+        server.await.unwrap();
+    } else {
+        let result = client
+            .ingest("000000_300", "20260930", test_file_parts(), None)
+            .await;
+        assert!(matches!(result, Err(RouteError::AwaitingConfirmation)));
+        assert!(futures_util::FutureExt::now_or_never(listener.accept()).is_none());
+    }
 }
 
 /// 5. Unreadable answer file -> session::pair does not rewrite it; phase stays awaiting; bytes unchanged.

@@ -41,7 +41,7 @@ fn main() -> ExitCode {
         return code;
     }
 
-    // `VelopackApp::run` below applies a downloaded update before it returns
+    // Startup or the CLI handler applies a downloaded update before GUI startup
     // (killing every process under `current\`): ask the running app to send its
     // browser hosts away first. Velopack's own hook invocations skip this.
     #[cfg(feature = "browser-host")]
@@ -63,6 +63,10 @@ fn main() -> ExitCode {
     // launch (no veloapp arg) `run()` is a no-op and falls through to the CLI
     // surface / GUI below.
     VelopackApp::build()
+        // The explicit apply handler restarts with empty arguments. Startup's
+        // automatic apply forwards argv, which would run --apply-update again
+        // in the new process and exit because the package is already installed.
+        .set_auto_apply_on_startup(!early_args.iter().any(|a| a == "--apply-update"))
         .on_before_uninstall_fast_callback(|_version| {
             if let Ok(exe) = std::env::current_exe() {
                 let _ = platform_win::autostart::remove_login_item_if_matches(

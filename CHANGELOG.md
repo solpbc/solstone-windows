@@ -4,6 +4,13 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- a failed attempt to pair with another journal no longer makes the app show "not paired" while it is still connected to your existing journal.
+- applying a staged update from the command line now leaves the app running after it restarts.
+
 ## [2.0.16] - 2026-10-02
 
 ### Fixed
