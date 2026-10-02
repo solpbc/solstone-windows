@@ -1123,3 +1123,26 @@ fn segment_item_decodes_without_observed_field() {
     assert_eq!(item.key, "143000_300");
     assert!(!item.observed);
 }
+
+#[test]
+fn a_browser_period_names_its_source_in_the_envelope() {
+    let multipart = IngestMultipart::new(
+        "b",
+        "20261002",
+        "100000_300",
+        vec![FilePart {
+            filename: "browser_pages.jsonl".into(),
+            content_type: "application/jsonl".into(),
+            bytes: b"{\"t\":\"segment_start\"}\n".to_vec(),
+        }],
+    )
+    .unwrap()
+    .with_source("browser");
+    let body = multipart.serialize().unwrap();
+    let envelope = envelope_json(&body);
+    assert_eq!(envelope["source"], "browser");
+    assert_eq!(envelope["files"][0]["submitted"], "browser_pages.jsonl");
+    assert!(String::from_utf8(body)
+        .unwrap()
+        .contains("filename=\"browser_pages.jsonl\"\r\nContent-Type: application/jsonl\r\n"));
+}

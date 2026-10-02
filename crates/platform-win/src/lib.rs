@@ -31,6 +31,12 @@ pub mod autostart;
 #[allow(unsafe_code)]
 pub mod local_offset;
 
+/// The browser native host's same-user named pipe (Win32 security calls).
+#[allow(unsafe_code)]
+pub mod browser_pipe;
+/// Native-messaging host registration (HKCU, safe `winreg`).
+pub mod browser_registration;
+
 pub use local_offset::WindowsLocalOffset;
 
 /// The per-user data root: `%LocalAppData%\Solstone`. Falls back to a temp path

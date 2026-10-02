@@ -82,6 +82,10 @@ def cargo_metadata() -> dict:
             "1",
             "--filter-platform",
             TARGET,
+            # Every optional feature, so a build that turns one on (the browser
+            # host) ships notices that already cover it: over-inclusion, never
+            # a gap.
+            "--all-features",
         ],
         cwd=ROOT,
         check=True,

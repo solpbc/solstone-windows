@@ -61,6 +61,11 @@ pub struct PurityWitness {
 }
 
 pub const WINDOWS_ALLOWED_MEMBERS: &[&str] = &[
+    // Pure logic with no Windows API of its own; reaches `windows-link` only
+    // through the vendored native-browser contract crate (jsonschema ->
+    // referencing -> parking_lot_core). Reviewed as Windows-capable for that
+    // edge alone.
+    "browser-host",
     "capture-engine",
     "capture-screen-encode",
     "capture-wasapi",

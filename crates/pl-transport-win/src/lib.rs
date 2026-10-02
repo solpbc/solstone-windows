@@ -39,6 +39,7 @@ pub mod sealed;
 pub mod service;
 pub mod session;
 pub mod slot;
+pub mod source_upload;
 pub mod unknown_journals;
 
 #[cfg(any(test, feature = "transport-tests"))]
@@ -77,6 +78,8 @@ pub use client::{ClientSlot, ObserverClient, RouteError};
 pub use credential::{CasKey, Credential, PairedState, StorageError};
 pub use device_metadata::{RawDeviceFacts, ReportedMetadata};
 pub use journal_version::{JournalVersionController, JournalVersionSessionToken};
+/// Civil day and segment keys, shared with sub-stream uploaders.
+pub use observer_pl::civil;
 pub use post_connect::{PostConnectController, PostConnectSessionToken};
 pub use service::run_uploader;
 pub use slot::{SlotExit, UploaderSlot};

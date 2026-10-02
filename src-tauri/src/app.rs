@@ -159,6 +159,19 @@ fn ensure_owned_login_item() {
     }
 }
 
+/// This executable, when it is the installed (Setup) copy: the only copy that
+/// writes the browsers' native-messaging registration, so a portable or dev
+/// build never points a browser at itself.
+#[cfg(feature = "browser-host")]
+fn installed_copy_exe() -> Option<std::path::PathBuf> {
+    use velopack::locator::{auto_locate_app_manifest, LocationContext};
+
+    let exe = std::env::current_exe().ok()?;
+    let locator =
+        auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone())).ok()?;
+    (!locator.get_is_portable()).then_some(exe)
+}
+
 /// The installed (non-portable) copy the login item currently names, if that
 /// executable still exists. An unreadable entry is an error, never "no owner",
 /// so a portable copy does not overwrite what it could not read.
@@ -314,6 +327,8 @@ pub fn run(
             crate::ipc::storage_info,
             crate::ipc::open_storage_folder,
             crate::ipc::answer_pairing,
+            crate::ipc::browser_status,
+            crate::ipc::browser_discard_retired,
         ])
         .setup(move |app| {
             // Ensure the per-user autostart login item so the tray-resident
@@ -428,6 +443,11 @@ pub fn run(
                 #[cfg(test)]
                 probe: None,
             });
+
+            // The browser extension's native host (compiled in only with the
+            // `browser-host` feature): endpoint, custody, gate and delivery.
+            #[cfg(feature = "browser-host")]
+            crate::browser::start(app.handle().clone(), installed_copy_exe());
 
             // In-app updater: construct the Velopack-backed controller (honest
             // state earned from the feed, persisted next to pairing.json),

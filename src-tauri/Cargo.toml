@@ -36,6 +36,8 @@ observer-hotkey.workspace = true
 observer-mic.workspace = true
 observer-update.workspace = true
 observer-log.workspace = true
+# The browser extension's native host; only in a build with `browser-host`.
+browser-host = { workspace = true, optional = true }
 
 serde.workspace = true
 serde_json.workspace = true
@@ -67,3 +69,11 @@ tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 [features]
 # Default keeps the custom protocol off; release builds enable as needed.
 custom-protocol = ["tauri/custom-protocol"]
+# The browser extension's native host: host mode, the same-user endpoint,
+# registration and the `browser` source. Off by default, and no release target
+# enables it until the browser extension launches; turning it on is a change to
+# the pinned release feature list (packaging/release-toolchain.json and xtask).
+browser-host = ["dep:browser-host"]
+# Also admit the unpacked extension's development ids. A test preview only;
+# never set by a release target.
+browser-dev-host = ["browser-host"]

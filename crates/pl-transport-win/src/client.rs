@@ -831,11 +831,27 @@ impl ObserverClient {
         files: Vec<FilePart>,
         zone: Option<&LocalZone>,
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
+        self.ingest_source(segment, day, files, zone, None).await
+    }
+
+    /// [`Self::ingest`] into a device sub-stream (`source`, e.g. `browser`);
+    /// `None` is the primary capture stream.
+    pub async fn ingest_source(
+        &self,
+        segment: &str,
+        day: &str,
+        files: Vec<FilePart>,
+        zone: Option<&LocalZone>,
+        source: Option<&str>,
+    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
         let boundary = self.next_boundary();
         let mut request = IngestMultipart::new(boundary, day, segment, files)
             .map_err(|error| TransportError::Ingest(error.to_string()))?;
         if let Some(zone) = zone {
             request = request.with_zone(zone);
+        }
+        if let Some(source) = source {
+            request = request.with_source(source);
         }
         let body = request.serialize().map_err(TransportError::from)?;
 

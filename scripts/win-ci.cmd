@@ -82,6 +82,8 @@ echo === npm run build (ui -^> ui/dist) ===
 call npm --prefix ui run build || exit /b 1
 echo === cargo test --locked -p solstone-windows-app ===
 cargo test --locked -p solstone-windows-app || exit /b 1
+echo === cargo test --locked -p solstone-windows-app --features browser-dev-host ===
+cargo test --locked -p solstone-windows-app --features browser-dev-host || exit /b 1
 echo === cargo build --locked -p solstone-windows-app --features custom-protocol ===
 cargo build --locked -p solstone-windows-app --features custom-protocol || exit /b 1
 echo === cargo xtask contract --locked --check ===
@@ -94,5 +96,5 @@ cargo run --locked -q -p xtask -- rust-notices check || exit /b 1
 echo WIN_CI_HEAD=%WIN_CI_HEAD%
 echo WIN_CI_CARGO_LOCK_SHA256=%WIN_CI_CARGO_LOCK_SHA256%
 echo WIN_CI_UI_LOCK_SHA256=%WIN_CI_UI_LOCK_SHA256%
-echo === WIN_CI_OK: native Windows build and test passed for the workspace and the app crate; contract and purity checks passed; package install sign and smoke not run ===
+echo === WIN_CI_OK: native Windows build and test passed for the workspace and the app crate (also with the browser host); contract and purity checks passed; package install sign and smoke not run ===
 exit /b 0

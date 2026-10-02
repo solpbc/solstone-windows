@@ -277,6 +277,11 @@ pub fn apply_pending_cli(args: &[String]) -> std::process::ExitCode {
                 "--apply-update: applying staged {} and relaunching…",
                 asset.Version
             );
+            // The running app's browser hosts run this same executable: ask it,
+            // over its own pipe, to send them away before Velopack swaps
+            // `current\`. No app running means no hosts to wait for.
+            #[cfg(feature = "browser-host")]
+            crate::browser::quiesce_before_cli_apply();
             if let Err(e) = manager.apply_updates_and_restart(&asset) {
                 eprintln!("--apply-update: apply failed: {e}");
                 return ExitCode::FAILURE;
@@ -606,7 +611,13 @@ impl UpdateController {
         );
         let ctrl = self.clone();
         std::thread::spawn(move || {
+            // Connected browser hosts run this same executable: tell them to
+            // go and wait for them before Velopack replaces `current\`.
+            #[cfg(feature = "browser-host")]
+            crate::browser::quiesce_for_update();
             if let Err(e) = manager.apply_updates_and_restart(&asset) {
+                #[cfg(feature = "browser-host")]
+                crate::browser::resume_after_update();
                 tracing::warn!(
                     target: "update",
                     operation = "apply_restart",

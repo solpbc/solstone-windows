@@ -93,6 +93,12 @@ const APPROVED_NODES: &[ApprovedNode] = &[
     },
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "browser_pipe",
+        owner: None,
+    },
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::Fn,
         name: "acquire_single_instance",
         owner: None,

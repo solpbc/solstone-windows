@@ -5,7 +5,8 @@ texts of the crates statically linked into `solstone-windows-app` for
 `x86_64-pc-windows-msvc`.
 
 Population: non-dev (normal and build) dependency closure from locked Cargo
-metadata. That is a conservative over-inclusion, not an exact PE link census.
+metadata, with every optional feature resolved (`--all-features`), so a build
+that enables one is already covered. That is a conservative over-inclusion, not an exact PE link census.
 Workspace crates are AGPL-3.0-only and are covered by `LICENSE`.
 
 `index.json` binds those bytes to `Cargo.lock`. `cargo xtask rust-notices check`

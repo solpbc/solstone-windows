@@ -472,6 +472,7 @@ fn production_exception_set_is_exact() {
     assert_eq!(
         WINDOWS_ALLOWED_MEMBERS,
         [
+            "browser-host",
             "capture-engine",
             "capture-screen-encode",
             "capture-wasapi",

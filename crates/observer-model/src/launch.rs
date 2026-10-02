@@ -23,9 +23,49 @@ pub fn launch_should_surface<S: AsRef<str>>(args: &[S]) -> bool {
     !args.iter().any(|arg| SUPPRESS.contains(&arg.as_ref()))
 }
 
+/// Whether argv is a browser's native-messaging launch: Chrome/Edge pass the
+/// extension origin (`chrome-extension://<id>/`), Firefox passes exactly a
+/// manifest path and an extension id. The app's own flags and Velopack's hooks
+/// are all `--` options, so two bare words are never a normal launch.
+///
+/// Checked before anything else in `main`: such a launch is either the browser
+/// host or refused, never the tray app.
+pub fn is_native_messaging_launch<S: AsRef<str>>(args: &[S]) -> bool {
+    if args
+        .iter()
+        .any(|a| a.as_ref().starts_with("chrome-extension://"))
+    {
+        return true;
+    }
+    args.len() == 2
+        && args.iter().all(|a| {
+            let a = a.as_ref();
+            !a.is_empty() && !a.starts_with('-')
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_messaging_launch_shapes() {
+        assert!(is_native_messaging_launch(&[
+            "chrome-extension://eibbeeoifjoabddfmgeggnageolkcnim/",
+            "--parent-window=0"
+        ]));
+        assert!(is_native_messaging_launch(&[
+            r"C:\x\app.solstone.browser.firefox.json",
+            "browser@solstone.app"
+        ]));
+        assert!(!is_native_messaging_launch::<&str>(&[]));
+        assert!(!is_native_messaging_launch(&[
+            "--veloapp-updated",
+            "2.0.16"
+        ]));
+        assert!(!is_native_messaging_launch(&["--open-view", "about"]));
+        assert!(!is_native_messaging_launch(&["--from-autostart"]));
+    }
 
     #[test]
     fn bare_launch_surfaces() {

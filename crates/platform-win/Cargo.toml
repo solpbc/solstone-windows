@@ -33,6 +33,10 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Pipes",
+    "Win32_Security_Authorization",
 ] }
+# The browser native host's named pipe (server in the app, client in host mode).
+tokio = { workspace = true, features = ["net", "time", "io-util"] }
 # Per-user autostart `Run`-key registration (safe wrapper over the HKCU registry).
 winreg = "0.55"

@@ -455,3 +455,33 @@ pub fn update_set_interval(
     };
     ctrl.set_interval(iv);
 }
+
+/// The browser path's status for the Settings row: capture and delivery
+/// states, connected browsers, and what is held (counts only, never text).
+/// `None` in a build without the browser host.
+#[tauri::command]
+pub fn browser_status() -> Option<serde_json::Value> {
+    #[cfg(feature = "browser-host")]
+    {
+        crate::browser::status().and_then(|s| serde_json::to_value(s).ok())
+    }
+    #[cfg(not(feature = "browser-host"))]
+    {
+        None
+    }
+}
+
+/// The owner discards browser text kept for a journal this PC was paired with
+/// before. Returns what is left (nothing, on success); `None` in a build
+/// without the browser host.
+#[tauri::command]
+pub fn browser_discard_retired() -> Option<serde_json::Value> {
+    #[cfg(feature = "browser-host")]
+    {
+        crate::browser::discard_retired().and_then(|s| serde_json::to_value(s).ok())
+    }
+    #[cfg(not(feature = "browser-host"))]
+    {
+        None
+    }
+}

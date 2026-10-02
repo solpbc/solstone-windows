@@ -13,6 +13,7 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod app;
+mod browser;
 mod control;
 mod exclusions;
 mod health;
@@ -32,7 +33,15 @@ use std::process::ExitCode;
 use velopack::VelopackApp;
 
 fn main() -> ExitCode {
-    // Velopack-aware entry — MUST run first. For the installer lifecycle args
+    // A browser's native-messaging launch is decided before anything else —
+    // before Velopack's hooks, logging, the single-instance gate or a window:
+    // it is the browser host relay (when this build has it) or it exits.
+    let early_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = browser::dispatch(&early_args) {
+        return code;
+    }
+
+    // Velopack-aware entry — MUST run first after host mode. For the installer lifecycle args
     // (--veloapp-install / -updated / -obsolete / -uninstall) `run()` acts and
     // terminates the process. The uninstall fast-callback removes the per-user
     // autostart login item so no stale `Run` entry survives the app's removal —
@@ -49,6 +58,8 @@ fn main() -> ExitCode {
                     &exe,
                     &[observer_model::FROM_AUTOSTART_ARG],
                 );
+                #[cfg(feature = "browser-host")]
+                browser::remove_registration(&exe);
             }
         })
         .run();
@@ -67,6 +78,12 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+    }
+
+    // The browser path's last published status (states and counts only).
+    #[cfg(feature = "browser-host")]
+    if args.iter().any(|a| a == "--browser-status") {
+        return browser::status_cli();
     }
 
     // Headless check + stage of an update (readies it for --apply-update).

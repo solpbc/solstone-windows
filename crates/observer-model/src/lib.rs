@@ -23,7 +23,7 @@ use strum::{EnumIter, IntoStaticStr};
 pub mod launch;
 pub mod tray_status;
 
-pub use launch::{launch_should_surface, FROM_AUTOSTART_ARG};
+pub use launch::{is_native_messaging_launch, launch_should_surface, FROM_AUTOSTART_ARG};
 pub use tray_status::{
     classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, TrayVisual,
 };

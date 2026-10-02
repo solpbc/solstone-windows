@@ -31,6 +31,9 @@ struct IngestEnvelope {
     day: String,
     segment: String,
     files: Vec<EnvelopeFile>,
+    /// The device sub-stream, when not the primary capture (e.g. `browser`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     meta: Option<IngestMeta>,
 }
@@ -85,6 +88,7 @@ impl IngestMultipart {
                     submitted: file.filename.clone(),
                 })
                 .collect(),
+            source: None,
             meta: None,
         };
         Ok(Self {
@@ -109,6 +113,13 @@ impl IngestMultipart {
             tz,
             utc_offset_seconds: zone.utc_offset_seconds,
         });
+        self
+    }
+
+    /// Upload into the named device sub-stream instead of the primary capture
+    /// stream. The journal validates the name and names the stream itself.
+    pub fn with_source(mut self, source: &str) -> Self {
+        self.envelope.source = Some(source.to_owned());
         self
     }
 

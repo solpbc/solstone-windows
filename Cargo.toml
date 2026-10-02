@@ -23,12 +23,13 @@ members = [
     "crates/platform-win",
     "crates/pl-transport-win",
     "crates/capture-engine",
+    "crates/browser-host",
     "src-tauri",
     "xtask",
 ]
 # spikes/ is reference-only and intentionally excluded from the build:
 # stale spike code can never break `make ci`.
-exclude = ["spikes"]
+exclude = ["spikes", "vendor"]
 
 [workspace.package]
 version = "2.0.16"
@@ -99,3 +100,8 @@ capture-wasapi = { path = "crates/capture-wasapi" }
 platform-win = { path = "crates/platform-win" }
 pl-transport-win = { path = "crates/pl-transport-win" }
 capture-engine = { path = "crates/capture-engine" }
+browser-host = { path = "crates/browser-host" }
+# Shared native-browser contract crate, vendored byte-for-byte from
+# solstone-browser (see vendor/native-browser/VENDORED.md). Outside the
+# workspace members so its upstream formatting and lints are not re-judged here.
+native-browser-frame = { path = "vendor/native-browser/crates/native-browser-frame" }
