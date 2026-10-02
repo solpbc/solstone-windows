@@ -537,3 +537,66 @@ async fn the_updater_process_can_ask_for_quiescence_over_the_pipe() {
     assert_eq!(ask.await.unwrap(), Some(true));
     assert!(rig.hub.is_quiescing());
 }
+
+#[tokio::test]
+async fn a_failure_is_not_reported_once_nothing_is_held() {
+    let rig = rig(false);
+    rig.hub.update_gates(paired(JOURNAL_A));
+    let (mut c, ack) = handshake(&rig.hub, "chrome", "production").await;
+    let generation = ack["destination_generation"].as_str().unwrap().to_string();
+    c.send(&batch(&generation, 1, snapshot("c1", "x"))).await;
+    c.recv_skipping_state().await;
+    rig.clock.store(T0 + 300_000, Ordering::SeqCst);
+    rig.hub.tick();
+    let failing = FakeJournal {
+        outcome: UploadOutcome::Failed("relay_unavailable"),
+        ..journal(JOURNAL_A)
+    };
+    deliver_once(&rig.hub, &failing).await;
+    assert_eq!(rig.hub.status().delivery, "failed");
+    // Re-pairing elsewhere retires what was held: nothing is held, nothing failed.
+    rig.hub.update_gates(paired(JOURNAL_B));
+    let st = rig.hub.status();
+    assert_eq!((st.delivery, st.failure), ("idle", None));
+}
+
+#[tokio::test]
+async fn a_pause_outranks_a_full_spool() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        dir.path(),
+        Policy {
+            spool_bytes: 400,
+            ..Policy::default()
+        },
+        Box::new(|s, l| (format!("d{s}"), format!("s{s}_{l}"))),
+        T0,
+    );
+    let hub = Hub::new(
+        HubConfig {
+            development: false,
+            app_version: "t".into(),
+        },
+        store,
+        Box::new(|| T0),
+    );
+    hub.update_gates(paired(JOURNAL_A));
+    let (mut c, ack) = handshake(&hub, "chrome", "production").await;
+    let g = ack["destination_generation"].as_str().unwrap().to_string();
+    c.send(&batch(&g, 1, snapshot("c1", &"x".repeat(150))))
+        .await;
+    assert_eq!(c.recv_skipping_state().await.unwrap()["result"], "accepted");
+    c.send(&batch(&g, 2, snapshot("c2", &"y".repeat(150))))
+        .await;
+    assert_eq!(
+        c.recv_skipping_state().await.unwrap()["reason"],
+        "queue_full"
+    );
+    assert_eq!(hub.status().capture, "intake_off");
+    assert_eq!(hub.status().failure, Some("queue_full"));
+    hub.update_gates(Gates {
+        paused: true,
+        ..paired(JOURNAL_A)
+    });
+    assert_eq!(hub.status().capture, "paused");
+}

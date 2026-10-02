@@ -300,6 +300,19 @@ let exclusionsPersisted = true;
 // keydown listener lives on the window, added once when capture starts.
 let hotkeyCapturing = false;
 let latestMic: MicView | null = null;
+
+// The browser extension's path, present only in a build with the browser host
+// (the backend answers `null` otherwise, and nothing here renders). States and
+// counts only: the app never hands page text to the webview.
+type BrowserStatus = {
+  capture: "unavailable" | "not_paired" | "permitted" | "paused" | "intake_off";
+  delivery: "unknown" | "kept_locally" | "delivered" | "idle" | "failed";
+  failure: string | null;
+  connected: { brand: string; connected_at_ms: number }[];
+  custody: { held_bytes: number; retired: { generations: number; bytes: number } };
+};
+let latestBrowser: BrowserStatus | null = null;
+let browserDiscard: "idle" | "confirm" | "busy" | "done" | "failed" = "idle";
 let micDevices: MicDeviceRef[] = [];
 let runningApps: RunningApp[] = [];
 let titleDraft = "";
@@ -2531,6 +2544,121 @@ function clearLastSectionDivider(container: HTMLElement): void {
   sections[sections.length - 1].style.borderBottom = "none";
 }
 
+const BROWSER_COPY = {
+  connected: "connected now",
+  none: "no browser connected now",
+  paused: "paused with the rest of the solstone app. pausing doesn't hold back what's already taken in.",
+  held: "new browser pages aren't being taken in right now.",
+  notPaired: "pair with your journal first",
+  failed: "kept on this PC, not reaching your journal right now",
+  retired:
+    "some browser pages were kept for a journal this PC was paired with before. they won't go into any journal, and they stay on this PC until you discard them.",
+  discard: "discard",
+  discardConfirm:
+    "discard these browser pages? they're gone from this PC for good, and nothing in any journal changes.",
+  cancel: "cancel",
+  discarded: "discarded",
+  discardFailed: "couldn't finish discarding. what's left is still on this PC.",
+} as const;
+
+const BROWSER_NAMES: Record<string, string> = { chrome: "Chrome", edge: "Edge", firefox: "Firefox" };
+
+function browserStateText(status: BrowserStatus): string {
+  // The owner's own move first, then what the app is holding.
+  if (status.capture === "not_paired") {
+    return BROWSER_COPY.notPaired;
+  }
+  if (status.capture === "paused") {
+    return BROWSER_COPY.paused;
+  }
+  if (status.delivery === "failed" && status.custody.held_bytes > 0) {
+    return BROWSER_COPY.failed;
+  }
+  switch (status.capture) {
+    case "permitted": {
+      if (status.connected.length === 0) {
+        return BROWSER_COPY.none;
+      }
+      const names = [...new Set(status.connected.map((c) => BROWSER_NAMES[c.brand] ?? c.brand))];
+      return `${BROWSER_COPY.connected} · ${names.join(", ")}`;
+    }
+    case "intake_off":
+    case "unavailable":
+      return BROWSER_COPY.held;
+  }
+}
+
+function quietButton(labelText: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = labelText;
+  b.style.border = "none";
+  b.style.background = "transparent";
+  b.style.color = "var(--fg-subtle)";
+  b.style.cursor = "pointer";
+  b.style.fontSize = "12px";
+  b.style.padding = "6px 12px 6px 0";
+  b.style.textDecoration = "underline";
+  b.onclick = onClick;
+  return b;
+}
+
+async function discardRetiredBrowserPages(): Promise<void> {
+  browserDiscard = "busy";
+  requestRerender();
+  const left = await invoke<{ generations: number; bytes: number } | null>(
+    "browser_discard_retired",
+  ).catch(() => null);
+  browserDiscard = left !== null && left.generations === 0 ? "done" : "failed";
+  latestBrowser = await invoke<BrowserStatus | null>("browser_status").catch(() => latestBrowser);
+  requestRerender();
+}
+
+function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
+  const rows: HTMLElement[] = [valueRow("browser pages", selectable(text("div", browserStateText(status))))];
+  const retired = status.custody.retired.generations > 0;
+  if (!retired && browserDiscard !== "done" && browserDiscard !== "failed") {
+    return rows;
+  }
+  const box = document.createElement("div");
+  if (retired) {
+    box.append(text("div", BROWSER_COPY.retired));
+  }
+  const actions = document.createElement("div");
+  if (browserDiscard === "confirm") {
+    box.append(text("div", BROWSER_COPY.discardConfirm));
+    actions.append(
+      quietButton(BROWSER_COPY.discard, () => void discardRetiredBrowserPages()),
+      quietButton(BROWSER_COPY.cancel, () => {
+        browserDiscard = "idle";
+        requestRerender();
+      }),
+    );
+  } else if (browserDiscard === "busy") {
+    const busy = quietButton(BROWSER_COPY.discard, () => {});
+    busy.disabled = true;
+    busy.setAttribute("aria-busy", "true");
+    actions.append(busy);
+  } else if (retired) {
+    actions.append(
+      quietButton(BROWSER_COPY.discard, () => {
+        browserDiscard = "confirm";
+        requestRerender();
+      }),
+    );
+  }
+  if (browserDiscard === "done" && !retired) {
+    box.append(text("div", BROWSER_COPY.discarded));
+  } else if (browserDiscard === "failed") {
+    const failed = text("div", BROWSER_COPY.discardFailed);
+    failed.style.color = "var(--danger)";
+    box.append(failed);
+  }
+  box.append(actions);
+  rows.push(valueRow("", box));
+  return rows;
+}
+
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   const sources = section("sources");
   const screen = sourceByKind(dump, "screen");
@@ -2550,6 +2678,9 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
       selectable(automation(sourcePill(mic), ids["settings.sources.mic.state"])),
     ),
   );
+  if (latestBrowser) {
+    sources.append(...renderBrowserRows(latestBrowser));
+  }
   return sources;
 }
 
@@ -3616,6 +3747,18 @@ function scheduleRenderBeacon(): void {
   });
 }
 
+let browserRefreshAt = 0;
+
+// The browser row follows the health heartbeat, at most every few seconds.
+async function refreshBrowserStatus(): Promise<void> {
+  const now = Date.now();
+  if (now - browserRefreshAt < 5000) {
+    return;
+  }
+  browserRefreshAt = now;
+  latestBrowser = await invoke<BrowserStatus | null>("browser_status").catch(() => null);
+}
+
 async function boot(): Promise<void> {
   if (label === "about") {
     setLatestHealth(await invoke<HealthDump>("get_health").catch(() => null));
@@ -3640,6 +3783,7 @@ async function boot(): Promise<void> {
   latestHotkey = hotkey;
   latestMic = micCfg;
   micDevices = mics;
+  await refreshBrowserStatus();
   rerender();
 }
 
@@ -3761,6 +3905,7 @@ export function start(): void {
   void boot();
   void listen<HealthDump>("health://changed", (event) => {
     setLatestHealth(event.payload);
+    void refreshBrowserStatus();
     requestRerender();
   });
   void listen<UpdateView>("update://changed", (event) => {

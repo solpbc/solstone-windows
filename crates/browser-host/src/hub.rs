@@ -180,6 +180,10 @@ impl Hub {
             drop(store);
             // A first binding needs no reconnect: `state` carries it. Replacing a
             // generation does, so no session keeps stamping the old one.
+            if changed {
+                // A failure belonged to the previous journal's delivery.
+                *self.failure.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
             if changed && had_generation {
                 self.publish(Publication::Bye {
                     reason: "replaced",
@@ -314,10 +318,13 @@ impl Hub {
         let upload_failure = *self.failure.lock().unwrap_or_else(|p| p.into_inner());
         let paired = matches!(gates.pairing, Pairing::Paired { .. });
 
+        // A delivery failure is only true while something is held to deliver.
         let delivery_failure = if custody.failed {
             Some("local_io")
-        } else {
+        } else if custody.held_bytes > 0 {
             upload_failure
+        } else {
+            None
         };
         let delivery = if delivery_failure.is_some() {
             "failed"
@@ -341,10 +348,11 @@ impl Hub {
             "not_paired"
         } else if !bound {
             "unavailable"
+        } else if gates.paused {
+            // The owner's own move outranks the app's holds.
+            "paused"
         } else if custody.full {
             "intake_off"
-        } else if gates.paused {
-            "paused"
         } else {
             "permitted"
         };
