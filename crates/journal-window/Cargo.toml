@@ -1,0 +1,19 @@
+[package]
+name = "journal-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Classify journal-window navigations and read the embedded host contract."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json.workspace = true
+url = "2"
+
+[dev-dependencies]
+sha2.workspace = true

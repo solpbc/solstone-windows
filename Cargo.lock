@@ -2395,6 +2395,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "journal-window"
+version = "2.0.16"
+dependencies = [
+ "serde_json",
+ "sha2 0.10.9",
+ "url",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4498,6 +4507,7 @@ dependencies = [
  "capture-screen-encode",
  "capture-wasapi",
  "capture-wgc",
+ "journal-window",
  "observer-contract",
  "observer-exclusion",
  "observer-health",

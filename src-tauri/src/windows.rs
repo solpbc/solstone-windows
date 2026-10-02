@@ -416,37 +416,111 @@ fn build_journal_window(
     page_load_started: Arc<AtomicBool>,
 ) -> tauri::Result<WebviewWindow> {
     let parsed: tauri::Url = url.parse().map_err(tauri::Error::InvalidUrl)?;
-    let expected_port = parsed.port();
-    let window = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(parsed))
+    let origin = journal_window::JournalOrigin::from_url(&parsed)
+        .ok_or(tauri::Error::InvalidWebviewUrl("journal bootstrap origin"))?;
+    let builder = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(parsed))
         .title("your journal")
         .inner_size(1100.0, 800.0)
         .min_inner_size(640.0, 480.0)
         .additional_browser_args(WEBVIEW_ARGS)
-        .visible(false)
+        .visible(false);
+    let builder = match journal_window::bundled_initialization_script() {
+        Ok(script) => builder.initialization_script(script),
+        Err(error) => {
+            tracing::warn!(
+                target: "window",
+                label = "journal",
+                token = error.token(),
+                "journal host contract"
+            );
+            builder
+        }
+    };
+    let navigation_origin = origin.clone();
+    let navigation_app = app.clone();
+    let new_window_origin = origin;
+    let new_window_app = app.clone();
+    let window = builder
+        // Locked Tauri 2.11.2 (`tauri-runtime-wry` 2.11.2) parses the URI before
+        // these callbacks. A main-frame navigation whose URI fails `Url::parse` is
+        // allowed (`unwrap_or(true)`) and never reaches `on_navigation`. A new-window
+        // URI that fails `Url::parse` is denied before `on_new_window`. This repair
+        // does not change that bound.
         .on_navigation(move |url| {
-            let allowed = url.scheme() == "http"
-                && url.host_str() == Some("127.0.0.1")
-                && url.port() == expected_port;
-            if allowed {
+            let decision = journal_window::decide(
+                &navigation_origin,
+                journal_window::RequestKind::MainFrame,
+                url,
+            );
+            let decision = journal_window::apply(
+                decision,
+                url,
+                |destination| {
+                    use tauri_plugin_opener::OpenerExt;
+                    match navigation_app
+                        .opener()
+                        .open_url(destination.as_str(), None::<&str>)
+                    {
+                        Ok(()) => Ok(()),
+                        Err(_) => {
+                            log_journal_handoff(destination, "open_failed");
+                            Err(())
+                        }
+                    }
+                },
+                |_| Ok(()),
+            );
+            if decision.allows_main_frame() {
                 tracing::info!(
                     target: "window",
                     label = "journal",
                     scheme = url.scheme(),
                     host = url.host_str().unwrap_or(""),
-                    port = url.port().unwrap_or(0),
+                    port = ?url.port_or_known_default(),
                     "journal navigation"
                 );
-            } else {
-                tracing::warn!(
-                    target: "window",
-                    label = "journal",
-                    scheme = url.scheme(),
-                    host = url.host_str().unwrap_or(""),
-                    port = url.port().unwrap_or(0),
-                    "blocked journal navigation"
-                );
             }
-            allowed
+            decision.allows_main_frame()
+        })
+        .on_new_window(move |url, _features| {
+            let decision = journal_window::decide(
+                &new_window_origin,
+                journal_window::RequestKind::NewWindow,
+                &url,
+            );
+            let _ = journal_window::apply(
+                decision,
+                &url,
+                |destination| {
+                    use tauri_plugin_opener::OpenerExt;
+                    match new_window_app
+                        .opener()
+                        .open_url(destination.as_str(), None::<&str>)
+                    {
+                        Ok(()) => Ok(()),
+                        Err(_) => {
+                            log_journal_handoff(destination, "open_failed");
+                            Err(())
+                        }
+                    }
+                },
+                |destination| {
+                    let app = new_window_app.clone();
+                    let destination = destination.clone();
+                    let log_destination = destination.clone();
+                    std::thread::spawn(move || {
+                        let Some(window) = app.get_webview_window("journal") else {
+                            log_journal_handoff(&log_destination, "closing");
+                            return;
+                        };
+                        if window.navigate(destination).is_err() {
+                            log_journal_handoff(&log_destination, "closing");
+                        }
+                    });
+                    Ok(())
+                },
+            );
+            tauri::webview::NewWindowResponse::Deny
         })
         .on_page_load(move |_window, payload| {
             if payload.event() == PageLoadEvent::Started {
@@ -478,6 +552,18 @@ fn build_journal_window(
         "journal window shown"
     );
     Ok(window)
+}
+
+fn log_journal_handoff(url: &tauri::Url, outcome: &'static str) {
+    tracing::warn!(
+        target: "window",
+        label = "journal",
+        outcome,
+        scheme = url.scheme(),
+        host = url.host_str().unwrap_or(""),
+        port = ?url.port_or_known_default(),
+        "journal handoff"
+    );
 }
 
 /// Open (or focus) the About window.

@@ -36,6 +36,7 @@ observer-hotkey.workspace = true
 observer-mic.workspace = true
 observer-update.workspace = true
 observer-log.workspace = true
+journal-window.workspace = true
 # The browser extension's native host; only in a build with `browser-host`.
 browser-host = { workspace = true, optional = true }
 
