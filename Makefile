@@ -36,8 +36,10 @@ WIN_TARGET_NATIVE_C_CRATES := --exclude $(TAURI_BIN) --exclude pl-transport-win
 # committed (public hygiene): WIN_REMOTE_HOST=user@host make win-host-ci.
 WIN_REMOTE_HOST ?=
 WIN_SCP ?= scp -o ControlMaster=auto -o ControlPath=/tmp/sw-%r@%h:%p -o ControlPersist=60s
-# Transparency is paused during the Rust conversion freeze. Restore only after
-# the post-conversion review by changing this checked-in activation switch to 1.
+# Transparency publication is not active for this product. The v2 trust and
+# transparency rail (see solpbc/solstone-transparency) is live, but its release
+# record covers the journal only; this product has no transparency adapter yet.
+# Turning it on needs that adapter, not just flipping this checked-in switch.
 TRANSPARENCY_ACTIVATED ?= 0
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
@@ -402,7 +404,7 @@ prove-rust-release-native:
 publish-transparency:
 	@set -eu; \
 	  if [ "$(TRANSPARENCY_ACTIVATED)" != 1 ]; then \
-	    echo "transparency is suspended for the Rust conversion freeze; restore with TRANSPARENCY_ACTIVATED=1 only after the post-conversion review" >&2; \
+	    echo "transparency publication is not active for this product: the v2 release record covers the journal only and this product has no transparency adapter yet (see solpbc/solstone-transparency); this flag does not by itself authorize a real publish" >&2; \
 	    exit 2; \
 	  fi; \
 	  if [ -z "$(RELEASE_DIR)" ]; then \
@@ -413,7 +415,7 @@ publish-transparency:
 
 # Refresh only the signed latest pointer. This deliberately has no candidate input.
 resign-transparency-pointer:
-	@test "$(TRANSPARENCY_ACTIVATED)" = 1 || { echo "transparency is suspended for the Rust conversion freeze; restore with TRANSPARENCY_ACTIVATED=1 only after the post-conversion review" >&2; exit 2; }
+	@test "$(TRANSPARENCY_ACTIVATED)" = 1 || { echo "transparency publication is not active for this product: the v2 release record covers the journal only and this product has no transparency adapter yet (see solpbc/solstone-transparency); this flag does not by itself authorize a real publish" >&2; exit 2; }
 	CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- transparency resign-pointer
 
 # Real-tool acceptance for the declared minisign development prerequisite.
