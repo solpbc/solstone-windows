@@ -320,9 +320,7 @@ async fn pump_ws(
 
     let to_inner = async move {
         while let Some(message) = ws_stream.next().await {
-            match message.map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "relay websocket receive failed")
-            })? {
+            match message.map_err(io::Error::other)? {
                 Message::Binary(bytes) => {
                     if let Some(capture) = &capture_first_inbound {
                         let mut guard = capture.lock().unwrap();
@@ -360,9 +358,7 @@ async fn pump_ws(
             ws_sink
                 .send(Message::Binary(buf[..n].to_vec().into()))
                 .await
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "relay websocket send failed")
-                })?;
+                .map_err(io::Error::other)?;
         }
     };
 
@@ -597,7 +593,32 @@ async fn serve_stream_response<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut tls = acceptor.accept(stream).await.unwrap();
+    serve_stream_response_observed(stream, acceptor, status, body, None)
+        .await
+        .unwrap()
+}
+
+async fn serve_stream_response_observed<S>(
+    stream: S,
+    acceptor: TlsAcceptor,
+    status: &'static str,
+    body: &'static [u8],
+    diagnostics: Option<(&Mutex<Vec<String>>, usize)>,
+) -> io::Result<Vec<u8>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let note = |phase: &str| {
+        if let Some((events, id)) = diagnostics {
+            events
+                .lock()
+                .unwrap()
+                .push(format!("connection={id} inner {phase}"));
+        }
+    };
+    note("TLS handshake");
+    let mut tls = acceptor.accept(stream).await?;
+    note("request read");
 
     let mut decoder = FrameDecoder::new();
     let mut request = Vec::new();
@@ -605,12 +626,12 @@ where
     let mut closed = false;
     let mut buf = [0u8; 4096];
     while !closed {
-        let n = tls.read(&mut buf).await.unwrap();
+        let n = tls.read(&mut buf).await?;
         if n == 0 {
             break;
         }
         decoder.feed(&buf[..n]);
-        for frame in decoder.drain().unwrap() {
+        for frame in decoder.drain().map_err(io::Error::other)? {
             stream_id = frame.stream_id;
             if frame.flags & FLAG_DATA != 0 {
                 request.extend_from_slice(&frame.payload);
@@ -627,10 +648,14 @@ where
         String::from_utf8_lossy(body)
     );
     let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes());
-    tls.write_all(&frame.encode().unwrap()).await.unwrap();
-    tls.flush().await.unwrap();
-    let _ = tls.shutdown().await;
-    request
+    note("response write");
+    tls.write_all(&frame.encode().map_err(io::Error::other)?)
+        .await?;
+    note("response flush");
+    tls.flush().await?;
+    note("TLS shutdown");
+    tls.shutdown().await?;
+    Ok(request)
 }
 
 async fn serve_stream_large_response<S>(
@@ -971,6 +996,23 @@ fn body_for_assembled_response(total: usize) -> Vec<u8> {
     }
 }
 
+// A flushed close is not yet consumed by the peer. Keep reading in-flight
+// frames until the peer closes; dropping unread input can reset TCP on Windows
+// and discard the close code before the client classifies the rejection.
+async fn drain_fixture_close(ws: &mut WebSocketStream<TcpStream>) -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(message) = ws.next().await {
+            if let Message::Close(_) = message.map_err(io::Error::other)? {
+                ws.flush().await.map_err(io::Error::other)?;
+                break;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "fixture close handshake timed out"))?
+}
+
 struct CombinedRelayState {
     acceptor: TlsAcceptor,
     mode: CombinedWsMode,
@@ -980,6 +1022,9 @@ struct CombinedRelayState {
     refreshes: AtomicUsize,
     auth_headers: Mutex<Vec<String>>,
     inner_requests: Mutex<Vec<Vec<u8>>>,
+    diagnostics: Mutex<Vec<String>>,
+    stale_dial_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    await_stale_client_frame: AtomicBool,
 }
 
 struct CombinedRelay {
@@ -1010,6 +1055,9 @@ async fn spawn_combined_relay(
         refreshes: AtomicUsize::new(0),
         auth_headers: Mutex::new(Vec::new()),
         inner_requests: Mutex::new(Vec::new()),
+        diagnostics: Mutex::new(Vec::new()),
+        stale_dial_barrier: Mutex::new(None),
+        await_stale_client_frame: AtomicBool::new(false),
     });
     let task = tokio::spawn({
         let state = state.clone();
@@ -1018,10 +1066,15 @@ async fn spawn_combined_relay(
                 let Ok((tcp, _)) = listener.accept().await else {
                     break;
                 };
-                state.tcp_accepts.fetch_add(1, Ordering::SeqCst);
+                let id = state.tcp_accepts.fetch_add(1, Ordering::SeqCst) + 1;
                 let state = state.clone();
                 tokio::spawn(async move {
-                    let _ = handle_combined_connection(tcp, state).await;
+                    let result = handle_combined_connection(tcp, state.clone(), id).await;
+                    state
+                        .diagnostics
+                        .lock()
+                        .unwrap()
+                        .push(format!("connection={id} handler: {result:?}"));
                 });
             }
         }
@@ -1036,18 +1089,28 @@ async fn spawn_combined_relay(
 async fn handle_combined_connection(
     tcp: TcpStream,
     state: Arc<CombinedRelayState>,
+    id: usize,
 ) -> io::Result<()> {
     let mut peek = [0u8; 512];
     let n = tcp.peek(&mut peek).await?;
+    state
+        .diagnostics
+        .lock()
+        .unwrap()
+        .push(format!("connection={id} accepted prefix length={n}"));
     if String::from_utf8_lossy(&peek[..n]).starts_with("GET ") {
-        handle_combined_ws(tcp, state).await
+        handle_combined_ws(tcp, state, id).await
     } else {
-        handle_combined_http(tcp, state).await
+        handle_combined_http(tcp, state, id).await
     }
 }
 
 #[allow(clippy::result_large_err)]
-async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> io::Result<()> {
+async fn handle_combined_ws(
+    tcp: TcpStream,
+    state: Arc<CombinedRelayState>,
+    id: usize,
+) -> io::Result<()> {
     let seen_auth = Arc::new(Mutex::new(String::new()));
     let seen_auth_for_cb = seen_auth.clone();
     let state_for_cb = state.clone();
@@ -1066,6 +1129,14 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
             .and_then(|value| value.to_str().ok())
             .unwrap_or("")
             .to_string();
+        state_for_cb.diagnostics.lock().unwrap().push(format!(
+            "connection={id} upgrade {}",
+            if auth == format!("Bearer {}", state_for_cb.fresh_token) {
+                "fresh"
+            } else {
+                "old"
+            }
+        ));
         *seen_auth_for_cb.lock().unwrap() = auth.clone();
         state_for_cb.auth_headers.lock().unwrap().push(auth);
         if !path_ok {
@@ -1088,7 +1159,14 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
 
     let mut ws = match result {
         Ok(ws) => ws,
-        Err(_) => return Ok(()),
+        Err(error) => {
+            state
+                .diagnostics
+                .lock()
+                .unwrap()
+                .push(format!("connection={id} upgrade error: {error:?}"));
+            return Ok(());
+        }
     };
     match mode {
         CombinedWsMode::AcceptAny
@@ -1100,13 +1178,30 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
         CombinedWsMode::FreshOnly => {
             let expected = format!("Bearer {}", state.fresh_token);
             if *seen_auth.lock().unwrap() != expected {
+                if state.await_stale_client_frame.load(Ordering::SeqCst) {
+                    let mut byte = [0u8; 1];
+                    let n = ws.get_ref().peek(&mut byte).await?;
+                    assert_eq!(n, 1);
+                    state.diagnostics.lock().unwrap().push(format!(
+                        "connection={id} stale client frame pending before rejection"
+                    ));
+                }
+                let barrier = state.stale_dial_barrier.lock().unwrap().clone();
+                if let Some(barrier) = barrier {
+                    if barrier.wait().await.is_leader() {
+                        *state.stale_dial_barrier.lock().unwrap() = None;
+                    }
+                }
                 ws.send(Message::Close(Some(CloseFrame {
                     code: CloseCode::from(4401),
                     reason: "".into(),
                 })))
                 .await
                 .map_err(io::Error::other)?;
-                return Ok(());
+                state.diagnostics.lock().unwrap().push(format!(
+                    "connection={id} unauthorized close flushed; drain peer"
+                ));
+                return drain_fixture_close(&mut ws).await;
             }
         }
         CombinedWsMode::AlwaysUnauthorized => {
@@ -1116,7 +1211,7 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
             })))
             .await
             .map_err(io::Error::other)?;
-            return Ok(());
+            return drain_fixture_close(&mut ws).await;
         }
         CombinedWsMode::Close(code) => {
             ws.send(Message::Close(Some(CloseFrame {
@@ -1125,7 +1220,7 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
             })))
             .await
             .map_err(io::Error::other)?;
-            return Ok(());
+            return drain_fixture_close(&mut ws).await;
         }
         CombinedWsMode::UpgradeReject(_) => return Ok(()),
     }
@@ -1151,8 +1246,16 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
     }
 
     let (relay_side, server_side) = tokio::io::duplex(4096);
-    tokio::spawn(async move {
-        let _ = pump_ws(ws, relay_side, None).await;
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            let result = pump_ws(ws, relay_side, None).await;
+            state
+                .diagnostics
+                .lock()
+                .unwrap()
+                .push(format!("connection={id} pump: {result:?}"));
+        }
     });
     let body = match mode {
         CombinedWsMode::OversizeResponse => {
@@ -1163,7 +1266,17 @@ async fn handle_combined_ws(tcp: TcpStream, state: Arc<CombinedRelayState>) -> i
         }
         _ => b"{\"status\":\"ok\"}",
     };
-    let request = serve_stream_response(server_side, state.acceptor.clone(), "200 OK", body).await;
+    let request = serve_stream_response_observed(
+        server_side,
+        state.acceptor.clone(),
+        "200 OK",
+        body,
+        Some((&state.diagnostics, id)),
+    )
+    .await?;
+    state.diagnostics.lock().unwrap().push(format!(
+        "connection={id} inner response flushed and shutdown"
+    ));
     state.inner_requests.lock().unwrap().push(request);
     Ok(())
 }
@@ -1197,6 +1310,7 @@ where
 async fn handle_combined_http(
     mut tcp: TcpStream,
     state: Arc<CombinedRelayState>,
+    id: usize,
 ) -> io::Result<()> {
     let raw = read_http_request(&mut tcp).await?;
     let text = String::from_utf8_lossy(&raw);
@@ -1206,6 +1320,11 @@ async fn handle_combined_http(
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
     if path == "/token/refresh" {
+        state
+            .diagnostics
+            .lock()
+            .unwrap()
+            .push(format!("connection={id} refresh request"));
         state.refreshes.fetch_add(1, Ordering::SeqCst);
         write_json(
             &mut tcp,
@@ -1780,6 +1899,8 @@ async fn relay_post_upgrade_close_maps_codes() {
             })))
             .await
             .unwrap();
+            let drained = drain_fixture_close(&mut ws).await;
+            eprintln!("relay close {code}: {drained:?}");
         });
 
         let ws = dial_relay_ws(&url, RELAY_TOKEN, unused_outer_config())
@@ -2689,6 +2810,43 @@ async fn concurrent_relay_only_request_after_publication_latch_makes_no_relay_di
     relay.abort();
 }
 
+// Exercises an in-flight TLS-shaped frame without an inner TLS server: the
+// close must survive even when the relay has not consumed the client's bytes.
+#[tokio::test]
+async fn relay_fixture_close_reaches_client_with_inflight_data() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("ws://{}", listener.local_addr().unwrap());
+    let (close_sent_tx, close_sent_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(tcp).await.unwrap();
+        // Peek without consuming: dropping this socket still has unread input.
+        let mut byte = [0u8; 1];
+        let n = ws.get_ref().peek(&mut byte).await.unwrap();
+        assert_eq!(n, 1);
+        ws.send(Message::Close(Some(CloseFrame {
+            code: CloseCode::from(4401),
+            reason: "".into(),
+        })))
+        .await
+        .unwrap();
+        close_sent_tx.send(()).unwrap();
+        drain_fixture_close(&mut ws).await.unwrap();
+    });
+    let (mut client, _) = tokio_tungstenite::connect_async(origin).await.unwrap();
+    client
+        .send(Message::Binary(vec![0x16; 8192].into()))
+        .await
+        .unwrap();
+    close_sent_rx.await.unwrap();
+    let received = client.next().await;
+    eprintln!("fixture unauthorized close with unread client frame: {received:?}");
+    assert!(matches!(received, Some(Ok(Message::Close(Some(ref frame))))
+        if u16::from(frame.code) == 4401));
+    client.flush().await.unwrap();
+    server.await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_refresh_single_flight_across_concurrent_sends() {
     let (pin, acceptor) = tls_pair_with_pin();
@@ -2697,22 +2855,56 @@ async fn relay_refresh_single_flight_across_concurrent_sends() {
     let fresh_token = mint_jwt(now, now + 20_000);
     let relay =
         spawn_combined_relay(acceptor, CombinedWsMode::FreshOnly, fresh_token.clone()).await;
-    let client = Arc::new(relay_client(observer_relay_credential(
-        pin,
-        9,
-        relay.origin.clone(),
-        old_token,
-    )));
+    // Reject only after all concurrent callers have dialed with the stale
+    // generation, so a fast first refresh cannot make this check uncontended.
+    *relay.state.stale_dial_barrier.lock().unwrap() = Some(Arc::new(tokio::sync::Barrier::new(3)));
+    relay
+        .state
+        .await_stale_client_frame
+        .store(true, Ordering::SeqCst);
+    let observer = OperationObserver::new();
+    let client = Arc::new(
+        relay_client(observer_relay_credential(
+            pin,
+            9,
+            relay.origin.clone(),
+            old_token.clone(),
+        ))
+        .with_observer(Some(observer.clone())),
+    );
 
     let mut tasks = Vec::new();
     for _ in 0..3 {
         let client = client.clone();
         tasks.push(tokio::spawn(async move { relay_probe(&client).await }));
     }
+    let mut results = Vec::new();
     for task in tasks {
-        task.await.unwrap().unwrap();
+        results.push(task.await.unwrap());
+    }
+    eprintln!(
+        "relay diagnostic: results={results:?} progress={:?} refreshes={} inner_requests={} events={:?}",
+        observer.snapshot(),
+        relay.state.refreshes.load(Ordering::SeqCst),
+        relay.state.inner_requests.lock().unwrap().len(),
+        relay.state.diagnostics.lock().unwrap()
+    );
+    for result in results {
+        result.unwrap();
     }
 
+    assert_eq!(
+        relay
+            .state
+            .auth_headers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|auth| *auth == &format!("Bearer {old_token}"))
+            .count(),
+        3,
+        "all three callers must exercise the stale token generation",
+    );
     assert_eq!(relay.state.refreshes.load(Ordering::SeqCst), 1);
     assert_eq!(
         relay
