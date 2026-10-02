@@ -409,6 +409,10 @@ pub fn probe_app_presence(
                     }
                 };
 
+                // The probing process is never its own "present" app: `--dump-state`
+                // runs as `solstone-windows-app.exe` itself, so counting it would
+                // make every query with no running app read as present-but-silent.
+                let own_pid = std::process::id();
                 while walking {
                     let len = entry
                         .szExeFile
@@ -416,7 +420,7 @@ pub fn probe_app_presence(
                         .position(|&c| c == 0)
                         .unwrap_or(entry.szExeFile.len());
                     let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
-                    if exe_name.eq_ignore_ascii_case(image_name) {
+                    if entry.th32ProcessID != own_pid && exe_name.eq_ignore_ascii_case(image_name) {
                         found = true;
                         break;
                     }
@@ -487,6 +491,17 @@ mod win_presence_tests {
 
         let (mutex_view_after, _) = probe_app_presence(&name, "nonexistent.exe");
         assert_eq!(mutex_view_after, observer_model::SessionMutexView::Missing);
+    }
+
+    #[test]
+    fn probe_does_not_count_the_probing_process() {
+        let exe = std::env::current_exe().expect("test executable path");
+        let image = exe
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test executable name");
+        let (_, pop) = probe_app_presence("nonexistent_mutex", image);
+        assert_eq!(pop, observer_model::AppPopulation::Empty);
     }
 
     #[test]
