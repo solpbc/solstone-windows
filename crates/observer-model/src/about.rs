@@ -542,9 +542,7 @@ mod tests {
         assert_eq!(native.journal_line, "journal unknown");
         assert!(!native.journal_current);
         assert_eq!(native.journal_seen_at_epoch_secs, None);
-        assert!(
-            NativeAboutSnapshot::new("windows", "", "", "journal ", false, None).is_err()
-        );
+        assert!(NativeAboutSnapshot::new("windows", "", "", "journal ", false, None).is_err());
     }
 
     #[test]
