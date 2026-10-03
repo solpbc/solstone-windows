@@ -207,6 +207,7 @@ mod tests {
             sync: Arc::new(std::sync::Mutex::new(
                 observer_model::SyncSnapshot::default(),
             )),
+            about_observation: observer_model::about::WindowsObservation::default(),
             sync_config,
             _shutdown: std::sync::Mutex::new(None),
             uploader_slot: tokio::sync::Mutex::new(pl_transport_win::UploaderSlot::new()),

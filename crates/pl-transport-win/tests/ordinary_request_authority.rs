@@ -192,6 +192,8 @@ fn response_body(request: &[u8]) -> &'static [u8] {
         br#"{"items":[],"total":0,"protocol_version":3}"#
     } else if request.starts_with("GET /api/system/status ") {
         br#"{"version":{"current":"2026.9.14"}}"#
+    } else if request.starts_with("GET /api/system/about ") {
+        br#"{"protocol_version":1,"version":"2026.9.14","os":"ubuntu","os_version":"24.04","arch":"x86_64"}"#
     } else if request.starts_with("DELETE /app/network/api/clients/") {
         b""
     } else {
@@ -205,7 +207,7 @@ async fn serve_ordinary_routes(
     accepts: Arc<AtomicUsize>,
 ) -> Vec<Vec<u8>> {
     let mut requests = Vec::new();
-    for _ in 0..9 {
+    for _ in 0..10 {
         let (tcp, _) = listener.accept().await.unwrap();
         accepts.fetch_add(1, Ordering::SeqCst);
         let mut tls = acceptor.accept(tcp).await.unwrap();
@@ -315,13 +317,14 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
     client.ingest_manifest_day(DAY).await.unwrap();
     client.list_segments(DAY).await.unwrap();
     assert_eq!(client.system_status().await.unwrap(), "2026.9.14");
+    assert_eq!(client.system_about().await.unwrap().status, 200);
     client
         .retire_client("sha256:0123456789abcdef")
         .await
         .unwrap();
 
     let requests = server.await.unwrap();
-    assert_eq!(accepts.load(Ordering::SeqCst), 9);
+    assert_eq!(accepts.load(Ordering::SeqCst), 10);
     let targets: Vec<_> = requests
         .iter()
         .map(|request| {
@@ -343,6 +346,7 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
             "GET /app/devices/ingest/manifest/20260914 HTTP/1.1",
             "GET /app/devices/ingest/segments/20260914 HTTP/1.1",
             "GET /api/system/status HTTP/1.1",
+            "GET /api/system/about HTTP/1.1",
             "DELETE /app/network/api/clients/sha256:0123456789abcdef HTTP/1.1",
         ]
     );

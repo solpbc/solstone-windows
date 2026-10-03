@@ -39,6 +39,7 @@ pub enum RelayEnd {
 
 /// The `hello_ack` sent when the app is not running: the gate stays closed.
 pub fn unavailable_ack() -> Value {
+    let about = observer_model::about::NativeAboutSnapshot::unknown("windows", "", "");
     json!({
         "type": "hello_ack",
         "capture": "unavailable",
@@ -48,6 +49,7 @@ pub fn unavailable_ack() -> Value {
         "period_id": null,
         "custody": {"full": false, "stale": false},
         "version": native_browser_frame::BUNDLE_VERSION,
+        "about": about,
     })
 }
 

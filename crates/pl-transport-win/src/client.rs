@@ -772,6 +772,12 @@ impl ObserverClient {
             .await
     }
 
+    /// Read the host About resource without attaching identity or query data.
+    pub async fn system_about(&self) -> Result<HttpResponse, TransportError> {
+        self.post_connect_response(OrdinaryRequest::SystemAboutGet, self.v3_headers(), &[])
+            .await
+    }
+
     /// Attach the persisted pairing state path for best-effort relay token refresh write-back.
     pub fn with_state_path(self, path: PathBuf) -> Self {
         self.token_transaction.set_state_path(path);
@@ -996,7 +1002,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 9);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 10);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);

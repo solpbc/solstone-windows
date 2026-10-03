@@ -22,6 +22,7 @@ pub(crate) enum OrdinaryRequest {
     IngestManifestDayGet,
     IngestSegmentsDayGet,
     SystemStatusGet,
+    SystemAboutGet,
     ClientsRetireDelete,
 }
 
@@ -37,7 +38,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
         Self::RelayAccessGet,
@@ -46,6 +47,7 @@ impl OrdinaryRequest {
         Self::IngestManifestDayGet,
         Self::IngestSegmentsDayGet,
         Self::SystemStatusGet,
+        Self::SystemAboutGet,
         Self::ClientsRetireDelete,
     ];
 
@@ -103,6 +105,13 @@ impl OrdinaryRequest {
             Self::SystemStatusGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: "/api/system/status",
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
+            Self::SystemAboutGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: "/api/system/about",
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: false,
@@ -211,6 +220,14 @@ mod tests {
                 OrdinaryRequest::SystemStatusGet,
                 "GET",
                 "/api/system/status",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
+            (
+                OrdinaryRequest::SystemAboutGet,
+                "GET",
+                "/api/system/about",
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 false,

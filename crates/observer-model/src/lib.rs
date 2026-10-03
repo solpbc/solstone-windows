@@ -20,6 +20,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoStaticStr};
 
+pub mod about;
 pub mod launch;
 pub mod tray_status;
 
@@ -610,7 +611,7 @@ pub struct UnknownJournalSighting {
 
 /// The sync layer's snapshot (pairing + upload), folded into [`HealthDump`] by
 /// the engine. `Default` is the honest not-paired, nothing-uploaded state.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncSnapshot {
     pub pairing: PairingState,
     pub upload: UploadStatus,
@@ -618,8 +619,42 @@ pub struct SyncSnapshot {
     pub journal_version: Option<String>,
     #[serde(default)]
     pub journal_version_fresh: bool,
+    /// Frozen rendered journal line used by About and the native browser host.
+    #[serde(default = "about::unknown_journal_line")]
+    pub journal_display_line: String,
+    /// Base journal line for the native protocol, without freshness suffixes.
+    #[serde(default = "about::unknown_journal_line")]
+    pub journal_base_line: String,
+    /// Local acceptance time for the journal version, not the About resource.
+    #[serde(default)]
+    pub journal_seen_at_epoch_secs: Option<u64>,
+    /// Cached local Windows app line. The capture health poll carries this value
+    /// forward; it does not resample platform facts.
+    #[serde(default)]
+    pub about_app_line: String,
+    /// Exact two-line About block used by the UI, clipboard, and report form.
+    #[serde(default)]
+    pub about_block: String,
     #[serde(default)]
     pub unknown_journals: Vec<UnknownJournalSighting>,
+}
+
+impl Default for SyncSnapshot {
+    fn default() -> Self {
+        let unknown = about::unknown_journal_line();
+        Self {
+            pairing: PairingState::default(),
+            upload: UploadStatus::default(),
+            journal_version: None,
+            journal_version_fresh: false,
+            journal_display_line: unknown.clone(),
+            journal_base_line: unknown.clone(),
+            journal_seen_at_epoch_secs: None,
+            about_app_line: String::new(),
+            about_block: unknown,
+            unknown_journals: Vec::new(),
+        }
+    }
 }
 
 /// The honest pause detail surfaced in the health dump while the observer is

@@ -4034,13 +4034,9 @@ mod tests {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let cred = dummy_credential();
         jv.begin_session(&cred, &sync);
-
-        // Simulate an already fresh version in sync snapshot.
-        {
-            let mut s = sync.lock().unwrap();
-            s.journal_version = Some("0.4.0".into());
-            s.journal_version_fresh = true;
-        }
+        // Seed the controller as well as its snapshot so disconnect republishes
+        // the authoritative version state.
+        jv.publish_version("0.4.0", jv.current_token(), &sync);
 
         let store = OneSegmentStore::new(1_700_000_100, "audio.flac", b"audio".to_vec());
         let client = FakeClient::new(

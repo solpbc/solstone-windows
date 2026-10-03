@@ -30,6 +30,8 @@ pub struct AppState {
     pub health: Arc<Mutex<HealthDump>>,
     /// Wave-2 pairing/upload snapshot (shared with the engine + sync layer).
     pub sync: Arc<Mutex<SyncSnapshot>>,
+    /// Startup-only raw Windows observation reused by About and native host.
+    pub about_observation: observer_model::about::WindowsObservation,
     /// Static identity + paths the sync layer needs to pair/upload.
     pub sync_config: SyncConfig,
     pub _shutdown: Mutex<Option<oneshot::Sender<()>>>,
@@ -419,11 +421,26 @@ pub fn run(
                 segment_fs,
                 Box::new(SystemClock),
             )?;
+            let health = engine.health_handle();
+            let sync = engine.sync_handle();
+            let about_observation = platform_win::about_observation::windows_about_observation();
+            let about_app_line = observer_model::about::render_windows_app_line(
+                env!("CARGO_PKG_VERSION"),
+                &about_observation,
+            );
+            if let Ok(mut snapshot) = sync.lock() {
+                snapshot.about_app_line = about_app_line;
+                if snapshot.journal_display_line.is_empty() {
+                    snapshot.journal_display_line = observer_model::about::unknown_journal_line();
+                }
+                snapshot.about_block = observer_model::about::compose_about_block(
+                    &snapshot.about_app_line,
+                    &snapshot.journal_display_line,
+                );
+            }
             engine.start();
             tracing::info!(target: "engine", outcome = "started", "engine start");
 
-            let health = engine.health_handle();
-            let sync = engine.sync_handle();
             let watch_rx = engine.health_watch();
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -441,6 +458,7 @@ pub fn run(
                 commands: cmd_tx.clone(),
                 health: health.clone(),
                 sync: sync.clone(),
+                about_observation: about_observation.clone(),
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
                 uploader_slot: tokio::sync::Mutex::new(slot),

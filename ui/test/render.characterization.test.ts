@@ -338,34 +338,45 @@ describe("settings renderer characterization", () => {
     app.__test__.renderAbout(dump);
 
     present(ids["about.window.root"]);
-    expect(present(ids["about.version"]).textContent).toBe(dump.version);
-    expect(present(ids["about.journalVersion"]).textContent).toBe("unknown");
+    expect(present(ids["about.version"]).textContent).toBe(
+      "windows app test-version · windows 11 26100 · x86_64",
+    );
+    expect(present(ids["about.journalVersion"]).textContent).toBe("journal unknown");
+    expect(present(ids["about.version"]).classList.contains("selectable")).toBe(true);
+    expect(present(ids["about.journalVersion"]).classList.contains("selectable")).toBe(true);
   });
 
   it("renders the about surface with fresh journal version", () => {
     const dump = observingDump();
     dump.sync.journal_version = "0.4.2";
     dump.sync.journal_version_fresh = true;
+    dump.sync.journal_display_line = "journal 0.4.2 · ubuntu 24.04 · x86_64";
     resetRoot(ids["about.window.root"]);
     app.__test__.setLabel("about");
     app.__test__.setHealth(dump);
 
     app.__test__.renderAbout(dump);
 
-    expect(present(ids["about.journalVersion"]).textContent).toBe("0.4.2");
+    expect(present(ids["about.journalVersion"]).textContent).toBe(
+      "journal 0.4.2 · ubuntu 24.04 · x86_64",
+    );
   });
 
   it("renders the about surface with last known journal version", () => {
     const dump = observingDump();
     dump.sync.journal_version = "0.4.2";
     dump.sync.journal_version_fresh = false;
+    dump.sync.journal_display_line =
+      "journal 0.4.2 · ubuntu 24.04 · x86_64 · last seen 2 minutes ago";
     resetRoot(ids["about.window.root"]);
     app.__test__.setLabel("about");
     app.__test__.setHealth(dump);
 
     app.__test__.renderAbout(dump);
 
-    expect(present(ids["about.journalVersion"]).textContent).toBe("0.4.2 (last known)");
+    expect(present(ids["about.journalVersion"]).textContent).toBe(
+      "journal 0.4.2 · ubuntu 24.04 · x86_64 · last seen 2 minutes ago",
+    );
   });
 
   it("renders unknown journal version when unpaired", () => {
@@ -376,18 +387,6 @@ describe("settings renderer characterization", () => {
 
     app.__test__.renderAbout(dump);
 
-    expect(present(ids["about.journalVersion"]).textContent).toBe("unknown");
-  });
-
-  it("sanitizes journal version correctly", () => {
-    expect(app.__test__.sanitizeJournalVersion(null)).toBeNull();
-    expect(app.__test__.sanitizeJournalVersion("")).toBeNull();
-    expect(app.__test__.sanitizeJournalVersion("   ")).toBeNull();
-    expect(app.__test__.sanitizeJournalVersion("0.4.2")).toBe("0.4.2");
-    expect(app.__test__.sanitizeJournalVersion("v1.2.3-beta.1 (hash)")).toBe("v1.2.3-beta.1 (hash)");
-    expect(app.__test__.sanitizeJournalVersion("bad\x00version")).toBeNull();
-    expect(app.__test__.sanitizeJournalVersion("bad\nversion")).toBeNull();
-    expect(app.__test__.sanitizeJournalVersion("a".repeat(129))).toBeNull();
-    expect(app.__test__.sanitizeJournalVersion("a".repeat(128))).toBe("a".repeat(128));
+    expect(present(ids["about.journalVersion"]).textContent).toBe("journal unknown");
   });
 });

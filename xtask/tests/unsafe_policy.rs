@@ -92,6 +92,12 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         owner: None,
     },
     ApprovedNode {
+        path: "crates/platform-win/src/about_observation.rs",
+        kind: ApprovedKind::Fn,
+        name: "native_machine_code",
+        owner: None,
+    },
+    ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::ModDecl,
         name: "browser_pipe",

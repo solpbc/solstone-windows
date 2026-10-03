@@ -27,6 +27,7 @@ use observer_model::{
 use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
+pub mod about_observation;
 pub mod autostart;
 #[allow(unsafe_code)]
 pub mod local_offset;

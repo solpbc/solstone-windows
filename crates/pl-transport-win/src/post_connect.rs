@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use observer_model::about::{decode_journal_resource, normalize_version, JournalAboutFacts};
 use observer_model::SyncSnapshot;
+use spl_core::http::HttpResponse;
 
 use crate::client::ClientSlot;
 #[cfg(test)]
@@ -127,6 +129,18 @@ struct PassStart {
     token: (u64, u64, u64),
     paired_id: String,
     journal_version_token: Option<(u64, u64, u64)>,
+}
+
+#[derive(Debug, Default)]
+struct AboutReconciliation {
+    accepted_metadata_version: Option<String>,
+    pending_about: Option<PendingAbout>,
+}
+
+#[derive(Debug)]
+struct PendingAbout {
+    facts: JournalAboutFacts,
+    identity: (String, String),
 }
 
 #[derive(Debug, Default)]
@@ -479,11 +493,17 @@ impl PostConnectController {
         let metadata = self.clone();
         let metadata_token = start.token;
         let metadata_journal_version_token = start.journal_version_token;
+        let about_reconciliation = Arc::new(Mutex::new(AboutReconciliation::default()));
+        let metadata_about_reconciliation = about_reconciliation.clone();
         let h1 = tokio::spawn(async move {
             let deadline = metadata.deadline;
             let result = tokio::time::timeout(
                 deadline,
-                metadata.execute_metadata_job(metadata_token, metadata_journal_version_token),
+                metadata.execute_metadata_job(
+                    metadata_token,
+                    metadata_journal_version_token,
+                    metadata_about_reconciliation,
+                ),
             )
             .await;
             if result.is_err() {
@@ -496,6 +516,25 @@ impl PostConnectController {
             }
             #[cfg(any(test, feature = "transport-tests"))]
             metadata_completion.finish(outcome);
+        });
+
+        let about = self.clone();
+        let about_token = start.token;
+        let about_journal_version_token = start.journal_version_token;
+        let h3 = tokio::spawn(async move {
+            let deadline = about.deadline;
+            let result = tokio::time::timeout(
+                deadline,
+                about.execute_about_job(
+                    about_token,
+                    about_journal_version_token,
+                    about_reconciliation,
+                ),
+            )
+            .await;
+            if result.is_err() {
+                tracing::debug!(target: "sync", "post-connect about job timed out");
+            }
         });
 
         let access = self.clone();
@@ -530,6 +569,7 @@ impl PostConnectController {
             tasks.retain(|h| !h.is_finished());
             tasks.push(h1);
             tasks.push(h2);
+            tasks.push(h3);
         }
     }
 
@@ -622,9 +662,9 @@ impl PostConnectController {
         resource: &MetadataGetResponse,
         attempt: (u64, u64, u64),
         journal_version_token: Option<(u64, u64, u64)>,
-    ) {
+    ) -> Option<String> {
         if !self.attempt_is_current(attempt) {
-            return;
+            return None;
         }
         let journal = &resource.journal;
         if let (Some(jv), Some(version_token)) = (&self.journal_version, journal_version_token) {
@@ -633,11 +673,15 @@ impl PostConnectController {
             let name = journal.name.clone();
             let version = journal.version.clone();
             // The worker retains publication ownership if the network job expires.
-            let _ = tokio::task::spawn_blocking(move || {
-                jv.publish_info_for_attempt(Some(name.as_deref()), &version, version_token, &sync);
+            let accepted = tokio::task::spawn_blocking(move || {
+                jv.publish_info_for_attempt(Some(name.as_deref()), &version, version_token, &sync)
             })
             .await;
+            if matches!(accepted, Ok(true)) {
+                return Some(journal.version.clone());
+            }
         }
+        None
     }
 
     async fn fallback_journal_version(
@@ -645,30 +689,52 @@ impl PostConnectController {
         client: &crate::ObserverClient,
         attempt: (u64, u64, u64),
         journal_version_token: Option<(u64, u64, u64)>,
-    ) {
+    ) -> Option<String> {
         if !self.attempt_is_current(attempt) {
-            return;
+            return None;
         }
-        let (Some(jv), Some(version_token)) = (&self.journal_version, journal_version_token) else {
-            return;
+        let (Some(_jv), Some(version_token)) = (&self.journal_version, journal_version_token)
+        else {
+            return None;
         };
         if let Ok(version) = client.system_status().await {
-            if !self.attempt_is_current(attempt) {
-                return;
-            }
-            let jv = jv.clone();
-            let sync = self.sync.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                jv.publish_info_for_attempt(None, &version, version_token, &sync)
-            })
-            .await;
+            return self
+                .publish_fallback_version(&version, attempt, Some(version_token))
+                .await;
         }
+        None
+    }
+
+    async fn publish_fallback_version(
+        &self,
+        version: &str,
+        attempt: (u64, u64, u64),
+        journal_version_token: Option<(u64, u64, u64)>,
+    ) -> Option<String> {
+        if !self.attempt_is_current(attempt) {
+            return None;
+        }
+        let (Some(journal_version), Some(version_token)) =
+            (&self.journal_version, journal_version_token)
+        else {
+            return None;
+        };
+        let journal_version = journal_version.clone();
+        let sync = self.sync.clone();
+        let version = version.to_owned();
+        let accepted_version = version.clone();
+        let accepted = tokio::task::spawn_blocking(move || {
+            journal_version.publish_info_for_attempt(None, &version, version_token, &sync)
+        })
+        .await;
+        matches!(accepted, Ok(true)).then_some(accepted_version)
     }
 
     async fn execute_metadata_job(
         &self,
         token: (u64, u64, u64),
         journal_version_token: Option<(u64, u64, u64)>,
+        about_reconciliation: Arc<Mutex<AboutReconciliation>>,
     ) -> bool {
         let client = self.client_slot.load();
         let get_resp = match client.get_clients_self().await {
@@ -681,8 +747,18 @@ impl PostConnectController {
 
         // Old home: 404 -> skip PUT
         if get_resp.status == 404 {
-            self.fallback_journal_version(&client, token, journal_version_token)
+            if let Some(version) = self
+                .fallback_journal_version(&client, token, journal_version_token)
+                .await
+            {
+                self.apply_held_about_result(
+                    &about_reconciliation,
+                    &version,
+                    token,
+                    journal_version_token,
+                )
                 .await;
+            }
             tracing::debug!(target: "sync", "metadata GET returned 404 (old home); skipping PUT");
             return true;
         }
@@ -708,8 +784,18 @@ impl PostConnectController {
         if !self.attempt_is_current(token) {
             return true;
         }
-        self.publish_journal_metadata(&parsed, token, journal_version_token)
+        if let Some(version) = self
+            .publish_journal_metadata(&parsed, token, journal_version_token)
+            .await
+        {
+            self.apply_held_about_result(
+                &about_reconciliation,
+                &version,
+                token,
+                journal_version_token,
+            )
             .await;
+        }
 
         if !self.attempt_is_current(token) {
             return true;
@@ -760,8 +846,18 @@ impl PostConnectController {
             if !self.attempt_is_current(token) {
                 return true;
             }
-            self.publish_journal_metadata(parsed_put.resource(), token, journal_version_token)
+            if let Some(version) = self
+                .publish_journal_metadata(parsed_put.resource(), token, journal_version_token)
+                .await
+            {
+                self.apply_held_about_result(
+                    &about_reconciliation,
+                    &version,
+                    token,
+                    journal_version_token,
+                )
                 .await;
+            }
             let mut state = self.state.lock().unwrap();
             state.last_published_metadata = Some(current.clone());
             return true;
@@ -786,8 +882,18 @@ impl PostConnectController {
             if !self.attempt_is_current(token) {
                 return true;
             }
-            self.publish_journal_metadata(&retry_parsed, token, journal_version_token)
+            if let Some(version) = self
+                .publish_journal_metadata(&retry_parsed, token, journal_version_token)
+                .await
+            {
+                self.apply_held_about_result(
+                    &about_reconciliation,
+                    &version,
+                    token,
+                    journal_version_token,
+                )
                 .await;
+            }
 
             let newest_snapshot = {
                 if !self.attempt_is_current(token) {
@@ -829,18 +935,209 @@ impl PostConnectController {
                     if !self.attempt_is_current(token) {
                         return true;
                     }
-                    self.publish_journal_metadata(
-                        parsed_put.resource(),
-                        token,
-                        journal_version_token,
-                    )
-                    .await;
+                    if let Some(version) = self
+                        .publish_journal_metadata(
+                            parsed_put.resource(),
+                            token,
+                            journal_version_token,
+                        )
+                        .await
+                    {
+                        self.apply_held_about_result(
+                            &about_reconciliation,
+                            &version,
+                            token,
+                            journal_version_token,
+                        )
+                        .await;
+                    }
                     let mut state = self.state.lock().unwrap();
                     state.last_published_metadata = Some(newest_snapshot);
                 }
             }
         }
         true
+    }
+
+    async fn execute_about_job(
+        &self,
+        token: (u64, u64, u64),
+        journal_version_token: Option<(u64, u64, u64)>,
+        reconciliation: Arc<Mutex<AboutReconciliation>>,
+    ) {
+        let (Some(journal_version), Some(version_token)) =
+            (&self.journal_version, journal_version_token)
+        else {
+            return;
+        };
+        let client = self.client_slot.load();
+        let expected_identity = (
+            client.credential().instance_id.clone(),
+            crate::credential::hex_lower(&client.credential().ca_fp_prefix),
+        );
+        let response = client.system_about().await.ok();
+        self.apply_about_response(
+            response,
+            expected_identity,
+            token,
+            version_token,
+            reconciliation,
+            journal_version.clone(),
+        )
+        .await;
+    }
+
+    async fn apply_about_response(
+        &self,
+        response: Option<HttpResponse>,
+        expected_identity: (String, String),
+        token: (u64, u64, u64),
+        version_token: (u64, u64, u64),
+        reconciliation: Arc<Mutex<AboutReconciliation>>,
+        journal_version: Arc<JournalVersionController>,
+    ) {
+        let Some(response) = response else {
+            return;
+        };
+        if response.status != 200 || !self.attempt_is_current(token) {
+            return;
+        }
+        let Ok(facts) = decode_journal_resource(&response.body) else {
+            return;
+        };
+        self.accept_about_result(
+            &reconciliation,
+            facts,
+            expected_identity,
+            token,
+            version_token,
+            journal_version,
+        )
+        .await;
+    }
+
+    async fn accept_about_result(
+        &self,
+        reconciliation: &Arc<Mutex<AboutReconciliation>>,
+        facts: JournalAboutFacts,
+        expected_identity: (String, String),
+        attempt: (u64, u64, u64),
+        journal_version_token: (u64, u64, u64),
+        journal_version: Arc<JournalVersionController>,
+    ) {
+        let accepted_version = {
+            let mut reconciliation = reconciliation.lock().unwrap();
+            match reconciliation.accepted_metadata_version.clone() {
+                Some(version) if normalize_version(&facts.version) == version => Some(version),
+                Some(_) => {
+                    reconciliation.pending_about = Some(PendingAbout {
+                        facts,
+                        identity: expected_identity,
+                    });
+                    return;
+                }
+                None => {
+                    reconciliation.pending_about = Some(PendingAbout {
+                        facts,
+                        identity: expected_identity,
+                    });
+                    return;
+                }
+            }
+        };
+        let Some(accepted_version) = accepted_version else {
+            return;
+        };
+        self.commit_about_facts(
+            journal_version,
+            facts,
+            &accepted_version,
+            expected_identity,
+            attempt,
+            journal_version_token,
+        )
+        .await;
+    }
+
+    /// Apply an About response that arrived before this attempt independently
+    /// accepted its metadata version.
+    async fn apply_held_about_result(
+        &self,
+        reconciliation: &Arc<Mutex<AboutReconciliation>>,
+        version: &str,
+        attempt: (u64, u64, u64),
+        journal_version_token: Option<(u64, u64, u64)>,
+    ) {
+        let accepted_version = normalize_version(version).to_owned();
+        let pending = {
+            let mut reconciliation = reconciliation.lock().unwrap();
+            reconciliation.accepted_metadata_version = Some(accepted_version.clone());
+            if reconciliation
+                .pending_about
+                .as_ref()
+                .is_some_and(|pending| {
+                    normalize_version(&pending.facts.version) == accepted_version
+                })
+            {
+                reconciliation.pending_about.take()
+            } else {
+                None
+            }
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        let (Some(journal_version), Some(version_token)) =
+            (&self.journal_version, journal_version_token)
+        else {
+            return;
+        };
+        self.commit_about_facts(
+            journal_version.clone(),
+            pending.facts,
+            &accepted_version,
+            pending.identity,
+            attempt,
+            version_token,
+        )
+        .await;
+    }
+
+    async fn commit_about_facts(
+        &self,
+        journal_version: Arc<JournalVersionController>,
+        facts: JournalAboutFacts,
+        accepted_version: &str,
+        expected_identity: (String, String),
+        attempt: (u64, u64, u64),
+        journal_version_token: (u64, u64, u64),
+    ) {
+        if !self.attempt_is_current(attempt) {
+            return;
+        }
+        let credential = self.client_slot.load().credential().clone();
+        if credential.instance_id != expected_identity.0
+            || crate::credential::hex_lower(&credential.ca_fp_prefix) != expected_identity.1
+        {
+            return;
+        }
+        let sync = self.sync.clone();
+        let accepted_version = accepted_version.to_owned();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let _ = tokio::task::spawn_blocking(move || {
+            journal_version.apply_about_for_attempt(
+                facts,
+                &accepted_version,
+                journal_version_token,
+                &expected_identity,
+                &sync,
+                now,
+            )
+        })
+        .await;
     }
 
     async fn fetch_access_outcome(
@@ -1122,6 +1419,7 @@ mod tests {
     use crate::{CasKey, Credential, ObserverClient};
     use observer_model::SyncSnapshot;
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -1208,6 +1506,52 @@ mod tests {
         let disconnect_called = Arc::new(AtomicBool::new(false));
 
         (Arc::new(controller), slot, path, disconnect_called)
+    }
+
+    fn about_resource(version: &str, os: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "protocol_version": 1,
+            "version": version,
+            "os": os,
+            "os_version": "24.04",
+            "arch": "x86_64",
+            "about": "server text is ignored",
+            "hostname": "PRIVATE HOST"
+        }))
+        .unwrap()
+    }
+
+    fn strict_metadata_body(version: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "protocol_version": 1,
+            "revision": 4,
+            "reported": null,
+            "owner_label": null,
+            "display_label": "Device",
+            "updated_at": null,
+            "journal": { "name": "Home", "version": version }
+        }))
+        .unwrap()
+    }
+
+    fn write_cached_about(path: &Path, version: &str, seen_at: u64) {
+        let text = serde_json::json!({
+            "instance_id": "test",
+            "ca_fp_prefix_hex": "00000000000000000000000000000000",
+            "version": version,
+            "journal_name": "Home",
+            "updated_at_epoch_secs": seen_at,
+            "facts": {
+                "version": version,
+                "build": null,
+                "os": "old-os",
+                "os_version": "old-version",
+                "arch": "old-arch",
+                "accepted_at_epoch_secs": seen_at
+            },
+            "future_top_level": true
+        });
+        std::fs::write(path, serde_json::to_vec(&text).unwrap()).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -1299,6 +1643,250 @@ mod tests {
 
         assert!(!journal_path.exists());
         assert!(sync.lock().unwrap().journal_version.is_none());
+        drop(template);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn about_pending_body_is_not_applied_until_strict_metadata_completes() {
+        let (template, slot, path, _) = test_setup(false);
+        let sync = template.sync.clone();
+        let facts_fn = template.facts_fn.clone();
+        let credential = slot.load().credential().clone();
+        let journal_path = path.parent().unwrap().join("journal-version.json");
+        let old_seen_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 600;
+        write_cached_about(&journal_path, "1.2.3", old_seen_at);
+        let journal_version = Arc::new(JournalVersionController::new(journal_path));
+        let journal_session = journal_version.begin_session(&credential, &sync);
+        let controller = Arc::new(PostConnectController::new(
+            slot,
+            Some(path.clone()),
+            Some(journal_version.clone()),
+            sync.clone(),
+            facts_fn,
+        ));
+        controller.set_journal_version_token(journal_session);
+        let post_session = controller.begin_session(&credential);
+        let attempt = (
+            post_session.0,
+            controller.state.lock().unwrap().connection_epoch,
+            pairing_generation(&credential.client_cert_pem),
+        );
+        let journal_attempt = journal_version
+            .capture_metadata_attempt(journal_session)
+            .unwrap();
+        let reconciliation = Arc::new(Mutex::new(AboutReconciliation::default()));
+        let identity = (
+            credential.instance_id.clone(),
+            crate::credential::hex_lower(&credential.ca_fp_prefix),
+        );
+        let about_facts = decode_journal_resource(&about_resource("v1.2.3", "ubuntu")).unwrap();
+        let (release_body, pending_body) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        let metadata_controller = controller.clone();
+        let metadata_reconciliation = reconciliation.clone();
+        let metadata_job = tokio::spawn(async move {
+            let body = pending_body.await.unwrap();
+            let parsed: MetadataGetResponse = serde_json::from_slice(&body).unwrap();
+            let version = metadata_controller
+                .publish_journal_metadata(&parsed, attempt, Some(journal_attempt))
+                .await
+                .unwrap();
+            metadata_controller
+                .apply_held_about_result(
+                    &metadata_reconciliation,
+                    &version,
+                    attempt,
+                    Some(journal_attempt),
+                )
+                .await;
+        });
+
+        controller
+            .accept_about_result(
+                &reconciliation,
+                about_facts,
+                identity,
+                attempt,
+                journal_attempt,
+                journal_version.clone(),
+            )
+            .await;
+        let before = sync.lock().unwrap().clone();
+        assert_eq!(before.journal_seen_at_epoch_secs, Some(old_seen_at));
+        assert!(before.journal_display_line.contains("old-os"));
+        assert!(!before.journal_version_fresh);
+        assert!(
+            !metadata_job.is_finished(),
+            "strict metadata body remains held"
+        );
+
+        release_body.send(strict_metadata_body("1.2.3")).unwrap();
+        metadata_job.await.unwrap();
+
+        let after = sync.lock().unwrap().clone();
+        assert!(after.journal_version_fresh);
+        assert!(after.journal_seen_at_epoch_secs.unwrap() >= old_seen_at);
+        assert_eq!(
+            after.journal_display_line,
+            "journal 1.2.3 · ubuntu 24.04 · x86_64"
+        );
+        assert_eq!(
+            after.about_block,
+            format!("{}\n{}", after.about_app_line, after.journal_display_line)
+        );
+        drop(template);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn matching_about_after_status_fallback_keeps_fallback_version_current() {
+        let (template, slot, path, _) = test_setup(false);
+        let sync = template.sync.clone();
+        let facts_fn = template.facts_fn.clone();
+        let credential = slot.load().credential().clone();
+        let journal_path = path.parent().unwrap().join("journal-version.json");
+        let old_seen_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 600;
+        write_cached_about(&journal_path, "1.2.3", old_seen_at);
+        let journal_version = Arc::new(JournalVersionController::new(journal_path));
+        let journal_session = journal_version.begin_session(&credential, &sync);
+        let controller = Arc::new(PostConnectController::new(
+            slot,
+            Some(path.clone()),
+            Some(journal_version.clone()),
+            sync.clone(),
+            facts_fn,
+        ));
+        controller.set_journal_version_token(journal_session);
+        let post_session = controller.begin_session(&credential);
+        let attempt = (
+            post_session.0,
+            controller.state.lock().unwrap().connection_epoch,
+            pairing_generation(&credential.client_cert_pem),
+        );
+        let journal_attempt = journal_version
+            .capture_metadata_attempt(journal_session)
+            .unwrap();
+        let reconciliation = Arc::new(Mutex::new(AboutReconciliation::default()));
+
+        // The strict metadata GET's 404 path accepts system_status as its fallback.
+        let version = controller
+            .publish_fallback_version("1.2.3", attempt, Some(journal_attempt))
+            .await
+            .unwrap();
+        controller
+            .apply_held_about_result(&reconciliation, &version, attempt, Some(journal_attempt))
+            .await;
+        let version_seen_at = sync.lock().unwrap().journal_seen_at_epoch_secs;
+        let identity = (
+            credential.instance_id.clone(),
+            crate::credential::hex_lower(&credential.ca_fp_prefix),
+        );
+        controller
+            .accept_about_result(
+                &reconciliation,
+                decode_journal_resource(&about_resource("v1.2.3", "ubuntu")).unwrap(),
+                identity,
+                attempt,
+                journal_attempt,
+                journal_version.clone(),
+            )
+            .await;
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert!(snapshot.journal_version_fresh);
+        assert_eq!(snapshot.journal_version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            snapshot.journal_display_line,
+            "journal 1.2.3 · ubuntu 24.04 · x86_64"
+        );
+        assert_eq!(snapshot.journal_seen_at_epoch_secs, version_seen_at);
+        assert!(snapshot.journal_seen_at_epoch_secs.unwrap() >= old_seen_at);
+        drop(template);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn about_transport_failure_does_not_fail_metadata_acceptance() {
+        let (template, slot, path, _) = test_setup(false);
+        let sync = template.sync.clone();
+        let facts_fn = template.facts_fn.clone();
+        let credential = slot.load().credential().clone();
+        let journal_path = path.parent().unwrap().join("journal-version.json");
+        let journal_version = Arc::new(JournalVersionController::new(journal_path));
+        let journal_session = journal_version.begin_session(&credential, &sync);
+        let controller = Arc::new(PostConnectController::new(
+            slot,
+            Some(path.clone()),
+            Some(journal_version.clone()),
+            sync.clone(),
+            facts_fn,
+        ));
+        controller.set_journal_version_token(journal_session);
+        let post_session = controller.begin_session(&credential);
+        let attempt = (
+            post_session.0,
+            controller.state.lock().unwrap().connection_epoch,
+            pairing_generation(&credential.client_cert_pem),
+        );
+        let journal_attempt = journal_version
+            .capture_metadata_attempt(journal_session)
+            .unwrap();
+        let reconciliation = Arc::new(Mutex::new(AboutReconciliation::default()));
+        let identity = (
+            credential.instance_id.clone(),
+            crate::credential::hex_lower(&credential.ca_fp_prefix),
+        );
+
+        for response in [
+            None,
+            Some(HttpResponse {
+                status: 404,
+                headers: Vec::new(),
+                body: Vec::new(),
+            }),
+            Some(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: b"{".to_vec(),
+            }),
+        ] {
+            controller
+                .apply_about_response(
+                    response,
+                    identity.clone(),
+                    attempt,
+                    journal_attempt,
+                    reconciliation.clone(),
+                    journal_version.clone(),
+                )
+                .await;
+        }
+
+        let accepted_version = controller
+            .publish_fallback_version("1.2.3", attempt, Some(journal_attempt))
+            .await
+            .expect("metadata fallback remains independently acceptable");
+        controller
+            .apply_held_about_result(
+                &reconciliation,
+                &accepted_version,
+                attempt,
+                Some(journal_attempt),
+            )
+            .await;
+
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.journal_version.as_deref(), Some("1.2.3"));
+        assert!(snapshot.journal_version_fresh);
+        assert_eq!(snapshot.journal_display_line, "journal 1.2.3");
         drop(template);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

@@ -25,6 +25,7 @@ use native_browser_frame::constants::{
     CONTROL_MAX, FRESHNESS_MS_MAX, HANDSHAKE_MS_BUDGET, STATE_RENEWAL_MS_INTERVAL, WIRE_PROTOCOL,
 };
 use native_browser_frame::{decode, encode, DecodeOutcome, Direction};
+use observer_model::about::NativeAboutSnapshot;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -71,7 +72,7 @@ impl Default for Gates {
 
 #[derive(Debug, Clone)]
 enum Publication {
-    State,
+    State(NativeAboutSnapshot),
     Boundary,
     Bye {
         reason: &'static str,
@@ -109,6 +110,7 @@ pub struct HubConfig {
     /// Admit the development ids (never set by a release build).
     pub development: bool,
     pub app_version: String,
+    pub about: NativeAboutSnapshot,
 }
 
 pub struct Hub {
@@ -116,6 +118,7 @@ pub struct Hub {
     clock: Clock,
     store: Mutex<Store>,
     gates: Mutex<Gates>,
+    about: Mutex<NativeAboutSnapshot>,
     failure: Mutex<Option<&'static str>>,
     quiescing: AtomicBool,
     sessions: Mutex<HashMap<u64, SessionEntry>>,
@@ -124,14 +127,27 @@ pub struct Hub {
     tx: broadcast::Sender<Publication>,
 }
 
+fn destination_key(gates: &Gates) -> Option<String> {
+    match &gates.pairing {
+        Pairing::NotPaired => None,
+        Pairing::Paired { identity } => Some(identity.clone().unwrap_or_default()),
+    }
+}
+
 impl Hub {
     pub fn new(cfg: HubConfig, store: Store, clock: Clock) -> Arc<Self> {
         let (tx, _) = broadcast::channel(64);
+        let about = NativeAboutSnapshot::unknown(
+            cfg.about.os.clone(),
+            cfg.about.os_version.clone(),
+            cfg.about.arch.clone(),
+        );
         Arc::new(Self {
             cfg,
             clock,
             store: Mutex::new(store),
             gates: Mutex::new(Gates::default()),
+            about: Mutex::new(about),
             failure: Mutex::new(None),
             quiescing: AtomicBool::new(false),
             sessions: Mutex::new(HashMap::new()),
@@ -153,22 +169,40 @@ impl Hub {
         let _ = self.tx.send(p);
     }
 
+    fn publish_state(&self) {
+        let about = self.about.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        self.publish(Publication::State(about));
+    }
+
     /// Accept new gate inputs. A different journal identity retires custody
     /// before anything else happens, and every session is told to reconnect so
     /// the extension learns the new generation.
     pub fn update_gates(&self, gates: Gates) {
-        let changed = {
+        let (changed, destination_changed) = {
             let mut current = self.gates.lock().unwrap_or_else(|p| p.into_inner());
             if *current == gates {
-                false
+                (false, false)
             } else {
+                let old_destination = destination_key(&current);
+                let new_destination = destination_key(&gates);
                 *current = gates.clone();
-                true
+                (true, old_destination != new_destination)
             }
         };
         if !changed {
             return;
         }
+        let state_about = if destination_changed {
+            let mut about = self.about.lock().unwrap_or_else(|p| p.into_inner());
+            *about = NativeAboutSnapshot::unknown(
+                about.os.clone(),
+                about.os_version.clone(),
+                about.arch.clone(),
+            );
+            about.clone()
+        } else {
+            self.about.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        };
         if let Pairing::Paired {
             identity: Some(identity),
         } = &gates.pairing
@@ -191,7 +225,32 @@ impl Hub {
                 });
             }
         }
-        self.publish(Publication::State);
+        self.publish(Publication::State(state_about));
+    }
+
+    /// Publish a changed local/about snapshot through the normal state lane.
+    /// Equal snapshots are inert, including a same-version seen-at comparison.
+    pub fn update_about_snapshot(&self, mut snapshot: NativeAboutSnapshot) {
+        if snapshot.validate().is_err() {
+            return;
+        }
+        let gates = self.gates.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if !matches!(gates.pairing, Pairing::Paired { .. }) {
+            snapshot =
+                NativeAboutSnapshot::unknown(snapshot.os, snapshot.os_version, snapshot.arch);
+        }
+        let changed = {
+            let mut current = self.about.lock().unwrap_or_else(|p| p.into_inner());
+            if *current == snapshot {
+                false
+            } else {
+                *current = snapshot;
+                true
+            }
+        };
+        if changed {
+            self.publish_state();
+        }
     }
 
     /// Advance the period clock (call about once a second).
@@ -199,7 +258,7 @@ impl Hub {
         let now = self.now();
         if self.store().tick(now) {
             self.publish(Publication::Boundary);
-            self.publish(Publication::State);
+            self.publish_state();
         }
     }
 
@@ -210,7 +269,7 @@ impl Hub {
         if *current != failure {
             *current = failure;
             drop(current);
-            self.publish(Publication::State);
+            self.publish_state();
         }
     }
 
@@ -224,7 +283,7 @@ impl Hub {
 
     pub fn delivered(&self, entry: &OutboxEntry) -> std::io::Result<()> {
         let result = self.store().delivered(entry);
-        self.publish(Publication::State);
+        self.publish_state();
         result
     }
 
@@ -370,7 +429,7 @@ impl Hub {
     }
 
     /// The `hello_ack`/`state` message for the current gate.
-    fn state_message(&self, kind: &str) -> Value {
+    fn state_message(&self, kind: &str, about: &NativeAboutSnapshot) -> Value {
         let (capture, delivery, failure, generation, period, custody) = self.compute();
         let mut m = Map::new();
         m.insert("type".into(), json!(kind));
@@ -387,6 +446,7 @@ impl Hub {
             json!({"full": custody.full, "stale": custody.stale}),
         );
         m.insert("version".into(), json!(self.cfg.app_version));
+        m.insert("about".into(), json!(about));
         Value::Object(m)
     }
 
@@ -431,7 +491,7 @@ impl Hub {
                 }
             ) || matches!(&result, BatchResult::Accepted { .. })
             {
-                self.publish(Publication::State);
+                self.publish_state();
             }
             result
         };
@@ -574,7 +634,8 @@ impl Hub {
         };
         tracing::info!(target: "browser", component = "session", outcome = "connected", brand = %brand, "browser session");
 
-        let ack = self.state_message("hello_ack");
+        let ack_about = self.about.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let ack = self.state_message("hello_ack", &ack_about);
         let mut sent_generation = ack["destination_generation"].as_str().map(str::to_string);
         let mut sent_period = ack["period_id"].as_str().map(str::to_string);
         let mut ok = send(&mut w, &ack).await;
@@ -602,7 +663,8 @@ impl Hub {
                         }
                         Ok(Publication::Bye { .. }) => {}
                         Ok(Publication::Boundary) => {
-                            let state = self.state_message("state");
+                            let about = self.about.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                            let state = self.state_message("state", &about);
                             let generation = state["destination_generation"].as_str().map(str::to_string);
                             let period = state["period_id"].as_str().map(str::to_string);
                             if let (Some(g), Some(p)) = (&generation, &period) {
@@ -612,8 +674,15 @@ impl Hub {
                                 }
                             }
                         }
-                        Ok(Publication::State) | Err(broadcast::error::RecvError::Lagged(_)) => {
-                            let state = self.state_message("state");
+                        Ok(Publication::State(about)) => {
+                            let state = self.state_message("state", &about);
+                            sent_generation = state["destination_generation"].as_str().map(str::to_string);
+                            sent_period = state["period_id"].as_str().map(str::to_string);
+                            ok = send(&mut w, &state).await;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let about = self.about.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                            let state = self.state_message("state", &about);
                             sent_generation = state["destination_generation"].as_str().map(str::to_string);
                             sent_period = state["period_id"].as_str().map(str::to_string);
                             ok = send(&mut w, &state).await;
@@ -622,7 +691,8 @@ impl Hub {
                     }
                 }
                 _ = renew.tick() => {
-                    let state = self.state_message("state");
+                    let about = self.about.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    let state = self.state_message("state", &about);
                     sent_generation = state["destination_generation"].as_str().map(str::to_string);
                     sent_period = state["period_id"].as_str().map(str::to_string);
                     ok = send(&mut w, &state).await;

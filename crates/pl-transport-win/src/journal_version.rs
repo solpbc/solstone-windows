@@ -10,8 +10,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use observer_model::about::{self, JournalAboutFacts};
 use observer_model::SyncSnapshot;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::client::ObserverClient;
 use crate::credential::{hex_lower, Credential};
@@ -45,7 +47,22 @@ struct PersistedJournalVersion {
     version: String,
     #[serde(default)]
     journal_name: Option<String>,
-    updated_at_epoch_secs: u64,
+    #[serde(default)]
+    updated_at_epoch_secs: Option<u64>,
+    #[serde(default)]
+    facts: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedJournalFacts {
+    version: String,
+    #[serde(default)]
+    build: Option<String>,
+    os: String,
+    os_version: String,
+    arch: String,
+    #[serde(default)]
+    accepted_at_epoch_secs: Option<u64>,
 }
 
 fn save_persisted_atomic(path: &Path, record: &PersistedJournalVersion) -> std::io::Result<()> {
@@ -59,17 +76,123 @@ fn save_persisted_atomic(path: &Path, record: &PersistedJournalVersion) -> std::
     Ok(())
 }
 
+fn epoch_secs_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn sanitized_fact(value: &str, max_bytes: usize) -> bool {
+    value.len() <= max_bytes
+        && !value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
+}
+
+fn valid_about_facts(facts: &JournalAboutFacts) -> bool {
+    is_sanitized_version(&facts.version)
+        && facts
+            .build
+            .as_deref()
+            .is_none_or(|build| sanitized_fact(build, 128))
+        && sanitized_fact(&facts.os, 64)
+        && sanitized_fact(&facts.os_version, 64)
+        && sanitized_fact(&facts.arch, 64)
+}
+
+fn restore_host_facts(
+    value: Option<Value>,
+    version: &str,
+) -> Option<(JournalAboutFacts, Option<u64>)> {
+    let facts = serde_json::from_value::<PersistedJournalFacts>(value?).ok()?;
+    let host_facts = JournalAboutFacts {
+        version: facts.version,
+        build: facts.build,
+        os: facts.os,
+        os_version: facts.os_version,
+        arch: facts.arch,
+    };
+    if !valid_about_facts(&host_facts)
+        || about::normalize_version(&host_facts.version) != about::normalize_version(version)
+    {
+        return None;
+    }
+    Some((host_facts, facts.accepted_at_epoch_secs))
+}
+
+fn refresh_display_line(state: &mut State, now_epoch_secs: u64) {
+    state.journal_base_line =
+        about::render_journal_base_line(state.version.as_deref(), state.host_facts.as_ref());
+    state.journal_display_line = about::render_journal_line(
+        state.version.as_deref(),
+        state.host_facts.as_ref(),
+        state.fresh,
+        state.updated_at_epoch_secs,
+        now_epoch_secs,
+    );
+}
+
+fn sync_from_state(state: &State, sync: &Arc<Mutex<SyncSnapshot>>) {
+    if let Ok(mut snapshot) = sync.lock() {
+        snapshot.journal_version = state.version.clone();
+        snapshot.journal_version_fresh = state.fresh;
+        snapshot.journal_base_line = state.journal_base_line.clone();
+        snapshot.journal_display_line = state.journal_display_line.clone();
+        snapshot.journal_seen_at_epoch_secs = state.updated_at_epoch_secs;
+        snapshot.about_block =
+            about::compose_about_block(&snapshot.about_app_line, &state.journal_display_line);
+    }
+}
+
+fn persist_state(path: &Path, state: &State) {
+    let (Some(instance_id), Some(ca_fp_prefix_hex), Some(version)) =
+        (&state.instance_id, &state.ca_fp_prefix_hex, &state.version)
+    else {
+        return;
+    };
+    let facts = state.host_facts.as_ref().map(|facts| {
+        serde_json::to_value(PersistedJournalFacts {
+            version: facts.version.clone(),
+            build: facts.build.clone(),
+            os: facts.os.clone(),
+            os_version: facts.os_version.clone(),
+            arch: facts.arch.clone(),
+            accepted_at_epoch_secs: state.host_facts_accepted_at_epoch_secs,
+        })
+        .expect("journal facts serialize")
+    });
+    let _ = save_persisted_atomic(
+        path,
+        &PersistedJournalVersion {
+            instance_id: instance_id.clone(),
+            ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
+            version: version.clone(),
+            journal_name: state.journal_name.clone(),
+            updated_at_epoch_secs: state.updated_at_epoch_secs,
+            facts,
+        },
+    );
+}
+
 #[derive(Debug, Default)]
 struct State {
     instance_id: Option<String>,
     ca_fp_prefix_hex: Option<String>,
     version: Option<String>,
+    updated_at_epoch_secs: Option<u64>,
     journal_name: Option<String>,
+    host_facts: Option<JournalAboutFacts>,
+    host_facts_accepted_at_epoch_secs: Option<u64>,
+    journal_base_line: String,
+    journal_display_line: String,
     fresh: bool,
     session_generation: u64,
     connection_epoch: u64,
     in_flight_token: Option<(u64, u64)>,
     metadata_attempt: u64,
+    accepted_metadata_attempt: Option<u64>,
+    accepted_metadata_version: Option<String>,
 }
 
 /// Single process-wide controller for the journal version fact.
@@ -89,9 +212,15 @@ impl JournalVersionController {
                 {
                     state.instance_id = Some(p.instance_id);
                     state.ca_fp_prefix_hex = Some(p.ca_fp_prefix_hex);
-                    state.version = Some(p.version);
+                    state.version = Some(p.version.clone());
                     state.journal_name = p.journal_name;
+                    state.updated_at_epoch_secs = p.updated_at_epoch_secs;
+                    if let Some((facts, accepted_at)) = restore_host_facts(p.facts, &p.version) {
+                        state.host_facts = Some(facts);
+                        state.host_facts_accepted_at_epoch_secs = accepted_at;
+                    }
                     state.fresh = false;
+                    refresh_display_line(&mut state, epoch_secs_now());
                 }
             }
         }
@@ -134,10 +263,7 @@ impl JournalVersionController {
                         && p.ca_fp_prefix_hex == target_ca_fp_hex
                         && is_sanitized_version(&p.version)
                     {
-                        Some((
-                            p.version,
-                            p.journal_name.filter(|name| is_sanitized_name(name)),
-                        ))
+                        Some(p)
                     } else {
                         None
                     }
@@ -148,11 +274,22 @@ impl JournalVersionController {
                 None
             };
 
-            if let Some((cached_version, cached_name)) = disk_match {
+            if let Some(persisted) = disk_match {
                 state.instance_id = Some(target_instance_id);
                 state.ca_fp_prefix_hex = Some(target_ca_fp_hex);
-                state.version = Some(cached_version);
-                state.journal_name = cached_name;
+                state.version = Some(persisted.version.clone());
+                state.journal_name = persisted
+                    .journal_name
+                    .filter(|name| is_sanitized_name(name));
+                state.updated_at_epoch_secs = persisted.updated_at_epoch_secs;
+                state.host_facts = None;
+                state.host_facts_accepted_at_epoch_secs = None;
+                if let Some((facts, accepted_at)) =
+                    restore_host_facts(persisted.facts, &persisted.version)
+                {
+                    state.host_facts = Some(facts);
+                    state.host_facts_accepted_at_epoch_secs = accepted_at;
+                }
                 state.fresh = false;
             } else {
                 // Wipe cache and delete persisted file to prevent resurrecting old identity's version.
@@ -160,19 +297,21 @@ impl JournalVersionController {
                 state.instance_id = Some(target_instance_id);
                 state.ca_fp_prefix_hex = Some(target_ca_fp_hex);
                 state.version = None;
+                state.updated_at_epoch_secs = None;
                 state.journal_name = None;
+                state.host_facts = None;
+                state.host_facts_accepted_at_epoch_secs = None;
                 state.fresh = false;
             }
         }
+
+        refresh_display_line(&mut state, epoch_secs_now());
 
         state.session_generation += 1;
         let gen = state.session_generation;
 
         // Synchronize into SyncSnapshot.
-        if let Ok(mut s) = sync.lock() {
-            s.journal_version = state.version.clone();
-            s.journal_version_fresh = state.fresh;
-        }
+        sync_from_state(&state, sync);
 
         JournalVersionSessionToken(gen)
     }
@@ -194,9 +333,8 @@ impl JournalVersionController {
         }
         state.connection_epoch += 1;
         state.fresh = false;
-        if let Ok(mut s) = sync.lock() {
-            s.journal_version_fresh = false;
-        }
+        refresh_display_line(&mut state, epoch_secs_now());
+        sync_from_state(&state, sync);
     }
 
     pub(crate) fn mark_session_disconnected(
@@ -217,14 +355,18 @@ impl JournalVersionController {
         state.instance_id = None;
         state.ca_fp_prefix_hex = None;
         state.version = None;
+        state.updated_at_epoch_secs = None;
         state.journal_name = None;
+        state.host_facts = None;
+        state.host_facts_accepted_at_epoch_secs = None;
+        state.journal_display_line = about::unknown_journal_line();
+        state.journal_base_line = about::unknown_journal_line();
         state.fresh = false;
         state.in_flight_token = None;
+        state.accepted_metadata_attempt = None;
+        state.accepted_metadata_version = None;
         let _ = std::fs::remove_file(&self.state_path);
-        if let Ok(mut s) = sync.lock() {
-            s.journal_version = None;
-            s.journal_version_fresh = false;
-        }
+        sync_from_state(&state, sync);
     }
 
     /// Publish validated journal metadata without clobbering in-flight tokens.
@@ -247,6 +389,8 @@ impl JournalVersionController {
             return None;
         }
         state.metadata_attempt = state.metadata_attempt.wrapping_add(1);
+        state.accepted_metadata_attempt = None;
+        state.accepted_metadata_version = None;
         Some((
             state.session_generation,
             state.connection_epoch,
@@ -260,8 +404,8 @@ impl JournalVersionController {
         version: &str,
         token: (u64, u64, u64),
         sync: &Arc<Mutex<SyncSnapshot>>,
-    ) {
-        self.publish_info(name, Some(version), (token.0, token.1), Some(token.2), sync);
+    ) -> bool {
+        self.publish_info(name, Some(version), (token.0, token.1), Some(token.2), sync)
     }
 
     fn publish_info(
@@ -271,51 +415,86 @@ impl JournalVersionController {
         token: (u64, u64),
         expected_attempt: Option<u64>,
         sync: &Arc<Mutex<SyncSnapshot>>,
-    ) {
+    ) -> bool {
         let mut state = self.state.lock().expect("journal_version lock");
         if token != (state.session_generation, state.connection_epoch)
             || state.instance_id.is_none()
             || expected_attempt.is_some_and(|attempt| attempt != state.metadata_attempt)
         {
-            return;
+            return false;
         }
         if name.flatten().is_some_and(|name| !is_sanitized_name(name))
             || version.is_some_and(|version| !is_sanitized_version(version))
         {
-            return;
+            return false;
         }
         if let Some(name) = name {
             state.journal_name = name.map(str::to_string);
         }
+        let now_epoch_secs = version.map(|_| epoch_secs_now());
         if let Some(version) = version {
+            if state.version.as_deref().is_none_or(|old| {
+                about::normalize_version(old) != about::normalize_version(version)
+            }) {
+                state.host_facts = None;
+                state.host_facts_accepted_at_epoch_secs = None;
+            }
             state.version = Some(version.to_string());
+            state.updated_at_epoch_secs = now_epoch_secs;
             state.fresh = true;
+            if let Some(attempt) = expected_attempt {
+                state.accepted_metadata_attempt = Some(attempt);
+                state.accepted_metadata_version = Some(version.to_string());
+            }
         }
-        if let (Some(instance_id), Some(ca_fp_prefix_hex)) =
-            (&state.instance_id, &state.ca_fp_prefix_hex)
+        if version.is_some() {
+            persist_state(&self.state_path, &state);
+            refresh_display_line(&mut state, now_epoch_secs.unwrap());
+        }
+        sync_from_state(&state, sync);
+        version.is_some()
+    }
+
+    /// Commit resource facts only after the matching attempt accepted metadata.
+    pub(crate) fn apply_about_for_attempt(
+        &self,
+        facts: JournalAboutFacts,
+        expected_version: &str,
+        token: (u64, u64, u64),
+        expected_identity: &(String, String),
+        sync: &Arc<Mutex<SyncSnapshot>>,
+        now_epoch_secs: u64,
+    ) -> bool {
+        let mut state = self.state.lock().expect("journal_version lock");
+        if token.0 != state.session_generation
+            || token.1 != state.connection_epoch
+            || token.2 != state.metadata_attempt
+            || state.instance_id.as_deref() != Some(expected_identity.0.as_str())
+            || state.ca_fp_prefix_hex.as_deref() != Some(expected_identity.1.as_str())
+            || state.accepted_metadata_attempt != Some(token.2)
+            || state
+                .accepted_metadata_version
+                .as_deref()
+                .is_none_or(|accepted| {
+                    about::normalize_version(accepted) != about::normalize_version(expected_version)
+                })
+            || state.version.as_deref().is_none_or(|version| {
+                about::normalize_version(version) != about::normalize_version(expected_version)
+            })
+            || about::normalize_version(&facts.version)
+                != about::normalize_version(expected_version)
         {
-            if let Some(version) = &state.version {
-                let _ = save_persisted_atomic(
-                    &self.state_path,
-                    &PersistedJournalVersion {
-                        instance_id: instance_id.clone(),
-                        ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
-                        version: version.clone(),
-                        journal_name: state.journal_name.clone(),
-                        updated_at_epoch_secs: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0),
-                    },
-                );
-            }
+            return false;
         }
-        if let Ok(mut s) = sync.lock() {
-            if let Some(version) = &state.version {
-                s.journal_version = Some(version.clone());
-                s.journal_version_fresh = state.fresh;
-            }
+        if !valid_about_facts(&facts) {
+            return false;
         }
+        state.host_facts = Some(facts);
+        state.host_facts_accepted_at_epoch_secs = Some(now_epoch_secs);
+        refresh_display_line(&mut state, now_epoch_secs);
+        persist_state(&self.state_path, &state);
+        sync_from_state(&state, sync);
+        true
     }
 
     /// Publish a version without erasing a cached journal name.
@@ -378,29 +557,23 @@ impl JournalVersionController {
         if !is_sanitized_version(&version) {
             return;
         }
-        state.version = Some(version.clone());
-        state.fresh = true;
-        if let Ok(mut s) = sync.lock() {
-            s.journal_version = Some(version.clone());
-            s.journal_version_fresh = true;
-        }
-        if let (Some(instance_id), Some(ca_fp_prefix_hex)) =
-            (&state.instance_id, &state.ca_fp_prefix_hex)
+        if state
+            .version
+            .as_deref()
+            .is_none_or(|old| about::normalize_version(old) != about::normalize_version(&version))
         {
-            let persisted = PersistedJournalVersion {
-                instance_id: instance_id.clone(),
-                ca_fp_prefix_hex: ca_fp_prefix_hex.clone(),
-                version,
-                journal_name: state.journal_name.clone(),
-                updated_at_epoch_secs: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
-            };
-            // Hold the same guard through persistence: disconnect and pairing clear
-            // cannot overtake validation and then be overwritten by this result.
-            let _ = save_persisted_atomic(&self.state_path, &persisted);
+            state.host_facts = None;
+            state.host_facts_accepted_at_epoch_secs = None;
         }
+        state.version = Some(version.clone());
+        let now_epoch_secs = epoch_secs_now();
+        state.updated_at_epoch_secs = Some(now_epoch_secs);
+        state.fresh = true;
+        state.accepted_metadata_attempt = None;
+        state.accepted_metadata_version = None;
+        refresh_display_line(&mut state, now_epoch_secs);
+        persist_state(&self.state_path, &state);
+        sync_from_state(&state, sync);
     }
 
     #[cfg(test)]
@@ -486,7 +659,8 @@ mod tests {
             ca_fp_prefix_hex: "0102".to_string(),
             version: "0.9.5".to_string(),
             journal_name: None,
-            updated_at_epoch_secs: 100,
+            updated_at_epoch_secs: Some(100),
+            facts: None,
         };
         save_persisted_atomic(&path, &initial_record).unwrap();
 
@@ -500,6 +674,36 @@ mod tests {
         let snap = sync.lock().unwrap().clone();
         assert_eq!(snap.journal_version.as_deref(), Some("0.9.5"));
         assert!(!snap.journal_version_fresh);
+        assert_eq!(snap.journal_seen_at_epoch_secs, Some(100));
+    }
+
+    #[test]
+    fn legacy_version_without_timestamp_and_corrupt_facts_keeps_the_version() {
+        let dir = temp_test_dir("legacy-no-seen-at");
+        let path = dir.join("journal-version.json");
+        std::fs::write(
+            &path,
+            r#"{"instance_id":"inst-1","ca_fp_prefix_hex":"0102","version":"1.2.3","journal_name":"Home","facts":{"version":"1.2.3","os":"ubuntu","os_version":"24.04","arch":"x86_64","accepted_at_epoch_secs":"bad"},"future_field":"ignored"}"#,
+        )
+        .unwrap();
+
+        let ctrl = JournalVersionController::new(path.clone());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        ctrl.begin_session(&make_credential("inst-1", &[0x01, 0x02]), &sync);
+
+        let state = ctrl.state.lock().unwrap();
+        assert_eq!(state.version.as_deref(), Some("1.2.3"));
+        assert_eq!(state.instance_id.as_deref(), Some("inst-1"));
+        assert_eq!(state.ca_fp_prefix_hex.as_deref(), Some("0102"));
+        assert_eq!(state.journal_name.as_deref(), Some("Home"));
+        assert!(state.host_facts.is_none());
+        assert!(state.host_facts_accepted_at_epoch_secs.is_none());
+        drop(state);
+        let snapshot = sync.lock().unwrap();
+        assert_eq!(snapshot.journal_seen_at_epoch_secs, None);
+        assert_eq!(snapshot.journal_display_line, "journal 1.2.3");
+        assert!(!snapshot.journal_version_fresh);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -511,7 +715,8 @@ mod tests {
             ca_fp_prefix_hex: "0102".to_string(),
             version: "0.9.5".to_string(),
             journal_name: Some("invalid\nname".to_string()),
-            updated_at_epoch_secs: 100,
+            updated_at_epoch_secs: Some(100),
+            facts: None,
         };
         save_persisted_atomic(&path, &record).unwrap();
 
@@ -536,7 +741,8 @@ mod tests {
             ca_fp_prefix_hex: "0102".to_string(),
             version: "0.9.5".to_string(),
             journal_name: None,
-            updated_at_epoch_secs: 100,
+            updated_at_epoch_secs: Some(100),
+            facts: None,
         };
         save_persisted_atomic(&path, &initial_record).unwrap();
 

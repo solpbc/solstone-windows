@@ -1,0 +1,34 @@
+{
+  "adoption_schema_version": 1,
+  "consumer_identifier": "solstone-windows",
+  "authority_repository": "https://github.com/solpbc/solstone-journal",
+  "authority_commit": "ec1983799b66d3616708851d01803e4f3d6f0a20",
+  "authority_manifest_path": "manifest.json",
+  "authority_manifest_sha256": "301c1d84616379e11aaf22bb341e524bb4b2317051ea08453db9fdd87c706ab0",
+  "bundle_files": [
+    {
+      "path": "about.schema.json",
+      "sha256": "a7ad7e726044769d282719ff23e80736995292b82fa531c88d8a7b0adcf949a9"
+    },
+    {
+      "path": "contract.json",
+      "sha256": "b46aecfdee831f3bdc4979132c58b206f83d3d6264428ac9200109d20988fa25"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "301c1d84616379e11aaf22bb341e524bb4b2317051ea08453db9fdd87c706ab0"
+    },
+    {
+      "path": "native-about.json",
+      "sha256": "ad182a7ceb6556eea86368359e25c990201f740d9203928623280f78c8476619"
+    },
+    {
+      "path": "native-about.schema.json",
+      "sha256": "e1e2b4f2fc130145f467c2d2258b117fc967296910a95058adc77c5ab6f86833"
+    },
+    {
+      "path": "resources.json",
+      "sha256": "59b9c03c88826ce509c98358ab941e67f0fd833ebea45b392f30156957df42c3"
+    }
+  ]
+}

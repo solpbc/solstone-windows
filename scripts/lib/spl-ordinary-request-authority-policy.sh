@@ -37,7 +37,7 @@ client="$ROOT/crates/pl-transport-win/src/client.rs"
 if [ -f "$ordinary" ]; then
   for route in \
     ClientsSelfGet ClientsSelfPut RelayAccessGet IngestPost IngestManifestGet \
-    IngestManifestDayGet IngestSegmentsDayGet SystemStatusGet ClientsRetireDelete; do
+    IngestManifestDayGet IngestSegmentsDayGet SystemStatusGet SystemAboutGet ClientsRetireDelete; do
     grep -q "$route" "$ordinary" || violation "ordinary route $route is missing or unclassified"
   done
   grep -q "ReplayPolicy::ForbidAfterWrite" "$ordinary" || violation "clients-self PUT lacks explicit ForbidAfterWrite"
@@ -72,6 +72,7 @@ if [ -f "$client" ]; then
     'ingest_manifest_day:IngestManifestDayGet' \
     'list_segments:IngestSegmentsDayGet' \
     'system_status:SystemStatusGet' \
+    'system_about:SystemAboutGet' \
     'retire_client:ClientsRetireDelete'; do
     helper=${helper_route%%:*}
     route=${helper_route#*:}
@@ -104,7 +105,8 @@ for relative in src/journal_bridge.rs; do
       '/app/devices/ingest' \
       '/app/devices/ingest/manifest' \
       '/app/devices/ingest/segments' \
-      '/api/system/status'; do
+      '/api/system/status' \
+      '/api/system/about'; do
       if grep -F -q "$path" "$file"; then
         violation "$relative contains an ordinary request route $path"
       fi

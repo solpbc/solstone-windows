@@ -140,6 +140,11 @@ interface SyncSnapshot {
   upload: UploadStatus;
   journal_version?: string | null;
   journal_version_fresh?: boolean;
+  journal_display_line?: string;
+  journal_base_line?: string;
+  journal_seen_at_epoch_secs?: number | null;
+  about_app_line?: string;
+  about_block?: string;
   unknown_journals?: UnknownJournalSighting[];
 }
 
@@ -261,6 +266,7 @@ interface UpdateView {
 // Latest snapshots; the settings view renders from both. Held in module vars so a
 // re-render from either stream never loses the other's state.
 let latestHealth: HealthDump | null = null;
+let aboutClipboardWriter: ((value: string) => Promise<void>) | null = null;
 let latestStorage: StorageInfo | null = null;
 let latestUpdate: UpdateView | null = null;
 let activeRoute: Route = "home";
@@ -3100,23 +3106,6 @@ function renderSettings(dump: HealthDump): void {
   }
 }
 
-function sanitizeJournalVersion(raw: unknown): string | null {
-  if (typeof raw !== "string") {
-    return null;
-  }
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed.length > 128) {
-    return null;
-  }
-  for (let i = 0; i < trimmed.length; i++) {
-    const code = trimmed.charCodeAt(i);
-    if (code < 0x20 || code > 0x7e) {
-      return null;
-    }
-  }
-  return trimmed;
-}
-
 function renderAbout(dump: HealthDump): void {
   resetRoot(ids["about.window.root"]);
   root.style.padding = "22px";
@@ -3140,21 +3129,46 @@ function renderAbout(dump: HealthDump): void {
   }
   body4.style.margin = "0 0 18px";
 
-  const version = selectable(automation(text("div", dump.version), ids["about.version"]));
+  const version = selectable(
+    automation(text("div", dump.sync.about_app_line ?? ""), ids["about.version"]),
+  );
   version.style.fontSize = "13px";
   version.style.color = "var(--fg-subtle)";
 
   root.append(title, body1, body2, body3, body4, version);
 
-  const raw = dump.sync.journal_version;
-  const sanitized = sanitizeJournalVersion(raw);
-  const jvText = sanitized
-    ? dump.sync.journal_version_fresh
-      ? sanitized
-      : `${sanitized} (last known)`
-    : "unknown";
-  const jvEl = selectable(automation(text("div", jvText), ids["about.journalVersion"]));
+  const jvEl = selectable(
+    automation(
+      text("div", dump.sync.journal_display_line ?? "journal unknown"),
+      ids["about.journalVersion"],
+    ),
+  );
   root.append(valueRow("journal version", jvEl));
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.textContent = "copy";
+  copy.style.marginTop = "14px";
+  copy.style.padding = "7px 12px";
+  copy.style.border = "1px solid var(--border)";
+  copy.style.borderRadius = "var(--radius-control)";
+  copy.style.background = "var(--surface)";
+  copy.style.color = "var(--fg)";
+  copy.style.cursor = "pointer";
+  copy.onclick = async () => {
+    try {
+      const block = dump.sync.about_block ?? "";
+      if (aboutClipboardWriter) {
+        await aboutClipboardWriter(block);
+      } else {
+        await navigator.clipboard.writeText(block);
+      }
+      copy.textContent = "copied";
+    } catch {
+      copy.textContent = "couldn't copy. select the text and copy it.";
+    }
+  };
+  root.append(copy);
 }
 
 function nowSecs(): number {
@@ -3937,6 +3951,9 @@ export const __test__ = {
     latestHealth = dump;
     healthReceivedAt = receivedAt !== undefined ? receivedAt : (dump ? nowSecs() : null);
   },
+  setClipboardWriter(writer: ((value: string) => Promise<void>) | null) {
+    aboutClipboardWriter = writer;
+  },
   setStorage(v: StorageInfo | null) {
     latestStorage = v;
   },
@@ -3961,7 +3978,6 @@ export const __test__ = {
   renderSettings,
   renderAbout,
   renderUnavailable,
-  sanitizeJournalVersion,
   rerender,
   reset() {
     try {
@@ -3970,6 +3986,7 @@ export const __test__ = {
       // jsdom always provides localStorage; a real failure isn't testable state.
     }
     latestHealth = null;
+    aboutClipboardWriter = null;
     healthReceivedAt = null;
     latestStorage = null;
     latestUpdate = null;

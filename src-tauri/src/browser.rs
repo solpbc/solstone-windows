@@ -180,6 +180,21 @@ mod imp {
         )
     }
 
+    fn native_about_snapshot(app: &tauri::AppHandle) -> observer_model::about::NativeAboutSnapshot {
+        let state = app.state::<crate::app::AppState>();
+        let sync = state
+            .sync
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default();
+        observer_model::about::native_windows_snapshot(
+            &state.about_observation,
+            &sync.journal_base_line,
+            sync.journal_version_fresh,
+            sync.journal_seen_at_epoch_secs,
+        )
+    }
+
     /// Bind the endpoint, open custody and start the gate, clock and delivery
     /// tasks. Called once from setup, after the single-instance gate.
     pub fn start(app: tauri::AppHandle, installed_exe: Option<PathBuf>) {
@@ -195,6 +210,7 @@ mod imp {
             HubConfig {
                 development: DEVELOPMENT,
                 app_version: env!("CARGO_PKG_VERSION").to_string(),
+                about: native_about_snapshot(&app),
             },
             store,
             Box::new(now_ms),
@@ -253,6 +269,7 @@ mod imp {
                 tick.tick().await;
                 let gates = read_gates(&gate_app).await;
                 gate_hub.update_gates(gates);
+                gate_hub.update_about_snapshot(native_about_snapshot(&gate_app));
                 gate_hub.tick();
                 write_status(&gate_hub.status(), &mut published);
             }

@@ -70,6 +70,14 @@ export function observingDump() {
         detail: null,
       },
       upload: uploadStatus(),
+      journal_version: null,
+      journal_version_fresh: false,
+      journal_display_line: "journal unknown",
+      journal_base_line: "journal unknown",
+      journal_seen_at_epoch_secs: null,
+      about_app_line: "windows app test-version · windows 11 26100 · x86_64",
+      about_block:
+        "windows app test-version · windows 11 26100 · x86_64\njournal unknown",
     },
     screen_encoder: null,
     exclusions: null,
@@ -102,6 +110,14 @@ export function notPairedDump() {
         ...uploadStatus(),
         uploaded_segments: 0,
       },
+      journal_version: null,
+      journal_version_fresh: false,
+      journal_display_line: "journal unknown",
+      journal_base_line: "journal unknown",
+      journal_seen_at_epoch_secs: null,
+      about_app_line: "windows app test-version · windows 11 26100 · x86_64",
+      about_block:
+        "windows app test-version · windows 11 26100 · x86_64\njournal unknown",
     },
   };
 }

@@ -14,7 +14,8 @@ use browser_host::hub::{Gates, Hub, HubConfig, Pairing};
 use browser_host::relay::{self, RelayEnd};
 use browser_host::upload::{deliver_once, Journal, UploadOutcome};
 use browser_host::wire::{write_frame, FrameReader};
-use native_browser_frame::{encode, Direction};
+use native_browser_frame::{decode, encode, DecodeOutcome, Direction};
+use observer_model::about::NativeAboutSnapshot;
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 
@@ -42,6 +43,17 @@ fn rig(development: bool) -> Rig {
         HubConfig {
             development,
             app_version: "2.0.16".into(),
+            // Even if startup has a cached journal line, the first host
+            // publication is unknown until the destination gate is refreshed.
+            about: NativeAboutSnapshot::new(
+                "windows",
+                "11 26100",
+                "arm64",
+                "journal 2.0.16",
+                true,
+                Some(1_700_000_000),
+            )
+            .unwrap(),
         },
         store,
         Box::new(move || c.load(Ordering::SeqCst)),
@@ -157,6 +169,15 @@ async fn a_paired_app_permits_capture_accepts_and_dedups() {
     assert_eq!(ack["capture"], "permitted");
     assert_eq!(ack["delivery"], "idle");
     assert_eq!(ack["freshness_ms"], 15000);
+    let about = NativeAboutSnapshot::from_value(&ack["about"]).unwrap();
+    assert_eq!(about.journal_line, "journal unknown");
+    assert!(!about.journal_current);
+    assert_eq!(about.journal_seen_at_epoch_secs, None);
+    let encoded = encode(&ack).unwrap();
+    assert!(matches!(
+        decode(&encoded, Direction::HostToExtension),
+        DecodeOutcome::Accept(_)
+    ));
     let generation = ack["destination_generation"].as_str().unwrap().to_string();
     let period = ack["period_id"].as_str().unwrap().to_string();
 
@@ -172,6 +193,103 @@ async fn a_paired_app_permits_capture_accepts_and_dedups() {
     assert_eq!(reply["result"], "duplicate");
     assert_eq!(reply["period_id"], period.as_str());
     assert_eq!(rig.hub.status().delivery, "kept_locally");
+}
+
+#[tokio::test]
+async fn about_snapshot_updates_publish_once_and_destination_change_resets_first() {
+    let rig = rig(false);
+    rig.hub.update_gates(paired(JOURNAL_A));
+    let (mut client, ack) = handshake(&rig.hub, "chrome", "production").await;
+    assert_eq!(ack["about"]["journal_line"], "journal unknown");
+
+    let about = NativeAboutSnapshot::new(
+        "windows",
+        "11 26100",
+        "arm64",
+        "journal 1.2.3 · ubuntu 24.04 · x86_64",
+        true,
+        Some(1_700_000_000),
+    )
+    .unwrap();
+    rig.hub.update_about_snapshot(about.clone());
+    let state = client.recv().await.unwrap();
+    assert_eq!(state["type"], "state");
+    assert_eq!(state["about"]["journal_line"], about.journal_line);
+    assert_eq!(state["about"]["journal_current"], true);
+    assert_eq!(state["about"].as_object().unwrap().len(), 7);
+
+    let newer = NativeAboutSnapshot {
+        journal_seen_at_epoch_secs: Some(1_700_000_001),
+        ..about.clone()
+    };
+    rig.hub.update_about_snapshot(newer);
+    assert_eq!(
+        client.recv().await.unwrap()["about"]["journal_seen_at_epoch_secs"],
+        1_700_000_001
+    );
+    rig.hub.update_about_snapshot(NativeAboutSnapshot {
+        journal_seen_at_epoch_secs: Some(1_700_000_001),
+        ..about
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), client.recv())
+            .await
+            .is_err()
+    );
+
+    rig.hub.update_gates(paired(JOURNAL_B));
+    assert_eq!(client.recv().await.unwrap()["reason"], "replaced");
+    let (_replacement, ack) = handshake(&rig.hub, "chrome", "production").await;
+    assert_eq!(ack["about"]["journal_line"], "journal unknown");
+    assert_eq!(ack["about"]["journal_current"], false);
+    assert!(ack["about"]["journal_seen_at_epoch_secs"].is_null());
+}
+
+#[test]
+fn unavailable_ack_carries_a_closed_unknown_snapshot() {
+    let ack = relay::unavailable_ack();
+    let about = NativeAboutSnapshot::from_value(&ack["about"]).unwrap();
+    assert_eq!(about.journal_line, "journal unknown");
+    assert_eq!(about.journal_seen_at_epoch_secs, None);
+    assert_eq!(ack["about"].as_object().unwrap().len(), 7);
+    let bytes = encode(&ack).unwrap();
+    assert!(matches!(
+        decode(&bytes, Direction::HostToExtension),
+        DecodeOutcome::Accept(_)
+    ));
+}
+
+#[test]
+fn future_envelope_keys_round_trip_while_about_projection_stays_closed() {
+    let native: Value = serde_json::from_str(include_str!(
+        "../../../contracts/solstone-core-about/bundle/native-about.json"
+    ))
+    .unwrap();
+    let future = native["envelopes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|envelope| envelope.get("future_root").is_some())
+        .unwrap();
+    let encoded = encode(future).unwrap();
+    let text = String::from_utf8(encoded.clone()).unwrap();
+    assert!(text.find("\"about\"").unwrap() > text.find("\"period_id\"").unwrap());
+    let DecodeOutcome::Accept(decoded) = decode(&encoded, Direction::HostToExtension) else {
+        panic!("future envelope root key should remain extensible");
+    };
+    NativeAboutSnapshot::from_value(&decoded["about"]).unwrap();
+
+    let nested_extra = native["envelopes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|envelope| envelope["about"].get("hostname").is_some())
+        .unwrap();
+    let encoded = encode(nested_extra).unwrap();
+    let DecodeOutcome::Accept(decoded) = decode(&encoded, Direction::HostToExtension) else {
+        panic!("core envelope should accept an opaque about object");
+    };
+    assert!(NativeAboutSnapshot::from_value(&decoded["about"]).is_err());
 }
 
 #[tokio::test]
@@ -576,6 +694,7 @@ async fn a_pause_outranks_a_full_spool() {
         HubConfig {
             development: false,
             app_version: "t".into(),
+            about: NativeAboutSnapshot::unknown("windows", "", ""),
         },
         store,
         Box::new(|| T0),
