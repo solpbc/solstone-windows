@@ -148,7 +148,7 @@ impl NativeAboutSnapshot {
         {
             return Err("unknown journal cannot be current or have a seen-at time".into());
         }
-        if !self.journal_line.starts_with("journal ") {
+        if !self.journal_line.starts_with("journal ") || self.journal_line == "journal " {
             return Err("native journal line has an invalid name".into());
         }
         Ok(())
@@ -175,6 +175,13 @@ pub fn render_line(
         };
     };
     let version = version.strip_prefix('v').unwrap_or(version);
+    if version.is_empty() {
+        return if name == "journal" {
+            unknown_journal_line()
+        } else {
+            name.to_owned()
+        };
+    }
     let mut line = format!("{name} {version}");
     if let Some(build) = build.filter(|value| !value.is_empty()) {
         line.push_str(" (");
@@ -266,6 +273,7 @@ pub fn decode_journal_resource(body: &[u8]) -> Result<JournalAboutFacts, String>
         serde_json::from_slice(body).map_err(|_| "invalid about resource".to_string())?;
     if resource.protocol_version != 1
         || !valid_fact(&resource.version, 128)
+        || normalize_version(&resource.version).is_empty()
         || !valid_text(&resource.os, 64)
         || !valid_text(&resource.os_version, 64)
         || !valid_text(&resource.arch, 64)
@@ -519,6 +527,36 @@ mod tests {
             render_journal_line(None, None, false, None, 123),
             "journal unknown"
         );
+        assert_eq!(
+            render_journal_line(Some("v"), None, false, Some(1), 123),
+            "journal unknown"
+        );
+        let journal_base_line = render_journal_base_line(Some("v"), None);
+        assert_eq!(journal_base_line, "journal unknown");
+        let native = native_windows_snapshot(
+            &WindowsObservation::default(),
+            &journal_base_line,
+            true,
+            Some(123),
+        );
+        assert_eq!(native.journal_line, "journal unknown");
+        assert!(!native.journal_current);
+        assert_eq!(native.journal_seen_at_epoch_secs, None);
+        assert!(
+            NativeAboutSnapshot::new("windows", "", "", "journal ", false, None).is_err()
+        );
+    }
+
+    #[test]
+    fn resource_decoder_rejects_version_empty_after_prefix_removal() {
+        let resource = serde_json::json!({
+            "protocol_version": 1,
+            "version": "v",
+            "os": "ubuntu",
+            "os_version": "24.04",
+            "arch": "x86_64",
+        });
+        assert!(decode_journal_resource(&serde_json::to_vec(&resource).unwrap()).is_err());
     }
 
     #[test]
@@ -703,6 +741,8 @@ mod tests {
 
     #[test]
     fn report_fragment_round_trips_the_frozen_block() {
+        assert_eq!(form_encode("a b+c~\n"), "a+b%2Bc%7E%0A");
+
         let facts = JournalAboutFacts {
             version: "1.2.3".into(),
             build: None,
