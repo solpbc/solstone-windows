@@ -278,6 +278,15 @@ fn log_health_transitions(previous: Option<&HealthDump>, current: &HealthDump) {
     }
 }
 
+// Keep opening in Rust. The plugin's default script cancels new-window anchor navigation
+// before the Journal's native callbacks, then calls an IPC permission that the
+// remote dashboard does not have. The shell's fixed-URL commands also use Rust.
+pub(crate) fn native_opener_plugin() -> impl tauri::plugin::Plugin<tauri::Wry> {
+    tauri_plugin_opener::Builder::new()
+        .open_js_links_on_click(false)
+        .build()
+}
+
 /// Boot the tray-resident observer.
 pub fn run(
     open_view: Option<observer_model::View>,
@@ -292,11 +301,10 @@ pub fn run(
     );
 
     let app = tauri::Builder::default()
-        // Backend-only: opens the owner's default browser for `open_release_notes`.
-        // No opener:* permission is added to the webview capability set, so the
-        // renderer cannot call the plugin directly or name a URL — its sole
-        // outbound reach is the fixed-URL command below.
-        .plugin(tauri_plugin_opener::init())
+        // Backend-only browser/folder access. Bundled renderers use fixed-destination
+        // commands; the Journal uses native origin-based navigation callbacks.
+        // No opener:* permission is granted to either webview.
+        .plugin(native_opener_plugin())
         .invoke_handler(tauri::generate_handler![
             crate::ipc::pause,
             crate::ipc::resume,
