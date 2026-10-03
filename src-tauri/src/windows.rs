@@ -660,7 +660,7 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into()))
         .title("about solstone")
-        .inner_size(360.0, 280.0)
+        .inner_size(360.0, 480.0)
         .transparent(true)
         .effects(mica_effects())
         .scroll_bar_style(ScrollBarStyle::FluentOverlay)
