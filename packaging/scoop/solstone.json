@@ -13,7 +13,12 @@
       "hash": "35f067e842d5a4b807b72da3ca0918555cd04698fe92a0beaa93535674c8c551"
     }
   },
-  "bin": "solstone.exe",
+  "bin": [
+    [
+      "solstone.exe",
+      "solstone-app"
+    ]
+  ],
   "shortcuts": [
     [
       "solstone.exe",

@@ -361,7 +361,8 @@ fn derived_pack_title_identity_agrees_across_projections() {
             .expect("read scoop manifest"),
     )
     .expect("parse scoop manifest");
-    assert_eq!(scoop["bin"].as_str(), Some(PORTABLE_LAUNCHER));
+    // The shim is `solstone-app`: `solstone` on PATH is the journal's command line.
+    assert_eq!(scoop["bin"], json!([[PORTABLE_LAUNCHER, "solstone-app"]]));
     assert_eq!(scoop["shortcuts"], json!([[PORTABLE_LAUNCHER, PACK_TITLE]]));
 }
 

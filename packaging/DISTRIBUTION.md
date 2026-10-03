@@ -140,6 +140,13 @@ names the top-level launcher after `--packTitle` — today `solstone.exe`. If `-
 ever changes again, these change with it, or `scoop install` breaks at shim time.
 Check with `unzip -Z1 Solstone-win-Portable.zip`.
 
+**The scoop shim is named `solstone-app`, not `solstone`.** Scoop puts its shims
+directory ahead of other user PATH entries, and the journal's command line is
+`solstone` (`solstone journal …`). A `solstone` shim would shadow it on any machine
+with both installed. `bin` maps the launcher to the `solstone-app` shim; the Start menu
+shortcut keeps the `solstone` name. Scoop removes the old shim at the first
+`scoop update solstone` that installs a release carrying this manifest.
+
 ## Coexistence
 
 Each install method has a single update owner (above) — never two. A user who
