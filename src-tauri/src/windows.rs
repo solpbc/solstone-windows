@@ -10,7 +10,7 @@
 //! `observer_contract::about::WINDOW_ROOT`); the journal is external content.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -445,6 +445,8 @@ fn build_journal_window(
     let navigation_app = app.clone();
     let new_window_origin = origin.clone();
     let new_window_app = app.clone();
+    let initiating_window = Arc::new(OnceLock::<WebviewWindow>::new());
+    let new_window_source = Arc::clone(&initiating_window);
     let page_load_origin = origin.clone();
     let builder = builder
         // Locked Tauri 2.11.2 (`tauri-runtime-wry` 2.11.2) parses the URI before
@@ -511,14 +513,13 @@ fn build_journal_window(
                     }
                 },
                 |destination| {
-                    let app = new_window_app.clone();
+                    let Some(window) = new_window_source.get().cloned() else {
+                        log_journal_handoff(destination, "closing");
+                        return Err(());
+                    };
                     let destination = destination.clone();
                     let log_destination = destination.clone();
                     std::thread::spawn(move || {
-                        let Some(window) = app.get_webview_window("journal") else {
-                            log_journal_handoff(&log_destination, "closing");
-                            return;
-                        };
                         if window.navigate(destination).is_err() {
                             log_journal_handoff(&log_destination, "closing");
                         }
@@ -564,6 +565,10 @@ fn build_journal_window(
     #[cfg(windows)]
     {
         let window = builder.build()?;
+        if initiating_window.set(window.clone()).is_err() {
+            window.close().ok();
+            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+        }
         let installed = Arc::new(std::sync::Mutex::new(None));
         let installed_for_callback = Arc::clone(&installed);
         let window_for_callback = window.clone();

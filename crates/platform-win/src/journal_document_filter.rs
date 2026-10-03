@@ -7,8 +7,7 @@ use journal_window::{
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
     ICoreWebView2WebResourceRequestedEventArgs, ICoreWebView2_22,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
-    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
 };
 use webview2_com::{CoTaskMemPWSTR, WebResourceRequestedEventHandler};
 use windows_core::{Error, Interface, HRESULT, HSTRING, PWSTR};
@@ -33,7 +32,7 @@ pub fn install_document_filter(
         extended.AddWebResourceRequestedFilterWithRequestSourceKinds(
             &filter,
             COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
-            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT,
+            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
         )
     }
     .is_err()
@@ -81,15 +80,17 @@ pub fn install_document_filter(
                     unsafe { args.SetResponse(&response).map_err(|_| ()) }
                 },
                 |fault| {
+                    if let Some(sender) = sender.as_ref() {
+                        let _ = unsafe { sender.Stop() };
+                    }
+                    let view_closed = unsafe { controller.Close() }.is_ok();
                     tracing::warn!(
                         target: "window",
                         label = "journal",
                         fault = fault.token(),
-                        "journal document request terminated"
+                        view_closed,
+                        "journal document request fault"
                     );
-                    if let Some(sender) = sender.as_ref() {
-                        let _ = unsafe { sender.Stop() };
-                    }
                     terminate(fault);
                 },
             );

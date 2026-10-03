@@ -423,25 +423,29 @@ pub fn probe_app_presence(
                 // runs as `solstone-windows-app.exe` itself, so counting it would
                 // make every query with no running app read as present-but-silent.
                 let own_pid = std::process::id();
-                while walking {
-                    let len = entry
-                        .szExeFile
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(entry.szExeFile.len());
-                    let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
-                    if entry.th32ProcessID != own_pid && exe_name.eq_ignore_ascii_case(image_name) {
-                        found = true;
-                        break;
-                    }
-                    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-                    match unsafe { Process32NextW(handle, &mut entry) } {
-                        Ok(()) => {}
-                        Err(error) => {
-                            if error.code() != ERROR_NO_MORE_FILES.into() {
-                                error_occurred = true;
-                            }
+                if walking {
+                    loop {
+                        let len = entry
+                            .szExeFile
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(entry.szExeFile.len());
+                        let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                        if entry.th32ProcessID != own_pid
+                            && exe_name.eq_ignore_ascii_case(image_name)
+                        {
+                            found = true;
                             break;
+                        }
+                        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+                        match unsafe { Process32NextW(handle, &mut entry) } {
+                            Ok(()) => {}
+                            Err(error) => {
+                                if error.code() != ERROR_NO_MORE_FILES.into() {
+                                    error_occurred = true;
+                                }
+                                break;
+                            }
                         }
                     }
                 }
@@ -753,6 +757,12 @@ mod notification_pump {
                 .field("applied", &self.applied)
                 .field("registered", &self.registered)
                 .finish()
+        }
+    }
+
+    impl Default for NotificationPump {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
