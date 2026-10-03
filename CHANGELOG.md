@@ -4,12 +4,21 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.17] - 2026-10-03
+
+### Added
+
+- the about window now shows the system each one runs on beside the app's and your journal's versions (your journal's once it's updated too), and a copy button puts both lines on your clipboard. "report a problem" now includes those same two lines.
+
+### Changed
+
+- if you installed solstone with Scoop, the command that starts the app is now `solstone-app`. `solstone` is the name of the journal's command line. the start menu shortcut is still called solstone.
 
 ### Fixed
 
 - a failed attempt to pair with another journal no longer makes the app show "not paired" while it is still connected to your existing journal.
 - applying a staged update from the command line now leaves the app running after it restarts.
+- links in your journal window that go to another website now open in your web browser. links within your journal stay in the journal window.
 
 ## [2.0.16] - 2026-10-02
 
