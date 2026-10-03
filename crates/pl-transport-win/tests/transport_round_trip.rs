@@ -659,7 +659,8 @@ async fn start_bridge_with_persistent_server(
                     if let Ok(Some(frame)) = decoder.next_frame() {
                         let is_meta = frame.payload.starts_with(b"GET /app/")
                             || frame.payload.starts_with(b"PUT /app/")
-                            || frame.payload.starts_with(b"GET /api/system/status");
+                            || frame.payload.starts_with(b"GET /api/system/status")
+                            || frame.payload.starts_with(b"GET /api/system/about ");
                         if is_meta {
                             let resp = Frame::new(
                                 frame.stream_id,
