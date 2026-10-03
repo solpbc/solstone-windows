@@ -441,6 +441,15 @@ fn build_journal_window(
             builder
         }
     };
+    // The locked WebView2 backend can swallow anchor-created new windows even
+    // though window.open reaches on_new_window. Route anchors through the same
+    // main-frame policy; page handlers may still cancel their default action.
+    let journal_origin_json = serde_json::to_string(&parsed.origin().ascii_serialization())
+        .expect("URL origin is JSON serializable");
+    let builder = builder.initialization_script(format!(
+        "(() => {{ const journalOrigin = {journal_origin_json}; {} }})();",
+        include_str!("journal-new-window-links.js")
+    ));
     let navigation_origin = origin.clone();
     let navigation_app = app.clone();
     let new_window_origin = origin.clone();
