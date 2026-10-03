@@ -1007,17 +1007,17 @@ function sourceByKind(dump: HealthDump, kind: SourceKind): SourceReport | undefi
 function failedPairingLabel(detail: string | null | undefined): string {
   switch (detail) {
     case "pair_link":
-      return "that pairing link isn't one the solstone app can read. show a new pairing code on your journal and try again.";
+      return "that pairing link isn't one the solstone app can read. get a new pairing link from your journal and try again.";
     case "relay_pair_window_closed":
-      return "the pairing window closed. show a new pairing code on your journal, then try again.";
+      return "the pairing window closed. get a new pairing link from your journal, then try again.";
     case "io":
       return "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
     case "relay_unpaid":
-      return "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing code on your journal.";
+      return "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing link from your journal.";
     case "journal_refused":
-      return "this PC can't connect to your journal with its saved pairing. show a new pairing code on your journal and pair again.";
+      return "this PC can't connect to your journal with its saved pairing. get a new pairing link from your journal and pair again.";
     default:
-      return "pairing didn't go through. show a new pairing code on your journal and try again.";
+      return "pairing didn't go through. get a new pairing link from your journal and try again.";
   }
 }
 
@@ -1103,7 +1103,7 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
   let label: string;
   switch (sync.pairing.phase) {
     case "not_paired":
-      label = "not paired — pair to sync your journal";
+      label = "not paired. pair to sync your journal";
       break;
     case "pairing":
     case "awaiting_confirmation":
@@ -1265,7 +1265,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
 
       const subtle = text(
         "div",
-        "your journal shows this same mark in its network app. it should match, exactly.",
+        "your journal shows this same mark beside the pairing link. it should match, exactly.",
       );
       subtle.style.fontSize = "12px";
       subtle.style.color = "var(--fg-subtle)";

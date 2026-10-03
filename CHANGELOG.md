@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- when pairing doesn't go through, the solstone app now asks for a new pairing link from your journal instead of a pairing code. when it asks you to confirm your journal's mark, it now says where your journal shows that mark.
+
 ## [2.0.17] - 2026-10-03
 
 ### Added

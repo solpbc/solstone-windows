@@ -12,17 +12,17 @@ const ids = automationContract.automation_ids;
 const invokeMock = vi.mocked(invoke);
 
 const PAIR_LINK =
-  "that pairing link isn't one the solstone app can read. show a new pairing code on your journal and try again.";
+  "that pairing link isn't one the solstone app can read. get a new pairing link from your journal and try again.";
 const WINDOW_CLOSED =
-  "the pairing window closed. show a new pairing code on your journal, then try again.";
+  "the pairing window closed. get a new pairing link from your journal, then try again.";
 const NO_NETWORK =
   "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
 const GENERIC =
-  "pairing didn't go through. show a new pairing code on your journal and try again.";
+  "pairing didn't go through. get a new pairing link from your journal and try again.";
 const JOURNAL_REFUSED =
-  "this PC can't connect to your journal with its saved pairing. show a new pairing code on your journal and pair again.";
+  "this PC can't connect to your journal with its saved pairing. get a new pairing link from your journal and pair again.";
 const PRIVATE_NETWORK_UNAVAILABLE =
-  "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing code on your journal.";
+  "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing link from your journal.";
 
 const byId = (id: string): HTMLElement | null =>
   document.querySelector(`[data-automation-id="${id}"]`);
@@ -394,7 +394,7 @@ describe("awaiting mark confirmation", () => {
 
     expect(card.parentElement?.textContent).toContain("does this match your journal?");
     expect(card.parentElement?.textContent).toContain(
-      "your journal shows this same mark in its network app. it should match, exactly.",
+      "your journal shows this same mark beside the pairing link. it should match, exactly.",
     );
 
     const rejectBtn = present(ids["settings.pairing.confirmReject"]) as HTMLButtonElement;

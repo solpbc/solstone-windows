@@ -175,7 +175,7 @@ describe("settings renderer characterization", () => {
     app.__test__.renderSettings(dump);
 
     expect(present(ids["settings.pairing.state"]).textContent).toBe(
-      "pairing didn't go through. show a new pairing code on your journal and try again.",
+      "pairing didn't go through. get a new pairing link from your journal and try again.",
     );
   });
 
