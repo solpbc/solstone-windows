@@ -8,11 +8,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Changed
 
-- status no longer names your journal "solstone". after you confirm the mark, status shows its two words, and before that it says "your journal". if the app can't read your journal's mark, it shows "unavailable".
+- the solstone app no longer calls your journal "solstone". once paired, status names your journal by the two words of its mark, or says its mark is unavailable if the app can't read it. before you pair, the mark row says "your journal".
 
 ### Fixed
 
-- when pairing doesn't go through, the solstone app now asks for a new pairing link from your journal instead of a pairing code. when it asks you to confirm your journal's mark, it now says where your journal shows that mark.
+- when pairing doesn't go through, the solstone app now asks for a new pairing link from your journal instead of a pairing code. when it asks you to confirm your journal's mark, it now says your journal shows that mark beside the pairing link.
 
 ## [2.0.17] - 2026-10-03
 
