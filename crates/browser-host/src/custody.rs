@@ -279,27 +279,6 @@ impl Store {
             }
         }
 
-        // Open files are individually identified by their receipt key. A
-        // terminal receipt removes only its own batch, even when the open
-        // period id has been reused after an earlier discard.
-        for dir in &open_dirs {
-            if !dir.is_dir() {
-                continue;
-            }
-            for (name, ih, batch) in batch_files(dir)? {
-                if active
-                    .receipts
-                    .get(&(ih, batch))
-                    .is_some_and(|receipt| receipt.state != ReceiptState::Pending)
-                {
-                    fs::remove_file(dir.join(name))?;
-                }
-            }
-            if batch_files(dir)?.is_empty() {
-                self.remove_payload_dir(dir)?;
-            }
-        }
-
         // A finalized directory's marker is the durable intent for that
         // directory. Finish its receipt transitions before removing payload.
         for dir in list_dirs(&self.root.join("outbox"))? {
@@ -331,6 +310,27 @@ impl Store {
                 active.receipts.insert((ih, batch), receipt);
             }
             self.remove_payload_dir(&dir)?;
+        }
+
+        // Open files are individually identified by their receipt key. Clean
+        // terminal batches after marker recovery so a leftover open copy of a
+        // finalized period cannot be restarted after its outbox is removed.
+        for dir in &open_dirs {
+            if !dir.is_dir() {
+                continue;
+            }
+            for (name, ih, batch) in batch_files(dir)? {
+                if active
+                    .receipts
+                    .get(&(ih, batch))
+                    .is_some_and(|receipt| receipt.state != ReceiptState::Pending)
+                {
+                    fs::remove_file(dir.join(name))?;
+                }
+            }
+            if batch_files(dir)?.is_empty() {
+                self.remove_payload_dir(dir)?;
+            }
         }
 
         // Open periods from the previous process are finalized after receipt
@@ -1397,6 +1397,90 @@ mod tests {
                     ReceiptState::Discarded
                 }
             );
+        }
+    }
+
+    #[test]
+    fn terminal_marker_recovery_removes_a_leftover_open_copy() {
+        for delivered in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let batch_id = id(34);
+            let receipt_path = dir
+                .path()
+                .join("receipts")
+                .join(format!("{}-{batch_id}.json", inst_hash("inst-1")));
+            {
+                let mut s = open(dir.path(), T0);
+                let BatchResult::Accepted { period_id } =
+                    offer(&mut s, &batch_id, &[snapshot("c", "leftover payload")], T0)
+                else {
+                    panic!()
+                };
+                let open_dir = s.open_dir(&period_id);
+                s.fail_next_payload_removes(1);
+                assert!(s.tick(T0 + 300_000));
+                let entry = s.outbox().pop().unwrap();
+                assert!(open_dir.is_dir());
+                assert!(entry.dir.is_dir());
+                assert_eq!(
+                    read_json::<ReceiptFile>(&receipt_path)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    ReceiptState::Pending
+                );
+
+                s.stop_after_durable_writes(1);
+                if delivered {
+                    assert!(s.delivered(&entry).is_err());
+                } else {
+                    assert_eq!(s.discard_waiting(T0 + 300_000), 1);
+                }
+                assert!(entry.dir.join("terminal.json").is_file());
+                assert!(open_dir.is_dir());
+                assert_eq!(
+                    read_json::<ReceiptFile>(&receipt_path)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    ReceiptState::Pending
+                );
+            }
+
+            let mut s = open(dir.path(), T0 + 300_001);
+            assert!(s.outbox().is_empty());
+            assert!(!all_text(&dir.path().join("open")).contains("leftover payload"));
+            assert!(!all_text(&dir.path().join("outbox")).contains("leftover payload"));
+            let receipt = read_json::<ReceiptFile>(&receipt_path).unwrap().unwrap();
+            assert_eq!(
+                receipt.state,
+                if delivered {
+                    ReceiptState::Delivered
+                } else {
+                    ReceiptState::Discarded
+                }
+            );
+
+            let bytes_before_replay = s.spool_bytes();
+            assert_eq!(
+                s.offer(
+                    &BatchInput {
+                        generation: "a different generation",
+                        inst: "inst-1",
+                        batch_id: &batch_id,
+                        queued_at_ms: T0 + 3_700_000,
+                        records: &[snapshot("c", "replacement payload")],
+                    },
+                    T0 + 3_700_000,
+                ),
+                BatchResult::Duplicate {
+                    period_id: receipt.period_id
+                }
+            );
+            assert_eq!(s.spool_bytes(), bytes_before_replay);
+            assert!(s.outbox().is_empty());
+            assert!(!all_text(&dir.path().join("open")).contains("replacement payload"));
+            assert!(!all_text(&dir.path().join("outbox")).contains("replacement payload"));
         }
     }
 

@@ -7,8 +7,8 @@
 //! framing. On Windows the host is this app's own executable started in host
 //! mode ([`argv`]); it is a thin relay ([`relay`]) that forwards frames over a
 //! same-user named pipe to the running app. The app owns everything else: the
-//! session protocol and live capture gate ([`hub`]), durable acceptance and the
-//! custody generation ([`custody`]), and delivery of finalized periods to the
+//! session protocol and live capture gate ([`hub`]), durable acceptance in the
+//! pending store ([`custody`]), and delivery of finalized periods to the
 //! journal as the `browser` source ([`upload`]).
 //!
 //! The wire contract is the shared `native-browser-frame` crate, vendored from

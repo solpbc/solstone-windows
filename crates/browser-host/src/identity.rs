@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! The strict journal identity a custody generation is bound to.
+//! The strict journal identity digest used as the pairing destination key.
+//! It is not a custody generation and does not key the pending store.
 //!
-//! One generation per journal: the exact instance id plus the normalized CA
-//! chain (each certificate's SHA-256, in chain order). Instance id alone is not
+//! The digest combines the exact instance id with the normalized CA chain
+//! (each certificate's SHA-256, in chain order). Instance id alone is not
 //! enough: a journal replaced under the same id with a new CA is a different
-//! destination. A same-journal re-pair mints a new client certificate but keeps
-//! both, so it keeps the generation.
+//! destination. A same-journal re-pair can keep the same destination key even
+//! when it mints a new client certificate.
 
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
