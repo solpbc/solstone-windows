@@ -22,5 +22,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std"] }
 
 [dev-dependencies]
+pl-transport-win = { workspace = true, features = ["awaiting-hold"] }
+rcgen.workspace = true
 tokio = { workspace = true, features = ["io-util", "io-std", "test-util"] }
 tempfile = "3"

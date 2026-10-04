@@ -3,7 +3,7 @@
 The browser extension's native-messaging contract and its shared Rust framing
 crate, copied byte for byte from
 [`solstone-browser`](https://github.com/solpbc/solstone-browser) at
-`b948344f66c94f66a990f54c6b201d3a41507b18`:
+`731a80ddfed3a5e80bf8ce658cc71f761fa75f83`:
 
 - `contracts/native-browser/`: the envelope schema, authority, corpus, recipes
   and registration table;

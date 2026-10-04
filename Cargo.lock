@@ -458,6 +458,8 @@ dependencies = [
  "base64 0.22.1",
  "native-browser-frame",
  "observer-model",
+ "pl-transport-win",
+ "rcgen",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -6,6 +6,8 @@
 
 use std::future::Future;
 
+use sha2::{Digest, Sha256};
+
 use crate::custody::OutboxEntry;
 use crate::hub::Hub;
 
@@ -76,7 +78,12 @@ where
             armed: true,
         };
         let body = match std::fs::read(entry.pages_path()) {
-            Ok(body) if body.len() as u64 == entry.size => body,
+            Ok(body)
+                if body.len() as u64 == entry.size
+                    && format!("{:x}", Sha256::digest(&body)) == entry.sha256 =>
+            {
+                body
+            }
             _ => {
                 let current = load().await;
                 let still = current

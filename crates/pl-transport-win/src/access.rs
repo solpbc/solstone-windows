@@ -15,6 +15,14 @@ use crate::post_connect::{PostConnectController, PostConnectSessionToken};
 use crate::service::SyncConfig;
 use crate::{ObserverClient, ObserverHandle, TransportError};
 
+/// Load the current client immediately before a send, including replacements
+/// of the credential authority at the same journal.
+pub async fn load_current_client(
+    access: &tokio::sync::Mutex<Option<CredentialAccess>>,
+) -> Option<Arc<ObserverClient>> {
+    access.lock().await.as_ref().map(|a| a.client_slot().load())
+}
+
 /// The one live authority for a paired credential file.
 ///
 /// Cloning this type is cheap: all consumers use the same replacement slot,

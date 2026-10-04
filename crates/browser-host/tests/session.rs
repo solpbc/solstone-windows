@@ -516,6 +516,36 @@ async fn a_held_mark_keeps_text_locally_until_sending_opens() {
 }
 
 #[tokio::test]
+async fn same_length_corruption_never_reaches_the_journal() {
+    let rig = rig(false);
+    rig.hub.update_gates(paired(JOURNAL_A));
+    let (mut c, ack) = handshake(&rig.hub, "chrome", "production").await;
+    let generation = ack["destination_generation"].as_str().unwrap().to_string();
+    c.send(&batch(&generation, 1, snapshot("c1", "ORIGINAL_TEXT")))
+        .await;
+    c.recv_skipping_state().await;
+    rig.clock.store(T0 + 300_000, Ordering::SeqCst);
+    rig.hub.tick();
+    let entry = rig.hub.outbox().pop().unwrap();
+    let mut bytes = std::fs::read(entry.pages_path()).unwrap();
+    let i = bytes
+        .windows(13)
+        .position(|v| v == b"ORIGINAL_TEXT")
+        .unwrap();
+    bytes[i..i + 13].copy_from_slice(b"MODIFIED_TEXT");
+    std::fs::write(entry.pages_path(), bytes).unwrap();
+    let open = journal(JOURNAL_A);
+    let pass = deliver_pending(&rig.hub, || async { Some(open.clone()) }).await;
+    assert_eq!(pass.delivered, 0);
+    assert!(open.received.lock().unwrap().is_empty());
+    assert_eq!(rig.hub.status().failure, Some("local_io"));
+    assert!(entry.pages_path().exists());
+    // A rejected local payload releases its upload reservation for retry.
+    assert!(rig.hub.reserve(&entry));
+    rig.hub.release(&entry);
+}
+
+#[tokio::test]
 async fn a_failed_upload_reports_failed_and_keeps_the_period() {
     let rig = rig(false);
     rig.hub.update_gates(paired(JOURNAL_A));
@@ -716,7 +746,7 @@ async fn a_pause_outranks_a_full_spool() {
     let store = Store::open(
         dir.path(),
         Policy {
-            spool_bytes: 400,
+            spool_bytes: 2000,
             ..Policy::default()
         },
         Box::new(|s, l| (format!("d{s}"), format!("s{s}_{l}"))),

@@ -29,6 +29,10 @@ use sha2::{Digest, Sha256};
 
 use crate::identity::hex;
 
+const PERIOD_METADATA_BYTES: u64 = 1024;
+const TERMINAL_METADATA_BYTES: u64 = 64;
+const RECEIPT_METADATA_BYTES: u64 = 256;
+
 /// The bounds the store enforces. Defaults are the contract's policy.
 #[derive(Debug, Clone)]
 pub struct Policy {
@@ -514,17 +518,25 @@ impl Store {
             state: ReceiptState::Pending,
         };
         let receipt_bytes = match serde_json::to_vec(&receipt) {
-            Ok(bytes) => bytes.len() as u64,
+            Ok(bytes) => (bytes.len() as u64).max(RECEIPT_METADATA_BYTES),
             Err(_) => {
                 return BatchResult::Rejected {
                     reason: "resource_exhausted",
                 }
             }
         };
+        let period_bytes = self.active.as_ref().map_or(0, |active| {
+            if active.open.has_dir {
+                0
+            } else {
+                PERIOD_METADATA_BYTES + TERMINAL_METADATA_BYTES
+            }
+        });
         if self
             .spool_bytes()
-            .saturating_add(body_bytes)
+            .saturating_add(body_bytes.saturating_mul(2))
             .saturating_add(receipt_bytes)
+            .saturating_add(period_bytes)
             > self.policy.spool_bytes
         {
             self.full = true;
@@ -866,10 +878,31 @@ impl Store {
     }
 
     pub fn spool_bytes(&self) -> u64 {
+        // Keep room for the durable finalized copy while open chunks still exist.
         let payload = dir_payload_bytes(&self.root.join("open"))
-            + dir_payload_bytes(&self.root.join("outbox"));
-        let receipts = dir_file_bytes(&self.root.join("receipts"));
-        payload.saturating_add(receipts)
+            .saturating_mul(2)
+            .saturating_add(dir_payload_bytes(&self.root.join("outbox")));
+        let receipts = fs::read_dir(self.root.join("receipts"))
+            .map(|entries| {
+                entries.flatten().fold(0_u64, |bytes, entry| {
+                    bytes.saturating_add(
+                        entry
+                            .metadata()
+                            .map_or(0, |metadata| metadata.len())
+                            .max(RECEIPT_METADATA_BYTES),
+                    )
+                })
+            })
+            .unwrap_or(0);
+        let periods = [self.root.join("open"), self.root.join("outbox")]
+            .iter()
+            .flat_map(|root| list_dirs(root).unwrap_or_default())
+            .fold(0_u64, |bytes, directory| {
+                let metadata =
+                    dir_file_bytes(&directory).saturating_sub(dir_payload_bytes(&directory));
+                bytes.saturating_add(metadata.max(PERIOD_METADATA_BYTES + TERMINAL_METADATA_BYTES))
+            });
+        payload.saturating_add(receipts).saturating_add(periods)
     }
 
     fn refresh_full(&mut self) {
@@ -902,6 +935,18 @@ impl Store {
 
     fn write_json_atomic<T: Serialize>(&mut self, path: &Path, value: &T) -> io::Result<()> {
         let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+        let budget = if path.parent() == Some(self.root.join("receipts").as_path()) {
+            RECEIPT_METADATA_BYTES
+        } else if path.file_name().is_some_and(|name| name == "terminal.json") {
+            TERMINAL_METADATA_BYTES
+        } else {
+            PERIOD_METADATA_BYTES
+        };
+        if bytes.len() as u64 > budget {
+            return Err(io::Error::other(
+                "browser metadata exceeds reserved capacity",
+            ));
+        }
         self.write_bytes_atomic(path, &bytes)
     }
 
@@ -1120,6 +1165,64 @@ mod tests {
     }
 
     #[test]
+    fn intake_bound_includes_first_period_metadata() {
+        fn all_file_bytes(root: &Path) -> u64 {
+            fs::read_dir(root)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    if entry.path().is_dir() {
+                        all_file_bytes(&entry.path())
+                    } else {
+                        entry.metadata().unwrap().len()
+                    }
+                })
+                .sum()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(dir.path(), T0);
+        let record = snapshot("c1", "small");
+        let mut body = String::new();
+        canonical_stringify(&record, &mut body).unwrap();
+        body.push('\n');
+        let receipt = ReceiptFile {
+            period_id: store.period_id().unwrap().to_owned(),
+            at_ms: T0,
+            state: ReceiptState::Pending,
+        };
+        store.policy.spool_bytes =
+            body.len() as u64 + serde_json::to_vec(&receipt).unwrap().len() as u64 + 1;
+        let _ = offer(&mut store, &id(201), &[record], T0);
+        assert!(all_file_bytes(dir.path()) <= store.policy.spool_bytes);
+    }
+
+    #[test]
+    fn intake_reserves_the_finalized_copy_before_acceptance() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(dir.path(), T0);
+        let record = snapshot("c1", &"x".repeat(1024));
+        let mut body = String::new();
+        canonical_stringify(&record, &mut body).unwrap();
+        body.push('\n');
+        let metadata = PERIOD_METADATA_BYTES + TERMINAL_METADATA_BYTES + RECEIPT_METADATA_BYTES;
+        store.policy.spool_bytes = metadata + 2 * body.len() as u64 - 1;
+        assert!(matches!(
+            offer(&mut store, &id(202), std::slice::from_ref(&record), T0),
+            BatchResult::Rejected {
+                reason: "queue_full"
+            }
+        ));
+        store.policy.spool_bytes += 1;
+        assert!(matches!(
+            offer(&mut store, &id(202), &[record], T0),
+            BatchResult::Accepted { .. }
+        ));
+        assert_eq!(store.spool_bytes(), store.policy.spool_bytes);
+        assert!(store.finalize_now(T0 + 1));
+        assert!(store.spool_bytes() <= store.policy.spool_bytes);
+    }
+
+    #[test]
     fn accepted_batches_dedup_with_their_original_period() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(dir.path(), T0);
@@ -1201,7 +1304,7 @@ mod tests {
     fn a_full_spool_refuses_with_queue_full_until_delivery_frees_room() {
         let dir = tempfile::tempdir().unwrap();
         let policy = Policy {
-            spool_bytes: 450,
+            spool_bytes: 2000,
             ..Policy::default()
         };
         let mut s = Store::open(dir.path(), policy, namer(), T0);
@@ -1665,7 +1768,7 @@ mod tests {
         let mut s = Store::open(
             dir.path(),
             Policy {
-                spool_bytes: 400,
+                spool_bytes: 1800,
                 ..Policy::default()
             },
             namer(),

@@ -298,8 +298,7 @@ mod imp {
 
     async fn current_client(app: &tauri::AppHandle) -> Option<Arc<ObserverClient>> {
         let state = app.state::<crate::app::AppState>();
-        let access = state.credential_access.lock().await;
-        access.as_ref().map(|a| a.client_slot().load())
+        pl_transport_win::access::load_current_client(&state.credential_access).await
     }
 
     async fn read_gates(app: &tauri::AppHandle) -> Gates {
