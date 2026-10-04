@@ -8,7 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Changed
 
-- your journal is named by its mark. after you confirm the mark, status names the journal by the mark's two words. before that, the mark shown is your journal, not set up yet. a confirmed mark that can't be read shows as unavailable.
+- status no longer names your journal "solstone". after you confirm the mark, status shows its two words, and before that it says "your journal". if the app can't read your journal's mark, it shows "unavailable".
 
 ### Fixed
 
