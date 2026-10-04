@@ -183,3 +183,24 @@ fn every_frame_recipe_rebuilds_byte_for_byte() {
         assert_eq!(sha256_hex(&built), r["sha256"].as_str().unwrap(), "{id}");
     }
 }
+
+#[test]
+fn legacy_permanent_receipts_decode_but_cannot_be_replied_to() {
+    for reason in ["stale_generation", "expired_unaccepted"] {
+        let encoded = serde_json::to_vec(&serde_json::json!({
+            "result": "rejected",
+            "reason": reason,
+            "class": "permanent",
+            "destination_generation": "generation",
+            "inst": "instance",
+            "batch_id": "0123456789abcdef0123456789abcdef"
+        }))
+        .unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(receipt["reason"], reason);
+        assert_eq!(
+            native_browser_frame::build_reply(&receipt),
+            Err("invalid_receipt")
+        );
+    }
+}

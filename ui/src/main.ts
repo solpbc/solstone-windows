@@ -315,7 +315,7 @@ type BrowserStatus = {
   delivery: "unknown" | "kept_locally" | "delivered" | "idle" | "failed";
   failure: string | null;
   connected: { brand: string; connected_at_ms: number }[];
-  custody: { held_bytes: number; retired: { generations: number; bytes: number } };
+  custody: { held_bytes: number; waiting: boolean };
 };
 let latestBrowser: BrowserStatus | null = null;
 let browserDiscard: "idle" | "confirm" | "busy" | "done" | "failed" = "idle";
@@ -2603,11 +2603,9 @@ const BROWSER_COPY = {
   held: "new browser pages aren't being taken in right now.",
   notPaired: "pair with your journal first",
   failed: "kept on this PC, not reaching your journal right now",
-  retired:
-    "some browser pages were kept for a journal this PC was paired with before. they won't go into any journal, and they stay on this PC until you discard them.",
-  discard: "discard",
-  discardConfirm:
-    "discard these browser pages? they're gone from this PC for good, and nothing in any journal changes.",
+  discard: "discard waiting browser pages",
+  discardConfirm: "browser pages still waiting to be sent will be removed from this device.",
+  discardConfirmButton: "discard pages",
   cancel: "cancel",
   discarded: "discarded",
   discardFailed: "couldn't finish discarding. what's left is still on this PC.",
@@ -2655,32 +2653,27 @@ function quietButton(labelText: string, onClick: () => void): HTMLButtonElement 
   return b;
 }
 
-async function discardRetiredBrowserPages(): Promise<void> {
+async function discardWaitingBrowserPages(): Promise<void> {
   browserDiscard = "busy";
   requestRerender();
-  const left = await invoke<{ generations: number; bytes: number } | null>(
-    "browser_discard_retired",
-  ).catch(() => null);
-  browserDiscard = left !== null && left.generations === 0 ? "done" : "failed";
+  const result = await invoke<{ left: number } | null>("browser_discard_waiting").catch(() => null);
+  browserDiscard = result !== null && result.left === 0 ? "done" : "failed";
   latestBrowser = await invoke<BrowserStatus | null>("browser_status").catch(() => latestBrowser);
   requestRerender();
 }
 
 function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
   const rows: HTMLElement[] = [valueRow("browser pages", selectable(text("div", browserStateText(status))))];
-  const retired = status.custody.retired.generations > 0;
-  if (!retired && browserDiscard !== "done" && browserDiscard !== "failed") {
+  const waiting = status.custody.waiting;
+  if (!waiting && browserDiscard !== "done" && browserDiscard !== "failed") {
     return rows;
   }
   const box = document.createElement("div");
-  if (retired) {
-    box.append(text("div", BROWSER_COPY.retired));
-  }
   const actions = document.createElement("div");
   if (browserDiscard === "confirm") {
     box.append(text("div", BROWSER_COPY.discardConfirm));
     actions.append(
-      quietButton(BROWSER_COPY.discard, () => void discardRetiredBrowserPages()),
+      quietButton(BROWSER_COPY.discardConfirmButton, () => void discardWaitingBrowserPages()),
       quietButton(BROWSER_COPY.cancel, () => {
         browserDiscard = "idle";
         requestRerender();
@@ -2691,7 +2684,7 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
     busy.disabled = true;
     busy.setAttribute("aria-busy", "true");
     actions.append(busy);
-  } else if (retired) {
+  } else if (waiting) {
     actions.append(
       quietButton(BROWSER_COPY.discard, () => {
         browserDiscard = "confirm";
@@ -2699,7 +2692,7 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
       }),
     );
   }
-  if (browserDiscard === "done" && !retired) {
+  if (browserDiscard === "done" && !waiting) {
     box.append(text("div", BROWSER_COPY.discarded));
   } else if (browserDiscard === "failed") {
     const failed = text("div", BROWSER_COPY.discardFailed);

@@ -471,14 +471,13 @@ pub fn browser_status() -> Option<serde_json::Value> {
     }
 }
 
-/// The owner discards browser text kept for a journal this PC was paired with
-/// before. Returns what is left (nothing, on success); `None` in a build
-/// without the browser host.
+/// The owner discards browser pages still waiting to be sent. Returns the
+/// number of snapshotted periods that remain; `None` without the browser host.
 #[tauri::command]
-pub fn browser_discard_retired() -> Option<serde_json::Value> {
+pub fn browser_discard_waiting() -> Option<serde_json::Value> {
     #[cfg(feature = "browser-host")]
     {
-        crate::browser::discard_retired().and_then(|s| serde_json::to_value(s).ok())
+        crate::browser::discard_waiting().map(|left| serde_json::json!({"left": left}))
     }
     #[cfg(not(feature = "browser-host"))]
     {

@@ -46,7 +46,7 @@ mod imp {
     use browser_host::custody::{OutboxEntry, Policy, Store};
     use browser_host::hub::{BrowserStatus, Gates, Hub, HubConfig, Pairing};
     use browser_host::relay::{self, RelayEnd};
-    use browser_host::upload::{deliver_once, Journal, UploadOutcome};
+    use browser_host::upload::{deliver_pending, Journal, UploadOutcome};
     use observer_model::{AppPhase, LocalOffset, PairingPhase};
     use pl_transport_win::source_upload::{upload_source_file, SourceFile, SourceUploadOutcome};
     use pl_transport_win::ObserverClient;
@@ -285,11 +285,10 @@ mod imp {
                 if upload_hub.outbox().is_empty() {
                     continue;
                 }
-                let Some(client) = current_client(&upload_app).await else {
-                    continue;
-                };
-                let journal = ClientJournal::new(client);
-                let pass = deliver_once(&upload_hub, &journal).await;
+                let pass = deliver_pending(&upload_hub, || async {
+                    current_client(&upload_app).await.map(ClientJournal::new)
+                })
+                .await;
                 if pass.delivered > 0 {
                     tracing::info!(target: "browser", component = "delivery", delivered = pass.delivered, remaining = pass.remaining, "browser delivery");
                 }
@@ -333,27 +332,20 @@ mod imp {
         Gates { pairing, paused }
     }
 
-    /// One view of the paired journal: the identity and the client that would
-    /// carry the upload come from the same credential.
+    /// One view of the client that will carry an upload.
     struct ClientJournal {
         client: Arc<ObserverClient>,
-        identity: Option<String>,
     }
 
     impl ClientJournal {
         fn new(client: Arc<ObserverClient>) -> Self {
-            let credential = client.credential();
-            let identity = browser_host::identity::journal_identity_from_pem(
-                &credential.instance_id,
-                &credential.ca_chain_pem,
-            );
-            Self { client, identity }
+            Self { client }
         }
     }
 
     impl Journal for ClientJournal {
-        fn identity(&self) -> Option<&str> {
-            self.identity.as_deref()
+        fn same_connection(&self, current: &Self) -> bool {
+            Arc::ptr_eq(&self.client, &current.client)
         }
 
         async fn upload(&self, entry: &OutboxEntry, body: Vec<u8>) -> UploadOutcome {
@@ -442,9 +434,9 @@ mod imp {
         }
     }
 
-    /// The owner discards a previous journal's browser text.
-    pub fn discard_retired() -> Option<browser_host::custody::RetiredSummary> {
-        HUB.get().map(|hub| hub.discard_retired())
+    /// The owner discards browser pages still waiting to be sent.
+    pub fn discard_waiting() -> Option<usize> {
+        HUB.get().map(|hub| hub.discard_waiting())
     }
 
     /// Before the in-app updater applies: say `bye(update)` to every connected

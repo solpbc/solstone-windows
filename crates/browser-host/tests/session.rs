@@ -7,12 +7,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::Notify;
 
 use browser_host::argv::{BrandHint, Invocation, Mode};
 use browser_host::custody::{OutboxEntry, Policy, Store};
 use browser_host::hub::{Gates, Hub, HubConfig, Pairing};
 use browser_host::relay::{self, RelayEnd};
-use browser_host::upload::{deliver_once, Journal, UploadOutcome};
+use browser_host::upload::{deliver_pending, Journal, UploadOutcome};
 use browser_host::wire::{write_frame, FrameReader};
 use native_browser_frame::{decode, encode, DecodeOutcome, Direction};
 use observer_model::about::NativeAboutSnapshot;
@@ -186,12 +187,14 @@ async fn a_paired_app_permits_capture_accepts_and_dedups() {
     let reply = c.recv_skipping_state().await.unwrap();
     assert_eq!(reply["result"], "accepted");
     assert_eq!(reply["period_id"], period.as_str());
+    assert_eq!(reply["destination_generation"], generation);
 
     c.send(&batch(&generation, 1, snapshot("c1", "hello")))
         .await;
     let reply = c.recv_skipping_state().await.unwrap();
     assert_eq!(reply["result"], "duplicate");
     assert_eq!(reply["period_id"], period.as_str());
+    assert_eq!(reply["destination_generation"], generation);
     assert_eq!(rig.hub.status().delivery, "kept_locally");
 }
 
@@ -201,6 +204,20 @@ async fn about_snapshot_updates_publish_once_and_destination_change_resets_first
     rig.hub.update_gates(paired(JOURNAL_A));
     let (mut client, ack) = handshake(&rig.hub, "chrome", "production").await;
     assert_eq!(ack["about"]["journal_line"], "journal unknown");
+    let old_generation = ack["destination_generation"].as_str().unwrap().to_string();
+    client
+        .send(&batch(
+            &old_generation,
+            90,
+            snapshot("c1", "pending across destination change"),
+        ))
+        .await;
+    assert_eq!(
+        client.recv_skipping_state().await.unwrap()["result"],
+        "accepted"
+    );
+    let pending = rig.hub.status().custody.held_bytes;
+    assert!(pending > 0);
 
     let about = NativeAboutSnapshot::new(
         "windows",
@@ -212,7 +229,12 @@ async fn about_snapshot_updates_publish_once_and_destination_change_resets_first
     )
     .unwrap();
     rig.hub.update_about_snapshot(about.clone());
-    let state = client.recv().await.unwrap();
+    let state = loop {
+        let state = client.recv().await.unwrap();
+        if state["about"]["journal_line"] != "journal unknown" {
+            break state;
+        }
+    };
     assert_eq!(state["type"], "state");
     assert_eq!(state["about"]["journal_line"], about.journal_line);
     assert_eq!(state["about"]["journal_current"], true);
@@ -238,11 +260,21 @@ async fn about_snapshot_updates_publish_once_and_destination_change_resets_first
     );
 
     rig.hub.update_gates(paired(JOURNAL_B));
-    assert_eq!(client.recv().await.unwrap()["reason"], "replaced");
+    let changed = client.recv().await.unwrap();
+    assert_eq!(changed["type"], "state");
+    assert_ne!(changed["destination_generation"], old_generation);
+    assert_eq!(changed["about"]["journal_line"], "journal unknown");
+    assert_eq!(rig.hub.status().custody.held_bytes, pending);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), client.recv())
+            .await
+            .is_err()
+    );
     let (_replacement, ack) = handshake(&rig.hub, "chrome", "production").await;
     assert_eq!(ack["about"]["journal_line"], "journal unknown");
     assert_eq!(ack["about"]["journal_current"], false);
     assert!(ack["about"]["journal_seen_at_epoch_secs"].is_null());
+    assert_ne!(ack["destination_generation"], old_generation);
 }
 
 #[test]
@@ -303,6 +335,7 @@ async fn unpaired_and_paused_close_the_gate_and_resume_reopens_it() {
     assert_eq!(reply["result"], "rejected");
     assert_eq!(reply["reason"], "resource_exhausted");
     assert_eq!(reply["class"], "retryable");
+    assert_eq!(reply["destination_generation"], "whatever");
 
     rig.hub.update_gates(paired(JOURNAL_A));
     assert_eq!(c.recv().await.unwrap()["capture"], "permitted");
@@ -411,16 +444,28 @@ type Received = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
 #[derive(Clone)]
 struct FakeJournal {
     identity: String,
+    connection: Arc<()>,
     received: Received,
     outcome: UploadOutcome,
+    block: Option<(Arc<Notify>, Arc<Notify>)>,
+    assert_failure: Option<Arc<Hub>>,
 }
 
 impl Journal for FakeJournal {
-    fn identity(&self) -> Option<&str> {
-        Some(&self.identity)
+    fn same_connection(&self, current: &Self) -> bool {
+        Arc::ptr_eq(&self.connection, &current.connection)
     }
 
     async fn upload(&self, entry: &OutboxEntry, body: Vec<u8>) -> UploadOutcome {
+        if let Some((entered, release)) = &self.block {
+            entered.notify_one();
+            release.notified().await;
+        }
+        if self.outcome == UploadOutcome::Held {
+            if let Some(hub) = &self.assert_failure {
+                assert_eq!(hub.status().failure, Some("relay_unavailable"));
+            }
+        }
         if self.outcome == UploadOutcome::Delivered {
             self.received
                 .lock()
@@ -434,8 +479,11 @@ impl Journal for FakeJournal {
 fn journal(identity: &str) -> FakeJournal {
     FakeJournal {
         identity: identity.into(),
+        connection: Arc::new(()),
         received: Arc::new(Mutex::new(Vec::new())),
         outcome: UploadOutcome::Delivered,
+        block: None,
+        assert_failure: None,
     }
 }
 
@@ -455,12 +503,12 @@ async fn a_held_mark_keeps_text_locally_until_sending_opens() {
         outcome: UploadOutcome::Held,
         ..journal(JOURNAL_A)
     };
-    let pass = deliver_once(&rig.hub, &held).await;
+    let pass = deliver_pending(&rig.hub, || async { Some(held.clone()) }).await;
     assert_eq!(pass.delivered, 0);
     assert_eq!(rig.hub.status().delivery, "kept_locally");
 
     let open = journal(JOURNAL_A);
-    let pass = deliver_once(&rig.hub, &open).await;
+    let pass = deliver_pending(&rig.hub, || async { Some(open.clone()) }).await;
     assert_eq!(pass.delivered, 1);
     let got = open.received.lock().unwrap();
     assert!(String::from_utf8_lossy(&got[0].2).contains("WAITING_ON_MARK"));
@@ -481,7 +529,7 @@ async fn a_failed_upload_reports_failed_and_keeps_the_period() {
         outcome: UploadOutcome::Failed("relay_unavailable"),
         ..journal(JOURNAL_A)
     };
-    deliver_once(&rig.hub, &failing).await;
+    deliver_pending(&rig.hub, || async { Some(failing.clone()) }).await;
     let st = rig.hub.status();
     assert_eq!(
         (st.delivery, st.failure),
@@ -491,60 +539,43 @@ async fn a_failed_upload_reports_failed_and_keeps_the_period() {
 }
 
 #[tokio::test]
-async fn re_pairing_to_another_journal_delivers_none_of_the_old_text() {
+async fn pending_text_survives_unpair_and_is_sent_to_the_confirmed_journal() {
     let rig = rig(false);
     rig.hub.update_gates(paired(JOURNAL_A));
-    let (mut c, ack) = handshake(&rig.hub, "chrome", "production").await;
-    let gen_a = ack["destination_generation"].as_str().unwrap().to_string();
-    c.send(&batch(&gen_a, 1, snapshot("c1", "F6A_MARKER")))
+    let (mut client, ack) = handshake(&rig.hub, "chrome", "production").await;
+    let generation = ack["destination_generation"].as_str().unwrap().to_string();
+    client
+        .send(&batch(&generation, 1, snapshot("c1", "PENDING_FROM_A")))
         .await;
-    c.recv_skipping_state().await;
-    rig.clock.store(T0 + 300_000, Ordering::SeqCst);
-    rig.hub.tick();
-    // Journal A unreachable: A's text stays held.
-    deliver_once(
-        &rig.hub,
-        &FakeJournal {
-            outcome: UploadOutcome::Failed("relay_unavailable"),
-            ..journal(JOURNAL_A)
-        },
-    )
-    .await;
-
-    // Re-pair to B: every session is told to reconnect.
-    rig.hub.update_gates(paired(JOURNAL_B));
-    let bye = c.recv_skipping_state().await.unwrap();
-    assert_eq!(bye["reason"], "replaced");
-    assert_eq!(rig.hub.status().custody.retired.generations, 1);
-
-    // A view of B never sees A's text, even before the extension reconnects.
-    let b = journal(JOURNAL_B);
-    assert_eq!(deliver_once(&rig.hub, &b).await.delivered, 0);
-
-    let (mut c, ack) = handshake(&rig.hub, "chrome", "production").await;
-    let gen_b = ack["destination_generation"].as_str().unwrap().to_string();
-    assert_ne!(gen_a, gen_b);
-    c.send(&batch(&gen_a, 2, snapshot("c1", "late A"))).await;
-    let r = c.recv_skipping_state().await.unwrap();
     assert_eq!(
-        (r["reason"].as_str(), r["class"].as_str()),
-        (Some("stale_generation"), Some("permanent"))
+        client.recv_skipping_state().await.unwrap()["result"],
+        "accepted"
     );
-    c.send(&batch(&gen_b, 3, snapshot("c1", "F6B_NEW"))).await;
-    assert_eq!(c.recv_skipping_state().await.unwrap()["result"], "accepted");
-    rig.clock.store(T0 + 600_000, Ordering::SeqCst);
+    rig.hub.update_gates(Gates::default());
+    rig.clock.store(T0 + 700_000, Ordering::SeqCst);
     rig.hub.tick();
-
-    // A stale view of A can't deliver B's text either.
+    let old_bytes = rig.hub.outbox()[0].size;
+    rig.hub.update_gates(paired(JOURNAL_B));
+    assert_eq!(rig.hub.status().custody.held_bytes, old_bytes);
+    let mut b = journal(JOURNAL_B);
+    b.outcome = UploadOutcome::Held;
     assert_eq!(
-        deliver_once(&rig.hub, &journal(JOURNAL_A)).await.delivered,
+        deliver_pending(&rig.hub, || async { Some(b.clone()) })
+            .await
+            .delivered,
         0
     );
-    assert_eq!(deliver_once(&rig.hub, &b).await.delivered, 1);
+    assert!(b.received.lock().unwrap().is_empty());
+    b.outcome = UploadOutcome::Delivered;
+    assert_eq!(
+        deliver_pending(&rig.hub, || async { Some(b.clone()) })
+            .await
+            .delivered,
+        1
+    );
     let got = b.received.lock().unwrap();
     assert_eq!(got.len(), 1);
-    let text = String::from_utf8_lossy(&got[0].2);
-    assert!(text.contains("F6B_NEW") && !text.contains("F6A_MARKER"));
+    assert!(String::from_utf8_lossy(&got[0].2).contains("PENDING_FROM_A"));
 }
 
 // --- the relay ---------------------------------------------------------------
@@ -670,12 +701,13 @@ async fn a_failure_is_not_reported_once_nothing_is_held() {
         outcome: UploadOutcome::Failed("relay_unavailable"),
         ..journal(JOURNAL_A)
     };
-    deliver_once(&rig.hub, &failing).await;
+    deliver_pending(&rig.hub, || async { Some(failing.clone()) }).await;
     assert_eq!(rig.hub.status().delivery, "failed");
-    // Re-pairing elsewhere retires what was held: nothing is held, nothing failed.
+    // Destination change clears the old failure while the pending bytes remain.
     rig.hub.update_gates(paired(JOURNAL_B));
     let st = rig.hub.status();
-    assert_eq!((st.delivery, st.failure), ("idle", None));
+    assert_eq!((st.delivery, st.failure), ("kept_locally", None));
+    assert_eq!(rig.hub.outbox().len(), 1);
 }
 
 #[tokio::test]
@@ -720,19 +752,22 @@ async fn a_pause_outranks_a_full_spool() {
     assert_eq!(hub.status().capture, "paused");
 }
 
-/// A journal view whose upload switches the app to another journal mid-flight,
-/// then fails: the old journal's failure must not land on the new generation.
+/// A journal view whose upload switches the app to another journal mid-flight.
+#[derive(Clone)]
 struct SwitchingJournal {
     hub: Arc<Hub>,
+    connection: Arc<()>,
+    current: Arc<Mutex<Arc<()>>>,
 }
 
 impl Journal for SwitchingJournal {
-    fn identity(&self) -> Option<&str> {
-        Some(JOURNAL_A)
+    fn same_connection(&self, current: &Self) -> bool {
+        Arc::ptr_eq(&self.connection, &current.connection)
     }
 
     async fn upload(&self, _entry: &OutboxEntry, _body: Vec<u8>) -> UploadOutcome {
         self.hub.update_gates(paired(JOURNAL_B));
+        *self.current.lock().unwrap() = Arc::new(());
         UploadOutcome::Failed("relay_unavailable")
     }
 }
@@ -747,13 +782,152 @@ async fn an_old_journals_failure_finishing_after_a_switch_is_not_reported() {
     c.recv_skipping_state().await;
     rig.clock.store(T0 + 300_000, Ordering::SeqCst);
     rig.hub.tick();
-    let switching = SwitchingJournal {
-        hub: Arc::clone(&rig.hub),
-    };
-    deliver_once(&rig.hub, &switching).await;
+    let initial = Arc::new(());
+    let current = Arc::new(Mutex::new(initial.clone()));
+    let hub = Arc::clone(&rig.hub);
+    let current_for_load = Arc::clone(&current);
+    deliver_pending(&rig.hub, || {
+        let hub = Arc::clone(&hub);
+        let connection = current_for_load.lock().unwrap().clone();
+        let current = Arc::clone(&current_for_load);
+        async move {
+            Some(SwitchingJournal {
+                hub,
+                connection,
+                current,
+            })
+        }
+    })
+    .await;
     let st = rig.hub.status();
     assert_eq!(st.failure, None);
     assert_ne!(st.delivery, "failed");
+}
+
+async fn blocked_send_with_replacement(outcome: UploadOutcome) {
+    let rig = rig(false);
+    rig.hub.update_gates(paired(JOURNAL_A));
+    let (mut client, ack) = handshake(&rig.hub, "chrome", "production").await;
+    let generation = ack["destination_generation"].as_str().unwrap().to_string();
+    client
+        .send(&batch(&generation, 1, snapshot("c1", "first period")))
+        .await;
+    assert_eq!(
+        client.recv_skipping_state().await.unwrap()["result"],
+        "accepted"
+    );
+    rig.clock.store(T0 + 300_000, Ordering::SeqCst);
+    rig.hub.tick();
+    client
+        .send(&batch(&generation, 2, snapshot("c2", "second period")))
+        .await;
+    loop {
+        if client.recv().await.unwrap()["type"] == "accepted" {
+            break;
+        }
+    }
+    rig.clock.store(T0 + 600_000, Ordering::SeqCst);
+    rig.hub.tick();
+    assert_eq!(rig.hub.outbox().len(), 2);
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let old = FakeJournal {
+        outcome,
+        block: Some((Arc::clone(&entered), Arc::clone(&release))),
+        ..journal(JOURNAL_A)
+    };
+    let current = Arc::new(Mutex::new(old));
+    let task_hub = Arc::clone(&rig.hub);
+    let task_current = Arc::clone(&current);
+    let task = tokio::spawn(async move {
+        deliver_pending(&task_hub, || {
+            let loaded = task_current.lock().unwrap().clone();
+            async move { Some(loaded) }
+        })
+        .await
+    });
+    entered.notified().await;
+
+    let mut replacement = journal(JOURNAL_A);
+    replacement.outcome = UploadOutcome::Held;
+    replacement.assert_failure = Some(Arc::clone(&rig.hub));
+    assert_eq!(current.lock().unwrap().identity, replacement.identity);
+    assert!(!current.lock().unwrap().same_connection(&replacement));
+    *current.lock().unwrap() = replacement.clone();
+    rig.hub.set_delivery_failure(Some("relay_unavailable"));
+    release.notify_one();
+    let pass = task.await.unwrap();
+    if outcome == UploadOutcome::Failed("relay_unavailable") {
+        assert_eq!(rig.hub.status().failure, Some("relay_unavailable"));
+        // The held attempt on the replacement connection checks the flag before
+        // returning; it then clears its own current-connection failure state.
+        deliver_pending(&rig.hub, || async { Some(replacement.clone()) }).await;
+    }
+    assert!(replacement.received.lock().unwrap().is_empty());
+
+    let mut confirmed = replacement.clone();
+    confirmed.outcome = UploadOutcome::Delivered;
+    confirmed.assert_failure = None;
+    *current.lock().unwrap() = confirmed.clone();
+    let later = deliver_pending(&rig.hub, || async { Some(confirmed.clone()) }).await;
+    assert_eq!(
+        later.delivered,
+        if outcome == UploadOutcome::Delivered {
+            1
+        } else {
+            2
+        }
+    );
+    assert_eq!(rig.hub.outbox().len(), 0);
+    assert!(!confirmed.received.lock().unwrap().is_empty());
+    if outcome == UploadOutcome::Delivered {
+        assert_eq!(pass.delivered, 1);
+    } else {
+        assert_eq!(pass.delivered, 0);
+    }
+}
+
+#[tokio::test]
+async fn per_send_client_switch_does_not_apply_the_old_result_to_the_new_client() {
+    blocked_send_with_replacement(UploadOutcome::Delivered).await;
+    blocked_send_with_replacement(UploadOutcome::Failed("relay_unavailable")).await;
+}
+
+#[tokio::test]
+async fn dropping_a_blocked_delivery_releases_its_reservation_for_discard() {
+    let rig = rig(false);
+    rig.hub.update_gates(paired(JOURNAL_A));
+    let (mut client, ack) = handshake(&rig.hub, "chrome", "production").await;
+    let generation = ack["destination_generation"].as_str().unwrap().to_string();
+    client
+        .send(&batch(&generation, 1, snapshot("c1", "reserved pages")))
+        .await;
+    assert_eq!(
+        client.recv_skipping_state().await.unwrap()["result"],
+        "accepted"
+    );
+    rig.clock.store(T0 + 300_000, Ordering::SeqCst);
+    rig.hub.tick();
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let blocked = FakeJournal {
+        block: Some((Arc::clone(&entered), release)),
+        ..journal(JOURNAL_A)
+    };
+    let hub = Arc::clone(&rig.hub);
+    let task =
+        tokio::spawn(
+            async move { deliver_pending(&hub, || async { Some(blocked.clone()) }).await },
+        );
+    entered.notified().await;
+    assert_eq!(rig.hub.discard_waiting(), 0);
+    assert!(!rig.hub.status().custody.waiting);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(rig.hub.discard_waiting(), 0);
+    assert!(rig.hub.outbox().is_empty());
 }
 
 #[tokio::test]
@@ -770,12 +944,12 @@ async fn a_held_mark_clears_a_previous_failure() {
         outcome: UploadOutcome::Failed("relay_unavailable"),
         ..journal(JOURNAL_A)
     };
-    deliver_once(&rig.hub, &failing).await;
+    deliver_pending(&rig.hub, || async { Some(failing.clone()) }).await;
     assert_eq!(rig.hub.status().delivery, "failed");
     let held = FakeJournal {
         outcome: UploadOutcome::Held,
         ..journal(JOURNAL_A)
     };
-    deliver_once(&rig.hub, &held).await;
+    deliver_pending(&rig.hub, || async { Some(held.clone()) }).await;
     assert_eq!(rig.hub.status().delivery, "kept_locally");
 }

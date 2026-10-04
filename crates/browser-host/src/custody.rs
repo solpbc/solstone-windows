@@ -3,32 +3,17 @@
 
 //! Durable acceptance and custody of browser text on this PC.
 //!
-//! One bounded on-disk spool, one custody generation per strict journal
-//! identity ([`crate::identity`]), and periods the app owns:
-//!
 //! ```text
-//! <root>/active.json                         {"generation","identity"}
-//! <root>/gen/<g>/identity                    the identity this generation is for
-//! <root>/gen/<g>/open/<period>/period.json   the open period's window
-//! <root>/gen/<g>/open/<period>/<seq>-<ih>-<batch_id>.jsonl   one accepted batch
-//! <root>/gen/<g>/receipts/<ih>-<batch_id>.json               its dedup receipt
-//! <root>/gen/<g>/outbox/<start>-<period>/{browser_pages.jsonl,period.json}
-//! <root>/retired/<g>/...                     a previous journal's generation
+//! <root>/open/<period>/period.json
+//! <root>/open/<period>/<seq>-<ih>-<batch_id>.jsonl
+//! <root>/receipts/<ih>-<batch_id>.json
+//! <root>/outbox/<start>-<period>/{browser_pages.jsonl,period.json}
+//! <root>/outbox/<start>-<period>/terminal.json
 //! ```
 //!
-//! A batch is accepted only after its records file is written, fsynced and
-//! renamed into place; its receipt follows, so a replayed `batch_id` answers
-//! `duplicate` with the original period. A crash between the two is repaired on
-//! open from the batch file's name. At-least-once from the extension, dedup
-//! here, and an idempotent journal upload make delivery at-least-once end to
-//! end without duplicates in the journal.
-//!
-//! A journal switch renames the whole generation directory into `retired/`.
-//! Retired text is held, counted for the owner to see, never delivered, never
-//! counted against the spool, and removed only when the owner discards it.
-//!
-//! Deliberately not here (MVP): clock-rollback handling, legacy migration and
-//! page-level accounting.
+//! Batch bytes are committed before their receipt. A missing receipt is repaired
+//! from the open batch filename on restart. Receipts remain as dedup tombstones
+//! after delivery or discard.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -36,8 +21,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use native_browser_frame::{
-    canonical_stringify, ACCEPTED_RETENTION_MS_MIN, FILE_MAX, FUTURE_SKEW_MS_MAX,
-    OUTBOX_AGE_MS_MAX, SPOOL_AGE_MS_MAX, SPOOL_BYTES_MAX,
+    canonical_stringify, FILE_MAX, FUTURE_SKEW_MS_MAX, SPOOL_AGE_MS_MAX, SPOOL_BYTES_MAX,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -51,9 +35,7 @@ pub struct Policy {
     pub spool_bytes: u64,
     pub file_max: u64,
     pub spool_age_ms: u64,
-    pub outbox_age_ms: u64,
     pub future_skew_ms: u64,
-    pub accepted_retention_ms: u64,
     /// The period grid, aligned with the capture segments.
     pub period_ms: u64,
 }
@@ -64,9 +46,7 @@ impl Default for Policy {
             spool_bytes: SPOOL_BYTES_MAX as u64,
             file_max: FILE_MAX as u64,
             spool_age_ms: SPOOL_AGE_MS_MAX,
-            outbox_age_ms: OUTBOX_AGE_MS_MAX,
             future_skew_ms: FUTURE_SKEW_MS_MAX,
-            accepted_retention_ms: ACCEPTED_RETENTION_MS_MIN,
             period_ms: 300_000,
         }
     }
@@ -108,7 +88,6 @@ pub struct BatchInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxEntry {
     pub dir: PathBuf,
-    pub generation: String,
     pub period_id: String,
     pub day: String,
     pub segment: String,
@@ -124,30 +103,16 @@ impl OutboxEntry {
     }
 }
 
-/// What the owner can see about a previous journal's text.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct RetiredSummary {
-    pub generations: usize,
-    pub bytes: u64,
-}
-
-/// The store's status for the `state` message and the health dump.
+/// What the store can report about its pending custody.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CustodyStatus {
-    pub generation: Option<String>,
     pub period_id: Option<String>,
     pub held_bytes: u64,
     pub held_periods: usize,
     pub full: bool,
     pub stale: bool,
     pub failed: bool,
-    pub retired: RetiredSummary,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ActiveFile {
-    generation: String,
-    identity: String,
+    pub waiting: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -168,10 +133,24 @@ struct OutboxPeriodFile {
     sha256: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReceiptState {
+    Pending,
+    Discarded,
+    Delivered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReceiptFile {
     period_id: String,
     at_ms: u64,
+    state: ReceiptState,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OutboxTerminalFile {
+    state: ReceiptState,
 }
 
 struct OpenPeriod {
@@ -184,14 +163,10 @@ struct OpenPeriod {
 }
 
 struct Active {
-    generation: String,
-    identity: String,
     open: OpenPeriod,
-    receipts: HashMap<(String, String), (String, u64)>,
-    held_bytes: u64,
-    held_periods: usize,
-    oldest_held_ms: Option<u64>,
+    receipts: HashMap<(String, String), ReceiptFile>,
     next_seq: u64,
+    reserved: HashSet<PathBuf>,
 }
 
 pub struct Store {
@@ -201,13 +176,16 @@ pub struct Store {
     active: Option<Active>,
     failed: bool,
     full: bool,
-    retired: RetiredSummary,
     counter: u64,
+    #[cfg(test)]
+    stop_after_durable_writes: Option<usize>,
+    #[cfg(test)]
+    fail_next_payload_removes: usize,
 }
 
 impl Store {
-    /// Open (creating) the store at `root`, recovering any period left open by
-    /// a previous run: it is finalized as it stands.
+    /// Open the store, completing any interrupted tombstones before loading
+    /// content. Periods left open by a previous run are finalized as they stand.
     pub fn open(root: impl Into<PathBuf>, policy: Policy, namer: Namer, now_ms: u64) -> Self {
         let mut store = Store {
             root: root.into(),
@@ -216,129 +194,185 @@ impl Store {
             active: None,
             failed: false,
             full: false,
-            retired: RetiredSummary::default(),
             counter: 0,
+            #[cfg(test)]
+            stop_after_durable_writes: None,
+            #[cfg(test)]
+            fail_next_payload_removes: 0,
         };
         if let Err(error) = store.load(now_ms) {
             tracing::warn!(target: "browser", component = "custody", outcome = "open_failed", error = %error, "custody open");
             store.failed = true;
             store.active = None;
         }
-        store.refresh_retired();
         store
     }
 
     fn load(&mut self, now_ms: u64) -> io::Result<()> {
-        fs::create_dir_all(self.root.join("gen"))?;
-        fs::create_dir_all(self.root.join("retired"))?;
+        for legacy in [self.root.join("gen"), self.root.join("retired")] {
+            if legacy.exists() {
+                fs::remove_dir_all(legacy)?;
+            }
+        }
         let active_path = self.root.join("active.json");
-        let Some(active) = read_json::<ActiveFile>(&active_path)? else {
-            return Ok(());
-        };
-        let gen_dir = self.gen_dir(&active.generation);
-        if !gen_dir.is_dir() {
-            // Retired (or removed) after active.json was written.
-            return Ok(());
+        if active_path.exists() {
+            fs::remove_file(active_path)?;
         }
-        let on_disk_identity = fs::read_to_string(gen_dir.join("identity"))?;
-        if on_disk_identity != active.identity {
-            return Err(io::Error::other("generation identity mismatch"));
-        }
-        let mut a = Active {
-            generation: active.generation.clone(),
-            identity: active.identity,
+        fs::create_dir_all(self.root.join("open"))?;
+        fs::create_dir_all(self.root.join("receipts"))?;
+        fs::create_dir_all(self.root.join("outbox"))?;
+
+        let mut active = Active {
             open: self.new_open(now_ms, false),
             receipts: HashMap::new(),
-            held_bytes: 0,
-            held_periods: 0,
-            oldest_held_ms: None,
             next_seq: 0,
+            reserved: HashSet::new(),
         };
-        fs::create_dir_all(gen_dir.join("open"))?;
-        fs::create_dir_all(gen_dir.join("receipts"))?;
-        fs::create_dir_all(gen_dir.join("outbox"))?;
-
-        // Receipts, then any batch whose receipt the crash lost.
-        for entry in fs::read_dir(gen_dir.join("receipts"))? {
+        for entry in fs::read_dir(self.root.join("receipts"))? {
             let path = entry?.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if let Some(stem) = name.strip_suffix(".json") {
-                if let (Some((ih, batch)), Some(r)) =
-                    (stem.split_once('-'), read_json::<ReceiptFile>(&path)?)
-                {
-                    a.receipts
-                        .insert((ih.to_string(), batch.to_string()), (r.period_id, r.at_ms));
-                }
-            } else {
-                let _ = fs::remove_file(&path);
+            let Some(stem) = name.strip_suffix(".json") else {
+                let _ = fs::remove_file(path);
+                continue;
+            };
+            let Some((ih, batch)) = stem.split_once('-') else {
+                continue;
+            };
+            if let Some(receipt) = read_json::<ReceiptFile>(&path)? {
+                active
+                    .receipts
+                    .insert((ih.to_string(), batch.to_string()), receipt);
             }
         }
 
-        // Finalize every period a previous run left open.
-        let mut open_dirs: Vec<PathBuf> = fs::read_dir(gen_dir.join("open"))?
+        // Recover only missing receipts from batch filenames. Empty period
+        // directories are dropped and never become offered content.
+        let mut open_dirs: Vec<PathBuf> = fs::read_dir(self.root.join("open"))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.is_dir())
             .collect();
         open_dirs.sort();
-        for dir in open_dirs {
+        for dir in &open_dirs {
             let Some(meta) = read_json::<OpenPeriodFile>(&dir.join("period.json"))? else {
-                fs::remove_dir_all(&dir)?;
+                self.remove_payload_dir(dir)?;
                 continue;
             };
-            for (seq_name, ih, batch) in batch_files(&dir)? {
-                let _ = seq_name;
-                a.receipts
-                    .entry((ih, batch))
-                    .or_insert_with(|| (meta.period_id.clone(), now_ms));
+            let files = batch_files(dir)?;
+            if files.is_empty() {
+                self.remove_payload_dir(dir)?;
+                continue;
+            }
+            for (_, ih, batch) in files {
+                let key = (ih.clone(), batch.clone());
+                if let std::collections::hash_map::Entry::Vacant(entry) = active.receipts.entry(key)
+                {
+                    let receipt = ReceiptFile {
+                        period_id: meta.period_id.clone(),
+                        at_ms: now_ms,
+                        state: ReceiptState::Pending,
+                    };
+                    self.write_json_atomic(&self.receipt_path(&ih, &batch), &receipt)?;
+                    entry.insert(receipt);
+                }
+            }
+        }
+
+        // Open files are individually identified by their receipt key. A
+        // terminal receipt removes only its own batch, even when the open
+        // period id has been reused after an earlier discard.
+        for dir in &open_dirs {
+            if !dir.is_dir() {
+                continue;
+            }
+            for (name, ih, batch) in batch_files(dir)? {
+                if active
+                    .receipts
+                    .get(&(ih, batch))
+                    .is_some_and(|receipt| receipt.state != ReceiptState::Pending)
+                {
+                    fs::remove_file(dir.join(name))?;
+                }
+            }
+            if batch_files(dir)?.is_empty() {
+                self.remove_payload_dir(dir)?;
+            }
+        }
+
+        // A finalized directory's marker is the durable intent for that
+        // directory. Finish its receipt transitions before removing payload.
+        for dir in list_dirs(&self.root.join("outbox"))? {
+            if dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(".tmp-"))
+            {
+                continue;
+            }
+            let Some(marker) = read_json::<OutboxTerminalFile>(&dir.join("terminal.json"))? else {
+                continue;
+            };
+            let Some(meta) = read_json::<OutboxPeriodFile>(&dir.join("period.json"))? else {
+                self.remove_payload_dir(&dir)?;
+                continue;
+            };
+            let pending: Vec<_> = active
+                .receipts
+                .iter()
+                .filter(|(_, receipt)| {
+                    receipt.period_id == meta.period_id && receipt.state == ReceiptState::Pending
+                })
+                .map(|(key, receipt)| (key.clone(), receipt.clone()))
+                .collect();
+            for ((ih, batch), mut receipt) in pending {
+                receipt.state = marker.state;
+                self.write_json_atomic(&self.receipt_path(&ih, &batch), &receipt)?;
+                active.receipts.insert((ih, batch), receipt);
+            }
+            self.remove_payload_dir(&dir)?;
+        }
+
+        // Open periods from the previous process are finalized after receipt
+        // repair and tombstone recovery.
+        for dir in open_dirs {
+            if !dir.exists() {
+                continue;
+            }
+            let Some(meta) = read_json::<OpenPeriodFile>(&dir.join("period.json"))? else {
+                continue;
+            };
+            if batch_files(&dir)?.is_empty() {
+                continue;
             }
             let period = OpenPeriod {
                 id: meta.period_id,
                 start_ms: meta.start_ms,
                 end_ms: meta.end_ms,
-                bytes: 0,
+                bytes: dir_payload_bytes(&dir),
                 contexts: HashSet::new(),
                 has_dir: true,
             };
-            self.finalize_dir(&a.generation, &period, &dir, meta.end_ms.min(now_ms))?;
+            self.finalize_dir(&period, &dir, meta.end_ms.min(now_ms))?;
         }
-        for ((ih, batch), (period, at)) in &a.receipts {
-            let path = gen_dir.join("receipts").join(format!("{ih}-{batch}.json"));
-            if !path.exists() {
-                write_json_atomic(
-                    &path,
-                    &ReceiptFile {
-                        period_id: period.clone(),
-                        at_ms: *at,
-                    },
-                )?;
+        for dir in list_dirs(&self.root.join("outbox"))? {
+            if dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(".tmp-"))
+            {
+                self.remove_payload_dir(&dir)?;
             }
         }
-
-        // Outbox: drop half-built staging directories; count what is held.
-        for entry in fs::read_dir(gen_dir.join("outbox"))? {
-            let path = entry?.path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with(".tmp-") {
-                fs::remove_dir_all(&path)?;
-                continue;
-            }
-            if let Some(meta) = read_json::<OutboxPeriodFile>(&path.join("period.json"))? {
-                a.held_bytes += meta.size;
-                a.held_periods += 1;
-                a.oldest_held_ms = Some(
-                    a.oldest_held_ms
-                        .map_or(meta.start_ms, |o| o.min(meta.start_ms)),
-                );
-            }
-        }
-        self.active = Some(a);
+        self.active = Some(active);
+        self.refresh_full();
         Ok(())
     }
 
-    fn gen_dir(&self, generation: &str) -> PathBuf {
-        self.root.join("gen").join(generation)
+    fn receipt_path(&self, ih: &str, batch: &str) -> PathBuf {
+        self.root
+            .join("receipts")
+            .join(format!("{ih}-{batch}.json"))
     }
 
     fn next_token(&mut self, salt: &str, now_ms: u64) -> String {
@@ -372,107 +406,44 @@ impl Store {
         }
     }
 
-    /// Bind custody to the paired journal. A different identity retires the
-    /// current generation first; the same identity keeps it. Returns whether the
-    /// generation changed.
-    pub fn ensure_generation(&mut self, identity: &str, now_ms: u64) -> bool {
-        if self.failed {
-            return false;
-        }
-        if self.active.as_ref().is_some_and(|a| a.identity == identity) {
-            return false;
-        }
-        if let Err(error) = self.try_switch(identity, now_ms) {
-            tracing::warn!(target: "browser", component = "custody", outcome = "switch_failed", error = %error, "custody generation");
-            self.failed = true;
-            self.active = None;
-        }
-        self.refresh_retired();
-        true
-    }
-
-    fn try_switch(&mut self, identity: &str, now_ms: u64) -> io::Result<()> {
-        if let Some(old) = self.active.take() {
-            let from = self.gen_dir(&old.generation);
-            let to = self.root.join("retired").join(&old.generation);
-            fs::rename(&from, &to)?;
-            tracing::info!(target: "browser", component = "custody", outcome = "retired", held_bytes = old.held_bytes, "custody generation");
-        }
-        let token = self.next_token(identity, now_ms);
-        let generation = token[..32].to_string();
-        let dir = self.gen_dir(&generation);
-        fs::create_dir_all(dir.join("open"))?;
-        fs::create_dir_all(dir.join("receipts"))?;
-        fs::create_dir_all(dir.join("outbox"))?;
-        write_bytes_atomic(&dir.join("identity"), identity.as_bytes())?;
-        write_json_atomic(
-            &self.root.join("active.json"),
-            &ActiveFile {
-                generation: generation.clone(),
-                identity: identity.to_string(),
-            },
-        )?;
-        let open = self.new_open(now_ms, false);
-        self.active = Some(Active {
-            generation,
-            identity: identity.to_string(),
-            open,
-            receipts: HashMap::new(),
-            held_bytes: 0,
-            held_periods: 0,
-            oldest_held_ms: None,
-            next_seq: 0,
-        });
-        self.full = false;
-        Ok(())
-    }
-
-    pub fn generation(&self) -> Option<&str> {
-        self.active.as_ref().map(|a| a.generation.as_str())
-    }
-
-    pub fn identity(&self) -> Option<&str> {
-        self.active.as_ref().map(|a| a.identity.as_str())
-    }
-
     pub fn period_id(&self) -> Option<&str> {
         self.active.as_ref().map(|a| a.open.id.as_str())
     }
 
     pub fn status(&self, now_ms: u64) -> CustodyStatus {
-        let (generation, period_id, held_bytes, held_periods, stale) = match &self.active {
-            Some(a) => {
-                let open_bytes = if a.open.has_dir { a.open.bytes } else { 0 };
-                let oldest = match (a.oldest_held_ms, a.open.has_dir) {
-                    (Some(o), true) => Some(o.min(a.open.start_ms)),
-                    (Some(o), false) => Some(o),
-                    (None, true) => Some(a.open.start_ms),
-                    (None, false) => None,
-                };
-                (
-                    Some(a.generation.clone()),
-                    Some(a.open.id.clone()),
-                    a.held_bytes + open_bytes,
-                    a.held_periods + usize::from(a.open.has_dir),
-                    oldest.is_some_and(|o| now_ms.saturating_sub(o) >= self.policy.spool_age_ms),
-                )
-            }
-            None => (None, None, 0, 0, false),
+        let Some(active) = &self.active else {
+            return CustodyStatus {
+                failed: self.failed,
+                full: self.full,
+                ..CustodyStatus::default()
+            };
         };
+        let entries = self.all_outbox();
+        let open_bytes = if active.open.has_dir {
+            dir_payload_bytes(&self.open_dir(&active.open.id))
+        } else {
+            0
+        };
+        let held_bytes = entries.iter().map(|e| e.size).sum::<u64>() + open_bytes;
+        let held_periods = entries.len() + usize::from(open_bytes > 0);
+        let oldest = entries
+            .iter()
+            .map(|e| e.start_secs * 1000)
+            .chain((open_bytes > 0).then_some(active.open.start_ms))
+            .min();
         CustodyStatus {
-            generation,
-            period_id,
+            period_id: Some(active.open.id.clone()),
             held_bytes,
             held_periods,
             full: self.full,
-            stale,
+            stale: oldest.is_some_and(|at| now_ms.saturating_sub(at) >= self.policy.spool_age_ms),
             failed: self.failed,
-            retired: self.retired.clone(),
+            waiting: self.waiting(),
         }
     }
 
-    /// Offer one decoded batch. Only `Accepted`/`Duplicate` mean the records are
-    /// durably held under the active generation.
+    /// Offer one decoded batch. Generation and age ceilings are connection
+    /// concerns; the durable receipt key is only `(inst hash, batch id)`.
     pub fn offer(&mut self, batch: &BatchInput<'_>, now_ms: u64) -> BatchResult {
         if self.failed {
             return BatchResult::Rejected {
@@ -480,34 +451,31 @@ impl Store {
             };
         }
         let ih = inst_hash(batch.inst);
-        let Some(active) = self.active.as_ref() else {
-            return BatchResult::Rejected {
-                reason: "stale_generation",
-            };
-        };
-        if let Some((period, _)) = active
-            .receipts
-            .get(&(ih.clone(), batch.batch_id.to_string()))
+        if let Some(receipt) = self
+            .active
+            .as_ref()
+            .and_then(|a| a.receipts.get(&(ih.clone(), batch.batch_id.to_string())))
         {
-            if batch.generation == active.generation {
-                return BatchResult::Duplicate {
-                    period_id: period.clone(),
-                };
-            }
+            return BatchResult::Duplicate {
+                period_id: receipt.period_id.clone(),
+            };
         }
-        if batch.generation != active.generation {
+        let open_id = self
+            .active
+            .as_ref()
+            .filter(|active| active.open.has_dir)
+            .map(|active| active.open.id.clone());
+        if open_id
+            .as_deref()
+            .is_some_and(|id| self.open_has_terminal_batch(id).unwrap_or(true))
+        {
             return BatchResult::Rejected {
-                reason: "stale_generation",
+                reason: "resource_exhausted",
             };
         }
         if batch.queued_at_ms > now_ms.saturating_add(self.policy.future_skew_ms) {
             return BatchResult::Rejected {
                 reason: "age_policy",
-            };
-        }
-        if now_ms.saturating_sub(batch.queued_at_ms) >= self.policy.outbox_age_ms {
-            return BatchResult::Rejected {
-                reason: "expired_unaccepted",
             };
         }
         let mut body = String::new();
@@ -519,28 +487,52 @@ impl Store {
             }
             body.push('\n');
         }
-        let bytes = body.len() as u64;
-        let held = self.status(now_ms).held_bytes;
-        if held.saturating_add(bytes) > self.policy.spool_bytes {
-            self.full = true;
-            return BatchResult::Rejected {
-                reason: "queue_full",
-            };
+        let body_bytes = body.len() as u64;
+        if body_bytes > self.policy.file_max {
+            return BatchResult::Rejected { reason: "oversize" };
         }
 
-        // Rotate on the clock, then on the per-period file cap.
-        if now_ms >= self.active.as_ref().map_or(0, |a| a.open.end_ms) {
+        let open_end = self.active.as_ref().map_or(0, |a| a.open.end_ms);
+        if now_ms >= open_end {
             if let Err(e) = self.rotate(now_ms, false) {
                 return self.io_rejection(e);
             }
         }
         let open_bytes = self.active.as_ref().map_or(0, |a| a.open.bytes);
-        if open_bytes > 0 && open_bytes + bytes > self.policy.file_max {
+        if open_bytes > 0 && open_bytes.saturating_add(body_bytes) > self.policy.file_max {
             if let Err(e) = self.rotate(now_ms, true) {
                 return self.io_rejection(e);
             }
         }
-
+        let period_id = self
+            .period_id()
+            .expect("open store has a current period")
+            .to_string();
+        let receipt = ReceiptFile {
+            period_id: period_id.clone(),
+            at_ms: now_ms,
+            state: ReceiptState::Pending,
+        };
+        let receipt_bytes = match serde_json::to_vec(&receipt) {
+            Ok(bytes) => bytes.len() as u64,
+            Err(_) => {
+                return BatchResult::Rejected {
+                    reason: "resource_exhausted",
+                }
+            }
+        };
+        if self
+            .spool_bytes()
+            .saturating_add(body_bytes)
+            .saturating_add(receipt_bytes)
+            > self.policy.spool_bytes
+        {
+            self.full = true;
+            return BatchResult::Rejected {
+                reason: "queue_full",
+            };
+        }
+        self.refresh_full();
         let first = batch.records.first();
         let is_delta = first.and_then(|r| r.get("t")).and_then(Value::as_str) == Some("delta");
         let ctx = first
@@ -548,27 +540,22 @@ impl Store {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let active = self.active.as_mut().expect("active checked above");
+        let active = self
+            .active
+            .as_mut()
+            .expect("store load creates an open period");
         if is_delta && !active.open.contexts.contains(&ctx) {
             return BatchResult::Rejected {
                 reason: "snapshot_required",
             };
         }
-
-        match commit(
-            &self.root,
-            active,
-            &ih,
-            batch.batch_id,
-            body.as_bytes(),
-            now_ms,
-        ) {
+        match commit(self, &ih, batch.batch_id, body.as_bytes(), receipt, now_ms) {
             Ok(()) => {
                 if !is_delta {
-                    active.open.contexts.insert(ctx);
+                    self.active.as_mut().unwrap().open.contexts.insert(ctx);
                 }
                 BatchResult::Accepted {
-                    period_id: active.open.id.clone(),
+                    period_id: self.period_id().unwrap().to_string(),
                 }
             }
             Err(e) => self.io_rejection(e),
@@ -582,27 +569,10 @@ impl Store {
         }
     }
 
-    /// Advance the clock: finalize the open period once its window has passed,
-    /// and age out receipts. Returns whether the period id changed.
+    /// Advance the 300-second period grid. Receipts are durable dedup tombstones
+    /// and are never aged out.
     pub fn tick(&mut self, now_ms: u64) -> bool {
-        let Some(active) = self.active.as_mut() else {
-            return false;
-        };
-        let retention = self.policy.accepted_retention_ms;
-        let receipts_dir = self
-            .root
-            .join("gen")
-            .join(&active.generation)
-            .join("receipts");
-        let open_id = active.open.id.clone();
-        active.receipts.retain(|(ih, batch), (period, at)| {
-            let keep = *period == open_id || now_ms.saturating_sub(*at) < retention;
-            if !keep {
-                let _ = fs::remove_file(receipts_dir.join(format!("{ih}-{batch}.json")));
-            }
-            keep
-        });
-        if now_ms < active.open.end_ms {
+        if self.active.as_ref().is_none_or(|a| now_ms < a.open.end_ms) {
             return false;
         }
         if let Err(error) = self.rotate(now_ms, false) {
@@ -611,8 +581,6 @@ impl Store {
         true
     }
 
-    /// Finalize the open period now (an update or quit), so what it holds is
-    /// ready to deliver at the next start.
     pub fn finalize_now(&mut self, now_ms: u64) -> bool {
         if self.active.as_ref().is_some_and(|a| a.open.has_dir) {
             return self.rotate(now_ms, true).is_ok();
@@ -621,57 +589,49 @@ impl Store {
     }
 
     fn rotate(&mut self, now_ms: u64, early: bool) -> io::Result<()> {
-        let next = self.new_open(now_ms, early);
-        let active = self
+        let old_id = self
             .active
-            .as_mut()
-            .expect("rotate needs an active generation");
-        let generation = active.generation.clone();
+            .as_ref()
+            .filter(|active| active.open.has_dir)
+            .map(|active| active.open.id.clone());
+        if old_id
+            .as_deref()
+            .is_some_and(|id| self.open_has_terminal_batch(id).unwrap_or(true))
+        {
+            return Err(io::Error::other(
+                "open period contains a terminal batch awaiting discard",
+            ));
+        }
+        let next = self.new_open(now_ms, early);
+        let active = self.active.as_mut().expect("open store");
         let old = std::mem::replace(&mut active.open, next);
         if old.has_dir {
-            let dir = self
-                .root
-                .join("gen")
-                .join(&generation)
-                .join("open")
-                .join(&old.id);
+            let dir = self.open_dir(&old.id);
             let end = old.end_ms.min(now_ms);
-            let size = self.finalize_dir(&generation, &old, &dir, end)?;
-            if size == 0 {
-                return Ok(());
+            let size = self.finalize_dir(&old, &dir, end)?;
+            let active = self.active.as_mut().unwrap();
+            active.open.bytes = 0;
+            active.open.contexts.clear();
+            if size > 0 {
+                self.refresh_full();
             }
-            let active = self.active.as_mut().expect("still active");
-            active.held_bytes += size;
-            active.held_periods += 1;
-            active.oldest_held_ms = Some(
-                active
-                    .oldest_held_ms
-                    .map_or(old.start_ms, |o| o.min(old.start_ms)),
-            );
         }
         Ok(())
     }
 
-    /// Concatenate a period's batches into one outbox entry; returns its size.
-    fn finalize_dir(
-        &self,
-        generation: &str,
-        period: &OpenPeriod,
-        dir: &Path,
-        end_ms: u64,
-    ) -> io::Result<u64> {
-        let outbox = self.gen_dir(generation).join("outbox");
+    fn finalize_dir(&mut self, period: &OpenPeriod, dir: &Path, end_ms: u64) -> io::Result<u64> {
+        let outbox = self.root.join("outbox");
         let name = format!("{:015}-{}", period.start_ms, period.id);
         let final_dir = outbox.join(&name);
         if final_dir.is_dir() {
-            fs::remove_dir_all(dir)?;
+            self.remove_payload_dir(dir)?;
             return Ok(0);
         }
-        let mut files: Vec<_> = batch_files(dir)?;
+        let mut files = batch_files(dir)?;
         files.sort();
         let staging = outbox.join(format!(".tmp-{name}"));
         if staging.exists() {
-            fs::remove_dir_all(&staging)?;
+            self.remove_payload_dir(&staging)?;
         }
         fs::create_dir_all(&staging)?;
         let mut out = fs::File::create(staging.join(crate::PAGES_FILE))?;
@@ -686,51 +646,65 @@ impl Store {
         out.sync_all()?;
         drop(out);
         if size == 0 {
-            fs::remove_dir_all(&staging)?;
-            fs::remove_dir_all(dir)?;
+            self.remove_payload_dir(&staging)?;
+            self.remove_payload_dir(dir)?;
             return Ok(0);
         }
         let start_secs = period.start_ms / 1000;
         let len_secs = (end_ms.saturating_sub(period.start_ms) / 1000).max(1);
         let (day, segment) = (self.namer)(start_secs, len_secs);
-        write_json_atomic(
-            &staging.join("period.json"),
-            &OutboxPeriodFile {
-                period_id: period.id.clone(),
-                day,
-                segment,
-                start_ms: period.start_ms,
-                len_secs,
-                size,
-                sha256: hex(&hasher.finalize()),
-            },
-        )?;
+        let metadata = OutboxPeriodFile {
+            period_id: period.id.clone(),
+            day,
+            segment,
+            start_ms: period.start_ms,
+            len_secs,
+            size,
+            sha256: hex(&hasher.finalize()),
+        };
+        self.write_json_atomic(&staging.join("period.json"), &metadata)?;
         fs::rename(&staging, &final_dir)?;
-        fs::remove_dir_all(dir)?;
+        self.remove_payload_dir(dir)?;
         Ok(size)
     }
 
-    /// Finalized periods of the active generation, oldest first.
-    pub fn outbox(&self) -> Vec<OutboxEntry> {
-        let Some(active) = &self.active else {
-            return Vec::new();
+    fn open_dir(&self, id: &str) -> PathBuf {
+        self.root.join("open").join(id)
+    }
+
+    fn open_has_terminal_batch(&self, id: &str) -> io::Result<bool> {
+        let dir = self.open_dir(id);
+        if !dir.is_dir() {
+            return Ok(false);
+        }
+        let Some(active) = self.active.as_ref() else {
+            return Ok(false);
         };
-        let outbox = self.gen_dir(&active.generation).join("outbox");
-        let Ok(entries) = fs::read_dir(&outbox) else {
-            return Vec::new();
-        };
-        let mut out: Vec<OutboxEntry> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.file_name()
+        for (_, ih, batch) in batch_files(&dir)? {
+            if active
+                .receipts
+                .get(&(ih, batch))
+                .is_some_and(|receipt| receipt.state != ReceiptState::Pending)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn all_outbox(&self) -> Vec<OutboxEntry> {
+        let mut out = list_dirs(&self.root.join("outbox"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|dir| {
+                !dir.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| !n.starts_with(".tmp-"))
+                    .is_some_and(|n| n.starts_with(".tmp-"))
             })
             .filter_map(|dir| {
                 let meta = read_json::<OutboxPeriodFile>(&dir.join("period.json")).ok()??;
                 Some(OutboxEntry {
                     dir,
-                    generation: active.generation.clone(),
                     period_id: meta.period_id,
                     day: meta.day,
                     segment: meta.segment,
@@ -740,102 +714,263 @@ impl Store {
                     sha256: meta.sha256,
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
         out.sort_by(|a, b| a.dir.cmp(&b.dir));
         out
     }
 
-    /// The journal holds `entry`: release it. Refuses an entry of another
-    /// generation, so a retired period can never be released as delivered.
-    pub fn delivered(&mut self, entry: &OutboxEntry) -> io::Result<()> {
+    /// Finalized pending periods, oldest first. Tombstoned payload is never sent.
+    pub fn outbox(&self) -> Vec<OutboxEntry> {
+        self.all_outbox()
+            .into_iter()
+            .filter(|e| !e.dir.join("terminal.json").exists())
+            .collect()
+    }
+
+    pub fn reserve(&mut self, entry: &OutboxEntry) -> bool {
+        if entry.dir.join("terminal.json").exists() || !entry.dir.is_dir() {
+            return false;
+        }
         let Some(active) = self.active.as_mut() else {
-            return Err(io::Error::other("no active generation"));
+            return false;
         };
-        if entry.generation != active.generation {
-            return Err(io::Error::other("entry is not of the active generation"));
+        active.reserved.insert(entry.dir.clone())
+    }
+
+    pub fn release(&mut self, entry: &OutboxEntry) {
+        if let Some(active) = self.active.as_mut() {
+            active.reserved.remove(&entry.dir);
         }
-        fs::remove_dir_all(&entry.dir)?;
-        active.held_bytes = active.held_bytes.saturating_sub(entry.size);
-        active.held_periods = active.held_periods.saturating_sub(1);
-        if active.held_periods == 0 {
-            active.oldest_held_ms = None;
+        self.refresh_full();
+    }
+
+    /// Receipt-proven delivery is tombstoned before its payload is removed.
+    pub fn delivered(&mut self, entry: &OutboxEntry) -> io::Result<()> {
+        let state = self.write_outbox_terminal(&entry.dir, ReceiptState::Delivered)?;
+        self.mark_period(&entry.period_id, state, self.now_for_receipt(entry))?;
+        self.remove_payload_dir(&entry.dir)?;
+        if let Some(active) = self.active.as_mut() {
+            active.reserved.remove(&entry.dir);
         }
-        self.full = false;
+        self.refresh_full();
         Ok(())
     }
 
-    pub fn retired(&self) -> RetiredSummary {
-        self.retired.clone()
+    fn now_for_receipt(&self, _entry: &OutboxEntry) -> u64 {
+        // Receipt acceptance time is retained across terminal state changes.
+        self.active
+            .as_ref()
+            .and_then(|a| {
+                a.receipts
+                    .values()
+                    .filter(|r| r.period_id == _entry.period_id)
+                    .map(|r| r.at_ms)
+                    .max()
+            })
+            .unwrap_or(0)
     }
 
-    fn refresh_retired(&mut self) {
-        let mut summary = RetiredSummary::default();
-        if let Ok(entries) = fs::read_dir(self.root.join("retired")) {
-            for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    summary.generations += 1;
-                    summary.bytes += dir_size(&entry.path());
+    fn mark_period(&mut self, period: &str, target: ReceiptState, at_ms: u64) -> io::Result<()> {
+        let keys: Vec<_> = self
+            .active
+            .as_ref()
+            .map(|a| {
+                a.receipts
+                    .iter()
+                    .filter(|(_, r)| r.period_id == period)
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (ih, batch) in keys {
+            let mut receipt =
+                self.active.as_ref().unwrap().receipts[&(ih.clone(), batch.clone())].clone();
+            if receipt.state == ReceiptState::Pending {
+                receipt.state = target;
+                receipt.at_ms = at_ms.max(receipt.at_ms);
+                self.write_json_atomic(&self.receipt_path(&ih, &batch), &receipt)?;
+                self.active
+                    .as_mut()
+                    .unwrap()
+                    .receipts
+                    .insert((ih, batch), receipt);
+            }
+        }
+        Ok(())
+    }
+
+    fn write_outbox_terminal(
+        &mut self,
+        dir: &Path,
+        target: ReceiptState,
+    ) -> io::Result<ReceiptState> {
+        let path = dir.join("terminal.json");
+        if let Some(marker) = read_json::<OutboxTerminalFile>(&path)? {
+            return Ok(marker.state);
+        }
+        self.write_json_atomic(&path, &OutboxTerminalFile { state: target })?;
+        Ok(target)
+    }
+
+    fn waiting(&self) -> bool {
+        let Some(active) = &self.active else {
+            return false;
+        };
+        if active.open.has_dir && dir_payload_bytes(&self.open_dir(&active.open.id)) > 0 {
+            return true;
+        }
+        self.all_outbox()
+            .iter()
+            .any(|e| !active.reserved.contains(&e.dir))
+    }
+
+    /// Discard all currently waiting finalized periods and the populated open
+    /// period. Reservations exclude in-flight uploads.
+    pub fn discard_waiting(&mut self, now_ms: u64) -> usize {
+        let Some(active) = &self.active else { return 0 };
+        let open = active.open.has_dir.then(|| active.open.id.clone());
+        let mut snapshot: Vec<(String, PathBuf, bool)> = self
+            .all_outbox()
+            .into_iter()
+            .filter(|e| !active.reserved.contains(&e.dir))
+            .map(|e| (e.period_id, e.dir, false))
+            .collect();
+        if let Some(id) = open {
+            let dir = self.open_dir(&id);
+            if dir_payload_bytes(&dir) > 0 {
+                snapshot.push((id, dir, true));
+            }
+        }
+        for (period, dir, is_open) in &snapshot {
+            let state = if *is_open {
+                Ok(ReceiptState::Discarded)
+            } else {
+                self.write_outbox_terminal(dir, ReceiptState::Discarded)
+            };
+            let Ok(state) = state else {
+                continue;
+            };
+            if self.mark_period(period, state, now_ms).is_err() {
+                continue;
+            }
+            if self.remove_payload_dir(dir).is_ok() && *is_open {
+                if let Some(active) = self.active.as_mut() {
+                    active.open.has_dir = false;
+                    active.open.bytes = 0;
+                    active.open.contexts.clear();
                 }
             }
         }
-        self.retired = summary;
+        self.refresh_full();
+        snapshot.iter().filter(|(_, dir, _)| dir.exists()).count()
     }
 
-    /// The owner discards every previous journal's text. Returns what is left
-    /// (zero on success).
-    pub fn discard_retired(&mut self) -> RetiredSummary {
-        if let Ok(entries) = fs::read_dir(self.root.join("retired")) {
-            for entry in entries.flatten() {
-                if let Err(error) = fs::remove_dir_all(entry.path()) {
-                    tracing::warn!(target: "browser", component = "custody", outcome = "discard_failed", error = %error, "retired discard");
+    pub fn spool_bytes(&self) -> u64 {
+        let payload = dir_payload_bytes(&self.root.join("open"))
+            + dir_payload_bytes(&self.root.join("outbox"));
+        let receipts = dir_file_bytes(&self.root.join("receipts"));
+        payload.saturating_add(receipts)
+    }
+
+    fn refresh_full(&mut self) {
+        if self.spool_bytes() < self.policy.spool_bytes {
+            self.full = false;
+        }
+    }
+
+    fn write_bytes_atomic(&mut self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(remaining) = self.stop_after_durable_writes.as_mut() {
+            if *remaining == 0 {
+                self.stop_after_durable_writes = None;
+                return Err(io::Error::other("injected durable write interruption"));
+            }
+        }
+        let result = write_bytes_atomic(path, bytes);
+        #[cfg(test)]
+        if result.is_ok() {
+            if let Some(remaining) = self.stop_after_durable_writes.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    self.stop_after_durable_writes = None;
+                    return Err(io::Error::other("injected durable write interruption"));
                 }
             }
         }
-        self.refresh_retired();
-        self.retired.clone()
+        result
+    }
+
+    fn write_json_atomic<T: Serialize>(&mut self, path: &Path, value: &T) -> io::Result<()> {
+        let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+        self.write_bytes_atomic(path, &bytes)
+    }
+
+    fn remove_payload_dir(&mut self, path: &Path) -> io::Result<()> {
+        #[cfg(test)]
+        if self.fail_next_payload_removes > 0 {
+            self.fail_next_payload_removes -= 1;
+            return Err(io::Error::other("injected payload remove failure"));
+        }
+        match fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn stop_after_durable_writes(&mut self, n: usize) {
+        self.stop_after_durable_writes = Some(n);
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_payload_removes(&mut self, n: usize) {
+        self.fail_next_payload_removes = n;
     }
 }
 
-/// Durably write one batch and its receipt.
 fn commit(
-    root: &Path,
-    active: &mut Active,
+    store: &mut Store,
     ih: &str,
     batch_id: &str,
     body: &[u8],
+    receipt: ReceiptFile,
     now_ms: u64,
 ) -> io::Result<()> {
-    let gen_dir = root.join("gen").join(&active.generation);
-    let dir = gen_dir.join("open").join(&active.open.id);
-    if !active.open.has_dir {
+    let (period_id, has_dir, seq) = {
+        let active = store.active.as_ref().expect("open store");
+        (active.open.id.clone(), active.open.has_dir, active.next_seq)
+    };
+    let dir = store.open_dir(&period_id);
+    if !has_dir {
         fs::create_dir_all(&dir)?;
-        write_json_atomic(
+        let open = &store.active.as_ref().unwrap().open;
+        store.write_json_atomic(
             &dir.join("period.json"),
             &OpenPeriodFile {
-                period_id: active.open.id.clone(),
-                start_ms: active.open.start_ms,
-                end_ms: active.open.end_ms,
+                period_id: period_id.clone(),
+                start_ms: open.start_ms,
+                end_ms: open.end_ms,
             },
         )?;
-        active.open.has_dir = true;
+        store.active.as_mut().unwrap().open.has_dir = true;
     }
-    let seq = active.next_seq;
-    active.next_seq += 1;
-    write_bytes_atomic(&dir.join(format!("{seq:012}-{ih}-{batch_id}.jsonl")), body)?;
-    active.open.bytes += body.len() as u64;
-    active.receipts.insert(
-        (ih.to_string(), batch_id.to_string()),
-        (active.open.id.clone(), now_ms),
-    );
-    write_json_atomic(
-        &gen_dir
-            .join("receipts")
-            .join(format!("{ih}-{batch_id}.json")),
-        &ReceiptFile {
-            period_id: active.open.id.clone(),
-            at_ms: now_ms,
-        },
-    )
+    store.write_bytes_atomic(&dir.join(format!("{seq:012}-{ih}-{batch_id}.jsonl")), body)?;
+    {
+        let active = store.active.as_mut().unwrap();
+        active.next_seq += 1;
+        active.open.bytes += body.len() as u64;
+    }
+    let receipt_path = store.receipt_path(ih, batch_id);
+    store.write_json_atomic(&receipt_path, &receipt)?;
+    store
+        .active
+        .as_mut()
+        .unwrap()
+        .receipts
+        .insert((ih.to_string(), batch_id.to_string()), receipt);
+    let _ = now_ms;
+    Ok(())
 }
 
 fn inst_hash(inst: &str) -> String {
@@ -861,7 +996,14 @@ fn batch_files(dir: &Path) -> io::Result<Vec<(String, String, String)>> {
     Ok(out)
 }
 
-fn dir_size(path: &Path) -> u64 {
+fn list_dirs(path: &Path) -> io::Result<Vec<PathBuf>> {
+    Ok(fs::read_dir(path)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .collect())
+}
+
+fn dir_payload_bytes(path: &Path) -> u64 {
     let Ok(entries) = fs::read_dir(path) else {
         return 0;
     };
@@ -870,11 +1012,27 @@ fn dir_size(path: &Path) -> u64 {
         .map(|e| {
             let p = e.path();
             if p.is_dir() {
-                dir_size(&p)
-            } else {
+                dir_payload_bytes(&p)
+            } else if p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n == crate::PAGES_FILE || n.ends_with(".jsonl"))
+            {
                 e.metadata().map(|m| m.len()).unwrap_or(0)
+            } else {
+                0
             }
         })
+        .sum()
+}
+
+fn dir_file_bytes(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
         .sum()
 }
 
@@ -886,11 +1044,6 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>>
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
-}
-
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    write_bytes_atomic(path, &bytes)
 }
 
 /// Write, fsync, then rename into place: the file is whole or absent.
@@ -914,8 +1067,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const G_A: &str = "sha256:journal-a";
-    const G_B: &str = "sha256:journal-b";
     const T0: u64 = 1_790_000_100_000; // inside a 5-minute window
 
     fn namer() -> Namer {
@@ -935,7 +1086,7 @@ mod tests {
     }
 
     fn offer(store: &mut Store, batch_id: &str, records: &[Value], now: u64) -> BatchResult {
-        let generation = store.generation().unwrap().to_string();
+        let generation = "connection-generation".to_string();
         store.offer(
             &BatchInput {
                 generation: &generation,
@@ -972,7 +1123,6 @@ mod tests {
     fn accepted_batches_dedup_with_their_original_period() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(dir.path(), T0);
-        assert!(s.ensure_generation(G_A, T0));
         let first = offer(&mut s, &id(1), &[snapshot("c1", "hello")], T0);
         let BatchResult::Accepted { period_id } = first else {
             panic!("{first:?}")
@@ -987,7 +1137,6 @@ mod tests {
     fn a_delta_needs_its_context_snapshot_in_the_same_period() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(dir.path(), T0);
-        s.ensure_generation(G_A, T0);
         assert_eq!(
             offer(&mut s, &id(1), &[delta("c1", "x")], T0),
             BatchResult::Rejected {
@@ -1013,34 +1162,27 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_and_age_policy() {
+    fn old_batches_are_admitted_but_future_skew_is_retryable() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(dir.path(), T0);
-        s.ensure_generation(G_A, T0);
-        let r = s.offer(
+        let old = s.offer(
             &BatchInput {
-                generation: "other",
+                generation: "old-generation",
                 inst: "i",
                 batch_id: &id(1),
-                queued_at_ms: T0,
-                records: &[snapshot("c", "t")],
+                queued_at_ms: T0 - 600_001,
+                records: &[snapshot("c", "old")],
             },
             T0,
         );
-        assert_eq!(
-            r,
-            BatchResult::Rejected {
-                reason: "stale_generation"
-            }
-        );
-        let g = s.generation().unwrap().to_string();
+        assert!(matches!(old, BatchResult::Accepted { .. }));
         let future = s.offer(
             &BatchInput {
-                generation: &g,
+                generation: "other-generation",
                 inst: "i",
                 batch_id: &id(2),
                 queued_at_ms: T0 + 61_000,
-                records: &[snapshot("c", "t")],
+                records: &[snapshot("c", "future")],
             },
             T0,
         );
@@ -1050,35 +1192,19 @@ mod tests {
                 reason: "age_policy"
             }
         );
-        let old = s.offer(
-            &BatchInput {
-                generation: &g,
-                inst: "i",
-                batch_id: &id(3),
-                queued_at_ms: T0 - 600_000,
-                records: &[snapshot("c", "t")],
-            },
-            T0,
-        );
-        assert_eq!(
-            old,
-            BatchResult::Rejected {
-                reason: "expired_unaccepted"
-            }
-        );
-        assert_eq!(BatchResult::class("expired_unaccepted"), "permanent");
         assert_eq!(BatchResult::class("age_policy"), "retryable");
+        assert_eq!(BatchResult::class("stale_generation"), "retryable");
+        assert_eq!(BatchResult::class("expired_unaccepted"), "retryable");
     }
 
     #[test]
     fn a_full_spool_refuses_with_queue_full_until_delivery_frees_room() {
         let dir = tempfile::tempdir().unwrap();
         let policy = Policy {
-            spool_bytes: 300,
+            spool_bytes: 450,
             ..Policy::default()
         };
         let mut s = Store::open(dir.path(), policy, namer(), T0);
-        s.ensure_generation(G_A, T0);
         let big = "x".repeat(150);
         assert!(matches!(
             offer(&mut s, &id(1), &[snapshot("c1", &big)], T0),
@@ -1103,7 +1229,6 @@ mod tests {
     fn the_clock_finalizes_one_jsonl_per_period_named_from_the_window() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(dir.path(), T0);
-        s.ensure_generation(G_A, T0);
         offer(&mut s, &id(1), &[snapshot("c1", "alpha")], T0);
         offer(&mut s, &id(2), &[delta("c1", "beta")], T0 + 5);
         let before = s.period_id().unwrap().to_string();
@@ -1130,7 +1255,6 @@ mod tests {
             ..Policy::default()
         };
         let mut s = Store::open(dir.path(), policy, namer(), T0);
-        s.ensure_generation(G_A, T0);
         let text = "y".repeat(100);
         let BatchResult::Accepted { period_id: p1 } =
             offer(&mut s, &id(1), &[snapshot("c1", &text)], T0)
@@ -1151,7 +1275,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p1 = {
             let mut s = open(dir.path(), T0);
-            s.ensure_generation(G_A, T0);
             let BatchResult::Accepted { period_id } =
                 offer(&mut s, &id(1), &[snapshot("c1", "kept")], T0)
             else {
@@ -1160,10 +1283,6 @@ mod tests {
             period_id
         };
         let mut s = open(dir.path(), T0 + 1000);
-        assert!(
-            !s.ensure_generation(G_A, T0 + 1000),
-            "same journal keeps its generation"
-        );
         assert_eq!(s.outbox().len(), 1);
         assert_eq!(
             offer(&mut s, &id(1), &[snapshot("c1", "kept")], T0 + 2000),
@@ -1174,13 +1293,11 @@ mod tests {
     #[test]
     fn a_lost_receipt_is_repaired_from_the_batch_file() {
         let dir = tempfile::tempdir().unwrap();
-        let generation = {
+        {
             let mut s = open(dir.path(), T0);
-            s.ensure_generation(G_A, T0);
             offer(&mut s, &id(7), &[snapshot("c1", "kept")], T0);
-            s.generation().unwrap().to_string()
-        };
-        let receipts = dir.path().join("gen").join(&generation).join("receipts");
+        }
+        let receipts = dir.path().join("receipts");
         for e in fs::read_dir(&receipts).unwrap() {
             fs::remove_file(e.unwrap().path()).unwrap();
         }
@@ -1192,86 +1309,313 @@ mod tests {
     }
 
     #[test]
-    fn a_different_journal_retires_custody_which_is_never_delivered_or_counted() {
+    fn open_removes_legacy_layout_and_does_not_count_its_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = open(dir.path(), T0);
-        s.ensure_generation(G_A, T0);
-        let gen_a = s.generation().unwrap().to_string();
-        offer(&mut s, &id(1), &[snapshot("c1", "MARKER_FOR_A_OPEN")], T0);
-        s.tick(T0 + 300_000);
-        offer(
-            &mut s,
-            &id(2),
-            &[snapshot("c1", "MARKER_FOR_A_HELD")],
-            T0 + 300_000,
-        );
-        let a_entry = s.outbox().pop().unwrap();
-
-        assert!(s.ensure_generation(G_B, T0 + 300_500));
-        let gen_b = s.generation().unwrap().to_string();
-        assert_ne!(gen_a, gen_b);
-        let st = s.status(T0 + 300_500);
-        assert_eq!(st.held_bytes, 0, "retired text is not counted");
-        assert_eq!(st.retired.generations, 1);
-        assert!(st.retired.bytes > 0);
-        assert!(
-            s.outbox().is_empty(),
-            "retired text is never offered for delivery"
-        );
-        assert!(
-            s.delivered(&a_entry).is_err(),
-            "an old-generation entry cannot be released"
-        );
-        // A's batches can't be replayed into B.
-        let r = s.offer(
-            &BatchInput {
-                generation: &gen_a,
-                inst: "inst-1",
-                batch_id: &id(3),
-                queued_at_ms: T0 + 300_500,
-                records: &[snapshot("c", "late A")],
-            },
-            T0 + 300_500,
-        );
-        assert_eq!(
-            r,
-            BatchResult::Rejected {
-                reason: "stale_generation"
-            }
-        );
-        // B takes new text.
-        offer(
-            &mut s,
-            &id(4),
-            &[snapshot("c1", "MARKER_FOR_B")],
-            T0 + 300_600,
-        );
-        s.tick(T0 + 600_000);
-        let b_out = s.outbox();
-        assert_eq!(b_out.len(), 1);
-        let b_body = fs::read_to_string(b_out[0].pages_path()).unwrap();
-        assert!(b_body.contains("MARKER_FOR_B") && !b_body.contains("MARKER_FOR_A"));
-        // The retired text is still on disk until discarded, then gone.
-        let retired_root = dir.path().join("retired");
-        assert!(all_text(&retired_root).contains("MARKER_FOR_A_HELD"));
-        assert_eq!(s.discard_retired(), RetiredSummary::default());
-        assert!(!all_text(dir.path()).contains("MARKER_FOR_A"));
-        // A restart does not resurrect it.
-        let s2 = open(dir.path(), T0 + 700_000);
-        assert_eq!(s2.status(T0 + 700_000).retired.generations, 0);
-        assert_eq!(s2.generation(), Some(gen_b.as_str()));
+        fs::create_dir_all(dir.path().join("gen/g1")).unwrap();
+        fs::write(dir.path().join("gen/g1/pages"), b"legacy marker").unwrap();
+        fs::create_dir_all(dir.path().join("retired/g0")).unwrap();
+        fs::write(dir.path().join("retired/g0/pages"), b"retired marker").unwrap();
+        fs::write(
+            dir.path().join("active.json"),
+            b"not json and must not be read",
+        )
+        .unwrap();
+        let s = open(dir.path(), T0);
+        assert!(!dir.path().join("gen").exists());
+        assert!(!dir.path().join("retired").exists());
+        assert!(!dir.path().join("active.json").exists());
+        assert_eq!(s.spool_bytes(), 0);
+        assert!(!all_text(dir.path()).contains("legacy marker"));
     }
 
     #[test]
-    fn going_back_to_the_first_journal_does_not_revive_its_retired_text() {
+    fn discarded_and_delivered_replays_stay_duplicates_after_restart() {
+        for terminal in [ReceiptState::Discarded, ReceiptState::Delivered] {
+            let dir = tempfile::tempdir().unwrap();
+            {
+                let mut s = open(dir.path(), T0);
+                offer(&mut s, &id(11), &[snapshot("c", "terminal")], T0);
+                s.tick(T0 + 300_000);
+                let entry = s.outbox().pop().unwrap();
+                if terminal == ReceiptState::Discarded {
+                    assert_eq!(s.discard_waiting(T0 + 300_000), 0);
+                } else {
+                    s.delivered(&entry).unwrap();
+                }
+            }
+            let mut s = open(dir.path(), T0 + 3_700_000);
+            let replay = s.offer(
+                &BatchInput {
+                    generation: "a different generation",
+                    inst: "inst-1",
+                    batch_id: &id(11),
+                    queued_at_ms: T0 + 3_700_000,
+                    records: &[snapshot("c", "new payload")],
+                },
+                T0 + 3_700_000,
+            );
+            assert!(matches!(replay, BatchResult::Duplicate { .. }));
+            assert!(s.outbox().is_empty());
+            assert!(!all_text(dir.path()).contains("new payload"));
+        }
+    }
+
+    #[test]
+    fn discard_and_delivery_tombstones_finish_after_restart() {
+        for delivered in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            {
+                let mut s = open(dir.path(), T0);
+                offer(&mut s, &id(12), &[snapshot("c", "interrupt marker")], T0);
+                s.tick(T0 + 300_000);
+                let entry = s.outbox().pop().unwrap();
+                s.stop_after_durable_writes(1);
+                if delivered {
+                    assert!(s.delivered(&entry).is_err());
+                } else {
+                    assert_eq!(s.discard_waiting(T0 + 300_000), 1);
+                }
+            }
+            let s = open(dir.path(), T0 + 300_001);
+            assert!(s.outbox().is_empty());
+            assert!(!all_text(dir.path()).contains("interrupt marker"));
+            let receipt: ReceiptFile = read_json(
+                &fs::read_dir(dir.path().join("receipts"))
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path(),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                receipt.state,
+                if delivered {
+                    ReceiptState::Delivered
+                } else {
+                    ReceiptState::Discarded
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn period_metadata_without_a_batch_is_not_offered() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(dir.path(), T0);
-        s.ensure_generation(G_A, T0);
-        offer(&mut s, &id(1), &[snapshot("c1", "OLD_A")], T0);
-        s.ensure_generation(G_B, T0 + 10);
-        s.ensure_generation(G_A, T0 + 20);
-        s.tick(T0 + 300_000);
+        let id = s.period_id().unwrap().to_string();
+        let dirpath = s.open_dir(&id);
+        fs::create_dir_all(&dirpath).unwrap();
+        s.write_json_atomic(
+            &dirpath.join("period.json"),
+            &OpenPeriodFile {
+                period_id: id,
+                start_ms: T0,
+                end_ms: T0 + 300_000,
+            },
+        )
+        .unwrap();
+        drop(s);
+        s = open(dir.path(), T0 + 1);
         assert!(s.outbox().is_empty());
-        assert_eq!(s.status(T0 + 300_000).retired.generations, 2);
+        assert!(!s.status(T0 + 1).waiting);
+    }
+
+    #[test]
+    fn discard_removes_finalized_and_open_payload_and_clears_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = open(dir.path(), T0);
+        offer(&mut s, &id(13), &[snapshot("c", "finalized")], T0);
+        s.tick(T0 + 300_000);
+        let open_id = s.period_id().unwrap().to_string();
+        offer(
+            &mut s,
+            &id(14),
+            &[snapshot("open", "open payload")],
+            T0 + 300_000,
+        );
+        assert_eq!(s.discard_waiting(T0 + 300_001), 0);
+        assert_eq!(s.period_id(), Some(open_id.as_str()));
+        assert!(!s.status(T0 + 300_001).waiting);
+        assert_eq!(
+            offer(
+                &mut s,
+                &id(15),
+                &[delta("open", "needs snapshot")],
+                T0 + 300_002
+            ),
+            BatchResult::Rejected {
+                reason: "snapshot_required"
+            }
+        );
+        assert!(matches!(
+            offer(&mut s, &id(16), &[snapshot("open", "fresh")], T0 + 300_002),
+            BatchResult::Accepted { .. }
+        ));
+    }
+
+    #[test]
+    fn discarded_open_period_can_finalize_new_snapshot_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let stable_period = {
+            let mut s = open(dir.path(), T0);
+            let BatchResult::Accepted { period_id } =
+                offer(&mut s, &id(31), &[snapshot("c", "discarded text")], T0)
+            else {
+                panic!()
+            };
+            assert_eq!(s.discard_waiting(T0), 0);
+            assert!(!s.status(T0).waiting);
+            assert_eq!(s.period_id(), Some(period_id.as_str()));
+
+            assert_eq!(
+                offer(&mut s, &id(32), &[delta("c", "dependent delta")], T0 + 1),
+                BatchResult::Rejected {
+                    reason: "snapshot_required"
+                }
+            );
+            assert!(matches!(
+                offer(&mut s, &id(33), &[snapshot("c", "fresh text")], T0 + 2),
+                BatchResult::Accepted { .. }
+            ));
+            assert!(all_text(&s.open_dir(&period_id)).contains("fresh text"));
+            assert!(!all_text(&s.open_dir(&period_id)).contains("discarded text"));
+
+            assert!(s.tick(T0 + 300_000));
+            let outbox = s.outbox();
+            assert_eq!(outbox.len(), 1);
+            let body = fs::read_to_string(outbox[0].pages_path()).unwrap();
+            assert!(body.contains("fresh text"));
+            assert!(!body.contains("discarded text"));
+            period_id
+        };
+
+        let mut s = open(dir.path(), T0 + 300_001);
+        let outbox = s.outbox();
+        assert_eq!(outbox.len(), 1);
+        let body = fs::read_to_string(outbox[0].pages_path()).unwrap();
+        assert!(body.contains("fresh text"));
+        assert!(!body.contains("discarded text"));
+        let bytes_before_replay = s.spool_bytes();
+        assert_eq!(
+            s.offer(
+                &BatchInput {
+                    generation: "a different generation",
+                    inst: "inst-1",
+                    batch_id: &id(31),
+                    queued_at_ms: T0 + 3_700_000,
+                    records: &[snapshot("c", "replacement text")],
+                },
+                T0 + 3_700_000,
+            ),
+            BatchResult::Duplicate {
+                period_id: stable_period
+            }
+        );
+        assert_eq!(s.spool_bytes(), bytes_before_replay);
+        let body = fs::read_to_string(s.outbox()[0].pages_path()).unwrap();
+        assert!(body.contains("fresh text"));
+        assert!(!body.contains("discarded text"));
+        assert!(!body.contains("replacement text"));
+    }
+
+    #[test]
+    fn discard_skips_reserved_period_until_delivery_releases_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = open(dir.path(), T0);
+        offer(&mut s, &id(21), &[snapshot("one", "reserved")], T0);
+        s.tick(T0 + 300_000);
+        offer(&mut s, &id(22), &[snapshot("two", "waiting")], T0 + 300_000);
+        s.tick(T0 + 600_000);
+        let mut entries = s.outbox();
+        assert_eq!(entries.len(), 2);
+        let reserved = entries.remove(0);
+        assert!(s.reserve(&reserved));
+        assert_eq!(s.discard_waiting(T0 + 600_001), 0);
+        assert_eq!(s.outbox().len(), 1);
+        assert!(!s.status(T0 + 600_001).waiting);
+        s.delivered(&reserved).unwrap();
+        assert!(s.outbox().is_empty());
+        assert_eq!(s.status(T0 + 600_001).held_bytes, 0);
+    }
+
+    #[test]
+    fn reserved_payload_is_not_waiting_and_failed_delete_remains_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = open(dir.path(), T0);
+        offer(&mut s, &id(17), &[snapshot("c", "reserved")], T0);
+        s.tick(T0 + 300_000);
+        let entry = s.outbox().pop().unwrap();
+        assert!(s.reserve(&entry));
+        assert!(!s.status(T0 + 300_000).waiting);
+        assert_eq!(s.discard_waiting(T0 + 300_001), 0);
+        s.release(&entry);
+        s.fail_next_payload_removes(1);
+        assert_eq!(s.discard_waiting(T0 + 300_002), 1);
+        assert!(s.status(T0 + 300_002).waiting);
+        assert!(entry.pages_path().exists());
+        assert_eq!(s.discard_waiting(T0 + 300_003), 0);
+        assert!(!s.status(T0 + 300_003).waiting);
+    }
+
+    #[test]
+    fn pending_receipts_survive_longer_than_the_old_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = open(dir.path(), T0);
+        let first = offer(&mut s, &id(18), &[snapshot("c", "kept")], T0);
+        let BatchResult::Accepted { period_id } = first else {
+            panic!()
+        };
+        drop(s);
+        let mut s = open(dir.path(), T0 + 3_700_000);
+        assert_eq!(
+            offer(&mut s, &id(18), &[snapshot("c", "kept")], T0 + 3_700_000),
+            BatchResult::Duplicate { period_id }
+        );
+    }
+
+    #[test]
+    fn capacity_counts_receipts_and_duplicates_bypass_queue_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(
+            dir.path(),
+            Policy {
+                spool_bytes: 400,
+                ..Policy::default()
+            },
+            namer(),
+            T0,
+        );
+        let content = snapshot("c", &"x".repeat(70));
+        assert!(matches!(
+            offer(&mut s, &id(19), std::slice::from_ref(&content), T0),
+            BatchResult::Accepted { .. }
+        ));
+        let known = offer(&mut s, &id(19), std::slice::from_ref(&content), T0 + 1);
+        assert!(matches!(known, BatchResult::Duplicate { .. }));
+        let mut n = 20;
+        while !s.status(T0).full && n < 40 {
+            if matches!(
+                offer(
+                    &mut s,
+                    &id(n),
+                    &[snapshot("c", &"x".repeat(70))],
+                    T0 + n as u64
+                ),
+                BatchResult::Rejected {
+                    reason: "queue_full"
+                }
+            ) {
+                break;
+            }
+            n += 1;
+        }
+        assert!(s.status(T0).full);
+        assert!(matches!(
+            offer(&mut s, &id(19), &[snapshot("c", "replay")], T0),
+            BatchResult::Duplicate { .. }
+        ));
+        assert!(s.status(T0).full);
     }
 }

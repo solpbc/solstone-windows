@@ -12,9 +12,10 @@
 //! The capture gate is a live authorization: `state` is re-sent every renewal
 //! interval with a freshness deadline, so an app that goes away closes the gate
 //! in the browser by silence. Capture is `permitted` only while the app is
-//! paired, custody is bound to that journal's generation, intake has room, and
-//! the owner has not paused. A held journal mark does not close capture: those
-//! batches are kept here and sent once the owner confirms the mark.
+//! paired, the app is not quiescing, the spool is not full, the store has not
+//! failed, and the owner has not paused. Pending pages are not bound to a
+//! journal. A held journal mark does not close capture: those batches are kept
+//! here and sent once the owner confirms the mark.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -32,7 +33,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, Notify};
 
 use crate::argv::{BrandHint, Mode};
-use crate::custody::{BatchInput, BatchResult, CustodyStatus, OutboxEntry, RetiredSummary, Store};
+use crate::custody::{BatchInput, BatchResult, CustodyStatus, OutboxEntry, Store};
 use crate::wire::{write_frame, FrameReader};
 
 /// Largest `local_hello` the relay sends.
@@ -117,6 +118,8 @@ pub struct Hub {
     cfg: HubConfig,
     clock: Clock,
     store: Mutex<Store>,
+    advertised_generation: Mutex<Option<String>>,
+    generation_counter: AtomicU64,
     gates: Mutex<Gates>,
     about: Mutex<NativeAboutSnapshot>,
     failure: Mutex<Option<&'static str>>,
@@ -146,6 +149,8 @@ impl Hub {
             cfg,
             clock,
             store: Mutex::new(store),
+            advertised_generation: Mutex::new(None),
+            generation_counter: AtomicU64::new(1),
             gates: Mutex::new(Gates::default()),
             about: Mutex::new(about),
             failure: Mutex::new(None),
@@ -174,9 +179,10 @@ impl Hub {
         self.publish(Publication::State(about));
     }
 
-    /// Accept new gate inputs. A different journal identity retires custody
-    /// before anything else happens, and every session is told to reconnect so
-    /// the extension learns the new generation.
+    /// Accept new gate inputs. A different destination resets the about
+    /// snapshot to unknown, mints a new advertised generation, and clears the
+    /// delivery-failure flag. It does not retire, discard, or filter pending
+    /// pages, or publish `bye` `replaced`.
     pub fn update_gates(&self, gates: Gates) {
         let (changed, destination_changed) = {
             let mut current = self.gates.lock().unwrap_or_else(|p| p.into_inner());
@@ -203,27 +209,13 @@ impl Hub {
         } else {
             self.about.lock().unwrap_or_else(|p| p.into_inner()).clone()
         };
-        if let Pairing::Paired {
-            identity: Some(identity),
-        } = &gates.pairing
-        {
-            let now = self.now();
-            let mut store = self.store();
-            let had_generation = store.generation().is_some();
-            let changed = store.ensure_generation(identity, now);
-            drop(store);
-            // A first binding needs no reconnect: `state` carries it. Replacing a
-            // generation does, so no session keeps stamping the old one.
-            if changed {
-                // A failure belonged to the previous journal's delivery.
-                *self.failure.lock().unwrap_or_else(|p| p.into_inner()) = None;
-            }
-            if changed && had_generation {
-                self.publish(Publication::Bye {
-                    reason: "replaced",
-                    target: None,
-                });
-            }
+        if destination_changed {
+            let salt = destination_key(&gates).unwrap_or_default();
+            *self
+                .advertised_generation
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(self.mint_generation(&salt));
+            *self.failure.lock().unwrap_or_else(|p| p.into_inner()) = None;
         }
         self.publish(Publication::State(state_about));
     }
@@ -273,12 +265,16 @@ impl Hub {
         }
     }
 
-    pub fn identity(&self) -> Option<String> {
-        self.store().identity().map(str::to_string)
-    }
-
     pub fn outbox(&self) -> Vec<OutboxEntry> {
         self.store().outbox()
+    }
+
+    pub fn reserve(&self, entry: &OutboxEntry) -> bool {
+        self.store().reserve(entry)
+    }
+
+    pub fn release(&self, entry: &OutboxEntry) {
+        self.store().release(entry);
     }
 
     pub fn delivered(&self, entry: &OutboxEntry) -> std::io::Result<()> {
@@ -287,12 +283,46 @@ impl Hub {
         result
     }
 
-    pub fn retired(&self) -> RetiredSummary {
-        self.store().retired()
+    pub fn discard_waiting(&self) -> usize {
+        let left = self.store().discard_waiting(self.now());
+        self.publish_state();
+        left
     }
 
-    pub fn discard_retired(&self) -> RetiredSummary {
-        self.store().discard_retired()
+    fn mint_generation(&self, salt: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(salt.as_bytes());
+        h.update(self.now().to_le_bytes());
+        h.update(
+            self.generation_counter
+                .fetch_add(1, Ordering::SeqCst)
+                .to_le_bytes(),
+        );
+        h.update(std::process::id().to_le_bytes());
+        h.update(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+        crate::identity::hex(&h.finalize())[..32].to_string()
+    }
+
+    fn generation_for_pairing(&self, gates: &Gates) -> Option<String> {
+        if !matches!(gates.pairing, Pairing::Paired { .. }) {
+            return None;
+        }
+        let mut generation = self
+            .advertised_generation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if generation.is_none() {
+            let salt = destination_key(gates).unwrap_or_default();
+            *generation = Some(self.mint_generation(&salt));
+        }
+        generation.clone()
     }
 
     /// Update quiescence: refuse new sessions, tell every connected host to go
@@ -395,18 +425,10 @@ impl Hub {
             "unknown"
         };
 
-        let bound = match &gates.pairing {
-            Pairing::Paired {
-                identity: Some(identity),
-            } => custody.generation.is_some() && self.store().identity() == Some(identity.as_str()),
-            _ => false,
-        };
         let capture = if self.is_quiescing() || custody.failed {
             "unavailable"
         } else if !paired {
             "not_paired"
-        } else if !bound {
-            "unavailable"
         } else if gates.paused {
             // The owner's own move outranks the app's holds.
             "paused"
@@ -423,7 +445,10 @@ impl Hub {
         let (generation, period) = if matches!(capture, "unavailable" | "not_paired") {
             (None, None)
         } else {
-            (custody.generation.clone(), custody.period_id.clone())
+            (
+                self.generation_for_pairing(&gates),
+                custody.period_id.clone(),
+            )
         };
         (capture, delivery, failure, generation, period, custody)
     }
@@ -456,7 +481,7 @@ impl Hub {
 
     /// Offer one batch (blocking file I/O; call off the async reactor).
     fn offer(&self, batch: &Value, inst: &str) -> Value {
-        let generation = batch["destination_generation"].as_str().unwrap_or("");
+        let batch_generation = batch["destination_generation"].as_str().unwrap_or("");
         let batch_id = batch["batch_id"].as_str().unwrap_or("");
         let gates = self.gates.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let now = self.now();
@@ -470,7 +495,7 @@ impl Hub {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             let input = BatchInput {
-                generation,
+                generation: batch_generation,
                 inst,
                 batch_id,
                 queued_at_ms: batch["queued_at_ms"].as_u64().unwrap_or(0),
@@ -512,7 +537,15 @@ impl Hub {
                 m.insert("class".into(), json!(BatchResult::class(reason)));
             }
         }
-        m.insert("destination_generation".into(), json!(generation));
+        let response_generation = match result {
+            BatchResult::Rejected { .. } => self
+                .generation_for_pairing(&gates)
+                .unwrap_or_else(|| batch_generation.to_string()),
+            BatchResult::Accepted { .. } | BatchResult::Duplicate { .. } => self
+                .generation_for_pairing(&gates)
+                .unwrap_or_else(|| batch_generation.to_string()),
+        };
+        m.insert("destination_generation".into(), json!(response_generation));
         m.insert("inst".into(), json!(inst));
         m.insert("batch_id".into(), json!(batch_id));
         Value::Object(m)

@@ -338,7 +338,7 @@ pub fn run(
             crate::ipc::open_storage_folder,
             crate::ipc::answer_pairing,
             crate::ipc::browser_status,
-            crate::ipc::browser_discard_retired,
+            crate::ipc::browser_discard_waiting,
         ])
         .setup(move |app| {
             // Ensure the per-user autostart login item so the tray-resident
