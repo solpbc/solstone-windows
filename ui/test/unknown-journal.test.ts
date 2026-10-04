@@ -83,9 +83,8 @@ describe("unknown journal settings UI", () => {
     expect(captions.length).toBe(2);
     expect(captions[0].textContent).toBe("claimed, not verified");
     expect(captions[1].textContent).toBe("no identity presented");
-
-    expect(whatAnswereds[1].textContent).toContain("not");
-    expect(whatAnswereds[1].textContent).toContain("presented");
+    expect(whatAnswereds[1].textContent).toContain("mark");
+    expect(whatAnswereds[1].textContent).toContain("unavailable");
 
     // Marks different (hex/words)
     expect(whatAnswereds[0].textContent).toContain("distrust · chokehold");
@@ -106,14 +105,16 @@ describe("unknown journal settings UI", () => {
     expect(svg).not.toBeNull();
     expect(svg?.getAttribute("viewBox")).toBe("0 0 24 24");
 
-    // Empty tile geometry on second sighting
+    // Unavailable tile geometry on second sighting
     const emptyTiles = whatAnswereds[1].querySelectorAll(".unknown-journal-mark-tile");
     expect(emptyTiles.length).toBe(2);
     const emptyTile0 = emptyTiles[0] as HTMLElement;
     expect(emptyTile0.style.width).toBe("32px");
     expect(emptyTile0.style.height).toBe("32px");
     expect(emptyTile0.style.borderRadius).toBe("8px");
-    expect(emptyTile0.style.border).toContain("2px dashed");
+    expect(emptyTile0.style.border).not.toContain("dashed");
+    expect(emptyTile0.style.background).toMatch(/(#6e6453|rgb\(110, 100, 83\))/i);
+    expect(whatAnswereds[1].textContent).toContain("?");
 
     // Middots present
     expect(whatAnswereds[0].textContent).toContain("·");
@@ -129,6 +130,7 @@ describe("unknown journal settings UI", () => {
         responding_mark: sampleMarkSpec("distrust", "chokehold", "#ec4899"),
       },
     ]);
+    dump.sync.pairing.journal_label = "label-sent-by-the-journal";
 
     app.__test__.setRoute("journal");
     app.__test__.setHealth(dump);
@@ -139,6 +141,8 @@ describe("unknown journal settings UI", () => {
 
     const syncSummaryEl = present(ids["settings.status.upload.state"]);
     expect(syncSummaryEl.textContent).toContain("delivered");
+
+    expect(document.body.textContent).not.toContain("label-sent-by-the-journal");
   });
 
   it("ensures owner-visible strings contain no observer", () => {

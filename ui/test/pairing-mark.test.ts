@@ -47,22 +47,37 @@ describe("paired journal mark in the ordinary pairing pane", () => {
     expect(tiles.length).toBe(2);
   });
 
-  it("does not render a mark row when paired but no mark is known yet", () => {
+  it("renders an unavailable mark row when paired but no mark is known yet", () => {
     const dump = observingDump();
     app.__test__.setRoute("journal");
     app.__test__.setHealth(dump);
     app.__test__.renderSettings(dump);
 
-    expect(byId(ids["settings.pairing.mark"])).toBeNull();
+    const markEl = present(ids["settings.pairing.mark"]);
+    expect(markEl.textContent).toContain("?");
+
+    const tiles = markEl.querySelectorAll<HTMLElement>(".unknown-journal-mark-tile");
+    expect(tiles.length).toBe(2);
+    for (const tile of Array.from(tiles)) {
+      expect(tile.style.border).not.toContain("dashed");
+      expect(tile.style.background).toMatch(/(#6e6453|rgb\(110, 100, 83\))/i);
+    }
   });
 
-  it("does not render a mark row when not paired", () => {
+  it("renders a generic mark row when not paired", () => {
     const dump = notPairedDump();
     app.__test__.setRoute("journal");
     app.__test__.setHealth(dump);
     app.__test__.renderSettings(dump);
 
-    expect(byId(ids["settings.pairing.mark"])).toBeNull();
+    const markEl = present(ids["settings.pairing.mark"]);
+    expect(markEl.textContent).not.toContain("?");
+
+    const tiles = markEl.querySelectorAll<HTMLElement>(".unknown-journal-mark-tile");
+    expect(tiles.length).toBe(2);
+    for (const tile of Array.from(tiles)) {
+      expect(tile.style.border).toContain("2px dashed");
+    }
   });
 
   it("carries one role=img aria-label announcement, with every inner node hidden from the tree", () => {
@@ -76,7 +91,7 @@ describe("paired journal mark in the ordinary pairing pane", () => {
     const markEl = present(ids["settings.pairing.mark"]);
     expect(markEl.classList.contains("unknown-journal-chip")).toBe(true);
     expect(markEl.getAttribute("role")).toBe("img");
-    expect(markEl.getAttribute("aria-label")).toBe("mark: blue, purple, liquefy, smock");
+    expect(markEl.getAttribute("aria-label")).toBe("blue, purple, liquefy, smock");
 
     const tiles = markEl.querySelectorAll(".unknown-journal-mark-tile");
     expect(tiles.length).toBe(2);

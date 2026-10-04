@@ -1021,6 +1021,14 @@ function failedPairingLabel(detail: string | null | undefined): string {
   }
 }
 
+function markTextForm(mark: MarkRenderSpec | null | undefined): string {
+  if (!mark) {
+    return "mark\u00B7unavailable";
+  }
+  return `${mark.words[0].toLowerCase()}\u00B7${mark.words[1].toLowerCase()}`;
+}
+
+// journal_label stays on the dump for compatibility and is never rendered.
 function pairingPhaseLabel(pairing: PairingState): string {
   switch (pairing.phase) {
     case "not_paired":
@@ -1030,7 +1038,7 @@ function pairingPhaseLabel(pairing: PairingState): string {
     case "awaiting_confirmation":
       return "waiting for you to confirm your journal's mark";
     case "paired":
-      return pairing.journal_label ? `paired with ${pairing.journal_label}` : "paired";
+      return `paired with ${markTextForm(pairing.mark)}`;
     case "failed":
       return failedPairingLabel(pairing.detail);
   }
@@ -1200,22 +1208,66 @@ function render48pxMarkTile(icon: MarkIconSpec): HTMLElement {
   return tile;
 }
 
-function render48pxUnavailableTile(): HTMLElement {
-  const tile = document.createElement("div");
-  tile.setAttribute("aria-hidden", "true");
-  tile.style.display = "inline-flex";
-  tile.style.alignItems = "center";
-  tile.style.justifyContent = "center";
-  tile.style.width = "48px";
-  tile.style.height = "48px";
-  tile.style.borderRadius = "10px";
-  tile.style.border = "2px dashed #6E6453";
-  tile.style.background = "none";
-  tile.style.boxSizing = "border-box";
-  tile.style.fontSize = "20px";
-  tile.style.color = "#6E6453";
-  tile.textContent = "?";
-  return tile;
+function renderGenericMark(size: 32 | 48): HTMLElement {
+  const chipContainer = document.createElement("div");
+  chipContainer.classList.add("unknown-journal-chip");
+  chipContainer.style.display = "inline-flex";
+  chipContainer.style.alignItems = "center";
+  chipContainer.style.gap = size === 48 ? "10px" : "7px";
+  chipContainer.setAttribute("role", "img");
+  chipContainer.setAttribute("aria-label", "your journal, not set up yet");
+
+  const renderEmptyTile = (): HTMLElement => {
+    const tile = document.createElement("div");
+    tile.classList.add("unknown-journal-mark-tile");
+    tile.setAttribute("aria-hidden", "true");
+    tile.style.width = `${size}px`;
+    tile.style.height = `${size}px`;
+    tile.style.borderRadius = size === 48 ? "10px" : "8px";
+    tile.style.border = "2px dashed #6E6453";
+    tile.style.background = "none";
+    tile.style.boxSizing = "border-box";
+    return tile;
+  };
+
+  const words = renderMarkWords("your", "journal");
+  words.setAttribute("aria-hidden", "true");
+  chipContainer.append(renderEmptyTile(), renderEmptyTile(), words);
+  return chipContainer;
+}
+
+function renderUnavailableMark(size: 32 | 48): HTMLElement {
+  const chipContainer = document.createElement("div");
+  chipContainer.classList.add("unknown-journal-chip");
+  chipContainer.style.display = "inline-flex";
+  chipContainer.style.alignItems = "center";
+  chipContainer.style.gap = size === 48 ? "10px" : "7px";
+  chipContainer.setAttribute("role", "img");
+  chipContainer.setAttribute("aria-label", "your journal's mark, unavailable right now");
+
+  const renderTile = (): HTMLElement => {
+    const tile = document.createElement("div");
+    tile.classList.add("unknown-journal-mark-tile");
+    tile.setAttribute("aria-hidden", "true");
+    tile.style.display = "inline-flex";
+    tile.style.alignItems = "center";
+    tile.style.justifyContent = "center";
+    tile.style.width = `${size}px`;
+    tile.style.height = `${size}px`;
+    tile.style.borderRadius = size === 48 ? "10px" : "8px";
+    tile.style.border = "2px solid #6E6453";
+    tile.style.background = "#6E6453";
+    tile.style.boxSizing = "border-box";
+    tile.style.fontSize = size === 48 ? "20px" : "16px";
+    tile.style.color = "#FFFFFF";
+    tile.textContent = "?";
+    return tile;
+  };
+
+  const words = renderMarkWords("mark", "unavailable");
+  words.setAttribute("aria-hidden", "true");
+  chipContainer.append(renderTile(), renderTile(), words);
+  return chipContainer;
 }
 
 function renderPairingSection(dump: HealthDump): HTMLElement {
@@ -1226,37 +1278,29 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       "status",
       selectable(automation(text("div", pairingPhaseLabel(pairing)), ids["settings.pairing.state"])),
     ),
-    valueRow(
-      "journal",
-      automation(
-        text("div", pairing.journal_label ?? "not paired"),
-        ids["settings.pairing.journal"],
-      ),
-    ),
   );
 
   if (pairing.phase === "awaiting_confirmation") {
     const card = document.createElement("div");
     card.style.marginTop = "12px";
 
-    const markRow = document.createElement("div");
-    markRow.classList.add("fluent-card");
-    markRow.style.display = "inline-flex";
-    markRow.style.alignItems = "center";
-    markRow.style.gap = "10px";
-    markRow.style.padding = "16px";
-    markRow.style.border = "1px solid var(--border)";
-    markRow.style.borderRadius = "var(--radius-control)";
-    markRow.style.background = "var(--fill)";
-    markRow.style.marginBottom = "14px";
-    automation(markRow, ids["settings.pairing.markCard"]);
-    markRow.setAttribute("role", "img");
-    markRow.setAttribute("tabindex", "-1");
-
     if (pairing.mark) {
+      const markRow = document.createElement("div");
+      markRow.classList.add("fluent-card");
+      markRow.style.display = "inline-flex";
+      markRow.style.alignItems = "center";
+      markRow.style.gap = "10px";
+      markRow.style.padding = "16px";
+      markRow.style.border = "1px solid var(--border)";
+      markRow.style.borderRadius = "var(--radius-control)";
+      markRow.style.background = "var(--fill)";
+      markRow.style.marginBottom = "14px";
+      automation(markRow, ids["settings.pairing.markCard"]);
+      markRow.setAttribute("role", "img");
+      markRow.setAttribute("tabindex", "-1");
+
       const spec = pairing.mark;
-      const ariaName = `${spec.icon1.color.name.toLowerCase()}, ${spec.icon2.color.name.toLowerCase()} · ${spec.words[0].toLowerCase()} ${spec.words[1].toLowerCase()}`;
-      markRow.setAttribute("aria-label", ariaName);
+      markRow.setAttribute("aria-label", markAriaLabel(spec));
 
       const emphasis = text("div", "does this match your journal?");
       emphasis.style.fontWeight = "600";
@@ -1323,12 +1367,15 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       btnRow.append(rejectBtn, confirmBtn);
       card.append(emphasis, subtle, markRow, btnRow);
     } else {
-      markRow.setAttribute("aria-label", "your journal's mark, unavailable right now");
-
-      const words = renderMarkWords("mark", "unavailable");
-      words.setAttribute("aria-hidden", "true");
-
-      markRow.append(render48pxUnavailableTile(), render48pxUnavailableTile(), words);
+      const markRow = renderUnavailableMark(48);
+      markRow.classList.add("fluent-card");
+      markRow.style.padding = "16px";
+      markRow.style.border = "1px solid var(--border)";
+      markRow.style.borderRadius = "var(--radius-control)";
+      markRow.style.background = "var(--fill)";
+      markRow.style.marginBottom = "14px";
+      markRow.setAttribute("tabindex", "-1");
+      automation(markRow, ids["settings.pairing.markCard"]);
 
       const emphasis = text("div", "couldn't verify");
       emphasis.style.fontWeight = "600";
@@ -1395,11 +1442,27 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     return pane;
   }
 
-  if (pairing.phase === "paired" && pairing.mark) {
+  if (pairing.phase === "paired") {
+    if (pairing.mark) {
+      pane.append(
+        valueRow(
+          "mark",
+          automation(renderMarkChip(pairing.mark), ids["settings.pairing.mark"]),
+        ),
+      );
+    } else {
+      pane.append(
+        valueRow(
+          "mark",
+          automation(renderUnavailableMark(32), ids["settings.pairing.mark"]),
+        ),
+      );
+    }
+  } else {
     pane.append(
       valueRow(
         "mark",
-        automation(renderMarkChip(pairing.mark), ids["settings.pairing.mark"]),
+        automation(renderGenericMark(32), ids["settings.pairing.mark"]),
       ),
     );
   }
@@ -1510,10 +1573,14 @@ function renderMarkWords(w1: string, w2: string): HTMLElement {
 
 /** The one spoken announcement for a mark: both chip colors, then both words. */
 function markAriaLabel(spec: MarkRenderSpec): string {
-  return `mark: ${spec.icon1.color.name}, ${spec.icon2.color.name}, ${spec.words[0].toLowerCase()}, ${spec.words[1].toLowerCase()}`;
+  return `${spec.icon1.color.name}, ${spec.icon2.color.name}, ${spec.words[0].toLowerCase()}, ${spec.words[1].toLowerCase()}`;
 }
 
 function renderMarkChip(spec: MarkRenderSpec | null): HTMLElement {
+  if (!spec) {
+    return renderUnavailableMark(32);
+  }
+
   const chipContainer = document.createElement("div");
   chipContainer.classList.add("unknown-journal-chip");
   chipContainer.style.display = "inline-flex";
@@ -1522,27 +1589,6 @@ function renderMarkChip(spec: MarkRenderSpec | null): HTMLElement {
   // One announcement for the whole chip, not four fragments (two tiles + the
   // words span) read separately.
   chipContainer.setAttribute("role", "img");
-
-  if (!spec) {
-    chipContainer.setAttribute("aria-label", "no mark presented");
-    const renderEmptyTile = (): HTMLElement => {
-      const tile = document.createElement("div");
-      tile.classList.add("unknown-journal-mark-tile");
-      tile.setAttribute("aria-hidden", "true");
-      tile.style.width = "32px";
-      tile.style.height = "32px";
-      tile.style.borderRadius = "8px";
-      tile.style.border = "2px dashed #6E6453";
-      tile.style.background = "none";
-      tile.style.boxSizing = "border-box";
-      return tile;
-    };
-    const words = renderMarkWords("not", "presented");
-    words.setAttribute("aria-hidden", "true");
-    chipContainer.append(renderEmptyTile(), renderEmptyTile(), words);
-    return chipContainer;
-  }
-
   chipContainer.setAttribute("aria-label", markAriaLabel(spec));
 
   const renderTile = (icon: MarkIconSpec): HTMLElement => {

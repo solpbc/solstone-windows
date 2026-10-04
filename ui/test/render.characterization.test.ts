@@ -150,7 +150,8 @@ describe("settings renderer characterization", () => {
     app.__test__.renderSettings(dump);
 
     present(ids["settings.pairing.state"]);
-    present(ids["settings.pairing.journal"]);
+    present(ids["settings.pairing.mark"]);
+    expect(document.querySelector('[data-automation-id="settings.pairing.journal"]')).toBeNull();
     present(ids["settings.pairing.input"]);
     present(ids["settings.pairing.submit"]);
     expect(present(ids["settings.status.upload.state"]).textContent).toContain("not paired");

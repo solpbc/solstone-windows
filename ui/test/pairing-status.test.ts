@@ -278,12 +278,7 @@ describe("failed pairing status sentences", () => {
       GENERIC,
     ];
 
-    const journalLabelText = present(ids["settings.pairing.journal"]).textContent ?? "";
-    for (const s of lockedSentences) {
-      expect(journalLabelText).not.toBe(s);
-    }
-    expect(journalLabelText).not.toBe("pairing failed");
-    expect(journalLabelText).not.toBe("pairing failed: http_403");
+    expect(document.querySelector('[data-automation-id="settings.pairing.journal"]')).toBeNull();
 
     const unavailableText = present(ids["settings.journal.unavailable"]).textContent ?? "";
     for (const s of lockedSentences) {
@@ -356,10 +351,12 @@ describe("awaiting mark confirmation", () => {
     const homeGlance = homeJournalCardGlance();
     expect(homeGlance).toBe("waiting for you to confirm your journal's mark");
     expect(homeGlance).not.toContain("paired with");
+    expect(homeGlance).not.toContain("my-journal");
 
     const homeStrip = homeStatusStripJournalValue();
     expect(homeStrip).toBe("waiting for you to confirm your journal's mark");
     expect(homeStrip).not.toContain("paired with");
+    expect(homeStrip).not.toContain("my-journal");
 
     // Journal route
     resetRoot();
@@ -374,6 +371,8 @@ describe("awaiting mark confirmation", () => {
     const syncStatus = present(ids["settings.status.upload.state"]).textContent ?? "";
     expect(syncStatus).toBe("waiting for you to confirm your journal's mark");
     expect(syncStatus).not.toContain("paired with");
+
+    expect(document.body.textContent).not.toContain("my-journal");
   });
 
   it("renders mark confirmation card when mark is present with accessible name, focus, and non-default buttons", () => {
@@ -389,7 +388,7 @@ describe("awaiting mark confirmation", () => {
     const card = present(ids["settings.pairing.markCard"]);
     expect(card.getAttribute("role")).toBe("img");
     expect(card.getAttribute("tabindex")).toBe("-1");
-    expect(card.getAttribute("aria-label")).toBe("blue, amber · liquefy smock");
+    expect(card.getAttribute("aria-label")).toBe("Blue, Amber, liquefy, smock");
     expect(document.activeElement).toBe(card);
 
     expect(card.parentElement?.textContent).toContain("does this match your journal?");

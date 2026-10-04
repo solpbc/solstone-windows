@@ -144,17 +144,38 @@ impl OpenPairProbe {
     }
 }
 
+fn journal_window_title(
+    phase: observer_model::PairingPhase,
+    mark: Option<&observer_model::MarkRenderSpec>,
+) -> String {
+    if phase != observer_model::PairingPhase::Paired {
+        "your journal".to_string()
+    } else {
+        match mark {
+            Some(mark) => format!(
+                "{}{}{}",
+                mark.words[0].to_lowercase(),
+                '\u{00B7}',
+                mark.words[1].to_lowercase()
+            ),
+            None => format!("mark{}unavailable", '\u{00B7}'),
+        }
+    }
+}
+
 /// Open (or focus) the paired journal window.
 pub async fn open_journal<S: JournalSurface>(
     state: &crate::app::AppState,
     surface: &S,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), OpenJournalError> {
-    let phase = state
+    let (phase, mark) = state
         .sync
         .lock()
-        .map(|s| s.pairing.phase)
-        .unwrap_or(observer_model::PairingPhase::NotPaired);
+        .map(|s| (s.pairing.phase, s.pairing.mark.clone()))
+        .unwrap_or((observer_model::PairingPhase::NotPaired, None));
+
+    let title = journal_window_title(phase, mark.as_ref());
 
     dispatch_open_journal(
         phase,
@@ -248,6 +269,7 @@ pub async fn open_journal<S: JournalSurface>(
             let page_load_started = Arc::new(AtomicBool::new(false));
             let window = match build_journal_window_on_main_thread(
                 app,
+                title.clone(),
                 url.clone(),
                 page_loaded.clone(),
                 page_load_started.clone(),
@@ -395,6 +417,7 @@ fn log_journal_window_state(window: &WebviewWindow, stage: &'static str) {
 // also dispatches onto the async runtime before it calls this function.
 async fn build_journal_window_on_main_thread(
     app: &tauri::AppHandle,
+    title: String,
     url: String,
     page_loaded: Arc<Notify>,
     page_load_started: Arc<AtomicBool>,
@@ -402,7 +425,7 @@ async fn build_journal_window_on_main_thread(
     let (tx, rx) = oneshot::channel();
     let app_for_main = app.clone();
     app.run_on_main_thread(move || {
-        let res = build_journal_window(&app_for_main, &url, page_loaded, page_load_started);
+        let res = build_journal_window(&app_for_main, &title, &url, page_loaded, page_load_started);
         let _ = tx.send(res);
     })?;
 
@@ -411,6 +434,7 @@ async fn build_journal_window_on_main_thread(
 
 fn build_journal_window(
     app: &tauri::AppHandle,
+    title: &str,
     url: &str,
     page_loaded: Arc<Notify>,
     page_load_started: Arc<AtomicBool>,
@@ -424,7 +448,7 @@ fn build_journal_window(
     // then navigate the bootstrap URL only after comprehensive filtering is installed.
     let placeholder = tauri::Url::parse("about:blank").expect("valid placeholder URL");
     let builder = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(placeholder))
-        .title("your journal")
+        .title(title)
         .inner_size(1100.0, 800.0)
         .min_inner_size(640.0, 480.0)
         .additional_browser_args(WEBVIEW_ARGS)

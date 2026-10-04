@@ -33,7 +33,6 @@ export const automationContract = {
     "settings.pairing.confirmReject": "settings.pairing.confirmReject",
     "settings.pairing.confirmYes": "settings.pairing.confirmYes",
     "settings.pairing.input": "settings.pairing.input",
-    "settings.pairing.journal": "settings.pairing.journal",
     "settings.pairing.mark": "settings.pairing.mark",
     "settings.pairing.markCard": "settings.pairing.markCard",
     "settings.pairing.state": "settings.pairing.state",

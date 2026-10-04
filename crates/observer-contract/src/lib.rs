@@ -73,13 +73,14 @@ pub mod settings {
     pub const SOURCES_SCREEN_STATE: &str = "settings.sources.screen.state";
     pub const SOURCES_SYSTEM_AUDIO_STATE: &str = "settings.sources.systemAudio.state";
     pub const SOURCES_MIC_STATE: &str = "settings.sources.mic.state";
-    /// Pairing pane (Wave 2): phase, paired journal, the pair-link field + action.
+    /// Pairing pane (Wave 2): phase, the journal's mark, and the pair-link field + action.
     pub const PAIRING_STATE: &str = "settings.pairing.state";
-    pub const PAIRING_JOURNAL: &str = "settings.pairing.journal";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
     pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
-    /// The paired journal's own visual mark, shown once paired — the same mark
-    /// comparison primitive the unknown-journal detail card uses.
+    /// The mark row is the journal's identity whenever the confirmation card
+    /// is not on screen (generic mark before the owner confirms, the real
+    /// mark once paired, unavailable mark when paired but the mark cannot be
+    /// read).
     pub const PAIRING_MARK: &str = "settings.pairing.mark";
     pub const PAIRING_MARK_CARD: &str = "settings.pairing.markCard";
     pub const PAIRING_CONFIRM_YES: &str = "settings.pairing.confirmYes";
@@ -177,7 +178,6 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ),
         ("settings.sources.mic.state", settings::SOURCES_MIC_STATE),
         ("settings.pairing.state", settings::PAIRING_STATE),
-        ("settings.pairing.journal", settings::PAIRING_JOURNAL),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
         ("settings.pairing.mark", settings::PAIRING_MARK),

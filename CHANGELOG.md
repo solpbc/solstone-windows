@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- your journal is named by its mark. after you confirm the mark, status names the journal by the mark's two words. before that, the mark shown is your journal, not set up yet. a confirmed mark that can't be read shows as unavailable.
+
 ### Fixed
 
 - when pairing doesn't go through, the solstone app now asks for a new pairing link from your journal instead of a pairing code. when it asks you to confirm your journal's mark, it now says where your journal shows that mark.
