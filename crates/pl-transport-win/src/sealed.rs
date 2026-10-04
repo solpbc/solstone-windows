@@ -44,6 +44,10 @@ pub struct DirEntryFact {
 /// it (never re-uploads) and local finish removes that directory.
 pub const UPLOADED_MARKER: &str = ".uploaded";
 pub const UPLOADED_TMP_MARKER: &str = ".uploaded.tmp";
+/// Written into a segment the journal refused, naming that journal's instance.
+/// It lets a later journal get its own chance at the segment: a refusal binds
+/// only the journal that made it.
+pub const REFUSED_BY_MARKER: &str = ".refused-by";
 
 /// Source of sealed segments. Real impl scans `%LocalAppData%`; tests use a
 /// temp dir.
@@ -53,12 +57,18 @@ pub trait SealedStore: Send + Sync {
     fn scan(&self) -> std::io::Result<Vec<SealedSegment>>;
     fn read_file(&self, index: u64, name: &str) -> std::io::Result<Vec<u8>>;
     fn remove(&self, index: u64) -> std::io::Result<()>;
-    /// Move a rejected sealed segment aside without deleting it.
+    /// Move a segment the journal refused aside without deleting it, recording
+    /// which journal refused it in [`REFUSED_BY_MARKER`].
     ///
     /// The target is `<root>/quarantine/<index>` (bare index, or `<index>-2`, etc.),
     /// which stays scan-invisible because the top-level `quarantine` directory is not a
     /// decimal sealed segment name.
-    fn quarantine(&self, index: u64) -> std::io::Result<()>;
+    fn quarantine(&self, index: u64, refused_by: &str) -> std::io::Result<()>;
+    /// Return to pending every set-aside segment that a journal other than
+    /// `journal` refused. Set-asides with no refusing journal on record (a seal
+    /// collision, a recovery quarantine) stay where they are. A segment whose
+    /// index is already pending waits for a later call. Returns how many moved.
+    fn release_refused(&self, journal: &str) -> std::io::Result<u64>;
     /// Mark a segment confirmed-uploaded. Writes [`UPLOADED_MARKER`].
     fn mark_confirmed(&self, index: u64) -> std::io::Result<()>;
     /// Confirmed segments (those **with** the marker), for the local finish pass.
@@ -159,6 +169,12 @@ impl LocalSealedStore {
             if tmp_path.exists() {
                 let _ = std::fs::remove_file(tmp_path);
             }
+            // Left behind by a set-aside interrupted before its move, or a
+            // release interrupted after it; it means nothing in a pending dir.
+            let refused_path = entry.path().join(REFUSED_BY_MARKER);
+            if refused_path.exists() {
+                let _ = std::fs::remove_file(refused_path);
+            }
             let files = list_files(&entry.path())?;
             let is_confirmed = files.iter().any(|f| f == UPLOADED_MARKER);
             if is_confirmed != want_confirmed {
@@ -174,7 +190,10 @@ impl LocalSealedStore {
                 files: files
                     .into_iter()
                     .filter(|f| {
-                        f != UPLOADED_MARKER && f != LEN_FILE_NAME && f != UPLOADED_TMP_MARKER
+                        f != UPLOADED_MARKER
+                            && f != LEN_FILE_NAME
+                            && f != UPLOADED_TMP_MARKER
+                            && f != REFUSED_BY_MARKER
                     })
                     .collect(),
             });
@@ -197,9 +216,10 @@ impl SealedStore for LocalSealedStore {
         std::fs::remove_dir_all(self.segment_dir(index))
     }
 
-    fn quarantine(&self, index: u64) -> std::io::Result<()> {
+    fn quarantine(&self, index: u64, refused_by: &str) -> std::io::Result<()> {
         let quarantine = self.root.join("quarantine");
         std::fs::create_dir_all(&quarantine)?;
+        std::fs::write(self.segment_dir(index).join(REFUSED_BY_MARKER), refused_by)?;
         let preferred = index.to_string();
         let mut target = quarantine.join(&preferred);
         let mut counter = 2;
@@ -208,6 +228,44 @@ impl SealedStore for LocalSealedStore {
             counter += 1;
         }
         std::fs::rename(self.segment_dir(index), target)
+    }
+
+    fn release_refused(&self, journal: &str) -> std::io::Result<u64> {
+        let quarantine = self.root.join("quarantine");
+        let dir = match std::fs::read_dir(&quarantine) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        let mut released = 0;
+        for entry in dir {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let refused_by = match std::fs::read_to_string(entry.path().join(REFUSED_BY_MARKER)) {
+                Ok(text) => text,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            if refused_by == journal {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(index) = parse_sealed_index(name.split('-').next().unwrap_or_default()) else {
+                continue;
+            };
+            let target = self.segment_dir(index);
+            if target.exists() {
+                continue;
+            }
+            std::fs::rename(entry.path(), &target)?;
+            let _ = std::fs::remove_file(target.join(REFUSED_BY_MARKER));
+            released += 1;
+        }
+        Ok(released)
     }
 
     fn mark_confirmed(&self, index: u64) -> std::io::Result<()> {
@@ -301,7 +359,11 @@ impl SealedStore for LocalSealedStore {
                 let Some(name) = child.file_name().to_str().map(str::to_string) else {
                     continue;
                 };
-                if name != LEN_FILE_NAME && name != UPLOADED_MARKER && name != UPLOADED_TMP_MARKER {
+                if name != LEN_FILE_NAME
+                    && name != UPLOADED_MARKER
+                    && name != UPLOADED_TMP_MARKER
+                    && name != REFUSED_BY_MARKER
+                {
                     has_media = true;
                     break;
                 }
@@ -383,13 +445,18 @@ mod tests {
         std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
 
         let store = LocalSealedStore::new(&root, 300);
-        store.quarantine(7).unwrap();
+        store.quarantine(7, "journal-a").unwrap();
 
         assert!(!root.join("7").exists());
         assert!(root.join("quarantine/7").is_dir());
         assert_eq!(
             std::fs::read(root.join(format!("quarantine/7/{SCREEN_FILE_NAME}"))).unwrap(),
             b"MP4"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(format!("quarantine/7/{REFUSED_BY_MARKER}")))
+                .unwrap(),
+            "journal-a"
         );
         assert!(store.scan().unwrap().is_empty());
 
@@ -628,17 +695,17 @@ mod tests {
         let seg7 = root.join("7");
         std::fs::create_dir_all(&seg7).unwrap();
         std::fs::write(seg7.join("screen.mp4"), b"payload1").unwrap();
-        store.quarantine(7).unwrap();
+        store.quarantine(7, "journal-a").unwrap();
         assert!(root.join("quarantine/7").is_dir());
 
         std::fs::create_dir_all(&seg7).unwrap();
         std::fs::write(seg7.join("screen.mp4"), b"payload2").unwrap();
-        store.quarantine(7).unwrap();
+        store.quarantine(7, "journal-a").unwrap();
         assert!(root.join("quarantine/7-2").is_dir());
 
         std::fs::create_dir_all(&seg7).unwrap();
         std::fs::write(seg7.join("screen.mp4"), b"payload3").unwrap();
-        store.quarantine(7).unwrap();
+        store.quarantine(7, "journal-a").unwrap();
         assert!(root.join("quarantine/7-3").is_dir());
 
         let _ = std::fs::remove_dir_all(&root);
@@ -671,6 +738,11 @@ mod tests {
         std::fs::create_dir_all(&q_partial).unwrap();
         std::fs::write(q_partial.join("clip.partial"), b"partial").unwrap();
 
+        // The refusing journal's record is not media either
+        let q4 = root.join("quarantine/4");
+        std::fs::create_dir_all(&q4).unwrap();
+        std::fs::write(q4.join(REFUSED_BY_MARKER), b"journal-a").unwrap();
+
         assert_eq!(store.quarantined_media_dirs().unwrap(), 3);
 
         // Test modified
@@ -680,6 +752,100 @@ mod tests {
         std::fs::write(seg5.join("test.txt"), b"test").unwrap();
         assert!(store.modified(5, "test.txt").is_ok());
         assert!(store.modified(5, "missing.txt").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_refused_segment_returns_to_pending_for_another_journal_only() {
+        let root = temp_root();
+        let store = LocalSealedStore::new(&root, 300);
+        let seg = root.join("7");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+        std::fs::write(seg.join(LEN_FILE_NAME), b"300").unwrap();
+        store.quarantine(7, "journal-a").unwrap();
+
+        // The journal that refused it does not get it back.
+        assert_eq!(store.release_refused("journal-a").unwrap(), 0);
+        assert!(store.scan().unwrap().is_empty());
+
+        // A different journal does, with the media and LEN intact and no
+        // trace of the old refusal.
+        assert_eq!(store.release_refused("journal-b").unwrap(), 1);
+        assert!(!root.join("quarantine/7").exists());
+        let segs = store.scan().unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].index, 7);
+        assert_eq!(segs[0].len_secs, Some(300));
+        assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME]);
+        assert!(!seg.join(REFUSED_BY_MARKER).exists());
+
+        // Once is once: nothing left to release.
+        assert_eq!(store.release_refused("journal-b").unwrap(), 0);
+        assert_eq!(store.quarantined_media_dirs().unwrap(), 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_leaves_set_asides_no_journal_refused() {
+        let root = temp_root();
+        let store = LocalSealedStore::new(&root, 300);
+        // A seal collision and a recovery quarantine carry no refusing journal.
+        let collision = root.join("quarantine/9");
+        std::fs::create_dir_all(&collision).unwrap();
+        std::fs::write(collision.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+        let recovered = root.join("quarantine/10.incomplete");
+        std::fs::create_dir_all(&recovered).unwrap();
+        std::fs::write(recovered.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+
+        assert_eq!(store.release_refused("journal-b").unwrap(), 0);
+        assert!(collision.is_dir());
+        assert!(recovered.is_dir());
+        assert!(store.scan().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_waits_while_the_index_is_already_pending() {
+        let root = temp_root();
+        let store = LocalSealedStore::new(&root, 300);
+        for payload in [b"first".as_slice(), b"second".as_slice()] {
+            let seg = root.join("7");
+            std::fs::create_dir_all(&seg).unwrap();
+            std::fs::write(seg.join(SCREEN_FILE_NAME), payload).unwrap();
+            store.quarantine(7, "journal-a").unwrap();
+        }
+        assert!(root.join("quarantine/7").is_dir());
+        assert!(root.join("quarantine/7-2").is_dir());
+
+        // Only one can occupy index 7; the other waits for the next call.
+        assert_eq!(store.release_refused("journal-b").unwrap(), 1);
+        assert_eq!(store.scan().unwrap().len(), 1);
+        assert_eq!(store.release_refused("journal-b").unwrap(), 0);
+
+        store.remove(7).unwrap();
+        assert_eq!(store.release_refused("journal-b").unwrap(), 1);
+        assert_eq!(store.scan().unwrap().len(), 1);
+        assert_eq!(store.quarantined_media_dirs().unwrap(), 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_drops_a_stray_refusal_record_from_a_pending_dir() {
+        let root = temp_root();
+        let seg = root.join("7");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+        std::fs::write(seg.join(REFUSED_BY_MARKER), b"journal-a").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        let segs = store.scan().unwrap();
+        assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME]);
+        assert!(!seg.join(REFUSED_BY_MARKER).exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }

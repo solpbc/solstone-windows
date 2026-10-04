@@ -955,7 +955,8 @@ impl UploadCoordinator {
             return;
         }
 
-        match self.store.quarantine(index) {
+        let refused_by = self.client.journal_identity().instance_id;
+        match self.store.quarantine(index, &refused_by) {
             Ok(()) => {
                 self.quarantine_counts
                     .lock()
@@ -1102,6 +1103,27 @@ impl UploadCoordinator {
         }
 
         let now = self.monotonic_now_epoch_secs();
+
+        // A refusal binds only the journal that made it. Once the owner has
+        // confirmed this journal, segments another journal refused get their
+        // chance here; this journal's own refusals stay set aside.
+        match self
+            .store
+            .release_refused(&self.client.journal_identity().instance_id)
+        {
+            Ok(0) => {}
+            Ok(released) => tracing::info!(
+                target: "pl_upload",
+                released,
+                "segments another journal refused are pending again"
+            ),
+            Err(error) => tracing::warn!(
+                target: "pl_upload",
+                reason = "release_refused_failed",
+                kind = ?error.kind(),
+                "could not return refused segments to pending"
+            ),
+        }
 
         // Recount quarantined media dirs first
         if let Ok(count) = self.store.quarantined_media_dirs() {
@@ -1846,8 +1868,12 @@ mod tests {
             Ok(())
         }
 
-        fn quarantine(&self, _index: u64) -> std::io::Result<()> {
+        fn quarantine(&self, _index: u64, _refused_by: &str) -> std::io::Result<()> {
             Ok(())
+        }
+
+        fn release_refused(&self, _journal: &str) -> std::io::Result<u64> {
+            Ok(0)
         }
 
         fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
@@ -1902,8 +1928,12 @@ mod tests {
             Ok(())
         }
 
-        fn quarantine(&self, _index: u64) -> std::io::Result<()> {
+        fn quarantine(&self, _index: u64, _refused_by: &str) -> std::io::Result<()> {
             Ok(())
+        }
+
+        fn release_refused(&self, _journal: &str) -> std::io::Result<u64> {
+            Ok(0)
         }
 
         fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
@@ -2001,8 +2031,12 @@ mod tests {
             Ok(())
         }
 
-        fn quarantine(&self, _index: u64) -> std::io::Result<()> {
+        fn quarantine(&self, _index: u64, _refused_by: &str) -> std::io::Result<()> {
             Ok(())
+        }
+
+        fn release_refused(&self, _journal: &str) -> std::io::Result<u64> {
+            Ok(0)
         }
 
         fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
@@ -2232,9 +2266,13 @@ mod tests {
             Ok(())
         }
 
-        fn quarantine(&self, index: u64) -> std::io::Result<()> {
+        fn quarantine(&self, index: u64, _refused_by: &str) -> std::io::Result<()> {
             self.state.lock().unwrap().quarantined.insert(index);
             Ok(())
+        }
+
+        fn release_refused(&self, _journal: &str) -> std::io::Result<u64> {
+            Ok(0)
         }
 
         fn mark_confirmed(&self, index: u64) -> std::io::Result<()> {
@@ -2373,6 +2411,8 @@ mod tests {
         stop: Mutex<Option<HandshakeStop>>,
         /// Every POST, including the zone that named that attempt.
         posts: Mutex<Vec<PostedIngest>>,
+        /// The journal instance this client is paired with.
+        instance: String,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2389,12 +2429,21 @@ mod tests {
             ingests: Vec<Result<(IngestResponse, SendMetadata), TransportError>>,
             lists: Vec<Result<(SegmentsEnvelope, SendMetadata), TransportError>>,
         ) -> Arc<Self> {
+            Self::for_journal("test", ingests, lists)
+        }
+
+        fn for_journal(
+            instance: &str,
+            ingests: Vec<Result<(IngestResponse, SendMetadata), TransportError>>,
+            lists: Vec<Result<(SegmentsEnvelope, SendMetadata), TransportError>>,
+        ) -> Arc<Self> {
             Arc::new(Self {
                 ingests: Mutex::new(VecDeque::from(ingests)),
                 lists: Mutex::new(VecDeque::from(lists)),
                 submitted_day: Mutex::new(None),
                 stop: Mutex::new(None),
                 posts: Mutex::new(Vec::new()),
+                instance: instance.to_string(),
             })
         }
     }
@@ -2402,7 +2451,7 @@ mod tests {
     impl UploadClient for FakeClient {
         fn journal_identity(&self) -> JournalIdentity {
             JournalIdentity {
-                instance_id: "test".to_string(),
+                instance_id: self.instance.clone(),
                 ca_fp_prefix: "0000000000000000".to_string(),
                 client_cert_sha256:
                     "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2562,8 +2611,12 @@ mod tests {
             self.inner.remove(index)
         }
 
-        fn quarantine(&self, index: u64) -> std::io::Result<()> {
-            self.inner.quarantine(index)
+        fn quarantine(&self, index: u64, refused_by: &str) -> std::io::Result<()> {
+            self.inner.quarantine(index, refused_by)
+        }
+
+        fn release_refused(&self, journal: &str) -> std::io::Result<u64> {
+            self.inner.release_refused(journal)
         }
 
         fn mark_confirmed(&self, index: u64) -> std::io::Result<()> {
@@ -3138,6 +3191,167 @@ mod tests {
         assert!(!last_error.contains("https://"));
         assert!(!last_error.contains("sha256"));
         assert!(!last_error.contains("10.0.0.5"));
+    }
+
+    fn legacy_field_refusal() -> Result<(IngestResponse, SendMetadata), TransportError> {
+        Err(TransportError::Rejected {
+            status: 400,
+            body: r#"{"error":"Ingest request refused","reason_code":"legacy_observer_field"}"#
+                .into(),
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_segment_one_journal_refused_is_offered_to_the_next_journal_once() {
+        let root = TestRoot::new("refused-follows-pairing");
+        let file_name = "display_1_screen.mp4";
+        let index = 5_666_667;
+        let boundary = index * 300;
+        let bytes = b"held segment".to_vec();
+        let dir = root.path().join(index.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file_name), &bytes).unwrap();
+        let store = || Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300));
+
+        // Journal A refuses it until it is set aside.
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let journal_a = FakeClient::for_journal(
+            "journal-a",
+            (0..QUARANTINE_AFTER_REJECTS)
+                .map(|_| legacy_field_refusal())
+                .collect(),
+            vec![],
+        );
+        let coordinator = coordinator_with_client(journal_a.clone(), store(), sync.clone());
+        for _ in 0..QUARANTINE_AFTER_REJECTS {
+            assert_eq!(coordinator.tick().await.unwrap(), 0);
+            tokio::time::advance(Duration::from_secs(86401)).await;
+        }
+        assert!(!dir.exists());
+        assert_eq!(sync.lock().unwrap().upload.quarantined_segments, 1);
+        drop(coordinator);
+
+        // Still paired with A (say, after a restart): A is not asked again.
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let journal_a_again = FakeClient::for_journal("journal-a", vec![], vec![]);
+        let coordinator = coordinator_with_client(journal_a_again.clone(), store(), sync.clone());
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert!(journal_a_again.posts.lock().unwrap().is_empty());
+        assert_eq!(sync.lock().unwrap().upload.quarantined_segments, 1);
+        drop(coordinator);
+
+        // Paired with journal B: B gets the segment, and it is delivered.
+        let key = civil::segment_key_string_local(boundary, 0, 300);
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let journal_b = FakeClient::for_journal(
+            "journal-b",
+            vec![accepted_ingest(&key, file_name, &bytes, 1)],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(journal_b.clone(), store(), sync.clone());
+        assert_eq!(coordinator.tick().await.unwrap(), 1);
+        let posts = journal_b.posts.lock().unwrap().clone();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].segment, key);
+        assert_eq!(posts[0].files, vec![file_name.to_string()]);
+        assert_eq!(sync.lock().unwrap().upload.quarantined_segments, 0);
+        assert!(!root.path().join(format!("quarantine/{index}")).exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_segment_the_next_journal_also_refuses_is_set_aside_for_that_journal() {
+        let root = TestRoot::new("refused-twice");
+        let file_name = "display_1_screen.mp4";
+        let index = 5_666_668;
+        let dir = root.path().join(index.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file_name), b"held segment").unwrap();
+        let store = || Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300));
+        let refusals = || {
+            (0..QUARANTINE_AFTER_REJECTS)
+                .map(|_| legacy_field_refusal())
+                .collect::<Vec<_>>()
+        };
+
+        for journal in ["journal-a", "journal-b"] {
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            let client = FakeClient::for_journal(journal, refusals(), vec![]);
+            let coordinator = coordinator_with_client(client.clone(), store(), sync.clone());
+            for _ in 0..QUARANTINE_AFTER_REJECTS {
+                assert_eq!(coordinator.tick().await.unwrap(), 0);
+                tokio::time::advance(Duration::from_secs(86401)).await;
+            }
+            // Each journal was offered the segment its full run of attempts.
+            assert_eq!(
+                client.posts.lock().unwrap().len(),
+                QUARANTINE_AFTER_REJECTS as usize,
+                "{journal}"
+            );
+            assert!(!dir.exists(), "{journal}");
+            assert_eq!(sync.lock().unwrap().upload.quarantined_segments, 1);
+        }
+
+        // B's own refusal holds while paired with B: no endless retry.
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let journal_b = FakeClient::for_journal("journal-b", vec![], vec![]);
+        let coordinator = coordinator_with_client(journal_b.clone(), store(), sync.clone());
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        assert!(journal_b.posts.lock().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(format!(
+                "quarantine/{index}/{}",
+                crate::sealed::REFUSED_BY_MARKER
+            )))
+            .unwrap(),
+            "journal-b"
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_segments_wait_for_the_mark_before_another_journal_gets_them() {
+        let root = TestRoot::new("refused-awaits-mark");
+        let index = 5_666_669;
+        let set_aside = root.path().join(format!("quarantine/{index}"));
+        std::fs::create_dir_all(&set_aside).unwrap();
+        std::fs::write(set_aside.join("display_1_screen.mp4"), b"held").unwrap();
+        std::fs::write(
+            set_aside.join(crate::sealed::REFUSED_BY_MARKER),
+            "journal-a",
+        )
+        .unwrap();
+
+        // Paired with another journal whose mark the owner has not confirmed.
+        let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let client = Arc::new(ObserverClient::new(dummy_credential(), gate.clone()).unwrap());
+        assert_ne!(client.journal_identity().instance_id, "journal-a");
+        let coordinator = UploadCoordinator::new(
+            client,
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+            300,
+            Arc::new(FixedOffset(0)),
+            Arc::new(crate::journal_version::JournalVersionController::new(
+                root.path().join("jv.json"),
+            )),
+        );
+
+        assert!(matches!(
+            coordinator.tick().await,
+            Err(RouteError::AwaitingConfirmation)
+        ));
+        assert!(set_aside.is_dir());
+        assert!(!root.path().join(index.to_string()).exists());
+
+        // Confirmed: the segment is pending for this journal (the dummy
+        // endpoint then fails the send, which leaves it pending).
+        gate.store(true, Ordering::Release);
+        let _ = coordinator.tick().await;
+        assert!(!set_aside.exists());
+        assert!(root
+            .path()
+            .join(index.to_string())
+            .join("display_1_screen.mp4")
+            .is_file());
     }
 
     // Previous-model disclaimer: Retained under the 12.2.0 receipt model.
@@ -4896,7 +5110,7 @@ mod tests {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let store =
             MultiSegmentStore::new(vec![(1, 1_700_000_100, "screen.mp4", b"data".to_vec())]);
-        store.quarantine(1).unwrap();
+        store.quarantine(1, "test").unwrap();
         let coordinator = coordinator(Box::new(store), sync.clone());
 
         let res = coordinator.tick().await.unwrap();

@@ -932,9 +932,13 @@ impl SealedStore for SingleSegmentStore {
         Ok(())
     }
 
-    fn quarantine(&self, _index: u64) -> std::io::Result<()> {
+    fn quarantine(&self, _index: u64, _refused_by: &str) -> std::io::Result<()> {
         self.consumed.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn release_refused(&self, _journal: &str) -> std::io::Result<u64> {
+        Ok(0)
     }
 
     fn mark_confirmed(&self, _index: u64) -> std::io::Result<()> {
