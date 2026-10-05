@@ -4,10 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.19] - 2026-10-05
 
 ### Fixed
 
+- browser pages still waiting on this PC now stay here when you unpair. after you pair with a journal and confirm its mark, they go to that journal.
 - a segment a journal turns away is now held back from that journal only. once you pair with a different journal and confirm its mark, the segment goes to the new journal.
 
 ## [2.0.18] - 2026-10-04
