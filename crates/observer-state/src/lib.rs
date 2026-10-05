@@ -28,8 +28,13 @@ pub enum AppEvent {
         reason: PauseReason,
         expires_at_epoch_secs: Option<u64>,
     },
-    /// Operator asked to resume.
+    /// Operator asked to resume. Ends the owner's pause and any system pause.
     RequestedResume,
+    /// The session unlocked or the machine woke. Ends a system pause only; an
+    /// owner's pause holds until the owner resumes or its deadline passes.
+    SystemResumed,
+    /// The owner's timed pause reached its deadline.
+    OwnerPauseExpired,
     /// The engine finished construction + recovery and is ready.
     EngineReady,
     /// A source reported new honest state.
@@ -40,12 +45,11 @@ pub enum AppEvent {
     StorageFaultChanged(bool),
 }
 
-/// A pause in effect: why, and an optional absolute deadline for automatic
-/// resume. Reducer working memory.
+/// The owner's pause, with its optional absolute deadline for automatic resume.
+/// Reducer working memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PauseState {
-    reason: PauseReason,
-    expires_at_epoch_secs: Option<u64>,
+pub struct OwnerPause {
+    pub expires_at_epoch_secs: Option<u64>,
 }
 
 /// The reducer's working memory. The public [`phase`](Self::phase) is always
@@ -54,7 +58,11 @@ struct PauseState {
 pub struct StateMachine {
     engine_ready: bool,
     run_requested: bool,
-    paused: Option<PauseState>,
+    /// The owner's pause and a system (lock/suspend) pause are held apart, so
+    /// neither ends the other: an unlock does not end the owner's pause, and the
+    /// owner's deadline passing does not resume a locked session.
+    owner_pause: Option<OwnerPause>,
+    system_pause: Option<PauseReason>,
     storage_faulted: bool,
     screen: Option<SourceState>,
     system_audio: Option<SourceState>,
@@ -75,7 +83,7 @@ impl StateMachine {
     /// The computed phase. Reachability of `Observing` requires the engine ready,
     /// a run requested, no active pause, and every *required* source `Active`.
     pub fn phase(&self) -> AppPhase {
-        if self.paused.is_some() {
+        if self.owner_pause.is_some() || self.system_pause.is_some() {
             return AppPhase::Paused;
         }
         if !self.run_requested {
@@ -97,19 +105,32 @@ impl StateMachine {
     /// The honest pause snapshot for the health dump, given the current clock.
     /// `None` when not paused; `seconds_remaining` is the live countdown to an
     /// automatic resume for a duration-bounded pause, `None` for an indefinite one.
+    /// The owner's pause is reported first: it is the one the owner ends.
     pub fn pause_snapshot(&self, now_epoch_secs: u64) -> Option<PauseSnapshot> {
-        self.paused.map(|p| PauseSnapshot {
-            reason: p.reason,
-            seconds_remaining: p
-                .expires_at_epoch_secs
-                .map(|exp| exp.saturating_sub(now_epoch_secs)),
-        })
+        match (self.owner_pause, self.system_pause) {
+            (Some(owner), _) => Some(PauseSnapshot {
+                reason: PauseReason::Operator,
+                seconds_remaining: owner
+                    .expires_at_epoch_secs
+                    .map(|exp| exp.saturating_sub(now_epoch_secs)),
+            }),
+            (None, Some(reason)) => Some(PauseSnapshot {
+                reason,
+                seconds_remaining: None,
+            }),
+            (None, None) => None,
+        }
+    }
+
+    /// The owner's pause, if one is in effect.
+    pub fn owner_pause(&self) -> Option<OwnerPause> {
+        self.owner_pause
     }
 
     /// True when a duration-bounded pause has reached its deadline and the engine
     /// should auto-resume. An indefinite pause never expires on a timer.
     pub fn pause_due_to_expire(&self, now_epoch_secs: u64) -> bool {
-        self.paused
+        self.owner_pause
             .and_then(|p| p.expires_at_epoch_secs)
             .is_some_and(|exp| now_epoch_secs >= exp)
     }
@@ -138,20 +159,29 @@ impl StateMachine {
 pub fn reduce(state: &mut StateMachine, event: AppEvent) -> AppPhase {
     match event {
         AppEvent::RequestedStart => {
+            // Starting does not end a pause: an owner's pause restored at launch holds.
             state.run_requested = true;
-            state.paused = None;
         }
         AppEvent::RequestedPause {
-            reason,
+            reason: PauseReason::Operator,
             expires_at_epoch_secs,
         } => {
-            state.paused = Some(PauseState {
-                reason,
+            state.owner_pause = Some(OwnerPause {
                 expires_at_epoch_secs,
             });
         }
+        AppEvent::RequestedPause { reason, .. } => {
+            state.system_pause = Some(reason);
+        }
         AppEvent::RequestedResume => {
-            state.paused = None;
+            state.owner_pause = None;
+            state.system_pause = None;
+        }
+        AppEvent::SystemResumed => {
+            state.system_pause = None;
+        }
+        AppEvent::OwnerPauseExpired => {
+            state.owner_pause = None;
         }
         AppEvent::EngineReady => {
             state.engine_ready = true;
@@ -373,5 +403,95 @@ mod tests {
         reduce(&mut sm, AppEvent::RequestedResume);
         assert!(sm.pause_snapshot(1_000).is_none());
         assert!(!sm.pause_due_to_expire(u64::MAX));
+    }
+    #[test]
+    fn unlock_does_not_end_the_owners_pause() {
+        let mut sm = StateMachine::new();
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: None,
+            },
+        );
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::SessionLocked,
+                expires_at_epoch_secs: None,
+            },
+        );
+        let p = reduce(&mut sm, AppEvent::SystemResumed);
+        assert_eq!(p, AppPhase::Paused);
+        let snap = sm.pause_snapshot(1_000).expect("still paused");
+        assert_eq!(snap.reason, PauseReason::Operator);
+        assert_eq!(
+            sm.owner_pause(),
+            Some(OwnerPause {
+                expires_at_epoch_secs: None
+            })
+        );
+    }
+
+    #[test]
+    fn owner_deadline_does_not_resume_a_locked_session() {
+        let mut sm = StateMachine::new();
+        reduce(&mut sm, AppEvent::RequestedStart);
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: Some(1_900),
+            },
+        );
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::SessionLocked,
+                expires_at_epoch_secs: None,
+            },
+        );
+        assert!(sm.pause_due_to_expire(1_900));
+        let p = reduce(&mut sm, AppEvent::OwnerPauseExpired);
+        assert_eq!(p, AppPhase::Paused);
+        assert_eq!(
+            sm.pause_snapshot(1_900).unwrap().reason,
+            PauseReason::SessionLocked
+        );
+        assert_eq!(sm.owner_pause(), None);
+        let p = reduce(&mut sm, AppEvent::SystemResumed);
+        assert_ne!(p, AppPhase::Paused);
+    }
+
+    #[test]
+    fn start_keeps_a_restored_owner_pause() {
+        let mut sm = StateMachine::new();
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: None,
+            },
+        );
+        let p = reduce(&mut sm, AppEvent::RequestedStart);
+        assert_eq!(p, AppPhase::Paused);
+    }
+
+    #[test]
+    fn owner_resume_ends_both_pauses() {
+        let mut sm = StateMachine::new();
+        reduce(&mut sm, AppEvent::RequestedStart);
+        for reason in [PauseReason::Operator, PauseReason::SystemSuspending] {
+            reduce(
+                &mut sm,
+                AppEvent::RequestedPause {
+                    reason,
+                    expires_at_epoch_secs: None,
+                },
+            );
+        }
+        let p = reduce(&mut sm, AppEvent::RequestedResume);
+        assert_ne!(p, AppPhase::Paused);
+        assert!(sm.pause_snapshot(0).is_none());
     }
 }

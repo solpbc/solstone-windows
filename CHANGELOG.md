@@ -8,6 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- a pause now lasts until you resume it, or until the time you picked runs out, even if the solstone app quits, updates, or your computer restarts. before, a restart, unlocking your computer or waking it from sleep ended the pause.
 - a segment a journal turns away is now held back from that journal only. once you pair with a different journal and confirm its mark, the segment goes to the new journal.
 
 ## [2.0.18] - 2026-10-04

@@ -28,12 +28,15 @@ use observer_recovery::{recover_all, RecoveryFs, RecoveryOutcome};
 use observer_segment::{
     seconds_until_next_boundary, segment_for, should_rotate, SegmentFs, DEFAULT_SEGMENT_SECS,
 };
-use observer_state::{reduce, AppEvent, StateMachine};
+use observer_state::{reduce, AppEvent, OwnerPause, StateMachine};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub use observer_model::BREAKER_OPEN_MARKER;
+
+mod pause_store;
+pub use pause_store::{FilePauseStore, HeldPause, PauseStore};
 
 /// Commands the shell and lifecycle pump can send to the engine loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +48,11 @@ pub enum EngineCommand {
         reason: PauseReason,
         duration_secs: Option<u64>,
     },
+    /// The owner resumed: ends the owner's pause and any system pause.
     Resume,
+    /// The session unlocked or the machine woke: ends a lock/suspend pause and
+    /// leaves an owner's pause in place.
+    SystemResume,
     /// Toggle between paused and observing — the global hotkey's action. Pauses
     /// indefinitely when observing, resumes when paused. The engine resolves the
     /// direction because it owns the authoritative phase.
@@ -145,6 +152,8 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     storage_retry_at: Option<u64>,
     shared_health: Arc<Mutex<HealthDump>>,
     health_tx: watch::Sender<HealthDump>,
+    /// Where the owner's pause is kept across restarts; `None` keeps it in memory.
+    pause_store: Option<Box<dyn PauseStore>>,
     /// Wave-2 sync (pairing + upload) snapshot, published by the sync layer and
     /// folded into every `HealthDump`. Default = not-paired/idle, so the engine
     /// is unchanged when sync isn't running.
@@ -193,6 +202,7 @@ where
             storage_retry_at: None,
             shared_health: Arc::new(Mutex::new(Self::empty_health())),
             health_tx,
+            pause_store: None,
             sync: Arc::new(Mutex::new(SyncSnapshot::default())),
         };
         engine.refresh_health();
@@ -283,10 +293,44 @@ where
         }
     }
 
+    /// Keep the owner's pause in `store` from now on, restoring one still held
+    /// from before a restart. Call before [`Self::start`] so a held pause is in
+    /// effect before any source can start. A timed pause whose deadline has
+    /// passed is removed and does not apply.
+    pub fn hold_owner_pause_in(&mut self, store: Box<dyn PauseStore>) {
+        let now = self.clock.now_epoch_secs();
+        let expires_at_epoch_secs = match store.load() {
+            None => None,
+            Some(HeldPause::UntilResumed) => Some(None),
+            Some(HeldPause::Until(deadline)) if deadline > now => Some(Some(deadline)),
+            Some(HeldPause::Until(_)) => {
+                if let Err(error) = store.clear() {
+                    tracing::warn!(target: "engine", %error, "could not remove an ended pause");
+                }
+                None
+            }
+        };
+        if let Some(expires_at_epoch_secs) = expires_at_epoch_secs {
+            tracing::info!(target: "engine", timed = expires_at_epoch_secs.is_some(), "owner pause restored");
+            self.reduce(AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs,
+            });
+        }
+        self.pause_store = Some(store);
+        self.refresh_health();
+    }
+
     /// Start every source and open the current segment. Source start failures are
-    /// folded into state and do not abort the engine.
+    /// folded into state and do not abort the engine. A pause in effect (an
+    /// owner's pause restored at launch) holds: nothing starts until it ends.
     pub fn start(&mut self) {
         self.reduce(AppEvent::RequestedStart);
+        if self.state.phase() == AppPhase::Paused {
+            self.fold_source_states();
+            self.refresh_health();
+            return;
+        }
         self.open_current_segment();
         for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
             self.start_source(kind);
@@ -369,6 +413,11 @@ where
     }
 
     pub fn apply_command(&mut self, command: EngineCommand) {
+        let was_paused = self.state.phase() == AppPhase::Paused;
+        let owner_before = self.state.owner_pause();
+        // A resume also restarts sources that faulted or tripped their breaker,
+        // so it restarts capture even when nothing was paused.
+        let restart = matches!(command, EngineCommand::Resume | EngineCommand::SystemResume);
         match command {
             EngineCommand::Pause {
                 reason,
@@ -380,32 +429,66 @@ where
                     reason,
                     expires_at_epoch_secs,
                 });
-                // A pause must actually stop capture, not merely relabel the
-                // phase: stop every source so nothing is gathered while paused.
-                // The open segment stays incomplete until a boundary or stop.
-                self.pause_capture();
             }
             EngineCommand::Resume => {
                 self.reduce(AppEvent::RequestedResume);
-                self.resume_capture();
+            }
+            EngineCommand::SystemResume => {
+                self.reduce(AppEvent::SystemResumed);
             }
             EngineCommand::TogglePause => {
-                if self.state.phase() == AppPhase::Paused {
+                if was_paused {
                     self.reduce(AppEvent::RequestedResume);
-                    self.resume_capture();
                 } else {
                     self.reduce(AppEvent::RequestedPause {
                         reason: PauseReason::Operator,
                         expires_at_epoch_secs: None,
                     });
-                    self.pause_capture();
                 }
             }
             EngineCommand::DisplayChanged => {
                 self.on_display_changed();
             }
         }
+        self.settle_pause(was_paused, restart, owner_before);
         self.refresh_health();
+    }
+
+    /// Act on a pause change: stop capture when a pause began, restart it when
+    /// the last pause ended (or on `restart` when nothing is paused), and record
+    /// the owner's pause when it changed.
+    fn settle_pause(&mut self, was_paused: bool, restart: bool, owner_before: Option<OwnerPause>) {
+        let paused = self.state.phase() == AppPhase::Paused;
+        if paused && !was_paused {
+            // A pause must actually stop capture, not merely relabel the
+            // phase: stop every source so nothing is gathered while paused.
+            // The open segment stays incomplete until a boundary or stop.
+            self.pause_capture();
+        } else if !paused && (was_paused || restart) {
+            self.resume_capture();
+        }
+        let owner = self.state.owner_pause();
+        if owner != owner_before {
+            self.record_owner_pause(owner);
+        }
+    }
+
+    fn record_owner_pause(&self, owner: Option<OwnerPause>) {
+        let Some(store) = &self.pause_store else {
+            return;
+        };
+        let result = match owner {
+            Some(OwnerPause {
+                expires_at_epoch_secs: Some(deadline),
+            }) => store.save(HeldPause::Until(deadline)),
+            Some(OwnerPause {
+                expires_at_epoch_secs: None,
+            }) => store.save(HeldPause::UntilResumed),
+            None => store.clear(),
+        };
+        if let Err(error) = result {
+            tracing::warn!(target: "engine", %error, "could not record the owner pause");
+        }
     }
 
     /// Stop all sources so capture truly halts while paused. The open segment
@@ -431,10 +514,12 @@ where
     }
 
     /// Auto-resume when a duration-bounded pause has reached its deadline.
+    /// Capture restarts only if no lock/suspend pause is also in effect.
     fn auto_resume_if_due(&mut self) {
         if self.state.pause_due_to_expire(self.clock.now_epoch_secs()) {
-            self.reduce(AppEvent::RequestedResume);
-            self.resume_capture();
+            let owner_before = self.state.owner_pause();
+            self.reduce(AppEvent::OwnerPauseExpired);
+            self.settle_pause(true, false, owner_before);
         }
     }
 
@@ -1545,6 +1630,184 @@ mod tests {
         assert!(rx.has_changed().unwrap());
         assert_eq!(handles.screen.display_changes(), display_changes + 1);
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+    }
+
+    /// An in-memory pause store shared with the test, standing in for the file.
+    #[derive(Clone, Default)]
+    struct MemoryPauseStore(Arc<Mutex<Option<HeldPause>>>);
+
+    impl MemoryPauseStore {
+        fn holding(pause: HeldPause) -> Self {
+            Self(Arc::new(Mutex::new(Some(pause))))
+        }
+        fn held(&self) -> Option<HeldPause> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    impl PauseStore for MemoryPauseStore {
+        fn load(&self) -> Option<HeldPause> {
+            self.held()
+        }
+        fn save(&self, pause: HeldPause) -> io::Result<()> {
+            *self.0.lock().unwrap() = Some(pause);
+            Ok(())
+        }
+        fn clear(&self) -> io::Result<()> {
+            *self.0.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    fn restarted_with(
+        clock: FakeClock,
+        store: &MemoryPauseStore,
+    ) -> (CaptureEngine<FakeSegmentFs>, Handles) {
+        let (sources, handles) = active_sources();
+        let mut engine = engine_with(
+            clock,
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.hold_owner_pause_in(Box::new(store.clone()));
+        engine.start();
+        (engine, handles)
+    }
+
+    #[test]
+    fn until_resumed_survives_a_restart_and_starts_nothing() {
+        let store = MemoryPauseStore::default();
+        let (mut engine, _) = restarted_with(FakeClock::new(1_000), &store);
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
+        assert_eq!(store.held(), Some(HeldPause::UntilResumed));
+        engine.stop();
+
+        let clock = FakeClock::new(90_000);
+        let (mut engine, handles) = restarted_with(clock.clone(), &store);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert_eq!(handles.screen.starts(), 0);
+        assert_eq!(handles.system_audio.starts(), 0);
+        assert_eq!(handles.mic.starts(), 0);
+        assert!(engine.health_dump().segment_dir.is_none());
+        let pause = engine.health_dump().pause.expect("paused");
+        assert_eq!(pause.reason, PauseReason::Operator);
+        assert_eq!(pause.seconds_remaining, None);
+        clock.set(990_000);
+        engine.pump();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+
+        engine.apply_command(EngineCommand::Resume);
+        assert_eq!(handles.screen.starts(), 1);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert_eq!(store.held(), None);
+        let (engine, handles) = restarted_with(clock, &store);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert_eq!(handles.screen.starts(), 1);
+    }
+
+    #[test]
+    fn timed_pause_survives_a_restart_and_ends_at_its_deadline() {
+        let store = MemoryPauseStore::default();
+        let clock = FakeClock::new(1_000);
+        let (mut engine, _) = restarted_with(clock.clone(), &store);
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: Some(900),
+        });
+        assert_eq!(store.held(), Some(HeldPause::Until(1_900)));
+        engine.stop();
+
+        clock.set(1_600);
+        let (mut engine, handles) = restarted_with(clock.clone(), &store);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert_eq!(
+            engine.health_dump().pause.unwrap().seconds_remaining,
+            Some(300)
+        );
+        assert_eq!(handles.screen.starts(), 0);
+        clock.set(1_899);
+        engine.pump();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        clock.set(1_900);
+        engine.pump();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert_eq!(handles.screen.starts(), 1);
+        assert_eq!(store.held(), None);
+    }
+
+    #[test]
+    fn timed_pause_restarted_after_its_deadline_observes() {
+        let store = MemoryPauseStore::holding(HeldPause::Until(1_900));
+        let (engine, handles) = restarted_with(FakeClock::new(1_900), &store);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert_eq!(handles.screen.starts(), 1);
+        assert_eq!(store.held(), None);
+    }
+
+    #[test]
+    fn unlock_and_wake_do_not_end_the_owners_pause() {
+        let store = MemoryPauseStore::default();
+        let (mut engine, handles) = restarted_with(FakeClock::new(1_000), &store);
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
+        for reason in [PauseReason::SessionLocked, PauseReason::SystemSuspending] {
+            engine.apply_command(EngineCommand::Pause {
+                reason,
+                duration_secs: None,
+            });
+            engine.apply_command(EngineCommand::SystemResume);
+            assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+            assert_eq!(
+                engine.health_dump().pause.unwrap().reason,
+                PauseReason::Operator
+            );
+        }
+        assert_eq!(handles.screen.starts(), 1, "capture never restarted");
+        assert_eq!(store.held(), Some(HeldPause::UntilResumed));
+    }
+
+    #[test]
+    fn a_lock_pause_is_never_recorded_and_unlock_resumes() {
+        let store = MemoryPauseStore::default();
+        let (mut engine, handles) = restarted_with(FakeClock::new(1_000), &store);
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::SessionLocked,
+            duration_secs: None,
+        });
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert_eq!(store.held(), None);
+        engine.apply_command(EngineCommand::SystemResume);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert_eq!(handles.screen.starts(), 2);
+    }
+
+    #[test]
+    fn owner_deadline_while_locked_waits_for_unlock() {
+        let store = MemoryPauseStore::default();
+        let clock = FakeClock::new(1_000);
+        let (mut engine, handles) = restarted_with(clock.clone(), &store);
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: Some(900),
+        });
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::SessionLocked,
+            duration_secs: None,
+        });
+        clock.set(1_900);
+        engine.pump();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert_eq!(handles.screen.starts(), 1, "no capture while locked");
+        assert_eq!(store.held(), None, "the owner's pause has ended");
+        engine.apply_command(EngineCommand::SystemResume);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+        assert_eq!(handles.screen.starts(), 2);
     }
 
     #[test]

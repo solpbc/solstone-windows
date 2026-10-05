@@ -438,6 +438,11 @@ pub fn run(
                     &snapshot.journal_display_line,
                 );
             }
+            // The owner's pause outlives a restart: restore it before any source
+            // can start, so a held pause captures nothing at launch.
+            engine.hold_owner_pause_in(Box::new(capture_engine::FilePauseStore::new(
+                platform_win::local_data_root().join("pause.txt"),
+            )));
             engine.start();
             tracing::info!(target: "engine", outcome = "started", "engine start");
 
@@ -701,9 +706,11 @@ pub fn run(
                                         duration_secs: None,
                                     })
                                 }
+                                // Ends the lock/suspend pause only; an owner's
+                                // pause holds until the owner resumes.
                                 platform_win::SystemNotification::SessionUnlocked
                                 | platform_win::SystemNotification::Resumed => {
-                                    Some(EngineCommand::Resume)
+                                    Some(EngineCommand::SystemResume)
                                 }
                                 platform_win::SystemNotification::DisplayChanged => {
                                     Some(EngineCommand::DisplayChanged)
