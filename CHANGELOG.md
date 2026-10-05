@@ -8,7 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
-- a pause now lasts until you resume it, or until the time you picked runs out, even if the solstone app quits, updates, or your computer restarts. before, a restart, unlocking your computer or waking it from sleep ended the pause.
+- a pause now lasts until you resume it, or until the time you picked runs out, even if the solstone app quits or your computer restarts. before, a restart, unlocking your computer or waking it from sleep ended the pause.
 
 ## [2.0.19] - 2026-10-05
 
