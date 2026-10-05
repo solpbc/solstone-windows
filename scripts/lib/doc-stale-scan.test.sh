@@ -30,8 +30,8 @@ assert_contains() {
 GOOD=$TMP_ROOT/good
 mkdir "$GOOD"
 printf '%s\n\n%s\n\n%s\n' \
-  'R2 is the authoritative update feed. The GitHub Releases mirror is optional and non-authoritative.' \
-  'No GitHub mirror is required, and it cannot gate a release.' \
+  'R2 is the authoritative update feed. The exact-byte GitHub Releases mirror is required for release completion and non-authoritative for app updates.' \
+  'The aggregate publisher handles R2. Publish and verify the required GitHub mirror separately.' \
   'Never hand-chain cargo build --locked before vpk pack; use make package and the aggregate provenance publisher.' \
   > "$GOOD/good.md"
 good_output=$(sh "$SCANNER" --root "$GOOD" good.md 2>&1) || fail "qualified examples must pass"
@@ -41,9 +41,10 @@ assert_contains "good result" "$good_output" "no violations"
 
 PACKAGE_CHANNEL=$TMP_ROOT/package-channel
 mkdir "$PACKAGE_CHANNEL"
-printf '%s\n\n%s\n' \
+printf '%s\n\n%s\n\n%s\n' \
   'GitHub Releases is required for winget and Scoop download URLs but non-authoritative for app updates; R2 remains authoritative, and GitHub does not gate that publication.' \
   'Run version-gate to verify that ReleaseNotesUrl names the GitHub release for this version.' \
+  'The GitHub release mirror is required. A separate developer preview mirror is optional.' \
   > "$PACKAGE_CHANNEL/package-channel.md"
 package_output=$(sh "$SCANNER" --root "$PACKAGE_CHANNEL" package-channel.md 2>&1) || fail "qualified package-channel instruction must pass"
 ASSERTIONS=$((ASSERTIONS + 1))
@@ -57,7 +58,7 @@ if authority_output=$(sh "$SCANNER" --root "$AUTHORITY" authority.md 2>&1); then
 fi
 ASSERTIONS=$((ASSERTIONS + 1))
 assert_contains "github authority rule" "$authority_output" "authority.md:1:github-authority:"
-assert_contains "github authority remediation" "$authority_output" "name R2 as authoritative"
+assert_contains "github authority remediation" "$authority_output" "name R2 as the authoritative app-update feed"
 
 AUTHORITY_ADJACENT=$TMP_ROOT/authority-adjacent
 mkdir "$AUTHORITY_ADJACENT"
@@ -73,27 +74,54 @@ assert_contains "adjacent github authority rule" "$authority_adjacent_output" "a
 
 MIRROR=$TMP_ROOT/mirror
 mkdir "$MIRROR"
-printf '%s\n' 'The GitHub mirror must succeed and gates every release.' > "$MIRROR/mirror.md"
+printf '%s\n' 'The GitHub Releases mirror is optional and non-authoritative.' > "$MIRROR/mirror.md"
 if mirror_output=$(sh "$SCANNER" --root "$MIRROR" mirror.md 2>&1); then
-  fail "required mirror mutation must be rejected"
+  fail "optional mirror mutation must be rejected"
 fi
 ASSERTIONS=$((ASSERTIONS + 1))
-assert_contains "required mirror rule" "$mirror_output" "mirror.md:1:required-mirror:"
-assert_contains "required mirror remediation" "$mirror_output" "cannot gate release"
+assert_contains "optional mirror rule" "$mirror_output" "mirror.md:1:optional-mirror:"
+assert_contains "optional mirror remediation" "$mirror_output" "require the exact-byte GitHub release mirror"
 
 MIRROR_ADJACENT=$TMP_ROOT/mirror-adjacent
 mkdir "$MIRROR_ADJACENT"
 printf '%s\n' \
   '| Surface | Policy |' \
   '| --- | --- |' \
-  '| GitHub mirror | Must succeed and gates release |' \
-  '| Documentation mirror | Optional and cannot gate release |' \
+  '| GitHub mirror | Optional and cannot gate a release |' \
+  '| GitHub mirror | Required for release completion |' \
   > "$MIRROR_ADJACENT/mirror-adjacent.md"
 if mirror_adjacent_output=$(sh "$SCANNER" --root "$MIRROR_ADJACENT" mirror-adjacent.md 2>&1); then
   fail "adjacent mirror qualifier must not mask a violating table row"
 fi
 ASSERTIONS=$((ASSERTIONS + 1))
-assert_contains "adjacent required mirror rule" "$mirror_adjacent_output" "mirror-adjacent.md:3:required-mirror:"
+assert_contains "adjacent optional mirror rule" "$mirror_adjacent_output" "mirror-adjacent.md:3:optional-mirror:"
+
+NOT_REQUIRED=$TMP_ROOT/not-required
+mkdir "$NOT_REQUIRED"
+printf '%s\n' 'No GitHub mirror is required, and it cannot gate a release.' > "$NOT_REQUIRED/not-required.md"
+if not_required_output=$(sh "$SCANNER" --root "$NOT_REQUIRED" not-required.md 2>&1); then
+  fail "unrequired release mirror mutation must be rejected"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains "unrequired mirror rule" "$not_required_output" "not-required.md:1:optional-mirror:"
+
+AUTHORITY_PARAGRAPH=$TMP_ROOT/authority-paragraph
+mkdir "$AUTHORITY_PARAGRAPH"
+printf '%s\n' 'GitHub Releases hosts the update feed for Windows. A separate developer preview mirror is optional and non-authoritative.' > "$AUTHORITY_PARAGRAPH/authority-paragraph.md"
+if authority_paragraph_output=$(sh "$SCANNER" --root "$AUTHORITY_PARAGRAPH" authority-paragraph.md 2>&1); then
+  fail "another sentence must not mask a GitHub feed authority claim"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains "same-paragraph github authority rule" "$authority_paragraph_output" "authority-paragraph.md:1:github-authority:"
+
+AUTHORITY_REVERSE=$TMP_ROOT/authority-reverse
+mkdir "$AUTHORITY_REVERSE"
+printf '%s\n' 'The Windows update feed is served by GitHub Releases. R2 remains authoritative.' > "$AUTHORITY_REVERSE/authority-reverse.md"
+if authority_reverse_output=$(sh "$SCANNER" --root "$AUTHORITY_REVERSE" authority-reverse.md 2>&1); then
+  fail "reverse feed authority claim must be rejected"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert_contains "reverse github authority rule" "$authority_reverse_output" "authority-reverse.md:1:github-authority:"
 
 CHAIN=$TMP_ROOT/chain
 mkdir "$CHAIN"
