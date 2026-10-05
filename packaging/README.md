@@ -8,9 +8,10 @@ Velopack release packaging for the observer.
   MS's stable link, silent install) and no-op when already present; no runtime is
   bundled and there is no fixed-version bundle. Needs network at install time.
 - **Update feed.** R2 at `updates.solstone.app/solstone-windows/` is the
-  authoritative update feed. A GitHub Releases mirror is optional and
-  non-authoritative. Direct publication is locked; release publication belongs
-  to the aggregate provenance publisher.
+  authoritative update feed. The exact-byte GitHub Releases mirror is required
+  for release completion and package-manager downloads. Direct publication
+  entry points remain locked. The aggregate publisher handles R2; publish and
+  verify the GitHub mirror separately.
 
 ## Distribution
 

@@ -2,8 +2,9 @@
 
 solstone for Windows has three distribution channels, all intended to point at the
 **same finalized signed artifacts**. Direct publication scripts are locked.
-The aggregate provenance publisher handles R2 and GitHub; package-manager
-submissions are hand-run from the reviewed manifests in this repo. R2 at
+The aggregate provenance publisher handles R2. Publish the required GitHub
+mirror separately; package-manager submissions are hand-run from the reviewed
+manifests in this repo. R2 at
 `updates.solstone.app/solstone-windows/` is the authoritative update feed; any
 GitHub Releases is non-authoritative for app updates but is required for the
 package-manager download URLs.
@@ -66,9 +67,9 @@ it does not publish or replace candidate validation.
 
 `make publish`, `make publish-r2`, `make publish-winget`, `make publish-scoop`, and
 their `publish-packages` aggregate are deliberate fail-closed guards. They accept no
-version override and perform no authentication or transport. R2 and GitHub
-publication belong to the aggregate provenance publisher; package-channel
-publication is hand-run below.
+version override and perform no authentication or transport. The aggregate
+provenance publisher handles R2; the required GitHub mirror and package-channel
+publication are separate steps.
 
 After aggregate publication, **`make check-channels`** remains read-only. Its
 `xtask version-gate` prerequisite verifies that the winget locale carries the
@@ -126,7 +127,7 @@ Our source of truth is [`scoop/solstone.json`](scoop/solstone.json). It points a
 let a maintainer auto-refresh from a scoop checkout — `bin/checkver.ps1 solstone -u`).
 
 The direct scoop script is locked, and **nothing automated replaced it** — the aggregate
-provenance publisher covers R2 and the GitHub mirror and has no package-channel leg. Publishing
+provenance publisher covers R2 and has no GitHub or package-channel leg. Publishing
 scoop is a **hand-run one-file commit**: hash the finalized `Portable.zip`, put that digest in
 `packaging/scoop/solstone.json`, and commit the whole reviewed manifest into `solpbc/scoop-solstone`
 as `bucket/solstone.json` (message `solstone <version>`). Our own bucket, so no third-party queue.

@@ -90,9 +90,28 @@ while IFS= read -r relative; do
     function report(rule, remediation) {
       printf "%s:%d:%s:%s:%s\n", file, start, rule, compact(unit), remediation
     }
-    function flush(   lower, authority, authority_feed, authority_qualified,
-                          required_signal, mirror_linked, mirror_required,
-                          mirror_qualified, cargo_position, vpk_position, tail,
+    function github_feed_authority(text,   statements, count, i, clause, linked, qualified) {
+      count = split(text, statements, /[.!?;]/)
+      for (i = 1; i <= count; i++) {
+        clause = statements[i]
+        linked = clause ~ /github[^.!?]*(authoritative|primary[^.!?]*feed|update[[:space:]]+feed|serves?[^.!?]*feed|hosts?[^.!?]*feed)/ || clause ~ /(authoritative|primary)[^.!?]*feed[^.!?]*(from|via|on|by)[[:space:]]+github/ || clause ~ /update[[:space:]]+feed[^.!?]*(is|from|via|on|by)[[:space:]]+github/
+        qualified = clause ~ /(non-authoritative|non authoritative|secondary)/ || clause ~ /(not|never|no)[^.!?]*(authoritative|primary[^.!?]*feed|update[[:space:]]+feed|serves?[^.!?]*feed|hosts?[^.!?]*feed)/ || clause ~ /(does not|cannot)[^.!?]*(serve|host)[^.!?]*feed/
+        if (linked && !qualified) return 1
+      }
+      return 0
+    }
+    function github_optional_mirror(text,   statements, count, i, clause, linked, optional) {
+      count = split(text, statements, /[.!?;]/)
+      for (i = 1; i <= count; i++) {
+        clause = statements[i]
+        linked = clause ~ /github/ && clause ~ /(mirror|releases)/
+        optional = (clause ~ /optional/ && clause !~ /(not|never)[[:space:]]+optional/) || clause ~ /no[^.!?]*github[^.!?]*required/ || clause ~ /github[^.!?]*((not|never)[[:space:]]+required|cannot gate[^.!?]*(a |the |every )?release)/
+        if (linked && optional) return 1
+      }
+      return 0
+    }
+    function flush(   lower,
+                          cargo_position, vpk_position, tail,
                           publication_after, publication_here, chained, prohibited,
                           command_unit) {
       if (unit == "") return
@@ -100,19 +119,12 @@ while IFS= read -r relative; do
       # A release check named version-gate is not a claim that GitHub gates publication.
       gsub(/version-gate/, "versiongate", lower)
 
-      authority_feed = lower ~ /authoritative/ || lower ~ /primary[^.!?]*feed/ || lower ~ /update[[:space:]]+feed/ || lower ~ /serves?[^.!?]*feed/ || lower ~ /hosts?[^.!?]*feed/
-      authority = lower ~ /github/ && authority_feed
-      authority_qualified = lower ~ /(optional|non-authoritative|non authoritative|secondary)/ || lower ~ /(not|never|no)[^.!?]*(authoritative|primary[^.!?]*feed|update[[:space:]]+feed|serves?[^.!?]*feed|hosts?[^.!?]*feed)/ || lower ~ /(does not|cannot)[^.!?]*(serve|host)[^.!?]*feed/
-      if (authority && !authority_qualified) {
-        report("github-authority", "name R2 as authoritative and qualify any GitHub mirror as optional and non-authoritative")
+      if (github_feed_authority(lower)) {
+        report("github-authority", "name R2 as the authoritative app-update feed; GitHub supplies the required release mirror and package-manager downloads")
       }
 
-      required_signal = lower ~ /(^|[^[:alpha:]])(required|blocks?|gates?)([^[:alpha:]]|$)/ || lower ~ /must[[:space:]]+succeed/ || lower ~ /cannot[[:space:]]+release/
-      mirror_linked = lower ~ /mirror[^.!?]*(([^[:alpha:]])(required|blocks?|gates?)([^[:alpha:]])|must[[:space:]]+succeed|cannot[[:space:]]+release)/ || lower ~ /((^|[^[:alpha:]])(required|blocks?|gates?)([^[:alpha:]]|$)|must[[:space:]]+succeed|cannot[[:space:]]+release)[^.!?]*mirror/
-      mirror_required = (lower ~ /github/ && required_signal) || mirror_linked
-      mirror_qualified = lower ~ /(optional|non-authoritative|non authoritative)/ || lower ~ /(not|never|no)[^.!?]*((^|[^[:alpha:]])(required|blocks?|gates?)([^[:alpha:]]|$)|must[[:space:]]+succeed|cannot[[:space:]]+release)/ || lower ~ /cannot[[:space:]]+gate/ || lower ~ /does not[^.!?]*(block|gate|require)/ || lower ~ /must[[:space:]]+not/
-      if (mirror_required && !mirror_qualified) {
-        report("required-mirror", "state that R2 is authoritative and GitHub cannot gate release; package-manager URLs may require GitHub assets")
+      if (github_optional_mirror(lower)) {
+        report("optional-mirror", "require the exact-byte GitHub release mirror for completion; R2 remains the authoritative app-update feed")
       }
 
       cargo_position = index(lower, "cargo build")

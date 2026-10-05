@@ -47,7 +47,7 @@ history. Reference only the public charter and license.
   and `--apply-update` installs the staged one (the CLI analogs of the in-app
   check / relaunch-to-install); atomic `make` verbs wrap every multi-step
   operation. Never hand-chain `cargo build` → `vpk pack` or any publication
-  transport; invoke the packaging verb; release publication belongs to the aggregate provenance publisher.
+  transport; invoke the packaging verb. The aggregate provenance publisher handles R2; the required GitHub mirror is a separate operator step.
 - **Shared protocols are code.** The AutomationId identifiers and the
   health/state token vocabulary are a generated, committed,
   drift-gated `automation-contract.json`; not prose. The source of truth is the
@@ -81,7 +81,7 @@ history. Reference only the public charter and license.
 | `make resign-transparency-pointer` | refresh the latest-pointer signature and validity without changing the chain tip; no candidate input |
 | `make publish-r2` | fail-closed direct-publication guard; R2 publication belongs to the aggregate provenance publisher |
 | `make pull-releases` | pull the box's packed `Releases/` for a controlled aggregate workflow; does not publish |
-| `make publish` | fail-closed direct-publication guard; GitHub publication belongs to the aggregate provenance publisher |
+| `make publish` | fail-closed direct-publication guard; publish the required exact-byte GitHub mirror separately after aggregate R2 publication |
 | `make smoke` | Session-1 scheduled-task FlaUI smoke vs the installed app |
 | `make run` | launch from the tree + tail `%LocalAppData%\Solstone\logs\` |
 | `make clean` | `cargo clean` + remove `ui/dist` and `Releases/` |
@@ -266,14 +266,13 @@ app version, no app id, no per-user identifier), and never point it at a
 third-party update host.
 (The updater neutralizes Velopack's per-install staging id; see
 `src-tauri/src/update.rs`.) R2 is the authoritative update feed. A GitHub
-Releases mirror (a tagged `v<version>` release with the artifacts + the
-`CHANGELOG.md ## [<version>]` notes attached) is optional and non-authoritative;
-its success cannot gate authoritative publication, update delivery, or release
-evidence. Direct R2, GitHub, winget, and scoop publication entry points are
-fail-closed: release publication belongs to the aggregate provenance publisher.
+Releases mirror (a tagged `v<version>` release with the exact signed artifacts
+and the `CHANGELOG.md ## [<version>]` notes attached) is required for release
+completion and supplies package-manager download URLs. Direct R2, GitHub,
+winget, and scoop publication entry points remain fail-closed.
 The aggregate origin publisher publishes each finalized signed release to R2 as the
-authoritative feed. No GitHub mirror is
-required, and a missing or failed mirror never blocks a release.
+authoritative feed. Publish and verify the exact-byte GitHub mirror separately
+after R2 publication, before refreshing package-manager channels.
 The in-app updater fetches `releases.win.json` via a query-free first-party
 manifest GET (a small custom Velopack `UpdateSource`); package downloads still
 request the package files by filename from the same first-party feed host.
@@ -281,7 +280,7 @@ Release artifacts are signed (DigiCert
 KeyLocker via Velopack's `--signTemplate`); signing is opt-in and release-only
 (`-Sign` / `SOLSTONE_SIGN=1`) so dev/local packs stay unsigned, and the
 credentials are env-supplied, never committed. Signing covers release artifacts
-only. Package construction performs no publication auth or transport; release
+only. Package construction performs no publication auth or transport; R2
 publication belongs to the aggregate provenance publisher. See `docs/release-runbook.md`.
 
 `EXPECTED_RELEASE_COMMIT=<full-lowercase-commit>
@@ -316,7 +315,8 @@ candidates, `make prove-rust-release-native RELEASE_DIR=<candidate>` performs th
 clean isolated install and explicit-binary smoke and writes
 `target/release-evidence/<VERSION>/windows-native-proof.json`. Neither receipt is
 a candidate member. Direct R2, GitHub, winget, and scoop publication remains
-fail-closed; only the aggregate provenance publisher may publish finalized bytes.
+fail-closed; only the aggregate provenance publisher may publish finalized R2
+bytes. The required GitHub mirror uses the separate documented operator step.
 
 Release transparency is the post-delivery evidence publisher. It archives the
 full retained candidate plus evidence before exposing only manifests, proofs,
@@ -331,9 +331,9 @@ only the operator's local key path through `TRANSPARENCY_MINISIGN_PUB`; it does
 not change the public filename or served location, and no production public key
 is committed. Version keys are create-only and permanent, while staged retries
 reuse exact bytes. The tracked `transparency-head-log.jsonl` records witnessed
-heads for an ordinary later commit. GitHub remains optional and
-non-authoritative, is never required, and cannot gate the release or its
-transparency evidence.
+heads for an ordinary later commit. The exact-byte GitHub release mirror is
+required for delivery completion. Transparency evidence is published separately
+after delivery; R2 remains the authoritative app-update feed.
 
 The offline Rust release-manifest verifier has three modes. With no selector it
 runs only committed fixtures and deterministic rendering. `MANIFEST=<path>`

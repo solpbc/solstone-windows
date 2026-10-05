@@ -17,7 +17,7 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
 | Publish retained release evidence after delivery | Suspended during the Rust conversion freeze; do not override `TRANSPARENCY_ACTIVATED=0` |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
 | R2 direct-publication guard (**primary channel remains R2**) | `make publish-r2` (always fails closed) |
-| GitHub direct-publication guard (optional, non-authoritative mirror) | `make publish` (always fails closed) |
+| GitHub direct-publication guard (required release mirror) | `make publish` (always fails closed) |
 | FlaUI smoke vs the installed app | `make smoke` |
 
 ## Packaging
@@ -216,16 +216,16 @@ keeps that mirror current on every release.
 exists. Every finalization, signed or unsigned, fails closed when the section is
 missing; cut and review it before starting the transaction.
 
-## Update feed: R2 authoritative, optional GitHub mirror
+## Update feed: R2 authoritative, required GitHub mirror
 
 The **primary auto-update feed is R2** at `updates.solstone.app/solstone-windows/`.
 The in-app updater
 fetches `releases.win.json` from there with a bare, query-free manifest GET via
 the custom local Velopack `UpdateSource`; package downloads still request the
 package files by filename from the same first-party feed host. R2 is the
-authoritative update feed. A GitHub Releases mirror is optional and
-non-authoritative; its success cannot gate authoritative publication, update
-delivery, or release evidence. Direct publication scripts remain disabled. The
+authoritative update feed. The GitHub Releases mirror is required for release
+completion; package-manager manifests use its download URLs. Direct publication
+scripts remain disabled. The
 aggregate boundary is `make publish-origin`: it accepts only one exact finalized
 signed candidate, its finalization receipt, a clean checkout at the candidate's
 source commit, and a recorded clearance document for that exact release/channel.
@@ -235,8 +235,9 @@ then handles mutable Velopack metadata. It snapshots every mutable object's ETag
 (or absence), conditionally promotes each object against that snapshot, writes
 `releases.win.json` last under the same compare-and-swap rule, then downloads
 and byte-compares every public archive and live update-feed object before emitting
-a publication receipt. It does not publish to GitHub. A GitHub mirror is optional,
-and a missing or failed mirror never blocks a release.
+a publication receipt. It does not publish to GitHub. After R2 publication,
+publish the exact signed candidate assets to the matching GitHub release and
+verify its download URLs before refreshing package-manager channels.
 
 **Flow** (keeps publication credentials out of package construction):
 
@@ -319,7 +320,9 @@ and a missing or failed mirror never blocks a release.
    verification/receipt, rerun the same command; do not alter the candidate or
    clearance.
 7. Preserve the emitted publication receipt with the finalization/native receipts.
-   Any GitHub mirror is optional, non-authoritative, and never a release gate.
+   Publish the matching GitHub release with the exact candidate assets and compare
+   each downloaded asset with its local SHA-256. Keep the release open until that
+   mirror and its byte checks are complete.
 
 The aggregate publication layout accumulates version-named nupkgs, while the setup
 installer is versioned per release, giving each release a never-reused URL. The
@@ -328,9 +331,10 @@ installer.
 
 ## Package-manager channels (winget / scoop): submission timing
 
-These are secondary discovery surfaces; R2 remains authoritative, and any GitHub
-mirror is optional and non-authoritative. They are **community-moderated**, so factor
-the wait into release planning, don't block on it.
+These are secondary discovery surfaces. R2 remains the authoritative update
+feed; the required GitHub mirror supplies their download URLs. Winget review is
+community-moderated, so factor the wait into release planning without blocking
+R2 publication on it.
 
 - **winget (`microsoft/winget-pkgs`).** Submission and review are external and
   variable. Do not block the authoritative R2 release on moderator timing, and
@@ -340,12 +344,14 @@ the wait into release planning, don't block on it.
   `ReleaseNotesUrl` to that release. Run `cargo run --locked -q -p xtask --
   version-gate`, then submit all three checked manifests in one PR. The
   package-channel step is hand-run; see `packaging/DISTRIBUTION.md`.
-- **scoop**: bucket PR, lighter process.
+- **scoop**: copy the checked manifest into our `scoop-solstone` bucket, commit
+  and push it after the exact GitHub assets exist.
 - **After aggregate publication, run `make check-channels`** from the release
   source: it checks the winget locale's notes and release URL against the current
   `CHANGELOG.md` section, derives the expected version from Cargo metadata, and
   checks live channel versions and artifact hashes. It does not repair drift.
-  The aggregate publisher handles R2 and GitHub; package-channel updates use
+  The aggregate publisher handles R2. Publish the required GitHub mirror
+  separately; package-channel updates use
   the hand-run steps in `packaging/DISTRIBUTION.md`.
 - **Chocolatey**: a third channel (enterprise/IT-admin reach) we have **not** adopted;
   its community repo is also human-moderated. Evaluate deliberately, below winget/scoop.
