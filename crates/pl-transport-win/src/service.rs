@@ -368,27 +368,21 @@ pub async fn launch_resume(
     sync: &Arc<Mutex<SyncSnapshot>>,
     slot: &mut crate::slot::UploaderSlot,
 ) -> Option<CredentialAccess> {
-    if let Err(error) = crate::retirement::reconcile_on_launch(&cfg.state_path).await {
-        publish_pairing(
-            sync,
-            &cfg.confirmation,
-            &cfg.tombstone,
-            PairingWrite::Failed {
-                detail: transport_error_code(&error),
-            },
-        );
-        return None;
-    }
+    // Classify the saved credential before any owner that loads it. A typed
+    // client-key refusal has already persisted its recovery evidence, so the
+    // refused pairing is set aside and the profile publishes as unpaired for
+    // fresh linking; queued segments and settings are untouched.
     match PairedState::load_detailed(&cfg.state_path) {
         Err(error @ TransportError::ClientKeyProtectionRefused) => {
-            publish_pairing(
-                sync,
-                &cfg.confirmation,
-                &cfg.tombstone,
-                PairingWrite::NotPaired {
+            let write = match PairedState::set_aside_refused_client_key(&cfg.state_path) {
+                Ok(_) => PairingWrite::NotPaired {
                     detail: Some(transport_error_code(&error)),
                 },
-            );
+                Err(error) => PairingWrite::Failed {
+                    detail: transport_error_code(&error),
+                },
+            };
+            publish_pairing(sync, &cfg.confirmation, &cfg.tombstone, write);
             return None;
         }
         Err(error @ TransportError::CredentialRecoveryRequired)
@@ -404,6 +398,17 @@ pub async fn launch_resume(
             return None;
         }
         Err(_) | Ok(_) => {}
+    }
+    if let Err(error) = crate::retirement::reconcile_on_launch(&cfg.state_path).await {
+        publish_pairing(
+            sync,
+            &cfg.confirmation,
+            &cfg.tombstone,
+            PairingWrite::Failed {
+                detail: transport_error_code(&error),
+            },
+        );
+        return None;
     }
 
     #[cfg(windows)]
@@ -422,7 +427,19 @@ pub async fn launch_resume(
         .await
         {
             Ok(true) => {}
-            Ok(false) => return None,
+            Ok(false) => {
+                // The machine marker could not be read, so the carried
+                // pairing is held rather than silently resumed or moved.
+                publish_pairing(
+                    sync,
+                    &cfg.confirmation,
+                    &cfg.tombstone,
+                    PairingWrite::Failed {
+                        detail: "storage_unavailable".to_owned(),
+                    },
+                );
+                return None;
+            }
             Err(error) => {
                 publish_pairing(
                     sync,
@@ -765,6 +782,110 @@ mod tests {
                 utc_offset_seconds: self.0,
             })
         }
+    }
+
+    fn test_sync_config(dir: &std::path::Path) -> SyncConfig {
+        SyncConfig {
+            device_label: "test".to_string(),
+            period_secs: 300,
+            state_path: dir.join("pairing.json"),
+            segments_root: dir.join("segments"),
+            local_offset: Arc::new(FixedOffset(0)),
+            journal_version: Arc::new(JournalVersionController::new(dir.join("jv.json"))),
+            facts_fn: Arc::new(|| RawDeviceFacts {
+                name: Some("test".into()),
+                platform: Some("windows".into()),
+                device_type: None,
+                app_id: Some("test".into()),
+                app_version: Some("0.1.0".into()),
+            }),
+            confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
+        }
+    }
+
+    fn fixture_credential(key: &str, cert: &str) -> crate::credential::Credential {
+        crate::credential::Credential {
+            client_key_pem: key.into(),
+            client_cert_pem: cert.into(),
+            ca_chain_pem: vec!["CA".into()],
+            ca_fp_prefix: vec![1, 2, 3, 4],
+            instance_id: "f30ed159-ef46-8e9c-913f-e49f0fe7d201".into(),
+            home_label: "Home".into(),
+            endpoints: vec![crate::credential::EndpointAddr {
+                host: "10.0.0.5".into(),
+                port: 7657,
+            }],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn launch_refused_client_key_becomes_unpaired_with_evidence_and_fresh_pairing_allowed() {
+        let dir =
+            std::env::temp_dir().join(format!("test-launch-key-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("segments").join("12")).unwrap();
+        std::fs::write(dir.join("segments").join("12").join("screen.mp4"), b"held").unwrap();
+        let cfg = test_sync_config(&dir);
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        PairedState {
+            credential: Some(fixture_credential("OLD-KEY", "OLD-CERT")),
+            ..Default::default()
+        }
+        .save(&cfg.state_path)
+        .unwrap();
+        let protected = std::fs::read(&cfg.state_path).unwrap();
+
+        crate::credential::REFUSE_UNPROTECT.with(|flag| flag.set(true));
+        let mut slot = crate::slot::UploaderSlot::new();
+        let access = launch_resume(&cfg, &sync, &mut slot).await;
+        crate::credential::REFUSE_UNPROTECT.with(|flag| flag.set(false));
+
+        assert!(access.is_none());
+        let snapshot = sync.lock().unwrap().clone();
+        assert_eq!(snapshot.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(
+            snapshot.pairing.detail.as_deref(),
+            Some("client_key_protection_refused")
+        );
+        assert!(!cfg.state_path.exists());
+        assert_eq!(
+            std::fs::read(crate::credential::refused_pairing_path(&cfg.state_path)).unwrap(),
+            protected
+        );
+        assert!(crate::credential::key_recovery_evidence_path(&cfg.state_path).is_file());
+        assert_eq!(
+            std::fs::read(dir.join("segments").join("12").join("screen.mp4")).unwrap(),
+            b"held"
+        );
+
+        // Fresh linking proceeds through the real unpaired-only commit.
+        ensure_pairable(&cfg.state_path).unwrap();
+        PairedState {
+            credential: Some(fixture_credential("NEW-KEY", "NEW-CERT")),
+            ..Default::default()
+        }
+        .save_if_unpaired(&cfg.state_path)
+        .unwrap();
+        let fresh = PairedState::load(&cfg.state_path).unwrap();
+        assert_eq!(
+            fresh
+                .credential
+                .as_ref()
+                .map(|c| c.client_cert_pem.as_str()),
+            Some("NEW-CERT")
+        );
+        assert!(crate::credential::key_recovery_evidence_path(&cfg.state_path).is_file());
+        assert_eq!(
+            std::fs::read(crate::credential::refused_pairing_path(&cfg.state_path)).unwrap(),
+            protected
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

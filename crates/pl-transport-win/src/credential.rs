@@ -35,6 +35,16 @@ pub(crate) trait Protector {
     fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, ProtectionError>;
 }
 
+impl<P: Protector + ?Sized> Protector for Box<P> {
+    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, ProtectionError> {
+        (**self).protect(plain)
+    }
+
+    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, ProtectionError> {
+        (**self).unprotect(blob)
+    }
+}
+
 fn wrap_secret(protector: &dyn Protector, plain: &str) -> Result<String, TransportError> {
     let blob = protector
         .protect(plain.as_bytes())
@@ -136,6 +146,12 @@ pub fn key_recovery_evidence_path(state_path: &Path) -> PathBuf {
     state_path.with_file_name("pairing-key-recovery.bin")
 }
 
+/// Where a pairing whose client key the platform refused to unprotect is kept
+/// once launch has set it aside. The bytes are never deleted or rewritten.
+pub fn refused_pairing_path(state_path: &Path) -> PathBuf {
+    state_path.with_file_name("pairing-refused.json")
+}
+
 fn persist_key_recovery_evidence(state_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let destination = key_recovery_evidence_path(state_path);
     if destination.exists() {
@@ -202,13 +218,42 @@ impl Protector for PassthroughProtector {
 }
 
 #[cfg(not(windows))]
-fn platform_protector() -> PassthroughProtector {
+fn os_protector() -> PassthroughProtector {
     PassthroughProtector
 }
 
 #[cfg(windows)]
-fn platform_protector() -> DpapiProtector {
+fn os_protector() -> DpapiProtector {
     DpapiProtector
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes every platform protector refuse to unprotect, so launch paths can
+    /// be exercised against a client-key refusal on any host.
+    pub(crate) static REFUSE_UNPROTECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+struct RefusingProtector;
+
+#[cfg(test)]
+impl Protector for RefusingProtector {
+    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, ProtectionError> {
+        Ok(plain.to_vec())
+    }
+
+    fn unprotect(&self, _blob: &[u8]) -> Result<Vec<u8>, ProtectionError> {
+        Err(ProtectionError::Refused)
+    }
+}
+
+fn platform_protector() -> Box<dyn Protector> {
+    #[cfg(test)]
+    if REFUSE_UNPROTECT.with(|flag| flag.get()) {
+        return Box::new(RefusingProtector);
+    }
+    Box::new(os_protector())
 }
 
 #[cfg(windows)]
@@ -550,6 +595,56 @@ impl PairedState {
 
     pub fn load_detailed(path: &Path) -> Result<PairedStateLoad, TransportError> {
         Self::load_detailed_with(&platform_protector(), path)
+    }
+
+    /// After a client-key refusal has persisted its recovery evidence, move
+    /// the refused pairing aside so the profile reads as cleanly unpaired and
+    /// fresh linking can proceed. Returns `false` when the stored client key is
+    /// not refused: a token-only refusal keeps the pairing in place, and a
+    /// malformed wrapper, I/O or missing-evidence condition stays an error.
+    pub fn set_aside_refused_client_key(path: &Path) -> Result<bool, TransportError> {
+        Self::set_aside_refused_client_key_with(&platform_protector(), path)
+    }
+
+    fn set_aside_refused_client_key_with(
+        protector: &dyn Protector,
+        path: &Path,
+    ) -> Result<bool, TransportError> {
+        let _guard = owner_state_write_guard();
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(TransportError::Io(error)),
+        };
+        let state: Self =
+            serde_json::from_slice(&bytes).map_err(|_| TransportError::CredentialMalformed)?;
+        let Some(credential) = state.credential.as_ref() else {
+            return Ok(false);
+        };
+        match unwrap_secret(protector, &credential.client_key_pem, true) {
+            Err(TransportError::ClientKeyProtectionRefused) => {}
+            Err(error) => return Err(error),
+            Ok(_) => return Ok(false),
+        }
+        let evidence = extract_protected_blob(&credential.client_key_pem)
+            .ok_or(TransportError::CredentialMalformed)?;
+        if std::fs::read(key_recovery_evidence_path(path))
+            .map_err(|_| TransportError::CredentialRecoveryRequired)?
+            != evidence
+        {
+            return Err(TransportError::CredentialRecoveryRequired);
+        }
+        let destination = refused_pairing_path(path);
+        match std::fs::read(&destination) {
+            Ok(existing) if existing == bytes => {}
+            Ok(_) => return Err(TransportError::CredentialRecoveryRequired),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(TransportError::Io(error)),
+        }
+        publish_staged_file(path, &destination)?;
+        #[cfg(not(windows))]
+        sync_published_path(&destination).map_err(TransportError::Io)?;
+        Ok(true)
     }
 
     fn load_detailed_with(
@@ -1819,6 +1914,61 @@ mod tests {
         assert_eq!(result.state.credential.unwrap().device_token, None);
         assert_eq!(reader.unprotect_calls.get(), 2);
 
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn set_aside_moves_only_a_refused_client_key_with_matching_evidence() {
+        // Token-only refusal with a valid client key never becomes unpaired.
+        let path = temp_pairing_path("set-aside-token-only");
+        let state = paired_state_with("ROUNDTRIP-KEY-PEM", Some("ROUNDTRIP-TOKEN"));
+        state
+            .save_with(&TestProtector::reversible(), &path)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let reader = TestProtector::new(TestMode::FailOnNth(2));
+        assert!(
+            PairedState::load_detailed_with(&reader, &path)
+                .unwrap()
+                .relay_token_refused
+        );
+        assert!(!PairedState::set_aside_refused_client_key_with(
+            &TestProtector::reversible(),
+            &path
+        )
+        .unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!refused_pairing_path(&path).exists());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+
+        // A refused client key without its durable evidence stays an error.
+        let path = temp_pairing_path("set-aside-no-evidence");
+        let state = paired_state_with(&format!("{CREDENTIAL_WRAP_MARKER}S0s="), None);
+        write_raw_state(&path, &state);
+        let refusing = TestProtector::new(TestMode::AlwaysFail);
+        assert!(matches!(
+            PairedState::set_aside_refused_client_key_with(&refusing, &path),
+            Err(TransportError::CredentialRecoveryRequired)
+        ));
+        assert!(path.is_file());
+
+        // Once the load has persisted the evidence, the pairing is set aside.
+        assert!(matches!(
+            PairedState::load_with(&refusing, &path),
+            Err(TransportError::ClientKeyProtectionRefused)
+        ));
+        let before = std::fs::read(&path).unwrap();
+        assert!(PairedState::set_aside_refused_client_key_with(&refusing, &path).unwrap());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(refused_pairing_path(&path)).unwrap(), before);
+        assert_eq!(
+            std::fs::read(key_recovery_evidence_path(&path)).unwrap(),
+            b"KK"
+        );
+        assert!(PairedState::load_with(&refusing, &path)
+            .unwrap()
+            .credential
+            .is_none());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

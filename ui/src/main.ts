@@ -1251,6 +1251,8 @@ function failedPairingLabel(detail: string | null | undefined): string {
       return "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing link from your journal.";
     case "journal_refused":
       return "this PC can't connect to your journal with its saved pairing. get a new pairing link from your journal and pair again.";
+    case "storage_unavailable":
+      return `${MIGRATION_COPY["migration.storage_unavailable.title"]}. ${MIGRATION_COPY["migration.storage_unavailable.body"]}`;
     default:
       return "pairing didn't go through. get a new pairing link from your journal and try again.";
   }
