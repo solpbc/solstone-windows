@@ -4,7 +4,7 @@
   "homepage": "https://solstone.app",
   "license": "AGPL-3.0-only",
   "notes": [
-    "this is a portable install: the built-in updater does nothing here, so updates come from Scoop. run 'scoop update solstone' for new versions.",
+    "run 'scoop update solstone' for new versions.",
     "your local segments live in %LOCALAPPDATA%\\Solstone and are preserved across Scoop updates."
   ],
   "architecture": {
