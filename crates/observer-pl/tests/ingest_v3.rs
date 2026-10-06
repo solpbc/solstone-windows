@@ -70,6 +70,8 @@ fn proof_input(
             observed: false,
             files,
             original_key: None,
+            segment: None,
+            stream: None,
         }],
     };
     (manifest, day_manifest, segments, local)
@@ -648,6 +650,66 @@ fn proof_rejects_an_extra_file_with_a_count_mismatch() {
             actual: 3,
         })
     );
+}
+
+#[test]
+fn listing_reconciliation_rejects_duplicate_keys_and_incomplete_physical_coordinates() {
+    let (manifest, day_manifest, mut segments, local) =
+        proof_input("20260820", "120000_10~browser_a", valid_files());
+    segments.items[0].segment = Some("120000_10".into());
+    segments.items[0].stream = Some("browser_a".into());
+    let mut duplicate = segments.items[0].clone();
+    duplicate.stream = Some("browser_b".into());
+    segments.items.push(duplicate);
+    segments.total = 2;
+    assert!(matches!(
+        prove_custody(
+            &manifest,
+            &day_manifest,
+            &segments,
+            "20260820",
+            "120000_10~browser_a",
+            &local
+        ),
+        CustodyProof::Unconfirmed(CustodyFailure::DuplicateListingKey { .. })
+    ));
+
+    segments.items.truncate(1);
+    segments.total = 1;
+    segments.items[0].stream = None;
+    assert!(matches!(
+        prove_custody(
+            &manifest,
+            &day_manifest,
+            &segments,
+            "20260820",
+            "120000_10~browser_a",
+            &local
+        ),
+        CustodyProof::Unconfirmed(CustodyFailure::PhysicalCoordinatesMalformed { .. })
+    ));
+}
+
+#[test]
+fn listing_collision_alias_keeps_physical_stream_and_segment_distinct() {
+    let (manifest, day_manifest, mut segments, local) =
+        proof_input("20260820", "120000_10~browser_a", valid_files());
+    segments.items[0].segment = Some("120000_10".into());
+    segments.items[0].stream = Some("browser_a".into());
+    let proof = prove_custody(
+        &manifest,
+        &day_manifest,
+        &segments,
+        "20260820",
+        "120000_10~browser_a",
+        &local,
+    );
+    let CustodyProof::Confirmed(witness) = proof else {
+        panic!("physical alias should prove custody");
+    };
+    assert_eq!(witness.server_segment(), "120000_10~browser_a");
+    assert_eq!(segments.items[0].segment.as_deref(), Some("120000_10"));
+    assert_eq!(segments.items[0].stream.as_deref(), Some("browser_a"));
 }
 
 #[test]

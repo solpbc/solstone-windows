@@ -279,6 +279,11 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
 
     let cfg = state.sync_config.clone();
     let sync = state.sync.clone();
+    #[cfg(all(windows, not(test)))]
+    let baseline_marker = (act == pl_transport_win::session::PairingAction::Confirm)
+        .then(pl_transport_win::device_marker::probe_platform);
+    #[cfg(any(not(windows), test))]
+    let baseline_marker = None;
 
     pl_transport_win::session::answer(
         act,
@@ -287,6 +292,7 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
         &sync,
         &state.credential_access,
         &state.uploader_slot,
+        baseline_marker,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -307,6 +313,229 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
     }
 
     Ok(())
+}
+
+async fn migration_client(
+    state: &crate::app::AppState,
+) -> Result<std::sync::Arc<pl_transport_win::ObserverClient>, pl_transport_win::TransportError> {
+    if let Some(access) = state.credential_access.lock().await.as_ref() {
+        return Ok(access.client_slot().load());
+    }
+    let paired = PairedState::load(&state.sync_config.state_path)?;
+    let credential = paired
+        .credential
+        .ok_or(pl_transport_win::TransportError::NotPaired)?;
+    pl_transport_win::ObserverClient::new(
+        credential,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .map(std::sync::Arc::new)
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationUiIssue {
+    Offline,
+    Unsupported,
+    StorageUnavailable,
+    DecisionRefused,
+    TargetMissing,
+    KeyRefused,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct MigrationUiSnapshot {
+    migration: Option<pl_transport_win::migration::MigrationView>,
+    issue: Option<MigrationUiIssue>,
+}
+
+fn migration_ui_issue(error: &pl_transport_win::TransportError) -> MigrationUiIssue {
+    use pl_transport_win::TransportError as E;
+    match error {
+        E::ClientKeyProtectionRefused => MigrationUiIssue::KeyRefused,
+        E::CredentialRecoveryRequired | E::CredentialMalformed | E::Io(_) | E::NotPaired => {
+            MigrationUiIssue::StorageUnavailable
+        }
+        E::NoEndpoint | E::Tls(_) | E::Http(_) | E::Mux(_) => MigrationUiIssue::Offline,
+        E::Rejected { status, body } => {
+            let value: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let reason = value
+                .get("reason_code")
+                .or_else(|| value.get("reason"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            match reason {
+                "migration_protocol_unsupported" => MigrationUiIssue::Unsupported,
+                "paired_device_not_found" | "migration_target_conflict" => {
+                    MigrationUiIssue::TargetMissing
+                }
+                _ if *status >= 500 => MigrationUiIssue::Offline,
+                _ => MigrationUiIssue::DecisionRefused,
+            }
+        }
+        _ => MigrationUiIssue::DecisionRefused,
+    }
+}
+
+fn migration_ui_snapshot(
+    path: &std::path::Path,
+    issue: Option<MigrationUiIssue>,
+) -> MigrationUiSnapshot {
+    match pl_transport_win::migration::view(path) {
+        Ok(migration) => MigrationUiSnapshot { migration, issue },
+        Err(error) => MigrationUiSnapshot {
+            migration: None,
+            issue: Some(migration_ui_issue(&error)),
+        },
+    }
+}
+
+/// Reconcile any saved migration decision with the journal and return durable owner state.
+#[tauri::command]
+pub async fn pairing_migration_state(
+    state: tauri::State<'_, crate::app::AppState>,
+) -> MigrationUiSnapshot {
+    let path = &state.sync_config.state_path;
+    let mut issue = None;
+    let record = match pl_transport_win::migration::load(path) {
+        Ok(record) => record,
+        Err(error) => {
+            return migration_ui_snapshot(path, Some(migration_ui_issue(&error)));
+        }
+    };
+    if let Some(mut record) = record {
+        if record
+            .pending_decision
+            .as_ref()
+            .is_some_and(|decision| decision.result == "target_missing")
+        {
+            issue = Some(MigrationUiIssue::TargetMissing);
+        } else if record
+            .pending_decision
+            .as_ref()
+            .is_some_and(|decision| decision.result == "unknown")
+        {
+            match migration_client(&state).await {
+                Ok(client) => {
+                    match pl_transport_win::migration::reconcile_saved_decision(
+                        path,
+                        &mut record,
+                        client.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(pl_transport_win::migration::DecisionReconcile::TargetMissing) => {
+                            issue = Some(MigrationUiIssue::TargetMissing);
+                        }
+                        Err(error) => issue = Some(migration_ui_issue(&error)),
+                        Ok(_) => {}
+                    }
+                }
+                Err(error) => issue = Some(migration_ui_issue(&error)),
+            }
+        }
+    }
+    migration_ui_snapshot(path, issue)
+}
+
+/// Save an exact v1 decision before reconciling it with the journal.
+#[tauri::command]
+pub async fn pairing_migration_decide(
+    state: tauri::State<'_, crate::app::AppState>,
+    choice: pl_transport_win::migration::Choice,
+    replaces_cid: Option<String>,
+) -> Result<MigrationUiSnapshot, String> {
+    let path = &state.sync_config.state_path;
+    let mut record = pl_transport_win::migration::load(path)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "migration is unavailable".to_string())?;
+    let paired = PairedState::load(path).map_err(|e| e.to_string())?;
+    let credential = paired
+        .credential
+        .as_ref()
+        .ok_or_else(|| "not paired".to_string())?;
+    let binding =
+        pl_transport_win::ack::JournalIdentity::from_credential(credential).client_cert_sha256;
+    if record.new_certificate_binding.as_deref() != Some(binding.as_str())
+        || record.pairing_generation
+            != pl_transport_win::credential::pairing_generation(&credential.client_cert_pem)
+    {
+        return Err("migration owner changed".to_string());
+    }
+    pl_transport_win::migration::persist_decision(path, &mut record, choice, replaces_cid)
+        .map_err(|e| e.to_string())?;
+    let issue = if record
+        .pending_decision
+        .as_ref()
+        .is_some_and(|decision| decision.result == "target_missing")
+    {
+        Some(MigrationUiIssue::TargetMissing)
+    } else {
+        match migration_client(&state).await {
+            Ok(client) => match pl_transport_win::migration::reconcile_saved_decision(
+                path,
+                &mut record,
+                client.as_ref(),
+            )
+            .await
+            {
+                Ok(pl_transport_win::migration::DecisionReconcile::TargetMissing) => {
+                    Some(MigrationUiIssue::TargetMissing)
+                }
+                Err(error) => Some(migration_ui_issue(&error)),
+                Ok(_) => None,
+            },
+            Err(error) => Some(migration_ui_issue(&error)),
+        }
+    };
+    Ok(migration_ui_snapshot(path, issue))
+}
+
+/// Return other authorized devices with labels kept separate from their CIDs.
+#[tauri::command]
+pub async fn pairing_migration_devices(
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<Vec<pl_transport_win::device_metadata::PairedDevice>, String> {
+    let path = &state.sync_config.state_path;
+    let paired = PairedState::load(path).map_err(|error| error.to_string())?;
+    let credential = paired.credential.ok_or_else(|| "not paired".to_string())?;
+    let current_cid = pl_transport_win::migration::credential_cid(&credential)
+        .map_err(|error| error.to_string())?;
+    let old_cid = pl_transport_win::migration::load(path)
+        .map_err(|error| error.to_string())?
+        .and_then(|record| record.old_cid);
+    let client = migration_client(&state)
+        .await
+        .map_err(|error| error.to_string())?;
+    client
+        .list_paired_devices()
+        .await
+        .map(|devices| {
+            devices
+                .into_iter()
+                .filter(|device| {
+                    device.cid != current_cid && old_cid.as_deref() != Some(&device.cid)
+                })
+                .collect()
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Dismiss the saved fresh-pair offer without submitting a device decision.
+#[tauri::command]
+pub fn pairing_migration_offer_dismiss(
+    state: tauri::State<'_, crate::app::AppState>,
+    expected_binding: String,
+    expected_generation: [u8; 32],
+    expected_revision: u64,
+) -> Result<(), String> {
+    pl_transport_win::migration::dismiss_fresh_pair_offer(
+        &state.sync_config.state_path,
+        &expected_binding,
+        expected_generation,
+        expected_revision,
+    )
+    .map_err(|e| e.to_string())
 }
 
 // ── Capture-exclusion intents ─────────────────────────────────────────────────

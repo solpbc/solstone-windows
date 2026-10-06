@@ -1277,6 +1277,12 @@ impl UploadCoordinator {
                                 receipt.server_segment(),
                                 status_str,
                                 receipt.files(),
+                            )
+                            .with_physical_identity(
+                                segment.index,
+                                &segment_key,
+                                "_default",
+                                &segment_key,
                             );
                             if let Err(e) = self.store.write_ack(segment.index, &ack) {
                                 tracing::warn!(
@@ -1517,28 +1523,51 @@ impl UploadCoordinator {
                     );
 
                     if let Some(unknown_list) = unknown_by_day.get(&day) {
+                        let listing_is_valid =
+                            observer_pl::ingest::validate_segments_envelope(&envelope).is_ok();
                         for unk in unknown_list {
-                            let matched_item = envelope.items.iter().find(|item| {
-                                if item.key != unk.segment_key {
-                                    return false;
-                                }
-                                if item.files.len() != unk.local_files.len() {
-                                    return false;
-                                }
-                                for (name, sha, size) in &unk.local_files {
-                                    let Some(sf) = item.files.iter().find(|f| &f.name == name)
-                                    else {
-                                        return false;
-                                    };
-                                    if sf.size != *size || &sf.sha256 != sha || !sf.status.is_held()
-                                    {
-                                        return false;
-                                    }
-                                }
-                                true
-                            });
+                            let matches = if listing_is_valid {
+                                envelope
+                                    .items
+                                    .iter()
+                                    .filter(|item| {
+                                        let physical_match =
+                                            match (item.segment.as_deref(), item.stream.as_deref())
+                                            {
+                                                (Some(segment), Some(stream)) => {
+                                                    segment == unk.segment_key
+                                                        && stream == "_default"
+                                                }
+                                                (None, None) => item.key == unk.segment_key,
+                                                _ => false,
+                                            };
+                                        if !physical_match {
+                                            return false;
+                                        }
+                                        if item.files.len() != unk.local_files.len() {
+                                            return false;
+                                        }
+                                        for (name, sha, size) in &unk.local_files {
+                                            let Some(sf) =
+                                                item.files.iter().find(|f| &f.name == name)
+                                            else {
+                                                return false;
+                                            };
+                                            if sf.size != *size
+                                                || &sf.sha256 != sha
+                                                || !sf.status.is_held()
+                                            {
+                                                return false;
+                                            }
+                                        }
+                                        true
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                Vec::new()
+                            };
 
-                            if let Some(item) = matched_item {
+                            if let [item] = matches.as_slice() {
                                 let ack_files: Vec<AckFile> = unk
                                     .local_files
                                     .iter()
@@ -1562,6 +1591,12 @@ impl UploadCoordinator {
                                     &unk.segment_key,
                                     &item.key,
                                     ack_files,
+                                )
+                                .with_physical_identity(
+                                    unk.index,
+                                    item.segment.as_deref().unwrap_or(&unk.segment_key),
+                                    item.stream.as_deref().unwrap_or("_default"),
+                                    item.original_key.as_deref().unwrap_or(&unk.segment_key),
                                 );
                                 if let Err(e) = self.store.write_ack(unk.index, &ack) {
                                     tracing::warn!(
@@ -1973,6 +2008,7 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
     struct OneSegmentStore {
         removed: Arc<Mutex<bool>>,
         segment: SealedSegment,
@@ -1981,6 +2017,7 @@ mod tests {
         #[allow(dead_code)]
         bytes: Vec<u8>,
         ack: Arc<Mutex<Option<UploadAck>>>,
+        written_acks: Arc<Mutex<Vec<UploadAck>>>,
         files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     }
 
@@ -1999,6 +2036,7 @@ mod tests {
                 file_name: file_name.to_string(),
                 bytes,
                 ack: Arc::new(Mutex::new(None)),
+                written_acks: Arc::new(Mutex::new(Vec::new())),
                 files: Arc::new(Mutex::new(files)),
             }
         }
@@ -2102,6 +2140,7 @@ mod tests {
         }
 
         fn write_ack(&self, _index: u64, ack: &UploadAck) -> std::io::Result<()> {
+            self.written_acks.lock().unwrap().push(ack.clone());
             *self.ack.lock().unwrap() = Some(ack.clone());
             Ok(())
         }
@@ -3019,6 +3058,8 @@ mod tests {
                         submitted_name: None,
                     }],
                     original_key: None,
+                    segment: None,
+                    stream: None,
                 }],
                 total: 1,
                 protocol_version: 3,
@@ -4211,6 +4252,138 @@ mod tests {
         assert_eq!(coordinator.tick().await.unwrap(), 0);
         assert!(*removed.lock().unwrap());
         assert!(coordinator.quarantine_counts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reassigned_listing_alias_recovers_the_physical_candidate_after_restart() {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"original bytes".to_vec();
+        let physical_segment = civil::segment_key_string_local(boundary, 0, 300);
+        let listing_error =
+            TransportError::Json(serde_json::from_str::<SegmentsEnvelope>("not-json").unwrap_err());
+        let store = OneSegmentStore::new(boundary, file_name, bytes.clone());
+        let removed = store.removed_handle();
+
+        let first = FakeClient::new(
+            vec![accepted_unconfirmed_ingest(1)],
+            vec![Err(listing_error)],
+        );
+        let first_run = coordinator_with_client(first, Box::new(store.clone()), sync.clone());
+        assert!(matches!(
+            first_run.tick().await,
+            Err(RouteError::Transport(TransportError::Json(_)))
+        ));
+        assert!(!*removed.lock().unwrap());
+        assert!(store.written_acks.lock().unwrap().is_empty());
+
+        let alias = format!("{physical_segment}~server-assigned");
+        let listing = SegmentsEnvelope {
+            items: vec![SegmentItem {
+                key: alias.clone(),
+                observed: false,
+                files: vec![SegmentFile {
+                    name: file_name.to_owned(),
+                    sha256: ca::sha256_hex(&bytes),
+                    size: bytes.len() as u64,
+                    status: SegmentFileStatus::Present,
+                    submitted_name: None,
+                }],
+                original_key: Some(physical_segment.clone()),
+                segment: Some(physical_segment.clone()),
+                stream: Some("_default".to_owned()),
+            }],
+            total: 1,
+            protocol_version: 3,
+        };
+        let second = FakeClient::new(
+            vec![accepted_unconfirmed_ingest(2)],
+            vec![Ok((listing, test_metadata()))],
+        );
+        let after_restart = coordinator_with_client(second, Box::new(store.clone()), sync.clone());
+
+        assert_eq!(after_restart.tick().await.unwrap(), 0);
+        assert!(*removed.lock().unwrap());
+        let acknowledgements = store.written_acks.lock().unwrap();
+        let ack = acknowledgements.last().unwrap();
+        assert_eq!(ack.server_segment, alias);
+        assert_eq!(ack.physical_index, Some(1));
+        assert_eq!(
+            ack.physical_segment.as_deref(),
+            Some(physical_segment.as_str())
+        );
+        assert_eq!(ack.physical_stream.as_deref(), Some("_default"));
+        assert_eq!(
+            ack.original_upload_key.as_deref(),
+            Some(physical_segment.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_cross_stream_or_incomplete_listing_never_acknowledges() {
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"original bytes".to_vec();
+        let physical_segment = civil::segment_key_string_local(boundary, 0, 300);
+        let sha256 = ca::sha256_hex(&bytes);
+
+        let candidate = |key: String, stream: &str, status| SegmentItem {
+            key,
+            observed: false,
+            files: vec![SegmentFile {
+                name: file_name.to_owned(),
+                sha256: sha256.clone(),
+                size: bytes.len() as u64,
+                status,
+                submitted_name: None,
+            }],
+            original_key: Some(physical_segment.clone()),
+            segment: Some(physical_segment.clone()),
+            stream: Some(stream.to_owned()),
+        };
+        let aliases = vec![
+            candidate(
+                format!("{physical_segment}~first"),
+                "_default",
+                SegmentFileStatus::Present,
+            ),
+            candidate(
+                format!("{physical_segment}~second"),
+                "_default",
+                SegmentFileStatus::Present,
+            ),
+        ];
+        let cross_stream = vec![candidate(
+            format!("{physical_segment}~browser"),
+            "browser_pages",
+            SegmentFileStatus::Present,
+        )];
+        let incomplete = vec![candidate(
+            format!("{physical_segment}~missing"),
+            "_default",
+            SegmentFileStatus::Missing,
+        )];
+
+        for items in [aliases, cross_stream, incomplete] {
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            let store = OneSegmentStore::new(boundary, file_name, bytes.clone());
+            let removed = store.removed_handle();
+            let listing = SegmentsEnvelope {
+                total: items.len() as u64,
+                items,
+                protocol_version: 3,
+            };
+            let client = FakeClient::new(
+                vec![accepted_unconfirmed_ingest(1)],
+                vec![Ok((listing, test_metadata()))],
+            );
+            let coordinator = coordinator_with_client(client, Box::new(store.clone()), sync);
+
+            assert_eq!(coordinator.tick().await.unwrap(), 0);
+            assert!(!*removed.lock().unwrap());
+            assert!(store.written_acks.lock().unwrap().is_empty());
+        }
     }
 
     // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses simulated time advance across ticks.

@@ -47,6 +47,11 @@ impl CredentialAccess {
         sync: Arc<Mutex<SyncSnapshot>>,
         observer: ObserverHandle,
     ) -> Result<Self, TransportError> {
+        if paired.retirement_intent.is_some() {
+            return Err(TransportError::Pairing(
+                "a client retirement is still pending".to_owned(),
+            ));
+        }
         let credential = paired.credential.clone().ok_or(TransportError::NotPaired)?;
         let binding = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
         let confirmed = cfg.confirmation.lock().unwrap();
@@ -126,5 +131,98 @@ impl CredentialAccess {
         self.post_connect.disconnect_relay();
         self.post_connect
             .mark_session_disconnected(self.post_connect_token);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::credential::{Credential, RetirementIntent, RetirementOperation, RetirementPhase};
+    use crate::device_metadata::RawDeviceFacts;
+    use crate::journal_version::JournalVersionController;
+    use crate::service::SyncConfig;
+
+    #[derive(Debug)]
+    struct FixedOffset;
+
+    impl observer_model::LocalOffset for FixedOffset {
+        fn local_zone(
+            &self,
+            _epoch_secs: u64,
+        ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
+            Ok(observer_model::LocalZone {
+                tz: Some("UTC".to_owned()),
+                utc_offset_seconds: 0,
+            })
+        }
+    }
+
+    #[test]
+    fn bind_refuses_an_unresolved_retirement_before_constructing_a_client() {
+        let dir = std::env::temp_dir().join(format!(
+            "access-retirement-pending-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let candidate = Credential {
+            client_key_pem: "key".into(),
+            client_cert_pem: "candidate-cert".into(),
+            ca_chain_pem: vec!["ca".into()],
+            ca_fp_prefix: vec![1, 2, 3],
+            instance_id: "journal".into(),
+            home_label: "journal".into(),
+            endpoints: Vec::new(),
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        };
+        let paired = PairedState {
+            credential: Some(candidate.clone()),
+            retirement_intent: Some(RetirementIntent {
+                schema: 1,
+                operation_id: "pending".into(),
+                operation: RetirementOperation::IntegrationWrongMark,
+                phase: RetirementPhase::Prepared,
+                owner_generation: pairing_generation(&candidate.client_cert_pem),
+                candidate_generation: pairing_generation(&candidate.client_cert_pem),
+                access_mutation_generation: 0,
+                client_id: "sha256:fixture".into(),
+                candidate,
+                answer_disposition: None,
+                marker_result: None,
+            }),
+            ..Default::default()
+        };
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cfg = SyncConfig {
+            device_label: "device".into(),
+            period_secs: 300,
+            state_path: dir.join("pairing.json"),
+            segments_root: dir.join("segments"),
+            local_offset: Arc::new(FixedOffset),
+            journal_version: Arc::new(JournalVersionController::new(
+                dir.join("journal-version.json"),
+            )),
+            facts_fn: Arc::new(|| RawDeviceFacts {
+                name: None,
+                platform: None,
+                device_type: None,
+                app_id: None,
+                app_version: None,
+            }),
+            confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
+        };
+
+        assert!(matches!(
+            CredentialAccess::bind(&paired, &cfg, sync, None),
+            Err(TransportError::Pairing(_))
+        ));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

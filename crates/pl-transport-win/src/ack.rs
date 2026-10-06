@@ -60,6 +60,16 @@ pub struct UploadAck {
     pub status: Option<String>,
     pub proof: AckProofKind,
     pub files: Vec<AckFile>,
+    /// Local physical directory coordinates. Server listing aliases never enter these fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_segment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_stream: Option<String>,
+    /// Requested upload identity before the journal assigned any listing alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_upload_key: Option<String>,
 }
 
 impl UploadAck {
@@ -90,6 +100,10 @@ impl UploadAck {
                     listing_status: None,
                 })
                 .collect(),
+            physical_index: None,
+            physical_segment: None,
+            physical_stream: None,
+            original_upload_key: None,
         }
     }
 
@@ -109,7 +123,25 @@ impl UploadAck {
             status: None,
             proof: AckProofKind::Listing,
             files,
+            physical_index: None,
+            physical_segment: None,
+            physical_stream: None,
+            original_upload_key: None,
         }
+    }
+
+    pub fn with_physical_identity(
+        mut self,
+        index: u64,
+        segment: impl Into<String>,
+        stream: impl Into<String>,
+        original_upload_key: impl Into<String>,
+    ) -> Self {
+        self.physical_index = Some(index);
+        self.physical_segment = Some(segment.into());
+        self.physical_stream = Some(stream.into());
+        self.original_upload_key = Some(original_upload_key.into());
+        self
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
@@ -120,6 +152,19 @@ impl UploadAck {
         let ack: Self = serde_json::from_slice(bytes)?;
         if ack.schema != LOCAL_UPLOAD_ACK_SCHEMA {
             return Err(serde::de::Error::custom("schema mismatch"));
+        }
+        let physical_fields = [
+            ack.physical_index.is_some(),
+            ack.physical_segment.is_some(),
+            ack.physical_stream.is_some(),
+            ack.original_upload_key.is_some(),
+        ];
+        if physical_fields.iter().any(|present| *present)
+            && physical_fields.iter().any(|present| !present)
+        {
+            return Err(serde::de::Error::custom(
+                "physical identity fields must be complete",
+            ));
         }
         Ok(ack)
     }
@@ -158,5 +203,22 @@ mod tests {
         assert!(json.starts_with(
             r#"{"instance_id":"inst-42","ca_fp_prefix":"12abcd","client_cert_sha256":""#
         ));
+    }
+
+    #[test]
+    fn persisted_physical_identity_must_be_complete() {
+        let identity = JournalIdentity {
+            instance_id: "instance".into(),
+            ca_fp_prefix: "abcd".into(),
+            client_cert_sha256: "0123456789abcdef".repeat(4),
+        };
+        let ack = UploadAck::new_listing(identity, "20261006", "120000_300", "alias", vec![]);
+        let mut partial: serde_json::Value =
+            serde_json::from_slice(&ack.to_bytes().unwrap()).unwrap();
+        partial["physical_index"] = serde_json::json!(7);
+        assert!(UploadAck::from_bytes(&serde_json::to_vec(&partial).unwrap()).is_err());
+
+        let complete = ack.with_physical_identity(7, "120000_300", "_default", "120000_300");
+        assert!(UploadAck::from_bytes(&complete.to_bytes().unwrap()).is_ok());
     }
 }

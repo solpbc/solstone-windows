@@ -223,6 +223,10 @@ fn transport_error_is_retryable(error: &TransportError) -> bool {
         | TransportError::RelayRetired
         | TransportError::RelayPublicationRejected
         | TransportError::RelayPublicationIndeterminate
+        | TransportError::ClientKeyProtectionRefused
+        | TransportError::RelayTokenProtectionRefused
+        | TransportError::CredentialMalformed
+        | TransportError::CredentialRecoveryRequired
         | TransportError::NotPaired
         | TransportError::LocalOffset => false,
     }

@@ -141,6 +141,7 @@ async fn newly_generated_pairing_result_saves_and_loads_through_protector_path()
     let paired_state = PairedState {
         access_mutation_generation: 42,
         credential: Some(credential.clone()),
+        retirement_intent: None,
     };
 
     paired_state.save(&state_file).expect("save paired state");

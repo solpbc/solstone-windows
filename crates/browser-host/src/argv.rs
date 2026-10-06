@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn firefox_production_with_a_spaced_non_ascii_manifest_path() {
         let args = v(&[
-            r"C:\Users\Zoë Q\AppData\Local\Solstone\browser\app.solstone.browser.firefox.json",
+            r"C:\Users\Zoë Q\AppData\Local\SolstoneOwner\browser\app.solstone.browser.firefox.json",
             "browser@solstone.app",
         ]);
         assert_eq!(

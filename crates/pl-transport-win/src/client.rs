@@ -96,6 +96,7 @@ mod tests {
         PairedState {
             credential: Some(credential.clone()),
             access_mutation_generation: 0,
+            retirement_intent: None,
         }
         .save(path)
         .unwrap();
@@ -760,6 +761,23 @@ impl ObserverClient {
             .await
     }
 
+    /// List authorized journal devices for the replacement picker.
+    pub async fn list_paired_devices(
+        &self,
+    ) -> Result<Vec<crate::device_metadata::PairedDevice>, TransportError> {
+        let response = self
+            .post_connect_response(OrdinaryRequest::ClientsListGet, self.v3_headers(), &[])
+            .await?;
+        if response.status != 200 {
+            return Err(TransportError::Rejected {
+                status: response.status,
+                body: String::from_utf8_lossy(&response.body).into_owned(),
+            });
+        }
+        crate::device_metadata::parse_paired_devices(&response.body)
+            .map_err(|_| TransportError::CredentialMalformed)
+    }
+
     pub async fn put_clients_self(&self, body: &[u8]) -> Result<HttpResponse, TransportError> {
         let mut headers = self.v3_headers();
         headers.push(("content-type".to_string(), "application/json".to_string()));
@@ -769,6 +787,28 @@ impl ObserverClient {
 
     pub async fn get_relay_access(&self) -> Result<HttpResponse, TransportError> {
         self.post_connect_response(OrdinaryRequest::RelayAccessGet, self.v3_headers(), &[])
+            .await
+    }
+
+    pub async fn rekey(&self, body: &[u8]) -> Result<HttpResponse, TransportError> {
+        let mut headers = self.v3_headers();
+        headers.push(("content-type".to_string(), "application/json".to_string()));
+        self.post_connect_response(OrdinaryRequest::MigrationRekeyPost, headers, body)
+            .await
+    }
+
+    pub async fn get_migration_state(&self) -> Result<HttpResponse, TransportError> {
+        self.post_connect_response(OrdinaryRequest::MigrationStateGet, self.v3_headers(), &[])
+            .await
+    }
+
+    pub async fn put_migration_decision(
+        &self,
+        body: &[u8],
+    ) -> Result<HttpResponse, TransportError> {
+        let mut headers = self.v3_headers();
+        headers.push(("content-type".to_string(), "application/json".to_string()));
+        self.post_connect_response(OrdinaryRequest::MigrationDecisionPut, headers, body)
             .await
     }
 
@@ -1002,7 +1042,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 10);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 14);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);

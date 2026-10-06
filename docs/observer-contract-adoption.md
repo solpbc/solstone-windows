@@ -8,7 +8,7 @@ this repository's generated AutomationId and state-token contract described in
 `docs/automation-contract.md`.
 
 The adopted authority revision is
-`b78ba9eaac8228e65c4b5a3e64d27aefd3ad47cd`, bundle version `12.2.0`. Its
+`1e432dba3ecdfa43789c25f97077fdc3e71fab59`, bundle version `14.0.0`. Its
 generator identity is
 `solstone.repository_contracts.client_ingest_contract_bundle.v1`; its bundle
 schema identity is `solstone.client-ingest-contract-bundle.schema.v1`.
@@ -84,9 +84,11 @@ vendored export or the client.
 11. Run `make check-observer-contract`, focused crate tests, the host checks,
     and the separately required native Windows evidence.
 
-The 12.2.0 bundle contains four declared payload files, four projected operations,
-and five fixtures and five vectors (the `ok`, `duplicate`, `collision`,
-`conflict`, and `failed` ingest statuses).
+The 14.0.0 bundle contains four declared payload files and four projected
+operations. Its eight fixture/vector pairs cover ingest status results, browser
+record refusal, duplicate listing-key refusal, and same-basename segments on
+distinct streams. The Windows consumer identifier remains `solstone-windows`;
+the conformance bundle does not add pairing or root event-stream operations.
 
 ## Version policy
 
@@ -107,10 +109,10 @@ the digests then preserve the identity of those bytes.
 
 ## Upstream follow-ups
 
-The adopted 12.2.0 authority bundle at
-`b78ba9eaac8228e65c4b5a3e64d27aefd3ad47cd` audits `solstone-windows` at
-`f276076e3554c75d75cbd3616644f46d831c0d90` and no longer lists this consumer
-as `legacy_v2_unmigrated` or a rollout blocker; `solstone-linux` remains the
-rollout target. Pairing and root SSE stay out of projection scope; local
+The adopted 14.0.0 authority bundle at
+`1e432dba3ecdfa43789c25f97077fdc3e71fab59` audits `solstone-windows` at
+`83a85437427e96cbdc7d68cc43d6c4c98cf986c7`. The manifest records the audited
+Linux, macOS, tmux, and Windows consumers and has no outstanding rollout
+targets. Pairing and root SSE stay out of projection scope; local
 `excluded_operations.json` fixtures remain how those preserved request-byte
 tests operate until the upstream projection scope changes.

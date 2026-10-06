@@ -5,6 +5,40 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// Minimal identity/display data used by the replacement-device picker.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PairedDevice {
+    pub cid: String,
+    pub display_label: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PairedDeviceList {
+    clients: Vec<PairedDevice>,
+}
+
+/// Decode the journal's clients list without treating labels as identities.
+pub fn parse_paired_devices(bytes: &[u8]) -> Result<Vec<PairedDevice>, String> {
+    let response: PairedDeviceList =
+        serde_json::from_slice(bytes).map_err(|_| "invalid clients response".to_string())?;
+    let mut seen = std::collections::HashSet::with_capacity(response.clients.len());
+    if response.clients.iter().any(|device| {
+        let valid_cid = device.cid.strip_prefix("sha256:").is_some_and(|hex| {
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+        !valid_cid
+            || device.display_label.trim().is_empty()
+            || device.display_label.chars().any(char::is_control)
+            || !seen.insert(device.cid.as_str())
+    }) {
+        return Err("invalid clients response".to_string());
+    }
+    Ok(response.clients)
+}
+
 /// Maximum UTF-8 byte length for the name field.
 pub const MAX_NAME_BYTES: usize = 80;
 
@@ -255,6 +289,40 @@ impl<'de> Deserialize<'de> for MetadataPutResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_device_list_keeps_duplicate_labels_and_exact_cids() {
+        let first = format!("sha256:{}", "a".repeat(64));
+        let second = format!("sha256:{}", "b".repeat(64));
+        let body = serde_json::json!({
+            "clients": [
+                {"cid": first, "display_label": "same label", "other": "ignored"},
+                {"cid": second, "display_label": "same label"}
+            ]
+        });
+        let devices = parse_paired_devices(&serde_json::to_vec(&body).unwrap()).unwrap();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].cid, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(devices[1].cid, format!("sha256:{}", "b".repeat(64)));
+        assert_eq!(devices[0].display_label, devices[1].display_label);
+    }
+
+    #[test]
+    fn paired_device_list_rejects_duplicate_cids_and_invalid_labels() {
+        let cid = format!("sha256:{}", "a".repeat(64));
+        let duplicate = serde_json::json!({
+            "clients": [
+                {"cid": cid, "display_label": "first"},
+                {"cid": cid, "display_label": "second"}
+            ]
+        });
+        assert!(parse_paired_devices(&serde_json::to_vec(&duplicate).unwrap()).is_err());
+
+        let invalid_label = serde_json::json!({
+            "clients": [{"cid": format!("sha256:{}", "c".repeat(64)), "display_label": "bad\nlabel"}]
+        });
+        assert!(parse_paired_devices(&serde_json::to_vec(&invalid_label).unwrap()).is_err());
+    }
 
     #[test]
     fn sanitize_field_bounds_and_controls() {

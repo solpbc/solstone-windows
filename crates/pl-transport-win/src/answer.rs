@@ -19,7 +19,7 @@ pub fn answer_path(state_path: &Path) -> PathBuf {
 }
 
 /// Structured content of the pairing answer file.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AnswerState {
     pub confirmed: String,
     pub rejected: String,
@@ -111,6 +111,7 @@ pub fn read_answer(path: &Path) -> Result<Option<AnswerState>, StorageError> {
 
 /// Atomically write the answer file using stage-sync-rename.
 pub fn write_answer(path: &Path, state: &AnswerState) -> Result<(), StorageError> {
+    let _guard = crate::credential::owner_state_write_guard();
     let bytes = encode_answer(state)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(StorageError::WriteFailed)?;
@@ -120,10 +121,24 @@ pub fn write_answer(path: &Path, state: &AnswerState) -> Result<(), StorageError
     file.sync_all().map_err(StorageError::WriteFailed)?;
     drop(file);
 
+    if std::fs::read(&tmp).map_err(StorageError::WriteFailed)? != bytes {
+        return Err(StorageError::WriteFailed(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "answer staging readback mismatch",
+        )));
+    }
+
     publish_staged_file(&tmp, path)?;
 
     #[cfg(not(windows))]
     crate::credential::sync_published_path(path).map_err(StorageError::DurabilityUncertain)?;
+
+    if std::fs::read(path).map_err(StorageError::DurabilityUncertain)? != bytes {
+        return Err(StorageError::DurabilityUncertain(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "answer publication readback mismatch",
+        )));
+    }
 
     Ok(())
 }
@@ -225,7 +240,9 @@ pub async fn settle_rejected_on_launch(
             let cert_digest =
                 crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
             if cert_digest == rejected_digest {
-                // Matching rejected pairing found. Attempt one retire_client
+                // Matching rejected pairing found. Keep its durable intent
+                // unless retirement and local invalidation both complete.
+                let mut retired = false;
                 if let Ok(der_certs) = spl_transport::tls::parse_certs(&cred.client_cert_pem) {
                     if let Some(der) = der_certs.first() {
                         let client_id =
@@ -234,23 +251,43 @@ pub async fn settle_rejected_on_launch(
                             cred.clone(),
                             Arc::new(std::sync::atomic::AtomicBool::new(false)),
                         ) {
-                            let _ = tokio::time::timeout(
+                            retired = tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
                                 client.retire_client(&client_id),
                             )
-                            .await;
+                            .await
+                            .is_ok_and(|result| result.is_ok());
                         }
                     }
+                }
+
+                if !retired {
+                    return true;
                 }
 
                 // Delete pairing.json and pairing.json.tmp
                 let tmp = state_path.with_extension("json.tmp");
                 let mut delete_ok = true;
-                if state_path.exists() && std::fs::remove_file(state_path).is_err() {
-                    delete_ok = false;
-                }
-                if tmp.exists() {
-                    let _ = std::fs::remove_file(&tmp);
+                {
+                    let _guard = crate::credential::owner_state_write_guard();
+                    let current = crate::credential::PairedState::load(state_path);
+                    let still_rejected = current
+                        .ok()
+                        .and_then(|state| state.credential)
+                        .is_some_and(|current| {
+                            crate::ack::JournalIdentity::from_credential(&current)
+                                .client_cert_sha256
+                                == rejected_digest
+                        });
+                    if !still_rejected {
+                        return true;
+                    }
+                    if state_path.exists() && std::fs::remove_file(state_path).is_err() {
+                        delete_ok = false;
+                    }
+                    if tmp.exists() && std::fs::remove_file(&tmp).is_err() {
+                        delete_ok = false;
+                    }
                 }
 
                 if delete_ok {

@@ -16,13 +16,13 @@ pub enum Outcome {
 
 #[derive(Clone)]
 pub struct Attempt {
-    pub token: (u64, u64, u64),
+    pub token: (u64, u64, [u8; 32]),
     metadata: watch::Receiver<Option<Outcome>>,
     access: watch::Receiver<Option<Outcome>>,
 }
 
 impl Attempt {
-    pub(crate) fn new(token: (u64, u64, u64)) -> (Self, Completion, Completion) {
+    pub(crate) fn new(token: (u64, u64, [u8; 32])) -> (Self, Completion, Completion) {
         let (metadata, metadata_rx) = watch::channel(None);
         let (access, access_rx) = watch::channel(None);
         (
@@ -80,7 +80,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_waiter_sees_processed_and_failed_decisions() {
-        let (attempt, metadata, access) = Attempt::new((1, 2, 3));
+        let (attempt, metadata, access) = Attempt::new((1, 2, [3; 32]));
         metadata.finish(Outcome::Processed);
         access.finish(Outcome::Failed);
         assert_eq!(attempt.wait().await, (Outcome::Processed, Outcome::Failed));
@@ -88,7 +88,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_and_timeout_are_not_processed() {
-        let (attempt, metadata, access) = Attempt::new((1, 2, 3));
+        let (attempt, metadata, access) = Attempt::new((1, 2, [3; 32]));
         drop(metadata);
         access.finish(Outcome::TimedOut);
         assert_eq!(
@@ -99,8 +99,8 @@ mod tests {
 
     #[tokio::test]
     async fn earlier_epoch_cannot_release_successor() {
-        let (old, metadata, access) = Attempt::new((1, 2, 3));
-        let (new, next_metadata, next_access) = Attempt::new((1, 4, 3));
+        let (old, metadata, access) = Attempt::new((1, 2, [3; 32]));
+        let (new, next_metadata, next_access) = Attempt::new((1, 4, [3; 32]));
         metadata.finish(Outcome::Processed);
         access.finish(Outcome::Processed);
         assert_eq!(old.wait().await, (Outcome::Processed, Outcome::Processed));

@@ -93,8 +93,8 @@ fn observer_contract_good_tree_verifies() {
     let tree = TempTree::good();
     let report = tree.verify().expect("known-good tree verifies");
     assert_eq!(report.operation_count, 4);
-    assert_eq!(report.fixture_count, 5);
-    assert_eq!(report.vector_count, 5);
+    assert_eq!(report.fixture_count, 8);
+    assert_eq!(report.vector_count, 8);
 }
 
 #[test]

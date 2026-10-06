@@ -108,37 +108,60 @@ fn non_empty(s: &str) -> Option<String> {
 /// per-install staging UUID from `.betaId`, minting a random `Uuid::new_v4()`
 /// when absent, and threads it to the source as `staged_user_id`. Our
 /// `R2FeedSource` ignores that value so it never reaches the wire, but we still
-/// pre-seed `.betaId` **empty** at boot (overwriting any prior UUID) so no stable
-/// per-install identifier is minted/persisted on disk and the staged-rollout id
-/// stays unused. Pinned to the `velopack = "=1.2.0"` per-user layout:
-/// `%LocalAppData%\Solstone\packages`, which is `data_root/packages` (our
-/// `local_data_root()` is that same root).
-fn neutralize_staging_id(data_root: &Path) {
-    let beta_id = data_root.join("packages").join(".betaId");
-    if let Some(dir) = beta_id.parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            tracing::warn!(
-                target: "update",
-                step = "neutralize_staging_id_dir",
-                error = %e,
-                "updater staging id neutralization failed"
-            );
-            return;
-        }
-    }
-    if let Err(e) = std::fs::write(&beta_id, "") {
+/// pre-seed `.betaId` empty before every manager construction. Resolve the
+/// installation root through Velopack so owner data can live elsewhere.
+fn neutralize_staging_id() -> bool {
+    use velopack::locator::{auto_locate_app_manifest, LocationContext};
+
+    let result = std::env::current_exe()
+        .map_err(|error| error.to_string())
+        .and_then(|exe| {
+            auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe))
+                .map_err(|error| error.to_string())
+        })
+        .and_then(|locator| {
+            neutralize_packages_dir(&locator.get_packages_dir()).map_err(|e| e.to_string())
+        });
+    if let Err(error) = result {
         tracing::warn!(
             target: "update",
-            step = "neutralize_staging_id_write",
-            error = %e,
+            step = "neutralize_staging_id",
+            error = %error,
             "updater staging id neutralization failed"
         );
+        return false;
     }
+    true
+}
+
+fn neutralize_packages_dir(packages_dir: &Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    std::fs::create_dir_all(packages_dir)?;
+    let beta_id = packages_dir.join(".betaId");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&beta_id)?;
+    file.write_all(b"")?;
+    file.sync_all()?;
+    drop(file);
+    if !std::fs::read(&beta_id)?.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "staging id readback was not empty",
+        ));
+    }
+    Ok(())
 }
 
 /// Construct the Velopack `UpdateManager` over the given feed URL. `None` when the app is
 /// not Velopack-installed (e.g. a dev tree), surfaced honestly as `Unavailable`.
 fn build_manager_with_feed(feed_url: &str) -> Option<UpdateManager> {
+    if !neutralize_staging_id() {
+        return None;
+    }
     let opts = UpdateOptions {
         // Explicit so feed resolution is deterministic (`releases.win.json`),
         // even though the build's default channel is already `win`.
@@ -163,15 +186,28 @@ fn build_manager() -> Option<UpdateManager> {
     build_manager_with_feed(FEED_URL)
 }
 
-/// Whether `VelopackApp::run` is about to apply a downloaded update: a local
-/// full package newer than this install (Velopack's own test), in a process
-/// Velopack did not just restart (it never auto-applies there).
-#[cfg(feature = "browser-host")]
-pub fn startup_apply_pending() -> bool {
+/// Startup update state after the actual installation's staging id has been
+/// neutralized and the pending package has been inspected.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StartupApplyState {
+    pub manager_ready: bool,
+    pub pending: bool,
+}
+
+/// Prepare Velopack's startup apply before `VelopackApp::run` can construct or
+/// use its own manager. If neutralization or manager construction fails, the
+/// caller disables automatic apply for this process.
+pub fn prepare_startup_apply() -> StartupApplyState {
     if std::env::var_os("VELOPACK_RESTART").is_some() {
-        return false;
+        return StartupApplyState::default();
     }
-    build_manager().is_some_and(|m| m.get_update_pending_restart().is_some())
+    let Some(manager) = build_manager() else {
+        return StartupApplyState::default();
+    };
+    StartupApplyState {
+        manager_ready: true,
+        pending: manager.get_update_pending_restart().is_some(),
+    }
 }
 
 /// Extract `--update-feed <url>` from CLI args for `--check-update` and `--apply-update`.
@@ -215,8 +251,6 @@ pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
         }
     };
     let feed_url = feed_override.unwrap_or(FEED_URL);
-    // Article 8: strip velopack's per-install staging UUID before the check.
-    neutralize_staging_id(&platform_win::local_data_root());
     let Some(manager) = build_manager_with_feed(feed_url) else {
         eprintln!("--check-update: updater unavailable (not installed via Velopack?)");
         return ExitCode::FAILURE;
@@ -306,11 +340,6 @@ impl UpdateController {
     /// not Velopack-installed), load persisted prefs+status, and rehydrate any
     /// staged-pending-restart asset from Velopack (earned, not persisted).
     pub fn new(app: AppHandle, state_path: PathBuf) -> Self {
-        // Article 8: strip velopack's per-install staging UUID before any check.
-        if let Some(root) = state_path.parent() {
-            neutralize_staging_id(root);
-        }
-
         let manager = build_manager();
 
         let mut state = UpdateState::new();

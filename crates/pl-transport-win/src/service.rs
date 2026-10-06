@@ -211,6 +211,8 @@ pub async fn pair(
     cfg: &SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
 ) -> Result<PairedState, TransportError> {
+    ensure_pairable(&cfg.state_path)?;
+    let fresh_pair = !PairedState::load(&cfg.state_path)?.is_paired();
     publish_pairing(
         &sync,
         &cfg.confirmation,
@@ -218,7 +220,7 @@ pub async fn pair(
         PairingWrite::BeginCeremony,
     );
 
-    match pair_inner(link, cfg).await {
+    match pair_inner(link, cfg, fresh_pair).await {
         Ok((paired, journal_label, mark, binding)) => {
             cfg.journal_version.clear(&sync);
             publish_pairing(
@@ -248,19 +250,41 @@ pub async fn pair(
     }
 }
 
+/// This service path only installs a credential into an empty slot. The GUI
+/// session routes explicit pairing against an incumbent through its durable
+/// replacement transaction before reaching this path.
+pub(crate) fn ensure_pairable(state_path: &std::path::Path) -> Result<(), TransportError> {
+    let paired = PairedState::load(state_path)?;
+    if paired.retirement_intent.is_some() {
+        return Err(TransportError::Pairing(
+            "a client retirement is still pending".to_owned(),
+        ));
+    }
+    if paired.is_paired() {
+        return Err(TransportError::Pairing(
+            "an existing pairing must be retired before pairing again".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 async fn pair_inner(
     link: &str,
     cfg: &SyncConfig,
+    fresh_pair: bool,
 ) -> Result<(PairedState, String, Option<MarkRenderSpec>, String), TransportError> {
     let credential = pairing::pair_from_link(link, &cfg.device_label).await?;
     let journal_label = credential.home_label.clone();
     let mark = journal_mark(&credential.instance_id);
     let binding = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
+    if fresh_pair {
+        crate::migration::record_fresh_pair_offer(&cfg.state_path, &credential)?;
+    }
     let paired = PairedState {
         credential: Some(credential),
         ..Default::default()
     };
-    paired.save(&cfg.state_path)?;
+    paired.save_if_unpaired(&cfg.state_path)?;
     Ok((paired, journal_label, mark, binding))
 }
 
@@ -344,6 +368,75 @@ pub async fn launch_resume(
     sync: &Arc<Mutex<SyncSnapshot>>,
     slot: &mut crate::slot::UploaderSlot,
 ) -> Option<CredentialAccess> {
+    if let Err(error) = crate::retirement::reconcile_on_launch(&cfg.state_path).await {
+        publish_pairing(
+            sync,
+            &cfg.confirmation,
+            &cfg.tombstone,
+            PairingWrite::Failed {
+                detail: transport_error_code(&error),
+            },
+        );
+        return None;
+    }
+    match PairedState::load_detailed(&cfg.state_path) {
+        Err(error @ TransportError::ClientKeyProtectionRefused) => {
+            publish_pairing(
+                sync,
+                &cfg.confirmation,
+                &cfg.tombstone,
+                PairingWrite::NotPaired {
+                    detail: Some(transport_error_code(&error)),
+                },
+            );
+            return None;
+        }
+        Err(error @ TransportError::CredentialRecoveryRequired)
+        | Err(error @ TransportError::CredentialMalformed) => {
+            publish_pairing(
+                sync,
+                &cfg.confirmation,
+                &cfg.tombstone,
+                PairingWrite::Failed {
+                    detail: transport_error_code(&error),
+                },
+            );
+            return None;
+        }
+        Err(_) | Ok(_) => {}
+    }
+
+    #[cfg(windows)]
+    let _marker_result = Some(crate::device_marker::probe_platform());
+    #[cfg(not(windows))]
+    let _marker_result: Option<crate::device_marker::MarkerResult> = None;
+
+    #[cfg(windows)]
+    if let Some(marker) = _marker_result.clone() {
+        match crate::migration::resume_on_launch(
+            &cfg.state_path,
+            marker,
+            &cfg.device_label,
+            "solpbc/solstone-windows",
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(error) => {
+                publish_pairing(
+                    sync,
+                    &cfg.confirmation,
+                    &cfg.tombstone,
+                    PairingWrite::Failed {
+                        detail: transport_error_code(&error),
+                    },
+                );
+                return None;
+            }
+        }
+    }
+
     let skip_resume = crate::answer::settle_rejected_on_launch(
         &cfg.state_path,
         &cfg.confirmation,
@@ -352,6 +445,27 @@ pub async fn launch_resume(
     )
     .await;
     let _ = crate::answer::settle_grandfather(&cfg.state_path, &cfg.confirmation);
+    #[cfg(windows)]
+    if !skip_resume {
+        if let (Some(marker), Ok(paired)) =
+            (_marker_result.as_ref(), PairedState::load(&cfg.state_path))
+        {
+            if let Err(error) =
+                crate::migration::commit_baseline_after_answer(&cfg.state_path, marker, &paired)
+            {
+                tracing::warn!(target: "sync", error = %error, "device migration baseline remains pending");
+                publish_pairing(
+                    sync,
+                    &cfg.confirmation,
+                    &cfg.tombstone,
+                    PairingWrite::Failed {
+                        detail: transport_error_code(&error),
+                    },
+                );
+                return None;
+            }
+        }
+    }
     if !skip_resume {
         match PairedState::load(&cfg.state_path) {
             Ok(paired) if paired.is_paired() => {

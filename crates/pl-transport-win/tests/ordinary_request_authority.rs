@@ -182,7 +182,9 @@ async fn serve_direct_drop_once(
 
 fn response_body(request: &[u8]) -> &'static [u8] {
     let request = String::from_utf8_lossy(request);
-    if request.starts_with("POST /app/devices/ingest ") {
+    if request.starts_with("GET /app/network/api/clients HTTP") {
+        br#"{"clients":[{"cid":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","display_label":"device"}]}"#
+    } else if request.starts_with("POST /app/devices/ingest ") {
         br#"{"status":"ok","segment":"120000_300"}"#
     } else if request.starts_with("GET /app/devices/ingest/manifest/") {
         br#"{"version":1,"day":"20260914","segments":{}}"#
@@ -205,9 +207,10 @@ async fn serve_ordinary_routes(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     accepts: Arc<AtomicUsize>,
+    request_count: usize,
 ) -> Vec<Vec<u8>> {
     let mut requests = Vec::new();
-    for _ in 0..10 {
+    for _ in 0..request_count {
         let (tcp, _) = listener.accept().await.unwrap();
         accepts.fetch_add(1, Ordering::SeqCst);
         let mut tls = acceptor.accept(tcp).await.unwrap();
@@ -250,6 +253,12 @@ async fn serve_one_system_status(
 }
 
 async fn ordinary_client() -> (ObserverClient, Arc<AtomicUsize>, JoinHandle<Vec<Vec<u8>>>) {
+    ordinary_client_with_route_count(14).await
+}
+
+async fn ordinary_client_with_route_count(
+    request_count: usize,
+) -> (ObserverClient, Arc<AtomicUsize>, JoinHandle<Vec<Vec<u8>>>) {
     let (cert, key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -259,6 +268,7 @@ async fn ordinary_client() -> (ObserverClient, Arc<AtomicUsize>, JoinHandle<Vec<
         listener,
         TlsAcceptor::from(Arc::new(server_config(cert, key))),
         accepts.clone(),
+        request_count,
     ));
     (
         ObserverClient::new(
@@ -291,8 +301,9 @@ async fn assert_no_relay_tcp_dial(listener: &TcpListener) {
 
 #[tokio::test]
 async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority() {
-    let (client, accepts, server) = ordinary_client().await;
+    let (client, accepts, server) = ordinary_client_with_route_count(11).await;
 
+    client.list_paired_devices().await.unwrap();
     client.get_clients_self().await.unwrap();
     client
         .put_clients_self(br#"{"label":"desk"}"#)
@@ -324,7 +335,56 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
         .unwrap();
 
     let requests = server.await.unwrap();
-    assert_eq!(accepts.load(Ordering::SeqCst), 10);
+    assert_eq!(accepts.load(Ordering::SeqCst), 11);
+    assert_eq!(requests.len(), 11);
+    for request in &requests {
+        let request = String::from_utf8_lossy(request);
+        assert_eq!(request.matches("X-Solstone-Protocol-Version: 3").count(), 1);
+        assert!(!request.contains("Authorization:"));
+        assert!(!request.contains("X-Solstone-Observer:"));
+    }
+}
+
+#[tokio::test]
+async fn all_thirteen_production_helpers_use_the_shared_ordinary_request_authority() {
+    let (client, accepts, server) = ordinary_client().await;
+
+    client.list_paired_devices().await.unwrap();
+    client.get_clients_self().await.unwrap();
+    client
+        .put_clients_self(br#"{"label":"desk"}"#)
+        .await
+        .unwrap();
+    client.get_relay_access().await.unwrap();
+    let (ingest, _) = client
+        .ingest(
+            "120000_300",
+            DAY,
+            vec![FilePart {
+                filename: "proof.bin".into(),
+                content_type: "application/octet-stream".into(),
+                bytes: vec![1, 2, 3],
+            }],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ingest.status, IngestStatus::Ok);
+    client.ingest_manifest().await.unwrap();
+    client.ingest_manifest_day(DAY).await.unwrap();
+    client.list_segments(DAY).await.unwrap();
+    assert_eq!(client.system_status().await.unwrap(), "2026.9.14");
+    assert_eq!(client.system_about().await.unwrap().status, 200);
+    client
+        .retire_client("sha256:0123456789abcdef")
+        .await
+        .unwrap();
+    client.rekey(b"{}").await.unwrap();
+    client.get_migration_state().await.unwrap();
+    client.put_migration_decision(b"{}").await.unwrap();
+
+    let requests = server.await.unwrap();
+    assert_eq!(accepts.load(Ordering::SeqCst), 14);
     let targets: Vec<_> = requests
         .iter()
         .map(|request| {
@@ -338,6 +398,7 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
     assert_eq!(
         targets,
         [
+            "GET /app/network/api/clients HTTP/1.1",
             "GET /app/network/api/clients/self HTTP/1.1",
             "PUT /app/network/api/clients/self HTTP/1.1",
             "GET /app/network/api/relay/access HTTP/1.1",
@@ -348,6 +409,9 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
             "GET /api/system/status HTTP/1.1",
             "GET /api/system/about HTTP/1.1",
             "DELETE /app/network/api/clients/sha256:0123456789abcdef HTTP/1.1",
+            "POST /app/network/api/clients/self/rekey HTTP/1.1",
+            "GET /app/network/api/clients/self/migration HTTP/1.1",
+            "PUT /app/network/api/clients/self/migration HTTP/1.1",
         ]
     );
     for request in &requests {
@@ -356,9 +420,9 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
         assert!(!request.contains("Authorization:"));
         assert!(!request.contains("X-Solstone-Observer:"));
     }
-    assert!(String::from_utf8_lossy(&requests[1]).contains("content-type: application/json"));
-    assert!(String::from_utf8_lossy(&requests[3]).contains("Content-Type: multipart/form-data"));
-    assert!(String::from_utf8_lossy(&requests[7]).contains("Cache-Control: no-cache"));
+    assert!(String::from_utf8_lossy(&requests[2]).contains("content-type: application/json"));
+    assert!(String::from_utf8_lossy(&requests[4]).contains("Content-Type: multipart/form-data"));
+    assert!(String::from_utf8_lossy(&requests[8]).contains("Cache-Control: no-cache"));
 }
 
 #[tokio::test]

@@ -217,6 +217,7 @@ fn relay_client(credential: Credential) -> ObserverClient {
     PairedState {
         credential: Some(credential.clone()),
         access_mutation_generation: 0,
+        retirement_intent: None,
     }
     .save(&path)
     .unwrap();

@@ -126,7 +126,7 @@ enum BurstPhase {
 
 #[derive(Debug, Clone)]
 struct PassStart {
-    token: (u64, u64, u64),
+    token: (u64, u64, [u8; 32]),
     paired_id: String,
     journal_version_token: Option<(u64, u64, u64)>,
 }
@@ -148,12 +148,12 @@ struct PostConnectState {
     session_generation: u64,
     connection_epoch: u64,
     last_connected_epoch: Option<u64>,
-    pairing_generation: u64,
+    pairing_generation: [u8; 32],
     paired_instance_id: Option<String>,
-    in_flight_metadata: Option<(u64, u64, u64)>,
+    in_flight_metadata: Option<(u64, u64, [u8; 32])>,
     pending_metadata: Option<ReportedMetadata>,
     last_published_metadata: Option<ReportedMetadata>,
-    in_flight_access: Option<(u64, u64, u64)>,
+    in_flight_access: Option<(u64, u64, [u8; 32])>,
     pending_access_trigger: bool,
     burst_phase: BurstPhase,
     pending_durable_clear: Option<CasKey>,
@@ -327,7 +327,7 @@ impl PostConnectController {
         state.session_generation += 1;
         state.connection_epoch += 1;
         state.last_connected_epoch = None;
-        state.pairing_generation = 0;
+        state.pairing_generation = [0; 32];
         state.paired_instance_id = None;
         state.in_flight_metadata = None;
         state.pending_metadata = None;
@@ -575,7 +575,7 @@ impl PostConnectController {
 
     /// Release a lane only when this completion owns its exact claim. The
     /// final first-pass completion alone may start one common follow-up.
-    fn finish_pass_lane(&self, token: (u64, u64, u64), metadata: bool) -> Option<PassStart> {
+    fn finish_pass_lane(&self, token: (u64, u64, [u8; 32]), metadata: bool) -> Option<PassStart> {
         let mut state = self.state.lock().unwrap();
         let current_token = (
             state.session_generation,
@@ -635,7 +635,7 @@ impl PostConnectController {
         }
     }
 
-    fn attempt_is_current(&self, token: (u64, u64, u64)) -> bool {
+    fn attempt_is_current(&self, token: (u64, u64, [u8; 32])) -> bool {
         if self.client_slot.is_retired() {
             return false;
         }
@@ -660,7 +660,7 @@ impl PostConnectController {
     async fn publish_journal_metadata(
         &self,
         resource: &MetadataGetResponse,
-        attempt: (u64, u64, u64),
+        attempt: (u64, u64, [u8; 32]),
         journal_version_token: Option<(u64, u64, u64)>,
     ) -> Option<String> {
         if !self.attempt_is_current(attempt) {
@@ -687,7 +687,7 @@ impl PostConnectController {
     async fn fallback_journal_version(
         &self,
         client: &crate::ObserverClient,
-        attempt: (u64, u64, u64),
+        attempt: (u64, u64, [u8; 32]),
         journal_version_token: Option<(u64, u64, u64)>,
     ) -> Option<String> {
         if !self.attempt_is_current(attempt) {
@@ -708,7 +708,7 @@ impl PostConnectController {
     async fn publish_fallback_version(
         &self,
         version: &str,
-        attempt: (u64, u64, u64),
+        attempt: (u64, u64, [u8; 32]),
         journal_version_token: Option<(u64, u64, u64)>,
     ) -> Option<String> {
         if !self.attempt_is_current(attempt) {
@@ -732,7 +732,7 @@ impl PostConnectController {
 
     async fn execute_metadata_job(
         &self,
-        token: (u64, u64, u64),
+        token: (u64, u64, [u8; 32]),
         journal_version_token: Option<(u64, u64, u64)>,
         about_reconciliation: Arc<Mutex<AboutReconciliation>>,
     ) -> bool {
@@ -961,7 +961,7 @@ impl PostConnectController {
 
     async fn execute_about_job(
         &self,
-        token: (u64, u64, u64),
+        token: (u64, u64, [u8; 32]),
         journal_version_token: Option<(u64, u64, u64)>,
         reconciliation: Arc<Mutex<AboutReconciliation>>,
     ) {
@@ -991,7 +991,7 @@ impl PostConnectController {
         &self,
         response: Option<HttpResponse>,
         expected_identity: (String, String),
-        token: (u64, u64, u64),
+        token: (u64, u64, [u8; 32]),
         version_token: (u64, u64, u64),
         reconciliation: Arc<Mutex<AboutReconciliation>>,
         journal_version: Arc<JournalVersionController>,
@@ -1021,7 +1021,7 @@ impl PostConnectController {
         reconciliation: &Arc<Mutex<AboutReconciliation>>,
         facts: JournalAboutFacts,
         expected_identity: (String, String),
-        attempt: (u64, u64, u64),
+        attempt: (u64, u64, [u8; 32]),
         journal_version_token: (u64, u64, u64),
         journal_version: Arc<JournalVersionController>,
     ) {
@@ -1065,7 +1065,7 @@ impl PostConnectController {
         &self,
         reconciliation: &Arc<Mutex<AboutReconciliation>>,
         version: &str,
-        attempt: (u64, u64, u64),
+        attempt: (u64, u64, [u8; 32]),
         journal_version_token: Option<(u64, u64, u64)>,
     ) {
         let accepted_version = normalize_version(version).to_owned();
@@ -1109,7 +1109,7 @@ impl PostConnectController {
         facts: JournalAboutFacts,
         accepted_version: &str,
         expected_identity: (String, String),
-        attempt: (u64, u64, u64),
+        attempt: (u64, u64, [u8; 32]),
         journal_version_token: (u64, u64, u64),
     ) {
         if !self.attempt_is_current(attempt) {
@@ -1179,7 +1179,7 @@ impl PostConnectController {
     pub(crate) async fn apply_relay_access_outcome(
         self: &Arc<Self>,
         validated: Option<ValidatedReadyAccess>,
-        token: &(u64, u64, u64),
+        token: &(u64, u64, [u8; 32]),
         captured_cas: CasKey,
     ) -> bool {
         let this = self.clone();
@@ -1202,7 +1202,7 @@ impl PostConnectController {
     fn apply_relay_access_outcome_owned(
         &self,
         validated: Option<ValidatedReadyAccess>,
-        token: &(u64, u64, u64),
+        token: &(u64, u64, [u8; 32]),
         captured_cas: CasKey,
     ) {
         // Generation fence before side-effects
@@ -1479,6 +1479,7 @@ mod tests {
         let paired = PairedState {
             credential: Some(cred.clone()),
             access_mutation_generation: 0,
+            retirement_intent: None,
         };
         paired.save(&path).unwrap();
 

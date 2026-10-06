@@ -27,14 +27,17 @@ pub mod answer;
 pub mod client;
 pub mod coordinator;
 pub mod credential;
+pub mod device_marker;
 pub mod device_metadata;
 pub mod integration;
 pub mod journal_bridge;
 pub mod journal_version;
+pub mod migration;
 mod ordinary_request;
 pub mod pairing;
 pub mod post_connect;
 pub mod relay_pairing;
+pub mod retirement;
 pub mod sealed;
 pub mod service;
 pub mod session;
@@ -175,6 +178,14 @@ pub enum TransportError {
     Tls(String),
     #[error("crypto error: {0}")]
     Crypto(String),
+    #[error("protected client key could not be opened")]
+    ClientKeyProtectionRefused,
+    #[error("optional relay token could not be opened")]
+    RelayTokenProtectionRefused,
+    #[error("paired credential storage is malformed")]
+    CredentialMalformed,
+    #[error("client key recovery evidence could not be made durable")]
+    CredentialRecoveryRequired,
     #[error("mux error: {0}")]
     Mux(#[from] MuxError),
     #[error("http error: {0}")]
@@ -219,6 +230,10 @@ pub fn transport_error_code(err: &TransportError) -> String {
         TransportError::Io(_) => "io".to_string(),
         TransportError::Tls(_) => "tls".to_string(),
         TransportError::Crypto(_) => "crypto".to_string(),
+        TransportError::ClientKeyProtectionRefused => "client_key_protection_refused".to_string(),
+        TransportError::RelayTokenProtectionRefused => "relay_token_protection_refused".to_string(),
+        TransportError::CredentialMalformed => "credential_malformed".to_string(),
+        TransportError::CredentialRecoveryRequired => "credential_recovery_required".to_string(),
         TransportError::Mux(_) => "mux".to_string(),
         TransportError::Http(_) => "http".to_string(),
         TransportError::Json(_) => "json".to_string(),

@@ -22,7 +22,7 @@ use serde::Serialize;
 /// exclusion behavior headlessly (run it in the interactive session) without
 /// inspecting a captured segment. Read-only: it does not touch `exclusions.json`.
 pub fn dump_windows_json() -> String {
-    let rules = std::fs::read_to_string(platform_win::local_data_root().join("exclusions.json"))
+    let rules = std::fs::read_to_string(platform_win::existing_data_root().join("exclusions.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<ExclusionRules>(&text).ok())
         .unwrap_or_default()

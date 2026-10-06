@@ -23,33 +23,168 @@ use spl_transport::client::{TokenCommit, TokenCommitContext, TokenTransaction};
 
 const CREDENTIAL_WRAP_MARKER: &str = "dpapi:v1:";
 
+#[derive(Debug)]
+#[allow(dead_code)] // Refusal and I/O classes are produced by the Windows DPAPI implementation.
+pub(crate) enum ProtectionError {
+    Refused,
+    Failure(TransportError),
+}
+
 pub(crate) trait Protector {
-    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, TransportError>;
-    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, TransportError>;
+    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, ProtectionError>;
+    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, ProtectionError>;
 }
 
 fn wrap_secret(protector: &dyn Protector, plain: &str) -> Result<String, TransportError> {
-    let blob = protector.protect(plain.as_bytes())?;
+    let blob = protector
+        .protect(plain.as_bytes())
+        .map_err(|error| match error {
+            ProtectionError::Refused => {
+                TransportError::Crypto("credential protection refused".into())
+            }
+            ProtectionError::Failure(error) => error,
+        })?;
     Ok(format!(
         "{CREDENTIAL_WRAP_MARKER}{}",
         base64::engine::general_purpose::STANDARD.encode(blob)
     ))
 }
 
-fn unwrap_secret(protector: &dyn Protector, stored: &str) -> Result<String, TransportError> {
+#[cfg(windows)]
+pub(crate) fn protect_candidate_key(plain: &str) -> Result<String, TransportError> {
+    wrap_secret(&platform_protector(), plain)
+}
+
+pub(crate) fn unprotect_candidate_key(stored: &str) -> Result<String, TransportError> {
+    unwrap_secret(&platform_protector(), stored, true)
+}
+
+fn unwrap_secret(
+    protector: &dyn Protector,
+    stored: &str,
+    client_key: bool,
+) -> Result<String, TransportError> {
     match stored.strip_prefix(CREDENTIAL_WRAP_MARKER) {
         Some(b64) => {
             let blob = base64::engine::general_purpose::STANDARD
                 .decode(b64)
-                .map_err(|e| {
-                    TransportError::Crypto(format!("credential unwrap: bad base64: {e}"))
-                })?;
-            let plain = protector.unprotect(&blob)?;
-            String::from_utf8(plain)
-                .map_err(|e| TransportError::Crypto(format!("credential unwrap: bad utf8: {e}")))
+                .map_err(|_| TransportError::CredentialMalformed)?;
+            let plain = protector.unprotect(&blob).map_err(|error| match error {
+                ProtectionError::Refused if client_key => {
+                    TransportError::ClientKeyProtectionRefused
+                }
+                ProtectionError::Refused => TransportError::RelayTokenProtectionRefused,
+                ProtectionError::Failure(error) => error,
+            })?;
+            String::from_utf8(plain).map_err(|_| TransportError::CredentialMalformed)
         }
+        None if stored.starts_with("dpapi:") => Err(TransportError::CredentialMalformed),
         None => Ok(stored.to_string()), // legacy plaintext — NEVER call unprotect
     }
+}
+
+fn protect_credential(
+    protector: &dyn Protector,
+    credential: &mut Credential,
+) -> Result<(), StorageError> {
+    credential.client_key_pem = wrap_secret(protector, &credential.client_key_pem)?;
+    if let Some(token) = credential.device_token.take() {
+        credential.device_token = Some(wrap_secret(protector, &token)?);
+    }
+    Ok(())
+}
+
+fn unwrap_credential(
+    protector: &dyn Protector,
+    state_path: &Path,
+    credential: &mut Credential,
+    relay_token_refused: &mut bool,
+) -> Result<(), TransportError> {
+    let stored_key = credential.client_key_pem.clone();
+    credential.client_key_pem = match unwrap_secret(protector, &stored_key, true) {
+        Ok(key) => key,
+        Err(TransportError::ClientKeyProtectionRefused) => {
+            let evidence =
+                extract_protected_blob(&stored_key).ok_or(TransportError::CredentialMalformed)?;
+            persist_key_recovery_evidence(state_path, &evidence)
+                .map_err(|_| TransportError::CredentialRecoveryRequired)?;
+            return Err(TransportError::ClientKeyProtectionRefused);
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(token) = credential.device_token.take() {
+        match unwrap_secret(protector, &token, false) {
+            Ok(token) => credential.device_token = Some(token),
+            Err(TransportError::RelayTokenProtectionRefused) => {
+                *relay_token_refused = true;
+                credential.device_token_expires_at = None;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn extract_protected_blob(stored: &str) -> Option<Vec<u8>> {
+    let encoded = stored.strip_prefix(CREDENTIAL_WRAP_MARKER)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
+}
+
+pub fn key_recovery_evidence_path(state_path: &Path) -> PathBuf {
+    state_path.with_file_name("pairing-key-recovery.bin")
+}
+
+fn persist_key_recovery_evidence(state_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let destination = key_recovery_evidence_path(state_path);
+    if destination.exists() {
+        return if std::fs::read(&destination)? == bytes {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "client key recovery evidence conflict",
+            ))
+        };
+    }
+    let temp = destination.with_extension("bin.tmp");
+    if temp.exists() {
+        if std::fs::read(&temp)? != bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "client key recovery evidence temporary conflict",
+            ));
+        }
+    } else {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    if std::fs::read(&temp)? != bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "client key recovery evidence readback mismatch",
+        ));
+    }
+    publish_staged_file(&temp, &destination).map_err(|error| match error {
+        StorageError::WriteFailed(error) | StorageError::DurabilityUncertain(error) => error,
+        StorageError::Transport(error) => std::io::Error::other(error.to_string()),
+        StorageError::Crypto(message) => std::io::Error::other(message),
+        StorageError::CasMismatch => std::io::Error::other("client key recovery evidence conflict"),
+    })?;
+    #[cfg(not(windows))]
+    sync_published_path(&destination)?;
+    if std::fs::read(&destination)? != bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "client key recovery evidence publication mismatch",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -57,11 +192,11 @@ struct PassthroughProtector;
 
 #[cfg(not(windows))]
 impl Protector for PassthroughProtector {
-    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, TransportError> {
+    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, ProtectionError> {
         Ok(plain.to_vec())
     }
 
-    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, TransportError> {
+    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, ProtectionError> {
         Ok(blob.to_vec())
     }
 }
@@ -82,15 +217,18 @@ struct DpapiProtector;
 #[cfg(windows)]
 impl Protector for DpapiProtector {
     #[allow(unsafe_code)]
-    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, TransportError> {
+    fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, ProtectionError> {
         use std::ffi::c_void;
         use windows::core::PCWSTR;
         use windows::Win32::Foundation::{LocalFree, HLOCAL};
         use windows::Win32::Security::Cryptography::{
             CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
         };
-        let cb = u32::try_from(plain.len())
-            .map_err(|_| TransportError::Crypto("dpapi protect: input too large".into()))?;
+        let cb = u32::try_from(plain.len()).map_err(|_| {
+            ProtectionError::Failure(TransportError::Crypto(
+                "dpapi protect: input too large".into(),
+            ))
+        })?;
         let in_blob = CRYPT_INTEGER_BLOB {
             cbData: cb,
             pbData: plain.as_ptr().cast_mut(),
@@ -112,7 +250,9 @@ impl Protector for DpapiProtector {
                 CRYPTPROTECT_UI_FORBIDDEN,
                 &mut out_blob,
             )
-            .map_err(|e| TransportError::Crypto(format!("dpapi protect: {e}")))?;
+            .map_err(|e| {
+                ProtectionError::Failure(TransportError::Crypto(format!("dpapi protect: {e}")))
+            })?;
             let out =
                 std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
             let _ = LocalFree(HLOCAL(out_blob.pbData.cast::<c_void>()));
@@ -121,14 +261,17 @@ impl Protector for DpapiProtector {
     }
 
     #[allow(unsafe_code)]
-    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, TransportError> {
+    fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, ProtectionError> {
         use std::ffi::c_void;
         use windows::Win32::Foundation::{LocalFree, HLOCAL};
         use windows::Win32::Security::Cryptography::{
             CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
         };
-        let cb = u32::try_from(blob.len())
-            .map_err(|_| TransportError::Crypto("dpapi unprotect: input too large".into()))?;
+        let cb = u32::try_from(blob.len()).map_err(|_| {
+            ProtectionError::Failure(TransportError::Crypto(
+                "dpapi unprotect: input too large".into(),
+            ))
+        })?;
         let in_blob = CRYPT_INTEGER_BLOB {
             cbData: cb,
             pbData: blob.as_ptr().cast_mut(),
@@ -137,8 +280,8 @@ impl Protector for DpapiProtector {
             cbData: 0,
             pbData: core::ptr::null_mut(),
         };
-        // SAFETY: as protect(); a wrong-user or corrupt blob returns Err (mapped
-        // to Crypto), never a partial read. out_blob.pbData is LocalFree'd after copy.
+        // SAFETY: as protect(); an invalid or unavailable user key returns Err,
+        // never a partial read. out_blob.pbData is LocalFree'd after copy.
         unsafe {
             CryptUnprotectData(
                 &in_blob,
@@ -149,7 +292,16 @@ impl Protector for DpapiProtector {
                 CRYPTPROTECT_UI_FORBIDDEN,
                 &mut out_blob,
             )
-            .map_err(|e| TransportError::Crypto(format!("dpapi unprotect: {e}")))?;
+            .map_err(|error| {
+                if error.code().0 == 0x8007_0005_u32 as i32 {
+                    ProtectionError::Failure(TransportError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "DPAPI access denied",
+                    )))
+                } else {
+                    ProtectionError::Refused
+                }
+            })?;
             let out =
                 std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
             let _ = LocalFree(HLOCAL(out_blob.pbData.cast::<c_void>()));
@@ -212,18 +364,17 @@ pub struct Credential {
     pub device_token_expires_at: Option<i64>,
 }
 
-/// Derive the pairing generation from the SHA-256 of the client certificate PEM.
-///
-/// Same-home re-pair mints a new certificate, so this value changes on every re-pair.
-pub fn pairing_generation(client_cert_pem: &str) -> u64 {
-    let digest = spl_core::ca::sha256(client_cert_pem.as_bytes());
-    u64::from_be_bytes(digest[..8].try_into().unwrap())
+/// Derive the exact pairing owner generation from the full SHA-256 of the
+/// client certificate PEM. Same-home re-pair mints a new certificate, so this
+/// value changes on every replacement and can be compared across restarts.
+pub fn pairing_generation(client_cert_pem: &str) -> [u8; 32] {
+    spl_core::ca::sha256(client_cert_pem.as_bytes())
 }
 
 /// The CAS key for pairing state mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CasKey {
-    pub pairing_generation: u64,
+    pub pairing_generation: [u8; 32],
     pub access_mutation_generation: u64,
 }
 
@@ -255,7 +406,64 @@ impl From<StorageError> for TransportError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PairedStateLoad {
+    pub state: PairedState,
+    pub relay_token_refused: bool,
+}
+
+/// The only durable retirement operation that currently stages an unpaired
+/// candidate: integration pairing whose mark did not match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetirementOperation {
+    IntegrationWrongMark,
+    GuiPairReplacement,
+}
+
+/// Durable outcome of trying to retire the exact staged candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetirementPhase {
+    Prepared,
+    Unknown,
+    Succeeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetirementAnswerDisposition {
+    ResetForCandidate,
+}
+
+/// A protected, generation-bound remote retirement that launch can reconcile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetirementIntent {
+    pub schema: u32,
+    pub operation_id: String,
+    pub operation: RetirementOperation,
+    pub phase: RetirementPhase,
+    /// Certificate generation of the exact credential being retired.
+    pub owner_generation: [u8; 32],
+    /// Certificate generation of the protected candidate credential.
+    #[serde(default)]
+    pub candidate_generation: [u8; 32],
+    pub access_mutation_generation: u64,
+    pub client_id: String,
+    pub candidate: Credential,
+    #[serde(default)]
+    pub answer_disposition: Option<RetirementAnswerDisposition>,
+    #[serde(default)]
+    pub marker_result: Option<crate::device_marker::MarkerResult>,
+}
+
 static PAIRING_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn owner_state_write_guard() -> std::sync::MutexGuard<'static, ()> {
+    PAIRING_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[cfg(target_os = "linux")]
 pub(crate) fn sync_published_path(path: &Path) -> Result<(), std::io::Error> {
@@ -314,6 +522,8 @@ pub(crate) fn sync_published_path(_path: &Path) -> Result<(), std::io::Error> {
 #[cfg(test)]
 thread_local! {
     pub(crate) static FS_FAIL_POINT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    pub(crate) static RETIREMENT_CLEANUP_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static PAIR_REPLACEMENT_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The full persisted sync identity: the paired mTLS credential.
@@ -322,28 +532,56 @@ pub struct PairedState {
     pub credential: Option<Credential>,
     #[serde(default)]
     pub access_mutation_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement_intent: Option<RetirementIntent>,
 }
 
 impl PairedState {
     /// Load from a JSON file, returning the default (unpaired) state if absent.
     pub fn load(path: &Path) -> Result<Self, TransportError> {
-        Self::load_with(&platform_protector(), path)
+        Self::load_detailed(path).map(|loaded| loaded.state)
     }
 
     fn load_with(protector: &dyn Protector, path: &Path) -> Result<Self, TransportError> {
+        Self::load_detailed_with(protector, path).map(|loaded| loaded.state)
+    }
+
+    pub fn load_detailed(path: &Path) -> Result<PairedStateLoad, TransportError> {
+        Self::load_detailed_with(&platform_protector(), path)
+    }
+
+    fn load_detailed_with(
+        protector: &dyn Protector,
+        path: &Path,
+    ) -> Result<PairedStateLoad, TransportError> {
         let mut state: Self = match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|_| TransportError::CredentialMalformed)?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(PairedStateLoad {
+                    state: Self::default(),
+                    relay_token_refused: false,
+                });
+            }
             Err(e) => return Err(TransportError::Io(e)),
         };
+        let mut relay_token_refused = false;
         if let Some(cred) = state.credential.as_mut() {
-            let client_key_pem = unwrap_secret(protector, &cred.client_key_pem)?;
-            cred.client_key_pem = client_key_pem;
-            if let Some(token) = cred.device_token.take() {
-                cred.device_token = Some(unwrap_secret(protector, &token)?);
-            }
+            unwrap_credential(protector, path, cred, &mut relay_token_refused)?;
         }
-        Ok(state)
+        if let Some(intent) = state.retirement_intent.as_mut() {
+            unwrap_credential(
+                protector,
+                path,
+                &mut intent.candidate,
+                &mut relay_token_refused,
+            )?;
+        }
+        Ok(PairedStateLoad {
+            state,
+            relay_token_refused,
+        })
     }
 
     /// Atomically persist to a JSON file (write-temp-then-rename) with parent directory sync.
@@ -356,7 +594,7 @@ impl PairedState {
         protector: &dyn Protector,
         path: &Path,
     ) -> Result<(), TransportError> {
-        let _guard = PAIRING_MUTEX.lock().unwrap();
+        let _guard = owner_state_write_guard();
         match Self::save_inner(protector, path, self) {
             Ok(_) => Ok(()),
             Err(StorageError::Transport(e)) => Err(e),
@@ -376,10 +614,10 @@ impl PairedState {
     ) -> Result<(), StorageError> {
         let mut state = state.clone();
         if let Some(cred) = state.credential.as_mut() {
-            cred.client_key_pem = wrap_secret(protector, &cred.client_key_pem)?;
-            if let Some(token) = cred.device_token.take() {
-                cred.device_token = Some(wrap_secret(protector, &token)?);
-            }
+            protect_credential(protector, cred)?;
+        }
+        if let Some(intent) = state.retirement_intent.as_mut() {
+            protect_credential(protector, &mut intent.candidate)?;
         }
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(StorageError::WriteFailed)?;
@@ -390,6 +628,13 @@ impl PairedState {
         file.write_all(&bytes).map_err(StorageError::WriteFailed)?;
         file.sync_all().map_err(StorageError::WriteFailed)?;
         drop(file);
+
+        #[cfg(test)]
+        if FS_FAIL_POINT.with(|f| f.get()) == 4 {
+            return Err(StorageError::DurabilityUncertain(std::io::Error::other(
+                "simulated crash after durable retirement intent staging",
+            )));
+        }
 
         #[cfg(test)]
         if FS_FAIL_POINT.with(|f| f.get()) == 1 {
@@ -410,7 +655,345 @@ impl PairedState {
 
         #[cfg(not(windows))]
         sync_published_path(path).map_err(StorageError::DurabilityUncertain)?;
+        let readback = std::fs::read(path).map_err(StorageError::DurabilityUncertain)?;
+        #[cfg(test)]
+        let readback = if FS_FAIL_POINT.with(|f| f.get()) == 3 {
+            FS_FAIL_POINT.with(|f| f.set(0));
+            Vec::new()
+        } else {
+            readback
+        };
+        if readback != bytes {
+            return Err(StorageError::DurabilityUncertain(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "pairing state readback mismatch",
+            )));
+        }
         Ok(())
+    }
+
+    /// Promote only a complete, protected wrong-mark intent left in the atomic
+    /// staging sibling when the process stopped before rename. Other temporary
+    /// pairing writes retain their existing non-loadable behavior.
+    pub(crate) fn recover_staged_retirement_intent(path: &Path) -> Result<bool, StorageError> {
+        let _guard = owner_state_write_guard();
+        if path.exists() {
+            return Ok(false);
+        }
+        let tmp = path.with_extension("json.tmp");
+        let bytes = match std::fs::read(&tmp) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(StorageError::WriteFailed(error)),
+        };
+        let staged: PairedState = match serde_json::from_slice(&bytes) {
+            Ok(state) => state,
+            Err(_) => return Ok(false),
+        };
+        let Some(intent) = staged.retirement_intent.as_ref() else {
+            return Ok(false);
+        };
+        if staged.credential.is_some()
+            || intent.schema != 1
+            || intent.operation != RetirementOperation::IntegrationWrongMark
+            || intent.operation_id.is_empty()
+            || intent.owner_generation != pairing_generation(&intent.candidate.client_cert_pem)
+            || intent.candidate_generation != [0; 32]
+                && intent.candidate_generation
+                    != pairing_generation(&intent.candidate.client_cert_pem)
+            || intent.access_mutation_generation != 0
+            || !intent
+                .candidate
+                .client_key_pem
+                .starts_with(CREDENTIAL_WRAP_MARKER)
+        {
+            return Err(StorageError::Transport(TransportError::CredentialMalformed));
+        }
+        std::fs::File::open(&tmp)
+            .and_then(|file| file.sync_all())
+            .map_err(StorageError::DurabilityUncertain)?;
+        publish_staged_file(&tmp, path)?;
+        #[cfg(not(windows))]
+        sync_published_path(path).map_err(StorageError::DurabilityUncertain)?;
+        if std::fs::read(path).map_err(StorageError::DurabilityUncertain)? != bytes {
+            return Err(StorageError::DurabilityUncertain(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "staged retirement intent readback mismatch",
+            )));
+        }
+        Ok(true)
+    }
+
+    /// Save a newly issued credential only if the profile is still unpaired and
+    /// has no unresolved remote retirement intent.
+    pub(crate) fn save_if_unpaired(&self, path: &Path) -> Result<(), StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let current = Self::load_with(&protector, path)?;
+        if current.credential.is_some() || current.retirement_intent.is_some() {
+            return Err(StorageError::CasMismatch);
+        }
+        Self::save_inner(&protector, path, self)
+    }
+
+    /// Atomically install an integration retirement intent into an empty owner
+    /// slot. Its candidate key is protected by the same mechanism as pairing.
+    pub(crate) fn install_retirement_intent(
+        path: &Path,
+        intent: RetirementIntent,
+    ) -> Result<(), StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        if state.credential.is_some()
+            || state.retirement_intent.is_some()
+            || intent.schema != 1
+            || intent.operation != RetirementOperation::IntegrationWrongMark
+            || intent.owner_generation != pairing_generation(&intent.candidate.client_cert_pem)
+            || (intent.candidate_generation != [0; 32]
+                && intent.candidate_generation != intent.owner_generation)
+            || intent.access_mutation_generation != 0
+        {
+            return Err(StorageError::CasMismatch);
+        }
+        state.retirement_intent = Some(intent);
+        Self::save_inner(&protector, path, &state)
+    }
+
+    /// Atomically stage a validated replacement candidate while the incumbent
+    /// remains current. The intent is the send fence until replacement commit.
+    pub(crate) fn install_pair_replacement_intent(
+        path: &Path,
+        expected_owner_generation: [u8; 32],
+        expected_access_generation: u64,
+        intent: RetirementIntent,
+    ) -> Result<(), StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let incumbent = state.credential.as_ref().ok_or(StorageError::CasMismatch)?;
+        if state.retirement_intent.is_some()
+            || pairing_generation(&incumbent.client_cert_pem) != expected_owner_generation
+            || state.access_mutation_generation != expected_access_generation
+            || intent.schema != 1
+            || intent.operation != RetirementOperation::GuiPairReplacement
+            || intent.owner_generation != expected_owner_generation
+            || intent.access_mutation_generation != expected_access_generation
+            || pairing_generation(&intent.candidate.client_cert_pem) != intent.candidate_generation
+            || intent.answer_disposition != Some(RetirementAnswerDisposition::ResetForCandidate)
+            || intent.marker_result.is_none()
+        {
+            return Err(StorageError::CasMismatch);
+        }
+        state.retirement_intent = Some(intent);
+        Self::save_inner(&protector, path, &state)
+    }
+
+    /// Roll back only a prepared replacement whose old credential still owns
+    /// the exact pairing and access generations. Used when intent publication
+    /// itself fails before any remote operation is allowed.
+    pub(crate) fn rollback_unretired_pair_replacement(
+        path: &Path,
+        operation_id: &str,
+        owner_generation: [u8; 32],
+        candidate_generation: [u8; 32],
+    ) -> Result<bool, StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let Some(intent) = state.retirement_intent.as_ref() else {
+            return Ok(false);
+        };
+        let Some(incumbent) = state.credential.as_ref() else {
+            return Ok(false);
+        };
+        if intent.operation != RetirementOperation::GuiPairReplacement
+            || intent.operation_id != operation_id
+            || intent.owner_generation != owner_generation
+            || intent.candidate_generation != candidate_generation
+            || intent.phase != RetirementPhase::Prepared
+            || pairing_generation(&incumbent.client_cert_pem) != owner_generation
+            || state.access_mutation_generation != intent.access_mutation_generation
+        {
+            return Ok(false);
+        }
+        state.retirement_intent = None;
+        Self::save_inner(&protector, path, &state)?;
+        Ok(true)
+    }
+
+    /// Publish the already-retired replacement candidate as current while
+    /// retaining the intent as a restart fence for answer/migration publication.
+    pub(crate) fn commit_pair_replacement_candidate(
+        path: &Path,
+        operation_id: &str,
+        owner_generation: [u8; 32],
+        candidate_generation: [u8; 32],
+    ) -> Result<PairedState, StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let intent = state
+            .retirement_intent
+            .as_ref()
+            .ok_or(StorageError::CasMismatch)?;
+        if intent.operation != RetirementOperation::GuiPairReplacement
+            || intent.operation_id != operation_id
+            || intent.owner_generation != owner_generation
+            || intent.candidate_generation != candidate_generation
+            || intent.phase != RetirementPhase::Succeeded
+        {
+            return Err(StorageError::CasMismatch);
+        }
+        let current_generation = state
+            .credential
+            .as_ref()
+            .map(|credential| pairing_generation(&credential.client_cert_pem));
+        if current_generation == Some(candidate_generation) {
+            return Ok(state);
+        }
+        if current_generation != Some(owner_generation)
+            || state.access_mutation_generation != intent.access_mutation_generation
+        {
+            return Err(StorageError::CasMismatch);
+        }
+        state.credential = Some(intent.candidate.clone());
+        state.access_mutation_generation = 0;
+        Self::save_inner(&protector, path, &state)?;
+        Ok(state)
+    }
+
+    /// Clear a committed replacement only when every external publication has
+    /// completed and both generations still match the saved operation.
+    pub(crate) fn clear_pair_replacement_intent(
+        path: &Path,
+        operation_id: &str,
+        owner_generation: [u8; 32],
+        candidate_generation: [u8; 32],
+    ) -> Result<bool, StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let Some(intent) = state.retirement_intent.as_ref() else {
+            return Ok(false);
+        };
+        let current_generation = state
+            .credential
+            .as_ref()
+            .map(|credential| pairing_generation(&credential.client_cert_pem));
+        if intent.operation != RetirementOperation::GuiPairReplacement
+            || intent.operation_id != operation_id
+            || intent.owner_generation != owner_generation
+            || intent.candidate_generation != candidate_generation
+            || intent.phase != RetirementPhase::Succeeded
+            || current_generation != Some(candidate_generation)
+        {
+            return Ok(false);
+        }
+        state.retirement_intent = None;
+        Self::save_inner(&protector, path, &state)?;
+        Ok(true)
+    }
+
+    /// Advance an intent only while its operation and candidate generation still
+    /// own the durable pairing slot.
+    pub(crate) fn update_retirement_phase(
+        path: &Path,
+        operation_id: &str,
+        owner_generation: [u8; 32],
+        expected_phase: RetirementPhase,
+        phase: RetirementPhase,
+    ) -> Result<(), StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let Some(intent) = state.retirement_intent.as_ref() else {
+            return Err(StorageError::CasMismatch);
+        };
+        let candidate_generation = if intent.candidate_generation == [0; 32]
+            && intent.operation == RetirementOperation::IntegrationWrongMark
+        {
+            intent.owner_generation
+        } else {
+            intent.candidate_generation
+        };
+        let owner_matches = match intent.operation {
+            RetirementOperation::IntegrationWrongMark => {
+                state.credential.is_none() && intent.access_mutation_generation == 0
+            }
+            RetirementOperation::GuiPairReplacement => {
+                state.credential.as_ref().is_some_and(|credential| {
+                    pairing_generation(&credential.client_cert_pem) == intent.owner_generation
+                        && state.access_mutation_generation == intent.access_mutation_generation
+                })
+            }
+        };
+        if intent.schema != 1
+            || intent.operation_id != operation_id
+            || intent.owner_generation != owner_generation
+            || candidate_generation != pairing_generation(&intent.candidate.client_cert_pem)
+            || !owner_matches
+            || intent.phase != expected_phase
+        {
+            return Err(StorageError::CasMismatch);
+        }
+        state.retirement_intent.as_mut().unwrap().phase = phase;
+        Self::save_inner(&protector, path, &state)
+    }
+
+    /// Remove only a successfully retired, unpaired candidate. A later owner
+    /// generation or operation is left untouched if an old callback arrives.
+    pub(crate) fn remove_retired_intent(
+        path: &Path,
+        operation_id: &str,
+        owner_generation: [u8; 32],
+    ) -> Result<bool, StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let state = Self::load_with(&protector, path)?;
+        let Some(intent) = state.retirement_intent else {
+            return Ok(false);
+        };
+        let matches = match intent.operation {
+            RetirementOperation::IntegrationWrongMark => {
+                state.credential.is_none()
+                    && intent.operation_id == operation_id
+                    && intent.owner_generation == owner_generation
+                    && (intent.candidate_generation == [0; 32]
+                        || intent.candidate_generation == owner_generation)
+                    && pairing_generation(&intent.candidate.client_cert_pem) == owner_generation
+                    && intent.access_mutation_generation == 0
+                    && intent.phase == RetirementPhase::Succeeded
+            }
+            RetirementOperation::GuiPairReplacement => false,
+        };
+        if intent.schema != 1 || !matches {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        if RETIREMENT_CLEANUP_FAIL_POINT.with(|fail| fail.get()) {
+            return Err(StorageError::WriteFailed(std::io::Error::other(
+                "simulated retirement cleanup failure",
+            )));
+        }
+        let tmp = path.with_extension("json.tmp");
+        if tmp.exists() {
+            std::fs::remove_file(&tmp).map_err(StorageError::WriteFailed)?;
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(StorageError::WriteFailed(error)),
+        }
+        if path.exists() || tmp.exists() {
+            return Err(StorageError::DurabilityUncertain(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "retirement cleanup readback failed",
+            )));
+        }
+        #[cfg(not(windows))]
+        sync_published_path(path).map_err(StorageError::DurabilityUncertain)?;
+        Ok(true)
     }
 
     /// Mutate credential fields within an ordered process-wide CAS boundary.
@@ -418,9 +1001,12 @@ impl PairedState {
     where
         F: FnOnce(&mut Credential) -> Result<(), StorageError>,
     {
-        let _guard = PAIRING_MUTEX.lock().unwrap();
+        let _guard = owner_state_write_guard();
         let protector = platform_protector();
         let mut state = Self::load_with(&protector, path)?;
+        if state.retirement_intent.is_some() {
+            return Err(StorageError::CasMismatch);
+        }
         let cred = state.credential.as_mut().ok_or(StorageError::CasMismatch)?;
         let actual_pairing_gen = pairing_generation(&cred.client_cert_pem);
         if actual_pairing_gen != expected.pairing_generation
@@ -446,7 +1032,7 @@ impl PairedState {
 pub(crate) struct WindowsTokenTransaction {
     state_path: Arc<Mutex<Option<PathBuf>>>,
     cas_key: Arc<Mutex<Option<CasKey>>>,
-    pairing_generation: u64,
+    pairing_generation: [u8; 32],
     relay_fence: Arc<RelayFence>,
     incarnation: u64,
 }
@@ -455,7 +1041,7 @@ impl WindowsTokenTransaction {
     pub(crate) fn new(
         state_path: Arc<Mutex<Option<PathBuf>>>,
         cas_key: Arc<Mutex<Option<CasKey>>>,
-        pairing_generation: u64,
+        pairing_generation: [u8; 32],
         relay_fence: Arc<RelayFence>,
         incarnation: u64,
     ) -> Self {
@@ -639,7 +1225,10 @@ mod tests {
     enum TestMode {
         Reversible,
         AlwaysFail,
+        CryptoFailure,
+        IoFailure,
         FailOnNth(usize),
+        IoFailureOnNth(usize),
     }
 
     struct TestProtector {
@@ -661,19 +1250,30 @@ mod tests {
     }
 
     impl Protector for TestProtector {
-        fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, TransportError> {
+        fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, ProtectionError> {
             Ok(xor_5a(plain))
         }
 
-        fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, TransportError> {
+        fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, ProtectionError> {
             let calls = self.unprotect_calls.get() + 1;
             self.unprotect_calls.set(calls);
             match self.mode {
-                TestMode::AlwaysFail => Err(TransportError::Crypto("fake unprotect failed".into())),
-                TestMode::FailOnNth(n) if calls == n => {
-                    Err(TransportError::Crypto("fake unprotect failed".into()))
+                TestMode::AlwaysFail => Err(ProtectionError::Refused),
+                TestMode::CryptoFailure => Err(ProtectionError::Failure(TransportError::Crypto(
+                    "fake cryptographic failure".into(),
+                ))),
+                TestMode::IoFailure => Err(ProtectionError::Failure(TransportError::Io(
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fake denied"),
+                ))),
+                TestMode::FailOnNth(n) if calls == n => Err(ProtectionError::Refused),
+                TestMode::IoFailureOnNth(n) if calls == n => {
+                    Err(ProtectionError::Failure(TransportError::Io(
+                        std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fake denied"),
+                    )))
                 }
-                TestMode::Reversible | TestMode::FailOnNth(_) => Ok(xor_5a(blob)),
+                TestMode::Reversible | TestMode::FailOnNth(_) | TestMode::IoFailureOnNth(_) => {
+                    Ok(xor_5a(blob))
+                }
             }
         }
     }
@@ -681,11 +1281,11 @@ mod tests {
     struct PanicUnprotectProtector;
 
     impl Protector for PanicUnprotectProtector {
-        fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, TransportError> {
+        fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, ProtectionError> {
             Ok(plain.to_vec())
         }
 
-        fn unprotect(&self, _blob: &[u8]) -> Result<Vec<u8>, TransportError> {
+        fn unprotect(&self, _blob: &[u8]) -> Result<Vec<u8>, ProtectionError> {
             panic!("unprotect must not be called on legacy plaintext")
         }
     }
@@ -1065,29 +1665,130 @@ mod tests {
 
     #[test]
     fn marked_field_unprotect_failure_is_crypto_error() {
+        let path = temp_pairing_path("marked-crypto-failure");
+        let state = paired_state_with(&format!("{CREDENTIAL_WRAP_MARKER}S0s="), None);
+        write_raw_state(&path, &state);
+
+        let result = PairedState::load_with(&TestProtector::new(TestMode::CryptoFailure), &path);
+        assert!(matches!(result, Err(TransportError::Crypto(_))));
+        assert!(!key_recovery_evidence_path(&path).exists());
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn marked_client_key_refusal_writes_exact_recovery_evidence_before_returning() {
         let path = temp_pairing_path("marked-failure");
         let state = paired_state_with(&format!("{CREDENTIAL_WRAP_MARKER}S0s="), None);
         write_raw_state(&path, &state);
         let protector = TestProtector::new(TestMode::AlwaysFail);
 
         let result = PairedState::load_with(&protector, &path);
-        assert!(matches!(result, Err(TransportError::Crypto(_))));
+        assert!(matches!(
+            result,
+            Err(TransportError::ClientKeyProtectionRefused)
+        ));
+        assert_eq!(
+            std::fs::read(key_recovery_evidence_path(&path)).unwrap(),
+            b"KK"
+        );
+        assert!(path.is_file());
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
     fn second_secret_unprotect_failure_returns_error() {
+        let path = temp_pairing_path("second-secret-io-failure");
+        let state = paired_state_with("ROUNDTRIP-KEY-PEM", Some("ROUNDTRIP-TOKEN"));
+        let writer = TestProtector::reversible();
+        state.save_with(&writer, &path).unwrap();
+
+        let reader = TestProtector::new(TestMode::IoFailureOnNth(2));
+        let result = PairedState::load_with(&reader, &path);
+        assert!(matches!(
+            result,
+            Err(TransportError::Io(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(reader.unprotect_calls.get(), 2);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn optional_token_refusal_preserves_paired_identity_and_disables_relay_token() {
         let path = temp_pairing_path("second-secret-failure");
         let state = paired_state_with("ROUNDTRIP-KEY-PEM", Some("ROUNDTRIP-TOKEN"));
         let writer = TestProtector::reversible();
         state.save_with(&writer, &path).unwrap();
 
         let reader = TestProtector::new(TestMode::FailOnNth(2));
-        let result = PairedState::load_with(&reader, &path);
-        assert!(matches!(result, Err(TransportError::Crypto(_))));
+        let result = PairedState::load_detailed_with(&reader, &path).unwrap();
+        assert!(result.state.is_paired());
+        assert!(result.relay_token_refused);
+        assert_eq!(result.state.credential.unwrap().device_token, None);
         assert_eq!(reader.unprotect_calls.get(), 2);
 
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn refused_key_without_durable_evidence_is_an_explicit_recovery_error() {
+        let path = temp_pairing_path("evidence-write-failure");
+        let state = paired_state_with(&format!("{CREDENTIAL_WRAP_MARKER}S0s="), None);
+        write_raw_state(&path, &state);
+        std::fs::create_dir(key_recovery_evidence_path(&path)).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let result = PairedState::load_with(&TestProtector::new(TestMode::AlwaysFail), &path);
+        assert!(matches!(
+            result,
+            Err(TransportError::CredentialRecoveryRequired)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn malformed_protected_key_encoding_is_not_a_protection_refusal() {
+        let path = temp_pairing_path("malformed-key-encoding");
+        let state = paired_state_with(&format!("{CREDENTIAL_WRAP_MARKER}%%%"), None);
+        write_raw_state(&path, &state);
+
+        let result = PairedState::load_with(&TestProtector::new(TestMode::AlwaysFail), &path);
+        assert!(matches!(result, Err(TransportError::CredentialMalformed)));
+        assert!(!key_recovery_evidence_path(&path).exists());
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn unsupported_protection_wrapper_version_is_malformed() {
+        let path = temp_pairing_path("unsupported-key-wrapper");
+        let state = paired_state_with("dpapi:v2:opaque", None);
+        write_raw_state(&path, &state);
+        let result = PairedState::load_with(&TestProtector::new(TestMode::AlwaysFail), &path);
+        assert!(matches!(result, Err(TransportError::CredentialMalformed)));
+        assert!(!key_recovery_evidence_path(&path).exists());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn protector_permission_failure_is_not_reclassified_as_key_refusal() {
+        let path = temp_pairing_path("protection-permission-failure");
+        let state = paired_state_with(&format!("{CREDENTIAL_WRAP_MARKER}S0s="), None);
+        write_raw_state(&path, &state);
+
+        let result = PairedState::load_with(&TestProtector::new(TestMode::IoFailure), &path);
+        assert!(matches!(
+            result,
+            Err(TransportError::Io(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert!(!key_recovery_evidence_path(&path).exists());
+        assert!(path.is_file());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1227,7 +1928,7 @@ mod tests {
         initial_state.save(&path).unwrap();
 
         let wrong_cas = CasKey {
-            pairing_generation: 999999,
+            pairing_generation: pairing_generation("OTHER CERT"),
             access_mutation_generation: 0,
         };
 
@@ -1249,6 +1950,92 @@ mod tests {
         });
         assert!(matches!(res2, Err(StorageError::CasMismatch)));
 
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn paired_mutations_are_fenced_while_retirement_intent_is_pending() {
+        let path = temp_pairing_path("mutate-retirement-pending");
+        let mut state = paired_state_with("test-key", Some("token-1"));
+        let credential = state.credential.as_ref().unwrap();
+        let generation = pairing_generation(&credential.client_cert_pem);
+        state.retirement_intent = Some(RetirementIntent {
+            schema: 1,
+            operation_id: "retirement-op".into(),
+            operation: RetirementOperation::IntegrationWrongMark,
+            phase: RetirementPhase::Prepared,
+            owner_generation: generation,
+            candidate_generation: generation,
+            access_mutation_generation: 0,
+            client_id: "sha256:fixture".into(),
+            candidate: credential.clone(),
+            answer_disposition: None,
+            marker_result: None,
+        });
+        state.save(&path).unwrap();
+
+        let calls = Cell::new(0);
+        let result = PairedState::mutate(
+            &path,
+            CasKey {
+                pairing_generation: generation,
+                access_mutation_generation: 0,
+            },
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(StorageError::CasMismatch)));
+        assert_eq!(calls.get(), 0);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn save_if_unpaired_refuses_a_live_credential_or_retirement_intent() {
+        let path = temp_pairing_path("save-if-unpaired");
+        let incumbent = paired_state_with("old-key", None);
+        incumbent.save(&path).unwrap();
+        assert!(matches!(
+            paired_state_with("new-key", None).save_if_unpaired(&path),
+            Err(StorageError::CasMismatch)
+        ));
+        assert_eq!(
+            PairedState::load(&path)
+                .unwrap()
+                .credential
+                .unwrap()
+                .client_key_pem,
+            "old-key"
+        );
+
+        let candidate = paired_state_with("candidate-key", None).credential.unwrap();
+        PairedState::default().save(&path).unwrap();
+        let intent_state = PairedState {
+            retirement_intent: Some(RetirementIntent {
+                schema: 1,
+                operation_id: "retirement-op".into(),
+                operation: RetirementOperation::IntegrationWrongMark,
+                phase: RetirementPhase::Prepared,
+                owner_generation: pairing_generation(&candidate.client_cert_pem),
+                candidate_generation: pairing_generation(&candidate.client_cert_pem),
+                access_mutation_generation: 0,
+                client_id: "sha256:fixture".into(),
+                candidate,
+                answer_disposition: None,
+                marker_result: None,
+            }),
+            ..PairedState::default()
+        };
+        intent_state.save(&path).unwrap();
+        assert!(matches!(
+            paired_state_with("new-key", None).save_if_unpaired(&path),
+            Err(StorageError::CasMismatch)
+        ));
+        assert!(PairedState::load(&path)
+            .unwrap()
+            .retirement_intent
+            .is_some());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

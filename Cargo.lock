@@ -3498,12 +3498,15 @@ dependencies = [
  "spl-core",
  "spl-transport",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
  "webpki-roots",
  "windows 0.58.0",
+ "winreg",
+ "x509-parser",
  "xtask",
 ]
 

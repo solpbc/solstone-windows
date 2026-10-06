@@ -18,14 +18,14 @@ pub use crate::artifact_fs::{validate_relative_path, UnsafePathReason};
 pub const ADOPTION_SCHEMA_VERSION: u64 = 1;
 pub const CONSUMER_IDENTIFIER: &str = "solstone-windows";
 pub const AUTHORITY_REPOSITORY: &str = "https://github.com/solpbc/solstone-journal";
-pub const AUTHORITY_COMMIT: &str = "b78ba9eaac8228e65c4b5a3e64d27aefd3ad47cd";
-pub const BUNDLE_SEMVER: &str = "12.2.0";
-pub const ARCHIVE_SHA256: &str = "8939e7fd742ccbbfbfd8974ea405719a3a7c18aba7c5ea0fe7132fd4fa9eecb4";
-pub const ARCHIVE_SIZE_BYTES: u64 = 6_272;
+pub const AUTHORITY_COMMIT: &str = "1e432dba3ecdfa43789c25f97077fdc3e71fab59";
+pub const BUNDLE_SEMVER: &str = "14.0.0";
+pub const ARCHIVE_SHA256: &str = "9fbddd76e222ac244e513fe066279ebae050f0af0465838713196a6e30a205c2";
+pub const ARCHIVE_SIZE_BYTES: u64 = 7_260;
 /// All authority paths are relative to the explicit bundle directory.
 pub const AUTHORITY_MANIFEST_PATH: &str = "manifest.json";
 pub const AUTHORITY_MANIFEST_SHA256: &str =
-    "6a38b9be1b4e0b9d93edff7120399a5ace0f6aa8edfecaa349e4c98d8100dbe3";
+    "86d4358916a0303c29a8e61c6d1e48ef1939d0b5a2f042ae617958b9d0c1a5a8";
 pub const GENERATOR_IDENTITY: &str =
     "solstone.repository_contracts.client_ingest_contract_bundle.v1";
 pub const BUNDLE_SCHEMA_IDENTITY: &str = "solstone.client-ingest-contract-bundle.schema.v1";
@@ -46,19 +46,19 @@ pub struct FilePin {
 pub const BUNDLE_FILES: &[FilePin] = &[
     FilePin {
         path: "consumer-audit.json",
-        sha256: "9d8944fc5f873e858e3dab9f9251ded9e840cec0ef2284f510f70a560026d57b",
+        sha256: "31589211391a7feaafda6fa8514ffcf900f3acf3931a285e8712c646c6e9ab07",
     },
     FilePin {
         path: "fixtures/wire-behavior.json",
-        sha256: "f95433babe4f10ccf87a1ea32dfdb1e71c03b6165e81a9199090b5a9d8b37ee6",
+        sha256: "035e59297af21da998984910b4aa6a850d7e2e1225c79019045381bf3e17e708",
     },
     FilePin {
         path: "projection.openapi.json",
-        sha256: "2fc55fce7f9f7cb5b5dd2da13299acd371231caad9e4d877c6846ca6269c7198",
+        sha256: "db75a94ab97e83c56603e44d9313db86a94a2d9c4a920deaf090fe0f3358b8b0",
     },
     FilePin {
         path: "vectors.json",
-        sha256: "bb9c140d4f587825fd18bdce28b739edcad04f53d870c60da41a15af815680ee",
+        sha256: "7c61c1238184e1440110801478daf714aba05b2472338bd98c12cd508b303d0f",
     },
 ];
 
@@ -69,8 +69,12 @@ pub const COMPONENT_CLOSURE: &[&str] = &[
     "SegmentItem",
     "SegmentsEnvelope",
 ];
-pub const CONSUMER_IDENTIFIERS: &[&str] =
-    &["solstone-browser", "solstone-linux", "solstone-windows"];
+pub const CONSUMER_IDENTIFIERS: &[&str] = &[
+    "solstone-linux",
+    "solstone-macos",
+    "solstone-tmux",
+    "solstone-windows",
+];
 /// This order is pinned to the authority manifest, which is intentionally not lexical.
 pub const OPERATION_IDS: &[&str] = &[
     "client.ingestUpload",
@@ -117,6 +121,9 @@ pub const WINDOWS_OPERATION_MAPPINGS: &[OperationMapping] = &[
 ];
 
 pub const FIXTURE_IDS: &[&str] = &[
+    "declared.client.ingestSegments.collision.duplicate_wire_key_refused",
+    "declared.client.ingestSegments.collision.same_basename_distinct_streams",
+    "declared.client.ingestUpload.refusal.browser_record_invalid",
     "declared.client.ingestUpload.status.collision",
     "declared.client.ingestUpload.status.conflict",
     "declared.client.ingestUpload.status.duplicate",
@@ -124,6 +131,9 @@ pub const FIXTURE_IDS: &[&str] = &[
     "declared.client.ingestUpload.status.ok",
 ];
 pub const VECTOR_IDS: &[&str] = &[
+    "client.ingestSegments.collision.duplicate_wire_key_refused",
+    "client.ingestSegments.collision.same_basename_distinct_streams",
+    "client.ingestUpload.refusal.browser_record_invalid",
     "client.ingestUpload.status.collision",
     "client.ingestUpload.status.conflict",
     "client.ingestUpload.status.duplicate",
@@ -754,15 +764,16 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
                 "id": "openapi.client_ingest_authority",
                 "path": "core/crates/solstone-core-repository-contracts/src/contracts/client_ingest_authority.json",
                 "role": "openapi_source",
-                "sha256": "cc75cc6caa1db1d3b3c36db903f25b188158e0c162745fedb01f1ed3c09c0a1e",
+                "sha256": "afe354e26827d431d4766289a91c9d421edd99e67006937f7ad8d955a23a8f53",
             }]),
         ),
         (
             "audited_consumer_revisions",
             serde_json::json!([
-                { "consumer_identifier": "solstone-windows", "revision": "f276076e3554c75d75cbd3616644f46d831c0d90" },
-                { "consumer_identifier": "solstone-linux", "revision": "1c679db1ce6f9a65db70c5aae0ca2fad677416ef" },
-                { "consumer_identifier": "solstone-browser", "revision": "998c1095cd8f766dd188bece5ad6527444f8dfac" },
+                { "consumer_identifier": "solstone-linux", "revision": "f33878fb6c608bf43654777c4a3b7772d7375e7c" },
+                { "consumer_identifier": "solstone-macos", "revision": "6565338fa4a573065c25080d3da2bf75b973f254" },
+                { "consumer_identifier": "solstone-tmux", "revision": "c229b4ae034a5b10f5aeda73b71bf1ab961c0833" },
+                { "consumer_identifier": "solstone-windows", "revision": "83a85437427e96cbdc7d68cc43d6c4c98cf986c7" },
             ]),
         ),
         (
@@ -787,15 +798,7 @@ fn verify_manifest_fields(manifest: &Value) -> Result<(), VerifyError> {
                 },
             ]),
         ),
-        (
-            "windows_linux_rollout_targets",
-            serde_json::json!([
-                {
-                    "adoption_blocker_ids": ["solstone-linux-legacy-v2-unmigrated"],
-                    "consumer_identifier": "solstone-linux",
-                },
-            ]),
-        ),
+        ("windows_linux_rollout_targets", serde_json::json!([])),
     ];
     for (field, expected) in exact {
         if object.get(field) != Some(&expected) {

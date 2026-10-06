@@ -14,6 +14,7 @@ use crate::client::MAX_POST_CONNECT_RESPONSE_BYTES;
 /// The complete, closed set of ordinary Windows request routes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrdinaryRequest {
+    ClientsListGet,
     ClientsSelfGet,
     ClientsSelfPut,
     RelayAccessGet,
@@ -24,6 +25,9 @@ pub(crate) enum OrdinaryRequest {
     SystemStatusGet,
     SystemAboutGet,
     ClientsRetireDelete,
+    MigrationRekeyPost,
+    MigrationStateGet,
+    MigrationDecisionPut,
 }
 
 /// One route's transport authority.
@@ -38,7 +42,8 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 14] = [
+        Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
         Self::RelayAccessGet,
@@ -49,10 +54,20 @@ impl OrdinaryRequest {
         Self::SystemStatusGet,
         Self::SystemAboutGet,
         Self::ClientsRetireDelete,
+        Self::MigrationRekeyPost,
+        Self::MigrationStateGet,
+        Self::MigrationDecisionPut,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
         match self {
+            Self::ClientsListGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: "/app/network/api/clients",
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
             Self::ClientsSelfGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: "/app/network/api/clients/self",
@@ -123,6 +138,27 @@ impl OrdinaryRequest {
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: false,
             },
+            Self::MigrationRekeyPost => OrdinaryRequestSpec {
+                method: "POST",
+                path_pattern: "/app/network/api/clients/self/rekey",
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
+            Self::MigrationStateGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: "/app/network/api/clients/self/migration",
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
+            Self::MigrationDecisionPut => OrdinaryRequestSpec {
+                method: "PUT",
+                path_pattern: "/app/network/api/clients/self/migration",
+                replay: ReplayPolicy::ForbidAfterWrite,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
         }
     }
 
@@ -159,7 +195,37 @@ mod tests {
 
     #[test]
     fn registry_is_the_exact_nine_route_inventory() {
+        let established_routes = [
+            OrdinaryRequest::ClientsListGet,
+            OrdinaryRequest::ClientsSelfGet,
+            OrdinaryRequest::ClientsSelfPut,
+            OrdinaryRequest::RelayAccessGet,
+            OrdinaryRequest::IngestPost,
+            OrdinaryRequest::IngestManifestGet,
+            OrdinaryRequest::IngestManifestDayGet,
+            OrdinaryRequest::IngestSegmentsDayGet,
+            OrdinaryRequest::SystemStatusGet,
+            OrdinaryRequest::SystemAboutGet,
+            OrdinaryRequest::ClientsRetireDelete,
+        ];
+
+        assert_eq!(
+            &OrdinaryRequest::ALL[..established_routes.len()],
+            &established_routes
+        );
+    }
+
+    #[test]
+    fn registry_is_the_exact_ordinary_route_inventory() {
         let expected = [
+            (
+                OrdinaryRequest::ClientsListGet,
+                "GET",
+                "/app/network/api/clients",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
             (
                 OrdinaryRequest::ClientsSelfGet,
                 "GET",
@@ -236,6 +302,30 @@ mod tests {
                 OrdinaryRequest::ClientsRetireDelete,
                 "DELETE",
                 "/app/network/api/clients/<client-id>",
+                ReplayPolicy::ForbidAfterWrite,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
+            (
+                OrdinaryRequest::MigrationRekeyPost,
+                "POST",
+                "/app/network/api/clients/self/rekey",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
+            (
+                OrdinaryRequest::MigrationStateGet,
+                "GET",
+                "/app/network/api/clients/self/migration",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
+            (
+                OrdinaryRequest::MigrationDecisionPut,
+                "PUT",
+                "/app/network/api/clients/self/migration",
                 ReplayPolicy::ForbidAfterWrite,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 false,

@@ -99,6 +99,112 @@ interface PairingState {
   binding?: string;
 }
 
+type MigrationChoice = "new_device" | "same_device" | "replace_device";
+type MigrationPhase =
+  | "baseline"
+  | "request_prepared"
+  | "response_recorded"
+  | "credential_published"
+  | "decision_unknown"
+  | "admitted";
+type MigrationUiIssue =
+  | "offline"
+  | "unsupported"
+  | "storage_unavailable"
+  | "decision_refused"
+  | "target_missing"
+  | "key_refused";
+
+interface MigrationView {
+  phase: MigrationPhase;
+  revision: number;
+  pairing_generation: number[];
+  state: "none" | "pending" | "new_device" | "same_device" | "replaced_device" | null;
+  old_cid: string | null;
+  new_cid: string | null;
+  replaced_cid: string | null;
+  decision_choice: MigrationChoice | null;
+  decision_result: string | null;
+  same_device_available: boolean;
+  offer_available: boolean;
+  offer_binding: string | null;
+}
+
+interface MigrationSnapshot {
+  migration: MigrationView | null;
+  issue: MigrationUiIssue | null;
+}
+
+interface MigrationDevice {
+  cid: string;
+  display_label: string;
+}
+
+type MigrationFlow = "replace_offer" | "picker" | "confirm" | null;
+
+const MIGRATION_COPY = {
+  "migration.choice.title": "same device or a new one?",
+  "migration.choice.body":
+    'same device continues "{previous_device_label}" with its name and history, and removes the old device\'s access to your journal. new device keeps both.',
+  "migration.choice.same": "same device",
+  "migration.choice.new": "new device",
+  "migration.choice.defer": "not now",
+  "migration.replace_offer.title": "is this replacing one of your devices?",
+  "migration.replace_offer.body":
+    "you can keep both, or choose a device for this one to replace.",
+  "migration.replace_offer.pick": "choose a device",
+  "migration.replace_offer.keep": "keep both",
+  "migration.replace_offer.defer": "not now",
+  "migration.picker.title": "choose a device",
+  "migration.picker.empty": "no other paired devices",
+  "migration.picker.cancel": "cancel",
+  "migration.replace_confirm.title": 'replace "{selected_device_label}"?',
+  "migration.replace_confirm.body":
+    "this device continues its name and history. the selected device will lose access to your journal.",
+  "migration.replace_confirm.replace": "replace device",
+  "migration.replace_confirm.cancel": "cancel",
+  "migration.pending.row": "device choice",
+  "migration.pending.value": "not answered",
+  "migration.preparing.title": "getting this device ready",
+  "migration.preparing.body":
+    "anything waiting to send stays on this device until it's ready.",
+  "migration.offline.title": "can't reach your journal",
+  "migration.offline.body":
+    "anything waiting to send stays on this device. try again when your journal is reachable.",
+  "migration.offline.action": "try again",
+  "migration.unsupported.title": "journal update needed",
+  "migration.unsupported.body":
+    "your journal doesn't support this move yet. anything waiting to send stays on this device. update your journal, then try again.",
+  "migration.unsupported.action": "try again",
+  "migration.storage_unavailable.title": "saved connection unavailable",
+  "migration.storage_unavailable.body":
+    "this device couldn't read its saved connection. anything waiting to send hasn't been removed.",
+  "migration.storage_unavailable.action": "technical details",
+  "migration.deciding.title": "saving your choice",
+  "migration.decision_unknown.title": "checking your choice",
+  "migration.decision_unknown.body": "your journal hasn't confirmed the result yet.",
+  "migration.decision_unknown.action": "check again",
+  "migration.list_unavailable.title": "devices unavailable",
+  "migration.list_unavailable.body":
+    "couldn't load the devices in your journal. try again when your journal is reachable.",
+  "migration.list_unavailable.action": "try again",
+  "migration.target_missing.title": "device no longer available",
+  "migration.target_missing.body":
+    "that device is no longer listed in your journal. choose another device, or keep both.",
+  "migration.target_missing.action": "choose a device",
+  "migration.decision_refused.title": "choice needs attention",
+  "migration.decision_refused.body":
+    "your journal couldn't apply this choice. your current connection still works.",
+  "migration.decision_refused.action": "technical details",
+  "migration.key_refused.title": "pair again",
+  "migration.key_refused.body":
+    "this device couldn't open its saved connection to your journal. anything waiting to send is still here. pair again to reconnect.",
+  "migration.key_refused.action": "pair again",
+  "migration.choice.body_fallback":
+    "same device continues the old device with its name and history, and removes its access to your journal. new device keeps both.",
+  "migration.replace_confirm.title_fallback": "replace the selected device?",
+} as const;
+
 interface UploadStatus {
   pending_segments: number;
   uploaded_segments: number;
@@ -269,6 +375,18 @@ let latestHealth: HealthDump | null = null;
 let aboutClipboardWriter: ((value: string) => Promise<void>) | null = null;
 let latestStorage: StorageInfo | null = null;
 let latestUpdate: UpdateView | null = null;
+let latestMigration: MigrationSnapshot | null = null;
+let latestMigrationDevices: MigrationDevice[] | null = null;
+let migrationFlow: MigrationFlow = null;
+let migrationBusy = false;
+let migrationDevicesBusy = false;
+let migrationListUnavailable = false;
+let migrationShowDetails = false;
+let migrationPromptHidden = false;
+let migrationRefreshAt = 0;
+let migrationRefreshInFlight = false;
+let migrationOfferBinding: string | null = null;
+let selectedMigrationDevice: MigrationDevice | null = null;
 let activeRoute: Route = "home";
 let renderBeaconFired = false;
 let focusPaneTitleOnRender = false;
@@ -293,6 +411,123 @@ let healthReceivedAt: number | null = null;
 let pairingDraft = "";
 let pairingBusy = false;
 let journalOpenError = false;
+
+type MigrationCopyKey = keyof typeof MIGRATION_COPY;
+
+function migrationCopy(key: MigrationCopyKey, values: Record<string, string> = {}): string {
+  return MIGRATION_COPY[key].replace(/\{([^}]+)\}/g, (_match, name: string) => values[name] ?? "");
+}
+
+function migrationText<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  key: MigrationCopyKey,
+  values: Record<string, string> = {},
+): HTMLElementTagNameMap[K] {
+  const node = text(tag, migrationCopy(key, values)) as HTMLElementTagNameMap[K];
+  node.dataset.migrationKey = key;
+  return node;
+}
+
+function migrationAction(key: MigrationCopyKey, onClick: () => void): HTMLButtonElement {
+  const button = actionButton(migrationCopy(key), undefined, true, onClick, migrationBusy);
+  button.dataset.migrationKey = key;
+  button.dataset.migrationAction = key;
+  return button;
+}
+
+async function refreshMigrationState(force = false): Promise<void> {
+  if (migrationRefreshInFlight) return;
+  if (!force && Date.now() - migrationRefreshAt < 5000) return;
+  migrationRefreshInFlight = true;
+  migrationRefreshAt = Date.now();
+  try {
+    latestMigration = await invoke<MigrationSnapshot>("pairing_migration_state");
+    const nextBinding = latestMigration.migration?.offer_binding ?? null;
+    if (nextBinding !== migrationOfferBinding) {
+      migrationOfferBinding = nextBinding;
+      migrationPromptHidden = false;
+    }
+  } catch {
+    latestMigration = {
+      migration: null,
+      issue: "storage_unavailable",
+    };
+  } finally {
+    migrationRefreshInFlight = false;
+    requestRerender();
+  }
+}
+
+async function loadMigrationDevices(): Promise<void> {
+  if (migrationDevicesBusy) return;
+  migrationDevicesBusy = true;
+  migrationListUnavailable = false;
+  try {
+    latestMigrationDevices = await invoke<MigrationDevice[]>("pairing_migration_devices");
+  } catch {
+    latestMigrationDevices = null;
+    migrationListUnavailable = true;
+  } finally {
+    migrationDevicesBusy = false;
+    requestRerender();
+  }
+}
+
+async function submitMigrationDecision(
+  choice: MigrationChoice,
+  replacesCid: string | null = null,
+): Promise<void> {
+  if (migrationBusy) return;
+  migrationBusy = true;
+  migrationFlow = null;
+  latestMigration = {
+    migration: latestMigration?.migration ?? null,
+    issue: null,
+  };
+  requestRerender();
+  try {
+    latestMigration = await invoke<MigrationSnapshot>("pairing_migration_decide", {
+      choice,
+      replacesCid,
+    });
+    migrationOfferBinding = latestMigration.migration?.offer_binding ?? migrationOfferBinding;
+  } catch {
+    latestMigration = {
+      migration: latestMigration?.migration ?? null,
+      issue: "decision_refused",
+    };
+  } finally {
+    migrationBusy = false;
+    requestRerender();
+  }
+}
+
+async function dismissMigrationOffer(): Promise<void> {
+  const migration = latestMigration?.migration;
+  if (
+    migrationBusy ||
+    !migration?.offer_binding ||
+    !migration.offer_available
+  ) {
+    return;
+  }
+  migrationBusy = true;
+  try {
+    await invoke("pairing_migration_offer_dismiss", {
+      expectedBinding: migration.offer_binding,
+      expectedGeneration: migration.pairing_generation,
+      expectedRevision: migration.revision,
+    });
+    migrationPromptHidden = true;
+    migrationFlow = null;
+    await refreshMigrationState(true);
+  } catch {
+    latestMigration = { migration, issue: "storage_unavailable" };
+  } finally {
+    migrationBusy = false;
+    requestRerender();
+  }
+}
 
 // Capture-exclusion rules + the running-app picker list. Held in module vars so a
 // 1s health re-render repaints the section without losing edits; `titleDraft`
@@ -1270,6 +1505,297 @@ function renderUnavailableMark(size: 32 | 48): HTMLElement {
   return chipContainer;
 }
 
+function migrationCard(): HTMLDivElement {
+  const card = document.createElement("div");
+  card.classList.add("fluent-card");
+  card.style.display = "grid";
+  card.style.gap = "10px";
+  card.style.marginTop = "12px";
+  card.style.padding = "14px";
+  card.style.border = "1px solid var(--border)";
+  card.style.borderRadius = "var(--radius-control)";
+  card.style.background = "var(--fill)";
+  return card;
+}
+
+function migrationHeading(card: HTMLElement, key: MigrationCopyKey, values?: Record<string, string>): void {
+  const heading = migrationText("h3", key, values);
+  heading.style.margin = "0";
+  heading.style.fontSize = "14px";
+  heading.style.fontWeight = "650";
+  card.append(heading);
+}
+
+function migrationBody(card: HTMLElement, key: MigrationCopyKey, values?: Record<string, string>): void {
+  const body = migrationText("p", key, values);
+  body.style.margin = "0";
+  body.style.fontSize = "12px";
+  body.style.color = "var(--fg-subtle)";
+  body.style.lineHeight = "1.45";
+  card.append(body);
+}
+
+function migrationActions(card: HTMLElement, ...buttons: HTMLButtonElement[]): void {
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.flexWrap = "wrap";
+  row.style.justifyContent = "flex-end";
+  row.style.gap = "8px";
+  row.append(...buttons);
+  card.append(row);
+}
+
+function renderMigrationIssue(issue: MigrationUiIssue): HTMLElement {
+  const card = migrationCard();
+  const retry = (key: MigrationCopyKey, action: () => void) => migrationAction(key, action);
+  switch (issue) {
+    case "offline":
+      migrationHeading(card, "migration.offline.title");
+      migrationBody(card, "migration.offline.body");
+      migrationActions(card, retry("migration.offline.action", () => void refreshMigrationState(true)));
+      break;
+    case "unsupported":
+      migrationHeading(card, "migration.unsupported.title");
+      migrationBody(card, "migration.unsupported.body");
+      migrationActions(card, retry("migration.unsupported.action", () => void refreshMigrationState(true)));
+      break;
+    case "storage_unavailable":
+      migrationHeading(card, "migration.storage_unavailable.title");
+      migrationBody(card, "migration.storage_unavailable.body");
+      migrationActions(
+        card,
+        retry("migration.storage_unavailable.action", () => {
+          migrationShowDetails = !migrationShowDetails;
+          requestRerender();
+        }),
+      );
+      if (migrationShowDetails) {
+        const details = text("code", issue);
+        details.dataset.migrationIssue = issue;
+        card.append(details);
+      }
+      break;
+    case "decision_refused":
+      migrationHeading(card, "migration.decision_refused.title");
+      migrationBody(card, "migration.decision_refused.body");
+      migrationActions(
+        card,
+        retry("migration.decision_refused.action", () => {
+          migrationShowDetails = !migrationShowDetails;
+          requestRerender();
+        }),
+      );
+      if (migrationShowDetails) {
+        const details = text("code", issue);
+        details.dataset.migrationIssue = issue;
+        card.append(details);
+      }
+      break;
+    case "target_missing":
+      migrationHeading(card, "migration.target_missing.title");
+      migrationBody(card, "migration.target_missing.body");
+      migrationActions(
+        card,
+        retry("migration.target_missing.action", () => {
+          latestMigration = {
+            migration: latestMigration?.migration ?? null,
+            issue: null,
+          };
+          migrationFlow = "picker";
+          void loadMigrationDevices();
+          requestRerender();
+        }),
+      );
+      break;
+    case "key_refused":
+      migrationHeading(card, "migration.key_refused.title");
+      migrationBody(card, "migration.key_refused.body");
+      migrationActions(
+        card,
+        retry("migration.key_refused.action", () => {
+          document.querySelector<HTMLInputElement>(`[data-automation-id="${ids["settings.pairing.input"]}"]`)?.focus();
+        }),
+      );
+      break;
+  }
+  return card;
+}
+
+function migrationPendingRow(card: HTMLElement): void {
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.justifyContent = "space-between";
+  row.style.gap = "12px";
+  const labelNode = migrationText("span", "migration.pending.row");
+  const valueNode = migrationText("span", "migration.pending.value");
+  row.append(labelNode, valueNode);
+  card.append(row);
+}
+
+function renderMigrationFlow(view: MigrationView): HTMLElement {
+  const card = migrationCard();
+  if (migrationFlow === "replace_offer") {
+    migrationHeading(card, "migration.replace_offer.title");
+    migrationBody(card, "migration.replace_offer.body");
+    migrationActions(
+      card,
+      migrationAction("migration.replace_offer.defer", () => void dismissMigrationOffer()),
+      migrationAction("migration.replace_offer.keep", () => void submitMigrationDecision("new_device")),
+      migrationAction("migration.replace_offer.pick", () => {
+        migrationFlow = "picker";
+        void loadMigrationDevices();
+        requestRerender();
+      }),
+    );
+    return card;
+  }
+
+  if (migrationFlow === "picker") {
+    migrationHeading(card, "migration.picker.title");
+    if (migrationDevicesBusy) {
+      migrationHeading(card, "migration.preparing.title");
+    } else if (migrationListUnavailable) {
+      migrationHeading(card, "migration.list_unavailable.title");
+      migrationBody(card, "migration.list_unavailable.body");
+      migrationActions(
+        card,
+        migrationAction("migration.list_unavailable.action", () => void loadMigrationDevices()),
+      );
+    } else {
+      const oldCid = view.old_cid;
+      const choices = (latestMigrationDevices ?? []).filter((device) => device.cid !== oldCid);
+      if (choices.length === 0) {
+        const empty = migrationText("p", "migration.picker.empty");
+        empty.style.margin = "0";
+        card.append(empty);
+      }
+      const list = document.createElement("div");
+      list.setAttribute("role", "list");
+      list.style.display = "grid";
+      list.style.gap = "6px";
+      for (const device of choices) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("role", "listitem");
+        button.textContent = device.display_label;
+        button.dataset.migrationAction = "select_device";
+        button.setAttribute("aria-pressed", String(selectedMigrationDevice?.cid === device.cid));
+        button.classList.add("fluent-control");
+        button.style.textAlign = "left";
+        button.onclick = () => {
+          selectedMigrationDevice = device;
+          migrationFlow = "confirm";
+          requestRerender();
+        };
+        list.append(button);
+      }
+      card.append(list);
+    }
+    migrationActions(
+      card,
+      migrationAction("migration.picker.cancel", () => {
+        migrationFlow = "replace_offer";
+        selectedMigrationDevice = null;
+        requestRerender();
+      }),
+    );
+    return card;
+  }
+
+  if (migrationFlow === "confirm") {
+    migrationHeading(
+      card,
+      selectedMigrationDevice
+        ? "migration.replace_confirm.title"
+        : "migration.replace_confirm.title_fallback",
+      selectedMigrationDevice
+        ? { selected_device_label: selectedMigrationDevice.display_label }
+        : undefined,
+    );
+    migrationBody(card, "migration.replace_confirm.body");
+    migrationActions(
+      card,
+      migrationAction("migration.replace_confirm.cancel", () => {
+        migrationFlow = "picker";
+        requestRerender();
+      }),
+      migrationAction("migration.replace_confirm.replace", () => {
+        const cid = selectedMigrationDevice?.cid;
+        if (cid) void submitMigrationDecision("replace_device", cid);
+      }),
+    );
+    return card;
+  }
+
+  migrationHeading(card, "migration.choice.title");
+  const priorLabel = view.old_cid
+    ? latestMigrationDevices?.find((device) => device.cid === view.old_cid)?.display_label
+    : undefined;
+  const bodyKey = priorLabel ? "migration.choice.body" : "migration.choice.body_fallback";
+  migrationBody(
+    card,
+    bodyKey,
+    priorLabel ? { previous_device_label: priorLabel } : undefined,
+  );
+  migrationPendingRow(card);
+  const choiceButtons = [
+    migrationAction("migration.choice.defer", () => void dismissMigrationOffer()),
+    migrationAction("migration.choice.new", () => {
+      migrationFlow = "replace_offer";
+      requestRerender();
+    }),
+  ];
+  if (view.same_device_available) {
+    choiceButtons.push(
+      migrationAction("migration.choice.same", () => void submitMigrationDecision("same_device")),
+    );
+  }
+  migrationActions(card, ...choiceButtons);
+  return card;
+}
+
+function renderMigrationPanel(): HTMLElement | null {
+  const snapshot = latestMigration;
+  const view = snapshot?.migration;
+  if (snapshot?.issue) return renderMigrationIssue(snapshot.issue);
+  if (migrationBusy && view) {
+    const card = migrationCard();
+    migrationHeading(card, "migration.deciding.title");
+    return card;
+  }
+  if (!view) return null;
+
+  if (view.phase === "decision_unknown" || view.decision_result === "unknown") {
+    const card = migrationCard();
+    migrationHeading(card, "migration.decision_unknown.title");
+    migrationBody(card, "migration.decision_unknown.body");
+    migrationPendingRow(card);
+    migrationActions(
+      card,
+      migrationAction("migration.decision_unknown.action", () => void refreshMigrationState(true)),
+    );
+    return card;
+  }
+
+  if (
+    view.phase === "request_prepared" ||
+    view.phase === "response_recorded" ||
+    view.phase === "credential_published"
+  ) {
+    const card = migrationCard();
+    migrationHeading(card, "migration.preparing.title");
+    migrationBody(card, "migration.preparing.body");
+    return card;
+  }
+
+  if (migrationFlow === "replace_offer" || migrationFlow === "picker" || migrationFlow === "confirm") {
+    return renderMigrationFlow(view);
+  }
+  if (!view.offer_available || migrationPromptHidden) return null;
+  if (!latestMigrationDevices && view.old_cid) void loadMigrationDevices();
+  return renderMigrationFlow(view);
+}
+
 function renderPairingSection(dump: HealthDump): HTMLElement {
   const pairing = dump.sync.pairing;
   const pane = section("pairing");
@@ -1488,6 +2014,9 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       pane.append(msg);
     }
   }
+
+  const migrationPanel = renderMigrationPanel();
+  if (migrationPanel) pane.append(migrationPanel);
 
   const inputRow = document.createElement("div");
   inputRow.style.display = "grid";
@@ -3818,7 +4347,7 @@ async function boot(): Promise<void> {
     rerender();
     return;
   }
-  const [health, storage, update, exclusions, apps, hotkey, micCfg, mics] = await Promise.all([
+  const [health, storage, update, exclusions, apps, hotkey, micCfg, mics, migration] = await Promise.all([
     invoke<HealthDump>("get_health").catch(() => null),
     invoke<StorageInfo>("storage_info").catch(() => null),
     invoke<UpdateView>("update_get").catch(() => null),
@@ -3827,6 +4356,9 @@ async function boot(): Promise<void> {
     invoke<HotkeyView>("get_hotkey").catch(() => null),
     invoke<MicView>("get_mic_config").catch(() => null),
     invoke<MicDeviceRef[]>("list_mic_devices").catch(() => [] as MicDeviceRef[]),
+    invoke<MigrationSnapshot>("pairing_migration_state").catch(
+      () => ({ migration: null, issue: "storage_unavailable" }) as MigrationSnapshot,
+    ),
   ]);
   setLatestHealth(health);
   latestStorage = storage;
@@ -3836,6 +4368,9 @@ async function boot(): Promise<void> {
   latestHotkey = hotkey;
   latestMic = micCfg;
   micDevices = mics;
+  latestMigration = migration ?? { migration: null, issue: null };
+  migrationOfferBinding = latestMigration.migration?.offer_binding ?? null;
+  migrationRefreshAt = Date.now();
   await refreshBrowserStatus();
   rerender();
 }
@@ -3922,6 +4457,13 @@ export function start(): void {
   narrowNav = window.matchMedia("(max-width: 719px)");
 
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && latestMigration?.migration?.offer_available) {
+      migrationPromptHidden = true;
+      migrationFlow = null;
+      selectedMigrationDevice = null;
+      requestRerender();
+      return;
+    }
     if (event.key !== "Escape" || !narrowNav.matches) {
       return;
     }
@@ -3959,6 +4501,7 @@ export function start(): void {
   void listen<HealthDump>("health://changed", (event) => {
     setLatestHealth(event.payload);
     void refreshBrowserStatus();
+    void refreshMigrationState();
     requestRerender();
   });
   void listen<UpdateView>("update://changed", (event) => {
@@ -4011,6 +4554,17 @@ export const __test__ = {
   setMicDevices(v: MicDeviceRef[]) {
     micDevices = v;
   },
+  setMigration(v: MigrationSnapshot | null) {
+    latestMigration = v;
+    migrationOfferBinding = v?.migration?.offer_binding ?? null;
+  },
+  setMigrationDevices(v: MigrationDevice[] | null) {
+    latestMigrationDevices = v;
+    migrationListUnavailable = v === null;
+  },
+  setMigrationFlow(v: MigrationFlow) {
+    migrationFlow = v;
+  },
   setRunningApps(v: RunningApp[]) {
     runningApps = v;
   },
@@ -4029,6 +4583,18 @@ export const __test__ = {
     healthReceivedAt = null;
     latestStorage = null;
     latestUpdate = null;
+    latestMigration = null;
+    latestMigrationDevices = null;
+    migrationFlow = null;
+    migrationBusy = false;
+    migrationDevicesBusy = false;
+    migrationListUnavailable = false;
+    migrationShowDetails = false;
+    migrationPromptHidden = false;
+    migrationRefreshAt = 0;
+    migrationRefreshInFlight = false;
+    migrationOfferBinding = null;
+    selectedMigrationDevice = null;
     latestExclusions = null;
     latestHotkey = null;
     exclusionsPending = null;

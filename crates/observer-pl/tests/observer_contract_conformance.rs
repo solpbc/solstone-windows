@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use observer_pl::ingest::IngestResponse;
+use observer_pl::ingest::{
+    validate_segments_envelope, CustodyFailure, IngestError, IngestResponse, SegmentsEnvelope,
+};
 use serde_json::Value;
 use xtask::observer_contract::{FIXTURE_IDS, VECTOR_IDS, WINDOWS_OPERATION_MAPPINGS};
 
@@ -79,29 +81,76 @@ fn observer_contract_authority_status_fixtures_and_vectors_match_real_wire_types
         let fixture_id = vector["fixture_id"].as_str().expect("fixture ID");
         assert!(FIXTURE_IDS.contains(&fixture_id));
         let fixture = &fixtures[fixture_id];
-        let response: IngestResponse =
-            serde_json::from_value(fixture["payload"].clone()).expect("v3 status parses");
         let decision = &vector["decision"];
-        assert_eq!(
-            response.status.is_accepted(),
-            decision["accepted"].as_bool().expect("accepted flag"),
-            "{vector_id}"
-        );
-        assert_eq!(
-            fixture["provenance"]["http_status"], decision["http_status"],
-            "{vector_id}"
-        );
-        assert_eq!(
-            fixture["payload"]["status"], decision["status"],
-            "{vector_id}"
-        );
         let valid = fixture["schema_validation"]["valid"]
             .as_bool()
             .expect("boolean schema validation result");
-        assert_eq!(
-            valid,
-            *vector_id != "client.ingestUpload.status.failed",
-            "{vector_id}"
-        );
+        match decision["kind"].as_str().expect("decision kind") {
+            "ingest_status" => {
+                let response: IngestResponse =
+                    serde_json::from_value(fixture["payload"].clone()).expect("v3 status parses");
+                assert_eq!(
+                    response.status.is_accepted(),
+                    decision["accepted"].as_bool().expect("accepted flag"),
+                    "{vector_id}"
+                );
+                assert_eq!(
+                    fixture["provenance"]["http_status"], decision["http_status"],
+                    "{vector_id}"
+                );
+                assert_eq!(
+                    fixture["payload"]["status"], decision["status"],
+                    "{vector_id}"
+                );
+                assert_eq!(valid, *vector_id != "client.ingestUpload.status.failed");
+            }
+            "refusal" => {
+                let response: IngestError =
+                    serde_json::from_value(fixture["payload"].clone()).expect("v3 refusal parses");
+                assert!(!decision["accepted"].as_bool().expect("accepted flag"));
+                assert_eq!(response.reason_code, decision["reason_code"]);
+                assert_eq!(
+                    fixture["provenance"]["http_status"],
+                    decision["http_status"]
+                );
+                assert!(valid);
+            }
+            "listing_collision_identity" => {
+                let envelope: SegmentsEnvelope = serde_json::from_value(fixture["payload"].clone())
+                    .expect("collision listing parses");
+                validate_segments_envelope(&envelope).expect("distinct listing identities pass");
+                let selected: Vec<Value> = envelope
+                    .items
+                    .iter()
+                    .map(|item| {
+                        serde_json::json!({
+                            "key": item.key,
+                            "segment": item.segment,
+                            "stream": item.stream,
+                        })
+                    })
+                    .collect();
+                assert!(decision["accepted"].as_bool().expect("accepted flag"));
+                assert_eq!(Value::Array(selected), decision["selected"]);
+                assert_eq!(fixture["provenance"]["http_status"], 200);
+                assert_eq!(fixture["provenance"]["protocol_version"], 3);
+                assert!(valid);
+            }
+            "consumer_refusal" => {
+                let envelope: SegmentsEnvelope = serde_json::from_value(fixture["payload"].clone())
+                    .expect("duplicate-key listing parses");
+                assert!(matches!(
+                    validate_segments_envelope(&envelope),
+                    Err(CustodyFailure::DuplicateListingKey { .. })
+                ));
+                assert!(!decision["accepted"].as_bool().expect("accepted flag"));
+                assert_eq!(decision["reason_code"], "duplicate_listing_key");
+                assert_eq!(decision["selected_keys"], serde_json::json!([]));
+                assert_eq!(fixture["provenance"]["http_status"], 200);
+                assert_eq!(fixture["provenance"]["protocol_version"], 3);
+                assert!(valid);
+            }
+            kind => panic!("unhandled observer-client decision kind {kind}"),
+        }
     }
 }

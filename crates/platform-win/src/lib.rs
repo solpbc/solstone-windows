@@ -31,6 +31,7 @@ pub mod about_observation;
 pub mod autostart;
 #[allow(unsafe_code)]
 pub mod local_offset;
+pub mod owner_data;
 
 /// The browser native host's same-user named pipe (Win32 security calls).
 #[allow(unsafe_code)]
@@ -44,19 +45,16 @@ pub mod journal_document_filter;
 
 pub use local_offset::WindowsLocalOffset;
 
-/// The per-user data root: `%LocalAppData%\Solstone`. Falls back to a temp path
-/// off-Windows so the type is host-constructible for tests.
+/// The per-user owner-data root: `%LocalAppData%\SolstoneOwner`. Installer
+/// state remains under the independently resolved Velopack installation root.
 pub fn local_data_root() -> PathBuf {
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        let mut p = PathBuf::from(local);
-        p.push("Solstone");
-        p
-    } else {
-        // Host fallback (dev/test). Production always has %LocalAppData%.
-        let mut p = std::env::temp_dir();
-        p.push("solstone");
-        p
-    }
+    owner_data::owner_root()
+}
+
+/// The existing data root to inspect from a read-only diagnostic. This does
+/// not create or adopt either root.
+pub fn existing_data_root() -> PathBuf {
+    owner_data::existing_root()
 }
 
 /// The active segments directory under the data root.
@@ -1224,8 +1222,11 @@ mod tests {
     }
 
     #[test]
-    fn data_root_is_under_solstone() {
-        assert!(local_data_root().ends_with("Solstone") || local_data_root().ends_with("solstone"));
+    fn data_root_is_under_solstone_owner() {
+        assert!(
+            local_data_root().ends_with("SolstoneOwner")
+                || local_data_root().ends_with("solstoneowner")
+        );
     }
 
     #[test]

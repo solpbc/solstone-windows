@@ -274,6 +274,14 @@ pub struct IngestResponse {
     pub file_descriptors: FileDescriptors,
 }
 
+/// Error response from a protocol-v3 ingest endpoint.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IngestError {
+    pub error: String,
+    pub reason_code: String,
+    pub detail: String,
+}
+
 /// Root ingest manifest returned by `/app/devices/ingest/manifest`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct IngestManifest {
@@ -317,6 +325,12 @@ pub struct SegmentItem {
     pub files: Vec<SegmentFile>,
     #[serde(default)]
     pub original_key: Option<String>,
+    /// Physical segment directory basename, present when the listing key is an alias.
+    #[serde(default)]
+    pub segment: Option<String>,
+    /// Physical stream directory, present with `segment` for an alias.
+    #[serde(default)]
+    pub stream: Option<String>,
 }
 
 /// A validated upload receipt proving that the journal durably recorded the upload.
@@ -577,6 +591,12 @@ pub enum CustodyFailure {
         total: u64,
         item_count: usize,
     },
+    DuplicateListingKey {
+        key: String,
+    },
+    PhysicalCoordinatesMalformed {
+        key: String,
+    },
     SegmentAbsentFromSegments {
         segment_key: String,
     },
@@ -620,6 +640,36 @@ pub enum CustodyProof {
     Unconfirmed(CustodyFailure),
 }
 
+/// Validate response-wide protocol-3 listing invariants before a consumer
+/// attempts key or custody matching.
+pub fn validate_segments_envelope(segments: &SegmentsEnvelope) -> Result<(), CustodyFailure> {
+    if segments.protocol_version != 3 {
+        return Err(CustodyFailure::ProtocolVersionMismatch {
+            actual: segments.protocol_version,
+        });
+    }
+    if segments.total != segments.items.len() as u64 {
+        return Err(CustodyFailure::SegmentsTotalMismatch {
+            total: segments.total,
+            item_count: segments.items.len(),
+        });
+    }
+    let mut listing_keys = HashSet::with_capacity(segments.items.len());
+    for item in &segments.items {
+        if !listing_keys.insert(item.key.as_str()) {
+            return Err(CustodyFailure::DuplicateListingKey {
+                key: item.key.clone(),
+            });
+        }
+        if item.segment.is_some() != item.stream.is_some() {
+            return Err(CustodyFailure::PhysicalCoordinatesMalformed {
+                key: item.key.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Prove that the v3 manifest, day manifest, and segments response together
 /// witness every local file for `segment_key` on `day`.
 pub fn prove_custody(
@@ -646,16 +696,8 @@ pub fn prove_custody(
             segment_key: segment_key.to_owned(),
         });
     };
-    if segments.protocol_version != 3 {
-        return CustodyProof::Unconfirmed(CustodyFailure::ProtocolVersionMismatch {
-            actual: segments.protocol_version,
-        });
-    }
-    if segments.total != segments.items.len() as u64 {
-        return CustodyProof::Unconfirmed(CustodyFailure::SegmentsTotalMismatch {
-            total: segments.total,
-            item_count: segments.items.len(),
-        });
+    if let Err(failure) = validate_segments_envelope(segments) {
+        return CustodyProof::Unconfirmed(failure);
     }
     let Some(segment) = segments.items.iter().find(|item| item.key == segment_key) else {
         return CustodyProof::Unconfirmed(CustodyFailure::SegmentAbsentFromSegments {

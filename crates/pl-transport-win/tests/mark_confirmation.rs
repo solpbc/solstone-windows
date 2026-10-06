@@ -257,7 +257,7 @@ async fn mark_confirmation_rebuild_keeps_the_closed_gate() {
         .replace_from_incumbent(
             cred2,
             CasKey {
-                pairing_generation: 0,
+                pairing_generation: [0; 32],
                 access_mutation_generation: 0,
             },
         )

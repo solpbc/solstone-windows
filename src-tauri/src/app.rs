@@ -16,8 +16,7 @@ use std::time::Duration;
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
 use observer_model::{
-    control_client_exit_code, should_emit, AppPhase, HealthDump, PauseReason, SourceKind,
-    SourceState, SyncSnapshot,
+    should_emit, AppPhase, HealthDump, PauseReason, SourceKind, SourceState, SyncSnapshot,
 };
 use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::SyncConfig;
@@ -337,6 +336,10 @@ pub fn run(
             crate::ipc::storage_info,
             crate::ipc::open_storage_folder,
             crate::ipc::answer_pairing,
+            crate::ipc::pairing_migration_state,
+            crate::ipc::pairing_migration_decide,
+            crate::ipc::pairing_migration_devices,
+            crate::ipc::pairing_migration_offer_dismiss,
             crate::ipc::browser_status,
             crate::ipc::browser_discard_waiting,
         ])
@@ -347,46 +350,6 @@ pub fn run(
             // check, so opening the installed app while another copy runs
             // still takes the entry back. A failure is logged, never fatal.
             ensure_owned_login_item();
-
-            match crate::lifecycle::acquire_single_instance() {
-                platform_win::InstanceLock::AlreadyRunning => {
-                    tracing::info!(
-                        target: "lifecycle",
-                        outcome = "already_running",
-                        "single instance"
-                    );
-                    let acknowledged = if open_journal_on_launch {
-                        crate::control::signal_open_journal()
-                    } else if let Some(view) = open_view {
-                        // `--open-view` has to mean the same thing whether or not
-                        // the app is already running. This branch used to fall
-                        // through to the surface verb, so `--open-view about`
-                        // against a live instance opened Settings and reported
-                        // nothing wrong -- the flag lied rather than failed.
-                        match view {
-                            observer_model::View::Settings => crate::control::signal_surface(),
-                            observer_model::View::About => crate::control::signal_surface_about(),
-                        }
-                    } else if surface_on_launch {
-                        crate::control::signal_surface()
-                    } else {
-                        true
-                    };
-                    // The pinned Wry runtime turns RequestExit(code) into
-                    // ControlFlow::Exit, losing a nonzero acknowledgement
-                    // result. This instance owns no engine or capture tasks:
-                    // clean up Tauri before returning the exact client result.
-                    app.handle().cleanup_before_exit();
-                    std::process::exit(control_client_exit_code(acknowledged));
-                }
-                platform_win::InstanceLock::Acquired => {
-                    tracing::info!(
-                        target: "lifecycle",
-                        outcome = "acquired",
-                        "single instance"
-                    );
-                }
-            }
 
             // Capture-exclusion rules: load persisted owner policy and share the
             // handle with the WGC source so edits take effect on the next frame.
