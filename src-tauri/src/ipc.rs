@@ -12,6 +12,7 @@
 use capture_engine::EngineCommand;
 use observer_model::HealthDump;
 use observer_model::PauseReason;
+use pl_transport_win::credential::PairedState;
 use tauri::Manager;
 
 /// Ask the engine to pause. `reason` is an owner-meaningful token;
@@ -394,13 +395,16 @@ fn migration_ui_snapshot(
 #[tauri::command]
 pub async fn pairing_migration_state(
     state: tauri::State<'_, crate::app::AppState>,
-) -> MigrationUiSnapshot {
+) -> Result<MigrationUiSnapshot, String> {
     let path = &state.sync_config.state_path;
     let mut issue = None;
     let record = match pl_transport_win::migration::load(path) {
         Ok(record) => record,
         Err(error) => {
-            return migration_ui_snapshot(path, Some(migration_ui_issue(&error)));
+            return Ok(migration_ui_snapshot(
+                path,
+                Some(migration_ui_issue(&error)),
+            ));
         }
     };
     if let Some(mut record) = record {
@@ -435,7 +439,7 @@ pub async fn pairing_migration_state(
             }
         }
     }
-    migration_ui_snapshot(path, issue)
+    Ok(migration_ui_snapshot(path, issue))
 }
 
 /// Save an exact v1 decision before reconciling it with the journal.

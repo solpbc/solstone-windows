@@ -18,7 +18,6 @@ use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, System
 use observer_model::{
     should_emit, AppPhase, HealthDump, PauseReason, SourceKind, SourceState, SyncSnapshot,
 };
-use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::{CredentialAccess, UploaderSlot};
 use tauri::{Emitter, Manager};
