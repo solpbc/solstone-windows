@@ -1345,8 +1345,16 @@ async fn observer_contract_authority_direct_v3_operations_have_identical_mtls_on
 
 #[tokio::test]
 async fn observer_contract_authority_direct_status_vectors_use_documented_http_mapping() {
+    // Only the upload-status vectors carry an HTTP status mapping for the
+    // ingest POST; listing-collision and refusal vectors are covered by the
+    // typed-decoder conformance tests.
+    let mut exercised = 0;
     for vector_id in xtask::observer_contract::VECTOR_IDS {
         let vector = authority_vector(vector_id);
+        if vector["decision"]["kind"] != "ingest_status" {
+            continue;
+        }
+        exercised += 1;
         let fixture = authority_fixture(vector["fixture_id"].as_str().unwrap());
         let status = vector["decision"]["http_status"].as_u64().unwrap();
         let reason = match status {
@@ -1391,6 +1399,7 @@ async fn observer_contract_authority_direct_status_vectors_use_documented_http_m
             &["status.wav"]
         ));
     }
+    assert_eq!(exercised, 5);
 }
 
 #[tokio::test]
