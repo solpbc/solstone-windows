@@ -806,7 +806,11 @@ impl PairedState {
         {
             return Err(StorageError::Transport(TransportError::CredentialMalformed));
         }
-        std::fs::File::open(&tmp)
+        // A flush needs a writable handle; Windows refuses it on a read-only one.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&tmp)
             .and_then(|file| file.sync_all())
             .map_err(StorageError::DurabilityUncertain)?;
         publish_staged_file(&tmp, path)?;
