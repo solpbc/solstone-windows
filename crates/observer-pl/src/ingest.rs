@@ -661,7 +661,10 @@ pub fn validate_segments_envelope(segments: &SegmentsEnvelope) -> Result<(), Cus
                 key: item.key.clone(),
             });
         }
-        if item.segment.is_some() != item.stream.is_some() {
+        if item.segment.is_some() != item.stream.is_some()
+            || item.segment.as_deref().is_some_and(str::is_empty)
+            || item.stream.as_deref().is_some_and(str::is_empty)
+        {
             return Err(CustodyFailure::PhysicalCoordinatesMalformed {
                 key: item.key.clone(),
             });

@@ -49,21 +49,16 @@ impl OwnerFileSystem for SystemOwnerFileSystem {
 }
 
 const COMPLETE_FILE: &str = "owner-adoption-v1.json";
-const LEGACY_COMPLETE_BYTES: &[u8] =
-    b"{\"schema\":\"solstone.owner-adoption.v1\",\"source\":\"legacy-localappdata-solstone\"}\n";
 const COMPLETE_SCHEMA: &str = "solstone.owner-adoption.v1";
 const COMPLETE_SOURCE: &str = "legacy-localappdata-solstone";
+/// Every file a pre-separation release could have written at the legacy root.
+/// Migration, key-recovery and refused-pairing records only ever exist under
+/// the owner root, so they are not adoption inventory.
 const ROOT_FILES: &[&str] = &[
     "pairing.json",
     "pairing.json.tmp",
     "pairing-answer.json",
     "pairing-answer.json.tmp",
-    "pairing-refusal.json",
-    "pairing-refusal.json.tmp",
-    "pairing-migration.json",
-    "pairing-migration.json.tmp",
-    "pairing-key-recovery.bin",
-    "pairing-key-recovery.bin.tmp",
     "journal-version.json",
     "journal-version.json.tmp",
     "exclusions.json",
@@ -153,9 +148,6 @@ fn adopt_between(source: &Path, destination: &Path) -> io::Result<PathBuf> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum CompletionInventory {
-    /// Markers written before the inventory field was added. Recover only
-    /// source files that are still known and byte-identical at the destination.
-    Legacy,
     Exact(Vec<PathBuf>),
 }
 
@@ -186,9 +178,6 @@ fn completion_marker_bytes(files: &[PathBuf]) -> io::Result<Vec<u8>> {
 }
 
 fn parse_completion_marker(bytes: &[u8]) -> io::Result<CompletionInventory> {
-    if bytes == LEGACY_COMPLETE_BYTES {
-        return Ok(CompletionInventory::Legacy);
-    }
     let marker: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if marker.get("schema").and_then(serde_json::Value::as_str) != Some(COMPLETE_SCHEMA)
@@ -700,8 +689,9 @@ fn same_file_bytes(source: &mut File, destination: &mut File) -> io::Result<bool
     let mut source_buffer = [0; 64 * 1024];
     let mut destination_buffer = [0; 64 * 1024];
     loop {
-        let source_len = source.read(&mut source_buffer)?;
-        let destination_len = destination.read(&mut destination_buffer)?;
+        // A short read is not a mismatch: fill each buffer to the same length.
+        let source_len = fill_buffer(source, &mut source_buffer)?;
+        let destination_len = fill_buffer(destination, &mut destination_buffer)?;
         if source_len != destination_len
             || source_buffer[..source_len] != destination_buffer[..destination_len]
         {
@@ -711,6 +701,19 @@ fn same_file_bytes(source: &mut File, destination: &mut File) -> io::Result<bool
             return Ok(true);
         }
     }
+}
+
+fn fill_buffer(file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
 }
 
 fn is_reparse_point(metadata: &Metadata) -> bool {
@@ -1152,34 +1155,11 @@ fn cleanup_completed_with(
             "owner cleanup requires its exact durable completion marker",
         ));
     }
-    let files = match inventory {
-        CompletionInventory::Exact(files) => files.clone(),
-        CompletionInventory::Legacy => {
-            let mut recovered = Vec::new();
-            for relative in known_files(source)? {
-                let Some(source_metadata) = safe_metadata(source, &relative)? else {
-                    continue;
-                };
-                if !is_regular_non_reparse(&source_metadata) {
-                    return Err(inventory_error(&source.join(&relative)));
-                }
-                let Some(destination_metadata) = safe_metadata(destination, &relative)? else {
-                    continue;
-                };
-                if !is_regular_non_reparse(&destination_metadata) {
-                    return Err(inventory_error(&destination.join(&relative)));
-                }
-                if same_source_bytes(source_fs, source, &relative, destination, &relative)? {
-                    recovered.push(relative);
-                }
-            }
-            recovered
-        }
-    };
+    let CompletionInventory::Exact(files) = inventory;
 
     let mut removed = 0;
     let mut first_error = None;
-    for relative in &files {
+    for relative in files {
         let source_path = source.join(relative);
         let destination_path = destination.join(relative);
         let Some(source_metadata) = safe_metadata(source, relative)? else {
@@ -1216,7 +1196,7 @@ fn cleanup_completed_with(
     }
     maybe_inject_cleanup_failure(removed)?;
 
-    if let Err(error) = remove_empty_inventory_dirs(source_fs, source, &files) {
+    if let Err(error) = remove_empty_inventory_dirs(source_fs, source, files) {
         if first_error.is_none() {
             first_error = Some(error);
         }
@@ -1595,9 +1575,7 @@ mod tests {
         );
         assert!(source.join("logs").is_dir());
         let marker = fs::read(destination.join(COMPLETE_FILE)).unwrap();
-        let CompletionInventory::Exact(adopted) = parse_completion_marker(&marker).unwrap() else {
-            panic!("new completion marker must contain its exact source inventory")
-        };
+        let CompletionInventory::Exact(adopted) = parse_completion_marker(&marker).unwrap();
         assert!(adopted.contains(&PathBuf::from("pairing.json")));
         assert!(adopted.contains(&PathBuf::from("segments/7/video.mp4")));
         assert!(!adopted.contains(&PathBuf::from("packages/.betaId")));
@@ -1810,30 +1788,6 @@ mod tests {
         assert!(destination.join(COMPLETE_FILE).is_file());
         assert!(!temp.exists());
         assert!(!source.join("pairing.json").exists());
-        let _ = fs::remove_dir_all(source);
-        let _ = fs::remove_dir_all(destination);
-    }
-
-    #[test]
-    fn legacy_completion_marker_recovers_only_matching_known_source_files() {
-        let source = temp_root("legacy-marker-source");
-        let destination = temp_root("legacy-marker-destination");
-        fs::create_dir_all(&source).unwrap();
-        fs::create_dir_all(&destination).unwrap();
-        fs::write(source.join("pairing.json"), b"adopted pairing").unwrap();
-        fs::write(source.join("pause.txt"), b"changed after adoption").unwrap();
-        fs::write(destination.join("pairing.json"), b"adopted pairing").unwrap();
-        fs::write(destination.join(COMPLETE_FILE), LEGACY_COMPLETE_BYTES).unwrap();
-
-        assert_eq!(adopt_between(&source, &destination).unwrap(), destination);
-        assert!(!source.join("pairing.json").exists());
-        assert_eq!(
-            fs::read(source.join("pause.txt")).unwrap(),
-            b"changed after adoption"
-        );
-        assert!(!destination.join("pause.txt").exists());
-        assert_eq!(existing_root_between(&source, &destination), destination);
-
         let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(destination);
     }

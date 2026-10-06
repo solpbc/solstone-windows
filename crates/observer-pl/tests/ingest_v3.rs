@@ -676,18 +676,28 @@ fn listing_reconciliation_rejects_duplicate_keys_and_incomplete_physical_coordin
 
     segments.items.truncate(1);
     segments.total = 1;
-    segments.items[0].stream = None;
-    assert!(matches!(
-        prove_custody(
-            &manifest,
-            &day_manifest,
-            &segments,
-            "20260820",
-            "120000_10~browser_a",
-            &local
-        ),
-        CustodyProof::Unconfirmed(CustodyFailure::PhysicalCoordinatesMalformed { .. })
-    ));
+    for (segment, stream) in [
+        (Some("120000_10"), None),
+        (Some("120000_10"), Some("")),
+        (Some(""), Some("browser_a")),
+    ] {
+        segments.items[0].segment = segment.map(str::to_owned);
+        segments.items[0].stream = stream.map(str::to_owned);
+        assert!(
+            matches!(
+                prove_custody(
+                    &manifest,
+                    &day_manifest,
+                    &segments,
+                    "20260820",
+                    "120000_10~browser_a",
+                    &local
+                ),
+                CustodyProof::Unconfirmed(CustodyFailure::PhysicalCoordinatesMalformed { .. })
+            ),
+            "{segment:?}/{stream:?}"
+        );
+    }
 }
 
 #[test]
