@@ -114,7 +114,6 @@ pub enum MigrationPhase {
     Baseline,
     RequestPrepared,
     ResponseRecorded,
-    CredentialPublished,
     DecisionUnknown,
     Admitted,
 }
@@ -638,6 +637,9 @@ fn answer_can_be_rebound(
         && (current.confirmed == old_binding || current.confirmed == new_binding)
 }
 
+/// The relay device token is issued to the journal instance, not to a client
+/// certificate (its claims name `instance_id`, never a CID), so a rekey that
+/// returns no `relay_access` keeps the carried token with the new certificate.
 fn publish_migrated_credential(
     latest: &mut Credential,
     candidate: Credential,
@@ -888,16 +890,15 @@ pub fn commit_baseline_after_answer(
     };
     let mut record = load(state_path)?
         .unwrap_or_else(|| MigrationRecord::baseline(Some(marker_value.clone()), marker.clone()));
+    // A prepared or in-flight move completes only through its rekey; adopting
+    // the current marker as the baseline here would silently drop the move.
+    if !record.is_send_admitted() {
+        return Ok(());
+    }
     record.baseline_marker = Some(marker_value.clone());
     record.marker_probe = marker.clone();
     record.pairing_generation = pairing_generation(&credential.client_cert_pem);
     record.access_mutation_generation = paired.access_mutation_generation;
-    if record.phase == MigrationPhase::CredentialPublished && record.answer_published {
-        record.phase = MigrationPhase::Admitted;
-        record.fresh_pair_offer_pending = true;
-    } else if record.phase == MigrationPhase::RequestPrepared {
-        record.phase = MigrationPhase::Baseline;
-    }
     save(state_path, &mut record)
 }
 
@@ -1592,6 +1593,210 @@ mod tests {
         assert_eq!(view_after.revision, 2);
         dismiss_fresh_pair_offer(&state_path, &binding, generation, view_after.revision).unwrap();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    const MIGRATION_SCHEMA_BYTES: &str =
+        include_str!("../../../contracts/device-migration/bundle/v1.schema.json");
+    const MIGRATION_VECTOR_BYTES: &str =
+        include_str!("../../../contracts/device-migration/bundle/v1.vectors.json");
+    const MIGRATION_ADOPTION_BYTES: &str =
+        include_str!("../../../contracts/device-migration/adoption.json");
+
+    #[test]
+    fn pinned_migration_vectors_pass_through_the_typed_codecs() {
+        let adoption: Value = serde_json::from_str(MIGRATION_ADOPTION_BYTES).unwrap();
+        let pinned = |path: &str| -> String {
+            adoption["bundle_files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|file| file["path"] == path)
+                .and_then(|file| file["sha256"].as_str())
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(
+            spl_core::ca::sha256_hex(MIGRATION_SCHEMA_BYTES.as_bytes()),
+            pinned("v1.schema.json")
+        );
+        assert_eq!(
+            spl_core::ca::sha256_hex(MIGRATION_VECTOR_BYTES.as_bytes()),
+            pinned("v1.vectors.json")
+        );
+        let vectors: Value = serde_json::from_str(MIGRATION_VECTOR_BYTES).unwrap();
+        let vectors = &vectors["vectors"];
+
+        // Request: the typed codec reproduces the exact field set; replay
+        // validation binds it to this client's platform.
+        let request: RekeyRequest =
+            serde_json::from_value(vectors["rekey_request"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            vectors["rekey_request"]
+        );
+        assert!(validate_rekey_request(&request).is_err());
+        let mut windows_request = request.clone();
+        windows_request.platform = "windows".to_owned();
+        validate_rekey_request(&windows_request).unwrap();
+
+        let dir =
+            std::env::temp_dir().join(format!("test-migration-vectors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("pairing.json");
+        let prepared = || {
+            // Each replay starts from a fresh durable record.
+            let _ = std::fs::remove_file(path_for_state(&state_path));
+            let mut record = MigrationRecord::baseline(None, available("marker"));
+            record.phase = MigrationPhase::RequestPrepared;
+            record.request = Some(windows_request.clone());
+            record.old_cid = vectors["rekey_created_201"]["body"]["previous_cid"]
+                .as_str()
+                .map(str::to_owned);
+            record
+        };
+
+        // Responses: every positive envelope is recorded as pending for the
+        // new CID; version, operation and lineage mismatches are refused.
+        for name in [
+            "rekey_created_201",
+            "rekey_replay_200",
+            "rekey_without_network_metadata",
+        ] {
+            let vector = &vectors[name];
+            let status = u16::try_from(vector["status"].as_u64().unwrap()).unwrap();
+            let body = serde_json::to_vec(&vector["body"]).unwrap();
+            let mut record = prepared();
+            let response = record_response(&state_path, &mut record, status, &body).unwrap();
+            assert_eq!(response.state, ServerState::Pending, "{name}");
+            assert_eq!(record.phase, MigrationPhase::ResponseRecorded, "{name}");
+            assert_eq!(
+                record.new_cid.as_deref(),
+                vector["body"]["cid"].as_str(),
+                "{name}"
+            );
+
+            for (field, altered) in [
+                ("protocol_version", Value::from(2)),
+                (
+                    "operation_id",
+                    Value::from("123e4567-e89b-42d3-a456-426614174999"),
+                ),
+                (
+                    "previous_cid",
+                    Value::from(format!("sha256:{}", "e".repeat(64))),
+                ),
+                ("state", Value::from("new_device")),
+            ] {
+                let mut altered_body = vector["body"].clone();
+                altered_body[field] = altered;
+                let mut record = prepared();
+                assert!(
+                    matches!(
+                        record_response(
+                            &state_path,
+                            &mut record,
+                            status,
+                            &serde_json::to_vec(&altered_body).unwrap(),
+                        ),
+                        Err(TransportError::CredentialMalformed)
+                    ),
+                    "{name} with altered {field}"
+                );
+                assert_eq!(record.phase, MigrationPhase::RequestPrepared);
+            }
+            let mut unknown_field = vector["body"].clone();
+            unknown_field["extra"] = Value::from(true);
+            let mut record = prepared();
+            assert!(matches!(
+                record_response(
+                    &state_path,
+                    &mut record,
+                    status,
+                    &serde_json::to_vec(&unknown_field).unwrap(),
+                ),
+                Err(TransportError::CredentialMalformed)
+            ));
+        }
+
+        for state in vectors["migration_states"].as_array().unwrap() {
+            let decoded: MigrationStateResponse = serde_json::from_value(state.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&decoded).unwrap(), *state);
+        }
+        let replace: DecisionRequest =
+            serde_json::from_value(vectors["replace_request"].clone()).unwrap();
+        assert_eq!(replace.choice, Choice::ReplaceDevice);
+        assert_eq!(
+            serde_json::to_value(&replace).unwrap(),
+            vectors["replace_request"]
+        );
+        let decision: DecisionResponse =
+            serde_json::from_value(vectors["decision_response"].clone()).unwrap();
+        assert_eq!(decision.state, ServerState::ReplacedDevice);
+        assert_eq!(
+            serde_json::to_value(&decision).unwrap(),
+            vectors["decision_response"]
+        );
+
+        // Negative envelopes never record a response.
+        for negative in vectors["negative"].as_array().unwrap() {
+            let status = u16::try_from(negative["status"].as_u64().unwrap()).unwrap();
+            let body = serde_json::to_vec(&serde_json::json!({
+                "reason_code": negative["reason_code"],
+            }))
+            .unwrap();
+            let mut record = prepared();
+            assert!(matches!(
+                record_response(&state_path, &mut record, status, &body),
+                Err(TransportError::Rejected { status: refused, .. }) if refused == status
+            ));
+            assert_eq!(record.phase, MigrationPhase::RequestPrepared);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn confirmed_answer_does_not_rebaseline_a_prepared_move() {
+        let dir = std::env::temp_dir().join(format!(
+            "test-prepared-move-baseline-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("pairing.json");
+        let credential = fixture_credential();
+        let paired = PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        };
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: JournalIdentity::from_credential(&credential).client_cert_sha256,
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+        let mut record = MigrationRecord::baseline(
+            Some(marker("old", MarkerSource::PublisherSystemId)),
+            available("old"),
+        );
+        record.phase = MigrationPhase::RequestPrepared;
+        save(&state_path, &mut record).unwrap();
+
+        commit_baseline_after_answer(&state_path, &available("new"), &paired).unwrap();
+
+        let after = load(&state_path).unwrap().unwrap();
+        assert_eq!(after.phase, MigrationPhase::RequestPrepared);
+        assert_eq!(
+            after.baseline_marker,
+            Some(marker("old", MarkerSource::PublisherSystemId))
+        );
+        assert_eq!(
+            marker_action(Some(&after), &available("new")),
+            MarkerAction::StartOrResumeMigration
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

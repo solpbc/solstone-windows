@@ -175,6 +175,7 @@ ui/                    WebView2 front-end (vanilla TS + Vite); pure renderer
 xtask/                 cargo xtask: contract [--check], purity-check, rust-notices check, version-gate, package, dev
 contracts/observer-client/ test-only vendored authority bytes + checked consumer adoption metadata
 contracts/spl-pair-link/   test-only vendored SPL pair-link definition bundle + sibling-style adoption record
+contracts/device-migration/ test-only vendored journal device-migration v1 schema + vectors, with adoption record
 harness/               net48 FlaUI/UIA smoke driver (not a cargo member)
 packaging/             Velopack config + hooks/ + signing/ seam
 scripts/               PowerShell impls behind the make verbs
