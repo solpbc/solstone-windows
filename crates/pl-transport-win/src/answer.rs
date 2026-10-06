@@ -4,7 +4,8 @@
 //! Durable answer file for journal-mark confirmation.
 //!
 //! Stores the honest confirmation and rejection records for paired journals.
-//! Never deleted by the app once written; uses atomic stage-sync-rename.
+//! The answer record remains in owner storage, while successful retirement
+//! transactions may reset its contents; writes use atomic stage-sync-rename.
 
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
