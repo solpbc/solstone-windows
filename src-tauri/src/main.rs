@@ -98,6 +98,12 @@ fn main() -> ExitCode {
                 "startup refused: owner data adoption failed; source data retained ({})",
                 error.kind()
             );
+            if !is_integration {
+                platform_win::show_startup_refusal(
+                    "solstone couldn't start",
+                    "the solstone app couldn't move your saved settings and journal connection to a new folder, so it didn't start. nothing was removed. start the solstone app again, or email support@solstone.app and we'll help.",
+                );
+            }
             return ExitCode::FAILURE;
         }
     }

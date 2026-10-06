@@ -340,6 +340,37 @@ pub fn acquire_single_instance(name: &str) -> InstanceLock {
     }
 }
 
+/// Show a blocking owner-visible notice before a startup refusal exits. The
+/// app binary has no console, so a diagnostic on stderr alone would leave the
+/// owner with a silent non-start.
+#[cfg(not(windows))]
+pub fn show_startup_refusal(title: &str, body: &str) {
+    eprintln!("{title}: {body}");
+}
+
+/// Show a blocking owner-visible notice before a startup refusal exits.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn show_startup_refusal(title: &str, body: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+    };
+
+    let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    let body: Vec<u16> = body.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: both strings are NUL-terminated and live through the call; no
+    // owner window is supplied and nothing is retained after it returns.
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(body.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
+    }
+}
+
 /// Read-only probe for application process presence via session mutex and process snapshot.
 #[cfg(not(windows))]
 pub fn probe_app_presence(

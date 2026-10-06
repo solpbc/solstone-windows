@@ -159,6 +159,12 @@ const APPROVED_NODES: &[ApprovedNode] = &[
     },
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::Fn,
+        name: "show_startup_refusal",
+        owner: None,
+    },
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::Mod,
         name: "win_presence_tests",
         owner: None,
