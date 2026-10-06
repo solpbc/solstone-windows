@@ -16,6 +16,38 @@ std::thread_local! {
     static CLEANUP_FAIL_AFTER_REMOVALS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
+trait OwnerFileSystem {
+    fn open_source_file(&self, root: &Path, relative: &Path) -> io::Result<File>;
+    fn remove_source_file(
+        &self,
+        root: &Path,
+        relative: &Path,
+        verified_destination_root: &Path,
+    ) -> io::Result<()>;
+    fn remove_empty_source_dir(&self, root: &Path, relative: &Path) -> io::Result<()>;
+}
+
+struct SystemOwnerFileSystem;
+
+impl OwnerFileSystem for SystemOwnerFileSystem {
+    fn open_source_file(&self, root: &Path, relative: &Path) -> io::Result<File> {
+        open_source_file(root, relative)
+    }
+
+    fn remove_source_file(
+        &self,
+        root: &Path,
+        relative: &Path,
+        verified_destination_root: &Path,
+    ) -> io::Result<()> {
+        remove_source_file(root, relative, verified_destination_root)
+    }
+
+    fn remove_empty_source_dir(&self, root: &Path, relative: &Path) -> io::Result<()> {
+        remove_empty_source_dir(root, relative)
+    }
+}
+
 const COMPLETE_FILE: &str = "owner-adoption-v1.json";
 const LEGACY_COMPLETE_BYTES: &[u8] =
     b"{\"schema\":\"solstone.owner-adoption.v1\",\"source\":\"legacy-localappdata-solstone\"}\n";
@@ -473,6 +505,15 @@ fn inventory_error(path: &Path) -> io::Error {
 }
 
 fn copy_exact_file(source: &Path, destination: &Path, relative: &Path) -> io::Result<()> {
+    copy_exact_file_with(&SystemOwnerFileSystem, source, destination, relative)
+}
+
+fn copy_exact_file_with(
+    source_fs: &dyn OwnerFileSystem,
+    source: &Path,
+    destination: &Path,
+    relative: &Path,
+) -> io::Result<()> {
     let from = source.join(relative);
     let to = destination.join(relative);
     let metadata = fs::symlink_metadata(&from)?;
@@ -482,7 +523,7 @@ fn copy_exact_file(source: &Path, destination: &Path, relative: &Path) -> io::Re
     ensure_destination_parent(destination, relative)?;
     match fs::symlink_metadata(&to) {
         Ok(metadata) if metadata.file_type().is_file() => {
-            return if same_bytes(&from, &to)? {
+            return if same_source_bytes(source_fs, source, relative, destination, relative)? {
                 Ok(())
             } else {
                 Err(io::Error::new(
@@ -496,21 +537,23 @@ fn copy_exact_file(source: &Path, destination: &Path, relative: &Path) -> io::Re
         Err(error) => return Err(error),
     }
 
-    let tmp = to.with_file_name(format!(".owner-adopt-{}.tmp", relative_key(relative)));
+    let temp_name = format!(".owner-adopt-{}.tmp", relative_key(relative));
+    let temp_relative = relative.with_file_name(&temp_name);
+    let tmp = to.with_file_name(temp_name);
     match fs::symlink_metadata(&tmp) {
         Ok(metadata) if metadata.file_type().is_file() => {
-            if !same_bytes(&from, &tmp)? {
+            if !same_source_bytes(source_fs, source, relative, destination, &temp_relative)? {
                 fs::remove_file(&tmp)?;
-                copy_source_to_temp(&from, &tmp)?;
+                copy_source_to_temp(source_fs, source, relative, &tmp)?;
             }
         }
         Ok(_) => return Err(inventory_error(&tmp)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            copy_source_to_temp(&from, &tmp)?;
+            copy_source_to_temp(source_fs, source, relative, &tmp)?;
         }
         Err(error) => return Err(error),
     }
-    if !same_bytes(&from, &tmp)? {
+    if !same_source_bytes(source_fs, source, relative, destination, &temp_relative)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("owner adoption readback mismatch at {}", relative.display()),
@@ -519,7 +562,9 @@ fn copy_exact_file(source: &Path, destination: &Path, relative: &Path) -> io::Re
     match publish_exact_file(&tmp, &to) {
         Ok(()) => {}
         Err(error) => {
-            if !regular_file_exists(&to)? || !same_bytes(&from, &to)? {
+            if !regular_file_exists(&to)?
+                || !same_source_bytes(source_fs, source, relative, destination, relative)?
+            {
                 return Err(error);
             }
         }
@@ -528,7 +573,7 @@ fn copy_exact_file(source: &Path, destination: &Path, relative: &Path) -> io::Re
         fs::remove_file(&tmp)?;
         sync_parent(&to)?;
     }
-    if !same_bytes(&from, &to)? {
+    if !same_source_bytes(source_fs, source, relative, destination, relative)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -565,8 +610,13 @@ fn ensure_destination_parent(destination: &Path, relative: &Path) -> io::Result<
     Ok(())
 }
 
-fn copy_source_to_temp(source: &Path, temp: &Path) -> io::Result<()> {
-    let mut input = File::open(source)?;
+fn copy_source_to_temp(
+    source_fs: &dyn OwnerFileSystem,
+    root: &Path,
+    relative: &Path,
+    temp: &Path,
+) -> io::Result<()> {
+    let mut input = source_fs.open_source_file(root, relative)?;
     let mut output = OpenOptions::new().write(true).create_new(true).open(temp)?;
     io::copy(&mut input, &mut output)?;
     output.sync_all()
@@ -634,18 +684,30 @@ fn relative_key(path: &Path) -> String {
         .collect()
 }
 
-fn same_bytes(left: &Path, right: &Path) -> io::Result<bool> {
-    let mut a = File::open(left)?;
-    let mut b = File::open(right)?;
-    let mut ab = [0; 64 * 1024];
-    let mut bb = [0; 64 * 1024];
+fn same_source_bytes(
+    source_fs: &dyn OwnerFileSystem,
+    root: &Path,
+    source_relative: &Path,
+    destination_root: &Path,
+    destination_relative: &Path,
+) -> io::Result<bool> {
+    let mut source = source_fs.open_source_file(root, source_relative)?;
+    let mut destination = source_fs.open_source_file(destination_root, destination_relative)?;
+    same_file_bytes(&mut source, &mut destination)
+}
+
+fn same_file_bytes(source: &mut File, destination: &mut File) -> io::Result<bool> {
+    let mut source_buffer = [0; 64 * 1024];
+    let mut destination_buffer = [0; 64 * 1024];
     loop {
-        let an = a.read(&mut ab)?;
-        let bn = b.read(&mut bb)?;
-        if an != bn || ab[..an] != bb[..bn] {
+        let source_len = source.read(&mut source_buffer)?;
+        let destination_len = destination.read(&mut destination_buffer)?;
+        if source_len != destination_len
+            || source_buffer[..source_len] != destination_buffer[..destination_len]
+        {
             return Ok(false);
         }
-        if an == 0 {
+        if source_len == 0 {
             return Ok(true);
         }
     }
@@ -671,6 +733,366 @@ fn is_regular_non_reparse(metadata: &Metadata) -> bool {
 
 fn is_directory_non_reparse(metadata: &Metadata) -> bool {
     metadata.is_dir() && !is_reparse_point(metadata)
+}
+
+#[cfg(not(windows))]
+fn open_source_file(root: &Path, relative: &Path) -> io::Result<File> {
+    let metadata = safe_metadata(root, relative)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "owner source file disappeared"))?;
+    if !is_regular_non_reparse(&metadata) {
+        return Err(inventory_error(&root.join(relative)));
+    }
+    File::open(root.join(relative))
+}
+
+#[cfg(windows)]
+fn open_source_file(root: &Path, relative: &Path) -> io::Result<File> {
+    open_windows_source_file(root, relative)
+}
+
+#[cfg(not(windows))]
+fn remove_source_file(
+    root: &Path,
+    relative: &Path,
+    verified_destination_root: &Path,
+) -> io::Result<()> {
+    let metadata = safe_metadata(root, relative)?;
+    let Some(metadata) = metadata else {
+        return Ok(());
+    };
+    if !is_regular_non_reparse(&metadata) {
+        return Err(inventory_error(&root.join(relative)));
+    }
+    let mut source = open_source_file(root, relative)?;
+    let mut destination = open_source_file(verified_destination_root, relative)?;
+    if !same_file_bytes(&mut source, &mut destination)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "owner source changed after verification",
+        ));
+    }
+    fs::remove_file(root.join(relative))
+}
+
+#[cfg(windows)]
+fn remove_source_file(
+    root: &Path,
+    relative: &Path,
+    verified_destination_root: &Path,
+) -> io::Result<()> {
+    remove_windows_source_file(root, relative, verified_destination_root)
+}
+
+#[cfg(not(windows))]
+fn remove_empty_source_dir(root: &Path, relative: &Path) -> io::Result<()> {
+    let Some(metadata) = safe_metadata(root, relative)? else {
+        return Ok(());
+    };
+    if !is_directory_non_reparse(&metadata) {
+        return Err(inventory_error(&root.join(relative)));
+    }
+    if fs::read_dir(root.join(relative))?.next().is_some() {
+        return Ok(());
+    }
+    match fs::remove_dir(root.join(relative)) {
+        Ok(()) => sync_parent(&root.join(relative)),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                || error.kind() == io::ErrorKind::DirectoryNotEmpty =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn remove_empty_source_dir(root: &Path, relative: &Path) -> io::Result<()> {
+    remove_windows_empty_source_dir(root, relative)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn open_windows_source_file(root: &Path, relative: &Path) -> io::Result<File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GENERIC_READ, HANDLE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_MODE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    validate_relative_components(relative)?;
+    let mut guards = windows_parent_guards(root, relative)?;
+    let path = root.join(relative);
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: path is NUL-terminated and all handles remain live through the
+    // open. OPEN_REPARSE_POINT prevents following a final reparse point.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            GENERIC_READ.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0),
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(FILE_FLAG_OPEN_REPARSE_POINT.0),
+            HANDLE::default(),
+        )
+    }
+    .map_err(windows_error)?;
+    let file = unsafe { File::from_raw_handle(handle.0 as *mut _) };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns the valid handle and `info` is writable for the call.
+    unsafe { GetFileInformationByHandle(handle, &mut info) }.map_err(windows_error)?;
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
+    {
+        return Err(inventory_error(&path));
+    }
+    guards.clear();
+    Ok(file)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn remove_windows_source_file(
+    root: &Path,
+    relative: &Path,
+    verified_destination_root: &Path,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{BOOLEAN, GENERIC_READ, HANDLE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_DISPOSITION_INFO, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, OPEN_EXISTING,
+    };
+
+    validate_relative_components(relative)?;
+    let mut guards = windows_parent_guards(root, relative)?;
+    let path = root.join(relative);
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: the validated root and ancestor handles stay open and the final
+    // path is opened as a reparse object rather than followed.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            DELETE.0 | GENERIC_READ.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_DELETE.0),
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(FILE_FLAG_OPEN_REPARSE_POINT.0),
+            HANDLE::default(),
+        )
+    }
+    .map_err(windows_error)?;
+    let mut file = unsafe { File::from_raw_handle(handle.0 as *mut _) };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns a valid handle and `info` is writable for the call.
+    unsafe { GetFileInformationByHandle(handle, &mut info) }.map_err(windows_error)?;
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
+    {
+        return Err(inventory_error(&path));
+    }
+    let mut destination = open_windows_source_file(verified_destination_root, relative)?;
+    if !same_file_bytes(&mut file, &mut destination)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "owner source changed after verification",
+        ));
+    }
+    let disposition = FILE_DISPOSITION_INFO {
+        DeleteFile: BOOLEAN(1),
+    };
+    // SAFETY: the disposition structure has the exact Win32 layout for the
+    // FileDispositionInfo class and remains live through the call.
+    unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    }
+    .map_err(windows_error)?;
+    guards.clear();
+    drop(file);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn remove_windows_empty_source_dir(root: &Path, relative: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{BOOLEAN, HANDLE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FileDispositionInfo, GetFileInformationByHandle, SetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_DISPOSITION_INFO, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_MODE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    validate_relative_components(relative)?;
+    let mut guards = windows_parent_guards(root, relative)?;
+    let path = root.join(relative);
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: the validated ancestor handles remain live and the final entry
+    // is opened without following a reparse point.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            DELETE.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0),
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(
+                FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0,
+            ),
+            HANDLE::default(),
+        )
+    }
+    .map_err(windows_error)?;
+    let directory = unsafe { File::from_raw_handle(handle.0 as *mut _) };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `directory` owns a valid handle and `info` is writable.
+    unsafe { GetFileInformationByHandle(handle, &mut info) }.map_err(windows_error)?;
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+    {
+        return Err(inventory_error(&path));
+    }
+    match fs::read_dir(&path)?.next() {
+        Some(_) => return Ok(()),
+        None => {}
+    }
+    let disposition = FILE_DISPOSITION_INFO {
+        DeleteFile: BOOLEAN(1),
+    };
+    // SAFETY: the disposition structure is valid for FileDispositionInfo.
+    unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    }
+    .map_err(windows_error)?;
+    guards.clear();
+    drop(directory);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_parent_guards(root: &Path, relative: &Path) -> io::Result<Vec<File>> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let absolute_root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(root)
+    };
+    let mut directories = Vec::new();
+    let mut current = PathBuf::new();
+    for component in absolute_root.components() {
+        current.push(component.as_os_str());
+        if !current.is_absolute() || current == Path::new("\\") {
+            continue;
+        }
+        if matches!(component, std::path::Component::Normal(_))
+            || matches!(component, std::path::Component::RootDir)
+        {
+            let wide: Vec<u16> = current.as_os_str().encode_wide().chain(Some(0)).collect();
+            // SAFETY: each absolute ancestor is NUL-terminated and is opened
+            // without following a final reparse point. Omitting FILE_SHARE_DELETE
+            // pins its name until the protected child file handle is opened.
+            let handle = unsafe {
+                CreateFileW(
+                    PCWSTR(wide.as_ptr()),
+                    FILE_READ_ATTRIBUTES.0,
+                    FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0),
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(
+                        FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0,
+                    ),
+                    HANDLE::default(),
+                )
+            }
+            .map_err(windows_error)?;
+            let guard = unsafe { File::from_raw_handle(handle.0 as *mut _) };
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: `guard` owns a valid directory handle and info is writable.
+            unsafe { GetFileInformationByHandle(handle, &mut info) }.map_err(windows_error)?;
+            if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+                || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+            {
+                return Err(inventory_error(&current));
+            }
+            directories.push(guard);
+        }
+    }
+    let components: Vec<_> = relative.components().collect();
+    let mut parent = absolute_root;
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        let std::path::Component::Normal(name) = component else {
+            return Err(inventory_error(relative));
+        };
+        parent.push(name);
+        let wide: Vec<u16> = parent.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: parent was built from validated normal components. Opening
+        // with OPEN_REPARSE_POINT plus the attribute check refuses a swapped link.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                FILE_READ_ATTRIBUTES.0,
+                FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0),
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(
+                    FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0,
+                ),
+                HANDLE::default(),
+            )
+        }
+        .map_err(windows_error)?;
+        let guard = unsafe { File::from_raw_handle(handle.0 as *mut _) };
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `guard` owns a valid handle and info is writable.
+        unsafe { GetFileInformationByHandle(handle, &mut info) }.map_err(windows_error)?;
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+            || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
+        {
+            return Err(inventory_error(&parent));
+        }
+        directories.push(guard);
+    }
+    Ok(directories)
+}
+
+#[cfg(windows)]
+fn windows_error(error: windows::core::Error) -> io::Error {
+    io::Error::other(error.to_string())
 }
 
 fn safe_metadata(root: &Path, relative: &Path) -> io::Result<Option<Metadata>> {
@@ -711,6 +1133,15 @@ fn cleanup_completed(
     destination: &Path,
     inventory: &CompletionInventory,
 ) -> io::Result<()> {
+    cleanup_completed_with(&SystemOwnerFileSystem, source, destination, inventory)
+}
+
+fn cleanup_completed_with(
+    source_fs: &dyn OwnerFileSystem,
+    source: &Path,
+    destination: &Path,
+    inventory: &CompletionInventory,
+) -> io::Result<()> {
     let marker_path = destination.join(COMPLETE_FILE);
     let marker_metadata = fs::symlink_metadata(&marker_path)?;
     if !is_regular_non_reparse(&marker_metadata)
@@ -738,7 +1169,7 @@ fn cleanup_completed(
                 if !is_regular_non_reparse(&destination_metadata) {
                     return Err(inventory_error(&destination.join(&relative)));
                 }
-                if same_bytes(&source.join(&relative), &destination.join(&relative))? {
+                if same_source_bytes(source_fs, source, &relative, destination, &relative)? {
                     recovered.push(relative);
                 }
             }
@@ -769,7 +1200,7 @@ fn cleanup_completed(
         if !is_regular_non_reparse(&destination_metadata) {
             return Err(inventory_error(&destination_path));
         }
-        if !same_bytes(&source_path, &destination_path)? {
+        if !same_source_bytes(source_fs, source, relative, destination, relative)? {
             if first_error.is_none() {
                 first_error = Some(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -779,13 +1210,13 @@ fn cleanup_completed(
             continue;
         }
         maybe_inject_cleanup_failure(removed)?;
-        fs::remove_file(&source_path)?;
+        source_fs.remove_source_file(source, relative, destination)?;
         sync_parent(&source_path)?;
         removed += 1;
     }
     maybe_inject_cleanup_failure(removed)?;
 
-    if let Err(error) = remove_empty_inventory_dirs(source, &files) {
+    if let Err(error) = remove_empty_inventory_dirs(source_fs, source, &files) {
         if first_error.is_none() {
             first_error = Some(error);
         }
@@ -806,7 +1237,11 @@ fn maybe_inject_cleanup_failure(removed: usize) -> io::Result<()> {
     Ok(())
 }
 
-fn remove_empty_inventory_dirs(source: &Path, files: &[PathBuf]) -> io::Result<()> {
+fn remove_empty_inventory_dirs(
+    source_fs: &dyn OwnerFileSystem,
+    source: &Path,
+    files: &[PathBuf],
+) -> io::Result<()> {
     let mut directories = BTreeSet::new();
     for file in files {
         let mut parent = file.parent();
@@ -828,16 +1263,7 @@ fn remove_empty_inventory_dirs(source: &Path, files: &[PathBuf]) -> io::Result<(
         if !is_directory_non_reparse(&metadata) {
             return Err(inventory_error(&source.join(&relative)));
         }
-        if fs::read_dir(source.join(&relative))?.next().is_some() {
-            continue;
-        }
-        match fs::remove_dir(source.join(&relative)) {
-            Ok(()) => sync_parent(&source.join(&relative))?,
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    || error.kind() == io::ErrorKind::DirectoryNotEmpty => {}
-            Err(error) => return Err(error),
-        }
+        source_fs.remove_empty_source_dir(source, &relative)?;
     }
     Ok(())
 }
@@ -893,6 +1319,58 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(unix)]
+    #[derive(Clone, Copy)]
+    enum SwapPoint {
+        Open,
+        Delete,
+    }
+
+    #[cfg(unix)]
+    struct SwapAncestorFs {
+        source: PathBuf,
+        external_segments: PathBuf,
+        point: SwapPoint,
+        swapped: std::cell::Cell<bool>,
+    }
+
+    #[cfg(unix)]
+    impl SwapAncestorFs {
+        fn swap(&self) -> io::Result<()> {
+            if self.swapped.replace(true) {
+                return Ok(());
+            }
+            fs::remove_dir_all(self.source.join("segments"))?;
+            std::os::unix::fs::symlink(&self.external_segments, self.source.join("segments"))
+        }
+    }
+
+    #[cfg(unix)]
+    impl OwnerFileSystem for SwapAncestorFs {
+        fn open_source_file(&self, root: &Path, relative: &Path) -> io::Result<File> {
+            if matches!(self.point, SwapPoint::Open) {
+                self.swap()?;
+            }
+            SystemOwnerFileSystem.open_source_file(root, relative)
+        }
+
+        fn remove_source_file(
+            &self,
+            root: &Path,
+            relative: &Path,
+            verified_destination: &Path,
+        ) -> io::Result<()> {
+            if matches!(self.point, SwapPoint::Delete) {
+                self.swap()?;
+            }
+            SystemOwnerFileSystem.remove_source_file(root, relative, verified_destination)
+        }
+
+        fn remove_empty_source_dir(&self, root: &Path, relative: &Path) -> io::Result<()> {
+            SystemOwnerFileSystem.remove_empty_source_dir(root, relative)
+        }
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -906,6 +1384,89 @@ mod tests {
             "owner-adoption-{label}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[cfg(unix)]
+    fn setup_ancestor_swap(label: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, Vec<PathBuf>) {
+        let source = temp_root(&format!("{label}-source"));
+        let destination = temp_root(&format!("{label}-destination"));
+        let external = temp_root(&format!("{label}-external"));
+        let external_segments = external.join("segments-data");
+        let relative = PathBuf::from("segments/7/audio.flac");
+        fs::create_dir_all(source.join("segments/7")).unwrap();
+        fs::create_dir_all(destination.join("segments/7")).unwrap();
+        fs::create_dir_all(external_segments.join("7")).unwrap();
+        fs::write(source.join(&relative), b"source bytes").unwrap();
+        fs::write(destination.join(&relative), b"source bytes").unwrap();
+        fs::write(external_segments.join("7/audio.flac"), b"outside bytes").unwrap();
+        (
+            source,
+            destination,
+            external_segments,
+            external,
+            vec![relative],
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_symlink_swap_before_source_open_is_refused() {
+        let (source, destination, external_segments, external, files) =
+            setup_ancestor_swap("open-swap");
+        let filesystem = SwapAncestorFs {
+            source: source.clone(),
+            external_segments: external_segments.clone(),
+            point: SwapPoint::Open,
+            swapped: std::cell::Cell::new(false),
+        };
+        let error =
+            copy_exact_file_with(&filesystem, &source, &destination, &files[0]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("known owner path is not a regular file"));
+        assert_eq!(
+            fs::read(external_segments.join("7/audio.flac")).unwrap(),
+            b"outside bytes"
+        );
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(destination);
+        let _ = fs::remove_dir_all(external);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_symlink_swap_before_source_delete_is_refused() {
+        let (source, destination, external_segments, external, files) =
+            setup_ancestor_swap("delete-swap");
+        let marker = destination.join(COMPLETE_FILE);
+        publish_completion_marker(&marker, &completion_marker_bytes(&files).unwrap()).unwrap();
+        let filesystem = SwapAncestorFs {
+            source: source.clone(),
+            external_segments: external_segments.clone(),
+            point: SwapPoint::Delete,
+            swapped: std::cell::Cell::new(false),
+        };
+        let error = cleanup_completed_with(
+            &filesystem,
+            &source,
+            &destination,
+            &CompletionInventory::Exact(files),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("known owner path is not a regular file"));
+        assert_eq!(
+            fs::read(external_segments.join("7/audio.flac")).unwrap(),
+            b"outside bytes"
+        );
+        assert_eq!(
+            fs::read(destination.join("segments/7/audio.flac")).unwrap(),
+            b"source bytes"
+        );
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(destination);
+        let _ = fs::remove_dir_all(external);
     }
 
     #[test]

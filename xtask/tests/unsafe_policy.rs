@@ -74,6 +74,30 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         owner: None,
     },
     ApprovedNode {
+        path: "crates/platform-win/src/owner_data.rs",
+        kind: ApprovedKind::Fn,
+        name: "open_windows_source_file",
+        owner: None,
+    },
+    ApprovedNode {
+        path: "crates/platform-win/src/owner_data.rs",
+        kind: ApprovedKind::Fn,
+        name: "remove_windows_source_file",
+        owner: None,
+    },
+    ApprovedNode {
+        path: "crates/platform-win/src/owner_data.rs",
+        kind: ApprovedKind::Fn,
+        name: "remove_windows_empty_source_dir",
+        owner: None,
+    },
+    ApprovedNode {
+        path: "crates/platform-win/src/owner_data.rs",
+        kind: ApprovedKind::Fn,
+        name: "windows_parent_guards",
+        owner: None,
+    },
+    ApprovedNode {
         path: "crates/pl-transport-win/src/credential.rs",
         kind: ApprovedKind::Fn,
         name: "publish_staged_file",

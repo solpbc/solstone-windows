@@ -437,36 +437,27 @@ pub async fn launch_resume(
         }
     }
 
-    let skip_resume = crate::answer::settle_rejected_on_launch(
-        &cfg.state_path,
-        &cfg.confirmation,
-        &cfg.tombstone,
-        sync,
-    )
-    .await;
     let _ = crate::answer::settle_grandfather(&cfg.state_path, &cfg.confirmation);
     #[cfg(windows)]
-    if !skip_resume {
-        if let (Some(marker), Ok(paired)) =
-            (_marker_result.as_ref(), PairedState::load(&cfg.state_path))
+    if let (Some(marker), Ok(paired)) =
+        (_marker_result.as_ref(), PairedState::load(&cfg.state_path))
+    {
+        if let Err(error) =
+            crate::migration::commit_baseline_after_answer(&cfg.state_path, marker, &paired)
         {
-            if let Err(error) =
-                crate::migration::commit_baseline_after_answer(&cfg.state_path, marker, &paired)
-            {
-                tracing::warn!(target: "sync", error = %error, "device migration baseline remains pending");
-                publish_pairing(
-                    sync,
-                    &cfg.confirmation,
-                    &cfg.tombstone,
-                    PairingWrite::Failed {
-                        detail: transport_error_code(&error),
-                    },
-                );
-                return None;
-            }
+            tracing::warn!(target: "sync", error = %error, "device migration baseline remains pending");
+            publish_pairing(
+                sync,
+                &cfg.confirmation,
+                &cfg.tombstone,
+                PairingWrite::Failed {
+                    detail: transport_error_code(&error),
+                },
+            );
+            return None;
         }
     }
-    if !skip_resume {
+    {
         match PairedState::load(&cfg.state_path) {
             Ok(paired) if paired.is_paired() => {
                 let cfg_clone = cfg.clone();

@@ -35,7 +35,9 @@ use crate::ack::{AckFile, JournalIdentity, UploadAck};
 use crate::client::{ClientSlot, ObserverClient, RouteError, SendMetadata};
 use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
 use crate::post_connect::PostConnectController;
-use crate::sealed::{content_type_for, SealedStore, UPLOADED_MARKER, UPLOADED_TMP_MARKER};
+use crate::sealed::{
+    content_type_for, SealedSegment, SealedStore, UPLOADED_MARKER, UPLOADED_TMP_MARKER,
+};
 use crate::slot::SlotExit;
 use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
@@ -758,19 +760,19 @@ impl UploadCoordinator {
     }
 
     fn local_finish(&self, now: u64) {
-        let mut indices = Vec::new();
+        let mut segments = HashMap::new();
         if let Ok(scanned) = self.store.scan() {
             for s in scanned {
-                indices.push(s.index);
+                segments.insert(s.index, s);
             }
         }
         if let Ok(confirmed) = self.store.confirmed() {
             for s in confirmed {
-                indices.push(s.index);
+                segments.insert(s.index, s);
             }
         }
+        let mut indices: Vec<_> = segments.keys().copied().collect();
         indices.sort_unstable();
-        indices.dedup();
 
         for index in indices {
             if self.is_held(index, now) {
@@ -820,10 +822,20 @@ impl UploadCoordinator {
 
             match UploadAck::from_bytes(&marker_bytes) {
                 Ok(ack) => {
-                    if ack.journal_identity.instance_id
-                        == self.client.journal_identity().instance_id
-                    {
-                        match self.try_gate_delete(index, &ack.files) {
+                    let current_identity = self.client.journal_identity();
+                    let same_journal = ack.journal_identity.instance_id
+                        == current_identity.instance_id
+                        && ack.journal_identity.ca_fp_prefix == current_identity.ca_fp_prefix;
+                    let physical_match = if same_journal {
+                        match segments.get(&index) {
+                            Some(segment) => self.ack_matches_physical(index, segment, &ack),
+                            None => Ok(false),
+                        }
+                    } else {
+                        Ok(false)
+                    };
+                    match physical_match {
+                        Ok(true) => match self.try_gate_delete(index, &ack.files) {
                             Ok(DeleteGate::Blocked) => {
                                 self.set_hold(index, now.saturating_add(3600));
                             }
@@ -837,22 +849,44 @@ impl UploadCoordinator {
                                     "local_finish try_gate_delete failed"
                                 );
                             }
-                        }
-                    } else {
-                        if let Err(e) = self.store.remove_entry(index, UPLOADED_MARKER) {
-                            if e.kind() != std::io::ErrorKind::NotFound {
-                                self.set_hold(index, now.saturating_add(3600));
-                                tracing::warn!(
-                                    target: "pl_upload",
-                                    index,
-                                    error = %e,
-                                    "failed to remove foreign uploaded marker"
-                                );
+                        },
+                        Ok(false) => {
+                            if let Err(e) = self.store.remove_entry(index, UPLOADED_MARKER) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    self.set_hold(index, now.saturating_add(3600));
+                                    tracing::warn!(
+                                        target: "pl_upload",
+                                        index,
+                                        error = %e,
+                                        "failed to remove foreign or incomplete uploaded marker"
+                                    );
+                                }
                             }
+                        }
+                        Err(error) => {
+                            self.set_hold(index, now.saturating_add(3600));
+                            tracing::warn!(
+                                target: "pl_upload",
+                                index,
+                                error = %error,
+                                "failed to validate uploaded marker continuity"
+                            );
+                            continue;
                         }
                     }
                 }
                 Err(_) => {
+                    // A malformed structured marker may be an incomplete Ack.
+                    // It has no trusted physical continuity proof, so never
+                    // send it through the legacy mtime deletion path.
+                    if marker_bytes
+                        .iter()
+                        .copied()
+                        .find(|byte| !byte.is_ascii_whitespace())
+                        == Some(b'{')
+                    {
+                        continue;
+                    }
                     // Mtime rule
                     let marker_mtime = match self.store.modified(index, UPLOADED_MARKER) {
                         Ok(m) => m,
@@ -938,6 +972,49 @@ impl UploadCoordinator {
                 snap.upload.quarantined_segments = count;
             }
         }
+    }
+
+    fn ack_matches_physical(
+        &self,
+        index: u64,
+        segment: &SealedSegment,
+        ack: &UploadAck,
+    ) -> Result<bool, std::io::Error> {
+        let Ok(zone) = self.local_offset.local_zone(segment.boundary_epoch_secs) else {
+            return Ok(false);
+        };
+        let day = civil::day_string_local(segment.boundary_epoch_secs, zone.utc_offset_seconds);
+        let local_segment = civil::segment_key_string_local(
+            segment.boundary_epoch_secs,
+            zone.utc_offset_seconds,
+            segment.len_secs.unwrap_or(self.period_secs),
+        );
+        if ack.day != day
+            || ack.local_segment != local_segment
+            || ack.physical_index != Some(index)
+            || ack.physical_segment.as_deref() != Some(local_segment.as_str())
+            || ack.physical_stream.as_deref() != Some("_default")
+            || ack.original_upload_key.as_deref() != Some(local_segment.as_str())
+        {
+            return Ok(false);
+        }
+
+        let entries = self.store.list_entries(index)?;
+        let media: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                entry.name != UPLOADED_MARKER
+                    && entry.name != observer_model::LEN_FILE_NAME
+                    && entry.name != UPLOADED_TMP_MARKER
+            })
+            .collect();
+        let mut acknowledged = std::collections::HashSet::with_capacity(ack.files.len());
+        Ok(ack.files.iter().all(|file| {
+            acknowledged.insert(file.submitted.as_str())
+                && media
+                    .iter()
+                    .any(|entry| entry.name == file.submitted && entry.size_bytes == file.size)
+        }))
     }
 
     fn register_reject(&self, index: u64) {
@@ -1525,65 +1602,89 @@ impl UploadCoordinator {
                     if let Some(unknown_list) = unknown_by_day.get(&day) {
                         let listing_is_valid =
                             observer_pl::ingest::validate_segments_envelope(&envelope).is_ok();
-                        for unk in unknown_list {
-                            let matches = if listing_is_valid {
-                                envelope
-                                    .items
-                                    .iter()
-                                    .filter(|item| {
-                                        let physical_match =
-                                            match (item.segment.as_deref(), item.stream.as_deref())
-                                            {
-                                                (Some(segment), Some(stream)) => {
-                                                    segment == unk.segment_key
-                                                        && stream == "_default"
-                                                }
-                                                (None, None) => item.key == unk.segment_key,
-                                                _ => false,
-                                            };
-                                        if !physical_match {
-                                            return false;
-                                        }
-                                        if item.files.len() != unk.local_files.len() {
-                                            return false;
-                                        }
-                                        for (name, sha, size) in &unk.local_files {
-                                            let Some(sf) =
-                                                item.files.iter().find(|f| &f.name == name)
-                                            else {
-                                                return false;
-                                            };
-                                            if sf.size != *size
-                                                || &sf.sha256 != sha
-                                                || !sf.status.is_held()
-                                            {
-                                                return false;
+                        // Construct the complete candidate graph before writing
+                        // any ack. A listing fact and a physical segment can
+                        // each participate in at most one accepted edge.
+                        let mut local_edges = vec![Vec::new(); unknown_list.len()];
+                        let mut listing_degrees = vec![0usize; envelope.items.len()];
+                        if listing_is_valid {
+                            for (local_index, unk) in unknown_list.iter().enumerate() {
+                                for (listing_index, item) in envelope.items.iter().enumerate() {
+                                    let physical_match =
+                                        match (item.segment.as_deref(), item.stream.as_deref()) {
+                                            (Some(segment), Some(stream)) => {
+                                                segment == unk.segment_key && stream == "_default"
                                             }
-                                        }
-                                        true
-                                    })
-                                    .collect::<Vec<_>>()
-                            } else {
-                                Vec::new()
-                            };
+                                            (None, None) => item.key == unk.segment_key,
+                                            _ => false,
+                                        };
+                                    if !physical_match
+                                        || item.original_key.as_deref()
+                                            != Some(unk.segment_key.as_str())
+                                        || item.files.len() != unk.local_files.len()
+                                    {
+                                        continue;
+                                    }
+                                    let local_names = unk
+                                        .local_files
+                                        .iter()
+                                        .map(|(name, _, _)| name.as_str())
+                                        .collect::<std::collections::HashSet<_>>();
+                                    let listed_names = item
+                                        .files
+                                        .iter()
+                                        .map(|file| file.name.as_str())
+                                        .collect::<std::collections::HashSet<_>>();
+                                    if local_names.len() != unk.local_files.len()
+                                        || listed_names.len() != item.files.len()
+                                    {
+                                        continue;
+                                    }
+                                    let files_match =
+                                        unk.local_files.iter().all(|(name, sha, size)| {
+                                            item.files.iter().any(|listed| {
+                                                listed.name == *name
+                                                    && listed.size == *size
+                                                    && listed.sha256 == *sha
+                                                    && listed.status.is_held()
+                                            })
+                                        });
+                                    if files_match {
+                                        local_edges[local_index].push(listing_index);
+                                        listing_degrees[listing_index] += 1;
+                                    }
+                                }
+                            }
+                        }
 
-                            if let [item] = matches.as_slice() {
-                                let ack_files: Vec<AckFile> = unk
-                                    .local_files
-                                    .iter()
-                                    .map(|(name, sha, size)| {
-                                        let sf =
-                                            item.files.iter().find(|f| &f.name == name).unwrap();
-                                        AckFile {
-                                            submitted: name.clone(),
-                                            written: sf.name.clone(),
-                                            size: *size,
-                                            sha256: sha.clone(),
-                                            disposition: None,
-                                            listing_status: Some(sf.status),
-                                        }
-                                    })
-                                    .collect();
+                        for (local_index, edges) in local_edges.iter().enumerate() {
+                            let unk = &unknown_list[local_index];
+                            let selected_listing =
+                                if edges.len() == 1 && listing_degrees[edges[0]] == 1 {
+                                    Some(edges[0])
+                                } else {
+                                    None
+                                };
+                            if let Some(listing_index) = selected_listing {
+                                let item = &envelope.items[listing_index];
+                                let ack_files: Vec<AckFile> =
+                                    unk.local_files
+                                        .iter()
+                                        .map(|(name, sha, size)| {
+                                            let sf =
+                                                item.files.iter().find(|f| &f.name == name).expect(
+                                                    "eligibility already matched every file",
+                                                );
+                                            AckFile {
+                                                submitted: name.clone(),
+                                                written: sf.name.clone(),
+                                                size: *size,
+                                                sha256: sha.clone(),
+                                                disposition: None,
+                                                listing_status: Some(sf.status),
+                                            }
+                                        })
+                                        .collect();
 
                                 let ack = UploadAck::new_listing(
                                     self.client.journal_identity(),
@@ -1596,7 +1697,9 @@ impl UploadCoordinator {
                                     unk.index,
                                     item.segment.as_deref().unwrap_or(&unk.segment_key),
                                     item.stream.as_deref().unwrap_or("_default"),
-                                    item.original_key.as_deref().unwrap_or(&unk.segment_key),
+                                    item.original_key
+                                        .as_deref()
+                                        .expect("eligibility requires original upload identity"),
                                 );
                                 if let Err(e) = self.store.write_ack(unk.index, &ack) {
                                     tracing::warn!(
@@ -2169,6 +2272,7 @@ mod tests {
         remove_fails_once: HashSet<u64>,
         mark_confirmed_fails_once: HashSet<u64>,
         acks: HashMap<u64, UploadAck>,
+        written_acks: Vec<(u64, UploadAck)>,
     }
 
     impl MultiSegmentStore {
@@ -2198,6 +2302,7 @@ mod tests {
                     remove_fails_once: HashSet::new(),
                     mark_confirmed_fails_once: HashSet::new(),
                     acks: HashMap::new(),
+                    written_acks: Vec::new(),
                 })),
             }
         }
@@ -2261,6 +2366,10 @@ mod tests {
                 .into_iter()
                 .map(|segment| segment.index)
                 .collect()
+        }
+
+        fn written_acks(&self) -> Vec<(u64, UploadAck)> {
+            self.state.lock().unwrap().written_acks.clone()
         }
     }
 
@@ -2409,6 +2518,7 @@ mod tests {
                 .to_bytes()
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             state.acks.insert(index, ack.clone());
+            state.written_acks.push((index, ack.clone()));
             state
                 .bytes
                 .entry(index)
@@ -2732,14 +2842,21 @@ mod tests {
     }
 
     fn write_marker(dir: &std::path::Path, identity: JournalIdentity, files: &[FileDescriptor]) {
-        let ack = UploadAck::new_upload(
-            identity,
-            "20231114",
-            "120000_300",
-            "120000_300",
-            "ok",
-            files,
-        );
+        let index = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.parse::<u64>().ok())
+            .expect("test segment directory has a numeric index");
+        let boundary = index * 300;
+        let len_secs = std::fs::read_to_string(dir.join(observer_model::LEN_FILE_NAME))
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(300);
+        let day = civil::day_string_local(boundary, 0);
+        let segment = civil::segment_key_string_local(boundary, 0, len_secs);
+        let ack =
+            UploadAck::new_upload(identity, day, segment.clone(), segment.clone(), "ok", files)
+                .with_physical_identity(index, segment.clone(), "_default", segment);
         std::fs::write(dir.join(UPLOADED_MARKER), ack.to_bytes().unwrap()).unwrap();
     }
 
@@ -3043,7 +3160,7 @@ mod tests {
         Ok((
             SegmentsEnvelope {
                 items: vec![SegmentItem {
-                    key: segment_key,
+                    key: segment_key.clone(),
                     observed: false,
                     files: vec![SegmentFile {
                         name: file_name.to_string(),
@@ -3057,7 +3174,7 @@ mod tests {
                         },
                         submitted_name: None,
                     }],
-                    original_key: None,
+                    original_key: Some(segment_key),
                     segment: None,
                     stream: None,
                 }],
@@ -4386,6 +4503,315 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn one_listing_fact_cannot_acknowledge_equal_local_twins() {
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"equal twin bytes".to_vec();
+        let segment_key = civil::segment_key_string_local(boundary, 0, 300);
+        let store = MultiSegmentStore::new(vec![
+            (11, boundary, file_name, bytes.clone()),
+            (12, boundary, file_name, bytes.clone()),
+        ]);
+        let listing = SegmentsEnvelope {
+            items: vec![SegmentItem {
+                key: format!("{segment_key}~one-entry"),
+                observed: false,
+                files: vec![SegmentFile {
+                    name: file_name.to_owned(),
+                    sha256: ca::sha256_hex(&bytes),
+                    size: bytes.len() as u64,
+                    status: SegmentFileStatus::Present,
+                    submitted_name: None,
+                }],
+                original_key: Some(segment_key.clone()),
+                segment: Some(segment_key),
+                stream: Some("_default".to_owned()),
+            }],
+            total: 1,
+            protocol_version: 3,
+        };
+        let client = FakeClient::new(
+            vec![
+                accepted_unconfirmed_ingest(1),
+                accepted_unconfirmed_ingest(2),
+            ],
+            vec![Ok((listing, test_metadata()))],
+        );
+        let coordinator = coordinator_with_client(
+            client,
+            Box::new(store.clone()),
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+        );
+
+        coordinator.tick().await.unwrap();
+
+        assert_eq!(store.pending_indices(), vec![11, 12]);
+        assert!(store.written_acks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_equivalent_listing_facts_cannot_choose_the_first_entry() {
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"same local bytes".to_vec();
+        let physical = civil::segment_key_string_local(boundary, 0, 300);
+        let item = |alias: &str| SegmentItem {
+            key: alias.to_owned(),
+            observed: false,
+            files: vec![SegmentFile {
+                name: file_name.to_owned(),
+                sha256: ca::sha256_hex(&bytes),
+                size: bytes.len() as u64,
+                status: SegmentFileStatus::Present,
+                submitted_name: None,
+            }],
+            original_key: Some(physical.clone()),
+            segment: Some(physical.clone()),
+            stream: Some("_default".to_owned()),
+        };
+        let store = MultiSegmentStore::new(vec![(21, boundary, file_name, bytes.clone())]);
+        let listing = SegmentsEnvelope {
+            items: vec![
+                item(&format!("{physical}~first")),
+                item(&format!("{physical}~second")),
+            ],
+            total: 2,
+            protocol_version: 3,
+        };
+        let client = FakeClient::new(
+            vec![accepted_unconfirmed_ingest(1)],
+            vec![Ok((listing, test_metadata()))],
+        );
+        let coordinator = coordinator_with_client(
+            client,
+            Box::new(store.clone()),
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+        );
+
+        coordinator.tick().await.unwrap();
+
+        assert_eq!(store.pending_indices(), vec![21]);
+        assert!(store.written_acks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn listing_original_upload_identity_must_match_the_local_physical_key() {
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"local bytes".to_vec();
+        let physical = civil::segment_key_string_local(boundary, 0, 300);
+        let store = MultiSegmentStore::new(vec![(31, boundary, file_name, bytes.clone())]);
+        let listing = SegmentsEnvelope {
+            items: vec![SegmentItem {
+                key: format!("{physical}~alias"),
+                observed: false,
+                files: vec![SegmentFile {
+                    name: file_name.to_owned(),
+                    sha256: ca::sha256_hex(&bytes),
+                    size: bytes.len() as u64,
+                    status: SegmentFileStatus::Present,
+                    submitted_name: None,
+                }],
+                original_key: Some("different-original-key".to_owned()),
+                segment: Some(physical.clone()),
+                stream: Some("_default".to_owned()),
+            }],
+            total: 1,
+            protocol_version: 3,
+        };
+        let client = FakeClient::new(
+            vec![accepted_unconfirmed_ingest(1)],
+            vec![Ok((listing, test_metadata()))],
+        );
+        let coordinator = coordinator_with_client(
+            client,
+            Box::new(store.clone()),
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+        );
+
+        coordinator.tick().await.unwrap();
+
+        assert_eq!(store.pending_indices(), vec![31]);
+        assert!(store.written_acks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remapped_aliases_recover_only_their_physical_candidate_after_restart() {
+        let first_boundary = 1_700_000_100;
+        let second_boundary = first_boundary + 300;
+        let file_name = "audio.flac";
+        let bytes = b"same bytes at separate physical coordinates".to_vec();
+        let first_key = civil::segment_key_string_local(first_boundary, 0, 300);
+        let second_key = civil::segment_key_string_local(second_boundary, 0, 300);
+        let store = MultiSegmentStore::new(vec![
+            (41, first_boundary, file_name, bytes.clone()),
+            (42, second_boundary, file_name, bytes.clone()),
+        ]);
+        let bad_listing =
+            TransportError::Json(serde_json::from_str::<SegmentsEnvelope>("not-json").unwrap_err());
+        let first = FakeClient::new(
+            vec![
+                accepted_unconfirmed_ingest(1),
+                accepted_unconfirmed_ingest(2),
+            ],
+            vec![Err(bad_listing)],
+        );
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let before_restart = coordinator_with_client(first, Box::new(store.clone()), sync.clone());
+        assert!(matches!(
+            before_restart.tick().await,
+            Err(RouteError::Transport(TransportError::Json(_)))
+        ));
+        assert_eq!(store.pending_indices(), vec![41, 42]);
+
+        let first_alias = format!("{first_key}~server-a");
+        let second_alias = format!("{second_key}~server-b");
+        let item = |alias: &str, original: &str| SegmentItem {
+            key: alias.to_owned(),
+            observed: false,
+            files: vec![SegmentFile {
+                name: file_name.to_owned(),
+                sha256: ca::sha256_hex(&bytes),
+                size: bytes.len() as u64,
+                status: SegmentFileStatus::Present,
+                submitted_name: None,
+            }],
+            original_key: Some(original.to_owned()),
+            segment: Some(original.to_owned()),
+            stream: Some("_default".to_owned()),
+        };
+        let listing = SegmentsEnvelope {
+            items: vec![
+                item(&first_alias, &first_key),
+                item(&second_alias, &second_key),
+            ],
+            total: 2,
+            protocol_version: 3,
+        };
+        let after_restart = FakeClient::new(
+            vec![
+                accepted_unconfirmed_ingest(3),
+                accepted_unconfirmed_ingest(4),
+            ],
+            vec![Ok((listing, test_metadata()))],
+        );
+        let restarted = coordinator_with_client(after_restart, Box::new(store.clone()), sync);
+
+        restarted.tick().await.unwrap();
+
+        let acknowledgements = store.written_acks();
+        assert_eq!(acknowledgements.len(), 2);
+        assert!(acknowledgements.iter().any(|(index, ack)| {
+            *index == 41
+                && ack.server_segment == first_alias
+                && ack.physical_index == Some(41)
+                && ack.original_upload_key.as_deref() == Some(first_key.as_str())
+        }));
+        assert!(acknowledgements.iter().any(|(index, ack)| {
+            *index == 42
+                && ack.server_segment == second_alias
+                && ack.physical_index == Some(42)
+                && ack.original_upload_key.as_deref() == Some(second_key.as_str())
+        }));
+        assert!(store.removed(41));
+        assert!(store.removed(42));
+    }
+
+    #[test]
+    fn restart_ack_requires_matching_journal_and_complete_physical_coordinates() {
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"ack proof bytes".to_vec();
+        let physical = civil::segment_key_string_local(boundary, 0, 300);
+
+        for corruption in 0..12 {
+            let store = MultiSegmentStore::new(vec![(51, boundary, file_name, bytes.clone())]);
+            let client = FakeClient::new(Vec::new(), Vec::new());
+            let identity = client.journal_identity();
+            let mut ack = UploadAck::new_listing(
+                identity,
+                civil::day_string_local(boundary, 0),
+                physical.clone(),
+                format!("{physical}~alias"),
+                vec![AckFile {
+                    submitted: file_name.to_owned(),
+                    written: file_name.to_owned(),
+                    size: bytes.len() as u64,
+                    sha256: ca::sha256_hex(&bytes),
+                    disposition: None,
+                    listing_status: Some(SegmentFileStatus::Present),
+                }],
+            )
+            .with_physical_identity(51, physical.clone(), "_default", physical.clone());
+            match corruption {
+                0 => ack.journal_identity.instance_id = "other-journal".to_owned(),
+                1 => ack.day = "19000101".to_owned(),
+                2 => ack.local_segment = "other-segment".to_owned(),
+                3 => ack.physical_index = Some(999),
+                4 => ack.physical_index = None,
+                5 => ack.physical_segment = Some("other-segment".to_owned()),
+                6 => ack.physical_segment = None,
+                7 => ack.physical_stream = Some("other-stream".to_owned()),
+                8 => ack.physical_stream = None,
+                9 => ack.original_upload_key = None,
+                10 => ack.original_upload_key = Some("other-upload-key".to_owned()),
+                11 => ack.journal_identity.ca_fp_prefix = "other-ca".to_owned(),
+                _ => unreachable!(),
+            }
+            store.write_ack(51, &ack).unwrap();
+            let coordinator = coordinator_with_client(
+                client,
+                Box::new(store.clone()),
+                Arc::new(Mutex::new(SyncSnapshot::default())),
+            );
+
+            coordinator.local_finish(0);
+
+            assert!(!store.removed(51), "corrupted continuity case {corruption}");
+            assert_eq!(store.read_file(51, file_name).unwrap(), bytes);
+            if matches!(corruption, 4 | 6 | 8 | 9) {
+                assert!(store.read_file(51, UPLOADED_MARKER).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn valid_restart_ack_deletes_only_the_proved_physical_segment() {
+        let boundary = 1_700_000_100;
+        let file_name = "audio.flac";
+        let bytes = b"valid ack proof".to_vec();
+        let physical = civil::segment_key_string_local(boundary, 0, 300);
+        let store = MultiSegmentStore::new(vec![(61, boundary, file_name, bytes.clone())]);
+        let client = FakeClient::new(Vec::new(), Vec::new());
+        let identity = client.journal_identity();
+        let ack = UploadAck::new_listing(
+            identity,
+            civil::day_string_local(boundary, 0),
+            physical.clone(),
+            format!("{physical}~alias"),
+            vec![AckFile {
+                submitted: file_name.to_owned(),
+                written: file_name.to_owned(),
+                size: bytes.len() as u64,
+                sha256: ca::sha256_hex(&bytes),
+                disposition: None,
+                listing_status: Some(SegmentFileStatus::Present),
+            }],
+        )
+        .with_physical_identity(61, physical.clone(), "_default", physical);
+        store.write_ack(61, &ack).unwrap();
+        let coordinator = coordinator_with_client(
+            client,
+            Box::new(store.clone()),
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+        );
+
+        coordinator.local_finish(0);
+
+        assert!(store.removed(61));
+    }
+
     // Previous-model disclaimer: Retained under the 12.2.0 receipt model; uses simulated time advance across ticks.
     #[tokio::test(start_paused = true)]
     async fn conflict_and_failed_statuses_do_not_accumulate_quarantine() {
@@ -5089,14 +5515,16 @@ mod tests {
             sha256: ca::sha256_hex(b"payload1"),
             disposition: "written".to_string(),
         };
+        let local_segment1 = civil::segment_key_string_local(300, 0, 300);
         let ack1 = UploadAck::new_upload(
             coordinator.client.journal_identity(),
-            day,
-            segment_key,
-            segment_key,
+            civil::day_string_local(300, 0),
+            local_segment1.clone(),
+            local_segment1.clone(),
             "ok",
             &[desc1],
-        );
+        )
+        .with_physical_identity(1, local_segment1.clone(), "_default", local_segment1);
         let _ = coordinator.store.write_ack(1, &ack1);
 
         // 2. Valid foreign ack -> .uploaded stripped, media and .len retained
@@ -5217,14 +5645,16 @@ mod tests {
         let seg7 = temp_path.join("7");
         std::fs::create_dir_all(&seg7).unwrap();
         std::fs::write(seg7.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        let local_segment7 = civil::segment_key_string_local(2100, 0, 300);
         let ack7 = UploadAck::new_upload(
             coordinator.client.journal_identity(),
-            day,
-            segment_key,
-            segment_key,
+            civil::day_string_local(2100, 0),
+            local_segment7.clone(),
+            local_segment7.clone(),
             "ok",
             &[],
-        );
+        )
+        .with_physical_identity(7, local_segment7.clone(), "_default", local_segment7);
         let _ = coordinator.store.write_ack(7, &ack7);
 
         // 8. 0-media directory with no ack or unparsable marker -> sidecars and dir removed

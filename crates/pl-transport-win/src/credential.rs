@@ -412,13 +412,13 @@ pub struct PairedStateLoad {
     pub relay_token_refused: bool,
 }
 
-/// The only durable retirement operation that currently stages an unpaired
-/// candidate: integration pairing whose mark did not match.
+/// Durable retirement operations serialized with the paired credential owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetirementOperation {
     IntegrationWrongMark,
     GuiPairReplacement,
+    GuiPairRejection,
 }
 
 /// Durable outcome of trying to retire the exact staged candidate.
@@ -434,6 +434,7 @@ pub enum RetirementPhase {
 #[serde(rename_all = "snake_case")]
 pub enum RetirementAnswerDisposition {
     ResetForCandidate,
+    ClearRejectedPairing,
 }
 
 /// A protected, generation-bound remote retirement that launch can reconcile.
@@ -524,6 +525,7 @@ thread_local! {
     pub(crate) static FS_FAIL_POINT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     pub(crate) static RETIREMENT_CLEANUP_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static PAIR_REPLACEMENT_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static PAIR_REJECTION_CLEANUP_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The full persisted sync identity: the paired mTLS credential.
@@ -789,6 +791,86 @@ impl PairedState {
         Self::save_inner(&protector, path, &state)
     }
 
+    /// Persist a generation-bound rejection intent before retiring a current
+    /// credential. The current credential remains intact and send-fenced until
+    /// the remote result is durably terminal.
+    pub(crate) fn install_pair_rejection_intent(
+        path: &Path,
+        expected_owner_generation: [u8; 32],
+        expected_access_generation: u64,
+        intent: RetirementIntent,
+    ) -> Result<(), StorageError> {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let incumbent = state.credential.as_ref().ok_or(StorageError::CasMismatch)?;
+        if state.retirement_intent.is_some()
+            || pairing_generation(&incumbent.client_cert_pem) != expected_owner_generation
+            || state.access_mutation_generation != expected_access_generation
+            || intent.schema != 1
+            || intent.operation != RetirementOperation::GuiPairRejection
+            || intent.owner_generation != expected_owner_generation
+            || intent.candidate_generation != expected_owner_generation
+            || intent.access_mutation_generation != expected_access_generation
+            || pairing_generation(&intent.candidate.client_cert_pem) != expected_owner_generation
+            || intent.answer_disposition != Some(RetirementAnswerDisposition::ClearRejectedPairing)
+            || intent.marker_result.is_some()
+        {
+            return Err(StorageError::CasMismatch);
+        }
+        state.retirement_intent = Some(intent);
+        Self::save_inner(&protector, path, &state)
+    }
+
+    /// Finish a rejected pairing only while the succeeded intent still owns
+    /// the exact credential and access generation. The answer cleanup runs
+    /// under the same owner lock before the credential is cleared.
+    pub(crate) fn finish_pair_rejection<F>(
+        path: &Path,
+        operation_id: &str,
+        owner_generation: [u8; 32],
+        access_generation: u64,
+        clear_answer: F,
+    ) -> Result<bool, StorageError>
+    where
+        F: FnOnce() -> Result<(), StorageError>,
+    {
+        let _guard = owner_state_write_guard();
+        let protector = platform_protector();
+        let mut state = Self::load_with(&protector, path)?;
+        let Some(intent) = state.retirement_intent.as_ref() else {
+            return Ok(false);
+        };
+        let current_generation = state
+            .credential
+            .as_ref()
+            .map(|credential| pairing_generation(&credential.client_cert_pem));
+        if intent.schema != 1
+            || intent.operation != RetirementOperation::GuiPairRejection
+            || intent.operation_id != operation_id
+            || intent.owner_generation != owner_generation
+            || intent.candidate_generation != owner_generation
+            || intent.access_mutation_generation != access_generation
+            || intent.phase != RetirementPhase::Succeeded
+            || current_generation != Some(owner_generation)
+            || state.access_mutation_generation != access_generation
+        {
+            return Ok(false);
+        }
+        clear_answer()?;
+        #[cfg(test)]
+        if PAIR_REJECTION_CLEANUP_FAIL_POINT.with(|fail| fail.replace(false)) {
+            return Err(StorageError::WriteFailed(std::io::Error::other(
+                "simulated pair rejection cleanup failure",
+            )));
+        }
+        state.credential = None;
+        state.retirement_intent = None;
+        state.access_mutation_generation = state.access_mutation_generation.wrapping_add(1);
+        Self::save_inner(&protector, path, &state)?;
+        Ok(true)
+    }
+
     /// Roll back only a prepared replacement whose old credential still owns
     /// the exact pairing and access generations. Used when intent publication
     /// itself fails before any remote operation is allowed.
@@ -927,6 +1009,12 @@ impl PairedState {
                         && state.access_mutation_generation == intent.access_mutation_generation
                 })
             }
+            RetirementOperation::GuiPairRejection => {
+                state.credential.as_ref().is_some_and(|credential| {
+                    pairing_generation(&credential.client_cert_pem) == intent.owner_generation
+                        && state.access_mutation_generation == intent.access_mutation_generation
+                })
+            }
         };
         if intent.schema != 1
             || intent.operation_id != operation_id
@@ -966,6 +1054,7 @@ impl PairedState {
                     && intent.phase == RetirementPhase::Succeeded
             }
             RetirementOperation::GuiPairReplacement => false,
+            RetirementOperation::GuiPairRejection => false,
         };
         if intent.schema != 1 || !matches {
             return Ok(false);

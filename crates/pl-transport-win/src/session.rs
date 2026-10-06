@@ -22,8 +22,6 @@ pub enum PairingAction {
     Cancel,
 }
 
-const RETIRE_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 pub async fn answer(
     action: PairingAction,
     binding: &str,
@@ -94,93 +92,48 @@ pub async fn answer(
                 PAIRING_CANCELLED_DETAIL
             };
 
-            // The rejected digest is the durable, generation-bound local
-            // invalidation intent. No remote retirement or local completion is
-            // allowed until it is verified on disk.
-            answer_state.rejected = binding.to_string();
-            write_answer(&ans_path, &answer_state)?;
-
-            // 2. slot.stop() (Quiesce) so current tick finishes and client stays live
-            slot.stop().await;
-
-            // 3. Retire this exact credential. A failed request leaves the
-            // durable rejected digest in place for launch-time reconciliation.
-            let mut retired = false;
-            if let Some(access) = access_guard.as_ref() {
-                let client = access.client_slot().load();
-                if client.journal_identity().client_cert_sha256 == binding {
-                    if let Ok(certs) =
-                        spl_transport::tls::parse_certs(&client.credential().client_cert_pem)
-                    {
-                        if let Some(cert) = certs.first() {
-                            let der_hex = spl_core::ca::sha256_hex(cert.as_ref());
-                            let client_id = format!("sha256:{der_hex}");
-                            retired = tokio::time::timeout(
-                                RETIRE_CLIENT_TIMEOUT,
-                                client.retire_client(&client_id),
-                            )
-                            .await
-                            .is_ok_and(|result| result.is_ok());
-                        }
+            let outcome = crate::retirement::reject_pair_with(
+                &cfg.state_path,
+                binding,
+                || async {
+                    answer_state.rejected = binding.to_string();
+                    let write_result =
+                        write_answer(&ans_path, &answer_state).map_err(TransportError::from);
+                    slot.stop().await;
+                    if let Some(access) = access_guard.take() {
+                        access.retire();
                     }
-                }
-            }
+                    write_result
+                },
+                crate::retirement::retire_credential,
+            )
+            .await;
 
-            // 4. CredentialAccess::retire
-            if let Some(access) = access_guard.take() {
-                access.retire();
-            }
-
-            // 5. Delete the exact old owner only after remote retirement earned
-            // success. Otherwise its protected credential and intent survive
-            // for launch-time retry.
-            let tmp = cfg.state_path.with_extension("json.tmp");
-            let mut primary_deleted = false;
-            if retired {
-                let _guard = crate::credential::owner_state_write_guard();
-                let current = crate::credential::PairedState::load(&cfg.state_path);
-                let still_rejected =
-                    current
-                        .ok()
-                        .and_then(|state| state.credential)
-                        .is_some_and(|current| {
-                            crate::ack::JournalIdentity::from_credential(&current)
-                                .client_cert_sha256
-                                == binding
-                        });
-                if still_rejected {
-                    primary_deleted =
-                        !cfg.state_path.exists() || std::fs::remove_file(&cfg.state_path).is_ok();
-                    if primary_deleted && tmp.exists() {
-                        primary_deleted = std::fs::remove_file(&tmp).is_ok();
+            match outcome {
+                Ok(crate::retirement::ReconcileOutcome::Completed) => {
+                    if let Ok(mut confirmation) = cfg.confirmation.lock() {
+                        confirmation.clear();
                     }
+                    publish_pairing(
+                        sync,
+                        &cfg.confirmation,
+                        &cfg.tombstone,
+                        PairingWrite::NotPaired {
+                            detail: Some(detail.to_string()),
+                        },
+                    );
                 }
-            }
-
-            // Clear rejected only when primary path is gone
-            if primary_deleted {
-                answer_state.rejected.clear();
-                let _ = write_answer(&ans_path, &answer_state);
-            }
-
-            if primary_deleted {
-                publish_pairing(
-                    sync,
-                    &cfg.confirmation,
-                    &cfg.tombstone,
-                    PairingWrite::NotPaired {
-                        detail: Some(detail.to_string()),
-                    },
-                );
-            } else {
-                publish_pairing(
-                    sync,
-                    &cfg.confirmation,
-                    &cfg.tombstone,
-                    PairingWrite::Failed {
-                        detail: "client_retirement_pending".to_owned(),
-                    },
-                );
+                Ok(crate::retirement::ReconcileOutcome::Superseded) => {}
+                Ok(crate::retirement::ReconcileOutcome::None) | Err(_) => {
+                    publish_pairing(
+                        sync,
+                        &cfg.confirmation,
+                        &cfg.tombstone,
+                        PairingWrite::Failed {
+                            detail: "client_retirement_pending".to_owned(),
+                        },
+                    );
+                }
             }
         }
     }

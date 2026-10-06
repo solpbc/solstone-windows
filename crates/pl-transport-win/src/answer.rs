@@ -112,6 +112,16 @@ pub fn read_answer(path: &Path) -> Result<Option<AnswerState>, StorageError> {
 /// Atomically write the answer file using stage-sync-rename.
 pub fn write_answer(path: &Path, state: &AnswerState) -> Result<(), StorageError> {
     let _guard = crate::credential::owner_state_write_guard();
+    write_answer_with_owner_lock(path, state)
+}
+
+/// Publish the answer while the caller already owns the serialized pairing
+/// mutation lock. Used by rejection completion to fence the answer and pairing
+/// state as one ordered owner transaction.
+pub(crate) fn write_answer_with_owner_lock(
+    path: &Path,
+    state: &AnswerState,
+) -> Result<(), StorageError> {
     let bytes = encode_answer(state)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(StorageError::WriteFailed)?;
@@ -204,122 +214,6 @@ pub fn settle_grandfather(
         Err(_) => {
             // Unreadable answer file: return Ok, do not write, do not clobber cache
             Ok(())
-        }
-    }
-}
-
-/// Settle previously recorded rejected pairings on launch.
-///
-/// If `rejected` matches the on-disk pairing's PEM digest:
-/// Runs one `retire_client` against the journal (timeout 5s; 200/204/404 success).
-/// Deletes `pairing.json` and `.json.tmp`. Clears `rejected` back to empty.
-/// If `rejected` is set but does not match `pairing.json`, clears `rejected` only.
-/// Returns `true` if launch resume should be skipped.
-pub async fn settle_rejected_on_launch(
-    state_path: &Path,
-    confirmation: &Arc<Mutex<String>>,
-    tombstone: &Arc<Mutex<Option<String>>>,
-    sync: &Arc<Mutex<observer_model::SyncSnapshot>>,
-) -> bool {
-    let apath = answer_path(state_path);
-    let answer = match read_answer(&apath) {
-        Ok(Some(a)) if !a.rejected.is_empty() => a,
-        _ => return false,
-    };
-
-    let rejected_digest = answer.rejected.clone();
-    match crate::credential::PairedState::load(state_path) {
-        Ok(paired) => {
-            let Some(cred) = paired.credential else {
-                let mut updated = answer;
-                updated.rejected.clear();
-                let _ = write_answer(&apath, &updated);
-                return false;
-            };
-
-            let cert_digest =
-                crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
-            if cert_digest == rejected_digest {
-                // Matching rejected pairing found. Keep its durable intent
-                // unless retirement and local invalidation both complete.
-                let mut retired = false;
-                if let Ok(der_certs) = spl_transport::tls::parse_certs(&cred.client_cert_pem) {
-                    if let Some(der) = der_certs.first() {
-                        let client_id =
-                            format!("sha256:{}", spl_core::ca::sha256_hex(der.as_ref()));
-                        if let Ok(client) = crate::client::ObserverClient::new(
-                            cred.clone(),
-                            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                        ) {
-                            retired = tokio::time::timeout(
-                                std::time::Duration::from_secs(5),
-                                client.retire_client(&client_id),
-                            )
-                            .await
-                            .is_ok_and(|result| result.is_ok());
-                        }
-                    }
-                }
-
-                if !retired {
-                    return true;
-                }
-
-                // Delete pairing.json and pairing.json.tmp
-                let tmp = state_path.with_extension("json.tmp");
-                let mut delete_ok = true;
-                {
-                    let _guard = crate::credential::owner_state_write_guard();
-                    let current = crate::credential::PairedState::load(state_path);
-                    let still_rejected = current
-                        .ok()
-                        .and_then(|state| state.credential)
-                        .is_some_and(|current| {
-                            crate::ack::JournalIdentity::from_credential(&current)
-                                .client_cert_sha256
-                                == rejected_digest
-                        });
-                    if !still_rejected {
-                        return true;
-                    }
-                    if state_path.exists() && std::fs::remove_file(state_path).is_err() {
-                        delete_ok = false;
-                    }
-                    if tmp.exists() && std::fs::remove_file(&tmp).is_err() {
-                        delete_ok = false;
-                    }
-                }
-
-                if delete_ok {
-                    let mut updated = answer;
-                    updated.rejected.clear();
-                    let _ = write_answer(&apath, &updated);
-                    crate::service::publish_pairing(
-                        sync,
-                        confirmation,
-                        tombstone,
-                        crate::service::PairingWrite::NotPaired { detail: None },
-                    );
-                    false
-                } else {
-                    true
-                }
-            } else {
-                let mut updated = answer;
-                updated.rejected.clear();
-                let _ = write_answer(&apath, &updated);
-                false
-            }
-        }
-        Err(TransportError::Io(e)) if e.kind() == ErrorKind::NotFound => {
-            let mut updated = answer;
-            updated.rejected.clear();
-            let _ = write_answer(&apath, &updated);
-            false
-        }
-        Err(_) => {
-            // Unreadable pairing.json: do not clear rejected, skip resume
-            true
         }
     }
 }
