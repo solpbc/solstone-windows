@@ -813,10 +813,10 @@ async fn mark_confirmation_cancel_cleans_up_state() {
     server_task.abort();
 }
 
-/// Reject against an unreachable journal keeps the durable retirement pending
-/// for relaunch instead of dropping the pairing locally.
+/// Reject against an unreachable journal still completes the local retire:
+/// the remote DELETE is best effort and never blocks pairing again.
 #[tokio::test]
-async fn mark_confirmation_reject_unreachable_journal_keeps_retirement_pending() {
+async fn mark_confirmation_reject_unreachable_journal_completes_local_retire() {
     let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -873,22 +873,19 @@ async fn mark_confirmation_reject_unreachable_journal_keeps_retirement_pending()
     .await;
 
     let after = PairedState::load(&state_path).unwrap();
-    assert!(after.is_paired());
-    assert!(after.retirement_intent.is_some());
+    assert!(!after.is_paired());
+    assert!(after.retirement_intent.is_none());
     {
         let snap = sync.lock().unwrap();
-        assert_eq!(snap.pairing.phase, PairingPhase::Failed);
-        assert_eq!(
-            snap.pairing.detail.as_deref(),
-            Some("client_retirement_pending")
-        );
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
     }
 }
 
-/// Reject receiving a non-success HTTP status on the computed id keeps the
-/// durable retirement pending rather than completing the local retire.
+/// Reject receiving a non-success HTTP status on the computed id still
+/// completes the local retire.
 #[tokio::test]
-async fn mark_confirmation_reject_non_success_status_keeps_retirement_pending() {
+async fn mark_confirmation_reject_non_success_status_completes_local_retire() {
     let (cert, key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -971,15 +968,12 @@ async fn mark_confirmation_reject_non_success_status_keeps_retirement_pending() 
     .await;
 
     let after = PairedState::load(&state_path).unwrap();
-    assert!(after.is_paired());
-    assert!(after.retirement_intent.is_some());
+    assert!(!after.is_paired());
+    assert!(after.retirement_intent.is_none());
     {
         let snap = sync.lock().unwrap();
-        assert_eq!(snap.pairing.phase, PairingPhase::Failed);
-        assert_eq!(
-            snap.pairing.detail.as_deref(),
-            Some("client_retirement_pending")
-        );
+        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
     }
 
     server_task.abort();

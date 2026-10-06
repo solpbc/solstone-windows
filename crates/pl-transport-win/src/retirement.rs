@@ -243,8 +243,19 @@ where
                 intent.phase = RetirementPhase::Succeeded;
             }
             Err(error) => {
-                let _ = set_phase_or_superseded(state_path, &intent, RetirementPhase::Unknown)?;
-                return Err(error);
+                let current =
+                    set_phase_or_superseded(state_path, &intent, RetirementPhase::Unknown)?;
+                if intent.operation != RetirementOperation::GuiPairRejection {
+                    return Err(error);
+                }
+                if !current {
+                    return Ok(ReconcileOutcome::Superseded);
+                }
+                // The owner rejected this journal; it may never answer. Its
+                // DELETE is best effort: finish the local retirement so the
+                // owner can pair again, and leave the dead row to the journal.
+                tracing::warn!(target: "sync", error = %error, "rejected journal did not confirm client retirement; retiring locally");
+                intent.phase = RetirementPhase::Unknown;
             }
         }
     }
@@ -1649,11 +1660,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejection_unknown_result_retries_same_intent_on_restart() {
-        let dir = TestDir::new("reject-unknown-restart");
+    async fn rejection_unknown_result_retires_locally_and_restart_retries_once() {
+        let dir = TestDir::new("reject-unknown-local");
         let old = credential("old-rejected");
         let binding = crate::ack::JournalIdentity::from_credential(&old).client_cert_sha256;
-        save_incumbent(&dir.state_path(), old, 13);
+        save_incumbent(&dir.state_path(), old.clone(), 13);
         let first_call = AtomicUsize::new(0);
         let first = reject_pair_with(
             &dir.state_path(),
@@ -1664,25 +1675,36 @@ mod tests {
                 async { Err(TransportError::Io(std::io::Error::other("response lost"))) }
             },
         )
-        .await;
-        assert!(first.is_err());
+        .await
+        .unwrap();
+        assert_eq!(first, ReconcileOutcome::Completed);
         assert_eq!(first_call.load(Ordering::SeqCst), 1);
-        let saved = PairedState::load(&dir.state_path())
-            .unwrap()
-            .retirement_intent
-            .unwrap();
-        assert_eq!(saved.operation, RetirementOperation::GuiPairRejection);
-        assert_eq!(saved.phase, RetirementPhase::Unknown);
+        let settled = PairedState::load(&dir.state_path()).unwrap();
+        assert!(settled.credential.is_none());
+        assert!(settled.retirement_intent.is_none());
 
+        // An intent left behind by an interrupted rejection is retried once at
+        // restart while its credential is still on disk, then dropped even
+        // when the rejected journal still does not answer.
+        save_incumbent(&dir.state_path(), old.clone(), 13);
+        let paired = PairedState::load(&dir.state_path()).unwrap();
+        let intent = new_pair_rejection_intent(&paired, old).unwrap();
+        PairedState::install_pair_rejection_intent(
+            &dir.state_path(),
+            intent.owner_generation,
+            intent.access_mutation_generation,
+            intent.clone(),
+        )
+        .unwrap();
         let replayed = AtomicUsize::new(0);
         let outcome = reconcile_with(&dir.state_path(), |credential, client_id| {
             replayed.fetch_add(1, Ordering::SeqCst);
             assert_eq!(
                 pairing_generation(&credential.client_cert_pem),
-                saved.owner_generation
+                intent.owner_generation
             );
-            assert_eq!(client_id, saved.client_id);
-            success(credential, client_id)
+            assert_eq!(client_id, intent.client_id);
+            async { Err(TransportError::Io(std::io::Error::other("unreachable"))) }
         })
         .await
         .unwrap();

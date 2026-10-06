@@ -921,8 +921,9 @@ impl PairedState {
         Self::save_inner(&protector, path, &state)
     }
 
-    /// Finish a rejected pairing only while the succeeded intent still owns
-    /// the exact credential and access generation. The answer cleanup runs
+    /// Finish a rejected pairing only while the attempted (succeeded or
+    /// unknown) intent still owns the exact credential and access generation.
+    /// The rejected journal's DELETE is best effort and never blocks this. The answer cleanup runs
     /// under the same owner lock before the credential is cleared.
     pub(crate) fn finish_pair_rejection<F>(
         path: &Path,
@@ -950,7 +951,10 @@ impl PairedState {
             || intent.owner_generation != owner_generation
             || intent.candidate_generation != owner_generation
             || intent.access_mutation_generation != access_generation
-            || intent.phase != RetirementPhase::Succeeded
+            || !matches!(
+                intent.phase,
+                RetirementPhase::Succeeded | RetirementPhase::Unknown
+            )
             || current_generation != Some(owner_generation)
             || state.access_mutation_generation != access_generation
         {

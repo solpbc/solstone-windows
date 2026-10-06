@@ -464,6 +464,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(feature = "transport-tests")]
+    #[tokio::test]
+    async fn reject_with_unreachable_journal_still_allows_fresh_pairing() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "session-reject-unreachable-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("pairing.json");
+        let closed_port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let mut rejected = test_credential("rejected-journal");
+        rejected.endpoints[0].port = closed_port;
+        let paired = PairedState {
+            credential: Some(rejected.clone()),
+            ..Default::default()
+        };
+        paired.save(&state_path).unwrap();
+
+        let binding = crate::ack::JournalIdentity::from_credential(&rejected).client_cert_sha256;
+        let mut snapshot = SyncSnapshot::default();
+        snapshot.pairing.binding = binding.clone();
+        snapshot.pairing.phase = PairingPhase::AwaitingConfirmation;
+        let sync = Arc::new(Mutex::new(snapshot));
+        let tombstone = Arc::new(Mutex::new(None));
+        let cfg = SyncConfig {
+            device_label: "device".to_owned(),
+            period_secs: 300,
+            state_path: state_path.clone(),
+            segments_root: dir.join("segments"),
+            local_offset: Arc::new(FixedOffset),
+            journal_version: Arc::new(JournalVersionController::new(
+                dir.join("journal-version.json"),
+            )),
+            facts_fn: Arc::new(RawDeviceFacts::default),
+            confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: tombstone.clone(),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
+        };
+        let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+        let access_mutex = tokio::sync::Mutex::new(Some(access));
+        let slot = tokio::sync::Mutex::new(UploaderSlot::new());
+
+        answer(
+            PairingAction::Reject,
+            &binding,
+            &cfg,
+            &sync,
+            &access_mutex,
+            &slot,
+            None,
+        )
+        .await
+        .unwrap();
+
+        {
+            let snap = sync.lock().unwrap();
+            assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
+            assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+        }
+        assert!(access_mutex.lock().await.is_none());
+        assert_eq!(tombstone.lock().unwrap().as_deref(), Some(binding.as_str()));
+        let after = PairedState::load(&state_path).unwrap();
+        assert!(after.credential.is_none());
+        assert!(after.retirement_intent.is_none());
+        assert!(CredentialAccess::bind(&after, &cfg, sync.clone(), None).is_err());
+
+        crate::service::ensure_pairable(&state_path).unwrap();
+        let fresh = test_credential("fresh-journal");
+        PairedState {
+            credential: Some(fresh.clone()),
+            ..Default::default()
+        }
+        .save_if_unpaired(&state_path)
+        .unwrap();
+        let loaded = PairedState::load(&state_path).unwrap().credential.unwrap();
+        assert_eq!(loaded.client_cert_pem, fresh.client_cert_pem);
+        assert_ne!(loaded.client_cert_pem, rejected.client_cert_pem);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn gui_pair_replacement_persists_intent_before_retirement_and_rebinds_candidate() {
         let nonce = std::time::SystemTime::now()
