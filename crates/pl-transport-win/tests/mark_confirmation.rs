@@ -16,14 +16,14 @@ use observer_model::{
 use observer_pl::ingest::FilePart;
 use pl_transport_win::ack::JournalIdentity;
 use pl_transport_win::answer::{
-    answer_path, read_answer, settle_grandfather, settle_rejected_on_launch, write_answer,
-    AnswerState,
+    answer_path, read_answer, settle_grandfather, write_answer, AnswerState,
 };
 use pl_transport_win::client::{ObserverClient, RouteError};
 #[cfg(feature = "awaiting-hold")]
 use pl_transport_win::coordinator::AwaitingHold;
 use pl_transport_win::coordinator::UploadCoordinator;
 use pl_transport_win::credential::{CasKey, PairedState};
+use pl_transport_win::retirement::{reconcile_on_launch_with, ReconcileOutcome};
 use pl_transport_win::sealed::{LocalSealedStore, SealedStore};
 use pl_transport_win::service::{
     publish_pairing, run_uploader, BoundKind, PairingWrite, SyncConfig,
@@ -541,6 +541,7 @@ async fn mark_confirmation_kick_under_a_paused_clock() {
         &sync,
         &access_mutex,
         &slot,
+        None,
     )
     .await
     .expect("answer confirm");
@@ -663,6 +664,7 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
         &sync,
         &access_mutex,
         &slot,
+        None,
     )
     .await
     .expect("answer reject");
@@ -672,8 +674,11 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
     let delete_req = &delete_received.lock().unwrap()[0];
     assert!(delete_req.contains(&expected_client_id));
 
-    // pairing.json deleted, segments remain, phase is NotPaired(MARK_REJECTED_DETAIL)
-    assert!(!state_path.exists());
+    // pairing.json is unpaired with no pending retirement, segments remain,
+    // phase is NotPaired(MARK_REJECTED_DETAIL)
+    let after = PairedState::load(&state_path).unwrap();
+    assert!(!after.is_paired());
+    assert!(after.retirement_intent.is_none());
     assert!(day_dir.join("000000_300.tar.gz").exists());
     {
         let snap = sync.lock().unwrap();
@@ -788,11 +793,14 @@ async fn mark_confirmation_cancel_cleans_up_state() {
         &sync,
         &access_mutex,
         &slot,
+        None,
     )
     .await
     .expect("answer cancel");
 
-    assert!(!state_path.exists());
+    let after = PairedState::load(&state_path).unwrap();
+    assert!(!after.is_paired());
+    assert!(after.retirement_intent.is_none());
     {
         let snap = sync.lock().unwrap();
         assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
@@ -805,9 +813,10 @@ async fn mark_confirmation_cancel_cleans_up_state() {
     server_task.abort();
 }
 
-/// Reject against an unreachable journal still completes local retire and deletes pairing.json.
+/// Reject against an unreachable journal keeps the durable retirement pending
+/// for relaunch instead of dropping the pairing locally.
 #[tokio::test]
-async fn mark_confirmation_reject_unreachable_journal_completes_local_retire() {
+async fn mark_confirmation_reject_unreachable_journal_keeps_retirement_pending() {
     let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -859,20 +868,27 @@ async fn mark_confirmation_reject_unreachable_journal_completes_local_retire() {
         &sync,
         &access_mutex,
         &slot,
+        None,
     )
     .await;
 
-    assert!(!state_path.exists());
+    let after = PairedState::load(&state_path).unwrap();
+    assert!(after.is_paired());
+    assert!(after.retirement_intent.is_some());
     {
         let snap = sync.lock().unwrap();
-        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
-        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+        assert_eq!(snap.pairing.phase, PairingPhase::Failed);
+        assert_eq!(
+            snap.pairing.detail.as_deref(),
+            Some("client_retirement_pending")
+        );
     }
 }
 
-/// Reject receiving non-success HTTP status on computed id still completes local retire.
+/// Reject receiving a non-success HTTP status on the computed id keeps the
+/// durable retirement pending rather than completing the local retire.
 #[tokio::test]
-async fn mark_confirmation_reject_non_success_status_completes_local_retire() {
+async fn mark_confirmation_reject_non_success_status_keeps_retirement_pending() {
     let (cert, key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -950,22 +966,29 @@ async fn mark_confirmation_reject_non_success_status_completes_local_retire() {
         &sync,
         &access_mutex,
         &slot,
+        None,
     )
     .await;
 
-    assert!(!state_path.exists());
+    let after = PairedState::load(&state_path).unwrap();
+    assert!(after.is_paired());
+    assert!(after.retirement_intent.is_some());
     {
         let snap = sync.lock().unwrap();
-        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
-        assert_eq!(snap.pairing.detail.as_deref(), Some(MARK_REJECTED_DETAIL));
+        assert_eq!(snap.pairing.phase, PairingPhase::Failed);
+        assert_eq!(
+            snap.pairing.detail.as_deref(),
+            Some("client_retirement_pending")
+        );
     }
 
     server_task.abort();
 }
 
-/// A failed rejected write still stops uploader, sends one DELETE, and deletes pairing.json.
+/// A failed rejected-answer write sends no DELETE and leaves the durable
+/// retirement pending with the pairing retained for relaunch.
 #[tokio::test]
-async fn mark_confirmation_reject_failed_answer_write_stops_and_deletes() {
+async fn mark_confirmation_reject_failed_answer_write_sends_no_delete_and_keeps_pending() {
     let (cert, key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1050,11 +1073,14 @@ async fn mark_confirmation_reject_failed_answer_write_stops_and_deletes() {
         &sync,
         &access_mutex,
         &slot,
+        None,
     )
     .await;
 
-    assert_eq!(delete_received.lock().unwrap().len(), 1);
-    assert!(!state_path.exists());
+    assert_eq!(delete_received.lock().unwrap().len(), 0);
+    let after = PairedState::load(&state_path).unwrap();
+    assert!(after.is_paired());
+    assert!(after.retirement_intent.is_some());
 
     server_task.abort();
 }
@@ -1109,6 +1135,7 @@ async fn mark_confirmation_stale_answer_changes_nothing() {
         &sync,
         &access_mutex,
         &slot,
+        None,
     )
     .await
     .expect("answer stale");
@@ -1182,8 +1209,6 @@ async fn mark_confirmation_launch_finish_precedes_grandfather() {
     let state_path = dir.path().join("pairing.json");
     let ans_path = answer_path(&state_path);
     let confirmation = Arc::new(Mutex::new(String::new()));
-    let tombstone = Arc::new(Mutex::new(None));
-    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
 
     let cred = direct_credential(pin, 1);
     let digest = JournalIdentity::from_credential(&cred).client_cert_sha256;
@@ -1193,25 +1218,21 @@ async fn mark_confirmation_launch_finish_precedes_grandfather() {
     };
     paired.save(&state_path).unwrap();
 
-    // 1. Answer file has rejected = digest
+    // 1. Answer file has rejected = digest: launch stages and completes the retirement
     let ans = AnswerState {
         confirmed: String::new(),
         rejected: digest.clone(),
     };
     write_answer(&ans_path, &ans).unwrap();
 
-    let skip_resume =
-        settle_rejected_on_launch(&state_path, &confirmation, &tombstone, &sync).await;
-    assert!(!skip_resume);
-    assert!(!state_path.exists());
+    let outcome = reconcile_on_launch_with(&state_path, |_, _| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(outcome, ReconcileOutcome::Completed);
+    assert!(!PairedState::load(&state_path).unwrap().is_paired());
     let ans_after = read_answer(&ans_path).unwrap().unwrap();
     assert_eq!(ans_after.rejected, "");
     assert_eq!(ans_after.confirmed, "");
-    {
-        let snap = sync.lock().unwrap();
-        assert_eq!(snap.pairing.phase, PairingPhase::NotPaired);
-        assert_eq!(snap.pairing.detail, None);
-    }
 
     // 2. Absent answer file + pairing.json becomes confirmed
     paired.save(&state_path).unwrap();
@@ -1968,6 +1989,7 @@ async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
         &sync,
         &access_mutex,
         &slot_mutex,
+        None,
     )
     .await
     .expect("answer confirm");
@@ -1978,10 +2000,11 @@ async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
     server_task.abort();
 }
 
-/// 1. Absent answer, invalid pairing.json, ceremony fails -> empty answer on disk, replace with pre-gate cred A -> launch_resume leaves AwaitingConfirmation (not grandfathered).
+/// 1. Absent answer, malformed pairing.json -> pair refuses before any write; an
+/// empty answer file written beside a later pre-gate cred A -> launch_resume
+/// leaves AwaitingConfirmation (not grandfathered).
 #[tokio::test]
-async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_unconfirmed_on_resume(
-) {
+async fn session_pair_malformed_pairing_json_refuses_before_any_write_and_is_not_grandfathered() {
     let dir = TempDir::new("pair-invalid-json");
     let state_path = dir.path().join("pairing.json");
     let ans_path = answer_path(&state_path);
@@ -2019,13 +2042,11 @@ async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_
         || async {},
     )
     .await;
-    assert!(res.is_err());
-
-    let ans = read_answer(&ans_path)
-        .unwrap()
-        .expect("answer file must exist");
-    assert_eq!(ans.confirmed, "");
-    assert_eq!(ans.rejected, "");
+    assert!(matches!(
+        res,
+        Err(pl_transport_win::TransportError::CredentialMalformed)
+    ));
+    assert!(read_answer(&ans_path).unwrap().is_none());
     assert_eq!(std::fs::read(&state_path).unwrap(), b"invalid json content");
 
     let (cert, _key) = self_signed();
@@ -2035,6 +2056,7 @@ async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_
         credential: Some(cred_a),
         ..Default::default()
     };
+    write_answer(&ans_path, &AnswerState::default()).unwrap();
     paired_a.save(&state_path).unwrap();
 
     let mut uploader_slot = UploaderSlot::new();
@@ -2094,14 +2116,13 @@ async fn session_pair_answer_tmp_is_dir_returns_error_and_leaves_pairing_json_un
     assert_eq!(std::fs::read(&state_path).unwrap(), b"invalid json content");
 }
 
-/// 3. Absent answer file, unreadable pairing.json, then pair that returns Ok -> empty answer file exists before saved B is loaded -> launch_resume leaves B AwaitingConfirmation.
+/// 3. Absent answer file and no pairing, then pair that returns Ok -> empty answer file exists before saved B is loaded -> launch_resume leaves B AwaitingConfirmation.
 #[tokio::test]
 async fn session_pair_success_creates_empty_answer_before_saving_credential_and_leaves_awaiting_on_resume(
 ) {
     let dir = TempDir::new("pair-ok-empty-ans");
     let state_path = dir.path().join("pairing.json");
     let ans_path = answer_path(&state_path);
-    std::fs::write(&state_path, b"invalid json content").unwrap();
 
     let mock_state = Arc::new(support::relay_pairing::MockState::normal().with_same_tls_ca());
     let origin = support::relay_pairing::spawn_mock_relay(mock_state.clone()).await;
@@ -2288,7 +2309,8 @@ async fn assert_failed_repair_preserves_incumbent(confirmed: bool) {
     }
 }
 
-/// 5. Unreadable answer file -> session::pair does not rewrite it; phase stays awaiting; bytes unchanged.
+/// 5. Unreadable answer file -> session::pair does not rewrite it; launch fails
+/// closed with an explicit error instead of guessing the gate; bytes unchanged.
 #[tokio::test]
 async fn session_pair_unreadable_answer_file_returns_error_and_does_not_rewrite() {
     let dir = TempDir::new("pair-unreadable-ans");
@@ -2344,11 +2366,7 @@ async fn session_pair_unreadable_answer_file_returns_error_and_does_not_rewrite(
     let mut uploader_slot = UploaderSlot::new();
     let resumed_access =
         pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await;
-    assert!(resumed_access.is_some());
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(
-        sync.lock().unwrap().pairing.phase,
-        PairingPhase::AwaitingConfirmation
-    );
+    assert!(resumed_access.is_none());
+    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Failed);
     assert_eq!(std::fs::read(&ans_path).unwrap(), unreadable_bytes);
 }

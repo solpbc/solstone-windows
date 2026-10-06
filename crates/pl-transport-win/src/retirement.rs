@@ -85,8 +85,20 @@ where
 
 /// Reconcile a saved intent before migration, pairing admission, or any send.
 pub async fn reconcile_on_launch(state_path: &Path) -> Result<ReconcileOutcome, TransportError> {
+    reconcile_on_launch_with(state_path, retire_credential).await
+}
+
+/// The launch reconciliation with an injected retirement callback.
+pub async fn reconcile_on_launch_with<F, Fut>(
+    state_path: &Path,
+    retire: F,
+) -> Result<ReconcileOutcome, TransportError>
+where
+    F: FnOnce(Credential, String) -> Fut,
+    Fut: Future<Output = Result<(), TransportError>>,
+{
     stage_legacy_rejection(state_path)?;
-    reconcile_with(state_path, retire_credential).await
+    reconcile_with(state_path, retire).await
 }
 
 /// Convert a legacy rejected digest into the same typed transaction before
