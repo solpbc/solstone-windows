@@ -62,12 +62,6 @@ struct ApprovedNode {
 
 const APPROVED_NODES: &[ApprovedNode] = &[
     ApprovedNode {
-        path: "crates/pl-transport-win/src/device_marker.rs",
-        kind: ApprovedKind::ImplMethod,
-        name: "system_id_for_publisher",
-        owner: Some("WindowsMarkerProvider"),
-    },
-    ApprovedNode {
         path: "crates/platform-win/src/owner_data.rs",
         kind: ApprovedKind::Fn,
         name: "publish_exact_file",

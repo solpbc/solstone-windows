@@ -38,7 +38,7 @@ awaiting-hold = []
 transport-tests = []
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WinRT", "System_Profile", "Security_Cryptography", "Storage_Streams"] }
+windows = { version = "0.58", features = ["Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem", "System_Profile", "Security_Cryptography", "Storage_Streams"] }
 winreg = "0.55"
 
 [dev-dependencies]

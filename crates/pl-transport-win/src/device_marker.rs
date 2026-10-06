@@ -141,29 +141,23 @@ struct WindowsMarkerProvider;
 
 #[cfg(windows)]
 impl MarkerProvider for WindowsMarkerProvider {
-    #[allow(unsafe_code)]
     fn system_id_for_publisher(&self) -> Result<Option<Vec<u8>>, MarkerProbeError> {
         use windows::Security::Cryptography::CryptographicBuffer;
         use windows::System::Profile::SystemIdentification;
-        use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 
-        let initialized = unsafe { RoInitialize(RO_INIT_MULTITHREADED).is_ok() };
-        let result = (|| {
-            let info =
-                SystemIdentification::GetSystemIdForPublisher().map_err(|_| MarkerProbeError)?;
-            if info.Source().map_err(|_| MarkerProbeError)?.0 == 0 {
-                return Ok(None);
-            }
-            let buffer = info.Id().map_err(|_| MarkerProbeError)?;
-            let mut bytes = windows::core::Array::<u8>::new();
-            CryptographicBuffer::CopyToByteArray(&buffer, &mut bytes)
-                .map_err(|_| MarkerProbeError)?;
-            Ok((!bytes.is_empty()).then(|| bytes.as_ref().to_vec()))
-        })();
-        if initialized {
-            unsafe { RoUninitialize() };
+        // The activation factory is cached process-wide by the bindings, which
+        // initialize the multithreaded apartment themselves when a thread has
+        // none. Pairing a manual RoInitialize with RoUninitialize here tore
+        // that apartment down behind the cached factory, so a second probe in
+        // the same process on another thread faulted.
+        let info = SystemIdentification::GetSystemIdForPublisher().map_err(|_| MarkerProbeError)?;
+        if info.Source().map_err(|_| MarkerProbeError)?.0 == 0 {
+            return Ok(None);
         }
-        result
+        let buffer = info.Id().map_err(|_| MarkerProbeError)?;
+        let mut bytes = windows::core::Array::<u8>::new();
+        CryptographicBuffer::CopyToByteArray(&buffer, &mut bytes).map_err(|_| MarkerProbeError)?;
+        Ok((!bytes.is_empty()).then(|| bytes.as_ref().to_vec()))
     }
 
     fn registry_fallback(&self) -> Result<Option<Vec<u8>>, MarkerProbeError> {
