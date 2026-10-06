@@ -826,13 +826,23 @@ impl UploadCoordinator {
                     let same_journal = ack.journal_identity.instance_id
                         == current_identity.instance_id
                         && ack.journal_identity.ca_fp_prefix == current_identity.ca_fp_prefix;
-                    let physical_match = if same_journal {
+                    // Acks written before physical identity was recorded carry
+                    // none of the four fields (a partial set never parses); they
+                    // keep the prior same-journal gate, where try_gate_delete
+                    // still proves every local file by name, size and hash.
+                    let legacy_ack = ack.physical_index.is_none()
+                        && ack.physical_segment.is_none()
+                        && ack.physical_stream.is_none()
+                        && ack.original_upload_key.is_none();
+                    let physical_match = if !same_journal {
+                        Ok(false)
+                    } else if legacy_ack {
+                        Ok(true)
+                    } else {
                         match segments.get(&index) {
                             Some(segment) => self.ack_matches_physical(index, segment, &ack),
                             None => Ok(false),
                         }
-                    } else {
-                        Ok(false)
                     };
                     match physical_match {
                         Ok(true) => match self.try_gate_delete(index, &ack.files) {
@@ -1618,9 +1628,14 @@ impl UploadCoordinator {
                                             (None, None) => item.key == unk.segment_key,
                                             _ => false,
                                         };
+                                    // The journal populates `original_key` only for
+                                    // some collision groups; when present it must
+                                    // agree with the local upload key.
                                     if !physical_match
-                                        || item.original_key.as_deref()
-                                            != Some(unk.segment_key.as_str())
+                                        || item
+                                            .original_key
+                                            .as_deref()
+                                            .is_some_and(|key| key != unk.segment_key)
                                         || item.files.len() != unk.local_files.len()
                                     {
                                         continue;
@@ -1697,9 +1712,7 @@ impl UploadCoordinator {
                                     unk.index,
                                     item.segment.as_deref().unwrap_or(&unk.segment_key),
                                     item.stream.as_deref().unwrap_or("_default"),
-                                    item.original_key
-                                        .as_deref()
-                                        .expect("eligibility requires original upload identity"),
+                                    item.original_key.as_deref().unwrap_or(&unk.segment_key),
                                 );
                                 if let Err(e) = self.store.write_ack(unk.index, &ack) {
                                     tracing::warn!(
@@ -2854,9 +2867,8 @@ mod tests {
             .unwrap_or(300);
         let day = civil::day_string_local(boundary, 0);
         let segment = civil::segment_key_string_local(boundary, 0, len_secs);
-        let ack =
-            UploadAck::new_upload(identity, day, segment.clone(), segment.clone(), "ok", files)
-                .with_physical_identity(index, segment.clone(), "_default", segment);
+        // Pre-physical-identity marker shape: the legacy gate must still delete.
+        let ack = UploadAck::new_upload(identity, day, segment.clone(), segment, "ok", files);
         std::fs::write(dir.join(UPLOADED_MARKER), ack.to_bytes().unwrap()).unwrap();
     }
 
@@ -3174,7 +3186,7 @@ mod tests {
                         },
                         submitted_name: None,
                     }],
-                    original_key: Some(segment_key),
+                    original_key: None,
                     segment: None,
                     stream: None,
                 }],
@@ -4373,6 +4385,17 @@ mod tests {
 
     #[tokio::test]
     async fn reassigned_listing_alias_recovers_the_physical_candidate_after_restart() {
+        alias_listing_recovers_the_physical_candidate(true).await;
+    }
+
+    /// The journal lists ordinary and most collided segments without
+    /// `original_key`; the alias must still confirm from `segment`/`stream`.
+    #[tokio::test]
+    async fn listing_alias_without_original_key_confirms_the_physical_candidate() {
+        alias_listing_recovers_the_physical_candidate(false).await;
+    }
+
+    async fn alias_listing_recovers_the_physical_candidate(with_original_key: bool) {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         let boundary = 1_700_000_100;
         let file_name = "audio.flac";
@@ -4407,7 +4430,7 @@ mod tests {
                     status: SegmentFileStatus::Present,
                     submitted_name: None,
                 }],
-                original_key: Some(physical_segment.clone()),
+                original_key: with_original_key.then(|| physical_segment.clone()),
                 segment: Some(physical_segment.clone()),
                 stream: Some("_default".to_owned()),
             }],
@@ -5520,11 +5543,10 @@ mod tests {
             coordinator.client.journal_identity(),
             civil::day_string_local(300, 0),
             local_segment1.clone(),
-            local_segment1.clone(),
+            local_segment1,
             "ok",
             &[desc1],
-        )
-        .with_physical_identity(1, local_segment1.clone(), "_default", local_segment1);
+        );
         let _ = coordinator.store.write_ack(1, &ack1);
 
         // 2. Valid foreign ack -> .uploaded stripped, media and .len retained
@@ -5650,11 +5672,10 @@ mod tests {
             coordinator.client.journal_identity(),
             civil::day_string_local(2100, 0),
             local_segment7.clone(),
-            local_segment7.clone(),
+            local_segment7,
             "ok",
             &[],
-        )
-        .with_physical_identity(7, local_segment7.clone(), "_default", local_segment7);
+        );
         let _ = coordinator.store.write_ack(7, &ack7);
 
         // 8. 0-media directory with no ack or unparsable marker -> sidecars and dir removed
