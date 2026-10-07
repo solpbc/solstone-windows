@@ -1718,23 +1718,25 @@ mod tests {
             assert!(view_while_pending.decision_result.is_none());
 
             if check_guard {
-                let start = std::time::Instant::now();
-                let mut acquired = false;
-                while start.elapsed() < std::time::Duration::from_secs(2) {
-                    if let Some(_guard) = crate::credential::try_owner_state_write_guard() {
-                        acquired = true;
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
+                // Queue a writer instead of sampling a process-global mutex:
+                // parallel credential tests also write while this list is paused.
+                let probe = tokio::task::spawn_blocking(|| {
+                    let _guard = crate::credential::owner_state_write_guard();
+                });
+                let acquired = tokio::time::timeout(std::time::Duration::from_secs(10), probe)
+                    .await
+                    .is_ok_and(|result| result.is_ok());
+                // Always release the list before asserting, including a red probe.
+                release_tx.send(release_result).unwrap();
+                task.await.unwrap().unwrap();
                 assert!(
                     acquired,
                     "must not hold owner_state_write_guard during list await"
                 );
+            } else {
+                release_tx.send(release_result).unwrap();
+                task.await.unwrap().unwrap();
             }
-
-            release_tx.send(release_result).unwrap();
-            task.await.unwrap().unwrap();
             (dir, state_path)
         }
 
@@ -2821,22 +2823,20 @@ mod tests {
 
         started_rx.await.unwrap();
 
-        let start = std::time::Instant::now();
-        let mut acquired = false;
-        while start.elapsed() < std::time::Duration::from_secs(2) {
-            if let Some(_guard) = crate::credential::try_owner_state_write_guard() {
-                acquired = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        // A queued writer tolerates unrelated parallel writers without mistaking
+        // their brief ownership for a lock held across this preparation await.
+        let probe = tokio::task::spawn_blocking(|| {
+            let _guard = crate::credential::owner_state_write_guard();
+        });
+        let acquired = tokio::time::timeout(std::time::Duration::from_secs(10), probe)
+            .await
+            .is_ok_and(|result| result.is_ok());
+        release_tx.send(()).unwrap();
+        task.await.unwrap().unwrap();
         assert!(
             acquired,
             "owner state write guard must not be held during prepare await"
         );
-
-        release_tx.send(()).unwrap();
-        task.await.unwrap().unwrap();
 
         let _ = std::fs::remove_dir_all(dir);
     }

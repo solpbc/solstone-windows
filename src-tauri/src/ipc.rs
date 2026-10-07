@@ -390,6 +390,7 @@ fn migration_ui_snapshot(
 pub async fn pairing_migration_state(
     state: tauri::State<'_, crate::app::AppState>,
 ) -> Result<MigrationUiSnapshot, String> {
+    let state = state.inner();
     let path = &state.sync_config.state_path;
     let mut issue = None;
     let record = match pl_transport_win::migration::load(path) {
@@ -413,7 +414,7 @@ pub async fn pairing_migration_state(
             .as_ref()
             .is_some_and(|decision| decision.result == "unknown")
         {
-            match migration_client(&state).await {
+            match migration_client(state).await {
                 Ok(client) => {
                     match pl_transport_win::migration::reconcile_saved_decision(
                         path,
