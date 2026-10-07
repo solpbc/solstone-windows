@@ -6,6 +6,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.21] - 2026-10-07
+
+### Added
+
+- when you pair a computer that wasn't already paired and confirm your journal's mark, the solstone app's pairing settings ask "is this replacing one of your devices?" if you choose the device it replaces, this computer continues that device's name and history, and the device you chose can no longer reach your journal. you can also keep both.
+
+### Fixed
+
+- if windows won't unlock this computer's saved connection to your journal, for example after your windows profile is copied to another computer, the solstone app now lets you pair again, and anything waiting to send stays on this computer. before, it stopped connecting to your journal.
+
 ## [2.0.20] - 2026-10-06
 
 ### Fixed
