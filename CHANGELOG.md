@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- the question about replacing a device is now skipped when your journal lists no other paired device. it still appears when another device is listed.
+
 ## [2.0.21] - 2026-10-07
 
 ### Added
