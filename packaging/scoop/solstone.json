@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-only",
   "notes": [
     "run 'scoop update solstone' for new versions.",
-    "your local segments live in %LOCALAPPDATA%\\SolstoneOwner and are preserved across Scoop updates."
+    "your local segments live in %LOCALAPPDATA%\\Solstone and are preserved across Scoop updates."
   ],
   "architecture": {
     "64bit": {

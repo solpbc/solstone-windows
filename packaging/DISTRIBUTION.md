@@ -152,5 +152,5 @@ shortcut keeps the `solstone` name. Scoop removes the old shim at the first
 
 Each install method has a single update owner (above) — never two. A user who
 installs via winget is updated in place by the app; a user who installs via scoop
-is updated by `scoop update`. Journal data lives in `%LocalAppData%\SolstoneOwner` and
+is updated by `scoop update`. Journal data lives in `%LocalAppData%\Solstone` and
 is preserved across updates regardless of channel.

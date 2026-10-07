@@ -62,36 +62,6 @@ struct ApprovedNode {
 
 const APPROVED_NODES: &[ApprovedNode] = &[
     ApprovedNode {
-        path: "crates/platform-win/src/owner_data.rs",
-        kind: ApprovedKind::Fn,
-        name: "publish_exact_file",
-        owner: None,
-    },
-    ApprovedNode {
-        path: "crates/platform-win/src/owner_data.rs",
-        kind: ApprovedKind::Fn,
-        name: "open_windows_source_file",
-        owner: None,
-    },
-    ApprovedNode {
-        path: "crates/platform-win/src/owner_data.rs",
-        kind: ApprovedKind::Fn,
-        name: "remove_windows_source_file",
-        owner: None,
-    },
-    ApprovedNode {
-        path: "crates/platform-win/src/owner_data.rs",
-        kind: ApprovedKind::Fn,
-        name: "remove_windows_empty_source_dir",
-        owner: None,
-    },
-    ApprovedNode {
-        path: "crates/platform-win/src/owner_data.rs",
-        kind: ApprovedKind::Fn,
-        name: "windows_parent_guards",
-        owner: None,
-    },
-    ApprovedNode {
         path: "crates/pl-transport-win/src/credential.rs",
         kind: ApprovedKind::Fn,
         name: "publish_staged_file",
@@ -149,12 +119,6 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::Fn,
         name: "probe_app_presence",
-        owner: None,
-    },
-    ApprovedNode {
-        path: "crates/platform-win/src/lib.rs",
-        kind: ApprovedKind::Fn,
-        name: "show_startup_refusal",
         owner: None,
     },
     ApprovedNode {

@@ -83,7 +83,7 @@ history. Reference only the public charter and license.
 | `make pull-releases` | pull the box's packed `Releases/` for a controlled aggregate workflow; does not publish |
 | `make publish` | fail-closed direct-publication guard; publish the required exact-byte GitHub mirror separately after aggregate R2 publication |
 | `make smoke` | Session-1 scheduled-task FlaUI smoke vs the installed app |
-| `make run` | launch from the tree + tail `%LocalAppData%\SolstoneOwner\logs\` |
+| `make run` | launch from the tree + tail `%LocalAppData%\Solstone\logs\` |
 | `make clean` | `cargo clean` + remove `ui/dist` and `Releases/` |
 
 ### Target evidence

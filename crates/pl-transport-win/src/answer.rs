@@ -111,9 +111,9 @@ pub fn read_answer(path: &Path) -> Result<Option<AnswerState>, StorageError> {
 }
 
 /// Read the answer file, treating an unreadable or corrupt one as "answer
-/// unknown". Its bytes are moved aside to an evidence name outside the
-/// owner-data adoption inventory (never deleted) and an empty answer replaces
-/// it, so a pairing stays held until the owner answers its mark again.
+/// unknown". Its bytes are moved aside to an evidence name (never deleted)
+/// and an empty answer replaces it, so a pairing stays held until the owner
+/// answers its mark again.
 /// Unknown is never read as confirmed or rejected.
 pub fn read_answer_or_reset(path: &Path) -> Result<Option<AnswerState>, StorageError> {
     if let Ok(answer) = read_answer(path) {

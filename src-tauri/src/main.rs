@@ -41,88 +41,15 @@ fn main() -> ExitCode {
         return code;
     }
 
-    let is_velo_hook = early_args
-        .first()
-        .is_some_and(|arg| arg.starts_with("--veloapp-"));
-    let is_read_only = [
-        "--dump-state",
-        "--healthz",
-        "--browser-status",
-        "--dump-windows",
-        "--log-path",
-    ]
-    .iter()
-    .any(|flag| early_args.iter().any(|arg| arg == flag));
-    let is_update_cli = ["--check-update", "--apply-update"]
-        .iter()
-        .any(|flag| early_args.iter().any(|arg| arg == flag));
-    let is_integration = pl_transport_win::integration::is_selected(&early_args);
-    let needs_owner_session = !is_velo_hook && !is_read_only && !is_update_cli;
-
-    // Claim the same session mutex used by the GUI before adoption, startup
-    // update work, integration writes, logging, or any owner-root seed.
-    if needs_owner_session {
-        match crate::lifecycle::acquire_single_instance() {
-            platform_win::InstanceLock::Acquired => {}
-            platform_win::InstanceLock::AlreadyRunning => {
-                if is_integration {
-                    eprintln!("integration refused: another app instance owns the profile");
-                    return ExitCode::FAILURE;
-                }
-                let open_journal = early_args.iter().any(|arg| arg == "--open-journal");
-                let view = early_args
-                    .windows(2)
-                    .find(|pair| pair[0] == "--open-view")
-                    .and_then(|pair| observer_model::View::parse(&pair[1]));
-                let acknowledged = if open_journal {
-                    crate::control::signal_open_journal()
-                } else if let Some(view) = view {
-                    match view {
-                        observer_model::View::Settings => crate::control::signal_surface(),
-                        observer_model::View::About => crate::control::signal_surface_about(),
-                    }
-                } else if observer_model::launch_should_surface(&early_args) {
-                    crate::control::signal_surface()
-                } else {
-                    true
-                };
-                return if acknowledged {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                };
-            }
-        }
-        if let Err(error) = platform_win::owner_data::adopt_legacy_state() {
-            eprintln!(
-                "startup refused: owner data adoption failed; source data retained ({})",
-                error.kind()
-            );
-            if !is_integration {
-                platform_win::show_startup_refusal(
-                    "solstone couldn't start",
-                    "the solstone app couldn't move your saved settings and journal connection to a new folder, so it didn't start. nothing was removed. start the solstone app again, or email support@solstone.app and we'll help.",
-                );
-            }
-            return ExitCode::FAILURE;
-        }
-    }
-
-    // Neutralize `.betaId` and inspect startup staging before Velopack's own
-    // startup hook can construct its updater. A failed check disables auto-apply
-    // for this launch; the in-app and CLI paths report updater availability on
-    // their own.
-    let startup_apply_enabled = !is_velo_hook && !is_read_only && !is_update_cli && !is_integration;
-    let startup_update = if startup_apply_enabled {
-        update::prepare_startup_apply()
-    } else {
-        update::StartupApplyState::default()
-    };
-
-    // Startup may stop every process under `current\`; send browser hosts away
-    // before Velopack applies the staged package.
+    // Startup or the CLI handler applies a downloaded update before GUI startup
+    // (killing every process under `current\`): ask the running app to send its
+    // browser hosts away first. Velopack's own hook invocations skip this.
     #[cfg(feature = "browser-host")]
-    if startup_update.pending {
+    if !early_args
+        .first()
+        .is_some_and(|a| a.starts_with("--veloapp-"))
+        && update::startup_apply_pending()
+    {
         browser::quiesce_before_apply();
     }
 
@@ -139,7 +66,7 @@ fn main() -> ExitCode {
         // The explicit apply handler restarts with empty arguments. Startup's
         // automatic apply forwards argv, which would run --apply-update again
         // in the new process and exit because the package is already installed.
-        .set_auto_apply_on_startup(startup_apply_enabled && startup_update.manager_ready)
+        .set_auto_apply_on_startup(!early_args.iter().any(|a| a == "--apply-update"))
         .on_before_uninstall_fast_callback(|_version| {
             if let Ok(exe) = std::env::current_exe() {
                 let _ = platform_win::autostart::remove_login_item_if_matches(
@@ -195,14 +122,14 @@ fn main() -> ExitCode {
 
     // Operator integration mode. The selection predicate and every decision live
     // in the gated `pl-transport-win` crate; this is dispatch only.
-    if is_integration {
-        return integration::dispatch(&args).unwrap_or(ExitCode::FAILURE);
+    if let Some(code) = integration::dispatch(&args) {
+        return code;
     }
 
     if args.iter().any(|a| a == "--log-path") {
         use std::io::Write as _;
 
-        let path = observer_log::active_log_path(&platform_win::existing_data_root().join("logs"));
+        let path = observer_log::active_log_path(&platform_win::logs_dir());
         let absolute = if path.is_absolute() {
             path
         } else {

@@ -421,11 +421,7 @@ mod imp {
 
     /// `--browser-status`: print what the running app last published.
     pub fn status_cli() -> ExitCode {
-        match std::fs::read_to_string(
-            platform_win::existing_data_root()
-                .join("browser-intake")
-                .join("status.json"),
-        ) {
+        match std::fs::read_to_string(status_path()) {
             Ok(text) => {
                 println!("{}", text.trim_end());
                 ExitCode::SUCCESS
