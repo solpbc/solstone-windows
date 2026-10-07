@@ -480,6 +480,15 @@ pub(crate) fn owner_state_write_guard() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[cfg(test)]
+pub(crate) fn try_owner_state_write_guard() -> Option<std::sync::MutexGuard<'static, ()>> {
+    match PAIRING_MUTEX.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn sync_published_path(path: &Path) -> Result<(), std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));

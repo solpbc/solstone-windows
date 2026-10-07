@@ -4,9 +4,11 @@
 //! Durable client-side state for the fresh-pair replacement offer: after a
 //! fresh pairing the owner may say this device replaces one of the journal's
 //! other paired devices, through the journal's device-migration v1 decision
-//! endpoint. The exact decision request is saved before it is sent and is only
-//! ever replayed byte-for-byte, so an unanswered decision stays unknown until
-//! the journal proves its result.
+//! endpoint. A confirmed fresh pair shows the offer only after `ShowOffer`; an
+//! unchecked list hides it (including while a read is in flight), and
+//! `NoOtherDevice` retires it with no decision. The exact decision request is
+//! saved before it is sent and is only ever replayed byte-for-byte, so an
+//! unanswered decision stays unknown until the journal proves its result.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +22,22 @@ use crate::credential::{pairing_generation, Credential, PairedState};
 use crate::{ObserverClient, TransportError};
 
 pub const MIGRATION_RECORD_SCHEMA: &str = "solstone.windows-device-migration.v1";
+
+/// Classification of a fresh-pair offer's device-replacement eligibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FreshPairEligibility {
+    /// Not yet classified. `record_fresh_pair_offer` writes this.
+    /// Missing on an older file. Hides the offer.
+    #[default]
+    Unchecked,
+    /// Durable show-offer. A non-empty other-CID list, or an unavailable read.
+    /// `offer_pending` stays true.
+    ShowOffer,
+    /// Durable retirement. The list succeeded and had no other exact CID.
+    /// No decision is sent.
+    NoOtherDevice,
+}
 
 /// The owner's answer to the fresh-pair offer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +157,8 @@ pub struct MigrationRecord {
     pub cid: String,
     /// Mark-answer binding of this pairing's client certificate.
     pub binding: String,
+    #[serde(default)]
+    pub eligibility: FreshPairEligibility,
     pub pending_decision: Option<SavedDecision>,
     #[serde(default)]
     pub terminal_decisions: Vec<SavedDecision>,
@@ -481,8 +501,8 @@ pub async fn reconcile_saved_decision(
 }
 
 /// The owner-facing view. The offer is available only for the current,
-/// mark-confirmed pairing it was recorded for, and only until it was answered
-/// or dismissed.
+/// mark-confirmed pairing it was recorded for, after `ShowOffer` classification,
+/// and only until it was answered or dismissed.
 pub fn view(state_path: &Path) -> Result<Option<MigrationView>, TransportError> {
     let Some(record) = load(state_path)? else {
         return Ok(None);
@@ -493,7 +513,8 @@ pub fn view(state_path: &Path) -> Result<Option<MigrationView>, TransportError> 
     let current_binding = PairedState::load(state_path)?
         .credential
         .map(|credential| JournalIdentity::from_credential(&credential).client_cert_sha256);
-    let offer_available = record.offer_pending
+    let offer_available = record.eligibility == FreshPairEligibility::ShowOffer
+        && record.offer_pending
         && !record.offer_shown
         && current_binding.as_deref() == Some(record.binding.as_str())
         && answer.rejected.is_empty()
@@ -527,6 +548,7 @@ pub fn record_fresh_pair_offer(
         phase: MigrationPhase::Offered,
         cid: credential_cid(credential)?,
         binding: JournalIdentity::from_credential(credential).client_cert_sha256,
+        eligibility: FreshPairEligibility::Unchecked,
         pending_decision: None,
         terminal_decisions: Vec::new(),
         server_state: None,
@@ -536,6 +558,104 @@ pub fn record_fresh_pair_offer(
         offer_shown: false,
     };
     save(state_path, &mut record)
+}
+
+/// True only when an unresolved fresh-pair offer is ready for other-device classification.
+pub fn fresh_pair_offer_needs_list(state_path: &Path) -> Result<bool, TransportError> {
+    let Some(record) = load(state_path)? else {
+        return Ok(false);
+    };
+    if !record.offer_pending
+        || record.offer_shown
+        || record.phase != MigrationPhase::Offered
+        || record.pending_decision.is_some()
+        || record.server_state.is_some()
+        || record.eligibility != FreshPairEligibility::Unchecked
+    {
+        return Ok(false);
+    }
+    let Some(answer) = read_answer(&answer_path(state_path)).map_err(TransportError::from)? else {
+        return Ok(false);
+    };
+    if !answer.rejected.is_empty()
+        || answer.confirmed.is_empty()
+        || answer.confirmed != record.binding
+    {
+        return Ok(false);
+    }
+    let paired = PairedState::load(state_path)?;
+    let Some(credential) = paired.credential.as_ref() else {
+        return Ok(false);
+    };
+    let current_binding = JournalIdentity::from_credential(credential).client_cert_sha256;
+    let current_generation = pairing_generation(&credential.client_cert_pem);
+    if current_binding != record.binding || current_generation != record.pairing_generation {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Exclude the current device's own CID from a list of authorized devices.
+pub fn without_own_cid(
+    devices: Vec<crate::device_metadata::PairedDevice>,
+    own_cid: &str,
+) -> Vec<crate::device_metadata::PairedDevice> {
+    devices
+        .into_iter()
+        .filter(|device| device.cid != own_cid)
+        .collect()
+}
+
+/// Classify a fresh-pair offer's replacement eligibility based on authorized journal devices.
+pub async fn classify_fresh_pair_offer<L, Fut, W>(
+    state_path: &Path,
+    list_other_devices: L,
+    commit: W,
+) -> Result<(), TransportError>
+where
+    L: FnOnce() -> Fut,
+    Fut: std::future::Future<
+        Output = Result<Vec<crate::device_metadata::PairedDevice>, TransportError>,
+    >,
+    W: FnOnce(&mut MigrationRecord) -> Result<(), TransportError>,
+{
+    if !fresh_pair_offer_needs_list(state_path)? {
+        return Ok(());
+    }
+    let Some(pre_snapshot) = load(state_path)? else {
+        return Ok(());
+    };
+    let expected_revision = pre_snapshot.revision;
+    let expected_generation = pre_snapshot.pairing_generation;
+    let expected_binding = pre_snapshot.binding.clone();
+
+    let list_result = list_other_devices().await;
+    let (target_eligibility, target_offer_pending) = match list_result {
+        Err(_) => (FreshPairEligibility::ShowOffer, true),
+        Ok(devices) if devices.is_empty() => (FreshPairEligibility::NoOtherDevice, false),
+        Ok(_) => (FreshPairEligibility::ShowOffer, true),
+    };
+
+    if !fresh_pair_offer_needs_list(state_path)? {
+        return Ok(());
+    }
+    let Some(mut record) = load(state_path)? else {
+        return Ok(());
+    };
+    if record.revision != expected_revision
+        || record.pairing_generation != expected_generation
+        || record.binding != expected_binding
+    {
+        return Ok(());
+    }
+
+    record.eligibility = target_eligibility;
+    record.offer_pending = target_offer_pending;
+    match commit(&mut record) {
+        Ok(()) => Ok(()),
+        Err(TransportError::ReplayUnsafe) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 pub fn dismiss_fresh_pair_offer(
@@ -623,7 +743,7 @@ mod tests {
         .save(&state_path)
         .unwrap();
         record_fresh_pair_offer(&state_path, &credential).unwrap();
-        // The offer stays hidden until the owner confirms the journal's mark.
+        // Before answer, the offer is hidden.
         assert!(!view(&state_path).unwrap().unwrap().offer_available);
         write_answer(
             &answer_path(&state_path),
@@ -633,9 +753,18 @@ mod tests {
             },
         )
         .unwrap();
+        // After confirmed answer, while Unchecked, the offer is still hidden and phase is Offered.
+        let view_unchecked = view(&state_path).unwrap().unwrap();
+        assert!(!view_unchecked.offer_available);
+        assert_eq!(view_unchecked.phase, MigrationPhase::Offered);
+
+        let mut record = load(&state_path).unwrap().unwrap();
+        record.eligibility = FreshPairEligibility::ShowOffer;
+        save(&state_path, &mut record).unwrap();
+
         let view_before = view(&state_path).unwrap().unwrap();
         assert!(view_before.offer_available);
-        assert_eq!(view_before.revision, 1);
+        assert_eq!(view_before.revision, 2);
 
         assert!(matches!(
             dismiss_fresh_pair_offer(&state_path, &binding, generation, view_before.revision - 1),
@@ -655,7 +784,13 @@ mod tests {
         dismiss_fresh_pair_offer(&state_path, &binding, generation, view_before.revision).unwrap();
         let view_after = view(&state_path).unwrap().unwrap();
         assert!(!view_after.offer_available);
-        assert_eq!(view_after.revision, 2);
+        assert_eq!(view_after.revision, 3);
+        let dismissed_record = load(&state_path).unwrap().unwrap();
+        assert!(dismissed_record.offer_shown);
+        assert!(!dismissed_record.offer_pending);
+        assert!(dismissed_record.pending_decision.is_none());
+        assert!(dismissed_record.server_state.is_none());
+
         dismiss_fresh_pair_offer(&state_path, &binding, generation, view_after.revision).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -761,6 +896,7 @@ mod tests {
         );
         assert!(fresh.offer_pending);
         assert!(!fresh.offer_shown);
+        assert_eq!(fresh.eligibility, FreshPairEligibility::Unchecked);
         assert_eq!(fresh.binding, binding);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -1024,5 +1160,884 @@ mod tests {
         assert!(!durable.offer_pending);
         assert_eq!(durable.revision, 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn classify_confirmed_empty_list_retires_offer_with_no_other_device() {
+        let (dir, state_path) = temp_state_path("migration-classify-empty");
+        let credential = certified_credential();
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        let own_cid = credential_cid(&credential).unwrap();
+        PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        record_fresh_pair_offer(&state_path, &credential).unwrap();
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+
+        let json = serde_json::json!({
+            "clients": [
+                {"cid": own_cid.clone(), "display_label": "This PC", "platform": "windows"}
+            ]
+        });
+        let parsed =
+            crate::device_metadata::parse_paired_devices(&serde_json::to_vec(&json).unwrap())
+                .unwrap();
+        let filtered = without_own_cid(parsed, &own_cid);
+        assert!(filtered.is_empty());
+
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { Ok(filtered) },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+
+        let record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::NoOtherDevice);
+        assert!(!record.offer_pending);
+        assert!(!record.offer_shown);
+        assert!(record.server_state.is_none());
+        assert!(record.pending_decision.is_none());
+        assert_eq!(record.phase, MigrationPhase::Offered);
+        assert_eq!(record.revision, 2);
+        assert!(!view(&state_path).unwrap().unwrap().offer_available);
+
+        // Relaunch case: a second classify is a no-op even if a device would appear.
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { panic!("should not be called on retired offer") },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn classify_confirmed_non_empty_list_shows_offer_and_persists_decision_or_dismisses() {
+        let (dir, state_path) = temp_state_path("migration-classify-show");
+        let credential = certified_credential();
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        let other_cid = format!("sha256:{}", "b".repeat(64));
+        PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        record_fresh_pair_offer(&state_path, &credential).unwrap();
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+
+        classify_fresh_pair_offer(
+            &state_path,
+            || async {
+                Ok(vec![crate::device_metadata::PairedDevice {
+                    cid: other_cid.clone(),
+                    display_label: "Other Device".into(),
+                }])
+            },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+
+        let mut record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::ShowOffer);
+        assert!(record.offer_pending);
+        assert!(!record.offer_shown);
+        assert_eq!(record.phase, MigrationPhase::Offered);
+        assert!(view(&state_path).unwrap().unwrap().offer_available);
+
+        persist_decision(&state_path, &mut record, Choice::NewDevice, None).unwrap();
+        assert_eq!(record.phase, MigrationPhase::DecisionUnknown);
+
+        // Separate case: ShowOffer followed by dismissal
+        let (dir2, state_path2) = temp_state_path("migration-classify-show-dismiss");
+        let credential2 = certified_credential();
+        let binding2 = JournalIdentity::from_credential(&credential2).client_cert_sha256;
+        let generation2 = pairing_generation(&credential2.client_cert_pem);
+        PairedState {
+            credential: Some(credential2.clone()),
+            ..Default::default()
+        }
+        .save(&state_path2)
+        .unwrap();
+        record_fresh_pair_offer(&state_path2, &credential2).unwrap();
+        write_answer(
+            &answer_path(&state_path2),
+            &AnswerState {
+                confirmed: binding2.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+        classify_fresh_pair_offer(
+            &state_path2,
+            || async {
+                Ok(vec![crate::device_metadata::PairedDevice {
+                    cid: other_cid.clone(),
+                    display_label: "Other Device".into(),
+                }])
+            },
+            |record| save(&state_path2, record),
+        )
+        .await
+        .unwrap();
+        let view2 = view(&state_path2).unwrap().unwrap();
+        assert!(view2.offer_available);
+        dismiss_fresh_pair_offer(&state_path2, &binding2, generation2, view2.revision).unwrap();
+        let dismissed = load(&state_path2).unwrap().unwrap();
+        assert!(!dismissed.offer_pending);
+        assert!(dismissed.offer_shown);
+        assert!(dismissed.pending_decision.is_none());
+        assert!(dismissed.server_state.is_none());
+        assert!(!view(&state_path2).unwrap().unwrap().offer_available);
+
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(dir2);
+    }
+
+    #[tokio::test]
+    async fn classify_after_show_offer_does_not_call_list_again() {
+        let (dir, state_path) = temp_state_path("migration-classify-idempotent");
+        let credential = certified_credential();
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        record_fresh_pair_offer(&state_path, &credential).unwrap();
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+
+        let mut record = load(&state_path).unwrap().unwrap();
+        record.eligibility = FreshPairEligibility::ShowOffer;
+        save(&state_path, &mut record).unwrap();
+
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { panic!("must not call list when already ShowOffer") },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+
+        let record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::ShowOffer);
+        assert!(record.offer_pending);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn classify_list_errors_save_show_offer_and_return_ok() {
+        let error_cases = [
+            TransportError::Rejected {
+                status: 503,
+                body: "server error".into(),
+            },
+            TransportError::CredentialMalformed,
+            TransportError::Io(std::io::Error::other("offline")),
+        ];
+
+        for error in error_cases {
+            let (dir, state_path) = temp_state_path("migration-classify-err");
+            let credential = certified_credential();
+            let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+            PairedState {
+                credential: Some(credential.clone()),
+                ..Default::default()
+            }
+            .save(&state_path)
+            .unwrap();
+            record_fresh_pair_offer(&state_path, &credential).unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: binding.clone(),
+                    rejected: String::new(),
+                },
+            )
+            .unwrap();
+
+            let err_to_return = match &error {
+                TransportError::Rejected { status, body } => TransportError::Rejected {
+                    status: *status,
+                    body: body.clone(),
+                },
+                TransportError::CredentialMalformed => TransportError::CredentialMalformed,
+                TransportError::Io(_) => TransportError::Io(std::io::Error::other("offline")),
+                _ => unreachable!(),
+            };
+
+            classify_fresh_pair_offer(
+                &state_path,
+                || async move { Err(err_to_return) },
+                |record| save(&state_path, record),
+            )
+            .await
+            .unwrap();
+
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.eligibility, FreshPairEligibility::ShowOffer);
+            assert!(record.offer_pending);
+            assert_eq!(record.phase, MigrationPhase::Offered);
+            assert!(view(&state_path).unwrap().unwrap().offer_available);
+
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_commit_errors_leave_disk_unchecked() {
+        let (dir, state_path) = temp_state_path("migration-classify-commit-err");
+        let credential = certified_credential();
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        record_fresh_pair_offer(&state_path, &credential).unwrap();
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+
+        // 1. Commit returns TransportError::Io -> returns error, disk stays Unchecked.
+        let err = classify_fresh_pair_offer(
+            &state_path,
+            || async { Ok(vec![]) },
+            |_record| Err(TransportError::Io(std::io::Error::other("injected"))),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TransportError::Io(_)));
+
+        let record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+        assert!(record.offer_pending);
+        assert_eq!(record.phase, MigrationPhase::Offered);
+        assert!(record.pending_decision.is_none());
+        assert!(!view(&state_path).unwrap().unwrap().offer_available);
+
+        // 2. Commit returns TransportError::ReplayUnsafe -> returns Ok(()), disk stays Unchecked.
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { Ok(vec![]) },
+            |_record| Err(TransportError::ReplayUnsafe),
+        )
+        .await
+        .unwrap();
+
+        let record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn classify_no_migration_file_or_legacy_or_dismissed_json() {
+        let (dir, state_path) = temp_state_path("migration-classify-legacy");
+        let credential = certified_credential();
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+
+        // No migration file on disk: classify returns Ok(()) and creates no file.
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { panic!("must not call list when no migration file") },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+        assert!(load(&state_path).unwrap().is_none());
+
+        // Dismissed record with eligibility removed from JSON loads as Unchecked and is not classified.
+        let legacy_dismissed = serde_json::json!({
+            "schema": MIGRATION_RECORD_SCHEMA,
+            "revision": 2,
+            "pairing_generation": pairing_generation(&credential.client_cert_pem),
+            "phase": "offered",
+            "cid": credential_cid(&credential).unwrap(),
+            "binding": binding.clone(),
+            "pending_decision": null,
+            "terminal_decisions": [],
+            "server_state": null,
+            "replaced_cid": null,
+            "decision_display_label": null,
+            "offer_pending": false,
+            "offer_shown": true
+        });
+        std::fs::write(
+            path_for_state(&state_path),
+            serde_json::to_vec(&legacy_dismissed).unwrap(),
+        )
+        .unwrap();
+        let loaded = load(&state_path).unwrap().unwrap();
+        assert_eq!(loaded.eligibility, FreshPairEligibility::Unchecked);
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { panic!("must not call list for dismissed record") },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+
+        // Unresolved offer with eligibility removed loads as Unchecked and is eligible for list read.
+        let legacy_unresolved = serde_json::json!({
+            "schema": MIGRATION_RECORD_SCHEMA,
+            "revision": 3,
+            "pairing_generation": pairing_generation(&credential.client_cert_pem),
+            "phase": "offered",
+            "cid": credential_cid(&credential).unwrap(),
+            "binding": binding.clone(),
+            "pending_decision": null,
+            "terminal_decisions": [],
+            "server_state": null,
+            "replaced_cid": null,
+            "decision_display_label": null,
+            "offer_pending": true,
+            "offer_shown": false
+        });
+        std::fs::write(
+            path_for_state(&state_path),
+            serde_json::to_vec(&legacy_unresolved).unwrap(),
+        )
+        .unwrap();
+        assert!(fresh_pair_offer_needs_list(&state_path).unwrap());
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { Ok(vec![]) },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+        let classified = load(&state_path).unwrap().unwrap();
+        assert_eq!(classified.eligibility, FreshPairEligibility::NoOtherDevice);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn classify_does_not_hold_write_guard_during_list_await() {
+        // Helper to run a suspended classification and assert view is hidden while waiting on list future
+        async fn run_suspended_classification(
+            name: &str,
+            check_guard: bool,
+            release_result: Result<Vec<crate::device_metadata::PairedDevice>, TransportError>,
+        ) -> (PathBuf, PathBuf) {
+            let (dir, state_path) = temp_state_path(name);
+            let credential = certified_credential();
+            let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+            PairedState {
+                credential: Some(credential.clone()),
+                ..Default::default()
+            }
+            .save(&state_path)
+            .unwrap();
+            record_fresh_pair_offer(&state_path, &credential).unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: binding.clone(),
+                    rejected: String::new(),
+                },
+            )
+            .unwrap();
+
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let state_path_clone = state_path.clone();
+            let task = tokio::spawn(async move {
+                classify_fresh_pair_offer(
+                    &state_path_clone,
+                    || async move {
+                        started_tx.send(()).unwrap();
+                        release_rx.await.unwrap()
+                    },
+                    |record| save(&state_path_clone, record),
+                )
+                .await
+            });
+
+            // Wait until task is inside list closure
+            started_rx.await.unwrap();
+
+            // Assert view while list is pending: offer_available false, phase Offered, decision_result None.
+            let view_while_pending = view(&state_path).unwrap().unwrap();
+            assert!(!view_while_pending.offer_available);
+            assert_eq!(view_while_pending.phase, MigrationPhase::Offered);
+            assert!(view_while_pending.decision_result.is_none());
+
+            if check_guard {
+                let start = std::time::Instant::now();
+                let mut acquired = false;
+                while start.elapsed() < std::time::Duration::from_secs(2) {
+                    if let Some(_guard) = crate::credential::try_owner_state_write_guard() {
+                        acquired = true;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                assert!(
+                    acquired,
+                    "must not hold owner_state_write_guard during list await"
+                );
+            }
+
+            release_tx.send(release_result).unwrap();
+            task.await.unwrap().unwrap();
+            (dir, state_path)
+        }
+
+        // 1. Release Ok(vec![]) -> NoOtherDevice
+        {
+            let (dir, state_path) =
+                run_suspended_classification("migration-lock-empty", true, Ok(vec![])).await;
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.eligibility, FreshPairEligibility::NoOtherDevice);
+            assert!(!record.offer_pending);
+            assert!(!record.offer_shown);
+            assert!(record.server_state.is_none());
+            assert!(record.pending_decision.is_none());
+            assert_eq!(record.phase, MigrationPhase::Offered);
+            assert!(!view(&state_path).unwrap().unwrap().offer_available);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        // 2. Release Ok(vec![one other]) -> ShowOffer
+        {
+            let other_device = crate::device_metadata::PairedDevice {
+                cid: format!("sha256:{}", "b".repeat(64)),
+                display_label: "Other Device".into(),
+            };
+            let (dir, state_path) =
+                run_suspended_classification("migration-lock-other", false, Ok(vec![other_device]))
+                    .await;
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.eligibility, FreshPairEligibility::ShowOffer);
+            assert!(record.offer_pending);
+            assert!(!record.offer_shown);
+            assert_eq!(record.phase, MigrationPhase::Offered);
+            assert!(view(&state_path).unwrap().unwrap().offer_available);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        // 3. Release Err(Rejected) -> ShowOffer (not NoOtherDevice)
+        {
+            let err = TransportError::Rejected {
+                status: 503,
+                body: "unavailable".into(),
+            };
+            let (dir, state_path) =
+                run_suspended_classification("migration-lock-err", false, Err(err)).await;
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.eligibility, FreshPairEligibility::ShowOffer);
+            assert_ne!(record.eligibility, FreshPairEligibility::NoOtherDevice);
+            assert!(record.offer_pending);
+            assert!(!record.offer_shown);
+            assert_eq!(record.phase, MigrationPhase::Offered);
+            assert!(view(&state_path).unwrap().unwrap().offer_available);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_parsed_devices_with_extra_platform_field_and_other_cid_shows_offer() {
+        let (dir, state_path) = temp_state_path("migration-classify-platform-extra");
+        let credential = certified_credential();
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        let own_cid = credential_cid(&credential).unwrap();
+        let other_cid = format!("sha256:{}", "c".repeat(64));
+        PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        record_fresh_pair_offer(&state_path, &credential).unwrap();
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+
+        let json = serde_json::json!({
+            "clients": [
+                {"cid": own_cid.clone(), "display_label": "This PC", "platform": "windows"},
+                {"cid": other_cid.clone(), "display_label": "Other PC", "platform": "linux"}
+            ]
+        });
+        let parsed =
+            crate::device_metadata::parse_paired_devices(&serde_json::to_vec(&json).unwrap())
+                .unwrap();
+        let filtered = without_own_cid(parsed, &own_cid);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].cid, other_cid);
+
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { Ok(filtered) },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+
+        let record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::ShowOffer);
+        assert!(record.offer_pending);
+        assert!(!record.offer_shown);
+        assert_eq!(record.phase, MigrationPhase::Offered);
+        assert!(view(&state_path).unwrap().unwrap().offer_available);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn classify_concurrent_change_drops_result_without_committing() {
+        // (a) dismiss_fresh_pair_offer on that offer
+        {
+            let (dir, state_path) = temp_state_path("migration-concurrent-dismiss");
+            let credential = certified_credential();
+            let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+            let generation = pairing_generation(&credential.client_cert_pem);
+            PairedState {
+                credential: Some(credential.clone()),
+                ..Default::default()
+            }
+            .save(&state_path)
+            .unwrap();
+            record_fresh_pair_offer(&state_path, &credential).unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: binding.clone(),
+                    rejected: String::new(),
+                },
+            )
+            .unwrap();
+
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let state_path_clone = state_path.clone();
+            let task = tokio::spawn(async move {
+                classify_fresh_pair_offer(
+                    &state_path_clone,
+                    || async move {
+                        started_tx.send(()).unwrap();
+                        rx.await.unwrap()
+                    },
+                    |record| save(&state_path_clone, record),
+                )
+                .await
+            });
+
+            started_rx.await.unwrap();
+            dismiss_fresh_pair_offer(&state_path, &binding, generation, 1).unwrap();
+            tx.send(Ok(vec![])).unwrap();
+            task.await.unwrap().unwrap();
+
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+            assert!(record.offer_shown);
+            assert!(!record.offer_pending);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        // (b) persist_decision (phase becomes DecisionUnknown)
+        {
+            let (dir, state_path) = temp_state_path("migration-concurrent-decide");
+            let credential = certified_credential();
+            let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+            PairedState {
+                credential: Some(credential.clone()),
+                ..Default::default()
+            }
+            .save(&state_path)
+            .unwrap();
+            record_fresh_pair_offer(&state_path, &credential).unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: binding.clone(),
+                    rejected: String::new(),
+                },
+            )
+            .unwrap();
+
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let state_path_clone = state_path.clone();
+            let task = tokio::spawn(async move {
+                classify_fresh_pair_offer(
+                    &state_path_clone,
+                    || async move {
+                        started_tx.send(()).unwrap();
+                        rx.await.unwrap()
+                    },
+                    |record| save(&state_path_clone, record),
+                )
+                .await
+            });
+
+            started_rx.await.unwrap();
+            let mut record = load(&state_path).unwrap().unwrap();
+            persist_decision(&state_path, &mut record, Choice::NewDevice, None).unwrap();
+            tx.send(Ok(vec![])).unwrap();
+            task.await.unwrap().unwrap();
+
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+            assert_eq!(record.phase, MigrationPhase::DecisionUnknown);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        // (c) answer.rejected set to the binding
+        {
+            let (dir, state_path) = temp_state_path("migration-concurrent-reject");
+            let credential = certified_credential();
+            let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+            PairedState {
+                credential: Some(credential.clone()),
+                ..Default::default()
+            }
+            .save(&state_path)
+            .unwrap();
+            record_fresh_pair_offer(&state_path, &credential).unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: binding.clone(),
+                    rejected: String::new(),
+                },
+            )
+            .unwrap();
+
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let state_path_clone = state_path.clone();
+            let task = tokio::spawn(async move {
+                classify_fresh_pair_offer(
+                    &state_path_clone,
+                    || async move {
+                        started_tx.send(()).unwrap();
+                        rx.await.unwrap()
+                    },
+                    |record| save(&state_path_clone, record),
+                )
+                .await
+            });
+
+            started_rx.await.unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: String::new(),
+                    rejected: binding.clone(),
+                },
+            )
+            .unwrap();
+            tx.send(Ok(vec![])).unwrap();
+            task.await.unwrap().unwrap();
+
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        // (d) record_fresh_pair_offer for a different credential saved as current PairedState
+        {
+            let (dir, state_path) = temp_state_path("migration-concurrent-repair");
+            let credential1 = certified_credential();
+            let binding1 = JournalIdentity::from_credential(&credential1).client_cert_sha256;
+            PairedState {
+                credential: Some(credential1.clone()),
+                ..Default::default()
+            }
+            .save(&state_path)
+            .unwrap();
+            record_fresh_pair_offer(&state_path, &credential1).unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: binding1.clone(),
+                    rejected: String::new(),
+                },
+            )
+            .unwrap();
+
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let state_path_clone = state_path.clone();
+            let task = tokio::spawn(async move {
+                classify_fresh_pair_offer(
+                    &state_path_clone,
+                    || async move {
+                        started_tx.send(()).unwrap();
+                        rx.await.unwrap()
+                    },
+                    |record| save(&state_path_clone, record),
+                )
+                .await
+            });
+
+            started_rx.await.unwrap();
+            // Re-pair with credential2
+            let credential2 = certified_credential();
+            let binding2 = JournalIdentity::from_credential(&credential2).client_cert_sha256;
+            PairedState {
+                credential: Some(credential2.clone()),
+                ..Default::default()
+            }
+            .save(&state_path)
+            .unwrap();
+            record_fresh_pair_offer(&state_path, &credential2).unwrap();
+            write_answer(
+                &answer_path(&state_path),
+                &AnswerState {
+                    confirmed: binding2.clone(),
+                    rejected: String::new(),
+                },
+            )
+            .unwrap();
+
+            tx.send(Ok(vec![])).unwrap();
+            task.await.unwrap().unwrap();
+
+            let record = load(&state_path).unwrap().unwrap();
+            assert_eq!(record.binding, binding2);
+            assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_no_answer_or_rejected_answer_does_not_call_list() {
+        // (a) No answer file on disk
+        let (dir, state_path) = temp_state_path("migration-no-answer");
+        let credential = certified_credential();
+        PairedState {
+            credential: Some(credential.clone()),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        record_fresh_pair_offer(&state_path, &credential).unwrap();
+
+        assert!(!fresh_pair_offer_needs_list(&state_path).unwrap());
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { panic!("must not call list when no answer") },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+        let record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+
+        // (b) Rejected answer on disk
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: String::new(),
+                rejected: binding,
+            },
+        )
+        .unwrap();
+        assert!(!fresh_pair_offer_needs_list(&state_path).unwrap());
+        classify_fresh_pair_offer(
+            &state_path,
+            || async { panic!("must not call list when answer rejected") },
+            |record| save(&state_path, record),
+        )
+        .await
+        .unwrap();
+        let record = load(&state_path).unwrap().unwrap();
+        assert_eq!(record.eligibility, FreshPairEligibility::Unchecked);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_own_cid_filters_exact_cid() {
+        let own = format!("sha256:{}", "a".repeat(64));
+        let other1 = format!("sha256:{}", "b".repeat(64));
+        let other2 = format!("sha256:{}", "c".repeat(64));
+
+        let devices = vec![
+            crate::device_metadata::PairedDevice {
+                cid: own.clone(),
+                display_label: "Me".into(),
+            },
+            crate::device_metadata::PairedDevice {
+                cid: other1.clone(),
+                display_label: "Device 1".into(),
+            },
+            crate::device_metadata::PairedDevice {
+                cid: other2.clone(),
+                display_label: "Device 2".into(),
+            },
+        ];
+
+        let filtered = without_own_cid(devices, &own);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].cid, other1);
+        assert_eq!(filtered[1].cid, other2);
+
+        let only_own = vec![crate::device_metadata::PairedDevice {
+            cid: own.clone(),
+            display_label: "Me".into(),
+        }];
+        assert!(without_own_cid(only_own, &own).is_empty());
     }
 }

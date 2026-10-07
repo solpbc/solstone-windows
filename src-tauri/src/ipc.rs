@@ -385,6 +385,32 @@ fn migration_ui_snapshot(
     }
 }
 
+async fn migration_list_others(
+    state: &crate::app::AppState,
+    path: &std::path::Path,
+) -> Result<
+    impl FnOnce() -> impl std::future::Future<
+        Output = Result<
+            Vec<pl_transport_win::device_metadata::PairedDevice>,
+            pl_transport_win::TransportError,
+        >,
+    >,
+    pl_transport_win::TransportError,
+> {
+    let paired = PairedState::load(path)?;
+    let credential = paired
+        .credential
+        .ok_or(pl_transport_win::TransportError::NotPaired)?;
+    let own_cid = pl_transport_win::migration::credential_cid(&credential)?;
+    let client = migration_client(state).await?;
+    Ok(move || async move {
+        client
+            .list_paired_devices()
+            .await
+            .map(|devices| pl_transport_win::migration::without_own_cid(devices, &own_cid))
+    })
+}
+
 /// Reconcile any saved replacement decision with the journal and return durable owner state.
 #[tauri::command]
 pub async fn pairing_migration_state(
@@ -432,6 +458,23 @@ pub async fn pairing_migration_state(
                 Err(error) => issue = Some(migration_ui_issue(&error)),
             }
         }
+    }
+    match pl_transport_win::migration::fresh_pair_offer_needs_list(path) {
+        Err(error) => issue = Some(migration_ui_issue(&error)),
+        Ok(false) => {}
+        Ok(true) => match migration_list_others(&state, path).await {
+            Err(error) => issue = Some(migration_ui_issue(&error)),
+            Ok(list) => {
+                if let Err(error) =
+                    pl_transport_win::migration::classify_fresh_pair_offer(path, list, |record| {
+                        pl_transport_win::migration::save(path, record)
+                    })
+                    .await
+                {
+                    issue = Some(migration_ui_issue(&error));
+                }
+            }
+        },
     }
     Ok(migration_ui_snapshot(path, issue))
 }
@@ -505,12 +548,7 @@ pub async fn pairing_migration_devices(
     client
         .list_paired_devices()
         .await
-        .map(|devices| {
-            devices
-                .into_iter()
-                .filter(|device| device.cid != current_cid)
-                .collect()
-        })
+        .map(|devices| pl_transport_win::migration::without_own_cid(devices, &current_cid))
         .map_err(|error| error.to_string())
 }
 

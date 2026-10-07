@@ -205,9 +205,35 @@ describe("fresh-pair replacement offer settings flow", () => {
   });
 
   it("stays hidden once the offer is no longer available", () => {
-    app.__test__.setMigration({ migration: migration({ offer_available: false }), issue: null });
+    app.__test__.setMigration({ migration: migration({ phase: "offered", offer_available: false }), issue: null });
     paint();
 
     expect(document.querySelector("[data-migration-key]")).toBeNull();
+    expect(document.querySelector('[data-migration-key="migration.replace_offer.title"]')).toBeNull();
+    expect(document.querySelector('[data-migration-key="migration.pending.row"]')).toBeNull();
+    expect(document.querySelector('[data-migration-key="migration.pending.value"]')).toBeNull();
+  });
+
+  it("renders picker empty message when no other devices are available", () => {
+    app.__test__.setMigration({ migration: migration(), issue: null });
+    app.__test__.setMigrationFlow("picker");
+    app.__test__.setMigrationDevices([]);
+    paint();
+
+    expect(document.querySelector('[data-migration-key="migration.picker.empty"]')).not.toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "pairing_migration_decide",
+      expect.anything(),
+    );
+  });
+
+  it("renders list unavailable error when device list fails to load", () => {
+    app.__test__.setMigration({ migration: migration(), issue: null });
+    app.__test__.setMigrationFlow("picker");
+    app.__test__.setMigrationDevices(null);
+    paint();
+
+    expect(document.querySelector('[data-migration-key="migration.list_unavailable.title"]')).not.toBeNull();
+    expect(document.querySelector('[data-migration-key="migration.list_unavailable.action"]')).not.toBeNull();
   });
 });
