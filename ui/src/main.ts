@@ -99,14 +99,8 @@ interface PairingState {
   binding?: string;
 }
 
-type MigrationChoice = "new_device" | "same_device" | "replace_device";
-type MigrationPhase =
-  | "baseline"
-  | "request_prepared"
-  | "response_recorded"
-  | "credential_published"
-  | "decision_unknown"
-  | "admitted";
+type MigrationChoice = "new_device" | "replace_device";
+type MigrationPhase = "offered" | "decision_unknown" | "decided";
 type MigrationUiIssue =
   | "offline"
   | "unsupported"
@@ -120,12 +114,9 @@ interface MigrationView {
   revision: number;
   pairing_generation: number[];
   state: "none" | "pending" | "new_device" | "same_device" | "replaced_device" | null;
-  old_cid: string | null;
-  new_cid: string | null;
   replaced_cid: string | null;
   decision_choice: MigrationChoice | null;
   decision_result: string | null;
-  same_device_available: boolean;
   offer_available: boolean;
   offer_binding: string | null;
 }
@@ -143,12 +134,6 @@ interface MigrationDevice {
 type MigrationFlow = "replace_offer" | "picker" | "confirm" | null;
 
 const MIGRATION_COPY = {
-  "migration.choice.title": "same device or a new one?",
-  "migration.choice.body":
-    'same device continues "{previous_device_label}" with its name and history, and removes the old device\'s access to your journal. new device keeps both.',
-  "migration.choice.same": "same device",
-  "migration.choice.new": "new device",
-  "migration.choice.defer": "not now",
   "migration.replace_offer.title": "is this replacing one of your devices?",
   "migration.replace_offer.body":
     "you can keep both, or choose a device for this one to replace.",
@@ -166,8 +151,6 @@ const MIGRATION_COPY = {
   "migration.pending.row": "device choice",
   "migration.pending.value": "not answered",
   "migration.preparing.title": "getting this device ready",
-  "migration.preparing.body":
-    "anything waiting to send stays on this device until it's ready.",
   "migration.offline.title": "can't reach your journal",
   "migration.offline.body":
     "anything waiting to send stays on this device. try again when your journal is reachable.",
@@ -200,8 +183,6 @@ const MIGRATION_COPY = {
   "migration.key_refused.body":
     "this device couldn't open its saved connection to your journal. anything waiting to send is still here. pair again to reconnect.",
   "migration.key_refused.action": "pair again",
-  "migration.choice.body_fallback":
-    "same device continues the old device with its name and history, and removes its access to your journal. new device keeps both.",
   "migration.replace_confirm.title_fallback": "replace the selected device?",
 } as const;
 
@@ -1634,24 +1615,8 @@ function migrationPendingRow(card: HTMLElement): void {
   card.append(row);
 }
 
-function renderMigrationFlow(view: MigrationView): HTMLElement {
+function renderMigrationFlow(): HTMLElement {
   const card = migrationCard();
-  if (migrationFlow === "replace_offer") {
-    migrationHeading(card, "migration.replace_offer.title");
-    migrationBody(card, "migration.replace_offer.body");
-    migrationActions(
-      card,
-      migrationAction("migration.replace_offer.defer", () => void dismissMigrationOffer()),
-      migrationAction("migration.replace_offer.keep", () => void submitMigrationDecision("new_device")),
-      migrationAction("migration.replace_offer.pick", () => {
-        migrationFlow = "picker";
-        void loadMigrationDevices();
-        requestRerender();
-      }),
-    );
-    return card;
-  }
-
   if (migrationFlow === "picker") {
     migrationHeading(card, "migration.picker.title");
     if (migrationDevicesBusy) {
@@ -1664,8 +1629,7 @@ function renderMigrationFlow(view: MigrationView): HTMLElement {
         migrationAction("migration.list_unavailable.action", () => void loadMigrationDevices()),
       );
     } else {
-      const oldCid = view.old_cid;
-      const choices = (latestMigrationDevices ?? []).filter((device) => device.cid !== oldCid);
+      const choices = latestMigrationDevices ?? [];
       if (choices.length === 0) {
         const empty = migrationText("p", "migration.picker.empty");
         empty.style.margin = "0";
@@ -1729,30 +1693,18 @@ function renderMigrationFlow(view: MigrationView): HTMLElement {
     return card;
   }
 
-  migrationHeading(card, "migration.choice.title");
-  const priorLabel = view.old_cid
-    ? latestMigrationDevices?.find((device) => device.cid === view.old_cid)?.display_label
-    : undefined;
-  const bodyKey = priorLabel ? "migration.choice.body" : "migration.choice.body_fallback";
-  migrationBody(
+  migrationHeading(card, "migration.replace_offer.title");
+  migrationBody(card, "migration.replace_offer.body");
+  migrationActions(
     card,
-    bodyKey,
-    priorLabel ? { previous_device_label: priorLabel } : undefined,
-  );
-  migrationPendingRow(card);
-  const choiceButtons = [
-    migrationAction("migration.choice.defer", () => void dismissMigrationOffer()),
-    migrationAction("migration.choice.new", () => {
-      migrationFlow = "replace_offer";
+    migrationAction("migration.replace_offer.defer", () => void dismissMigrationOffer()),
+    migrationAction("migration.replace_offer.keep", () => void submitMigrationDecision("new_device")),
+    migrationAction("migration.replace_offer.pick", () => {
+      migrationFlow = "picker";
+      void loadMigrationDevices();
       requestRerender();
     }),
-  ];
-  if (view.same_device_available) {
-    choiceButtons.push(
-      migrationAction("migration.choice.same", () => void submitMigrationDecision("same_device")),
-    );
-  }
-  migrationActions(card, ...choiceButtons);
+  );
   return card;
 }
 
@@ -1779,23 +1731,11 @@ function renderMigrationPanel(): HTMLElement | null {
     return card;
   }
 
-  if (
-    view.phase === "request_prepared" ||
-    view.phase === "response_recorded" ||
-    view.phase === "credential_published"
-  ) {
-    const card = migrationCard();
-    migrationHeading(card, "migration.preparing.title");
-    migrationBody(card, "migration.preparing.body");
-    return card;
-  }
-
   if (migrationFlow === "replace_offer" || migrationFlow === "picker" || migrationFlow === "confirm") {
-    return renderMigrationFlow(view);
+    return renderMigrationFlow();
   }
   if (!view.offer_available || migrationPromptHidden) return null;
-  if (!latestMigrationDevices && view.old_cid) void loadMigrationDevices();
-  return renderMigrationFlow(view);
+  return renderMigrationFlow();
 }
 
 function renderPairingSection(dump: HealthDump): HTMLElement {

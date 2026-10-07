@@ -253,7 +253,7 @@ async fn serve_one_system_status(
 }
 
 async fn ordinary_client() -> (ObserverClient, Arc<AtomicUsize>, JoinHandle<Vec<Vec<u8>>>) {
-    ordinary_client_with_route_count(14).await
+    ordinary_client_with_route_count(13).await
 }
 
 async fn ordinary_client_with_route_count(
@@ -379,12 +379,11 @@ async fn all_thirteen_production_helpers_use_the_shared_ordinary_request_authori
         .retire_client("sha256:0123456789abcdef")
         .await
         .unwrap();
-    client.rekey(b"{}").await.unwrap();
     client.get_migration_state().await.unwrap();
     client.put_migration_decision(b"{}").await.unwrap();
 
     let requests = server.await.unwrap();
-    assert_eq!(accepts.load(Ordering::SeqCst), 14);
+    assert_eq!(accepts.load(Ordering::SeqCst), 13);
     let targets: Vec<_> = requests
         .iter()
         .map(|request| {
@@ -409,7 +408,6 @@ async fn all_thirteen_production_helpers_use_the_shared_ordinary_request_authori
             "GET /api/system/status HTTP/1.1",
             "GET /api/system/about HTTP/1.1",
             "DELETE /app/network/api/clients/sha256:0123456789abcdef HTTP/1.1",
-            "POST /app/network/api/clients/self/rekey HTTP/1.1",
             "GET /app/network/api/clients/self/migration HTTP/1.1",
             "PUT /app/network/api/clients/self/migration HTTP/1.1",
         ]

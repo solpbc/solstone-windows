@@ -27,7 +27,6 @@ pub mod answer;
 pub mod client;
 pub mod coordinator;
 pub mod credential;
-pub mod device_marker;
 pub mod device_metadata;
 pub mod integration;
 pub mod journal_bridge;

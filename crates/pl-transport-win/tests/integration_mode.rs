@@ -392,7 +392,7 @@ fn a_malformed_pairing_file_is_an_error_not_a_silent_unpaired_default() {
         &root,
     );
     assert_eq!(value["phase"], "precondition");
-    assert_eq!(value["reason"], "credential_malformed");
+    assert_eq!(value["reason"], "pairing_state_unavailable");
     assert_eq!(code, EXIT_ERROR);
     let _ = std::fs::remove_dir_all(&root);
 }

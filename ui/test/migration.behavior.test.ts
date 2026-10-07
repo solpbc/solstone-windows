@@ -12,7 +12,6 @@ const ids = automationContract.automation_ids;
 const invokeMock = vi.mocked(invoke);
 const firstCid = `sha256:${"a".repeat(64)}`;
 const secondCid = `sha256:${"b".repeat(64)}`;
-const ownCid = `sha256:${"c".repeat(64)}`;
 
 function resetRoot(): HTMLDivElement {
   document.body.replaceChildren();
@@ -28,16 +27,13 @@ function resetRoot(): HTMLDivElement {
 
 function migration(overrides: Record<string, unknown> = {}) {
   return {
-    phase: "admitted",
+    phase: "offered",
     revision: 4,
     pairing_generation: Array.from({ length: 32 }, (_, index) => index),
-    state: "pending",
-    old_cid: firstCid,
-    new_cid: ownCid,
+    state: null,
     replaced_cid: null,
     decision_choice: null,
     decision_result: null,
-    same_device_available: true,
     offer_available: true,
     offer_binding: "certificate-binding",
     ...overrides,
@@ -74,7 +70,7 @@ const action = (key: string): HTMLButtonElement => {
   return node as HTMLButtonElement;
 };
 
-describe("device migration settings flow", () => {
+describe("fresh-pair replacement offer settings flow", () => {
   beforeEach(() => {
     resetRoot();
   });
@@ -83,9 +79,10 @@ describe("device migration settings flow", () => {
     app.__test__.setMigration({ migration: migration(), issue: null });
     paint();
 
-    expect(document.querySelector('[data-migration-key="migration.choice.title"]')).not.toBeNull();
-    expect(document.querySelector('[data-migration-key="migration.pending.row"]')).not.toBeNull();
-    action("migration.choice.defer").click();
+    expect(
+      document.querySelector('[data-migration-key="migration.replace_offer.title"]'),
+    ).not.toBeNull();
+    action("migration.replace_offer.defer").click();
 
     await vi.waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("pairing_migration_offer_dismiss", {
@@ -100,23 +97,23 @@ describe("device migration settings flow", () => {
     );
   });
 
-  it("submits the same-device action only when saved rekey lineage is available", async () => {
+  it("keeps both devices with a new-device decision", async () => {
     app.__test__.setMigration({ migration: migration(), issue: null });
     invokeMock.mockResolvedValueOnce({ migration: null, issue: null } as never);
     paint();
 
-    action("migration.choice.same").click();
+    action("migration.replace_offer.keep").click();
 
     await vi.waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("pairing_migration_decide", {
-        choice: "same_device",
+        choice: "new_device",
         replacesCid: null,
       });
     });
   });
 
   it("keeps duplicate display labels distinct and submits the selected CID", async () => {
-    app.__test__.setMigration({ migration: migration({ old_cid: null }), issue: null });
+    app.__test__.setMigration({ migration: migration(), issue: null });
     app.__test__.setMigrationDevices([
       { cid: firstCid, display_label: "<em>shared label</em>" },
       { cid: secondCid, display_label: "<em>shared label</em>" },
@@ -199,19 +196,18 @@ describe("device migration settings flow", () => {
     );
   });
 
-  it("does not offer same-device lineage for an ordinary fresh pair", () => {
-    app.__test__.setMigration({
-      migration: migration({
-        old_cid: null,
-        same_device_available: false,
-      }),
-      issue: null,
-    });
+  it("offers only keep-both or a chosen replacement, never a same-device choice", () => {
+    app.__test__.setMigration({ migration: migration(), issue: null });
     paint();
 
-    expect(action("migration.choice.new")).not.toBeNull();
-    expect(
-      document.querySelector('[data-migration-action="migration.choice.same"]'),
-    ).toBeNull();
+    expect(action("migration.replace_offer.pick")).not.toBeNull();
+    expect(document.querySelector('[data-migration-key^="migration.choice."]')).toBeNull();
+  });
+
+  it("stays hidden once the offer is no longer available", () => {
+    app.__test__.setMigration({ migration: migration({ offer_available: false }), issue: null });
+    paint();
+
+    expect(document.querySelector("[data-migration-key]")).toBeNull();
   });
 });

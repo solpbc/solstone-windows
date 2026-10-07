@@ -60,15 +60,6 @@ fn wrap_secret(protector: &dyn Protector, plain: &str) -> Result<String, Transpo
     ))
 }
 
-#[cfg(windows)]
-pub(crate) fn protect_candidate_key(plain: &str) -> Result<String, TransportError> {
-    wrap_secret(&platform_protector(), plain)
-}
-
-pub(crate) fn unprotect_candidate_key(stored: &str) -> Result<String, TransportError> {
-    unwrap_secret(&platform_protector(), stored, true)
-}
-
 fn unwrap_secret(
     protector: &dyn Protector,
     stored: &str,
@@ -457,16 +448,7 @@ pub struct PairedStateLoad {
     pub relay_token_refused: bool,
 }
 
-/// Durable retirement operations serialized with the paired credential owner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetirementOperation {
-    IntegrationWrongMark,
-    GuiPairReplacement,
-    GuiPairRejection,
-}
-
-/// Durable outcome of trying to retire the exact staged candidate.
+/// Durable outcome of trying to retire a rejected pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetirementPhase {
@@ -475,32 +457,19 @@ pub enum RetirementPhase {
     Succeeded,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetirementAnswerDisposition {
-    ResetForCandidate,
-    ClearRejectedPairing,
-}
-
-/// A protected, generation-bound remote retirement that launch can reconcile.
+/// A protected, generation-bound rejection of the current pairing that launch
+/// can reconcile. While it is present the pairing is fenced from every send.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetirementIntent {
     pub schema: u32,
     pub operation_id: String,
-    pub operation: RetirementOperation,
     pub phase: RetirementPhase,
     /// Certificate generation of the exact credential being retired.
     pub owner_generation: [u8; 32],
-    /// Certificate generation of the protected candidate credential.
-    #[serde(default)]
-    pub candidate_generation: [u8; 32],
     pub access_mutation_generation: u64,
     pub client_id: String,
-    pub candidate: Credential,
-    #[serde(default)]
-    pub answer_disposition: Option<RetirementAnswerDisposition>,
-    #[serde(default)]
-    pub marker_result: Option<crate::device_marker::MarkerResult>,
+    /// The credential being retired; its secrets are protected like pairing.
+    pub credential: Credential,
 }
 
 static PAIRING_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -568,8 +537,6 @@ pub(crate) fn sync_published_path(_path: &Path) -> Result<(), std::io::Error> {
 #[cfg(test)]
 thread_local! {
     pub(crate) static FS_FAIL_POINT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
-    pub(crate) static RETIREMENT_CLEANUP_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    pub(crate) static PAIR_REPLACEMENT_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static PAIR_REJECTION_CLEANUP_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -671,7 +638,7 @@ impl PairedState {
             unwrap_credential(
                 protector,
                 path,
-                &mut intent.candidate,
+                &mut intent.credential,
                 &mut relay_token_refused,
             )?;
         }
@@ -714,7 +681,7 @@ impl PairedState {
             protect_credential(protector, cred)?;
         }
         if let Some(intent) = state.retirement_intent.as_mut() {
-            protect_credential(protector, &mut intent.candidate)?;
+            protect_credential(protector, &mut intent.credential)?;
         }
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(StorageError::WriteFailed)?;
@@ -769,127 +736,6 @@ impl PairedState {
         Ok(())
     }
 
-    /// Promote only a complete, protected wrong-mark intent left in the atomic
-    /// staging sibling when the process stopped before rename. Other temporary
-    /// pairing writes retain their existing non-loadable behavior.
-    pub(crate) fn recover_staged_retirement_intent(path: &Path) -> Result<bool, StorageError> {
-        let _guard = owner_state_write_guard();
-        if path.exists() {
-            return Ok(false);
-        }
-        let tmp = path.with_extension("json.tmp");
-        let bytes = match std::fs::read(&tmp) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(StorageError::WriteFailed(error)),
-        };
-        let staged: PairedState = match serde_json::from_slice(&bytes) {
-            Ok(state) => state,
-            Err(_) => return Ok(false),
-        };
-        let Some(intent) = staged.retirement_intent.as_ref() else {
-            return Ok(false);
-        };
-        if staged.credential.is_some()
-            || intent.schema != 1
-            || intent.operation != RetirementOperation::IntegrationWrongMark
-            || intent.operation_id.is_empty()
-            || intent.owner_generation != pairing_generation(&intent.candidate.client_cert_pem)
-            || intent.candidate_generation != [0; 32]
-                && intent.candidate_generation
-                    != pairing_generation(&intent.candidate.client_cert_pem)
-            || intent.access_mutation_generation != 0
-            || !intent
-                .candidate
-                .client_key_pem
-                .starts_with(CREDENTIAL_WRAP_MARKER)
-        {
-            return Err(StorageError::Transport(TransportError::CredentialMalformed));
-        }
-        // A flush needs a writable handle; Windows refuses it on a read-only one.
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&tmp)
-            .and_then(|file| file.sync_all())
-            .map_err(StorageError::DurabilityUncertain)?;
-        publish_staged_file(&tmp, path)?;
-        #[cfg(not(windows))]
-        sync_published_path(path).map_err(StorageError::DurabilityUncertain)?;
-        if std::fs::read(path).map_err(StorageError::DurabilityUncertain)? != bytes {
-            return Err(StorageError::DurabilityUncertain(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "staged retirement intent readback mismatch",
-            )));
-        }
-        Ok(true)
-    }
-
-    /// Save a newly issued credential only if the profile is still unpaired and
-    /// has no unresolved remote retirement intent.
-    pub(crate) fn save_if_unpaired(&self, path: &Path) -> Result<(), StorageError> {
-        let _guard = owner_state_write_guard();
-        let protector = platform_protector();
-        let current = Self::load_with(&protector, path)?;
-        if current.credential.is_some() || current.retirement_intent.is_some() {
-            return Err(StorageError::CasMismatch);
-        }
-        Self::save_inner(&protector, path, self)
-    }
-
-    /// Atomically install an integration retirement intent into an empty owner
-    /// slot. Its candidate key is protected by the same mechanism as pairing.
-    pub(crate) fn install_retirement_intent(
-        path: &Path,
-        intent: RetirementIntent,
-    ) -> Result<(), StorageError> {
-        let _guard = owner_state_write_guard();
-        let protector = platform_protector();
-        let mut state = Self::load_with(&protector, path)?;
-        if state.credential.is_some()
-            || state.retirement_intent.is_some()
-            || intent.schema != 1
-            || intent.operation != RetirementOperation::IntegrationWrongMark
-            || intent.owner_generation != pairing_generation(&intent.candidate.client_cert_pem)
-            || (intent.candidate_generation != [0; 32]
-                && intent.candidate_generation != intent.owner_generation)
-            || intent.access_mutation_generation != 0
-        {
-            return Err(StorageError::CasMismatch);
-        }
-        state.retirement_intent = Some(intent);
-        Self::save_inner(&protector, path, &state)
-    }
-
-    /// Atomically stage a validated replacement candidate while the incumbent
-    /// remains current. The intent is the send fence until replacement commit.
-    pub(crate) fn install_pair_replacement_intent(
-        path: &Path,
-        expected_owner_generation: [u8; 32],
-        expected_access_generation: u64,
-        intent: RetirementIntent,
-    ) -> Result<(), StorageError> {
-        let _guard = owner_state_write_guard();
-        let protector = platform_protector();
-        let mut state = Self::load_with(&protector, path)?;
-        let incumbent = state.credential.as_ref().ok_or(StorageError::CasMismatch)?;
-        if state.retirement_intent.is_some()
-            || pairing_generation(&incumbent.client_cert_pem) != expected_owner_generation
-            || state.access_mutation_generation != expected_access_generation
-            || intent.schema != 1
-            || intent.operation != RetirementOperation::GuiPairReplacement
-            || intent.owner_generation != expected_owner_generation
-            || intent.access_mutation_generation != expected_access_generation
-            || pairing_generation(&intent.candidate.client_cert_pem) != intent.candidate_generation
-            || intent.answer_disposition != Some(RetirementAnswerDisposition::ResetForCandidate)
-            || intent.marker_result.is_none()
-        {
-            return Err(StorageError::CasMismatch);
-        }
-        state.retirement_intent = Some(intent);
-        Self::save_inner(&protector, path, &state)
-    }
-
     /// Persist a generation-bound rejection intent before retiring a current
     /// credential. The current credential remains intact and send-fenced until
     /// the remote result is durably terminal.
@@ -907,13 +753,9 @@ impl PairedState {
             || pairing_generation(&incumbent.client_cert_pem) != expected_owner_generation
             || state.access_mutation_generation != expected_access_generation
             || intent.schema != 1
-            || intent.operation != RetirementOperation::GuiPairRejection
             || intent.owner_generation != expected_owner_generation
-            || intent.candidate_generation != expected_owner_generation
             || intent.access_mutation_generation != expected_access_generation
-            || pairing_generation(&intent.candidate.client_cert_pem) != expected_owner_generation
-            || intent.answer_disposition != Some(RetirementAnswerDisposition::ClearRejectedPairing)
-            || intent.marker_result.is_some()
+            || pairing_generation(&intent.credential.client_cert_pem) != expected_owner_generation
         {
             return Err(StorageError::CasMismatch);
         }
@@ -946,10 +788,8 @@ impl PairedState {
             .as_ref()
             .map(|credential| pairing_generation(&credential.client_cert_pem));
         if intent.schema != 1
-            || intent.operation != RetirementOperation::GuiPairRejection
             || intent.operation_id != operation_id
             || intent.owner_generation != owner_generation
-            || intent.candidate_generation != owner_generation
             || intent.access_mutation_generation != access_generation
             || !matches!(
                 intent.phase,
@@ -974,114 +814,8 @@ impl PairedState {
         Ok(true)
     }
 
-    /// Roll back only a prepared replacement whose old credential still owns
-    /// the exact pairing and access generations. Used when intent publication
-    /// itself fails before any remote operation is allowed.
-    pub(crate) fn rollback_unretired_pair_replacement(
-        path: &Path,
-        operation_id: &str,
-        owner_generation: [u8; 32],
-        candidate_generation: [u8; 32],
-    ) -> Result<bool, StorageError> {
-        let _guard = owner_state_write_guard();
-        let protector = platform_protector();
-        let mut state = Self::load_with(&protector, path)?;
-        let Some(intent) = state.retirement_intent.as_ref() else {
-            return Ok(false);
-        };
-        let Some(incumbent) = state.credential.as_ref() else {
-            return Ok(false);
-        };
-        if intent.operation != RetirementOperation::GuiPairReplacement
-            || intent.operation_id != operation_id
-            || intent.owner_generation != owner_generation
-            || intent.candidate_generation != candidate_generation
-            || intent.phase != RetirementPhase::Prepared
-            || pairing_generation(&incumbent.client_cert_pem) != owner_generation
-            || state.access_mutation_generation != intent.access_mutation_generation
-        {
-            return Ok(false);
-        }
-        state.retirement_intent = None;
-        Self::save_inner(&protector, path, &state)?;
-        Ok(true)
-    }
-
-    /// Publish the already-retired replacement candidate as current while
-    /// retaining the intent as a restart fence for answer/migration publication.
-    pub(crate) fn commit_pair_replacement_candidate(
-        path: &Path,
-        operation_id: &str,
-        owner_generation: [u8; 32],
-        candidate_generation: [u8; 32],
-    ) -> Result<PairedState, StorageError> {
-        let _guard = owner_state_write_guard();
-        let protector = platform_protector();
-        let mut state = Self::load_with(&protector, path)?;
-        let intent = state
-            .retirement_intent
-            .as_ref()
-            .ok_or(StorageError::CasMismatch)?;
-        if intent.operation != RetirementOperation::GuiPairReplacement
-            || intent.operation_id != operation_id
-            || intent.owner_generation != owner_generation
-            || intent.candidate_generation != candidate_generation
-            || intent.phase != RetirementPhase::Succeeded
-        {
-            return Err(StorageError::CasMismatch);
-        }
-        let current_generation = state
-            .credential
-            .as_ref()
-            .map(|credential| pairing_generation(&credential.client_cert_pem));
-        if current_generation == Some(candidate_generation) {
-            return Ok(state);
-        }
-        if current_generation != Some(owner_generation)
-            || state.access_mutation_generation != intent.access_mutation_generation
-        {
-            return Err(StorageError::CasMismatch);
-        }
-        state.credential = Some(intent.candidate.clone());
-        state.access_mutation_generation = 0;
-        Self::save_inner(&protector, path, &state)?;
-        Ok(state)
-    }
-
-    /// Clear a committed replacement only when every external publication has
-    /// completed and both generations still match the saved operation.
-    pub(crate) fn clear_pair_replacement_intent(
-        path: &Path,
-        operation_id: &str,
-        owner_generation: [u8; 32],
-        candidate_generation: [u8; 32],
-    ) -> Result<bool, StorageError> {
-        let _guard = owner_state_write_guard();
-        let protector = platform_protector();
-        let mut state = Self::load_with(&protector, path)?;
-        let Some(intent) = state.retirement_intent.as_ref() else {
-            return Ok(false);
-        };
-        let current_generation = state
-            .credential
-            .as_ref()
-            .map(|credential| pairing_generation(&credential.client_cert_pem));
-        if intent.operation != RetirementOperation::GuiPairReplacement
-            || intent.operation_id != operation_id
-            || intent.owner_generation != owner_generation
-            || intent.candidate_generation != candidate_generation
-            || intent.phase != RetirementPhase::Succeeded
-            || current_generation != Some(candidate_generation)
-        {
-            return Ok(false);
-        }
-        state.retirement_intent = None;
-        Self::save_inner(&protector, path, &state)?;
-        Ok(true)
-    }
-
-    /// Advance an intent only while its operation and candidate generation still
-    /// own the durable pairing slot.
+    /// Advance an intent only while it and its exact credential and access
+    /// generation still own the durable pairing slot.
     pub(crate) fn update_retirement_phase(
         path: &Path,
         operation_id: &str,
@@ -1095,34 +829,14 @@ impl PairedState {
         let Some(intent) = state.retirement_intent.as_ref() else {
             return Err(StorageError::CasMismatch);
         };
-        let candidate_generation = if intent.candidate_generation == [0; 32]
-            && intent.operation == RetirementOperation::IntegrationWrongMark
-        {
-            intent.owner_generation
-        } else {
-            intent.candidate_generation
-        };
-        let owner_matches = match intent.operation {
-            RetirementOperation::IntegrationWrongMark => {
-                state.credential.is_none() && intent.access_mutation_generation == 0
-            }
-            RetirementOperation::GuiPairReplacement => {
-                state.credential.as_ref().is_some_and(|credential| {
-                    pairing_generation(&credential.client_cert_pem) == intent.owner_generation
-                        && state.access_mutation_generation == intent.access_mutation_generation
-                })
-            }
-            RetirementOperation::GuiPairRejection => {
-                state.credential.as_ref().is_some_and(|credential| {
-                    pairing_generation(&credential.client_cert_pem) == intent.owner_generation
-                        && state.access_mutation_generation == intent.access_mutation_generation
-                })
-            }
-        };
+        let owner_matches = state.credential.as_ref().is_some_and(|credential| {
+            pairing_generation(&credential.client_cert_pem) == intent.owner_generation
+                && state.access_mutation_generation == intent.access_mutation_generation
+        });
         if intent.schema != 1
             || intent.operation_id != operation_id
             || intent.owner_generation != owner_generation
-            || candidate_generation != pairing_generation(&intent.candidate.client_cert_pem)
+            || owner_generation != pairing_generation(&intent.credential.client_cert_pem)
             || !owner_matches
             || intent.phase != expected_phase
         {
@@ -1130,62 +844,6 @@ impl PairedState {
         }
         state.retirement_intent.as_mut().unwrap().phase = phase;
         Self::save_inner(&protector, path, &state)
-    }
-
-    /// Remove only a successfully retired, unpaired candidate. A later owner
-    /// generation or operation is left untouched if an old callback arrives.
-    pub(crate) fn remove_retired_intent(
-        path: &Path,
-        operation_id: &str,
-        owner_generation: [u8; 32],
-    ) -> Result<bool, StorageError> {
-        let _guard = owner_state_write_guard();
-        let protector = platform_protector();
-        let state = Self::load_with(&protector, path)?;
-        let Some(intent) = state.retirement_intent else {
-            return Ok(false);
-        };
-        let matches = match intent.operation {
-            RetirementOperation::IntegrationWrongMark => {
-                state.credential.is_none()
-                    && intent.operation_id == operation_id
-                    && intent.owner_generation == owner_generation
-                    && (intent.candidate_generation == [0; 32]
-                        || intent.candidate_generation == owner_generation)
-                    && pairing_generation(&intent.candidate.client_cert_pem) == owner_generation
-                    && intent.access_mutation_generation == 0
-                    && intent.phase == RetirementPhase::Succeeded
-            }
-            RetirementOperation::GuiPairReplacement => false,
-            RetirementOperation::GuiPairRejection => false,
-        };
-        if intent.schema != 1 || !matches {
-            return Ok(false);
-        }
-        #[cfg(test)]
-        if RETIREMENT_CLEANUP_FAIL_POINT.with(|fail| fail.get()) {
-            return Err(StorageError::WriteFailed(std::io::Error::other(
-                "simulated retirement cleanup failure",
-            )));
-        }
-        let tmp = path.with_extension("json.tmp");
-        if tmp.exists() {
-            std::fs::remove_file(&tmp).map_err(StorageError::WriteFailed)?;
-        }
-        match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(StorageError::WriteFailed(error)),
-        }
-        if path.exists() || tmp.exists() {
-            return Err(StorageError::DurabilityUncertain(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "retirement cleanup readback failed",
-            )));
-        }
-        #[cfg(not(windows))]
-        sync_published_path(path).map_err(StorageError::DurabilityUncertain)?;
-        Ok(true)
     }
 
     /// Mutate credential fields within an ordered process-wide CAS boundary.
@@ -2209,15 +1867,11 @@ mod tests {
         state.retirement_intent = Some(RetirementIntent {
             schema: 1,
             operation_id: "retirement-op".into(),
-            operation: RetirementOperation::IntegrationWrongMark,
             phase: RetirementPhase::Prepared,
             owner_generation: generation,
-            candidate_generation: generation,
             access_mutation_generation: 0,
             client_id: "sha256:fixture".into(),
-            candidate: credential.clone(),
-            answer_disposition: None,
-            marker_result: None,
+            credential: credential.clone(),
         });
         state.save(&path).unwrap();
 
@@ -2235,54 +1889,6 @@ mod tests {
         );
         assert!(matches!(result, Err(StorageError::CasMismatch)));
         assert_eq!(calls.get(), 0);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn save_if_unpaired_refuses_a_live_credential_or_retirement_intent() {
-        let path = temp_pairing_path("save-if-unpaired");
-        let incumbent = paired_state_with("old-key", None);
-        incumbent.save(&path).unwrap();
-        assert!(matches!(
-            paired_state_with("new-key", None).save_if_unpaired(&path),
-            Err(StorageError::CasMismatch)
-        ));
-        assert_eq!(
-            PairedState::load(&path)
-                .unwrap()
-                .credential
-                .unwrap()
-                .client_key_pem,
-            "old-key"
-        );
-
-        let candidate = paired_state_with("candidate-key", None).credential.unwrap();
-        PairedState::default().save(&path).unwrap();
-        let intent_state = PairedState {
-            retirement_intent: Some(RetirementIntent {
-                schema: 1,
-                operation_id: "retirement-op".into(),
-                operation: RetirementOperation::IntegrationWrongMark,
-                phase: RetirementPhase::Prepared,
-                owner_generation: pairing_generation(&candidate.client_cert_pem),
-                candidate_generation: pairing_generation(&candidate.client_cert_pem),
-                access_mutation_generation: 0,
-                client_id: "sha256:fixture".into(),
-                candidate,
-                answer_disposition: None,
-                marker_result: None,
-            }),
-            ..PairedState::default()
-        };
-        intent_state.save(&path).unwrap();
-        assert!(matches!(
-            paired_state_with("new-key", None).save_if_unpaired(&path),
-            Err(StorageError::CasMismatch)
-        ));
-        assert!(PairedState::load(&path)
-            .unwrap()
-            .retirement_intent
-            .is_some());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

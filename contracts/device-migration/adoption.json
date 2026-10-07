@@ -16,10 +16,6 @@
     }
   ],
   "adopted_vector_ids": [
-    "rekey_request",
-    "rekey_created_201",
-    "rekey_replay_200",
-    "rekey_without_network_metadata",
     "migration_states",
     "replace_request",
     "decision_response",

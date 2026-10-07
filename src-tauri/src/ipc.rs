@@ -280,11 +280,6 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
 
     let cfg = state.sync_config.clone();
     let sync = state.sync.clone();
-    #[cfg(all(windows, not(test)))]
-    let baseline_marker = (act == pl_transport_win::session::PairingAction::Confirm)
-        .then(pl_transport_win::device_marker::probe_platform);
-    #[cfg(any(not(windows), test))]
-    let baseline_marker = None;
 
     pl_transport_win::session::answer(
         act,
@@ -293,7 +288,6 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
         &sync,
         &state.credential_access,
         &state.uploader_slot,
-        baseline_marker,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -391,7 +385,7 @@ fn migration_ui_snapshot(
     }
 }
 
-/// Reconcile any saved migration decision with the journal and return durable owner state.
+/// Reconcile any saved replacement decision with the journal and return durable owner state.
 #[tauri::command]
 pub async fn pairing_migration_state(
     state: tauri::State<'_, crate::app::AppState>,
@@ -460,7 +454,7 @@ pub async fn pairing_migration_decide(
         .ok_or_else(|| "not paired".to_string())?;
     let binding =
         pl_transport_win::ack::JournalIdentity::from_credential(credential).client_cert_sha256;
-    if record.new_certificate_binding.as_deref() != Some(binding.as_str())
+    if record.binding != binding
         || record.pairing_generation
             != pl_transport_win::credential::pairing_generation(&credential.client_cert_pem)
     {
@@ -505,9 +499,6 @@ pub async fn pairing_migration_devices(
     let credential = paired.credential.ok_or_else(|| "not paired".to_string())?;
     let current_cid = pl_transport_win::migration::credential_cid(&credential)
         .map_err(|error| error.to_string())?;
-    let old_cid = pl_transport_win::migration::load(path)
-        .map_err(|error| error.to_string())?
-        .and_then(|record| record.old_cid);
     let client = migration_client(&state)
         .await
         .map_err(|error| error.to_string())?;
@@ -517,9 +508,7 @@ pub async fn pairing_migration_devices(
         .map(|devices| {
             devices
                 .into_iter()
-                .filter(|device| {
-                    device.cid != current_cid && old_cid.as_deref() != Some(&device.cid)
-                })
+                .filter(|device| device.cid != current_cid)
                 .collect()
         })
         .map_err(|error| error.to_string())

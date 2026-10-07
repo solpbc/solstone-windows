@@ -25,7 +25,6 @@ pub(crate) enum OrdinaryRequest {
     SystemStatusGet,
     SystemAboutGet,
     ClientsRetireDelete,
-    MigrationRekeyPost,
     MigrationStateGet,
     MigrationDecisionPut,
 }
@@ -42,7 +41,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -54,7 +53,6 @@ impl OrdinaryRequest {
         Self::SystemStatusGet,
         Self::SystemAboutGet,
         Self::ClientsRetireDelete,
-        Self::MigrationRekeyPost,
         Self::MigrationStateGet,
         Self::MigrationDecisionPut,
     ];
@@ -135,13 +133,6 @@ impl OrdinaryRequest {
                 method: "DELETE",
                 path_pattern: "/app/network/api/clients/<client-id>",
                 replay: ReplayPolicy::ForbidAfterWrite,
-                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
-                gated: false,
-            },
-            Self::MigrationRekeyPost => OrdinaryRequestSpec {
-                method: "POST",
-                path_pattern: "/app/network/api/clients/self/rekey",
-                replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: false,
             },
@@ -303,14 +294,6 @@ mod tests {
                 "DELETE",
                 "/app/network/api/clients/<client-id>",
                 ReplayPolicy::ForbidAfterWrite,
-                MAX_POST_CONNECT_RESPONSE_BYTES,
-                false,
-            ),
-            (
-                OrdinaryRequest::MigrationRekeyPost,
-                "POST",
-                "/app/network/api/clients/self/rekey",
-                ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 false,
             ),

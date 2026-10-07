@@ -112,52 +112,6 @@ fn execute_inner(
         }
     };
 
-    match runtime.block_on(crate::retirement::reconcile_on_launch(
-        &environment.state_path,
-    )) {
-        Ok(_) => {}
-        Err(error) => {
-            return (
-                Some(Failure::transport(
-                    Phase::Precondition,
-                    &error,
-                    "a saved client retirement could not be reconciled",
-                )),
-                Evidence::default(),
-            )
-        }
-    }
-
-    #[cfg(all(windows, not(test)))]
-    match runtime.block_on(crate::migration::resume_on_launch(
-        &environment.state_path,
-        crate::device_marker::probe_platform(),
-        &environment.device_label,
-        "solpbc/solstone-windows",
-    )) {
-        Ok(true) => {}
-        Ok(false) => {
-            return (
-                Some(Failure::error(
-                    Phase::Precondition,
-                    "device_migration_pending",
-                    "the paired device migration has not been admitted",
-                )),
-                Evidence::default(),
-            )
-        }
-        Err(error) => {
-            return (
-                Some(Failure::transport(
-                    Phase::Precondition,
-                    &error,
-                    "the paired device migration could not be reconciled",
-                )),
-                Evidence::default(),
-            )
-        }
-    }
-
     let handle = shared_observer(&observer);
     runtime.block_on(async move {
         match &command.args {
@@ -386,55 +340,40 @@ pub async fn pair(
     };
 
     if !matches_mark {
-        let retirement = retire_wrong_mark_candidate(
-            &environment.state_path,
-            credential,
-            |credential, client_id| async move {
-                let client = ObserverClient::new(
-                    credential,
+        let mut delete_success = false;
+        if let Ok(der_certs) = spl_transport::tls::parse_certs(&credential.client_cert_pem) {
+            if let Some(der) = der_certs.first() {
+                let client_id = format!("sha256:{}", spl_core::ca::sha256_hex(der.as_ref()));
+                if let Ok(client) = ObserverClient::new(
+                    credential.clone(),
                     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                )?;
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    client.retire_client(&client_id),
-                )
-                .await
-                .map_err(|_| {
-                    TransportError::Io(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "client retirement timed out",
-                    ))
-                })?
-            },
-        )
-        .await;
-        match retirement {
-            Ok(()) => {
-                evidence.remote_residue = Some(ceremony_residue(carrier, &observer, Residue::None));
-                evidence.local_residue_cleared = Some(true);
-                return (
-                    Some(Failure::assertion(
-                        Phase::Validate,
-                        "mark_mismatch",
-                        "the supplied mark did not match the journal's mark",
-                    )),
-                    evidence,
-                );
-            }
-            Err(error) => {
-                evidence.remote_residue =
-                    Some(ceremony_residue(carrier, &observer, Residue::Present));
-                evidence.local_residue_cleared = Some(false);
-                return (
-                    Some(Failure::transport(
-                        Phase::Persist,
-                        &error,
-                        "the rejected pairing could not be safely retired yet",
-                    )),
-                    evidence,
-                );
+                ) {
+                    if let Ok(Ok(())) = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        client.retire_client(&client_id),
+                    )
+                    .await
+                    {
+                        delete_success = true;
+                    }
+                }
             }
         }
+        let residue_journal = if delete_success {
+            Residue::None
+        } else {
+            Residue::Present
+        };
+        evidence.remote_residue = Some(ceremony_residue(carrier, &observer, residue_journal));
+        evidence.local_residue_cleared = Some(clear_local_credential(environment));
+        return (
+            Some(Failure::assertion(
+                Phase::Validate,
+                "mark_mismatch",
+                "the supplied mark did not match the journal's mark",
+            )),
+            evidence,
+        );
     }
 
     // Journal identity issuance succeeded. Enrollment is optional, and even a
@@ -480,7 +419,7 @@ pub async fn pair(
         evidence.local_residue_cleared = Some(clear_local_credential(environment));
         return (Some(deadline), evidence);
     }
-    if let Err(error) = paired.save_if_unpaired(&environment.state_path) {
+    if let Err(error) = paired.save(&environment.state_path) {
         match prior_ans_bytes {
             Some(bytes) => {
                 let _ = std::fs::write(&ans_path, bytes);
@@ -490,7 +429,6 @@ pub async fn pair(
             }
         }
         evidence.local_residue_cleared = Some(clear_local_credential(environment));
-        let error = TransportError::from(error);
         return (
             Some(Failure::transport(
                 Phase::Persist,
@@ -502,18 +440,6 @@ pub async fn pair(
     }
     evidence.state_written = Some(true);
     (None, evidence)
-}
-
-async fn retire_wrong_mark_candidate<F, Fut>(
-    state_path: &Path,
-    candidate: crate::credential::Credential,
-    retire: F,
-) -> Result<(), TransportError>
-where
-    F: FnOnce(crate::credential::Credential, String) -> Fut,
-    Fut: std::future::Future<Output = Result<(), TransportError>>,
-{
-    crate::retirement::retire_wrong_mark_with(state_path, candidate, retire).await
 }
 
 // ── shared ───────────────────────────────────────────────────────────────────
@@ -1401,98 +1327,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
-    }
-
-    #[tokio::test]
-    async fn wrong_mark_owner_persists_intent_before_the_injected_delete() {
-        let root = temp_root("wrong-mark-intent-order");
-        let environment = environment(&root);
-        let generated = rcgen::generate_simple_self_signed(vec!["fixture".into()]).unwrap();
-        let credential = crate::credential::Credential {
-            client_key_pem: generated.key_pair.serialize_pem(),
-            client_cert_pem: generated.cert.pem(),
-            ca_chain_pem: vec![generated.cert.pem()],
-            ca_fp_prefix: vec![1, 2, 3],
-            instance_id: "fixture-journal".into(),
-            home_label: "Fixture Journal".into(),
-            endpoints: vec![crate::credential::EndpointAddr {
-                host: "127.0.0.1".into(),
-                port: 7657,
-            }],
-            relay_origin: None,
-            device_token: None,
-            device_token_expires_at: None,
-        };
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        crate::credential::FS_FAIL_POINT.with(|fail| fail.set(1));
-        let callback_calls = calls.clone();
-        let result =
-            retire_wrong_mark_candidate(&environment.state_path, credential, move |_, _| {
-                callback_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                async { Ok(()) }
-            })
-            .await;
-        crate::credential::FS_FAIL_POINT.with(|fail| fail.set(0));
-
-        assert!(result.is_err());
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(!environment.state_path.exists());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn wrong_mark_owner_persists_protected_candidate_before_injected_delete() {
-        let root = temp_root("wrong-mark-protected-intent");
-        let environment = environment(&root);
-        let generated = rcgen::generate_simple_self_signed(vec!["fixture".into()]).unwrap();
-        let candidate = crate::credential::Credential {
-            client_key_pem: generated.key_pair.serialize_pem(),
-            client_cert_pem: generated.cert.pem(),
-            ca_chain_pem: vec![generated.cert.pem()],
-            ca_fp_prefix: vec![1, 2, 3],
-            instance_id: "fixture-journal".into(),
-            home_label: "Fixture Journal".into(),
-            endpoints: vec![crate::credential::EndpointAddr {
-                host: "127.0.0.1".into(),
-                port: 7657,
-            }],
-            relay_origin: None,
-            device_token: None,
-            device_token_expires_at: None,
-        };
-        let expected_cert = candidate.client_cert_pem.clone();
-        let expected_cid = crate::migration::credential_cid(&candidate).unwrap();
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let callback_calls = calls.clone();
-        let callback_path = environment.state_path.clone();
-
-        retire_wrong_mark_candidate(&environment.state_path, candidate, move |candidate, cid| {
-            let saved_path = callback_path.clone();
-            async move {
-                assert_eq!(candidate.client_cert_pem, expected_cert);
-                assert_eq!(cid, expected_cid);
-                let raw = std::fs::read_to_string(&saved_path).unwrap();
-                assert!(raw.contains("dpapi:v1:"));
-                assert!(!raw.contains("PRIVATE KEY"));
-                let state = PairedState::load(&saved_path).unwrap();
-                let intent = state.retirement_intent.unwrap();
-                assert_eq!(
-                    intent.operation,
-                    crate::credential::RetirementOperation::IntegrationWrongMark
-                );
-                assert_eq!(intent.phase, crate::credential::RetirementPhase::Prepared);
-                assert_eq!(intent.candidate.client_cert_pem, expected_cert);
-                callback_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(!environment.state_path.exists());
-        let _ = std::fs::remove_dir_all(root);
     }
 
     // Deliberate build-unit-local overlap with tests/support/journal_fake.rs:

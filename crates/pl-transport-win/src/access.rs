@@ -137,7 +137,7 @@ impl CredentialAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential::{Credential, RetirementIntent, RetirementOperation, RetirementPhase};
+    use crate::credential::{Credential, RetirementIntent, RetirementPhase};
     use crate::device_metadata::RawDeviceFacts;
     use crate::journal_version::JournalVersionController;
     use crate::service::SyncConfig;
@@ -167,9 +167,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let candidate = Credential {
+        let rejected = Credential {
             client_key_pem: "key".into(),
-            client_cert_pem: "candidate-cert".into(),
+            client_cert_pem: "rejected-cert".into(),
             ca_chain_pem: vec!["ca".into()],
             ca_fp_prefix: vec![1, 2, 3],
             instance_id: "journal".into(),
@@ -180,19 +180,15 @@ mod tests {
             device_token_expires_at: None,
         };
         let paired = PairedState {
-            credential: Some(candidate.clone()),
+            credential: Some(rejected.clone()),
             retirement_intent: Some(RetirementIntent {
                 schema: 1,
                 operation_id: "pending".into(),
-                operation: RetirementOperation::IntegrationWrongMark,
                 phase: RetirementPhase::Prepared,
-                owner_generation: pairing_generation(&candidate.client_cert_pem),
-                candidate_generation: pairing_generation(&candidate.client_cert_pem),
+                owner_generation: pairing_generation(&rejected.client_cert_pem),
                 access_mutation_generation: 0,
                 client_id: "sha256:fixture".into(),
-                candidate,
-                answer_disposition: None,
-                marker_result: None,
+                credential: rejected,
             }),
             ..Default::default()
         };

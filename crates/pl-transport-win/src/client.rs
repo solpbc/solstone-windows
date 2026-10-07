@@ -790,13 +790,6 @@ impl ObserverClient {
             .await
     }
 
-    pub async fn rekey(&self, body: &[u8]) -> Result<HttpResponse, TransportError> {
-        let mut headers = self.v3_headers();
-        headers.push(("content-type".to_string(), "application/json".to_string()));
-        self.post_connect_response(OrdinaryRequest::MigrationRekeyPost, headers, body)
-            .await
-    }
-
     pub async fn get_migration_state(&self) -> Result<HttpResponse, TransportError> {
         self.post_connect_response(OrdinaryRequest::MigrationStateGet, self.v3_headers(), &[])
             .await
@@ -1042,7 +1035,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 14);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 13);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);

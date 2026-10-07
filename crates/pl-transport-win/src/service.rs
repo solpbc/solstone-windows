@@ -212,7 +212,9 @@ pub async fn pair(
     sync: Arc<Mutex<SyncSnapshot>>,
 ) -> Result<PairedState, TransportError> {
     ensure_pairable(&cfg.state_path)?;
-    let fresh_pair = !PairedState::load(&cfg.state_path)?.is_paired();
+    // Only a pairing made from an unpaired profile carries the replacement
+    // offer. An unreadable state file is overwritten as before.
+    let fresh_pair = PairedState::load(&cfg.state_path).map_or(true, |paired| !paired.is_paired());
     publish_pairing(
         &sync,
         &cfg.confirmation,
@@ -250,19 +252,12 @@ pub async fn pair(
     }
 }
 
-/// This service path only installs a credential into an empty slot. The GUI
-/// session routes explicit pairing against an incumbent through its durable
-/// replacement transaction before reaching this path.
+/// A rejected pairing whose retirement has not finished still owns the slot;
+/// relaunch finishes it. Anything else may be paired over, as before.
 pub(crate) fn ensure_pairable(state_path: &std::path::Path) -> Result<(), TransportError> {
-    let paired = PairedState::load(state_path)?;
-    if paired.retirement_intent.is_some() {
+    if PairedState::load(state_path).is_ok_and(|paired| paired.retirement_intent.is_some()) {
         return Err(TransportError::Pairing(
             "a client retirement is still pending".to_owned(),
-        ));
-    }
-    if paired.is_paired() {
-        return Err(TransportError::Pairing(
-            "an existing pairing must be retired before pairing again".to_owned(),
         ));
     }
     Ok(())
@@ -284,7 +279,7 @@ async fn pair_inner(
         credential: Some(credential),
         ..Default::default()
     };
-    paired.save_if_unpaired(&cfg.state_path)?;
+    paired.save(&cfg.state_path)?;
     Ok((paired, journal_label, mark, binding))
 }
 
@@ -422,108 +417,44 @@ pub async fn launch_resume(
         return None;
     }
 
-    #[cfg(windows)]
-    let _marker_result = Some(crate::device_marker::probe_platform());
-    #[cfg(not(windows))]
-    let _marker_result: Option<crate::device_marker::MarkerResult> = None;
-
-    #[cfg(windows)]
-    if let Some(marker) = _marker_result.clone() {
-        match crate::migration::resume_on_launch(
-            &cfg.state_path,
-            marker,
-            &cfg.device_label,
-            "solpbc/solstone-windows",
-        )
-        .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                // The machine marker could not be read, so the carried
-                // pairing is held rather than silently resumed or moved.
-                publish_pairing(
-                    sync,
-                    &cfg.confirmation,
-                    &cfg.tombstone,
-                    PairingWrite::Failed {
-                        detail: "storage_unavailable".to_owned(),
-                    },
-                );
-                return None;
-            }
-            Err(error) => {
-                publish_pairing(
-                    sync,
-                    &cfg.confirmation,
-                    &cfg.tombstone,
-                    PairingWrite::Failed {
-                        detail: transport_error_code(&error),
-                    },
-                );
-                return None;
-            }
-        }
-    }
-
     let _ = crate::answer::settle_grandfather(&cfg.state_path, &cfg.confirmation);
-    #[cfg(windows)]
-    if let (Some(marker), Ok(paired)) =
-        (_marker_result.as_ref(), PairedState::load(&cfg.state_path))
-    {
-        if let Err(error) =
-            crate::migration::commit_baseline_after_answer(&cfg.state_path, marker, &paired)
-        {
-            tracing::warn!(target: "sync", error = %error, "device migration baseline remains pending");
-            publish_pairing(
-                sync,
-                &cfg.confirmation,
-                &cfg.tombstone,
-                PairingWrite::Failed {
-                    detail: transport_error_code(&error),
-                },
-            );
-            return None;
-        }
-    }
-    {
-        match PairedState::load(&cfg.state_path) {
-            Ok(paired) if paired.is_paired() => {
-                let cfg_clone = cfg.clone();
-                let sync_for_sync = sync.clone();
-                match CredentialAccess::bind(&paired, cfg, sync.clone(), None) {
-                    Ok(access) => {
-                        tracing::info!(
-                            target: "sync",
-                            source = "resume",
-                            "uploader started"
-                        );
-                        let wake = slot.wake();
-                        let access_clone = access.clone();
-                        slot.replace(move |rx| async move {
-                            run_uploader(access_clone, cfg_clone, sync_for_sync, rx, wake).await;
-                        })
-                        .await;
-                        return Some(access);
-                    }
-                    Err(error) => {
-                        let error = error.to_string();
-                        tracing::warn!(
-                            target: "sync",
-                            error = %observer_log::redact_secret("pairing-load-error", &error),
-                            "pairing state load failed"
-                        );
-                    }
+    match PairedState::load(&cfg.state_path) {
+        Ok(paired) if paired.is_paired() => {
+            let cfg_clone = cfg.clone();
+            let sync_for_sync = sync.clone();
+            match CredentialAccess::bind(&paired, cfg, sync.clone(), None) {
+                Ok(access) => {
+                    tracing::info!(
+                        target: "sync",
+                        source = "resume",
+                        "uploader started"
+                    );
+                    let wake = slot.wake();
+                    let access_clone = access.clone();
+                    slot.replace(move |rx| async move {
+                        run_uploader(access_clone, cfg_clone, sync_for_sync, rx, wake).await;
+                    })
+                    .await;
+                    return Some(access);
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    tracing::warn!(
+                        target: "sync",
+                        error = %observer_log::redact_secret("pairing-load-error", &error),
+                        "pairing state load failed"
+                    );
                 }
             }
-            Ok(_) => {}
-            Err(error) => {
-                let error = error.to_string();
-                tracing::warn!(
-                    target: "sync",
-                    error = %observer_log::redact_secret("pairing-load-error", &error),
-                    "pairing state load failed"
-                );
-            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            let error = error.to_string();
+            tracing::warn!(
+                target: "sync",
+                error = %observer_log::redact_secret("pairing-load-error", &error),
+                "pairing state load failed"
+            );
         }
     }
     None
@@ -881,7 +812,7 @@ mod tests {
             credential: Some(fixture_credential("NEW-KEY", "NEW-CERT")),
             ..Default::default()
         }
-        .save_if_unpaired(&cfg.state_path)
+        .save(&cfg.state_path)
         .unwrap();
         let fresh = PairedState::load(&cfg.state_path).unwrap();
         assert_eq!(
