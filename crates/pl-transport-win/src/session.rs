@@ -51,7 +51,7 @@ pub async fn answer(
     }
 
     let ans_path = answer_path(&cfg.state_path);
-    let mut answer_state = read_answer(&ans_path)?.unwrap_or_default();
+    let mut answer_state = crate::answer::read_answer_or_reset(&ans_path)?.unwrap_or_default();
 
     match action {
         PairingAction::Confirm => {

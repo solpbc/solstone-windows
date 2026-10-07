@@ -399,6 +399,17 @@ pub async fn launch_resume(
         }
         Err(_) | Ok(_) => {}
     }
+    if crate::answer::read_answer_or_reset(&crate::answer::answer_path(&cfg.state_path)).is_err() {
+        publish_pairing(
+            sync,
+            &cfg.confirmation,
+            &cfg.tombstone,
+            PairingWrite::Failed {
+                detail: "storage_unavailable".to_owned(),
+            },
+        );
+        return None;
+    }
     if let Err(error) = crate::retirement::reconcile_on_launch(&cfg.state_path).await {
         publish_pairing(
             sync,

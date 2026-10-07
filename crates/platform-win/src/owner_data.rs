@@ -52,8 +52,8 @@ const COMPLETE_FILE: &str = "owner-adoption-v1.json";
 const COMPLETE_SCHEMA: &str = "solstone.owner-adoption.v1";
 const COMPLETE_SOURCE: &str = "legacy-localappdata-solstone";
 /// Every file a pre-separation release could have written at the legacy root.
-/// Migration, key-recovery and refused-pairing records only ever exist under
-/// the owner root, so they are not adoption inventory.
+/// Migration, key-recovery, refused-pairing and unreadable-answer records only
+/// ever exist under the owner root, so they are not adoption inventory.
 const ROOT_FILES: &[&str] = &[
     "pairing.json",
     "pairing.json.tmp",

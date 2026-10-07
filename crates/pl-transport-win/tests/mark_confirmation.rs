@@ -2303,10 +2303,11 @@ async fn assert_failed_repair_preserves_incumbent(confirmed: bool) {
     }
 }
 
-/// 5. Unreadable answer file -> session::pair does not rewrite it; launch fails
-/// closed with an explicit error instead of guessing the gate; bytes unchanged.
+/// 5. Unreadable answer file -> session::pair does not rewrite it; launch treats
+/// it as unknown: the bytes are set aside as evidence, the pairing is held for
+/// the mark, and the owner can answer it again.
 #[tokio::test]
-async fn session_pair_unreadable_answer_file_returns_error_and_does_not_rewrite() {
+async fn session_pair_unreadable_answer_file_is_set_aside_and_held_for_the_mark() {
     let dir = TempDir::new("pair-unreadable-ans");
     let state_path = dir.path().join("pairing.json");
     let ans_path = answer_path(&state_path);
@@ -2314,6 +2315,7 @@ async fn session_pair_unreadable_answer_file_returns_error_and_does_not_rewrite(
     let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let cred = direct_credential(pin, 1);
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
     let paired = PairedState {
         credential: Some(cred),
         ..Default::default()
@@ -2357,10 +2359,49 @@ async fn session_pair_unreadable_answer_file_returns_error_and_does_not_rewrite(
     .await;
     assert!(res.is_err());
 
-    let mut uploader_slot = UploaderSlot::new();
-    let resumed_access =
-        pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await;
-    assert!(resumed_access.is_none());
-    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Failed);
     assert_eq!(std::fs::read(&ans_path).unwrap(), unreadable_bytes);
+
+    let resumed_access = {
+        let mut uploader_slot = slot.lock().await;
+        pl_transport_win::service::launch_resume(&cfg, &sync, &mut uploader_slot).await
+    };
+    assert!(resumed_access.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    {
+        let snap = sync.lock().unwrap();
+        assert_eq!(snap.pairing.phase, PairingPhase::AwaitingConfirmation);
+        assert_eq!(snap.pairing.binding, binding);
+    }
+    assert!(confirmation.lock().unwrap().is_empty());
+    assert_eq!(
+        read_answer(&ans_path).unwrap(),
+        Some(AnswerState::default())
+    );
+    let evidence: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("pairing-answer-unreadable-"))
+        })
+        .collect();
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(std::fs::read(&evidence[0]).unwrap(), unreadable_bytes);
+
+    *access.lock().await = resumed_access;
+    answer(
+        PairingAction::Confirm,
+        &binding,
+        &cfg,
+        &sync,
+        &access,
+        &slot,
+        None,
+    )
+    .await
+    .expect("the owner can answer the mark again");
+    assert_eq!(read_answer(&ans_path).unwrap().unwrap().confirmed, binding);
+    assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Paired);
+    slot.lock().await.stop().await;
 }

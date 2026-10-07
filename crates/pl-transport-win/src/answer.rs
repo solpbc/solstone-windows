@@ -110,6 +110,33 @@ pub fn read_answer(path: &Path) -> Result<Option<AnswerState>, StorageError> {
     Ok(Some(parsed))
 }
 
+/// Read the answer file, treating an unreadable or corrupt one as "answer
+/// unknown". Its bytes are moved aside to an evidence name outside the
+/// owner-data adoption inventory (never deleted) and an empty answer replaces
+/// it, so a pairing stays held until the owner answers its mark again.
+/// Unknown is never read as confirmed or rejected.
+pub fn read_answer_or_reset(path: &Path) -> Result<Option<AnswerState>, StorageError> {
+    if let Ok(answer) = read_answer(path) {
+        return Ok(answer);
+    }
+    let _guard = crate::credential::owner_state_write_guard();
+    if let Ok(answer) = read_answer(path) {
+        return Ok(answer);
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let evidence = path.with_file_name(format!("pairing-answer-unreadable-{nonce}.json"));
+    publish_staged_file(path, &evidence)?;
+    #[cfg(not(windows))]
+    crate::credential::sync_published_path(&evidence).map_err(StorageError::DurabilityUncertain)?;
+    tracing::warn!(target: "sync", "unreadable pairing answer set aside; the mark will be asked again");
+    let empty = AnswerState::default();
+    write_answer_with_owner_lock(path, &empty)?;
+    Ok(Some(empty))
+}
+
 /// Atomically write the answer file using stage-sync-rename.
 pub fn write_answer(path: &Path, state: &AnswerState) -> Result<(), StorageError> {
     let _guard = crate::credential::owner_state_write_guard();
