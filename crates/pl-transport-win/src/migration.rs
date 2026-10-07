@@ -641,10 +641,7 @@ pub fn credential_matches_admitted_fresh_pair(
 
 fn apply_classified_offer<W>(
     state_path: &Path,
-    expected_revision: u64,
-    expected_generation: [u8; 32],
-    expected_binding: &str,
-    expected_cid: &str,
+    expected: &AdmittedFreshPair,
     target_eligibility: FreshPairEligibility,
     target_offer_pending: bool,
     commit: W,
@@ -658,10 +655,10 @@ where
     let Some(mut record) = load(state_path)? else {
         return Ok(());
     };
-    if record.revision != expected_revision
-        || record.pairing_generation != expected_generation
-        || record.binding != expected_binding
-        || record.cid != expected_cid
+    if record.revision != expected.revision
+        || record.pairing_generation != expected.pairing_generation
+        || record.binding != expected.binding
+        || record.cid != expected.cid
     {
         return Ok(());
     }
@@ -694,10 +691,12 @@ where
     let Some(pre_snapshot) = load(state_path)? else {
         return Ok(());
     };
-    let expected_revision = pre_snapshot.revision;
-    let expected_generation = pre_snapshot.pairing_generation;
-    let expected_binding = pre_snapshot.binding;
-    let expected_cid = pre_snapshot.cid;
+    let expected = AdmittedFreshPair {
+        binding: pre_snapshot.binding,
+        pairing_generation: pre_snapshot.pairing_generation,
+        revision: pre_snapshot.revision,
+        cid: pre_snapshot.cid,
+    };
 
     let list_result = list_other_devices().await;
     let (target_eligibility, target_offer_pending) = match list_result {
@@ -707,10 +706,7 @@ where
     };
     apply_classified_offer(
         state_path,
-        expected_revision,
-        expected_generation,
-        &expected_binding,
-        &expected_cid,
+        &expected,
         target_eligibility,
         target_offer_pending,
         commit,
@@ -757,10 +753,7 @@ where
 
     apply_classified_offer(
         state_path,
-        admitted.revision,
-        admitted.pairing_generation,
-        &admitted.binding,
-        &admitted.cid,
+        &admitted,
         target_eligibility,
         target_offer_pending,
         commit,
