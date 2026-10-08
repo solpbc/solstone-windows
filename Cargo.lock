@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "browser-host"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "base64 0.22.1",
  "native-browser-frame",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "capture-engine"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-audio",
  "observer-health",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "capture-screen-encode"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
  "observer-nv12",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "capture-wasapi"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-mic",
  "observer-model",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "capture-wgc"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-exclusion",
  "observer-model",
@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "journal-window"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "observer-audio"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "claxon",
  "flacenc",
@@ -3122,7 +3122,7 @@ dependencies = [
 
 [[package]]
 name = "observer-contract"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
  "serde",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "observer-exclusion"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
  "serde",
@@ -3141,7 +3141,7 @@ dependencies = [
 
 [[package]]
 name = "observer-health"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
  "serde_json",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "observer-hotkey"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -3157,14 +3157,14 @@ dependencies = [
 
 [[package]]
 name = "observer-lifecycle"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-log"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -3175,7 +3175,7 @@ dependencies = [
 
 [[package]]
 name = "observer-mic"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "observer-model"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -3193,7 +3193,7 @@ dependencies = [
 
 [[package]]
 name = "observer-nv12"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
  "thiserror 2.0.18",
@@ -3201,7 +3201,7 @@ dependencies = [
 
 [[package]]
 name = "observer-pl"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "base64 0.22.1",
  "observer-model",
@@ -3215,32 +3215,32 @@ dependencies = [
 
 [[package]]
 name = "observer-recovery"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-sample-timing"
-version = "2.0.21"
+version = "2.0.22"
 
 [[package]]
 name = "observer-segment"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-state"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-update"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -3481,7 +3481,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "pl-transport-win"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "platform-win"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "journal-window",
  "observer-audio",
@@ -4505,7 +4505,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-windows-app"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "anyhow",
  "browser-host",
@@ -6809,7 +6809,7 @@ checksum = "636f85e5ca6488e96401b61eb7de54f4e44755c988af0f52cf90230c312a1a89"
 
 [[package]]
 name = "xtask"
-version = "2.0.21"
+version = "2.0.22"
 dependencies = [
  "base64 0.22.1",
  "jsonschema 0.48.2",
