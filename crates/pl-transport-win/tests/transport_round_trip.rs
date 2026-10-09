@@ -2831,7 +2831,8 @@ fn mint_test_jwt_v2(instance_id: &str, exp: i64) -> String {
 async fn wait_for_post_connect(controller: &pl_transport_win::PostConnectController) {
     use pl_transport_win::test_completion::Outcome;
     tokio::time::timeout(
-        pl_transport_win::post_connect::DEFAULT_POST_CONNECT_DEADLINE + Duration::from_secs(5),
+        // The access lane runs relay access and then the address refresh, each under its own deadline.
+        pl_transport_win::post_connect::DEFAULT_POST_CONNECT_DEADLINE * 2 + Duration::from_secs(5),
         async {
             let mut attempt = controller.await_started_attempt().await;
             // The production controller admits one common follow-up, never a third pass.
