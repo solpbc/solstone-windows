@@ -8,7 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
-- when your journal's address changes, the solstone app now switches to the new address without pairing again, as long as it can still reach your journal another way after the change. this needs your journal to be updated too. a journal on this computer is unaffected.
+- when your journal's address changes, the solstone app now switches to the new address without pairing again, as long as it can still reach your journal another way after the change. this needs your journal to be updated too.
 
 ## [2.0.22] - 2026-10-08
 
