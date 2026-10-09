@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- the solstone app now saves your journal's current addresses each time it connects, so once it has connected after your journal's address changes, it keeps using the new one without pairing again. a journal on this computer is unaffected.
+
 ## [2.0.22] - 2026-10-08
 
 ### Fixed
