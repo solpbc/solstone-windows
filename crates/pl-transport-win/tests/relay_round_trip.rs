@@ -3423,6 +3423,207 @@ async fn tls_access_denied_latches_and_prevents_follow_on_dial() {
 }
 
 #[tokio::test]
+async fn stalled_lan_access_and_address_reads_reach_relay_within_post_connect_deadline() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let stalled = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stalled_port = stalled.local_addr().unwrap().port();
+    let lan_accepted = Arc::new(AtomicUsize::new(0));
+    let accepted = lan_accepted.clone();
+    let stall_task = tokio::spawn(async move {
+        let mut sockets = Vec::new();
+        loop {
+            let (tcp, _) = stalled.accept().await.unwrap();
+            sockets.push(tcp); // Accept TCP, but never answer the inner TLS handshake.
+            accepted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let relay = spawn_path_routed_relay(
+        TlsAcceptor::from(Arc::new(server_config(cert, key))),
+        |_, path, _, _| match path {
+            "/app/network/api/relay/access" => (200, vec![], b"{}".to_vec()),
+            "/app/network/local-endpoints" => (
+                200,
+                vec![],
+                br#"{"v":2,"endpoints":[{"ip":"192.168.20.30","port":7658}]}"#.to_vec(),
+            ),
+            _ => panic!("unexpected request {path}"),
+        },
+    )
+    .await;
+    let now = epoch_secs();
+    let credential = observer_relay_credential(
+        pin,
+        stalled_port,
+        relay.origin.clone(),
+        mint_jwt(now, now + 10_000),
+    );
+    let client = ObserverClient::new(credential.clone(), Arc::new(AtomicBool::new(true))).unwrap();
+    let observer = OperationObserver::new();
+    let client = client.with_observer(Some(observer.clone()));
+    tokio::time::timeout(
+        pl_transport_win::post_connect::DEFAULT_POST_CONNECT_DEADLINE,
+        async {
+            assert_eq!(client.get_relay_access().await.unwrap().status, 200);
+            let endpoints = client.get_local_endpoints().await.unwrap();
+            assert_eq!(endpoints.status, 200);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&endpoints.body).unwrap()["endpoints"]
+                    [0]["ip"],
+                "192.168.20.30"
+            );
+        },
+    )
+    .await
+    .expect("stalled LAN spent the entire post-connect deadline before relay fallback");
+    assert_eq!(relay.requests.lock().unwrap().len(), 2);
+    assert_eq!(lan_accepted.load(Ordering::SeqCst), 2);
+    assert_eq!(observer.snapshot().selected_path, Some(SelectedPath::Relay));
+    assert_eq!(observer.dial_attempts(), 4);
+    // Exercise the real post-connect writer as well as the HTTP exchanges.
+    // A non-loopback unusable address avoids the same-computer refresh exemption.
+    let mut credential = credential;
+    credential.endpoints.push(EndpointAddr {
+        host: "255.255.255.255".into(),
+        port: 9,
+    });
+    let state_path = temp_pairing_path("stalled-lan-address-refresh");
+    PairedState {
+        credential: Some(credential.clone()),
+        ..Default::default()
+    }
+    .save(&state_path)
+    .unwrap();
+    let cas = CasKey {
+        pairing_generation: pairing_generation(&credential.client_cert_pem),
+        access_mutation_generation: 0,
+    };
+    let client = ObserverClient::new(credential.clone(), Arc::new(AtomicBool::new(true)))
+        .unwrap()
+        .with_state_path(state_path.clone())
+        .with_cas_key(cas);
+    let slot = ClientSlot::new(Arc::new(client));
+    let controller = Arc::new(PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        Arc::new(Mutex::new(SyncSnapshot::default())),
+        Arc::new(RawDeviceFacts::default),
+    ));
+    controller.begin_session(&credential);
+    controller.trigger();
+    let (_, access) = tokio::time::timeout(
+        pl_transport_win::post_connect::DEFAULT_POST_CONNECT_DEADLINE + Duration::from_secs(1),
+        async { controller.await_started_attempt().await.wait().await },
+    )
+    .await
+    .expect("post-connect failed to finish access and address refresh by its deadline");
+    assert_eq!(access, Outcome::Processed);
+    let saved = PairedState::load(&state_path).unwrap();
+    assert_eq!(saved.access_mutation_generation, 1);
+    let saved = saved.credential.unwrap();
+    assert_eq!(
+        saved.endpoints,
+        vec![EndpointAddr {
+            host: "192.168.20.30".into(),
+            port: 7658,
+        }]
+    );
+    assert_eq!(slot.load().credential().endpoints, saved.endpoints);
+    assert_eq!(saved.device_token, credential.device_token);
+    assert_eq!(saved.relay_origin, credential.relay_origin);
+    std::fs::remove_file(state_path).unwrap();
+    stall_task.abort();
+    relay.abort();
+}
+
+#[tokio::test]
+async fn responsive_lan_access_and_address_reads_win_before_relay() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let lan = spawn_scripted_journal_server_with_cert(cert, key, |_, _, _, _| {
+        (200, vec![], b"{}".to_vec())
+    })
+    .await;
+    let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_origin = format!(
+        "http://127.0.0.1:{}",
+        relay_listener.local_addr().unwrap().port()
+    );
+    let now = epoch_secs();
+    let stalled = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut credential =
+        observer_relay_credential(pin, lan.port, relay_origin, mint_jwt(now, now + 10_000));
+    credential.endpoints.insert(
+        0,
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: stalled.local_addr().unwrap().port(),
+        },
+    );
+    let client = ObserverClient::new(credential, Arc::new(AtomicBool::new(true))).unwrap();
+    assert_eq!(client.get_relay_access().await.unwrap().status, 200);
+    assert_eq!(client.get_local_endpoints().await.unwrap().status, 200);
+    assert_eq!(lan.requests.lock().unwrap().len(), 2);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), relay_listener.accept())
+            .await
+            .is_err()
+    );
+    lan.abort();
+}
+
+#[tokio::test]
+async fn refused_lan_access_and_address_reads_never_try_another_address_or_relay() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let refused = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let refused_port = refused.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(support::journal_fake::refusing_server_config(
+        cert,
+        key,
+        rustls::CertificateError::ApplicationVerificationFailure,
+    )));
+    let refused_task = tokio::spawn(async move {
+        let (tcp, _) = refused.accept().await.unwrap();
+        assert!(acceptor.accept(tcp).await.is_err());
+    });
+    let stalled = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let now = epoch_secs();
+    let mut credential = observer_relay_credential(
+        pin,
+        refused_port,
+        format!("http://127.0.0.1:{}", relay.local_addr().unwrap().port()),
+        mint_jwt(now, now + 10_000),
+    );
+    credential.endpoints.push(EndpointAddr {
+        host: "127.0.0.1".into(),
+        port: stalled.local_addr().unwrap().port(),
+    });
+    let client = ObserverClient::new(credential, Arc::new(AtomicBool::new(true))).unwrap();
+    for result in [
+        client.get_relay_access().await,
+        client.get_local_endpoints().await,
+    ] {
+        assert!(
+            matches!(result, Err(TransportError::Tls(message)) if message == "tls access denied")
+        );
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), stalled.accept())
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), relay.accept())
+            .await
+            .is_err()
+    );
+    refused_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn test_adapter_local_endpoints_refresh_relay_only_and_lan_pickup() {
     let (cert, key) = self_signed();
     let (lan_cert, lan_key) = (cert.clone(), key.clone_key());
@@ -3636,7 +3837,17 @@ async fn test_adapter_local_endpoints_refresh_relay_removal() {
 
     let _session = controller.begin_session(&cred);
     controller.trigger();
-    wait_for_post_connect(&controller).await;
+    // Address replacement can retire the client held by the independent
+    // metadata lane. Wait for the address lane this test exercises, then prove
+    // metadata works through the current client rather than its retired peer.
+    let (_, access) = tokio::time::timeout(
+        pl_transport_win::post_connect::DEFAULT_POST_CONNECT_DEADLINE * 2 + Duration::from_secs(5),
+        async { controller.await_started_attempt().await.wait().await },
+    )
+    .await
+    .expect("address-removal pass did not complete");
+    assert_eq!(access, Outcome::Processed);
+    assert_eq!(slot.load().get_clients_self().await.unwrap().status, 404);
 
     // List does not include that loopback
     let saved = PairedState::load(&state_path).unwrap();

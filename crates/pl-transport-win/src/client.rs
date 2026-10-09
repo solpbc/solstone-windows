@@ -30,6 +30,7 @@ use spl_transport::request::{RequestError, RequestOptions, RequestOutcome, Selec
 
 /// Maximum allowed response bytes for post-connect metadata/access endpoints (64 KiB).
 pub(crate) const MAX_POST_CONNECT_RESPONSE_BYTES: usize = 64 * 1024;
+const POST_CONNECT_LAN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Process-local relay authority shared by every incarnation in one client slot.
 ///
@@ -712,12 +713,25 @@ pub struct ObserverClient {
     relay_fence: Arc<RelayFence>,
     pub(crate) token_transaction: Arc<WindowsTokenTransaction>,
     transport: spl_transport::TransportClient,
-    /// Bounded device retirement skips potentially stale LAN addresses while
-    /// sharing the same publication transaction and lifecycle fence.
-    retirement_transport: Option<spl_transport::TransportClient>,
+    /// Relay-only operations share the publication transaction and lifecycle fence.
+    relay_transport: Option<spl_transport::TransportClient>,
+    /// Access/address GETs reserve time for relay after a bounded LAN leg.
+    post_connect_lan_transports: Vec<spl_transport::TransportClient>,
     /// Handshake refusals for this pairing, kept across access rebuilds.
     refusals: Arc<std::sync::Mutex<RefusalTracker>>,
     gate: Arc<AtomicBool>,
+}
+
+fn lan_unreachable(error: &RequestError) -> bool {
+    matches!(
+        error,
+        RequestError::Transport(
+            spl_transport::TransportError::Io(_)
+                | spl_transport::TransportError::Tls(_)
+                | spl_transport::TransportError::UnknownJournal(_)
+                | spl_transport::TransportError::NoEndpoint
+        )
+    )
 }
 
 impl ObserverClient {
@@ -772,7 +786,7 @@ impl ObserverClient {
             incarnation,
         };
         let shared_credential = windows_to_shared_credential(&credential);
-        let retirement_transport = if matches!(
+        let relay_transport = if matches!(
             (shared_credential.relay_origin.as_deref(), shared_credential.device_token.as_deref()),
             (Some(origin), Some(token)) if !origin.is_empty() && !token.is_empty()
         ) {
@@ -789,6 +803,26 @@ impl ObserverClient {
         } else {
             None
         };
+        // Separate clients keep a refusal from an earlier address observable
+        // before another address can spend the remaining LAN budget.
+        let mut post_connect_lan_transports = Vec::new();
+        if relay_transport.is_some() {
+            for endpoint in &shared_credential.endpoints {
+                let mut lan_credential = shared_credential.clone();
+                lan_credential.endpoints = vec![endpoint.clone()];
+                lan_credential.local_endpoints = None;
+                lan_credential.relay_origin = None;
+                lan_credential.device_token = None;
+                lan_credential.device_token_expires_at = None;
+                post_connect_lan_transports.push(
+                    spl_transport::TransportClient::new_with_publication(
+                        lan_credential,
+                        publication.clone(),
+                    )
+                    .map_err(map_shared_error)?,
+                );
+            }
+        }
         let transport = if !shared_credential.endpoints.is_empty() {
             spl_transport::TransportClient::new_with_publication(shared_credential, publication)
         } else if matches!(
@@ -816,7 +850,8 @@ impl ObserverClient {
             relay_fence,
             token_transaction: transaction,
             transport,
-            retirement_transport,
+            relay_transport,
+            post_connect_lan_transports,
             refusals,
             gate,
         })
@@ -1186,6 +1221,94 @@ impl ObserverClient {
         Ok(response)
     }
 
+    async fn bounded_post_connect_read(
+        &self,
+        route: OrdinaryRequest,
+        headers: &[(String, String)],
+        options: RequestOptions<'_>,
+    ) -> Result<RequestOutcome, RequestError> {
+        let spec = route.spec();
+        let path = route.path(None, None);
+        let Some(relay) = self
+            .relay_transport
+            .as_ref()
+            .filter(|_| !self.post_connect_lan_transports.is_empty())
+        else {
+            return self
+                .transport
+                .request(spec.method, &path, headers, &[], options)
+                .await;
+        };
+        // Both routes are read-only. Writes keep the shared transport's
+        // ForbidAfterWrite policy and are never cancelled for fallback.
+        let lan_observer = spl_transport::OperationObserver::new_unshared();
+        let lan_options = RequestOptions {
+            observer: Some(&lan_observer),
+            ..options.clone()
+        };
+        let endpoint_budget = POST_CONNECT_LAN_TIMEOUT
+            / u32::try_from(self.post_connect_lan_transports.len()).unwrap_or(u32::MAX);
+        let timeout_error = || {
+            RequestError::Transport(spl_transport::TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "post-connect LAN read timed out",
+            )))
+        };
+        let result = tokio::time::timeout(POST_CONNECT_LAN_TIMEOUT, async {
+            let mut last_error = RequestError::Transport(spl_transport::TransportError::NoEndpoint);
+            for lan in &self.post_connect_lan_transports {
+                // Give every saved address a turn inside the shared LAN budget.
+                let result = tokio::time::timeout(
+                    endpoint_budget,
+                    lan.request(spec.method, &path, headers, &[], lan_options.clone()),
+                )
+                .await
+                .unwrap_or_else(|_| Err(timeout_error()));
+                match result {
+                    Err(error) if lan_unreachable(&error) => last_error = error,
+                    other => return other,
+                }
+            }
+            Err(last_error)
+        })
+        .await
+        .unwrap_or_else(|_| Err(timeout_error()));
+        let snapshot = lan_observer.snapshot();
+        if let Some(observer) = options.observer {
+            for _ in 0..snapshot.dial_attempts {
+                observer.record_dial_attempt();
+            }
+            for _ in 0..snapshot.direct_successes {
+                observer.record_direct_success();
+            }
+            observer.record_request_bytes(snapshot.request_bytes_sent);
+            if snapshot.close_completed {
+                observer.record_close_completed();
+            }
+            if let Some(path) = snapshot.selected_path {
+                observer.record_selected_path(path);
+            }
+        }
+        match result {
+            Err(error) if lan_unreachable(&error) => relay
+                .request(spec.method, &path, headers, &[], options)
+                .await
+                .map(|mut outcome| {
+                    outcome.attempts = outcome
+                        .attempts
+                        .saturating_add(u32::try_from(snapshot.dial_attempts).unwrap_or(u32::MAX));
+                    outcome
+                }),
+            Ok(mut outcome) => {
+                outcome.attempts = u32::try_from(snapshot.dial_attempts).unwrap_or(u32::MAX);
+                Ok(outcome)
+            }
+            // A certificate refusal, response cap or other terminal
+            // error remains terminal; relay is not a way around it.
+            other => other,
+        }
+    }
+
     async fn ordinary_request(
         &self,
         route: OrdinaryRequest,
@@ -1212,25 +1335,26 @@ impl ObserverClient {
             return Err(RouteError::Transport(map_shared_error(stop.error())));
         }
         let transport = if matches!(route, OrdinaryRequest::ClientsRetireDelete) {
-            self.retirement_transport
-                .as_ref()
-                .unwrap_or(&self.transport)
+            self.relay_transport.as_ref().unwrap_or(&self.transport)
         } else {
             &self.transport
         };
-        let result = transport
-            .request(
-                spec.method,
-                &path,
-                headers,
-                body,
-                RequestOptions {
-                    response_cap: spec.response_cap,
-                    replay: spec.replay,
-                    observer: observer.as_deref(),
-                },
-            )
-            .await;
+        let options = RequestOptions {
+            response_cap: spec.response_cap,
+            replay: spec.replay,
+            observer: observer.as_deref(),
+        };
+        let result = if matches!(
+            route,
+            OrdinaryRequest::RelayAccessGet | OrdinaryRequest::LocalEndpointsGet
+        ) {
+            self.bounded_post_connect_read(route, headers, options)
+                .await
+        } else {
+            transport
+                .request(spec.method, &path, headers, body, options)
+                .await
+        };
         self.note_attempt(&result);
         let RequestOutcome {
             response,

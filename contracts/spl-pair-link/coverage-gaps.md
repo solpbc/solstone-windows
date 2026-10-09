@@ -3,7 +3,7 @@
 
 # SPL Pair-Link Coverage Gaps
 
-Engineering-internal coverage report for vendored bundle `8.0.2` conformance against `spl-core`.
+Engineering-internal coverage report for vendored bundle `8.0.5` conformance against `spl-core`.
 
 ## 1. Uncovered Predicates
 
