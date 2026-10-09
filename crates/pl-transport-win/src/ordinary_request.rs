@@ -27,6 +27,7 @@ pub(crate) enum OrdinaryRequest {
     ClientsRetireDelete,
     MigrationStateGet,
     MigrationDecisionPut,
+    LocalEndpointsGet,
 }
 
 /// One route's transport authority.
@@ -41,7 +42,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -55,6 +56,7 @@ impl OrdinaryRequest {
         Self::ClientsRetireDelete,
         Self::MigrationStateGet,
         Self::MigrationDecisionPut,
+        Self::LocalEndpointsGet,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
@@ -147,6 +149,13 @@ impl OrdinaryRequest {
                 method: "PUT",
                 path_pattern: "/app/network/api/clients/self/migration",
                 replay: ReplayPolicy::ForbidAfterWrite,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
+            Self::LocalEndpointsGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: "/app/network/local-endpoints",
+                replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: false,
             },
@@ -310,6 +319,14 @@ mod tests {
                 "PUT",
                 "/app/network/api/clients/self/migration",
                 ReplayPolicy::ForbidAfterWrite,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
+            (
+                OrdinaryRequest::LocalEndpointsGet,
+                "GET",
+                "/app/network/local-endpoints",
+                ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 false,
             ),

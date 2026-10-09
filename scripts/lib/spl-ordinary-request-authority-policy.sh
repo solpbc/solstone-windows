@@ -37,7 +37,7 @@ client="$ROOT/crates/pl-transport-win/src/client.rs"
 if [ -f "$ordinary" ]; then
   for route in \
     ClientsSelfGet ClientsSelfPut RelayAccessGet IngestPost IngestManifestGet \
-    IngestManifestDayGet IngestSegmentsDayGet SystemStatusGet SystemAboutGet ClientsRetireDelete; do
+    IngestManifestDayGet IngestSegmentsDayGet SystemStatusGet SystemAboutGet ClientsRetireDelete LocalEndpointsGet; do
     grep -q "$route" "$ordinary" || violation "ordinary route $route is missing or unclassified"
   done
   grep -q "ReplayPolicy::ForbidAfterWrite" "$ordinary" || violation "clients-self PUT lacks explicit ForbidAfterWrite"
@@ -67,6 +67,7 @@ if [ -f "$client" ]; then
     'get_clients_self:ClientsSelfGet' \
     'put_clients_self:ClientsSelfPut' \
     'get_relay_access:RelayAccessGet' \
+    'get_local_endpoints:LocalEndpointsGet' \
     'ingest:IngestPost' \
     'ingest_manifest:IngestManifestGet' \
     'ingest_manifest_day:IngestManifestDayGet' \
@@ -102,6 +103,7 @@ for relative in src/journal_bridge.rs; do
       '/app/network/api/clients/self' \
       '/app/network/api/clients' \
       '/app/network/api/relay/access' \
+      '/app/network/local-endpoints' \
       '/app/devices/ingest' \
       '/app/devices/ingest/manifest' \
       '/app/devices/ingest/segments' \

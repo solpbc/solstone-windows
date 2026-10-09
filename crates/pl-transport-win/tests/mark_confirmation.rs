@@ -260,6 +260,7 @@ async fn mark_confirmation_rebuild_keeps_the_closed_gate() {
                 pairing_generation: [0; 32],
                 access_mutation_generation: 0,
             },
+            pl_transport_win::client::RelayEligibility::FromCredential,
         )
         .unwrap();
     assert!(!client2.gate_open());
@@ -1476,16 +1477,19 @@ async fn mark_confirmation_metadata_routes_dial_while_awaiting() {
     let system_status_count = Arc::new(AtomicUsize::new(0));
     let clients_self_count = Arc::new(AtomicUsize::new(0));
     let relay_access_count = Arc::new(AtomicUsize::new(0));
+    let local_endpoints_count = Arc::new(AtomicUsize::new(0));
 
     let status_count = system_status_count.clone();
     let self_count = clients_self_count.clone();
     let relay_count = relay_access_count.clone();
+    let endpoints_count = local_endpoints_count.clone();
     let server_task = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let acceptor = acceptor.clone();
             let status_count = status_count.clone();
             let self_count = self_count.clone();
             let relay_count = relay_count.clone();
+            let endpoints_count = endpoints_count.clone();
             tokio::spawn(async move {
                 if let Ok(mut tls) = acceptor.accept(stream).await {
                     loop {
@@ -1524,6 +1528,16 @@ async fn mark_confirmation_metadata_routes_dial_while_awaiting() {
                             )
                             .into_bytes();
                             write_response(&mut tls, stream_id, resp).await;
+                        } else if req_str.starts_with("GET /app/network/local-endpoints") {
+                            endpoints_count.fetch_add(1, Ordering::SeqCst);
+                            let body = br#"{"v":2,"endpoints":[]}"#;
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(),
+                                String::from_utf8_lossy(body)
+                            )
+                            .into_bytes();
+                            write_response(&mut tls, stream_id, resp).await;
                         }
                     }
                 }
@@ -1550,6 +1564,14 @@ async fn mark_confirmation_metadata_routes_dial_while_awaiting() {
     let relay_access = client.get_relay_access().await.expect("get relay access");
     assert_eq!(relay_access.status, 200);
     assert_eq!(relay_access_count.load(Ordering::SeqCst), 1);
+
+    // 4. get_local_endpoints dials while awaiting confirmation
+    let local_endpoints = client
+        .get_local_endpoints()
+        .await
+        .expect("get local endpoints");
+    assert_eq!(local_endpoints.status, 200);
+    assert_eq!(local_endpoints_count.load(Ordering::SeqCst), 1);
 
     // Gate remains closed throughout
     assert!(!client.gate_open());

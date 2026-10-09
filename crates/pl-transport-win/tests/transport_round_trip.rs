@@ -23,7 +23,9 @@ use observer_model::{LocalOffset, LocalOffsetError, LocalZone, SyncSnapshot};
 use observer_pl::ingest::{FilePart, IngestStatus};
 use observer_pl::PROTOCOL_VERSION_HEADER;
 use pl_transport_win::client::ObserverClient;
-use pl_transport_win::credential::{Credential, EndpointAddr, PairedState};
+use pl_transport_win::credential::{
+    pairing_generation, CasKey, Credential, EndpointAddr, PairedState,
+};
 use pl_transport_win::service::{self, SyncConfig};
 use pl_transport_win::{journal_bridge, CredentialAccess, TransportError};
 use rcgen::{
@@ -2646,6 +2648,20 @@ where
         + 'static,
 {
     let (cert, key) = self_signed();
+    spawn_scripted_journal_server_with_cert(cert, key, handler).await
+}
+
+async fn spawn_scripted_journal_server_with_cert<F>(
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+    handler: F,
+) -> ScriptedJournalServer
+where
+    F: Fn(&str, &str, &HashMap<String, String>, &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>)
+        + Send
+        + Sync
+        + 'static,
+{
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3529,6 +3545,15 @@ async fn test_adapter_relay_access_ready() {
         Some(valid_jwt.as_str())
     );
 
+    let endpoints_requests = server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == "GET" && r.path == "/app/network/local-endpoints")
+        .count();
+    assert_eq!(endpoints_requests, 0);
+
     server.abort();
     let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
 }
@@ -3884,5 +3909,795 @@ async fn test_adapter_service_and_carrier_share_post_connect_authority() {
         .expect("uploader should stop")
         .unwrap();
     server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_local_endpoints_refresh_direct_and_relay() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let token = mint_test_jwt_v2("inst-test-123", now + 3600);
+    let token_for_server = token.clone();
+
+    let server = spawn_scripted_journal_server(move |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":null,\"updated_at\":null,\"journal\":null}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":null,\"updated_at\":null,\"journal\":null}".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => {
+            let body = serde_json::json!({
+                "status": "ready",
+                "protocol_version": 2,
+                "relay_origin": "https://relay.test.solstone.app",
+                "instance_id": "inst-test-123",
+                "device_token": token_for_server.clone(),
+                "expires_at": epoch_to_rfc3339(now + 3600),
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        ("GET", "/app/network/local-endpoints") => {
+            let body = serde_json::json!({
+                "v": 2,
+                "endpoints": [
+                    { "ip": "192.168.1.50", "port": 7657 },
+                    { "ip": "192.168.1.51", "port": 7657 }
+                ]
+            });
+            (200, vec![], serde_json::to_vec(&body).unwrap())
+        }
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    // 1. Direct delivery: persists refreshed list + up to 2 stored entries, and bumps generation by 2 when relay ready and addresses change
+    let mut cred = observer_credential(server.pin.clone(), server.port);
+    cred.instance_id = "inst-test-123".into();
+    cred.endpoints = vec![
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: server.port,
+        },
+        EndpointAddr {
+            host: "10.0.0.1".into(),
+            port: 7657,
+        },
+    ];
+    let state_path = temp_state_path("refresh-direct");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap()
+    .with_state_path(state_path.clone());
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+    wait_for_post_connect(&controller).await;
+
+    assert_journal_requests(&server, "GET", "/app/network/local-endpoints", 1);
+    assert_journal_requests(&server, "GET", "/app/network/api/relay/access", 1);
+
+    let saved = PairedState::load(&state_path).unwrap();
+    assert_eq!(saved.access_mutation_generation, 2);
+    let saved_endpoints = &saved.credential.as_ref().unwrap().endpoints;
+    // Persists refreshed list (2 entries) + up to 2 stored entries (127.0.0.1 and 10.0.0.1) = 4 total
+    assert_eq!(saved_endpoints.len(), 4);
+    assert_eq!(saved_endpoints[0].host, "192.168.1.50");
+    assert_eq!(saved_endpoints[1].host, "192.168.1.51");
+    assert_eq!(saved_endpoints[2].host, "127.0.0.1");
+    assert_eq!(saved_endpoints[3].host, "10.0.0.1");
+
+    let slot_cred = slot.load().credential().clone();
+    assert_eq!(slot_cred.device_token.as_deref(), Some(token.as_str()));
+    assert_eq!(slot_cred.endpoints, *saved_endpoints);
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_local_endpoints_refresh_two_refresh_persistence() {
+    let (cert, key) = self_signed();
+    let (cert2, key2) = (cert.clone(), key.clone_key());
+
+    let server2_port = Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let s2_port_for_s1 = server2_port.clone();
+    let s2_port_for_s2 = server2_port.clone();
+
+    let handler_s1 = move |method: &str, path: &str, _: &HashMap<String, String>, _: &[u8]| {
+        match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => (404, vec![], b"{}".to_vec()),
+        ("GET", "/app/network/local-endpoints") => (
+            200,
+            vec![],
+            serde_json::to_vec(&serde_json::json!({
+                "v": 2,
+                "endpoints": [
+                    { "ip": "127.0.0.1", "port": s2_port_for_s1.load(Ordering::SeqCst) }
+                ]
+            }))
+            .unwrap(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    }
+    };
+
+    let handler_s2 = move |method: &str, path: &str, _: &HashMap<String, String>, _: &[u8]| {
+        match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => (404, vec![], b"{}".to_vec()),
+        ("GET", "/app/network/local-endpoints") => (
+            200,
+            vec![],
+            serde_json::to_vec(&serde_json::json!({
+                "v": 2,
+                "endpoints": [
+                    { "ip": "127.0.0.1", "port": s2_port_for_s2.load(Ordering::SeqCst) }
+                ]
+            }))
+            .unwrap(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    }
+    };
+
+    let server1 = spawn_scripted_journal_server_with_cert(cert, key, handler_s1).await;
+    let server2 = spawn_scripted_journal_server_with_cert(cert2, key2, handler_s2).await;
+    server2_port.store(server2.port, Ordering::SeqCst);
+
+    // Stored first pass: [127.0.0.1:<server1>, 255.255.255.255:9, 224.0.0.1:9]
+    let mut cred = observer_credential(server1.pin.clone(), server1.port);
+    cred.instance_id = "inst-test-two-refresh".into();
+    cred.endpoints = vec![
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: server1.port,
+        },
+        EndpointAddr {
+            host: "255.255.255.255".into(),
+            port: 9,
+        },
+        EndpointAddr {
+            host: "224.0.0.1".into(),
+            port: 9,
+        },
+    ];
+    let state_path = temp_state_path("refresh-two-pass");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let cas = CasKey {
+        pairing_generation: pairing_generation(&cred.client_cert_pem),
+        access_mutation_generation: 0,
+    };
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap()
+    .with_state_path(state_path.clone())
+    .with_cas_key(cas);
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    let session = controller.begin_session(&cred);
+    controller.trigger();
+    wait_for_post_connect(&controller).await;
+
+    let saved = PairedState::load(&state_path).unwrap();
+    assert_eq!(saved.access_mutation_generation, 1);
+    let endpoints1 = saved.credential.unwrap().endpoints;
+    assert_eq!(endpoints1.len(), 3);
+    assert_eq!(
+        endpoints1[0],
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: server2.port
+        }
+    );
+    assert_eq!(
+        endpoints1[1],
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: server1.port
+        }
+    );
+    assert_eq!(
+        endpoints1[2],
+        EndpointAddr {
+            host: "255.255.255.255".into(),
+            port: 9
+        }
+    );
+
+    let client_before_second = slot.load();
+    // Second pass dials server2, writes nothing, Arc::ptr_eq, generation stays 1
+    controller.mark_session_disconnected(session);
+    controller.note_connected(session);
+    wait_for_post_connect(&controller).await;
+
+    let saved2 = PairedState::load(&state_path).unwrap();
+    assert_eq!(saved2.access_mutation_generation, 1);
+    assert!(Arc::ptr_eq(&slot.load(), &client_before_second));
+
+    server1.abort();
+    server2.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_adapter_local_endpoints_refresh_paused_time_and_relay_delivery() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let relay_hanging = Arc::new(tokio::sync::Notify::new());
+    let relay_hanging_clone = relay_hanging.clone();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests_clone = requests.clone();
+    let clients_self_flushed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let clients_self_flushed_clone = clients_self_flushed.clone();
+
+    let server_task = tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else {
+                break;
+            };
+            let acceptor = acceptor.clone();
+            let relay_hanging = relay_hanging_clone.clone();
+            let requests = requests_clone.clone();
+            let clients_self_flushed = clients_self_flushed_clone.clone();
+
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let mut decoder = FrameDecoder::new();
+                let mut stream_buffers: HashMap<u32, Vec<u8>> = HashMap::new();
+                let mut buf = [0u8; 4096];
+
+                loop {
+                    let n = match tls.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    decoder.feed(&buf[..n]);
+                    let Ok(frames) = decoder.drain() else {
+                        break;
+                    };
+                    for frame in frames {
+                        let stream_id = frame.stream_id;
+                        if frame.flags & FLAG_DATA != 0 {
+                            stream_buffers
+                                .entry(stream_id)
+                                .or_default()
+                                .extend_from_slice(&frame.payload);
+                        }
+                        if frame.flags & FLAG_CLOSE != 0 {
+                            let req_bytes = stream_buffers.remove(&stream_id).unwrap_or_default();
+                            let (method, path, _headers, body) = parse_raw_http_request(&req_bytes);
+                            requests.lock().unwrap().push(RecordedJournalRequest {
+                                method: method.clone(),
+                                path: path.clone(),
+                                body: body.clone(),
+                            });
+
+                            if method == "GET" && path == "/app/network/api/relay/access" {
+                                // Hang relay-access: record it, signal notify, and do not respond
+                                relay_hanging.notify_waiters();
+                                continue;
+                            }
+
+                            let (status, resp_headers, resp_body) =
+                                match (method.as_str(), path.as_str()) {
+                                    ("GET", "/app/network/api/clients/self") => {
+                                        (404, vec![], b"{\"error\":\"not found\"}".to_vec())
+                                    }
+                                    ("GET", "/app/network/local-endpoints") => (
+                                        200,
+                                        vec![],
+                                        serde_json::to_vec(&serde_json::json!({
+                                            "v": 2,
+                                            "endpoints": [
+                                                { "ip": "192.168.1.100", "port": 7657 }
+                                            ]
+                                        }))
+                                        .unwrap(),
+                                    ),
+                                    _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+                                };
+                            let resp_bytes =
+                                format_http_response(status, &resp_headers, &resp_body);
+                            let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, resp_bytes);
+                            if let Ok(encoded) = frame.encode() {
+                                if tls.write_all(&encoded).await.is_err() {
+                                    break;
+                                }
+                                let _ = tls.flush().await;
+                                if method == "GET" && path == "/app/network/api/clients/self" {
+                                    clients_self_flushed.store(true, Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let mut cred = observer_credential(pin, port);
+    cred.instance_id = "inst-test-paused".into();
+    cred.endpoints = vec![
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port,
+        },
+        EndpointAddr {
+            host: "192.0.2.1".into(),
+            port: 7657,
+        },
+    ];
+    let state_path = temp_state_path("refresh-paused");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let cas = CasKey {
+        pairing_generation: pairing_generation(&cred.client_cert_pem),
+        access_mutation_generation: 0,
+    };
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap()
+    .with_state_path(state_path.clone())
+    .with_cas_key(cas);
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+    let attempt = controller.await_started_attempt().await;
+
+    // Yield until relay-access is hanging and clients/self response is flushed
+    let start_instant = std::time::Instant::now();
+    loop {
+        let has_hanging_relay = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.path == "/app/network/api/relay/access");
+        let has_flushed_self = clients_self_flushed.load(Ordering::SeqCst);
+        if has_hanging_relay && has_flushed_self {
+            break;
+        }
+        if start_instant.elapsed() > Duration::from_secs(5) {
+            panic!(
+                "timed out waiting for relay access hanging and metadata answered: {:?}",
+                requests.lock().unwrap()
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+
+    // Yield for another 300ms of wall clock so client reads 404 and execute_metadata_job returns
+    let drain_start = std::time::Instant::now();
+    while drain_start.elapsed() < Duration::from_millis(300) {
+        tokio::task::yield_now().await;
+    }
+
+    // Advance by 15s (relay access timeout)
+    tokio::time::advance(Duration::from_secs(15)).await;
+
+    // Yield for another 300ms of wall clock so client reads local-endpoints response and commits
+    let drain_start2 = std::time::Instant::now();
+    while drain_start2.elapsed() < Duration::from_millis(300) {
+        tokio::task::yield_now().await;
+    }
+
+    // Wait on attempt
+    use pl_transport_win::test_completion::Outcome;
+    let outcomes = attempt.wait().await;
+    assert_eq!(outcomes.0, Outcome::Processed);
+    assert_eq!(outcomes.1, Outcome::TimedOut);
+
+    let ep_count = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.path == "/app/network/local-endpoints")
+        .count();
+    assert_eq!(ep_count, 1);
+
+    let saved = PairedState::load(&state_path).unwrap();
+    let endpoints = saved.credential.unwrap().endpoints;
+    assert_eq!(endpoints.len(), 3);
+    assert_eq!(endpoints[0].host, "192.168.1.100");
+    assert_eq!(endpoints[1].host, "127.0.0.1");
+    assert_eq!(endpoints[2].host, "192.0.2.1");
+
+    server_task.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_local_endpoints_refresh_non_write_peers() {
+    let mode = Arc::new(AtomicUsize::new(0));
+    let mode_clone = mode.clone();
+    let local_port = Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let local_port_clone = local_port.clone();
+
+    let server = spawn_scripted_journal_server(move |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => (404, vec![], b"{}".to_vec()),
+        ("GET", "/app/network/local-endpoints") => match mode_clone.load(Ordering::SeqCst) {
+            0 => (500, vec![("content-type".to_string(), "text/plain".to_string())], b"internal error".to_vec()),
+            1 => (302, vec![("location".to_string(), "http://127.0.0.1:1234/redirect".to_string())], vec![]),
+            2 => (404, vec![], b"not found".to_vec()),
+            3 => (200, vec![("content-type".to_string(), "text/plain".to_string())], b"not json".to_vec()),
+            4 => (200, vec![], serde_json::to_vec(&serde_json::json!({ "v": 1, "endpoints": [] })).unwrap()),
+            5 => (200, vec![], serde_json::to_vec(&serde_json::json!({ "endpoints": [] })).unwrap()),
+            _ => (
+                200,
+                vec![],
+                serde_json::to_vec(&serde_json::json!({
+                    "v": 2,
+                    "endpoints": [
+                        { "ip": "127.0.0.1", "port": local_port_clone.load(Ordering::SeqCst) },
+                        { "ip": "192.0.2.1", "port": 7657 }
+                    ]
+                }))
+                .unwrap(),
+            ),
+        },
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+    local_port.store(server.port, Ordering::SeqCst);
+
+    let mut cred = observer_credential(server.pin.clone(), server.port);
+    cred.instance_id = "inst-test-non-write".into();
+    cred.endpoints = vec![
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: server.port,
+        },
+        EndpointAddr {
+            host: "192.0.2.1".into(),
+            port: 7657,
+        },
+    ];
+    let state_path = temp_state_path("refresh-non-write");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let cas = CasKey {
+        pairing_generation: pairing_generation(&cred.client_cert_pem),
+        access_mutation_generation: 0,
+    };
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap()
+    .with_state_path(state_path.clone())
+    .with_cas_key(cas);
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    let session = controller.begin_session(&cred);
+    let initial_bytes = std::fs::read(&state_path).unwrap();
+
+    for m in 0..=6 {
+        mode.store(m, Ordering::SeqCst);
+        let client_before = slot.load();
+        if m == 0 {
+            controller.trigger();
+        } else {
+            controller.mark_session_disconnected(session);
+            controller.note_connected(session);
+        }
+        wait_for_post_connect(&controller).await;
+
+        let current_bytes = std::fs::read(&state_path).unwrap();
+        assert_eq!(current_bytes, initial_bytes);
+        assert_eq!(
+            PairedState::load(&state_path)
+                .unwrap()
+                .access_mutation_generation,
+            0
+        );
+        assert!(Arc::ptr_eq(&slot.load(), &client_before));
+    }
+
+    let redirected = server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r.path.contains("redirect"));
+    assert!(!redirected, "client must not follow Location redirect");
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_local_endpoints_refresh_direct_merge() {
+    let server = spawn_scripted_journal_server(|method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => (404, vec![], b"{}".to_vec()),
+        ("GET", "/app/network/local-endpoints") => (
+            200,
+            vec![],
+            serde_json::to_vec(&serde_json::json!({
+                "v": 2,
+                "endpoints": [
+                    { "ip": "192.168.1.200", "port": 7657 }
+                ]
+            }))
+            .unwrap(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let mut cred = observer_credential(server.pin.clone(), server.port);
+    cred.instance_id = "inst-test-direct-merge".into();
+    cred.endpoints = vec![
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: server.port,
+        },
+        EndpointAddr {
+            host: "192.0.2.1".into(),
+            port: 7657,
+        },
+    ];
+    let state_path = temp_state_path("refresh-direct-merge");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let cas = CasKey {
+        pairing_generation: pairing_generation(&cred.client_cert_pem),
+        access_mutation_generation: 0,
+    };
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap()
+    .with_state_path(state_path.clone())
+    .with_cas_key(cas);
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+    wait_for_post_connect(&controller).await;
+
+    let saved = PairedState::load(&state_path).unwrap();
+    assert_eq!(saved.access_mutation_generation, 1);
+    let endpoints = saved.credential.unwrap().endpoints;
+    assert_eq!(endpoints.len(), 3);
+    assert_eq!(endpoints[0].host, "192.168.1.200");
+    assert_eq!(endpoints[1].host, "127.0.0.1");
+    assert_eq!(endpoints[2].host, "192.0.2.1");
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn test_adapter_local_endpoints_refresh_live_pickup() {
+    let (cert, key) = self_signed();
+    let (cert_b, key_b) = (cert.clone(), key.clone_key());
+
+    let server_b = spawn_scripted_journal_server_with_cert(cert_b, key_b, |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => (404, vec![], b"{}".to_vec()),
+        ("GET", "/app/network/local-endpoints") => (
+            200,
+            vec![],
+            serde_json::to_vec(&serde_json::json!({ "v": 2, "endpoints": [] })).unwrap(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let port_b = server_b.port;
+    let server_a = spawn_scripted_journal_server_with_cert(cert, key, move |method, path, _, _| match (method, path) {
+        ("GET", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":0,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("PUT", "/app/network/api/clients/self") => (
+            200,
+            vec![],
+            b"{\"protocol_version\":1,\"revision\":1,\"reported\":null,\"owner_label\":null,\"display_label\":\"pc\",\"updated_at\":null,\"journal\":{\"node_id\":\"j1\",\"display_name\":\"J\",\"state_version\":1}}".to_vec(),
+        ),
+        ("GET", "/app/network/api/relay/access") => (404, vec![], b"{}".to_vec()),
+        ("GET", "/app/network/local-endpoints") => (
+            200,
+            vec![],
+            serde_json::to_vec(&serde_json::json!({
+                "v": 2,
+                "endpoints": [
+                    { "ip": "127.0.0.1", "port": port_b }
+                ]
+            }))
+            .unwrap(),
+        ),
+        _ => (404, vec![], b"{\"error\":\"not found\"}".to_vec()),
+    })
+    .await;
+
+    let mut cred = observer_credential(server_a.pin.clone(), server_a.port);
+    cred.instance_id = "inst-test-live-pickup".into();
+    cred.endpoints = vec![
+        EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: server_a.port,
+        },
+        EndpointAddr {
+            host: "192.0.2.1".into(),
+            port: 7657,
+        },
+    ];
+    let state_path = temp_state_path("refresh-live-pickup");
+    let paired = paired_state(cred.clone());
+    paired.save(&state_path).unwrap();
+
+    let cas = CasKey {
+        pairing_generation: pairing_generation(&cred.client_cert_pem),
+        access_mutation_generation: 0,
+    };
+    let client = ObserverClient::new(
+        cred.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .unwrap()
+    .with_state_path(state_path.clone())
+    .with_cas_key(cas);
+    let slot = pl_transport_win::client::ClientSlot::new(Arc::new(client));
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let facts = Arc::new(pl_transport_win::device_metadata::RawDeviceFacts::default);
+
+    let controller = Arc::new(pl_transport_win::post_connect::PostConnectController::new(
+        slot.clone(),
+        Some(state_path.clone()),
+        None,
+        sync,
+        facts,
+    ));
+
+    controller.begin_session(&cred);
+    controller.trigger();
+    wait_for_post_connect(&controller).await;
+
+    let saved = PairedState::load(&state_path).unwrap();
+    assert_eq!(saved.access_mutation_generation, 1);
+    let endpoints = saved.credential.unwrap().endpoints;
+    assert_eq!(endpoints[0].port, port_b);
+
+    let a_count_before = server_a.requests.lock().unwrap().len();
+    let b_count_before = server_b.requests.lock().unwrap().len();
+
+    // Next request is accepted by B while A is still up; A does not accept that follow-up
+    slot.load().get_clients_self().await.unwrap();
+
+    assert!(server_b.requests.lock().unwrap().len() > b_count_before);
+    assert_eq!(server_a.requests.lock().unwrap().len(), a_count_before);
+
+    server_a.abort();
+    server_b.abort();
     let _ = std::fs::remove_dir_all(state_path.parent().unwrap());
 }

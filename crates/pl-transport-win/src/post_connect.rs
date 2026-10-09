@@ -8,18 +8,23 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_model::about::{decode_journal_resource, normalize_version, JournalAboutFacts};
-use observer_model::SyncSnapshot;
+use observer_model::{SyncSnapshot, TransportPath};
 use spl_core::http::HttpResponse;
 
-use crate::client::ClientSlot;
+use crate::client::{ClientSlot, RelayEligibility};
 #[cfg(test)]
 use crate::credential::FS_FAIL_POINT;
-use crate::credential::{pairing_generation, CasKey, Credential, PairedState, StorageError};
+use crate::credential::{
+    pairing_generation, CasKey, Credential, EndpointAddr, PairedState, StorageError,
+};
 use crate::device_metadata::{
     sanitize_facts, MetadataGetResponse, MetadataPutRequest, MetadataPutResponse, RawDeviceFacts,
     ReportedMetadata,
 };
 use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
+use crate::local_endpoints::{
+    endpoints_match, is_same_computer, merge_dial_endpoints, parse_local_endpoints,
+};
 
 /// Session identity for post-connect work. It is intentionally not
 /// interchangeable with journal-version sessions.
@@ -441,6 +446,7 @@ impl PostConnectController {
                                 pairing_generation: cas_key.pairing_generation,
                                 access_mutation_generation: new_generation,
                             },
+                            RelayEligibility::FromCredential,
                         );
                     }
                 }
@@ -558,6 +564,14 @@ impl PostConnectController {
             }
             #[cfg(any(test, feature = "transport-tests"))]
             let outcome = completion_outcome(&result, access.attempt_is_current(access_token));
+
+            let address_result =
+                tokio::time::timeout(deadline, access.refresh_journal_endpoints(access_token))
+                    .await;
+            if address_result.is_err() {
+                tracing::warn!(target: "sync", reason = "timeout", "post-connect local endpoints job timed out");
+            }
+
             if let Some(next) = access.finish_pass_lane(access_token, false) {
                 access.start_pass(next);
             }
@@ -1237,9 +1251,11 @@ impl PostConnectController {
                 lan_cred.relay_origin = None;
                 lan_cred.device_token = None;
                 lan_cred.device_token_expires_at = None;
-                let _ = self
-                    .client_slot
-                    .replace_from_incumbent(lan_cred, captured_cas);
+                let _ = self.client_slot.replace_from_incumbent(
+                    lan_cred,
+                    captured_cas,
+                    RelayEligibility::FromCredential,
+                );
 
                 self.disconnect_relay();
 
@@ -1260,9 +1276,11 @@ impl PostConnectController {
                                 access_mutation_generation: new_gen,
                             };
                             let updated_cred = self.client_slot.load().credential().clone();
-                            let _ = self
-                                .client_slot
-                                .replace_from_incumbent(updated_cred, new_cas);
+                            let _ = self.client_slot.replace_from_incumbent(
+                                updated_cred,
+                                new_cas,
+                                RelayEligibility::FromCredential,
+                            );
                         }
                         Err(StorageError::CasMismatch) => {
                             tracing::debug!(target: "sync", reason = "cas_mismatch", "durable clear deferred");
@@ -1335,7 +1353,11 @@ impl PostConnectController {
                             pairing_generation: captured_cas.pairing_generation,
                             access_mutation_generation: new_gen,
                         };
-                        let _ = self.client_slot.replace_from_incumbent(new_cred, new_cas);
+                        let _ = self.client_slot.replace_from_incumbent(
+                            new_cred,
+                            new_cas,
+                            RelayEligibility::FromCredential,
+                        );
                         let mut state = self.state.lock().unwrap();
                         if state.pending_durable_clear == Some(captured_cas) {
                             state.pending_durable_clear = None;
@@ -1382,7 +1404,11 @@ impl PostConnectController {
         let is_clear = credential.relay_origin.is_none()
             && credential.device_token.is_none()
             && credential.device_token_expires_at.is_none();
-        let _ = self.client_slot.replace_from_incumbent(credential, cas);
+        let _ = self.client_slot.replace_from_incumbent(
+            credential,
+            cas,
+            RelayEligibility::FromCredential,
+        );
         let mut controller = self.state.lock().unwrap();
         if controller.pending_durable_clear.is_some_and(|pending| {
             pending.pairing_generation == cas.pairing_generation
@@ -1391,6 +1417,161 @@ impl PostConnectController {
             // A visible clear still needs a confirmed durable retry. A newer
             // Ready supersedes the old clear instead of erasing that Ready.
             controller.pending_durable_clear = is_clear.then_some(cas);
+        }
+    }
+
+    pub(crate) async fn refresh_journal_endpoints(
+        self: &Arc<Self>,
+        access_token: (u64, u64, [u8; 32]),
+    ) {
+        let client = self.client_slot.load();
+        if is_same_computer(&client.credential().endpoints) {
+            return;
+        }
+
+        let (resp, path) = match client.get_local_endpoints_routed().await {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::debug!(target: "sync", reason = "transport", "local endpoints GET failed");
+                return;
+            }
+        };
+
+        if resp.status != 200 {
+            tracing::debug!(target: "sync", reason = "status", status = resp.status, "local endpoints GET returned non-success");
+            return;
+        }
+
+        let listed = match parse_local_endpoints(&resp.body) {
+            Some(l) => l,
+            None => {
+                tracing::warn!(target: "sync", reason = "invalid_response", "local endpoints GET rejected");
+                return;
+            }
+        };
+
+        let relay = path == TransportPath::Relay;
+        self.apply_refreshed_endpoints(listed, relay, access_token)
+            .await;
+    }
+
+    pub(crate) async fn apply_refreshed_endpoints(
+        self: &Arc<Self>,
+        listed: Vec<EndpointAddr>,
+        relay: bool,
+        access_token: (u64, u64, [u8; 32]),
+    ) {
+        let this = self.clone();
+        #[cfg(test)]
+        let failpoint = FS_FAIL_POINT.with(|f| f.get());
+        let _ = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(failpoint));
+            let owner = this.client_slot.publication_owner();
+            let _guard = owner.lock().unwrap();
+            this.commit_refreshed_endpoints(listed, relay, access_token);
+            #[cfg(test)]
+            FS_FAIL_POINT.with(|f| f.set(0));
+        })
+        .await;
+    }
+
+    fn commit_refreshed_endpoints(
+        &self,
+        listed: Vec<EndpointAddr>,
+        relay: bool,
+        access_token: (u64, u64, [u8; 32]),
+    ) {
+        if self.client_slot.is_retired() {
+            return;
+        }
+
+        {
+            let state = self.state.lock().unwrap();
+            let current_token = (
+                state.session_generation,
+                state.connection_epoch,
+                state.pairing_generation,
+            );
+            if current_token != access_token {
+                tracing::debug!(target: "sync", reason = "stale", "refreshed endpoints commit skipped due to stale token");
+                return;
+            }
+        }
+
+        // Read current_cas_key inside publication_owner after the GET, so a token
+        // refresh that committed during the GET is visible and cannot land between
+        // this snapshot and mutate.
+        let Some(captured_cas) = self.client_slot.load().current_cas_key() else {
+            return;
+        };
+
+        let Some(path) = &self.state_path else {
+            return;
+        };
+
+        let disk_state = match PairedState::load(path) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let Some(disk_cred) = disk_state.credential else {
+            return;
+        };
+
+        let merged = merge_dial_endpoints(&disk_cred.endpoints, &listed, relay);
+        if merged.is_empty() || endpoints_match(&merged, &disk_cred.endpoints) {
+            return;
+        }
+
+        let pending_clear = self.state.lock().unwrap().pending_durable_clear;
+
+        let mut stored_cred = None;
+        let mutate_res = PairedState::mutate(path, captured_cas, |cred| {
+            cred.endpoints = merged;
+            // An endpoints-only generation bump would let reconcile_from_disk
+            // drop the marker and keep the revoked token, so the clear is folded
+            // only into a real address write.
+            if pending_clear.is_some() {
+                cred.relay_origin = None;
+                cred.device_token = None;
+                cred.device_token_expires_at = None;
+            }
+            stored_cred = Some(cred.clone());
+            Ok(())
+        });
+
+        match mutate_res {
+            Ok(new_gen) => {
+                if pending_clear.is_some() {
+                    let mut state = self.state.lock().unwrap();
+                    state.pending_durable_clear = None;
+                }
+                let written = stored_cred.expect("written credential captured");
+                let new_cas = CasKey {
+                    pairing_generation: captured_cas.pairing_generation,
+                    access_mutation_generation: new_gen,
+                };
+                if self
+                    .client_slot
+                    .replace_from_incumbent(written, new_cas, RelayEligibility::Preserve)
+                    .is_err()
+                {
+                    tracing::warn!(target: "sync", reason = "replace", "local endpoints client replace failed");
+                }
+            }
+            Err(StorageError::WriteFailed(_)) => {
+                tracing::warn!(target: "sync", reason = "write_failed", "local endpoints persist failed");
+            }
+            Err(StorageError::DurabilityUncertain(_)) => {
+                tracing::warn!(target: "sync", reason = "durability_uncertain", "local endpoints persist uncertain");
+                self.reconcile_from_disk();
+            }
+            Err(StorageError::CasMismatch) => {
+                tracing::debug!(target: "sync", reason = "cas_mismatch", "local endpoints persist skipped due to CAS mismatch");
+            }
+            Err(_) => {
+                tracing::warn!(target: "sync", reason = "storage", "local endpoints persist failed");
+            }
         }
     }
 }
@@ -1419,6 +1600,7 @@ mod tests {
     use crate::{CasKey, Credential, ObserverClient};
     use observer_model::SyncSnapshot;
     use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use spl_transport::TokenTransaction;
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -2468,6 +2650,328 @@ mod tests {
         let started = tokio::time::Instant::now();
         controller.quiesce().await;
         assert!(started.elapsed() < Duration::from_secs(2));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_endpoints_unchanged_or_empty_skips_disk_write() {
+        let (controller, slot, path, _called) = test_setup(false);
+        let token = {
+            let state = controller.state.lock().unwrap();
+            (
+                state.session_generation,
+                state.connection_epoch,
+                state.pairing_generation,
+            )
+        };
+        let before_client = slot.load();
+
+        // 1. Empty listed endpoints on relay -> merged empty -> skips write
+        controller
+            .apply_refreshed_endpoints(vec![], true, token)
+            .await;
+        assert!(Arc::ptr_eq(&slot.load(), &before_client));
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 0);
+
+        // 2. Listed matching stored (127.0.0.1:9) -> merged equals disk -> skips write
+        let same = vec![EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: 9,
+        }];
+        controller
+            .apply_refreshed_endpoints(same, false, token)
+            .await;
+        assert!(Arc::ptr_eq(&slot.load(), &before_client));
+        let disk2 = PairedState::load(&path).unwrap();
+        assert_eq!(disk2.access_mutation_generation, 0);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_endpoints_honors_fs_fail_points() {
+        let (controller, slot, path, _called) = test_setup(false);
+        let token = {
+            let state = controller.state.lock().unwrap();
+            (
+                state.session_generation,
+                state.connection_epoch,
+                state.pairing_generation,
+            )
+        };
+        let before_client = slot.load();
+        let new_eps = vec![EndpointAddr {
+            host: "10.0.0.1".into(),
+            port: 7657,
+        }];
+
+        // Fail point 1: WriteFailed before rename
+        FS_FAIL_POINT.with(|f| f.set(1));
+        controller
+            .apply_refreshed_endpoints(new_eps.clone(), false, token)
+            .await;
+        FS_FAIL_POINT.with(|f| f.set(0));
+
+        assert!(Arc::ptr_eq(&slot.load(), &before_client));
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 0);
+        assert_eq!(
+            slot.load().credential().endpoints,
+            before_client.credential().endpoints
+        );
+
+        // Clear fail point and apply commits
+        controller
+            .apply_refreshed_endpoints(new_eps.clone(), false, token)
+            .await;
+        assert!(!Arc::ptr_eq(&slot.load(), &before_client));
+        let disk2 = PairedState::load(&path).unwrap();
+        assert_eq!(disk2.access_mutation_generation, 1);
+        assert_eq!(slot.load().credential().endpoints[0], new_eps[0]);
+
+        // Fail point 2: DurabilityUncertain after rename -> reconciles from disk
+        let new_eps2 = vec![EndpointAddr {
+            host: "10.0.0.2".into(),
+            port: 7657,
+        }];
+        FS_FAIL_POINT.with(|f| f.set(2));
+        controller
+            .apply_refreshed_endpoints(new_eps2.clone(), false, token)
+            .await;
+        FS_FAIL_POINT.with(|f| f.set(0));
+
+        // Reconcile from disk should have loaded generation 2 and updated slot
+        let disk3 = PairedState::load(&path).unwrap();
+        assert_eq!(disk3.access_mutation_generation, 2);
+        assert_eq!(
+            slot.load()
+                .current_cas_key()
+                .unwrap()
+                .access_mutation_generation,
+            2
+        );
+
+        // A later Ready-style write leaves the refreshed endpoints on disk and on the slot
+        let mut ready_cred = slot.load().credential().clone();
+        ready_cred.relay_origin = Some("https://relay.example.com".into());
+        ready_cred.device_token = Some("ready-token".into());
+        ready_cred.device_token_expires_at = Some(1800000000);
+        let ready_cas = slot.load().current_cas_key().unwrap();
+        let _ = PairedState::mutate(&path, ready_cas, |cred| {
+            cred.relay_origin = ready_cred.relay_origin.clone();
+            cred.device_token = ready_cred.device_token.clone();
+            cred.device_token_expires_at = ready_cred.device_token_expires_at;
+            Ok(())
+        });
+        let ready_new_cas = CasKey {
+            pairing_generation: ready_cas.pairing_generation,
+            access_mutation_generation: ready_cas.access_mutation_generation + 1,
+        };
+        let replaced = slot.replace_from_incumbent(
+            ready_cred,
+            ready_new_cas,
+            RelayEligibility::FromCredential,
+        );
+        assert!(replaced.is_ok());
+        let expected_merged = disk3.credential.as_ref().unwrap().endpoints.clone();
+        let disk_after_ready = PairedState::load(&path).unwrap();
+        assert_eq!(
+            disk_after_ready.credential.as_ref().unwrap().endpoints,
+            expected_merged
+        );
+        assert_eq!(slot.load().credential().endpoints, expected_merged);
+
+        // slot.load().token_transaction.commit(TokenCommitContext { ... }) returns TokenCommit::Committed and leaves endpoints in place
+        let current_inc = slot.current_incarnation();
+        let commit_res = slot
+            .load()
+            .token_transaction
+            .commit(spl_transport::TokenCommitContext {
+                token: "newer-token",
+                expires_at: 1900000000,
+                previous_token: "ready-token",
+                incarnation: current_inc,
+            });
+        assert!(matches!(
+            commit_res,
+            spl_transport::TokenCommit::Committed { .. }
+        ));
+        let disk_after_commit = PairedState::load(&path).unwrap();
+        assert_eq!(
+            disk_after_commit.credential.as_ref().unwrap().endpoints,
+            expected_merged
+        );
+        assert_eq!(slot.load().credential().endpoints, expected_merged);
+
+        // A second slot with the same pairing cert and different in-memory endpoints, then reconcile_from_disk, loads the refreshed endpoints
+        let mut different_cred = slot.load().credential().clone();
+        different_cred.endpoints = vec![EndpointAddr {
+            host: "10.99.99.99".into(),
+            port: 7657,
+        }];
+        let second_client = Arc::new(
+            ObserverClient::new(
+                different_cred,
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            )
+            .unwrap()
+            .with_state_path(path.clone()),
+        );
+        let second_slot = ClientSlot::new(second_client);
+        let second_controller = Arc::new(PostConnectController::new(
+            second_slot.clone(),
+            Some(path.clone()),
+            None,
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+            Arc::new(RawDeviceFacts::default),
+        ));
+        second_controller.reconcile_from_disk();
+        assert_eq!(second_slot.load().credential().endpoints, expected_merged);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_endpoints_folds_pending_clear_atomically() {
+        let (controller, slot, path, _called) = test_setup(true);
+        let token = {
+            let state = controller.state.lock().unwrap();
+            (
+                state.session_generation,
+                state.connection_epoch,
+                state.pairing_generation,
+            )
+        };
+        let cas = slot.load().current_cas_key().unwrap();
+        controller.state.lock().unwrap().pending_durable_clear = Some(cas);
+
+        let new_eps = vec![EndpointAddr {
+            host: "10.1.2.3".into(),
+            port: 7657,
+        }];
+        controller
+            .apply_refreshed_endpoints(new_eps.clone(), false, token)
+            .await;
+
+        assert_eq!(controller.state.lock().unwrap().pending_durable_clear, None);
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 1);
+        let cred = disk.credential.unwrap();
+        assert_eq!(cred.endpoints[0], new_eps[0]);
+        assert_eq!(cred.relay_origin, None);
+        assert_eq!(cred.device_token, None);
+        assert_eq!(cred.device_token_expires_at, None);
+
+        // Slot also replaced and has no relay fields
+        let slot_cred = slot.load().credential().clone();
+        assert_eq!(slot_cred.relay_origin, None);
+        assert_eq!(slot_cred.device_token, None);
+
+        // reconcile_from_disk on a slot that still had old relay credentials disables relay
+        let (_controller2, _slot2, path2, _) = test_setup(true);
+        // Replace slot2's client with a client sharing the same pairing cert as slot
+        let mut old_relay_cred = slot.load().credential().clone();
+        old_relay_cred.relay_origin = Some("https://relay.example.com".into());
+        old_relay_cred.device_token = Some("old-jwt".into());
+        old_relay_cred.device_token_expires_at = Some(1700000000);
+        let client_old =
+            Arc::new(ObserverClient::new(old_relay_cred, Arc::new(AtomicBool::new(true))).unwrap());
+        let slot2 = ClientSlot::new(client_old);
+
+        let controller2 = Arc::new(PostConnectController::new(
+            slot2.clone(),
+            Some(path.clone()),
+            None,
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+            Arc::new(|| RawDeviceFacts {
+                name: Some("test-device".into()),
+                platform: Some("windows".into()),
+                device_type: None,
+                app_id: Some("app.solstone.windows".into()),
+                app_version: Some("2.0.0".into()),
+            }),
+        ));
+        assert!(slot2.is_current_incarnation());
+        controller2.reconcile_from_disk();
+        assert!(!slot2.is_current_incarnation());
+        assert_eq!(slot2.load().credential().relay_origin, None);
+        assert_eq!(slot2.load().credential().device_token, None);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(path2.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_endpoints_stale_session_aborts_commit() {
+        let (controller, slot, path, _called) = test_setup(false);
+        let before_client = slot.load();
+        let stale_token = (999, 888, [1u8; 32]);
+        let new_eps = vec![EndpointAddr {
+            host: "10.0.0.1".into(),
+            port: 7657,
+        }];
+        controller
+            .apply_refreshed_endpoints(new_eps, false, stale_token)
+            .await;
+        assert!(Arc::ptr_eq(&slot.load(), &before_client));
+        let disk = PairedState::load(&path).unwrap();
+        assert_eq!(disk.access_mutation_generation, 0);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn refresh_endpoints_preserves_concurrent_disk_token() {
+        let (controller, slot, path, _called) = test_setup(true);
+        let token = {
+            let state = controller.state.lock().unwrap();
+            (
+                state.session_generation,
+                state.connection_epoch,
+                state.pairing_generation,
+            )
+        };
+        // Suppose disk token was updated to T2 concurrently while slot still had T1, at same pairing gen
+        let cas = slot.load().current_cas_key().unwrap();
+        let _ = PairedState::mutate(&path, cas, |cred| {
+            cred.device_token = Some("T2".into());
+            Ok(())
+        });
+        // Now disk is at generation 1 with token T2.
+        // Update slot's current_cas_key to generation 1 without replacing the ObserverClient
+        *slot.load().cas_key.lock().unwrap() = Some(CasKey {
+            pairing_generation: cas.pairing_generation,
+            access_mutation_generation: 1,
+        });
+
+        let pre_replace = slot.load();
+        assert_eq!(
+            pre_replace.credential().device_token.as_deref(),
+            Some("jwt-token")
+        );
+
+        let new_eps = vec![EndpointAddr {
+            host: "10.5.5.5".into(),
+            port: 7657,
+        }];
+        controller
+            .apply_refreshed_endpoints(new_eps, false, token)
+            .await;
+
+        // Pre-replace client still has T1
+        assert_eq!(
+            pre_replace.credential().device_token.as_deref(),
+            Some("jwt-token")
+        );
+        // Replaced client in slot reads T2 from transport client
+        let live_mutex = slot
+            .load()
+            .transport_client()
+            .live_token_mutex_for_test()
+            .unwrap();
+        assert_eq!(*live_mutex.lock().await, "T2");
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

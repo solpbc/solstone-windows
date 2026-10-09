@@ -350,6 +350,104 @@ mod tests {
         assert_eq!(SharedRelayFence::permit(&stale, 2), RelayPermit::Retired);
     }
 
+    #[test]
+    fn replace_from_incumbent_preserve_vs_from_credential() {
+        let cred = relay_credential();
+        let client =
+            Arc::new(ObserverClient::new(cred.clone(), Arc::new(AtomicBool::new(true))).unwrap());
+        let slot = ClientSlot::new(client);
+        let cas = slot.load().current_cas_key().unwrap();
+
+        // 1. Preserve on eligible incumbent stays eligible and advances
+        let replaced = slot
+            .replace_from_incumbent(cred.clone(), cas, RelayEligibility::Preserve)
+            .unwrap();
+        assert!(slot.relay_fence.allows(2));
+        assert!(replaced.relay_fence.allows(2));
+
+        // 2. Mark ineligible on incarnation 2
+        slot.relay_fence.mark_relay_ineligible(2);
+        assert!(!slot.relay_fence.allows(2));
+
+        // 3. Preserve keeps disabled / ineligible retargeted onto new incarnation 3
+        let cas2 = slot.load().current_cas_key().unwrap();
+        let replaced2 = slot
+            .replace_from_incumbent(cred.clone(), cas2, RelayEligibility::Preserve)
+            .unwrap();
+        assert_eq!(slot.relay_fence.incarnation.load(Ordering::Acquire), 3);
+        assert_eq!(
+            slot.relay_fence
+                .ineligible_incarnation
+                .load(Ordering::Acquire),
+            3
+        );
+        assert!(!slot.relay_fence.allows(3));
+        assert!(!replaced2.relay_fence.allows(3));
+
+        // 4. FromCredential advances past an old ineligible mark
+        let mut with_token = cred.clone();
+        with_token.relay_origin = Some("https://relay.example.com".into());
+        with_token.device_token = Some("tok".into());
+        with_token.device_token_expires_at = Some(100);
+        let cas3 = slot.load().current_cas_key().unwrap();
+        let replaced3 = slot
+            .replace_from_incumbent(with_token, cas3, RelayEligibility::FromCredential)
+            .unwrap();
+        assert_eq!(slot.relay_fence.incarnation.load(Ordering::Acquire), 4);
+        assert!(slot.relay_fence.allows(4));
+        assert!(replaced3.relay_fence.allows(4));
+
+        // 5. Disable relay: Preserve keeps it disabled
+        slot.disable_relay(); // advances to 5, disabled = true
+        assert!(!slot.relay_fence.allows(5));
+        let cas4 = slot.load().current_cas_key().unwrap();
+        let replaced4 = slot
+            .replace_from_incumbent(cred.clone(), cas4, RelayEligibility::Preserve)
+            .unwrap();
+        assert_eq!(slot.relay_fence.incarnation.load(Ordering::Acquire), 6);
+        assert!(!slot.relay_fence.allows(6));
+        assert!(!replaced4.relay_fence.allows(6));
+    }
+
+    #[test]
+    fn rebuild_from_honors_access_credential_endpoints() {
+        let cred = relay_credential();
+        let client =
+            Arc::new(ObserverClient::new(cred.clone(), Arc::new(AtomicBool::new(true))).unwrap());
+        let mut new_cred = cred.clone();
+        new_cred.endpoints = vec![EndpointAddr {
+            host: "10.10.10.10".into(),
+            port: 8888,
+        }];
+        let rebuilt = ObserverClient::rebuild_from(
+            &client,
+            new_cred.clone(),
+            CasKey {
+                pairing_generation: [0; 32],
+                access_mutation_generation: 1,
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(rebuilt.credential().endpoints, new_cred.endpoints);
+
+        // Cloned from slot with only relay fields changed retains original endpoints
+        let mut relay_only_change = rebuilt.credential().clone();
+        relay_only_change.relay_origin = None;
+        relay_only_change.device_token = None;
+        let rebuilt2 = ObserverClient::rebuild_from(
+            &rebuilt,
+            relay_only_change,
+            CasKey {
+                pairing_generation: [0; 32],
+                access_mutation_generation: 2,
+            },
+            3,
+        )
+        .unwrap();
+        assert_eq!(rebuilt2.credential().endpoints, new_cred.endpoints);
+    }
+
     #[cfg(feature = "transport-tests")]
     #[tokio::test]
     async fn rejected_transaction_stops_relay_only_requests_before_any_relay_dial() {
@@ -458,6 +556,13 @@ impl SharedRelayFence for RelayFence {
     }
 }
 
+/// Policy for relay eligibility across an incumbent client replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayEligibility {
+    FromCredential,
+    Preserve,
+}
+
 /// A thread-safe container for the active `ObserverClient` allowing atomic live replacement.
 #[derive(Clone)]
 pub struct ClientSlot {
@@ -497,15 +602,26 @@ impl ClientSlot {
         &self,
         credential: Credential,
         cas_key: CasKey,
+        eligibility: RelayEligibility,
     ) -> Result<Arc<ObserverClient>, TransportError> {
         if self.relay_fence.retired.load(Ordering::Acquire) {
             return Err(TransportError::NotPaired);
         }
-        let enabled = credential.relay_origin.is_some() && credential.device_token.is_some();
         loop {
             let incumbent = self.load();
             let current = self.relay_fence.incarnation.load(Ordering::Acquire);
+            let was_disabled = self.relay_fence.disabled.load(Ordering::Acquire);
+            let was_ineligible = self
+                .relay_fence
+                .ineligible_incarnation
+                .load(Ordering::Acquire);
             let incarnation = current.wrapping_add(1);
+            let enabled = match eligibility {
+                RelayEligibility::FromCredential => {
+                    credential.relay_origin.is_some() && credential.device_token.is_some()
+                }
+                RelayEligibility::Preserve => !was_disabled,
+            };
             let replacement =
                 ObserverClient::rebuild_from(&incumbent, credential.clone(), cas_key, incarnation)?;
             if self.relay_fence.retired.load(Ordering::Acquire) {
@@ -513,6 +629,12 @@ impl ClientSlot {
             }
             if self.relay_fence.advance_from(current, enabled) != Some(incarnation) {
                 continue;
+            }
+            // The caller holds publication_owner, the same mutex that records
+            // the ineligible mark; advance_from still bumps the incarnation,
+            // and the mark is retargeted onto the new one.
+            if matches!(eligibility, RelayEligibility::Preserve) && was_ineligible == current {
+                self.relay_fence.mark_relay_ineligible(incarnation);
             }
             let replacement = Arc::new(replacement);
             self.replace(replacement.clone());
@@ -529,6 +651,17 @@ impl ClientSlot {
 
     pub fn disable_relay(&self) {
         self.relay_fence.disable();
+    }
+
+    #[cfg(any(test, feature = "transport-tests"))]
+    pub fn mark_current_relay_ineligible_for_test(&self) {
+        let incarnation = self.relay_fence.incarnation.load(Ordering::Acquire);
+        self.relay_fence.mark_relay_ineligible(incarnation);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_incarnation(&self) -> u64 {
+        self.relay_fence.incarnation.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -573,7 +706,7 @@ pub struct ObserverClient {
     /// Optional persisted pairing state path for best-effort refreshed-token write-back.
     state_path: Arc<std::sync::Mutex<Option<PathBuf>>>,
     /// CAS key tracking the pairing and access mutation generation.
-    cas_key: Arc<std::sync::Mutex<Option<CasKey>>>,
+    pub(crate) cas_key: Arc<std::sync::Mutex<Option<CasKey>>>,
     /// Optional operation-scoped observation seam. `None` in the GUI.
     observer: ObserverHandle,
     relay_fence: Arc<RelayFence>,
@@ -698,6 +831,7 @@ impl ObserverClient {
         // Access updates must not replace pairing material. This is also what
         // makes a held pre-replacement client unambiguously retired.
         let mut credential = incumbent.credential.clone();
+        credential.endpoints = access_credential.endpoints;
         credential.relay_origin = access_credential.relay_origin;
         credential.device_token = access_credential.device_token;
         credential.device_token_expires_at = access_credential.device_token_expires_at;
@@ -788,6 +922,20 @@ impl ObserverClient {
     pub async fn get_relay_access(&self) -> Result<HttpResponse, TransportError> {
         self.post_connect_response(OrdinaryRequest::RelayAccessGet, self.v3_headers(), &[])
             .await
+    }
+
+    pub async fn get_local_endpoints(&self) -> Result<HttpResponse, TransportError> {
+        self.post_connect_response(OrdinaryRequest::LocalEndpointsGet, self.v3_headers(), &[])
+            .await
+    }
+
+    pub(crate) async fn get_local_endpoints_routed(
+        &self,
+    ) -> Result<(HttpResponse, TransportPath), TransportError> {
+        let (response, meta) = self
+            .post_connect_exchange(OrdinaryRequest::LocalEndpointsGet, self.v3_headers(), &[])
+            .await?;
+        Ok((response, meta.path))
     }
 
     pub async fn get_migration_state(&self) -> Result<HttpResponse, TransportError> {
@@ -1003,13 +1151,13 @@ impl ObserverClient {
         )]
     }
 
-    async fn post_connect_response(
+    async fn post_connect_exchange(
         &self,
         route: OrdinaryRequest,
         headers: Vec<(String, String)>,
         body: &[u8],
-    ) -> Result<HttpResponse, TransportError> {
-        let (response, _) = match self.ordinary_request(route, None, &headers, body).await {
+    ) -> Result<(HttpResponse, SendMetadata), TransportError> {
+        let (response, meta) = match self.ordinary_request(route, None, &headers, body).await {
             Ok(res) => res,
             Err(RouteError::Transport(e)) => return Err(e),
             Err(RouteError::AwaitingConfirmation) => {
@@ -1025,6 +1173,16 @@ impl ObserverClient {
                 "response body exceeds 64 KiB limit",
             )));
         }
+        Ok((response, meta))
+    }
+
+    async fn post_connect_response(
+        &self,
+        route: OrdinaryRequest,
+        headers: Vec<(String, String)>,
+        body: &[u8],
+    ) -> Result<HttpResponse, TransportError> {
+        let (response, _) = self.post_connect_exchange(route, headers, body).await?;
         Ok(response)
     }
 
@@ -1035,7 +1193,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 13);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 14);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);

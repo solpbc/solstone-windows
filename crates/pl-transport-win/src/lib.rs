@@ -31,6 +31,7 @@ pub mod device_metadata;
 pub mod integration;
 pub mod journal_bridge;
 pub mod journal_version;
+mod local_endpoints;
 pub mod migration;
 mod ordinary_request;
 pub mod pairing;

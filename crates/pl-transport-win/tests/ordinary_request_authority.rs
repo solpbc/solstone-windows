@@ -253,7 +253,7 @@ async fn serve_one_system_status(
 }
 
 async fn ordinary_client() -> (ObserverClient, Arc<AtomicUsize>, JoinHandle<Vec<Vec<u8>>>) {
-    ordinary_client_with_route_count(13).await
+    ordinary_client_with_route_count(14).await
 }
 
 async fn ordinary_client_with_route_count(
@@ -346,7 +346,7 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
 }
 
 #[tokio::test]
-async fn all_thirteen_production_helpers_use_the_shared_ordinary_request_authority() {
+async fn all_fourteen_production_helpers_use_the_shared_ordinary_request_authority() {
     let (client, accepts, server) = ordinary_client().await;
 
     client.list_paired_devices().await.unwrap();
@@ -381,9 +381,10 @@ async fn all_thirteen_production_helpers_use_the_shared_ordinary_request_authori
         .unwrap();
     client.get_migration_state().await.unwrap();
     client.put_migration_decision(b"{}").await.unwrap();
+    client.get_local_endpoints().await.unwrap();
 
     let requests = server.await.unwrap();
-    assert_eq!(accepts.load(Ordering::SeqCst), 13);
+    assert_eq!(accepts.load(Ordering::SeqCst), 14);
     let targets: Vec<_> = requests
         .iter()
         .map(|request| {
@@ -410,6 +411,7 @@ async fn all_thirteen_production_helpers_use_the_shared_ordinary_request_authori
             "DELETE /app/network/api/clients/sha256:0123456789abcdef HTTP/1.1",
             "GET /app/network/api/clients/self/migration HTTP/1.1",
             "PUT /app/network/api/clients/self/migration HTTP/1.1",
+            "GET /app/network/local-endpoints HTTP/1.1",
         ]
     );
     for request in &requests {
@@ -596,7 +598,12 @@ async fn stale_slot_incarnation_blocks_old_relay_only_helper_without_a_relay_dia
     );
     let slot = ClientSlot::new(old.clone());
     let cas = old.current_cas_key().unwrap();
-    slot.replace_from_incumbent(credential, cas).unwrap();
+    slot.replace_from_incumbent(
+        credential,
+        cas,
+        pl_transport_win::client::RelayEligibility::FromCredential,
+    )
+    .unwrap();
 
     assert!(matches!(
         old.system_status().await,
