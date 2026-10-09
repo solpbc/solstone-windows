@@ -4,11 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.23] - 2026-10-09
 
 ### Fixed
 
-- the solstone app now saves your journal's current addresses each time it connects, so once it has connected after your journal's address changes, it keeps using the new one without pairing again. a journal on this computer is unaffected.
+- when your journal's address changes, the solstone app now switches to the new address without pairing again, as long as it can still reach your journal another way after the change. this needs your journal to be updated too. a journal on this computer is unaffected.
 
 ## [2.0.22] - 2026-10-08
 
