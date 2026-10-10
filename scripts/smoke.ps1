@@ -21,7 +21,11 @@
 # have registered its own login item - the owner-visible "comes back after
 # reboot" behavior. The Uninstall entry and shortcuts that Setup.exe repoints are
 # not this script's: xtask brackets setup and smoke with
-# scripts\native-proof-host-state.ps1, which puts those back.
+# scripts\native-proof-host-state.ps1, which puts those back. The app's data root
+# (config, logs, segments) follows LOCALAPPDATA, and xtask runs this script with
+# LOCALAPPDATA set to the proof root. The launch carries that value into the
+# Session-1 task, which would otherwise start with the signed-in user's own and
+# write into their real %LocalAppData%\Solstone.
 #
 # -FailInject: after the app reaches observing, stop the Windows Audio service so
 # the (required) system-audio source faults, then assert the observer honestly
@@ -113,6 +117,11 @@ if ($NativeProofMode) {
     if ($ObservedSha256 -ne $ExpectedSha256) {
         throw "native-proof explicit app SHA-256 does not match the finalized baseline"
     }
+    # GetFullPath folds separators, so a joined path's forward slash still compares.
+    $IsolatedApp = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "Solstone\current\solstone-windows-app.exe"))
+    if (-not [IO.Path]::GetFullPath($AppExe).Equals($IsolatedApp, [StringComparison]::OrdinalIgnoreCase) -or $env:LOCALAPPDATA -match '[%"]') {
+        throw "native-proof AppExe is not the installed app under this script's LOCALAPPDATA; run the smoke through xtask's isolated proof root"
+    }
 } else {
     # Locate the installed app (Velopack per-user layout). This legacy discovery
     # remains available only to the default operator smoke.
@@ -188,7 +197,12 @@ Start-Sleep -Seconds 2
 Write-Host "=== launch observer in Session 1 (--open-view settings) ==="
 $AppLaunchCmd = Join-Path $env:TEMP "solstone-smoke-app.cmd"
 if (Test-Path $AppLaunchCmd) { Remove-Item $AppLaunchCmd -Force }
-Set-Content -Path $AppLaunchCmd -Value @("@echo off", "`"$AppExe`" --open-view settings") -Encoding ASCII
+$AppLaunchLines = @("@echo off")
+if ($NativeProofMode) {
+    $AppLaunchLines += "set `"LOCALAPPDATA=$env:LOCALAPPDATA`""
+}
+$AppLaunchLines += "`"$AppExe`" --open-view settings"
+Set-Content -Path $AppLaunchCmd -Value $AppLaunchLines -Encoding ASCII
 Invoke-InSession1 "solstone-smoke-app" $AppLaunchCmd ""
 
 $GateArgs = @(
