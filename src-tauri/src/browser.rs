@@ -11,8 +11,8 @@
 //! In the running app, [`start`] binds the same-user pipe, writes the browsers'
 //! registration for the installed copy, feeds the capture gate from pairing and
 //! pause, and delivers finalized periods as the journal's `browser` source.
-//! Everything here is compiled out unless the `browser-host` feature is on; no
-//! release target sets it until the browser extension launches.
+//! Everything here is compiled out unless the `browser-host` feature is on.
+//! Owner builds enable it by default and admit only the production extension ids.
 
 use std::process::ExitCode;
 

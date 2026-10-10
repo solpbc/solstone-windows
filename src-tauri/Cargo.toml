@@ -66,13 +66,12 @@ spl-core.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 
 [features]
+default = ["browser-host"]
 # Default keeps the custom protocol off; release builds enable as needed.
 custom-protocol = ["tauri/custom-protocol"]
 # The browser extension's native host: host mode, the same-user endpoint,
-# registration and the `browser` source. Off by default, and no release target
-# enables it until the browser extension launches. Turning it on for owner builds
-# is one line, `default = ["browser-host"]`, which the release build (and every
-# gate that builds the app) then picks up with its pinned features unchanged.
+# registration and the `browser` source. Enabled for owner builds by the default
+# feature; the development ids still require the separate preview feature.
 browser-host = ["dep:browser-host"]
 # Also admit the unpacked extension's development ids. A test preview only;
 # never set by a release target.
