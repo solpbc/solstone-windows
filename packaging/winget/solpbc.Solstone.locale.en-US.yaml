@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.23
+PackageVersion: 2.0.24
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,7 +23,7 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Fixed
-  - when your journal's address changes, the solstone app now switches to the new address without pairing again, as long as it can still reach your journal another way after the change. this needs your journal to be updated too.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.23
+  - an old wifi address no longer prevents the solstone app from refreshing your journal's current addresses through the private network.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.24
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
