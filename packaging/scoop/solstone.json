@@ -10,7 +10,7 @@
   "architecture": {
     "64bit": {
       "url": "https://github.com/solpbc/solstone-windows/releases/download/v2.0.25/Solstone-win-Portable.zip",
-      "hash": "8fbc797b5678ba0efa4f0186d154049c86fd3c9d01a640971fa3640736a372a5"
+      "hash": "16919b73de629e8db114027c2d6fe57fd60990b82498178d23cdd4f7d18c74f8"
     }
   },
   "bin": [
