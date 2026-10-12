@@ -45,22 +45,25 @@ pub enum BrowsersTray {
     None,
 }
 
-/// Connected brands win, in the order given, with duplicates collapsed.
-/// Pause and intake-off apply only when nothing is connected.
+/// Intake off, then pause, win over a connection, so the row never reads as
+/// taking in pages while it isn't. Otherwise connected brands, in the order
+/// given, with duplicates collapsed.
 pub fn browsers_tray(capture: &str, connected_brands_in_order: &[&str]) -> BrowsersTray {
+    match capture {
+        "intake_off" => return BrowsersTray::Off,
+        "paused" => return BrowsersTray::Paused,
+        _ => {}
+    }
     let mut names = Vec::new();
     for brand in connected_brands_in_order {
         if !names.iter().any(|seen: &String| seen == brand) {
             names.push((*brand).to_string());
         }
     }
-    if !names.is_empty() {
-        return BrowsersTray::Names(names);
-    }
-    match capture {
-        "paused" => BrowsersTray::Paused,
-        "intake_off" => BrowsersTray::Off,
-        _ => BrowsersTray::None,
+    if names.is_empty() {
+        BrowsersTray::None
+    } else {
+        BrowsersTray::Names(names)
     }
 }
 
@@ -105,17 +108,20 @@ mod tests {
     #[test]
     fn browsers_tray_connected_brands_order_and_deduplication() {
         assert_eq!(
-            browsers_tray("paused", &["chrome", "edge"]),
+            browsers_tray("permitted", &["chrome", "edge"]),
             BrowsersTray::Names(vec!["chrome".to_string(), "edge".to_string()])
         );
         assert_eq!(
-            browsers_tray("paused", &["chrome", "chrome", "edge"]),
+            browsers_tray("permitted", &["chrome", "chrome", "edge"]),
             BrowsersTray::Names(vec!["chrome".to_string(), "edge".to_string()])
         );
         assert_eq!(
-            browsers_tray("intake_off", &["edge", "chrome"]),
+            browsers_tray("permitted", &["edge", "chrome"]),
             BrowsersTray::Names(vec!["edge".to_string(), "chrome".to_string()])
         );
+        // Off and pause win over a connection.
+        assert_eq!(browsers_tray("paused", &["chrome"]), BrowsersTray::Paused);
+        assert_eq!(browsers_tray("intake_off", &["chrome"]), BrowsersTray::Off);
     }
 
     #[test]
