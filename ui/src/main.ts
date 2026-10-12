@@ -532,9 +532,11 @@ type BrowserStatus = {
   failure: string | null;
   connected: { brand: string; connected_at_ms: number }[];
   custody: { held_bytes: number; waiting: boolean };
+  stores: string[];
 };
 let latestBrowser: BrowserStatus | null = null;
 let browserDiscard: "idle" | "confirm" | "busy" | "done" | "failed" = "idle";
+let browserStoreFailure: string | null = null;
 let micDevices: MicDeviceRef[] = [];
 let runningApps: RunningApp[] = [];
 let titleDraft = "";
@@ -3133,8 +3135,53 @@ async function discardWaitingBrowserPages(): Promise<void> {
   requestRerender();
 }
 
+async function openBrowserStore(brand: string): Promise<void> {
+  try {
+    const ok = await invoke<boolean>("open_browser_store", { brand });
+    if (ok) {
+      browserStoreFailure = null;
+    } else {
+      browserStoreFailure = brand;
+    }
+  } catch {
+    browserStoreFailure = brand;
+  }
+  requestRerender();
+}
+
 function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
   const rows: HTMLElement[] = [valueRow("browser pages", selectable(text("div", browserStateText(status))))];
+  const offerVisible = status.connected.length === 0 && status.capture !== "not_paired";
+  if (!offerVisible) {
+    browserStoreFailure = null;
+  } else {
+    const block = document.createElement("div");
+    const guidance = text(
+      "div",
+      "if you haven't yet, add the solstone extension to a browser on this PC, then choose which sites to share. what you share goes into your journal.",
+    );
+    automation(guidance, ids["settings.sources.browser.offer"]);
+    const storesContainer = document.createElement("div");
+    automation(storesContainer, ids["settings.sources.browser.stores"]);
+    for (const brand of status.stores) {
+      const btn = quietButton(`add to ${BROWSER_NAMES[brand] ?? brand}`, () => {
+        void openBrowserStore(brand);
+      });
+      btn.dataset.brand = brand;
+      storesContainer.append(btn);
+    }
+    block.append(guidance, storesContainer);
+    if (browserStoreFailure !== null) {
+      const err = text(
+        "div",
+        `couldn't open the store page in ${BROWSER_NAMES[browserStoreFailure] ?? browserStoreFailure}.`,
+      );
+      automation(err, ids["settings.sources.browser.storeError"]);
+      err.style.color = "var(--danger)";
+      block.append(err);
+    }
+    rows.push(valueRow("", block));
+  }
   const waiting = status.custody.waiting;
   if (!waiting && browserDiscard !== "done" && browserDiscard !== "failed") {
     return rows;
@@ -4339,6 +4386,11 @@ export function start(): void {
   }
   root = queriedRoot;
 
+  if (new URLSearchParams(window.location.search).get("route") === "sources") {
+    activeRoute = "sources";
+    focusPaneTitleOnRender = true;
+  }
+
   const styleEl = document.createElement("style");
   styleEl.textContent = NATIVE_FEEL_CSS;
   document.head.append(styleEl);
@@ -4440,6 +4492,11 @@ export function start(): void {
   label = getCurrentWindow().label;
 
   void boot();
+  void listen<string>("settings://navigate", (event) => {
+    if (event.payload === "sources") {
+      navigateTo("sources");
+    }
+  });
   void listen<HealthDump>("health://changed", (event) => {
     setLatestHealth(event.payload);
     void refreshBrowserStatus();
@@ -4510,6 +4567,9 @@ export const __test__ = {
   setRunningApps(v: RunningApp[]) {
     runningApps = v;
   },
+  setBrowser(status: BrowserStatus | null) {
+    latestBrowser = status;
+  },
   renderSettings,
   renderAbout,
   renderUnavailable,
@@ -4544,6 +4604,9 @@ export const __test__ = {
     latestMic = null;
     micDevices = [];
     runningApps = [];
+    latestBrowser = null;
+    browserDiscard = "idle";
+    browserStoreFailure = null;
     activeRoute = "home";
     label = "settings";
     renderBeaconFired = false;

@@ -23,6 +23,7 @@ pub mod hub;
 pub mod identity;
 pub mod registration;
 pub mod relay;
+pub mod stores;
 pub mod upload;
 pub mod wire;
 

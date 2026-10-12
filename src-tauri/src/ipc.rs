@@ -760,3 +760,30 @@ pub fn browser_discard_waiting() -> Option<serde_json::Value> {
         None
     }
 }
+
+#[tauri::command]
+pub fn open_browser_store(app: tauri::AppHandle, brand: String) -> Result<bool, String> {
+    #[cfg(feature = "browser-host")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let Some(entry) = browser_host::stores::get(&brand) else {
+            return Err("unknown browser".to_string());
+        };
+        if app
+            .opener()
+            .open_url(entry.url, Some(entry.executable))
+            .is_ok()
+        {
+            return Ok(true);
+        }
+        if app.opener().open_url(entry.url, None::<&str>).is_ok() {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    #[cfg(not(feature = "browser-host"))]
+    {
+        let _ = (app, brand);
+        Err("unknown browser".to_string())
+    }
+}

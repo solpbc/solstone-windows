@@ -342,6 +342,7 @@ pub fn run(
             crate::ipc::pairing_migration_devices,
             crate::ipc::pairing_migration_offer_dismiss,
             crate::ipc::browser_status,
+            crate::ipc::open_browser_store,
             crate::ipc::browser_discard_waiting,
         ])
         .setup(move |app| {
@@ -506,7 +507,7 @@ pub fn run(
             app.manage(hotkey.clone());
             app.manage(mic.clone());
 
-            let (tray, pause_submenu, mi_resume, mi_restart) =
+            let (tray, pause_submenu, mi_resume, mi_restart, mi_browsers) =
                 crate::tray::init(app, cmd_tx.clone())?;
 
             tauri::async_runtime::spawn(async move {
@@ -603,6 +604,7 @@ pub fn run(
                 let pause_submenu = pause_submenu.clone();
                 let mi_resume = mi_resume.clone();
                 let mi_restart = mi_restart.clone();
+                let mi_browsers = mi_browsers.clone();
                 let mut rx = watch_rx;
                 async move {
                     let mut previous: Option<HealthDump> = None;
@@ -618,6 +620,7 @@ pub fn run(
                             &pause_submenu,
                             &mi_resume,
                             &mi_restart,
+                            mi_browsers.as_ref(),
                             &dump,
                         );
                         if changed {
@@ -678,6 +681,7 @@ pub fn run(
                         &pause_submenu,
                         &mi_resume,
                         &mi_restart,
+                        mi_browsers.as_ref(),
                         &terminal,
                     );
                     let _ = app.emit("health://changed", &terminal);

@@ -103,6 +103,7 @@ pub struct BrowserStatus {
     pub failure: Option<&'static str>,
     pub connected: Vec<ConnectedBrowser>,
     pub custody: CustodyStatus,
+    pub stores: Vec<&'static str>,
 }
 
 pub type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
@@ -387,6 +388,10 @@ impl Hub {
             failure,
             connected,
             custody,
+            stores: crate::stores::stores()
+                .iter()
+                .map(|entry| entry.brand)
+                .collect(),
         }
     }
 

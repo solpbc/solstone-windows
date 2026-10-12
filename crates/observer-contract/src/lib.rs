@@ -54,6 +54,7 @@ pub mod tray {
     pub const MENU_PAUSE_INDEFINITE: &str = "tray.menu.pauseIndefinite";
     pub const MENU_RESUME: &str = "tray.menu.resume";
     pub const MENU_RESTART_OBSERVING: &str = "tray.menu.restartObserving";
+    pub const MENU_BROWSERS: &str = "tray.menu.browsers";
     pub const MENU_OPEN_JOURNAL: &str = "tray.menu.openJournal";
     pub const MENU_OPEN_SETTINGS: &str = "tray.menu.openSettings";
     pub const MENU_GET_HELP: &str = "tray.menu.getHelp";
@@ -73,6 +74,9 @@ pub mod settings {
     pub const SOURCES_SCREEN_STATE: &str = "settings.sources.screen.state";
     pub const SOURCES_SYSTEM_AUDIO_STATE: &str = "settings.sources.systemAudio.state";
     pub const SOURCES_MIC_STATE: &str = "settings.sources.mic.state";
+    pub const SOURCES_BROWSER_OFFER: &str = "settings.sources.browser.offer";
+    pub const SOURCES_BROWSER_STORES: &str = "settings.sources.browser.stores";
+    pub const SOURCES_BROWSER_STORE_ERROR: &str = "settings.sources.browser.storeError";
     /// Pairing pane (Wave 2): phase, the journal's mark, and the pair-link field + action.
     pub const PAIRING_STATE: &str = "settings.pairing.state";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
@@ -154,6 +158,7 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("tray.menu.pauseIndefinite", tray::MENU_PAUSE_INDEFINITE),
         ("tray.menu.resume", tray::MENU_RESUME),
         ("tray.menu.restartObserving", tray::MENU_RESTART_OBSERVING),
+        ("tray.menu.browsers", tray::MENU_BROWSERS),
         ("tray.menu.openJournal", tray::MENU_OPEN_JOURNAL),
         ("tray.menu.openSettings", tray::MENU_OPEN_SETTINGS),
         ("tray.menu.getHelp", tray::MENU_GET_HELP),
@@ -177,6 +182,18 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             settings::SOURCES_SYSTEM_AUDIO_STATE,
         ),
         ("settings.sources.mic.state", settings::SOURCES_MIC_STATE),
+        (
+            "settings.sources.browser.offer",
+            settings::SOURCES_BROWSER_OFFER,
+        ),
+        (
+            "settings.sources.browser.stores",
+            settings::SOURCES_BROWSER_STORES,
+        ),
+        (
+            "settings.sources.browser.storeError",
+            settings::SOURCES_BROWSER_STORE_ERROR,
+        ),
         ("settings.pairing.state", settings::PAIRING_STATE),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),

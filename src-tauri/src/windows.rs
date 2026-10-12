@@ -45,10 +45,13 @@ impl OpenJournalError {
     }
 }
 
-/// Open (or focus) the Settings window.
-pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("settings") {
         window.set_focus()?;
+        if sources {
+            use tauri::Emitter;
+            let _ = window.emit("settings://navigate", "sources");
+        }
         tracing::info!(
             target: "window",
             label = "settings",
@@ -58,7 +61,13 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
+    let url = if sources {
+        WebviewUrl::App("index.html?route=sources".into())
+    } else {
+        WebviewUrl::App("index.html".into())
+    };
+
+    WebviewWindowBuilder::new(app, "settings", url)
         .title("solstone settings")
         .inner_size(820.0, 580.0)
         .min_inner_size(460.0, 480.0)
@@ -75,6 +84,16 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
         "window open"
     );
     Ok(())
+}
+
+/// Open (or focus) the Settings window.
+pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
+    open_settings_internal(app, false)
+}
+
+/// Open (or focus) the Settings window on the sources pane.
+pub fn open_settings_sources(app: &tauri::AppHandle) -> tauri::Result<()> {
+    open_settings_internal(app, true)
 }
 
 /// Dispatch opening journal based on pairing phase.
