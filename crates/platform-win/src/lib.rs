@@ -28,6 +28,8 @@ use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
 
 pub mod about_observation;
+/// Where Windows registers an installed program (`App Paths`, safe `winreg`).
+pub mod app_paths;
 pub mod autostart;
 #[allow(unsafe_code)]
 pub mod local_offset;

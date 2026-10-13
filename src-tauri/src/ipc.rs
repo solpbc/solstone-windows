@@ -769,12 +769,13 @@ pub fn open_browser_store(app: tauri::AppHandle, brand: String) -> Result<bool, 
         let Some(entry) = browser_host::stores::get(&brand) else {
             return Err("unknown browser".to_string());
         };
-        if app
-            .opener()
-            .open_url(entry.url, Some(entry.executable))
-            .is_ok()
-        {
-            return Ok(true);
+        // Only a browser Windows says is installed is launched by path; by bare
+        // name, a missing one brings up Windows' own "cannot find" dialog first.
+        if let Some(exe) = platform_win::app_paths::registered_executable(entry.executable) {
+            let exe = exe.to_string_lossy().into_owned();
+            if app.opener().open_url(entry.url, Some(exe)).is_ok() {
+                return Ok(true);
+            }
         }
         if app.opener().open_url(entry.url, None::<&str>).is_ok() {
             return Ok(true);
