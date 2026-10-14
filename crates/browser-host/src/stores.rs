@@ -17,7 +17,10 @@ fn store_url() -> &'static str {
         .as_str()
 }
 
-pub fn stores() -> [BrowserStore; 2] {
+/// The Firefox Add-ons listing.
+const FIREFOX_STORE_URL: &str = "https://addons.mozilla.org/firefox/addon/solstone/";
+
+pub fn stores() -> [BrowserStore; 3] {
     let url = store_url();
     [
         BrowserStore {
@@ -29,6 +32,11 @@ pub fn stores() -> [BrowserStore; 2] {
             brand: "edge",
             url,
             executable: "msedge.exe",
+        },
+        BrowserStore {
+            brand: "firefox",
+            url: FIREFOX_STORE_URL,
+            executable: "firefox.exe",
         },
     ]
 }
@@ -93,8 +101,17 @@ mod tests {
     }
 
     #[test]
+    fn get_firefox_points_at_its_add_ons_listing() {
+        let firefox = get("firefox").expect("firefox store");
+        assert_eq!(
+            firefox.url,
+            "https://addons.mozilla.org/firefox/addon/solstone/"
+        );
+        assert_eq!(firefox.executable, "firefox.exe");
+    }
+
+    #[test]
     fn get_returns_none_for_missing_or_empty_brands() {
-        assert!(get("firefox").is_none());
         assert!(get("unknown").is_none());
         assert!(get("").is_none());
     }
@@ -102,7 +119,7 @@ mod tests {
     #[test]
     fn brand_order_of_stores() {
         let brands: Vec<&str> = stores().into_iter().map(|s| s.brand).collect();
-        assert_eq!(brands, ["chrome", "edge"]);
+        assert_eq!(brands, ["chrome", "edge", "firefox"]);
     }
 
     #[test]
