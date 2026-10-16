@@ -43,19 +43,15 @@ impl RotatingFileWriter {
     }
 
     fn active_path(&self) -> PathBuf {
-        active_path(&self.dir, self.prefix)
+        member_path(&self.dir, self.prefix, 0)
     }
 
     fn rolled_path(&self, index: usize) -> PathBuf {
-        self.dir.join(format!("{}.{}.log", self.prefix, index))
+        member_path(&self.dir, self.prefix, index)
     }
 
     fn source_path_for_index(&self, index: usize) -> PathBuf {
-        if index == 0 {
-            self.active_path()
-        } else {
-            self.rolled_path(index)
-        }
+        member_path(&self.dir, self.prefix, index)
     }
 
     fn ensure_file(&mut self) -> io::Result<&mut File> {
@@ -109,8 +105,17 @@ impl Write for RotatingFileWriter {
     }
 }
 
+/// Pure log member path helper. Index 0 is `{prefix}.log`; index `n >= 1` is `{prefix}.{n}.log`.
+pub(crate) fn member_path(dir: &Path, prefix: &str, index: usize) -> PathBuf {
+    if index == 0 {
+        dir.join(format!("{prefix}.log"))
+    } else {
+        dir.join(format!("{prefix}.{index}.log"))
+    }
+}
+
 fn active_path(dir: &Path, prefix: &str) -> PathBuf {
-    dir.join(format!("{prefix}.log"))
+    member_path(dir, prefix, 0)
 }
 
 fn remove_if_present(path: PathBuf) -> io::Result<()> {

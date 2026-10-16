@@ -13,14 +13,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use filter::resolve_filter;
+use format::layer_builder;
 use panic::install_panic_hook;
-use time::Rfc3339Utc;
 use writer::LogMakeWriter;
 
 pub mod filter;
+mod format;
 pub mod frontend;
 pub mod journal_open;
 pub mod panic;
+pub mod preview;
+mod record;
 pub mod redact;
 pub mod time;
 pub mod writer;
@@ -43,7 +46,7 @@ pub const MAX_FILES: usize = 5;
 
 /// Pure active-log path helper. Opens nothing.
 pub fn active_log_path(dir: &Path) -> PathBuf {
-    dir.join(format!("{PREFIX}.log"))
+    writer::member_path(dir, PREFIX, 0)
 }
 
 /// Install persistent file logging and the panic hook.
@@ -68,12 +71,7 @@ fn try_init(dir: &Path, rust_log: Option<&str>) -> Result<(), InitError> {
     let writer = Arc::new(Mutex::new(writer));
     let make_writer = LogMakeWriter::new(Arc::clone(&writer));
 
-    tracing_subscriber::fmt()
-        .compact()
-        .with_ansi(false)
-        .with_timer(Rfc3339Utc)
-        .with_env_filter(resolve_filter(rust_log))
-        .with_writer(make_writer)
+    layer_builder(resolve_filter(rust_log), make_writer)
         .try_init()
         .map_err(|error| InitError::Subscriber(error.to_string()))?;
 
@@ -115,7 +113,7 @@ mod tests {
     use crate::frontend::{FrontendErrorKind, FrontendErrorRecord, FrontendLevel, FrontendOrigin};
     use crate::panic::panic_line;
     use crate::redact::{redact_pair_link, redact_secret, redact_titles};
-    use crate::time::format_rfc3339_utc;
+    use crate::time::{format_rfc3339_utc, Rfc3339Utc};
     use crate::writer::RotatingFileWriter;
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -317,10 +315,10 @@ mod tests {
     #[test]
     fn panic_line_formats_single_line_and_uses_shared_timestamp() {
         let now = UNIX_EPOCH + Duration::from_millis(1_704_067_200_123);
-        let line = panic_line(now, "main", Some("src/main.rs:1:2"), "boom");
+        let line = panic_line(now, "main", Some("src/main.rs"), Some(1), Some(2), "boom");
         assert_eq!(
             line,
-            "2024-01-01T00:00:00.123Z PANIC thread=main location=src/main.rs:1:2 message=boom\n"
+            "solstone-log/1 ts=2024-01-01T00:00:00.123Z lvl=PANIC tgt=- mod=- file=src/main.rs loc=1 col=2 thread=l:4 message=l:4\n"
         );
     }
 
@@ -376,4 +374,16 @@ mod tests {
         assert!(!bytes.contains("Owner Secret Window Title"));
         let _ = std::fs::remove_dir_all(dir);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn safe_records_drop_sentinels_and_keep_identity() {
+    format::tests::safe_records_drop_sentinels_and_keep_identity();
+}
+
+#[cfg(test)]
+#[test]
+fn preview_write_to_preserves_snapshot() {
+    preview::tests::preview_write_to_preserves_snapshot();
 }
