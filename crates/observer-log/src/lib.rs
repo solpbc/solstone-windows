@@ -10,7 +10,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use filter::resolve_filter;
 use format::layer_builder;
@@ -44,6 +44,13 @@ pub const MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// Active file counts toward this total: active plus `.1.log` through `.4.log`.
 pub const MAX_FILES: usize = 5;
 
+static PERSISTENT_WRITER: OnceLock<Arc<Mutex<RotatingFileWriter>>> = OnceLock::new();
+
+/// This process' installed writer, for holding rotation still during a preview.
+pub fn persistent_writer() -> Option<&'static Mutex<RotatingFileWriter>> {
+    PERSISTENT_WRITER.get().map(Arc::as_ref)
+}
+
 /// Pure active-log path helper. Opens nothing.
 pub fn active_log_path(dir: &Path) -> PathBuf {
     writer::member_path(dir, PREFIX, 0)
@@ -75,6 +82,7 @@ fn try_init(dir: &Path, rust_log: Option<&str>) -> Result<(), InitError> {
         .try_init()
         .map_err(|error| InitError::Subscriber(error.to_string()))?;
 
+    let _ = PERSISTENT_WRITER.set(Arc::clone(&writer));
     install_panic_hook(writer);
     Ok(())
 }

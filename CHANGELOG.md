@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- you can read recent logs in settings → help on windows and save a copy for a support report.
+
 ## [2.0.27] - 2026-10-14
 
 ### Fixed

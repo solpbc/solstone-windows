@@ -303,6 +303,7 @@ pub fn run(
     );
 
     let app = tauri::Builder::default()
+        .manage(crate::logs::LogExports::default())
         // Backend-only browser/folder access. Bundled renderers use fixed-destination
         // commands; the Journal uses native origin-based navigation callbacks.
         // No opener:* permission is granted to either webview.
@@ -311,6 +312,8 @@ pub fn run(
             crate::ipc::pause,
             crate::ipc::resume,
             crate::ipc::get_health,
+            crate::logs::read_recent_logs,
+            crate::logs::save_recent_logs,
             crate::ipc::open_settings,
             crate::ipc::open_about,
             crate::ipc::open_journal,

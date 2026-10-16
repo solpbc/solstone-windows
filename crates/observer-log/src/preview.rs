@@ -398,40 +398,17 @@ impl<'a> LogSource for DirectorySource<'a> {
                             id,
                             body: MemberBody::Empty,
                         });
-                    } else if len > max_tail_bytes {
-                        use std::io::Seek as _;
-                        let seek_pos = len.saturating_sub(max_tail_bytes);
-                        let mut buf = Vec::new();
-                        if file.seek(std::io::SeekFrom::Start(seek_pos)).is_err()
-                            || std::io::Read::read_to_end(&mut file, &mut buf).is_err()
-                        {
-                            members.push(LogMember {
-                                index: index as u8,
-                                id: 0,
-                                body: MemberBody::Unreadable,
-                            });
-                        } else {
-                            members.push(LogMember {
-                                index: index as u8,
-                                id,
-                                body: MemberBody::Partial(buf),
-                            });
-                        }
                     } else {
-                        let mut buf = Vec::new();
-                        if std::io::Read::read_to_end(&mut file, &mut buf).is_err() {
-                            members.push(LogMember {
-                                index: index as u8,
-                                id: 0,
-                                body: MemberBody::Unreadable,
-                            });
-                        } else {
-                            members.push(LogMember {
-                                index: index as u8,
-                                id,
-                                body: MemberBody::Read(buf),
-                            });
-                        }
+                        let (id, body) = match read_bounded_tail(&mut file, len, max_tail_bytes) {
+                            Ok(bytes) if len > max_tail_bytes => (id, MemberBody::Partial(bytes)),
+                            Ok(bytes) => (id, MemberBody::Read(bytes)),
+                            Err(_) => (0, MemberBody::Unreadable),
+                        };
+                        members.push(LogMember {
+                            index: index as u8,
+                            id,
+                            body,
+                        });
                     }
                 }
             }
@@ -439,6 +416,20 @@ impl<'a> LogSource for DirectorySource<'a> {
 
         Ok(LogSnapshot { stable, members })
     }
+}
+
+fn read_bounded_tail(
+    reader: &mut (impl std::io::Read + std::io::Seek),
+    observed_len: u64,
+    max_tail_bytes: u64,
+) -> std::io::Result<Vec<u8>> {
+    reader.seek(std::io::SeekFrom::Start(
+        observed_len.saturating_sub(max_tail_bytes),
+    ))?;
+    let mut bounded = std::io::Read::take(reader, observed_len.min(max_tail_bytes));
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut bounded, &mut bytes)?;
+    Ok(bytes)
 }
 
 fn compute_file_id(len: u64, mtime: Option<SystemTime>) -> u64 {
@@ -460,6 +451,28 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::panic::panic_line;
+
+    #[test]
+    fn file_growth_cannot_extend_the_measured_tail_or_small_member() {
+        use std::io::{Cursor, Read};
+        let data = b"0123456789abcdefghij";
+        // Metadata saw twelve bytes, then another writer appended eight.
+        let mut growing = Cursor::new(data);
+        let bounded = read_bounded_tail(&mut growing, 12, 8).unwrap();
+        assert_eq!(bounded, b"456789ab");
+        let mut unbounded = Cursor::new(data);
+        unbounded.set_position(4);
+        let mut control = Vec::new();
+        unbounded.read_to_end(&mut control).unwrap();
+        assert_eq!(control.len(), 16);
+        assert!(control.len() > bounded.len());
+        // A file initially smaller than the tail budget also stops at its
+        // observed end instead of following newly appended bytes.
+        assert_eq!(
+            read_bounded_tail(&mut Cursor::new(data), 4, 8).unwrap(),
+            b"0123"
+        );
+    }
 
     struct InjectedSource {
         snapshot: LogSnapshot,

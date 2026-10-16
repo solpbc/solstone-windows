@@ -427,7 +427,7 @@ fn is_valid_len_token(s: &str) -> bool {
     if s.is_empty() || s.starts_with('0') || !s.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    s.parse::<usize>().is_ok()
+    s.parse::<usize>().is_ok_and(|len| len <= EXCLUDED_LEN_CAP)
 }
 
 fn is_valid_u128_token(s: &str) -> bool {
@@ -460,4 +460,16 @@ fn is_valid_i128_token(s: &str) -> bool {
         return false;
     }
     s.parse::<i128>().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_line;
+
+    #[test]
+    fn excluded_lengths_cannot_exceed_the_producer_cap() {
+        let header = "solstone-log/1 ts=2026-10-16T12:00:00.000Z lvl=INFO tgt=example mod=- file=src/example.rs loc=1";
+        assert!(parse_line(&format!("{header} message=l:256")).is_some());
+        assert!(parse_line(&format!("{header} message=l:257")).is_none());
+    }
 }

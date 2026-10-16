@@ -68,6 +68,9 @@ pub mod settings {
     pub const WINDOW_ROOT: &str = "settings.window.root";
     /// Home pane: the first-run kinship intro block (shown only while not paired).
     pub const HOME_KINSHIP: &str = "settings.home.kinship";
+    pub const LOGS_READ: &str = "settings.logs.read";
+    pub const LOGS_PREVIEW: &str = "settings.logs.preview";
+    pub const LOGS_SAVE: &str = "settings.logs.save";
     pub const STATUS_APP_STATE: &str = "settings.status.appState.state";
     pub const STATUS_SEGMENT_DIR: &str = "settings.status.segmentDir";
     pub const STATUS_UPLOAD_STATE: &str = "settings.status.upload.state";
@@ -167,6 +170,9 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("tray.menu.quit", tray::MENU_QUIT),
         ("settings.window.root", settings::WINDOW_ROOT),
         ("settings.home.kinship", settings::HOME_KINSHIP),
+        ("settings.logs.read", settings::LOGS_READ),
+        ("settings.logs.preview", settings::LOGS_PREVIEW),
+        ("settings.logs.save", settings::LOGS_SAVE),
         ("settings.status.appState.state", settings::STATUS_APP_STATE),
         ("settings.status.segmentDir", settings::STATUS_SEGMENT_DIR),
         (

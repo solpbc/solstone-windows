@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { automationContract } from "./lib/contract";
+import { createLogHelp } from "./logs";
 
 type FrontendOrigin = "settings" | "about" | "none";
 type FrontendErrorKind = "error" | "unhandled_rejection";
@@ -79,7 +80,7 @@ type AppPhase = "idle" | "starting" | "observing" | "paused" | "error";
 type SourceKind = "screen" | "system_audio" | "mic";
 type SourceStatus = "active" | "inactive" | "no_input_device" | "faulted";
 type Severity = "ok" | "neutral" | "attention";
-type Route = "home" | "sources" | "privacy" | "journal" | "shortcut" | "storage" | "updates";
+type Route = "home" | "sources" | "privacy" | "journal" | "shortcut" | "storage" | "updates" | "help";
 
 interface SourceReport {
   kind: SourceKind;
@@ -554,7 +555,10 @@ const ROUTES: ReadonlyArray<{ route: Route; label: string; glyph: string }> = [
   { route: "shortcut", label: "shortcut", glyph: "\uE765" },
   { route: "storage", label: "storage", glyph: "\uE8B7" },
   { route: "updates", label: "updates", glyph: "\uE777" },
+  { route: "help", label: "help", glyph: "\uE897" },
 ];
+
+let logHelp: HTMLElement | null = null;
 
 const NATIVE_FEEL_CSS = `
 :root {
@@ -657,6 +661,25 @@ textarea {
   cursor: text;
 }
 
+.log-help p { font-size: 13px; line-height: 1.5; color: var(--fg-subtle); }
+.log-help button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--fill);
+  color: var(--fg);
+  cursor: pointer;
+}
+.log-help button:disabled { color: var(--muted); cursor: default; }
+.log-help textarea {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--fg);
+  margin-bottom: 12px;
+}
+
 .fluent-control:not(:disabled):hover {
   box-shadow: inset 0 0 0 999px var(--overlay-hover);
 }
@@ -675,6 +698,7 @@ textarea {
 
 button:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 select:focus-visible,
 a:focus-visible,
 [tabindex]:focus-visible {
@@ -3552,6 +3576,10 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
     case "updates":
       content.append(latestUpdate ? renderUpdatesSection(latestUpdate) : loadingCaption());
       break;
+    case "help":
+      logHelp ??= createLogHelp();
+      content.append(logHelp);
+      break;
   }
 
   clearLastSectionDivider(content);
@@ -3647,11 +3675,18 @@ function renderSettingsShell(dump: HealthDump): HTMLElement {
 }
 
 function renderSettings(dump: HealthDump): void {
+  const logText = logHelp?.querySelector("textarea");
+  const logPosition = logText ? [logText.selectionStart, logText.selectionEnd, logText.scrollTop, logText.scrollLeft] : null;
   resetRoot(ids["settings.window.root"]);
   root.style.padding = "0";
   root.style.overflow = "hidden";
   root.style.boxSizing = "border-box";
   root.append(renderSettingsShell(dump));
+  if (logText && logPosition) {
+    logText.setSelectionRange(logPosition[0], logPosition[1]);
+    logText.scrollTop = logPosition[2];
+    logText.scrollLeft = logPosition[3];
+  }
   if (focusPaneTitleOnRender) {
     focusPaneTitleOnRender = false;
     root.querySelector<HTMLElement>(".settings-pane-title")?.focus();

@@ -21,6 +21,7 @@ mod hotkey;
 mod integration;
 mod ipc;
 mod lifecycle;
+mod logs;
 mod mic;
 mod support;
 mod tray;

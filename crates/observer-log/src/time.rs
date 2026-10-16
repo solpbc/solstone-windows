@@ -68,6 +68,9 @@ pub(crate) fn parse_rfc3339_utc(text: &str) -> Option<SystemTime> {
     }
 
     let days = days_from_civil(year, month as i64, day as i64);
+    if civil_from_days(days) != (year, month as i64, day as i64) {
+        return None;
+    }
     let total_secs = days
         .checked_mul(86_400)?
         .checked_add((hour as i64).checked_mul(3_600)?)?
@@ -150,5 +153,24 @@ impl Rfc3339Utc {
 impl FormatTime for Rfc3339Utc {
     fn format_time(&self, writer: &mut Writer<'_>) -> fmt::Result {
         write!(writer, "{}", format_rfc3339_utc(SystemTime::now()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_rfc3339_utc, parse_rfc3339_utc};
+
+    #[test]
+    fn parser_checks_calendar_dates_including_leap_centuries() {
+        for valid in ["2024-02-29T12:00:00.123Z", "2000-02-29T00:00:00.000Z"] {
+            assert_eq!(format_rfc3339_utc(parse_rfc3339_utc(valid).unwrap()), valid);
+        }
+        for invalid in [
+            "2026-02-29T12:00:00.123Z",
+            "1900-02-29T00:00:00.000Z",
+            "2026-04-31T00:00:00.000Z",
+        ] {
+            assert!(parse_rfc3339_utc(invalid).is_none(), "{invalid}");
+        }
     }
 }

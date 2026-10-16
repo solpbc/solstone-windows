@@ -33,6 +33,8 @@ pub mod app_paths;
 pub mod autostart;
 #[allow(unsafe_code)]
 pub mod local_offset;
+#[allow(unsafe_code)]
+pub mod log_save;
 
 /// The browser native host's same-user named pipe (Win32 security calls).
 #[allow(unsafe_code)]
