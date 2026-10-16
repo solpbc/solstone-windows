@@ -77,8 +77,8 @@ history. Reference only the public charter and license.
 | `make package` | source-bound build-to-finalize transaction → `target/release-candidate/<VERSION>/`; requires full lowercase `EXPECTED_RELEASE_COMMIT`, reviewed `SOLSTONE_ADVISORY_TREE_SHA256`, and the signed mirror packet environment documented in the release runbook (unsigned unless `SOLSTONE_SIGN=1`) |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | strict signed-candidate install and explicit-binary smoke → `target/release-evidence/<VERSION>/windows-native-proof.json` |
 | `make publish-origin CANDIDATE_DIR=<candidate> FINALIZATION_RECEIPT=<json> SOURCE_CHECKOUT=<exact-source-tree> CLEARANCE=<json> PUBLICATION_RECEIPT=<json>` | validate the retained signed candidate, exact clean source, and clearance document bound to the candidate/channel; publish immutable archive/versioned bytes before mutable Velopack metadata, write `releases.win.json` last, GET/compare every public byte, and emit a receipt; does not publish to GitHub |
-| `make publish-transparency RELEASE_DIR=<candidate>` | archive complete retained release bytes, then publish only signed transparency evidence; runs after delivery and never gates it |
-| `make resign-transparency-pointer` | refresh the latest-pointer signature and validity without changing the chain tip; no candidate input |
+| `make publish-transparency RELEASE_DIR=<candidate>` | not active for this product: exits 2 unless `TRANSPARENCY_ACTIVATED=1`, and is not a release step (see § 7 below) |
+| `make resign-transparency-pointer` | not active for this product: exits 2 unless `TRANSPARENCY_ACTIVATED=1` |
 | `make publish-r2` | fail-closed direct-publication guard; R2 publication belongs to the aggregate provenance publisher |
 | `make pull-releases` | pull the box's packed `Releases/` for a controlled aggregate workflow; does not publish |
 | `make publish` | fail-closed direct-publication guard; publish the required exact-byte GitHub mirror separately after aggregate R2 publication |
@@ -96,7 +96,7 @@ history. Reference only the public charter and license.
 | `make purity-check` | Cross-target classification evidence | Enumerates every workspace member from `cargo metadata` and inspects each exactly once with `cargo tree --target all --all-features -e normal,build`; the Windows family is forbidden in each strict member's shipped (normal+build) graph. Dev-only reachability is out of scope because dev-dependencies never ship; the reviewed Windows-capable set includes platform/composition/app members and `xtask` build tooling. Unknown or stale exceptions fail. This does not compile or link MSVC code |
 | `make rust-notices-check` | Host evidence | Committed `RUST_DEPENDENCY_NOTICES.txt` matches `Cargo.lock` via `packaging/rust-notices/index.json`. Crate license reproduction, not a prebuilt-binary determination; see `packaging/rust-notices/` |
 | `make check-rust-release-manifest` | Host evidence | Offline exact-schema and semantic self-check with no environment selector; `MANIFEST=<path>` verifies one manifest and its named sibling bytes without claiming completeness; `RELEASE_DIR=<path>` classifies one exact flat current-only bundle |
-| `make publish-transparency RELEASE_DIR=<candidate>` | Host-orchestrated publication | Re-validates a snapshot, retains candidate artifact bytes only through the operator archive channel, and publishes an immutable signed entry plus derived mutable pointers through conditional HTTP operations; host tests use fakes and do not prove a real bucket |
+| `make publish-transparency RELEASE_DIR=<candidate>` | Host-orchestrated publication (not active) | Re-validates a snapshot, retains candidate artifact bytes only through the operator archive channel, and publishes an immutable signed entry plus derived mutable pointers through conditional HTTP operations; host tests use fakes and do not prove a real bucket |
 | `make win-host-ci` → `scripts/win-ci.cmd` (in `make ci-full`) | Native-target evidence | Windows build/test for the workspace with the full transport tests enabled, then the UI build and the app crate's tests and `custom-protocol` binary, plus contract and purity checks; the caller matches the box's reported HEAD, `Cargo.lock` SHA-256, and `ui/package-lock.json` SHA-256 to the transferred binding; no app package, install, sign, or smoke |
 | `make package` / `scripts/win-package.cmd` | Package-finalization evidence | One source-bound transaction builds, packs, optionally signs and verifies, renders evidence, and atomically promotes the exact current-only candidate; it does not install, smoke, or publish |
 | `make prove-rust-release-native RELEASE_DIR=<candidate>` | Native-proof orchestration | Strictly classifies one signed candidate before resolving native action tools, then installs and explicitly smokes its bytes; read-only checkout-fact acquisition precedes classification, fake action seams are host-tested, and a green real receipt is box evidence |
@@ -317,9 +317,16 @@ clean isolated install and explicit-binary smoke and writes
 `target/release-evidence/<VERSION>/windows-native-proof.json`. Neither receipt is
 a candidate member. Direct R2, GitHub, winget, and scoop publication remains
 fail-closed; only the aggregate provenance publisher may publish finalized R2
-bytes. The required GitHub mirror uses the separate documented operator step.
+bytes. The exact-byte GitHub release mirror is required for delivery completion
+and uses the separate documented operator step; R2 remains the authoritative
+app-update feed.
 
-Release transparency is the post-delivery evidence publisher. It archives the
+Release transparency publication is not active for this product, and a release
+has no transparency step. The v2 release record (see
+`solpbc/solstone-transparency`) covers the journal only, and this product has no
+transparency adapter yet, so both transparency targets exit 2 unless
+`TRANSPARENCY_ACTIVATED=1`; that flag does not by itself authorize a publish.
+The rest of this paragraph describes the dormant publisher. It archives the
 full retained candidate plus evidence before exposing only manifests, proofs,
 the signed hash-chained entry, the derived ledger, and the signed latest
 pointer at `transparency.solstone.app`; artifact bytes must never reach that
@@ -332,9 +339,7 @@ only the operator's local key path through `TRANSPARENCY_MINISIGN_PUB`; it does
 not change the public filename or served location, and no production public key
 is committed. Version keys are create-only and permanent, while staged retries
 reuse exact bytes. The tracked `transparency-head-log.jsonl` records witnessed
-heads for an ordinary later commit. The exact-byte GitHub release mirror is
-required for delivery completion. Transparency evidence is published separately
-after delivery; R2 remains the authoritative app-update feed.
+heads for an ordinary later commit.
 
 The offline Rust release-manifest verifier has three modes. With no selector it
 runs only committed fixtures and deterministic rendering. `MANIFEST=<path>`
