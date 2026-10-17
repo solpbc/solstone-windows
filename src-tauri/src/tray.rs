@@ -17,7 +17,7 @@
 use capture_engine::EngineCommand;
 use observer_model::{
     classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, AppPhase,
-    HealthDump, PauseReason, SyncSnapshot, TrayVisual,
+    HealthDump, PauseReason, SourceKind, SyncSnapshot, TrayVisual,
 };
 use tauri::image::Image;
 use tauri::menu::{
@@ -157,7 +157,13 @@ pub fn init(
         .item(&mi_quit)
         .build()?;
 
-    let (visual, tooltip) = classify_tray(AppPhase::Starting, &SyncSnapshot::default(), None, None);
+    let (visual, tooltip) = classify_tray(
+        AppPhase::Starting,
+        &SyncSnapshot::default(),
+        None,
+        None,
+        false,
+    );
 
     let tray = TrayIconBuilder::with_id(observer_contract::tray::ROOT)
         .menu(&menu)
@@ -240,12 +246,19 @@ pub fn apply_state(
     browsers: Option<&MenuItem<Wry>>,
     dump: &HealthDump,
 ) {
-    let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref());
+    let is_enabled = |kind: SourceKind| match kind {
+        SourceKind::Screen => dump.setup.screen,
+        SourceKind::SystemAudio => dump.setup.system_audio,
+        SourceKind::Mic => dump.setup.mic,
+    };
+    let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), is_enabled);
+    let deliberate_off = !dump.setup.screen && !dump.setup.system_audio && !dump.setup.mic;
     let (visual, tooltip) = classify_tray(
         dump.app_state,
         &dump.sync,
         dump.pause.as_ref(),
         fault_detail.as_deref(),
+        deliberate_off,
     );
     let _ = tray.set_icon(Some(icon_for(visual)));
     let _ = tray.set_tooltip(Some(tooltip));
@@ -266,7 +279,9 @@ fn icon_for(visual: TrayVisual) -> Image<'static> {
     let bytes = match visual {
         TrayVisual::Healthy => include_bytes!("../icons/tray/healthy.ico").as_slice(),
         TrayVisual::Connecting => include_bytes!("../icons/tray/connecting.ico").as_slice(),
-        TrayVisual::Paused => include_bytes!("../icons/tray/paused.ico").as_slice(),
+        TrayVisual::Paused | TrayVisual::Off => {
+            include_bytes!("../icons/tray/paused.ico").as_slice()
+        }
         TrayVisual::Offline => include_bytes!("../icons/tray/offline.ico").as_slice(),
         TrayVisual::Error => include_bytes!("../icons/tray/error.ico").as_slice(),
     };

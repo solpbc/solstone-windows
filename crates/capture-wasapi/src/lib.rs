@@ -76,8 +76,8 @@ mod imp {
     use crate::reselect::{is_render_reselect_error, render_reopen_needed};
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
-        AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError, SourceKind,
-        SourceState, SystemAudioSource,
+        monotonic_us, AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError,
+        SourceKind, SourceState, SystemAudioSource,
     };
     use windows::core::{Error as WindowsError, Result as WindowsResult, PCWSTR};
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
@@ -409,6 +409,7 @@ mod imp {
                             seq,
                             data,
                             format: Some(audio_format),
+                            at_us: Some(monotonic_us()),
                         });
                     }
                     unsafe { capture.ReleaseBuffer(frames)? };
@@ -613,6 +614,7 @@ mod imp {
                             seq,
                             data,
                             format: Some(audio_format),
+                            at_us: Some(monotonic_us()),
                         });
                     }
                     match unsafe { capture.ReleaseBuffer(frames) } {

@@ -1983,8 +1983,13 @@ async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
     let snapshot = sync.lock().unwrap().clone();
     assert_eq!(snapshot.pairing.phase, PairingPhase::AwaitingConfirmation);
 
-    let tray =
-        observer_model::classify_tray(observer_model::AppPhase::Observing, &snapshot, None, None);
+    let tray = observer_model::classify_tray(
+        observer_model::AppPhase::Observing,
+        &snapshot,
+        None,
+        None,
+        false,
+    );
     assert_eq!(
         tray.1,
         "solstone · waiting for you to confirm your journal's mark"

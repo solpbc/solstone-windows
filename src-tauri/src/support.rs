@@ -51,6 +51,7 @@ mod tests {
             views: BTreeMap::new(),
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
+            setup: Default::default(),
         };
         let url = report_url(&dump);
         assert!(url.starts_with("https://support.solstone.app/#report=v1&app=solstone+for+windows"));

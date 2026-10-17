@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- you choose which sources are on. a new install starts with screen, system audio, and the microphone off, and it does not start at login until you turn that on. an install that already ran keeps those sources on, your microphone settings, a held pause, your journal connection, and start at login, and settings points you at the new switches.
+
 ## [2.0.28] - 2026-10-17
 
 ### Added

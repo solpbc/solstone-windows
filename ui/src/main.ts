@@ -253,6 +253,82 @@ interface PauseSnapshot {
   seconds_remaining: number | null;
 }
 
+type WizardStep = "mic" | "system_audio" | "screen" | "connection" | "done";
+
+interface UnsavedChoice {
+  kind: SourceKind;
+  attempted: boolean;
+}
+
+interface SetupSnapshot {
+  mic: boolean;
+  system_audio: boolean;
+  screen: boolean;
+  start_at_login: boolean;
+  wizard: WizardStep;
+  notice_dismissed: boolean;
+  unsaved?: UnsavedChoice | null;
+  login_apply_failed?: boolean;
+}
+
+interface ScreenPreviewFrame {
+  width: number;
+  height: number;
+  rgba_base64: string;
+}
+
+interface PreviewSnapshot {
+  mic?: number | null;
+  mic_level?: number | null;
+  system_audio?: number | null;
+  system_audio_level?: number | null;
+  screen?: boolean | { width?: number; height?: number } | null;
+  screen_frame?: ScreenPreviewFrame | null;
+}
+
+function isSourceEnabled(setup: SetupSnapshot | undefined, kind: SourceKind): boolean {
+  if (!setup) {
+    return false;
+  }
+  switch (kind) {
+    case "screen":
+      return setup.screen;
+    case "system_audio":
+      return setup.system_audio;
+    case "mic":
+      return setup.mic;
+  }
+}
+
+function deriveSourceStatus(
+  enabled: boolean,
+  isPaused: boolean,
+  report: SourceReport | undefined,
+): "off" | "paused" | "on" | "unavailable" | "error" | null {
+  if (!enabled) {
+    return "off";
+  }
+  if (isPaused) {
+    return "paused";
+  }
+  if (!report) {
+    return null;
+  }
+  if (report.status === "active") {
+    return "on";
+  }
+  if (
+    report.status === "no_input_device" ||
+    (report.status === "faulted" && (report.reason === "access_denied" || report.reason === "AccessDenied"))
+  ) {
+    return "unavailable";
+  }
+  if (report.status === "faulted") {
+    return "error";
+  }
+  return null;
+}
+
 interface HealthDump {
   app_state: AppPhase;
   sources: SourceReport[];
@@ -266,6 +342,7 @@ interface HealthDump {
   exclusions: ExclusionHealth | null;
   pause: PauseSnapshot | null;
   views?: Record<string, string>;
+  setup?: SetupSnapshot;
 }
 
 interface StorageInfo {
@@ -523,6 +600,7 @@ let exclusionsPersisted = true;
 // keydown listener lives on the window, added once when capture starts.
 let hotkeyCapturing = false;
 let latestMic: MicView | null = null;
+let latestPreview: PreviewSnapshot = {};
 
 // The browser extension's path, present only in a build with the browser host
 // (the backend answers `null` otherwise, and nothing here renders). States and
@@ -882,21 +960,6 @@ a:focus-visible,
 
 	.settings-status-value {
 	  min-width: 0;
-	  overflow-wrap: anywhere;
-	}
-
-	.settings-kinship {
-	  display: grid;
-	  gap: 8px;
-	  padding: 15px;
-	  border: 1px solid var(--border);
-	  border-radius: var(--radius-card);
-	  background: var(--fill);
-	}
-
-	.settings-kinship-body {
-	  font-size: 13px;
-	  color: var(--fg-subtle);
 	  overflow-wrap: anywhere;
 	}
 
@@ -3246,6 +3309,47 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
   return rows;
 }
 
+function renderSourceControl(
+  kind: SourceKind,
+  report: SourceReport | undefined,
+  stateId: string,
+  switchId: string,
+  dump: HealthDump,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.gap = "10px";
+
+  const enabled = isSourceEnabled(dump.setup, kind);
+  const isPaused = dump.pause !== null || dump.app_state === "paused";
+  const status = deriveSourceStatus(enabled, isPaused, report);
+  const isUnsaved = dump.setup?.unsaved?.kind === kind;
+
+  const toggle = toggleRow("", switchId, enabled, (on) => {
+    void invoke("set_source_enabled", { kind, enabled: on }).then(() => retryHealth());
+  });
+  const input = toggle.querySelector("input");
+  if (input) {
+    if (status !== null) {
+      input.dataset.status = status;
+    }
+    if (isUnsaved) {
+      input.dataset.unsaved = "true";
+    }
+  }
+  if (status !== null) {
+    toggle.dataset.status = status;
+  }
+  if (isUnsaved) {
+    toggle.dataset.unsaved = "true";
+  }
+
+  const pill = selectable(automation(sourcePill(report), stateId));
+  wrap.append(toggle, pill);
+  return wrap;
+}
+
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   const sources = section("sources");
   const screen = sourceByKind(dump, "screen");
@@ -3254,17 +3358,28 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   sources.append(
     valueRow(
       "screen",
-      selectable(automation(sourcePill(screen), ids["settings.sources.screen.state"])),
+      renderSourceControl("screen", screen, ids["settings.sources.screen.state"], ids["settings.sources.screen.enabled"], dump),
     ),
     valueRow(
       "system audio",
-      selectable(automation(sourcePill(systemAudio), ids["settings.sources.systemAudio.state"])),
+      renderSourceControl("system_audio", systemAudio, ids["settings.sources.systemAudio.state"], ids["settings.sources.systemAudio.enabled"], dump),
     ),
     valueRow(
       "microphone",
-      selectable(automation(sourcePill(mic), ids["settings.sources.mic.state"])),
+      renderSourceControl("mic", mic, ids["settings.sources.mic.state"], ids["settings.sources.mic.enabled"], dump),
     ),
   );
+  if (dump.setup?.unsaved) {
+    const retryBtn = actionButton(
+      "retry save",
+      ids["settings.sources.saveRetry"],
+      true,
+      () => {
+        void invoke("retry_save").then(() => retryHealth());
+      },
+    );
+    sources.append(retryBtn);
+  }
   if (latestBrowser) {
     sources.append(...renderBrowserRows(latestBrowser));
   }
@@ -3456,53 +3571,404 @@ function renderUpdatesCard(): HTMLElement {
   );
 }
 
-function renderKinshipCard(): HTMLElement {
+function renderSourcesNotice(): HTMLElement {
   const card = document.createElement("div");
-  card.classList.add("settings-kinship");
-  automation(card, ids["settings.home.kinship"]);
+  card.classList.add("settings-card");
+  automation(card, ids["settings.home.sourcesNotice"]);
 
-  const heading = text("h2", "welcome to solstone.");
+  const heading = text("h2", "you choose which sources are on.");
   heading.classList.add("settings-card-title");
 
-  const body1 = text(
+  const body = text(
     "div",
-    "the solstone app takes in what you share with it, and all of it goes into your journal.",
+    "your sources are on and you can turn them off in sources.",
   );
-  body1.classList.add("settings-kinship-body");
+  body.style.fontSize = "13px";
+  body.style.color = "var(--fg-subtle)";
+  body.style.margin = "4px 0 12px";
 
-  const body2 = text("div", "your journal is always private, only yours.");
-  body2.classList.add("settings-kinship-body");
+  const dismiss = actionButton(
+    "dismiss",
+    ids["settings.home.sourcesNotice.dismiss"],
+    true,
+    () => {
+      void invoke("dismiss_notice").then(() => retryHealth());
+    },
+  );
 
-  card.append(heading, body1, body2);
+  card.append(heading, body, dismiss);
   return card;
 }
 
-// The kinship card is a first-run-only intro, not a not-paired-forever banner:
-// "not paired" is a legitimate ongoing mode for an owner who chooses local-only
-// capture, so gating solely on it would show the intro on every settings visit
-// for the life of the install. Windows has no source-level opt-in to read a
-// "has the owner done anything yet" fact from (sources activate automatically,
-// unlike the Android wish-store precedent this mirrors), so the fact this gate
-// needs is instead recorded the first time the card is actually shown. This is
-// UI-dismissal state, not an engine fact, so it lives in the webview's own
-// storage rather than HealthDump (whose fields the shell only ever reads, never
-// mints, per the module doc comment above).
-const KINSHIP_SEEN_STORAGE_KEY = "solstone.settings.kinshipSeen";
+function renderWizardSourceControl(
+  kind: SourceKind,
+  automationId: string,
+  dump: HealthDump,
+): HTMLElement {
+  const enabled = isSourceEnabled(dump.setup, kind);
+  const isPaused = dump.pause !== null || dump.app_state === "paused";
+  const report = sourceByKind(dump, kind);
+  const status = deriveSourceStatus(enabled, isPaused, report);
+  const isUnsaved = dump.setup?.unsaved?.kind === kind;
 
-function hasSeenKinship(): boolean {
-  try {
-    return localStorage.getItem(KINSHIP_SEEN_STORAGE_KEY) === "1";
-  } catch {
-    return false;
+  const toggle = toggleRow(kind.replace("_", " "), automationId, enabled, async (on) => {
+    try {
+      await invoke("set_source_enabled", { kind, enabled: on });
+    } finally {
+      retryHealth();
+    }
+  });
+  const input = toggle.querySelector("input");
+  if (input) {
+    if (status !== null) {
+      input.dataset.status = status;
+    }
+    if (isUnsaved) {
+      input.dataset.unsaved = "true";
+    }
   }
+  if (status !== null) {
+    toggle.dataset.status = status;
+  }
+  if (isUnsaved) {
+    toggle.dataset.unsaved = "true";
+  }
+  return toggle;
 }
 
-function markKinshipSeen(): void {
-  try {
-    localStorage.setItem(KINSHIP_SEEN_STORAGE_KEY, "1");
-  } catch {
-    // Best-effort only; a storage failure just means the intro may repeat.
+function renderProofNode(kind: SourceKind, preview: PreviewSnapshot): HTMLElement {
+  const node = document.createElement("div");
+  node.classList.add("wizard-proof");
+  if (kind === "mic") {
+    automation(node, ids["settings.setup.mic.proof"]);
+    const level = preview.mic !== undefined ? preview.mic : preview.mic_level;
+    if (typeof level === "number" && Number.isFinite(level)) {
+      node.dataset.proof = "ready";
+      node.dataset.level = String(level);
+    } else {
+      node.dataset.proof = "withheld";
+    }
+  } else if (kind === "system_audio") {
+    automation(node, ids["settings.setup.systemAudio.proof"]);
+    const level = preview.system_audio !== undefined ? preview.system_audio : preview.system_audio_level;
+    if (typeof level === "number" && Number.isFinite(level)) {
+      node.dataset.proof = "ready";
+      node.dataset.level = String(level);
+    } else {
+      node.dataset.proof = "withheld";
+    }
+  } else if (kind === "screen") {
+    automation(node, ids["settings.setup.screen.proof"]);
+    const frame = preview.screen !== undefined ? preview.screen : preview.screen_frame;
+    const ready =
+      frame === true ||
+      (typeof frame === "object" &&
+        frame !== null &&
+        (typeof (frame as any).width === "number" || typeof (frame as any).height === "number"));
+    if (ready) {
+      node.dataset.proof = "ready";
+    } else {
+      node.dataset.proof = "withheld";
+    }
   }
+  return node;
+}
+
+function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.classList.add("wizard-start-at-login");
+  const checked = dump.setup?.start_at_login ?? false;
+  const toggle = toggleRow(
+    "start at login",
+    ids["settings.setup.startAtLogin"],
+    checked,
+    async (on) => {
+      try {
+        await invoke("set_start_at_login", { enabled: on });
+      } finally {
+        retryHealth();
+      }
+    },
+  );
+  wrap.append(toggle);
+  if (dump.setup?.login_apply_failed) {
+    const err = text("div", "could not update start at login");
+    automation(err, ids["settings.setup.startAtLogin.error"]);
+    err.classList.add("wizard-error");
+    wrap.append(err);
+  }
+  return wrap;
+}
+
+function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
+  const wizardEl = document.createElement("div");
+  wizardEl.classList.add("settings-wizard");
+
+  const step = dump.setup?.wizard ?? "mic";
+  const stepContainer = document.createElement("div");
+  automation(stepContainer, ids["settings.setup.step"]);
+  stepContainer.dataset.step = step;
+
+  const renderPauseBtn = (kind: SourceKind) =>
+    actionButton(
+      "Off",
+      ids["settings.setup.pauseSource"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind, enabled: false });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+  const sentence = text("p", "what you turn on goes into your journal.");
+  sentence.classList.add("wizard-sentence");
+
+  if (step === "mic") {
+    const sw = renderWizardSourceControl("mic", "settings.setup.mic", dump);
+    const proof = renderProofNode("mic", preview);
+    const pauseBtn = renderPauseBtn("mic");
+
+    const notNowBtn = actionButton(
+      "not now",
+      ids["settings.setup.notNow"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind: "mic", enabled: false });
+          await invoke("set_wizard_step", { step: "system_audio" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const nextBtn = actionButton(
+      "next",
+      ids["settings.setup.next"],
+      true,
+      async () => {
+        try {
+          await invoke("set_wizard_step", { step: "system_audio" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const navRow = document.createElement("div");
+    navRow.style.display = "flex";
+    navRow.style.gap = "8px";
+    navRow.style.marginTop = "12px";
+    navRow.append(notNowBtn, nextBtn);
+
+    stepContainer.append(sw, proof, pauseBtn, sentence, renderStartAtLoginControl(dump), navRow);
+  } else if (step === "system_audio") {
+    const sw = renderWizardSourceControl("system_audio", "settings.setup.systemAudio", dump);
+    const proof = renderProofNode("system_audio", preview);
+    const pauseBtn = renderPauseBtn("system_audio");
+
+    const backBtn = actionButton(
+      "back",
+      ids["settings.setup.back"],
+      true,
+      async () => {
+        try {
+          await invoke("set_wizard_step", { step: "mic" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const notNowBtn = actionButton(
+      "not now",
+      ids["settings.setup.notNow"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind: "system_audio", enabled: false });
+          await invoke("set_wizard_step", { step: "screen" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const nextBtn = actionButton(
+      "next",
+      ids["settings.setup.next"],
+      true,
+      async () => {
+        try {
+          await invoke("set_wizard_step", { step: "screen" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const navRow = document.createElement("div");
+    navRow.style.display = "flex";
+    navRow.style.gap = "8px";
+    navRow.style.marginTop = "12px";
+    navRow.append(backBtn, notNowBtn, nextBtn);
+
+    stepContainer.append(sw, proof, pauseBtn, sentence, renderStartAtLoginControl(dump), navRow);
+  } else if (step === "screen") {
+    const sw = renderWizardSourceControl("screen", "settings.setup.screen", dump);
+    const proof = renderProofNode("screen", preview);
+    const pauseBtn = renderPauseBtn("screen");
+
+    const backBtn = actionButton(
+      "back",
+      ids["settings.setup.back"],
+      true,
+      async () => {
+        try {
+          await invoke("set_wizard_step", { step: "system_audio" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const notNowBtn = actionButton(
+      "not now",
+      ids["settings.setup.notNow"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind: "screen", enabled: false });
+          await invoke("set_wizard_step", { step: "connection" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const nextBtn = actionButton(
+      "next",
+      ids["settings.setup.next"],
+      true,
+      async () => {
+        try {
+          await invoke("set_wizard_step", { step: "connection" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    const navRow = document.createElement("div");
+    navRow.style.display = "flex";
+    navRow.style.gap = "8px";
+    navRow.style.marginTop = "12px";
+    navRow.append(backBtn, notNowBtn, nextBtn);
+
+    stepContainer.append(sw, proof, pauseBtn, sentence, renderStartAtLoginControl(dump), navRow);
+  } else if (step === "connection") {
+    const isPaired = dump.sync.pairing.phase === "paired";
+
+    const backBtn = actionButton(
+      "back",
+      ids["settings.setup.back"],
+      true,
+      async () => {
+        try {
+          await invoke("set_wizard_step", { step: "screen" });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+
+    if (isPaired) {
+      const journalCard = renderJournalCard(dump);
+      const nextBtn = actionButton(
+        "next",
+        ids["settings.setup.next"],
+        true,
+        async () => {
+          try {
+            await invoke("set_wizard_step", { step: "done" });
+          } finally {
+            retryHealth();
+          }
+        },
+      );
+      const navRow = document.createElement("div");
+      navRow.style.display = "flex";
+      navRow.style.gap = "8px";
+      navRow.style.marginTop = "12px";
+      navRow.append(backBtn, nextBtn);
+
+      stepContainer.append(journalCard, sentence, renderStartAtLoginControl(dump), navRow);
+    } else {
+      const inputRow = document.createElement("div");
+      inputRow.style.display = "grid";
+      inputRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+      inputRow.style.gap = "8px";
+      inputRow.style.padding = "7px 0";
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "paste a pair-link from your journal";
+      input.value = pairingDraft;
+      input.dataset.automationId = ids["settings.pairing.input"];
+      input.setAttribute("aria-label", "pair-link from your journal");
+      input.classList.add("fluent-control");
+      input.oninput = () => {
+        pairingDraft = input.value;
+      };
+
+      const button = document.createElement("button");
+      const busy = pairingBusy || dump.sync.pairing.phase === "pairing";
+      button.textContent = busy ? "pairing…" : "pair";
+      button.disabled = busy;
+      button.dataset.automationId = ids["settings.pairing.submit"];
+      button.classList.add("fluent-accent");
+      button.onclick = async () => {
+        if (pairingBusy || !pairingDraft.trim()) return;
+        pairingBusy = true;
+        try {
+          await invoke("pair", { link: pairingDraft.trim() });
+        } catch {
+          // Handled via pairing status updates
+        } finally {
+          pairingBusy = false;
+          retryHealth();
+        }
+      };
+      inputRow.append(input, button);
+
+      const skipBtn = actionButton(
+        "skip",
+        ids["settings.setup.notNow"],
+        true,
+        async () => {
+          try {
+            await invoke("set_wizard_step", { step: "done" });
+          } finally {
+            retryHealth();
+          }
+        },
+      );
+
+      const navRow = document.createElement("div");
+      navRow.style.display = "flex";
+      navRow.style.gap = "8px";
+      navRow.style.marginTop = "12px";
+      navRow.append(backBtn, skipBtn);
+
+      stepContainer.append(inputRow, sentence, renderStartAtLoginControl(dump), navRow);
+    }
+  }
+
+  wizardEl.append(stepContainer);
+  return wizardEl;
 }
 
 function renderHome(dump: HealthDump): HTMLElement {
@@ -3518,9 +3984,8 @@ function renderHome(dump: HealthDump): HTMLElement {
     renderUpdatesCard(),
   );
 
-  if (dump.sync.pairing.phase === "not_paired" && !hasSeenKinship()) {
-    markKinshipSeen();
-    home.append(renderKinshipCard(), renderStatusStrip(dump), cards);
+  if (dump.setup && dump.setup.wizard === "done" && !dump.setup.notice_dismissed) {
+    home.append(renderSourcesNotice(), renderStatusStrip(dump), cards);
   } else {
     home.append(renderStatusStrip(dump), cards);
   }
@@ -3533,7 +3998,11 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
 
   switch (route) {
     case "home":
-      content.append(renderHome(dump));
+      if (dump.setup?.wizard && dump.setup.wizard !== "done") {
+        content.append(renderWizard(dump, latestPreview));
+      } else {
+        content.append(renderHome(dump));
+      }
       break;
     case "sources":
       content.append(renderSourcesSection(dump), latestMic ? renderMicSection(latestMic) : loadingCaption());
@@ -4326,9 +4795,13 @@ function renderUnavailable(): void {
 }
 
 async function retryHealth(): Promise<void> {
-  const health = await invoke<HealthDump>("get_health").catch(() => null);
-  if (health) {
-    setLatestHealth(health);
+  try {
+    const health = await invoke<HealthDump>("get_health");
+    if (health) {
+      setLatestHealth(health);
+    }
+  } catch {
+    // Ignore error
   }
   requestRerender();
 }
@@ -4542,6 +5015,10 @@ export function start(): void {
     latestUpdate = event.payload;
     requestRerender();
   });
+  void listen<PreviewSnapshot>("preview://changed", (event) => {
+    latestPreview = event.payload ?? {};
+    requestRerender();
+  });
 
   // Live last-checked clock: tick the relative string once a second without a full
   // re-render (the JS analog of the macOS TimelineView; <60s -> "just now").
@@ -4605,9 +5082,13 @@ export const __test__ = {
   setBrowser(status: BrowserStatus | null) {
     latestBrowser = status;
   },
+  setPreview(v: PreviewSnapshot | null) {
+    latestPreview = v ?? {};
+  },
   renderSettings,
   renderAbout,
   renderUnavailable,
+  renderWizard,
   rerender,
   reset() {
     try {
@@ -4616,6 +5097,7 @@ export const __test__ = {
       // jsdom always provides localStorage; a real failure isn't testable state.
     }
     latestHealth = null;
+    latestPreview = {};
     aboutClipboardWriter = null;
     healthReceivedAt = null;
     latestStorage = null;

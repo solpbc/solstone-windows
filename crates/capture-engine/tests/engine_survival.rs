@@ -37,6 +37,10 @@ impl Clock for FakeClock {
     fn now_epoch_secs(&self) -> u64 {
         self.now.load(Ordering::Relaxed)
     }
+
+    fn now_monotonic_us(&self) -> u64 {
+        self.now.load(Ordering::Relaxed) * 1_000_000
+    }
 }
 
 #[derive(Clone, Default)]
@@ -188,6 +192,7 @@ fn emit_system_audio(sink: &Arc<dyn CaptureSink>, seq: u64, samples: usize) {
         seq,
         data: pcm_i16(samples),
         format: Some(audio_format()),
+        at_us: None,
     });
 }
 
@@ -209,6 +214,12 @@ fn pause_resume_same_window_seals_once_and_preserves_audio_duration() {
     .unwrap();
     assert!(outcomes.is_empty());
 
+    engine.set_source_choices(observer_model::setup::SetupSnapshot {
+        mic: true,
+        system_audio: true,
+        screen: true,
+        ..observer_model::setup::SetupSnapshot::default()
+    });
     engine.start();
     let sink = engine.sink();
     let pre = 16_000usize;

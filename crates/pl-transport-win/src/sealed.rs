@@ -541,6 +541,7 @@ mod tests {
                         bits_per_sample: 16,
                         is_float: false,
                     }),
+                    at_us: None,
                 },
             )
             .unwrap();
