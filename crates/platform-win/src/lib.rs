@@ -97,14 +97,6 @@ fn source_fmt_file_name(source: SourceKind) -> &'static str {
     }
 }
 
-fn source_timeline_file_name(source: SourceKind) -> &'static str {
-    match source {
-        SourceKind::Screen => unreachable!("screen chunks do not have timeline sidecars"),
-        SourceKind::SystemAudio => "system-audio.timeline",
-        SourceKind::Mic => "mic.timeline",
-    }
-}
-
 fn has_sealable_media(dir: &Path) -> io::Result<bool> {
     // Partial files are never counted as sealable media because only the bare
     // final per-source filenames are probed here.
@@ -125,9 +117,7 @@ fn has_sealable_media(dir: &Path) -> io::Result<bool> {
 struct PresentSealAudioSource {
     pcm_path: PathBuf,
     fmt_path: PathBuf,
-    timeline_path: PathBuf,
     bytes: Vec<u8>,
-    timeline_bytes: Option<Vec<u8>>,
     format: AudioFormat,
 }
 
@@ -138,13 +128,9 @@ enum SealAudioSource {
 }
 
 impl SealAudioSource {
-    fn combine_input(&self) -> Option<observer_audio::TimedSourceInput<'_>> {
+    fn combine_input(&self) -> Option<(&[u8], AudioFormat)> {
         match self {
-            Self::Present(source) => Some((
-                source.bytes.as_slice(),
-                source.format,
-                source.timeline_bytes.as_deref(),
-            )),
+            Self::Present(source) => Some((source.bytes.as_slice(), source.format)),
             Self::Absent | Self::Orphan => None,
         }
     }
@@ -166,19 +152,10 @@ fn read_seal_audio_source(dir: &Path, source: SourceKind) -> io::Result<SealAudi
         return Ok(SealAudioSource::Orphan);
     };
 
-    let timeline_path = dir.join(source_timeline_file_name(source));
-    let timeline_bytes = match fs::read(&timeline_path) {
-        Ok(bytes) => Some(bytes),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err),
-    };
-
     Ok(SealAudioSource::Present(PresentSealAudioSource {
         bytes: fs::read(&pcm_path)?,
         pcm_path,
         fmt_path,
-        timeline_path,
-        timeline_bytes,
         format,
     }))
 }
@@ -190,7 +167,7 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
         return Ok(());
     }
 
-    let flac = observer_audio::combine_timed_to_flac(mic.combine_input(), sys.combine_input())
+    let flac = observer_audio::combine_to_flac(mic.combine_input(), sys.combine_input())
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
     let Some(bytes) = flac else {
@@ -206,11 +183,6 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
         if let SealAudioSource::Present(source) = source {
             fs::remove_file(&source.pcm_path)?;
             match fs::remove_file(&source.fmt_path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
-            }
-            match fs::remove_file(&source.timeline_path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
@@ -1041,14 +1013,6 @@ impl SegmentFs for LocalSegmentFs {
         }
         let handle = self.handles.get_mut(&handle_key).expect("handle inserted");
         handle.file.write_all(&chunk.data)?;
-        if let Some(us) = chunk.at_us {
-            let timeline_path = dir.join(source_timeline_file_name(chunk.source));
-            let mut timeline_file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(timeline_path)?;
-            writeln!(timeline_file, "{us} {}", chunk.data.len())?;
-        }
         // Commit durability on a ~1s per-handle cadence, not per chunk. Audio
         // flows here at the 100ms WASAPI pull cadence from two sources, so
         // per-chunk fsync was ~10-20/sec. The first chunk syncs immediately so
@@ -1221,7 +1185,6 @@ mod tests {
             seq: 0,
             data: data.to_vec(),
             format: None,
-            at_us: None,
         }
     }
 
@@ -1248,7 +1211,6 @@ mod tests {
             seq: 0,
             data: pcm_i16(samples),
             format: Some(audio_format()),
-            at_us: None,
         }
     }
 
@@ -1300,59 +1262,6 @@ mod tests {
         assert!(!root.join("7/mic.pcm").exists());
         assert!(!root.join("7/system-audio.fmt.json").exists());
         assert!(!root.join("7/mic.fmt.json").exists());
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn timed_audio_seal_matches_sidecar_placement() {
-        let root = temp_root("timed-seal");
-        let _ = fs::remove_dir_all(&root);
-        let mut fs_impl = LocalSegmentFs::new(root.clone());
-        let key = key(8);
-
-        fs_impl.open_incomplete(key).unwrap();
-
-        let sys_samples = vec![1000i16; 1600];
-        let mic_samples = vec![2000i16; 1600];
-
-        let mut sys_chunk = audio_chunk(SourceKind::SystemAudio, &sys_samples);
-        sys_chunk.at_us = Some(0);
-
-        let mut mic_chunk = audio_chunk(SourceKind::Mic, &mic_samples);
-        mic_chunk.at_us = Some(100_000); // 100ms later = 1600 samples at 16kHz
-
-        fs_impl.write_chunk(key, &sys_chunk).unwrap();
-        fs_impl.write_chunk(key, &mic_chunk).unwrap();
-
-        assert!(root.join("8.incomplete/system-audio.timeline").is_file());
-        assert!(root.join("8.incomplete/mic.timeline").is_file());
-
-        fs_impl.finalize(key, None).unwrap();
-
-        assert!(!root.join("8.incomplete").exists());
-        assert!(root.join(format!("8/{AUDIO_FILE_NAME}")).is_file());
-        assert!(!root.join("8/system-audio.pcm").exists());
-        assert!(!root.join("8/mic.pcm").exists());
-        assert!(!root.join("8/system-audio.fmt.json").exists());
-        assert!(!root.join("8/mic.fmt.json").exists());
-        assert!(!root.join("8/system-audio.timeline").exists());
-        assert!(!root.join("8/mic.timeline").exists());
-
-        let flac_bytes = fs::read(root.join(format!("8/{AUDIO_FILE_NAME}"))).unwrap();
-        let expected = observer_audio::combine_timed_to_flac(
-            Some((
-                &pcm_i16(&mic_samples),
-                audio_format(),
-                Some(b"100000 3200\n"),
-            )),
-            Some((&pcm_i16(&sys_samples), audio_format(), Some(b"0 3200\n"))),
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(flac_bytes, expected);
-        assert_eq!(observer_audio::flac_duration_secs(&flac_bytes), Some(0.2));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1451,7 +1360,6 @@ mod tests {
                     seq: 0,
                     data: pcm_i16(&[1000; 16]),
                     format: Some(first),
-                    at_us: None,
                 },
             )
             .unwrap();
@@ -1466,7 +1374,6 @@ mod tests {
                     seq: 1,
                     data: pcm_i16(&[2000; 16]),
                     format: Some(second),
-                    at_us: None,
                 },
             )
             .unwrap();

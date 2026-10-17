@@ -15,10 +15,14 @@
 //!   place — there is never a second, duplicate entry across updates. The
 //!   uninstall hook removes that one value, but only while it still names the
 //!   executable being uninstalled.
-//! - **Caller-directed registration.** The caller decides whether to register
-//!   (based on the saved start-at-login choice and which copy tier may register);
-//!   this module only reads and writes the value. When registration is requested,
-//!   it is guarded by a read so it only writes when the entry is missing or stale.
+//! - **Ensured on launch, not on a one-shot signal.** The app calls
+//!   registration on every normal startup, guarded by a read so it only writes
+//!   when the entry is missing or stale. Tying registration to a single
+//!   post-install callback leaves the observer silently unregistered whenever the
+//!   first launch after install isn't the installer-spawned one; ensuring on
+//!   launch is self-healing. Deciding *which* copy may register (an installed
+//!   copy over a portable one, never a dev build) is the caller's job; this
+//!   module only owns the registry value.
 //!
 //! The executable path is quoted so a profile path containing spaces (e.g.
 //! `C:\Users\Jane Doe\…`) is parsed by the shell as a single token.
@@ -46,7 +50,7 @@ pub enum EnsureOutcome {
 /// The `Run` command string for an executable launched with optional args. The
 /// executable path is quoted; args are appended verbatim.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn run_command(exe: &Path, args: &[&str]) -> String {
+fn run_command(exe: &Path, args: &[&str]) -> String {
     let mut command = format!("\"{}\"", exe.display());
     for arg in args {
         command.push(' ');

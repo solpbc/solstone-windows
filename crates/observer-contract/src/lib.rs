@@ -75,29 +75,11 @@ pub mod settings {
     pub const STATUS_SEGMENT_DIR: &str = "settings.status.segmentDir";
     pub const STATUS_UPLOAD_STATE: &str = "settings.status.upload.state";
     pub const SOURCES_SCREEN_STATE: &str = "settings.sources.screen.state";
-    pub const SOURCES_SCREEN_ENABLED: &str = "settings.sources.screen.enabled";
     pub const SOURCES_SYSTEM_AUDIO_STATE: &str = "settings.sources.systemAudio.state";
-    pub const SOURCES_SYSTEM_AUDIO_ENABLED: &str = "settings.sources.systemAudio.enabled";
     pub const SOURCES_MIC_STATE: &str = "settings.sources.mic.state";
-    pub const SOURCES_MIC_ENABLED: &str = "settings.sources.mic.enabled";
-    pub const SOURCES_SAVE_RETRY: &str = "settings.sources.saveRetry";
     pub const SOURCES_BROWSER_OFFER: &str = "settings.sources.browser.offer";
     pub const SOURCES_BROWSER_STORES: &str = "settings.sources.browser.stores";
     pub const SOURCES_BROWSER_STORE_ERROR: &str = "settings.sources.browser.storeError";
-
-    pub const SETUP_STEP: &str = "settings.setup.step";
-    pub const SETUP_NEXT: &str = "settings.setup.next";
-    pub const SETUP_BACK: &str = "settings.setup.back";
-    pub const SETUP_NOT_NOW: &str = "settings.setup.notNow";
-    pub const SETUP_PAUSE_SOURCE: &str = "settings.setup.pauseSource";
-    pub const SETUP_START_AT_LOGIN: &str = "settings.setup.startAtLogin";
-    pub const SETUP_START_AT_LOGIN_ERROR: &str = "settings.setup.startAtLogin.error";
-    pub const SETUP_MIC_PROOF: &str = "settings.setup.mic.proof";
-    pub const SETUP_SYSTEM_AUDIO_PROOF: &str = "settings.setup.systemAudio.proof";
-    pub const SETUP_SCREEN_PROOF: &str = "settings.setup.screen.proof";
-
-    pub const HOME_SOURCES_NOTICE: &str = "settings.home.sourcesNotice";
-    pub const HOME_SOURCES_NOTICE_DISMISS: &str = "settings.home.sourcesNotice.dismiss";
     /// Pairing pane (Wave 2): phase, the journal's mark, and the pair-link field + action.
     pub const PAIRING_STATE: &str = "settings.pairing.state";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
@@ -202,47 +184,10 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             settings::SOURCES_SCREEN_STATE,
         ),
         (
-            "settings.sources.screen.enabled",
-            settings::SOURCES_SCREEN_ENABLED,
-        ),
-        (
             "settings.sources.systemAudio.state",
             settings::SOURCES_SYSTEM_AUDIO_STATE,
         ),
-        (
-            "settings.sources.systemAudio.enabled",
-            settings::SOURCES_SYSTEM_AUDIO_ENABLED,
-        ),
         ("settings.sources.mic.state", settings::SOURCES_MIC_STATE),
-        (
-            "settings.sources.mic.enabled",
-            settings::SOURCES_MIC_ENABLED,
-        ),
-        ("settings.sources.saveRetry", settings::SOURCES_SAVE_RETRY),
-        ("settings.setup.step", settings::SETUP_STEP),
-        ("settings.setup.next", settings::SETUP_NEXT),
-        ("settings.setup.back", settings::SETUP_BACK),
-        ("settings.setup.notNow", settings::SETUP_NOT_NOW),
-        ("settings.setup.pauseSource", settings::SETUP_PAUSE_SOURCE),
-        (
-            "settings.setup.startAtLogin",
-            settings::SETUP_START_AT_LOGIN,
-        ),
-        (
-            "settings.setup.startAtLogin.error",
-            settings::SETUP_START_AT_LOGIN_ERROR,
-        ),
-        ("settings.setup.mic.proof", settings::SETUP_MIC_PROOF),
-        (
-            "settings.setup.systemAudio.proof",
-            settings::SETUP_SYSTEM_AUDIO_PROOF,
-        ),
-        ("settings.setup.screen.proof", settings::SETUP_SCREEN_PROOF),
-        ("settings.home.sourcesNotice", settings::HOME_SOURCES_NOTICE),
-        (
-            "settings.home.sourcesNotice.dismiss",
-            settings::HOME_SOURCES_NOTICE_DISMISS,
-        ),
         (
             "settings.sources.browser.offer",
             settings::SOURCES_BROWSER_OFFER,

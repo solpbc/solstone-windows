@@ -8,7 +8,7 @@ shell is a pure renderer of the engine's honest `HealthDump`.
 
 | Surface | Mechanism | Used for |
 |---|---|---|
-| **Production** | opt-in per-user `HKCU\…\Run` login item into interactive Session 1, reconciled on launch according to `setup.json` by the copy that owns it (the installed app over a portable one, never a dev build; see `AGENTS.md` § 6) | normal operation |
+| **Production** | per-user `HKCU\…\Run` login item into interactive Session 1, ensured on each launch by the copy that owns it (the installed app over a portable one, never a dev build; see `AGENTS.md` § 6) | normal operation |
 | **Test** | low-privilege scheduled task (`LogonType=Interactive`) into Session 1 | the FlaUI smoke only |
 
 ## Single instance
@@ -27,17 +27,15 @@ instance and exits.
 | Display changed | re-acquire screen source | recomputed |
 | System suspending | pause (`SystemSuspending`) | `Paused` |
 | System resumed | resume | recomputed |
-| Enabled source faulted (not access denial) | feed to backoff/breaker; cannot claim observing | `Error` |
-| No microphone present / access denied | first-class `NoInputDevice` / `AccessDenied` (not an error by themselves) | unaffected |
+| Required source faulted | feed to backoff/breaker; cannot claim observing | `Error` |
+| No microphone present | first-class `NoInputDevice` (not a fault; not required) | unaffected |
 
 ## Phase computation
 
 `Observing` is reachable only when the engine is ready, a run is requested, no
-pause is in effect, and at least one enabled source is `Active`. An enabled source
-that faults (other than access denial) leaves observing; a disabled source is
-not a fault and does not block another enabled source. When all sources are off,
-the phase is `Idle`. `NoInputDevice` and `AccessDenied` are not `Error` by
-themselves.
+pause is in effect, and every *required* source (screen + system audio) is
+`Active`. The microphone is best-effort: a machine with no mic
+(`NoInputDevice`) still observes.
 
 > **Mic validation is deferred.** The `NoInputDevice` state is modeled and tested
 > from the first wave, but validating capture against a *real* input device is

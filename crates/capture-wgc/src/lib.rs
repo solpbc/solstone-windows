@@ -316,7 +316,6 @@ mod imp {
             if let Some(control) = self.control.take() {
                 let _ = control.stop();
             }
-            self.last_sink = None;
             self.set_state(SourceState::Inactive);
         }
 

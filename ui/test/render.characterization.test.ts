@@ -63,14 +63,19 @@ describe("settings renderer characterization", () => {
     expect(present(ids["settings.status.appState.state"]).textContent).toBe("on");
   });
 
-  it("omits the kinship intro on not-paired home", () => {
+  it("renders the kinship intro on not-paired home", () => {
     const dump = notPairedDump();
     app.__test__.setRoute("home");
     app.__test__.setHealth(dump);
 
     app.__test__.renderSettings(dump);
 
-    absent(ids["settings.home.kinship"]);
+    const block = present(ids["settings.home.kinship"]);
+    expect(block.textContent).toContain("welcome to solstone.");
+    expect(block.textContent).toContain(
+      "the solstone app takes in what you share with it, and all of it goes into your journal.",
+    );
+    expect(block.textContent).toContain("your journal is always private, only yours.");
   });
 
   it("omits the kinship intro once paired", () => {
@@ -89,7 +94,7 @@ describe("settings renderer characterization", () => {
     app.__test__.setHealth(dump);
 
     app.__test__.renderSettings(dump);
-    absent(ids["settings.home.kinship"]);
+    present(ids["settings.home.kinship"]);
 
     app.__test__.renderSettings(dump);
 

@@ -77,10 +77,12 @@ fn current_raw_facts() -> pl_transport_win::RawDeviceFacts {
 /// this is:
 ///
 /// - **installed** (Setup / winget): always owns the entry;
-/// Evaluate and apply the pure start-at-login decision for this copy.
-/// Returns true if applying the decision failed (so the health snapshot
-/// honestly reports `login_apply_failed = true`).
-pub(crate) fn apply_login_decision(choice: bool) -> bool {
+/// - **portable** (the ZIP, and so every scoop install, which carries Velopack's
+///   `.portable` marker): claims it only when it does not already name an
+///   installed copy, so scoop owners keep autostart but a portable copy never
+///   displaces an install;
+/// - **anything else** (a dev build, a copied binary): never touches it.
+fn ensure_owned_login_item() {
     use velopack::locator::{auto_locate_app_manifest, LocationContext};
 
     let exe = match std::env::current_exe() {
@@ -91,134 +93,71 @@ pub(crate) fn apply_login_decision(choice: bool) -> bool {
                 component = "autostart",
                 outcome = "current_exe_failed",
                 error = %error,
-                "autostart evaluate"
+                "autostart ensure"
             );
-            return true;
+            return;
         }
     };
-
-    let copy_class =
-        match auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone())) {
-            Ok(locator) if locator.get_is_portable() => observer_model::setup::CopyClass::Portable,
-            Ok(_) => observer_model::setup::CopyClass::Installed,
-            Err(_) => observer_model::setup::CopyClass::Dev,
-        };
-
-    let installed_owner_exists = match installed_login_item_owner() {
-        Ok(opt) => Some(opt.is_some()),
+    match auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone())) {
+        Ok(locator) if locator.get_is_portable() => match installed_login_item_owner() {
+            Ok(None) => {}
+            Ok(Some(owner)) => {
+                tracing::info!(
+                    target: "lifecycle",
+                    component = "autostart",
+                    outcome = "skipped_portable",
+                    owner = %owner.display(),
+                    "autostart ensure"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "lifecycle",
+                    component = "autostart",
+                    outcome = "failed",
+                    error = %error,
+                    "autostart ensure"
+                );
+                return;
+            }
+        },
+        Ok(_) => {}
         Err(error) => {
-            tracing::warn!(
-                target: "lifecycle",
-                component = "autostart",
-                outcome = "installed_owner_check_failed",
-                error = %error,
-                "autostart evaluate"
-            );
-            None
-        }
-    };
-
-    let registry_state =
-        match platform_win::autostart::login_item_command(platform_win::autostart::LOGIN_ITEM_NAME)
-        {
-            Ok(Some(cmd)) => observer_model::setup::RegistryReadState::Present(cmd),
-            Ok(None) => observer_model::setup::RegistryReadState::Absent,
-            Err(_) => observer_model::setup::RegistryReadState::Unreadable,
-        };
-
-    let my_command =
-        platform_win::autostart::run_command(&exe, &[observer_model::FROM_AUTOSTART_ARG]);
-
-    let decision = observer_model::setup::evaluate_login_decision(
-        copy_class,
-        Some(choice),
-        &registry_state,
-        &my_command,
-        installed_owner_exists,
-    );
-
-    match decision {
-        observer_model::setup::LoginDecision::Ensure => {
-            match platform_win::autostart::ensure_login_item(
-                platform_win::autostart::LOGIN_ITEM_NAME,
-                &exe,
-                &[observer_model::FROM_AUTOSTART_ARG],
-            ) {
-                Ok(platform_win::autostart::EnsureOutcome::Registered) => {
-                    tracing::info!(
-                        target: "lifecycle",
-                        component = "autostart",
-                        outcome = "registered",
-                        "autostart ensure"
-                    );
-                    false
-                }
-                Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => {
-                    tracing::info!(
-                        target: "lifecycle",
-                        component = "autostart",
-                        outcome = "already_current",
-                        "autostart ensure"
-                    );
-                    false
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        target: "lifecycle",
-                        component = "autostart",
-                        outcome = "failed",
-                        error = %error,
-                        "autostart ensure"
-                    );
-                    true
-                }
-            }
-        }
-        observer_model::setup::LoginDecision::Remove => {
-            match platform_win::autostart::remove_login_item_if_matches(
-                platform_win::autostart::LOGIN_ITEM_NAME,
-                &exe,
-                &[observer_model::FROM_AUTOSTART_ARG],
-            ) {
-                Ok(removed) => {
-                    tracing::info!(
-                        target: "lifecycle",
-                        component = "autostart",
-                        outcome = if removed { "removed" } else { "already_removed" },
-                        "autostart remove"
-                    );
-                    false
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        target: "lifecycle",
-                        component = "autostart",
-                        outcome = "failed",
-                        error = %error,
-                        "autostart remove"
-                    );
-                    true
-                }
-            }
-        }
-        observer_model::setup::LoginDecision::Leave => {
             tracing::info!(
                 target: "lifecycle",
                 component = "autostart",
-                outcome = "leave",
-                "autostart leave"
+                outcome = "skipped_not_installed",
+                error = %error,
+                "autostart ensure"
             );
-            false
+            return;
         }
-        observer_model::setup::LoginDecision::Failed => {
-            tracing::warn!(
-                target: "lifecycle",
-                component = "autostart",
-                outcome = "failed",
-                "autostart decision failed"
-            );
-            true
-        }
+    }
+    match platform_win::autostart::ensure_login_item(
+        platform_win::autostart::LOGIN_ITEM_NAME,
+        &exe,
+        &[observer_model::FROM_AUTOSTART_ARG],
+    ) {
+        Ok(platform_win::autostart::EnsureOutcome::Registered) => tracing::info!(
+            target: "lifecycle",
+            component = "autostart",
+            outcome = "registered",
+            "autostart ensure"
+        ),
+        Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => tracing::info!(
+            target: "lifecycle",
+            component = "autostart",
+            outcome = "already_current",
+            "autostart ensure"
+        ),
+        Err(error) => tracing::warn!(
+            target: "lifecycle",
+            component = "autostart",
+            outcome = "failed",
+            error = %error,
+            "autostart ensure"
+        ),
     }
 }
 
@@ -408,34 +347,14 @@ pub fn run(
             crate::ipc::browser_status,
             crate::ipc::open_browser_store,
             crate::ipc::browser_discard_waiting,
-            crate::ipc::set_source_enabled,
-            crate::ipc::set_start_at_login,
-            crate::ipc::set_wizard_step,
-            crate::ipc::dismiss_notice,
-            crate::ipc::retry_save,
         ])
         .setup(move |app| {
-            // Load or classify setup.json before single instance or engine.
-            let data_root = platform_win::local_data_root();
-            let load_outcome = observer_model::setup::load_or_classify(&data_root);
-            let config = match load_outcome {
-                observer_model::setup::LoadOutcome::Abort => {
-                    tracing::warn!(
-                        target: "lifecycle",
-                        component = "setup",
-                        outcome = "abort",
-                        "setup classification aborted"
-                    );
-                    return Ok(());
-                }
-                observer_model::setup::LoadOutcome::Fresh(cfg)
-                | observer_model::setup::LoadOutcome::Legacy(cfg)
-                | observer_model::setup::LoadOutcome::Valid(cfg)
-                | observer_model::setup::LoadOutcome::FailedClosed(cfg)
-                | observer_model::setup::LoadOutcome::LegacyUnsaved(cfg) => cfg,
-            };
-
-            let login_apply_failed = apply_login_decision(config.start_at_login);
+            // Ensure the per-user autostart login item so the tray-resident
+            // observer relaunches at the next login, for the copy that owns
+            // it (see `ensure_owned_login_item`). Before the single-instance
+            // check, so opening the installed app while another copy runs
+            // still takes the entry back. A failure is logged, never fatal.
+            ensure_owned_login_item();
 
             match crate::lifecycle::acquire_single_instance() {
                 platform_win::InstanceLock::AlreadyRunning => {
@@ -527,10 +446,6 @@ pub fn run(
                     &snapshot.journal_display_line,
                 );
             }
-            let mut setup_snapshot = config.to_snapshot();
-            setup_snapshot.login_apply_failed = login_apply_failed;
-            engine.set_source_choices(setup_snapshot);
-
             // The owner's pause outlives a restart: restore it before any source
             // can start, so a held pause captures nothing at launch.
             engine.hold_owner_pause_in(Box::new(capture_engine::FilePauseStore::new(
@@ -540,17 +455,6 @@ pub fn run(
             tracing::info!(target: "engine", outcome = "started", "engine start");
 
             let watch_rx = engine.health_watch();
-            let preview_rx = engine.preview_watch();
-            tauri::async_runtime::spawn({
-                let app = app.handle().clone();
-                let mut rx = preview_rx;
-                async move {
-                    while rx.changed().await.is_ok() {
-                        let snapshot = rx.borrow_and_update().clone();
-                        let _ = app.emit("preview://changed", &snapshot);
-                    }
-                }
-            });
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -754,10 +658,6 @@ pub fn run(
                         .lock()
                         .map(|health| health.listener_faults.clone())
                         .unwrap_or_default();
-                    let setup = health
-                        .lock()
-                        .map(|health| health.setup.clone())
-                        .unwrap_or_default();
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -774,7 +674,6 @@ pub fn run(
                         views,
                         pump_degraded,
                         listener_faults,
-                        setup,
                     };
                     log_health_transitions(previous.as_ref(), &terminal);
                     if let Ok(mut health) = health.lock() {

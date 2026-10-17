@@ -144,7 +144,6 @@ mod tests {
             views: Default::default(),
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
-            setup: Default::default(),
         }
     }
 

@@ -22,28 +22,12 @@ use strum::{EnumIter, IntoStaticStr};
 
 pub mod about;
 pub mod launch;
-pub mod setup;
 pub mod tray_status;
 
 pub use launch::{is_native_messaging_launch, launch_should_surface, FROM_AUTOSTART_ARG};
-pub use setup::{
-    apply_source_choice, atomic_write_setup, evaluate_login_decision, has_predecessor_evidence,
-    load_or_classify, read_setup_read_only, ChoiceApplyResult, CopyClass, LoadOutcome,
-    LoginDecision, RegistryReadState, SetupConfig, SetupSnapshot, UnsavedChoice, WizardStep,
-    CURRENT_SETUP_VERSION, SETUP_FILE_NAME,
-};
 pub use tray_status::{
     classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, TrayVisual,
 };
-
-/// Process-monotonic microsecond clock for timestamping capture chunks.
-pub fn monotonic_us() -> u64 {
-    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let origin = ORIGIN.get_or_init(std::time::Instant::now);
-    std::time::Instant::now()
-        .duration_since(*origin)
-        .as_micros() as u64
-}
 
 /// Final screen media filename inside a sealed segment.
 pub const SCREEN_FILE_NAME: &str = "display_1_screen.mp4";
@@ -191,7 +175,6 @@ pub struct CaptureChunk {
     pub seq: u64,
     pub data: Vec<u8>,
     pub format: Option<AudioFormat>,
-    pub at_us: Option<u64>,
 }
 
 /// CPU pixel format for screen frames crossing the pure capture seam.
@@ -211,21 +194,6 @@ pub struct ScreenFrame {
     pub height: u32,
     pub pixel_format: ScreenPixelFormat,
     pub pixels: Arc<[u8]>,
-}
-
-/// Ephemeral preview state held inside the engine, off HealthDump.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PreviewSnapshot {
-    pub mic_level: Option<f32>,
-    pub system_audio_level: Option<f32>,
-    pub screen_frame: Option<ScreenPreviewFrame>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScreenPreviewFrame {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
 }
 
 /// Crop a screen frame down to even dimensions for NV12 consumers.
@@ -771,9 +739,6 @@ pub struct HealthDump {
     /// App-owned loopback listener faults. Carried forward like `pump_degraded`.
     #[serde(default)]
     pub listener_faults: ListenerFaults,
-    /// Durable setup and source preferences snapshot.
-    #[serde(default)]
-    pub setup: SetupSnapshot,
 }
 
 /// True when `next` differs from `previous` in a way the Settings/About UI
@@ -831,7 +796,6 @@ pub trait CaptureSink: Send + Sync {
 /// fake clock.
 pub trait Clock: Send + Sync {
     fn now_epoch_secs(&self) -> u64;
-    fn now_monotonic_us(&self) -> u64;
 }
 
 /// Offset and optional IANA id from one [`LocalOffset`] lookup.
@@ -1226,7 +1190,6 @@ mod tests {
             views: BTreeMap::new(),
             pump_degraded: false,
             listener_faults: ListenerFaults::default(),
-            setup: Default::default(),
         }
     }
 
@@ -1433,7 +1396,6 @@ mod tests {
             views: BTreeMap::new(),
             pump_degraded: false,
             listener_faults: ListenerFaults::default(),
-            setup: Default::default(),
         };
 
         let empty_json = serde_json::to_string(&dump).unwrap();
