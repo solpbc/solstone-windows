@@ -21,16 +21,24 @@ pub async fn pair_from_link_observed(
     device_label: &str,
     observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
-    let empty_map = serde_json::Map::new();
+    let hints = pairing_hints();
     let result = spl_transport::pairing::pair_from_link_observed(
         link,
         device_label,
-        &empty_map,
+        &hints,
         observer.as_deref(),
     )
     .await;
 
     handle_shared_pairing_result(result)
+}
+
+/// The optional SPL pairing hints this client sends: its platform, so the journal
+/// names this computer's new streams from it instead of its generic fallback.
+pub(crate) fn pairing_hints() -> serde_json::Map<String, serde_json::Value> {
+    let mut hints = serde_json::Map::new();
+    hints.insert("platform".to_owned(), "windows".into());
+    hints
 }
 
 pub(crate) fn handle_shared_pairing_result(

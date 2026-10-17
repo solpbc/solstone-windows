@@ -53,7 +53,8 @@ async fn relay_pairing_full_ceremony_populates_credential() {
     let obj = body_json.as_object().unwrap();
     let mut keys: Vec<&String> = obj.keys().collect();
     keys.sort();
-    assert_eq!(keys, vec!["csr", "device_label"]);
+    assert_eq!(keys, vec!["csr", "device_label", "platform"]);
+    assert_eq!(obj["platform"], "windows");
 }
 
 #[tokio::test]

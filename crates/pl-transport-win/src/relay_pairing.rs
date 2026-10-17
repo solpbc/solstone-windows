@@ -23,11 +23,11 @@ pub async fn pair_over_relay_observed(
     device_label: &str,
     observer: ObserverHandle,
 ) -> Result<Credential, TransportError> {
-    let empty_map = serde_json::Map::new();
+    let hints = crate::pairing::pairing_hints();
     let result = spl_transport::relay_pairing::pair_over_relay_observed(
         link,
         device_label,
-        &empty_map,
+        &hints,
         observer.as_deref(),
     )
     .await;
