@@ -228,6 +228,7 @@ async fn serve_one_pair_response(
     signing_cert: rcgen::Certificate,
     signing_key: KeyPair,
     mode: PairCertificateMode,
+    expected_platform: Option<&'static str>,
 ) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
     let mut tls = acceptor.accept(tcp).await.unwrap();
@@ -236,7 +237,13 @@ async fn serve_one_pair_response(
     let body_obj = body_json.as_object().unwrap();
     let mut keys: Vec<&String> = body_obj.keys().collect();
     keys.sort();
-    assert_eq!(keys, vec!["csr", "device_label"]);
+    match expected_platform {
+        Some(platform) => {
+            assert_eq!(keys, vec!["csr", "device_label", "platform"]);
+            assert_eq!(body_obj["platform"], platform);
+        }
+        None => assert_eq!(keys, vec!["csr", "device_label"]),
+    }
 
     let csr = body_obj.get("csr").unwrap().as_str().unwrap();
     let client_cert = match mode {
@@ -1014,6 +1021,7 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
         signing_cert,
         signing_key,
         PairCertificateMode::SubmittedCsr,
+        None,
     ));
     let nonce = request_fixture["payload"]["nonce"].as_str().unwrap();
     let label = request_fixture["payload"]["device_label"].as_str().unwrap();
@@ -1069,6 +1077,7 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
         signing_cert,
         signing_key,
         PairCertificateMode::UnrelatedKey,
+        None,
     ));
 
     let later_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1136,6 +1145,7 @@ async fn service_pair_persists_credential_without_register_request() {
         signing_cert,
         signing_key,
         PairCertificateMode::SubmittedCsr,
+        Some("windows"),
     ));
     let state_path = temp_state_path("service-pair");
     let cfg = service_config(state_path.clone());
