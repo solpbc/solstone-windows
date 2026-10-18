@@ -1913,8 +1913,11 @@ function renderMigrationPanel(): HTMLElement | null {
   return renderMigrationFlow();
 }
 
-function renderPairingSection(dump: HealthDump): HTMLElement {
+function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean } = {}): HTMLElement {
   const pairing = dump.sync.pairing;
+  // Once setup's connect step has paired, opening the journal is the only action
+  // left there; pasting another link stays available from the journal page.
+  const connectedInSetup = options.setupStep === true && pairing.phase === "paired";
   const pane = section("pairing");
   pane.append(
     valueRow(
@@ -2267,7 +2270,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       "standard",
     );
 
-  if (dump.setup?.sequence_enabled === true && dump.setup.has_deferred_link) {
+  if (dump.setup?.sequence_enabled === true && dump.setup.has_deferred_link && !connectedInSetup) {
     const deferredNote = document.createElement("p");
     deferredNote.classList.add("setup-deferred-note");
     deferredNote.textContent = "another pairing link arrived: use it or dismiss it.";
@@ -2362,7 +2365,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   const freshLink = document.createElement("p");
   freshLink.textContent = "a new link from your journal can be pasted here.";
   freshLink.dataset.automationId = ids["settings.setup.freshLink"];
-  pane.append(freshLink);
+  if (!connectedInSetup) pane.append(freshLink);
 
   const inputRow = document.createElement("div");
   inputRow.style.display = "grid";
@@ -2426,7 +2429,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     inputRow.append(button);
   }
 
-  pane.append(inputRow);
+  if (!connectedInSetup) pane.append(inputRow);
   return pane;
 }
 
@@ -4042,8 +4045,14 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
   const report = latestHealth ? sourceByKind(latestHealth, kind) : undefined;
   const status = deriveSourceStatus(enabled, isPaused, report);
 
-  if (!enabled || status === "off" || isPaused || !proofWindowActive || document.visibilityState === "hidden") {
-    const withheldEl = text("span", !enabled ? "off" : isPaused ? "paused" : "preview paused");
+  if (!enabled) {
+    // The control's own state pill already says off; nothing to prove yet.
+    node.replaceChildren();
+    return;
+  }
+
+  if (status === "off" || isPaused || !proofWindowActive || document.visibilityState === "hidden") {
+    const withheldEl = text("span", isPaused ? "paused" : "preview paused");
     withheldEl.classList.add("proof-status");
     node.replaceChildren(withheldEl);
     return;
@@ -4274,15 +4283,21 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     connection: { number: 7, heading: "connect your journal" },
   } as const;
   const wizardStep = wizardSteps[step as keyof typeof wizardSteps];
+  // Steps 1-4 happen in the journal window on this PC. Number the steps only when
+  // setup is continuing from there; otherwise the count points at steps never shown.
+  const continuingFromJournal = Boolean(dump.setup?.handoff_id);
   if (wizardStep) {
-    const progress = text("p", `step ${wizardStep.number} of 7`);
-    progress.classList.add("wizard-progress");
-    progress.dataset.stepNumber = String(wizardStep.number);
-    automation(progress, ids["settings.setup.stepNumber"]);
+    if (continuingFromJournal) {
+      const progress = text("p", `step ${wizardStep.number} of 7`);
+      progress.classList.add("wizard-progress");
+      progress.dataset.stepNumber = String(wizardStep.number);
+      automation(progress, ids["settings.setup.stepNumber"]);
+      stepContainer.append(progress);
+    }
     const heading = text("h2", wizardStep.heading);
     heading.classList.add("wizard-step-title");
     heading.tabIndex = -1;
-    stepContainer.append(progress, heading);
+    stepContainer.append(heading);
   }
 
   const renderPauseBtn = (kind: SourceKind) => {
@@ -4486,7 +4501,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(backBtn);
     if (!nativeContinuationPending(dump)) navRow.append(forwardBtn);
 
-    stepContainer.append(renderPairingSection(dump), sentence, navRow);
+    stepContainer.append(renderPairingSection(dump, { setupStep: true }), sentence, navRow);
   }
 
   if (dump.setup?.wizard_save_failed) {

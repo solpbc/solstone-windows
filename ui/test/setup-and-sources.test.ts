@@ -545,8 +545,10 @@ describe("setup and source transitions", () => {
         },
       };
       app.__test__.renderSettings(offDump);
+      // The control's own state already reads off; the proof area stays empty.
       const withheldProof = present(ids["settings.setup.mic.proof"]);
-      expect(withheldProof.textContent).toContain("off");
+      expect(withheldProof.childElementCount).toBe(0);
+      expect(withheldProof.textContent).toBe("");
     });
 
     it("renders unavailable/error token plus detail, leaves not-now enabled, and retry inside proof invokes set_source_enabled", async () => {
@@ -1072,7 +1074,7 @@ describe("setup recovery and proof lifetimes", () => {
   });
 
   describe("wizard step numbering", () => {
-    it("numbers both a handoff dump and a standalone dump 5 / 5 / 6 / 7", () => {
+    it("numbers a handoff dump 5 / 5 / 6 / 7 and gives a standalone dump no step line", () => {
       const steps = [
         ["mic", "5"],
         ["system_audio", "5"],
@@ -1080,6 +1082,7 @@ describe("setup recovery and proof lifetimes", () => {
         ["connection", "7"],
       ] as const;
       for (const extra of [{ handoff_id: "11111111-1111-4111-8111-111111111111", handoff_revision: 1 }, {}]) {
+        const continuing = "handoff_id" in extra;
         for (const [wizard, number] of steps) {
           app.__test__.renderSettings({
             ...observingDump(),
@@ -1094,8 +1097,13 @@ describe("setup recovery and proof lifetimes", () => {
               ...extra,
             },
           });
-          const stepNum = present(ids["settings.setup.stepNumber"]);
-          expect(stepNum.getAttribute("data-step-number")).toBe(number);
+          expect(present(ids["settings.setup.step"]).getAttribute("data-step")).toBe(wizard);
+          if (continuing) {
+            const stepNum = present(ids["settings.setup.stepNumber"]);
+            expect(stepNum.getAttribute("data-step-number")).toBe(number);
+          } else {
+            expect(byId(ids["settings.setup.stepNumber"])).toBeNull();
+          }
         }
       }
     });
@@ -1363,6 +1371,31 @@ describe("setup recovery and proof lifetimes", () => {
       expect(byId(ids["settings.setup.nativeConnect"])).toBeNull();
       expect(byId(ids["settings.setup.next"])).toBeNull();
       expect(invokeMock).not.toHaveBeenCalledWith("connect_native_handoff", expect.anything());
+    });
+
+    it("leaves opening the journal as the connect step's only action once paired", () => {
+      app.__test__.renderSettings(continuation({
+        handoff_id: "11111111-1111-4111-8111-111111111111",
+        handoff_revision: 3,
+        handoff_expired: false,
+        handoff_new_connection: false,
+        wizard: "connection" as const,
+      }, { phase: "paired", setup_browser_ready: true, binding: "bound" }));
+      present(ids["settings.setup.browserJournal"]);
+      expect(byId(ids["settings.setup.freshLink"])).toBeNull();
+      expect(byId(ids["settings.pairing.input"])).toBeNull();
+      expect(byId(ids["settings.pairing.submit"])).toBeNull();
+
+      app.__test__.reset();
+      app.__test__.renderSettings(continuation({
+        handoff_id: "11111111-1111-4111-8111-111111111111",
+        handoff_revision: 3,
+        handoff_expired: false,
+        wizard: "connection" as const,
+      }, { phase: "not_paired" }));
+      present(ids["settings.setup.freshLink"]);
+      present(ids["settings.pairing.input"]);
+      present(ids["settings.pairing.submit"]);
     });
 
     it("shows a continuation failure and does not invoke twice while pending", async () => {
