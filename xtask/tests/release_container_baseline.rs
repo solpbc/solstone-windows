@@ -10,7 +10,7 @@ use xtask::release_container::{
 use xtask::release_receipt::PackagedExecutableEvidence;
 use xtask::release_selection::PORTABLE_LAUNCHER;
 use zip::write::{SimpleFileOptions, ZipWriter};
-use zip::{CompressionMethod, ZipArchive};
+use zip::{CompressionMethod, System, ZipArchive};
 
 const NUPKG_MEMBER: &str = "lib/app/solstone-windows-app.exe";
 const PORTABLE_MEMBER: &str = "current/solstone-windows-app.exe";
@@ -269,6 +269,24 @@ fn directory_at_the_canonical_member_is_rejected() {
             container: ContainerKind::Nupkg,
         }
     );
+
+    let mut dos_directory = build_zip(|writer| {
+        writer
+            .start_file(
+                NUPKG_MEMBER,
+                safe_options(CompressionMethod::Stored).system(System::Dos),
+            )
+            .expect("start DOS target member");
+        writer.write_all(b"abc").expect("write DOS target member");
+    });
+    set_external_attributes(&mut dos_directory, NUPKG_MEMBER, 0x10);
+    assert_eq!(
+        ExecutableContainerReader::read_nupkg(&dos_directory)
+            .expect_err("DOS directory attribute at target must fail"),
+        ReleaseContainerError::CanonicalMemberIsDirectory {
+            container: ContainerKind::Nupkg,
+        }
+    );
 }
 
 #[test]
@@ -483,6 +501,9 @@ fn evidence(sha256: &str, bytes: u64) -> PackagedExecutableEvidence {
 
 fn safe_options(compression: CompressionMethod) -> SimpleFileOptions {
     SimpleFileOptions::default()
+        // These fixtures mutate Unix attributes. zip otherwise chooses a
+        // different creator system on Windows, where those bits are ignored.
+        .system(System::Unix)
         .compression_method(compression)
         .unix_permissions(0o644)
 }
