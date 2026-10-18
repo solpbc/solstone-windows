@@ -94,7 +94,6 @@ impl SetupConfig {
             login_apply_failed: false,
             handoff_id: None,
             handoff_revision: None,
-            handoff_link: None,
             handoff_expired: false,
             handoff_new_connection: false,
             handoff_deferred: false,
@@ -102,7 +101,7 @@ impl SetupConfig {
             handoff_rejected: false,
             native_handoff_rejected: false,
             handoff_persist_failed: false,
-            deferred_link: None,
+            has_deferred_link: false,
         }
     }
 }
@@ -138,8 +137,6 @@ pub struct SetupSnapshot {
     #[serde(default)]
     pub handoff_revision: Option<u64>,
     #[serde(default)]
-    pub handoff_link: Option<String>,
-    #[serde(default)]
     pub handoff_expired: bool,
     #[serde(default)]
     pub handoff_new_connection: bool,
@@ -154,7 +151,7 @@ pub struct SetupSnapshot {
     #[serde(default)]
     pub handoff_persist_failed: bool,
     #[serde(default)]
-    pub deferred_link: Option<String>,
+    pub has_deferred_link: bool,
 }
 
 impl Default for SetupSnapshot {
@@ -173,7 +170,6 @@ impl Default for SetupSnapshot {
             login_apply_failed: false,
             handoff_id: None,
             handoff_revision: None,
-            handoff_link: None,
             handoff_expired: false,
             handoff_new_connection: false,
             handoff_deferred: false,
@@ -181,7 +177,7 @@ impl Default for SetupSnapshot {
             handoff_rejected: false,
             native_handoff_rejected: false,
             handoff_persist_failed: false,
-            deferred_link: None,
+            has_deferred_link: false,
         }
     }
 }
@@ -191,7 +187,6 @@ impl Default for SetupSnapshot {
 pub struct HandoffOverlay {
     pub handoff_id: Option<String>,
     pub handoff_revision: Option<u64>,
-    pub handoff_link: Option<String>,
     pub handoff_expired: bool,
     pub handoff_new_connection: bool,
     pub handoff_deferred: bool,
@@ -199,7 +194,7 @@ pub struct HandoffOverlay {
     pub handoff_rejected: bool,
     pub native_handoff_rejected: bool,
     pub handoff_persist_failed: bool,
-    pub deferred_link: Option<String>,
+    pub has_deferred_link: bool,
 }
 
 impl SetupSnapshot {
@@ -474,7 +469,6 @@ impl SetupAuthority {
             login_apply_failed: self.login_apply_failed,
             handoff_id: self.overlay.handoff_id.clone(),
             handoff_revision: self.overlay.handoff_revision,
-            handoff_link: self.overlay.handoff_link.clone(),
             handoff_expired: self.overlay.handoff_expired,
             handoff_new_connection: self.overlay.handoff_new_connection,
             handoff_deferred: self.overlay.handoff_deferred,
@@ -482,7 +476,7 @@ impl SetupAuthority {
             handoff_rejected: self.overlay.handoff_rejected,
             native_handoff_rejected: self.overlay.native_handoff_rejected,
             handoff_persist_failed: self.overlay.handoff_persist_failed,
-            deferred_link: self.overlay.deferred_link.clone(),
+            has_deferred_link: self.overlay.has_deferred_link,
         }
     }
 
@@ -1167,7 +1161,6 @@ mod tests {
         authority.set_handoff_overlay(HandoffOverlay {
             handoff_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
             handoff_revision: Some(42),
-            handoff_link: Some("https://go.solstone.app/p#example".to_string()),
             handoff_expired: false,
             handoff_new_connection: true,
             handoff_deferred: true,
@@ -1175,7 +1168,7 @@ mod tests {
             handoff_rejected: false,
             native_handoff_rejected: false,
             handoff_persist_failed: false,
-            deferred_link: Some("https://go.solstone.app/p#later".to_string()),
+            has_deferred_link: true,
         });
         let before = authority.projection();
         assert_eq!(
@@ -1186,10 +1179,7 @@ mod tests {
         assert!(before.handoff_new_connection);
         assert!(before.mailbox_busy);
         assert!(before.handoff_deferred);
-        assert_eq!(
-            before.deferred_link.as_deref(),
-            Some("https://go.solstone.app/p#later")
-        );
+        assert!(before.has_deferred_link);
         assert!(before.mic);
         assert!(!before.system_audio);
         assert!(before.screen);
@@ -1201,8 +1191,7 @@ mod tests {
         assert_eq!(after.wizard, WizardStep::Connection);
         assert_eq!(after.handoff_id, before.handoff_id);
         assert_eq!(after.handoff_revision, before.handoff_revision);
-        assert_eq!(after.handoff_link, before.handoff_link);
-        assert_eq!(after.deferred_link, before.deferred_link);
+        assert_eq!(after.has_deferred_link, before.has_deferred_link);
         assert!(after.mailbox_busy);
         assert!(after.handoff_deferred);
         assert_eq!(after.mic, before.mic);

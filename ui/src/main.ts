@@ -276,7 +276,6 @@ interface SetupSnapshot {
   login_apply_failed?: boolean;
   handoff_id?: string | null;
   handoff_revision?: number | null;
-  handoff_link?: string | null;
   handoff_expired?: boolean;
   handoff_new_connection?: boolean;
   handoff_deferred?: boolean;
@@ -284,7 +283,7 @@ interface SetupSnapshot {
   handoff_rejected?: boolean;
   native_handoff_rejected?: boolean;
   handoff_persist_failed?: boolean;
-  deferred_link?: string | null;
+  has_deferred_link?: boolean;
 }
 
 interface ScreenPreviewFrame {
@@ -557,7 +556,7 @@ function homeShowsPairing(dump: HealthDump): boolean {
       setup?.handoff_rejected ||
       setup?.native_handoff_rejected ||
       setup?.handoff_persist_failed ||
-      setup?.deferred_link ||
+      setup?.has_deferred_link ||
       pairing.finish_connecting ||
       pairing.setup_browser_ready,
   );
@@ -2163,21 +2162,15 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   if (migrationPanel) pane.append(migrationPanel);
 
   if (!pairFieldDirty && !pairingDraft) {
-    const handoffLink = dump.setup?.handoff_link ?? "";
     void Promise.resolve(invoke<string>("pairing_prefill"))
       .then((prefill) => {
         if (pairFieldDirty || pairingDraft) return;
-        const link = typeof prefill === "string" && prefill ? prefill : handoffLink;
+        const link = typeof prefill === "string" ? prefill : "";
         if (!link || pairFieldDirty || pairingDraft) return;
         pairingDraft = link;
         input.value = link;
       })
-      .catch(() => {
-        if (!pairFieldDirty && !pairingDraft && handoffLink) {
-          pairingDraft = handoffLink;
-          input.value = handoffLink;
-        }
-      });
+      .catch(() => {});
   }
 
   if (pairing.setup_browser_ready) {
@@ -2271,7 +2264,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       "standard",
     );
 
-  if (dump.setup?.deferred_link) {
+  if (dump.setup?.has_deferred_link) {
     const deferredRow = document.createElement("div");
     deferredRow.style.marginTop = "8px";
     deferredRow.style.display = "flex";

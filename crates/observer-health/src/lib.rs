@@ -149,6 +149,32 @@ mod tests {
     }
 
     #[test]
+    fn pairing_capabilities_never_enter_any_health_json_transport() {
+        let secret = "https://go.solstone.app/p#capability-canary";
+        let mut legacy = serde_json::to_value(sample()).unwrap();
+        legacy["setup"]["handoff_link"] = serde_json::json!(secret);
+        legacy["setup"]["deferred_link"] = serde_json::json!(secret);
+        legacy["setup"]["has_deferred_link"] = serde_json::json!(true);
+        legacy["setup"]["handoff_id"] = serde_json::json!("11111111-1111-4111-8111-111111111111");
+        let dump: HealthDump = serde_json::from_value(legacy).unwrap();
+        for encoded in [
+            to_pretty_json(&dump).unwrap(),
+            to_compact_json(&dump).unwrap(),
+            serde_json::to_string(&dump).unwrap(),
+        ] {
+            assert!(!encoded.contains(secret));
+            let health: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            assert!(health["setup"].get("handoff_link").is_none());
+            assert!(health["setup"].get("deferred_link").is_none());
+            assert_eq!(health["setup"]["has_deferred_link"], true);
+            assert_eq!(
+                health["setup"]["handoff_id"],
+                "11111111-1111-4111-8111-111111111111"
+            );
+        }
+    }
+
+    #[test]
     fn round_trips_through_json() {
         let dump = sample();
         let json = to_pretty_json(&dump).unwrap();

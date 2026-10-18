@@ -1108,6 +1108,29 @@ describe("setup recovery and proof lifetimes", () => {
       expect(initial.setup.system_audio).toBe(true);
     });
 
+    it.each(["empty", "failure"])("never restores a capability from health after %s private prefill", async (mode) => {
+      const secret = "https://go.solstone.app/p#health-capability-canary";
+      invokeMock.mockImplementation(async (command) => {
+        if (command === "pairing_prefill") {
+          if (mode === "failure") throw new Error("prefill unavailable");
+          return "" as never;
+        }
+        return undefined as never;
+      });
+      app.__test__.renderSettings(continuation({
+        handoff_id: "11111111-1111-4111-8111-111111111111",
+        handoff_revision: 10,
+        handoff_link: secret,
+        deferred_link: secret,
+      }));
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("pairing_prefill"));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe("");
+      expect(document.body.textContent).not.toContain(secret);
+      expect(byId(ids["settings.setup.deferredUse"])).toBeNull();
+    });
+
     it("fills an empty field when a later prefill returns a link", async () => {
       let link = "";
       invokeMock.mockImplementation(async (command) =>
@@ -1171,7 +1194,7 @@ describe("setup recovery and proof lifetimes", () => {
       ["settings.setup.deferredUse", "use_deferred_link"],
       ["settings.setup.deferredDismiss", "dismiss_deferred_link"],
     ] as const)("shows an ordinary deferred action failure beside %s and blocks duplicate actions", async (id, command) => {
-      const initial = continuation({ deferred_link: "https://go.solstone.app/p#stored" });
+      const initial = continuation({ has_deferred_link: true });
       let reject: (reason: unknown) => void = () => {};
       const pending = new Promise((_resolve, fail) => { reject = fail; });
       invokeMock.mockImplementation((called) => {
@@ -1197,7 +1220,7 @@ describe("setup recovery and proof lifetimes", () => {
         if (command === "pairing_prefill") return "" as never;
         return undefined as never;
       });
-      app.__test__.renderSettings(continuation({ deferred_link: "https://go.solstone.app/p#stored" }));
+      app.__test__.renderSettings(continuation({ has_deferred_link: true }));
       const typed = present(ids["settings.pairing.input"]) as HTMLInputElement;
       typed.value = "owner-typed-draft";
       typed.dispatchEvent(new Event("input"));
@@ -1212,7 +1235,7 @@ describe("setup recovery and proof lifetimes", () => {
 
       app.__test__.reset();
       invokeMock.mockClear();
-      app.__test__.renderSettings(continuation({ deferred_link: "https://go.solstone.app/p#stored" }));
+      app.__test__.renderSettings(continuation({ has_deferred_link: true }));
       present(ids["settings.setup.deferredDismiss"]).click();
       await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("dismiss_deferred_link"));
       expect(invokeMock).not.toHaveBeenCalledWith("pair", expect.anything());

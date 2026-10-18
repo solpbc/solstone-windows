@@ -265,7 +265,6 @@ fn fill_accepted_progress(
 ) {
     overlay.handoff_id = Some(progress.handoff_id.clone());
     overlay.handoff_revision = Some(progress.accepted_unix_ms);
-    overlay.handoff_link = Some(progress.pairing_link.clone());
     overlay.handoff_expired = progress.is_expired(now_ms);
 }
 
@@ -289,7 +288,7 @@ pub(crate) fn update_handoff_overlay(
     });
     let progress = pl_transport_win::handoff::read_active_progress(data_root);
     let mut overlay = observer_model::HandoffOverlay {
-        deferred_link: pl_transport_win::draft::read_deferred(data_root),
+        has_deferred_link: pl_transport_win::draft::read_deferred(data_root).is_some(),
         handoff_rejected: pl_transport_win::draft::deferred_rejected(data_root),
         handoff_persist_failed: progress.is_err(),
         ..observer_model::HandoffOverlay::default()
