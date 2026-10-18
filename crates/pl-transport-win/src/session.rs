@@ -297,6 +297,21 @@ pub(crate) fn check_native_post_dial(
     instance_id: &str,
     identity: &crate::client::LinkIdentity,
 ) -> Result<MarkRenderSpec, TransportError> {
+    check_native_credential(
+        expected_ca_fingerprint,
+        expected_instance_id,
+        ca_pem,
+        instance_id,
+    )?;
+    crate::client::accept_link_identity(identity, expected_instance_id)
+}
+
+fn check_native_credential(
+    expected_ca_fingerprint: &str,
+    expected_instance_id: &str,
+    ca_pem: &str,
+    instance_id: &str,
+) -> Result<(), TransportError> {
     let der = crate::pairing::pem_to_der(ca_pem)
         .ok_or_else(|| TransportError::Pairing("failed to parse CA certificate DER".to_string()))?;
     if !ca_fingerprint_matches(expected_ca_fingerprint, &der) {
@@ -307,7 +322,7 @@ pub(crate) fn check_native_post_dial(
     if instance_id != expected_instance_id {
         return Err(TransportError::Pairing("instance ID mismatch".to_string()));
     }
-    crate::client::accept_link_identity(identity, expected_instance_id)
+    Ok(())
 }
 
 /// Binding to confirm when the saved activation matches the live certificate and identity.
@@ -685,6 +700,12 @@ where
                 .ca_chain_pem
                 .first()
                 .ok_or_else(|| TransportError::Pairing("empty CA chain".to_string()))?;
+            check_native_credential(
+                &progress.expected_ca_fingerprint,
+                &progress.expected_instance_id,
+                ca_pem,
+                &credential.instance_id,
+            )?;
             let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let identity_client = crate::ObserverClient::new(credential.clone(), gate)?;
             let identity = identity_client.get_link_identity().await?;
@@ -1937,7 +1958,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        let _server = tokio::spawn(serve_one_pair_response(
+        let server = tokio::spawn(serve_one_pair_response(
             listener,
             acceptor,
             signing_cert,
@@ -2004,11 +2025,19 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, TransportError::Pairing(_)));
+        assert!(
+            matches!(err, TransportError::Pairing(ref detail) if detail == "full CA fingerprint mismatch"),
+            "expected a full-fingerprint refusal, got {err:?}"
+        );
         assert!(
             !state_path.exists(),
             "pairing file must not be created when full fingerprint mismatches"
         );
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
 
         let _ = std::fs::remove_dir_all(dir);
     }

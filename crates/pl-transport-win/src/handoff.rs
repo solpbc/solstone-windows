@@ -764,24 +764,47 @@ mod tests {
     fn consume_failure_still_accepts() {
         let dir = TestDir::new("consume-fail");
         write_mailbox(dir.path(), &sample_mailbox(ID_A));
+        #[cfg(windows)]
+        let mut delete_guard = None;
         let outcome = process_mailbox_with_hooks(
             dir.path(),
             || 1000,
             || false,
             |_, _| Ok(()),
             |data_root, _| {
-                let mut perms = fs::metadata(data_root).unwrap().permissions();
-                perms.set_readonly(true);
-                fs::set_permissions(data_root, perms).unwrap();
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    // Permit the conditional re-read, but deny deletion until
+                    // after the receiver has attempted to consume the file.
+                    delete_guard = Some(
+                        OpenOptions::new()
+                            .read(true)
+                            .share_mode(0x1 | 0x2) // FILE_SHARE_READ | FILE_SHARE_WRITE
+                            .open(data_root.join(MAILBOX_FILE_NAME))
+                            .unwrap(),
+                    );
+                }
+                #[cfg(not(windows))]
+                {
+                    let mut perms = fs::metadata(data_root).unwrap().permissions();
+                    perms.set_readonly(true);
+                    fs::set_permissions(data_root, perms).unwrap();
+                }
+                assert!(fs::remove_file(data_root.join(MAILBOX_FILE_NAME)).is_err());
+                assert!(read_mailbox_doc(data_root)?.is_some());
                 Ok(())
             },
         )
         .unwrap();
-        restore_dir_writable(dir.path());
         assert_eq!(outcome, MailboxOutcome::Accepted);
         assert!(dir.path().join(MAILBOX_FILE_NAME).exists());
         assert!(read_progress(dir.path()).unwrap().is_some());
         assert!(read_receipt_doc(dir.path()).unwrap().accepted);
+        #[cfg(windows)]
+        drop(delete_guard);
+        restore_dir_writable(dir.path());
+        fs::remove_file(dir.path().join(MAILBOX_FILE_NAME)).unwrap();
     }
 
     #[test]
