@@ -488,6 +488,9 @@ fn consume_mailbox_if_same(data_root: &Path, mailbox_path: &Path, handoff_id: &s
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     const SAMPLE_LINK: &str = "https://go.solstone.app/p#0G0W000258DSX8DJRFAEBXG7308J4CT4ANK7F26YNPZEZJQYQAZ028T5CY4TQKFF";
     const SAMPLE_FP: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -503,11 +506,12 @@ mod tests {
                 std::env::temp_dir()
             };
             let path = base.join(format!(
-                "handoff-test-{prefix}-{}-{}",
+                "handoff-test-{prefix}-{}-{}-{}",
                 std::process::id(),
-                observer_model::monotonic_us()
+                observer_model::monotonic_us(),
+                NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
             ));
-            let _ = fs::create_dir_all(&path);
+            fs::create_dir(&path).expect("create isolated handoff test directory");
             Self(path)
         }
         fn path(&self) -> &Path {
