@@ -498,15 +498,15 @@ let deferredInFlight = false;
 const setupActionError = { finish: "", browser: "", retry: "", connect: "", deferred: "" };
 
 const SETUP_LINK_ERRORS: Record<string, string> = {
-  setup_connect_failed: "this connection could not finish. try again, or paste a new pair link from your journal.",
+  setup_connect_failed: "this connection could not finish. try again, or paste a new pairing link from your journal.",
   setup_finish_failed: "this connection could not finish. try again.",
   setup_browser_failed: "this step could not finish. try again.",
   setup_browser_completion_failed: "your journal opened, but setup progress could not be saved. try again.",
   setup_link_use_failed: "this link could not be used. try again.",
   setup_link_dismiss_failed: "this link could not be dismissed. try again.",
-  handoff_persist_failed: "this connection could not be saved. try again, or paste a pair link from your journal.",
+  handoff_persist_failed: "this connection could not be saved. try again, or paste a pairing link from your journal.",
   handoff_busy: "setup is busy. try again in a moment.",
-  handoff_rejected: "this setup link could not be used. return to your journal for a new link, or paste a pair link here.",
+  handoff_rejected: "this setup link could not be used. return to your journal for a new link, or paste a pairing link here.",
   handoff_deferred: "finish the current connection, then try again.",
 };
 
@@ -1925,7 +1925,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       const card = document.createElement("div");
       card.style.marginTop = "12px";
       const finishBtn = actionButton(
-        "Finish connecting",
+        "finish connecting",
         ids["settings.pairing.finishConnecting"],
         !finishInFlight,
         async () => {
@@ -2177,7 +2177,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     const browserRow = document.createElement("div");
     browserRow.style.marginTop = "8px";
     const openBtn = actionButton(
-      "Open your journal",
+      "open your journal",
       ids["settings.setup.browserJournal"],
       !browserInFlight,
       async () => {
@@ -2328,7 +2328,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
             : "another pairing link could not be added.";
     retryRow.append(reason);
     const retryBtn = actionButton(
-      "Try again",
+      "try again",
       ids["settings.setup.linkRetry"],
       !retryInFlight,
       async () => {
@@ -2364,10 +2364,10 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
 
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "paste a pair-link from your journal";
+  input.placeholder = "paste a pairing link from your journal";
   input.value = pairingDraft;
   input.dataset.automationId = ids["settings.pairing.input"];
-  input.setAttribute("aria-label", "pair-link from your journal");
+  input.setAttribute("aria-label", "pairing link from your journal");
   input.classList.add("fluent-control");
   input.style.fontSize = "13px";
   input.style.padding = "7px 9px";
