@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::SourceKind;
 
 /// Release activation is changed only after native owner qualification.
-pub const SETUP_SEQUENCE_ENABLED: bool = false;
+pub const SETUP_SEQUENCE_ENABLED: bool = true;
 
 pub fn is_setup_ingress(arg: &str) -> bool {
     let arg = arg.trim();

@@ -8,12 +8,10 @@ product.
 ## 1. Project Overview
 
 This repo builds the windows tray app (`solstone-windows-app`): per-user,
-non-elevated, one process per session. The new setup sequence is prepared behind
-`SETUP_SEQUENCE_ENABLED`, currently false. Published source and login defaults
-remain in place until a separately qualified activation. Existing saved source
-choices remain in place in either build. When activated, a new install starts with each source off
-and writes nothing until the owner turns one on, and an install that already ran
-keeps screen, system audio, and the microphone on until the owner turns one off.
+non-elevated, one process per session. A new install starts with each source off
+and writes no source media until the owner turns one on. An install that already ran
+keeps its saved source choices; an older install without those choices keeps
+screen, system audio, and the microphone on until the owner turns one off.
 Enabled screen, system-audio, and microphone segments go to local disk on
 5-minute clock boundaries and, once paired, into your journal. Journal data and
 service behavior live in the journal repository.
