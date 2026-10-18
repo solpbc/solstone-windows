@@ -132,6 +132,7 @@ test-transport: preflight-toolchain
 
 # Host-testable deterministic/package/publication policy checks on the Linux host.
 test-scripts:
+	python3 scripts/lib/rust-notices-vendor.test.py
 	sh scripts/lib/deterministic-gates.test.sh
 	sh scripts/lib/publication-guard.test.sh
 	bash scripts/lib/publish-origin.test.sh

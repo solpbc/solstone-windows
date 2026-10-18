@@ -55,7 +55,7 @@ tauri-plugin-opener = "2"
 
 # Velopack-aware entry hook (VelopackApp runs first in main) + per-user install
 # feed. The exact pin keeps native ci-full builds on the integration version.
-velopack = { version = "=1.2.0", features = ["public-utils"] }
+velopack = { version = "=1.2.0", path = "../vendor/velopack", features = ["public-utils"] }
 url = "2"
 
 [dev-dependencies]

@@ -180,7 +180,8 @@ fn zip_entry_names(bytes: &[u8]) -> Vec<String> {
                 .by_index_raw(index)
                 .expect("read candidate ZIP entry")
                 .name()
-                .to_owned()
+                .expect("decode candidate ZIP entry name")
+                .into_owned()
         })
         .collect()
 }

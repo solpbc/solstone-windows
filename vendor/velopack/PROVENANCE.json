@@ -1,0 +1,19 @@
+{
+  "package": "velopack",
+  "version": "1.2.0",
+  "archive_url": "https://static.crates.io/crates/velopack/velopack-1.2.0.crate",
+  "archive_sha256": "bd3fd8e7b771e0d0fc4ca67249273ad4eacfabe2562617b3ca42065a5972a58c",
+  "changes": {
+    "Cargo.toml": "Pin zip9.0.3 with the existing default-features=false and deflate feature.",
+    "src/bundle.rs": "Backport the three fallible ZipFile::name API adaptations from upstream1.3.39-g8d2844f, commit8d2844f.",
+    "LICENSE": "Existing upstream MIT license text reproduced from the dependency-notices override."
+  },
+  "omitted_package_metadata": [
+    "Cargo.lock"
+  ],
+  "purpose": "Resolve RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369 without changing the updater implementation.",
+  "removal": "Replace this patch when a qualified stable upstream release supports fixed zip versions.",
+  "license_url": "https://raw.githubusercontent.com/velopack/velopack/f2edcbcafb81da5b3c884aaea330e225ad91d8b6/LICENSE",
+  "license_sha256": "91845db83551c877ebbb1118e0fb92e4e527290d23b995c55dcd438b3293943f",
+  "api_donor_archive_sha256": "cbfbd9ee9818d1155813c4a1024a459763c3782405d5c1ad8f116bd8adaf0b88"
+}

@@ -4,8 +4,8 @@
 """Generate lock-bound Rust dependency notices for the shipped Windows app.
 
 Population: non-dev (normal + build) dependency closure of solstone-windows-app
-for x86_64-pc-windows-msvc from locked Cargo metadata. Workspace crates are
-AGPL-3.0-only and are not reproduced here.
+for x86_64-pc-windows-msvc from locked Cargo metadata. First-party crates
+share the root license; vendored third-party licenses are reproduced.
 
 Crate-shipped LICENSE/COPYING/NOTICE files are preferred. packaging/rust-notices/overrides
 covers crates that publish no license file. Regeneration is offline after `cargo fetch
@@ -91,6 +91,7 @@ def cargo_metadata() -> dict:
         check=True,
         capture_output=True,
         text=True,
+        timeout=300,
     )
     return json.loads(proc.stdout)
 
@@ -182,6 +183,15 @@ def main() -> int:
     meta = cargo_metadata()
     seen = closure(meta, ROOT_PACKAGE)
     packages = {p["id"]: p for p in meta["packages"]}
+    first_party = set(meta["workspace_members"])
+    # This byte-preserved first-party contract crate is excluded from the
+    # workspace. Other local path dependencies still need their own notices.
+    native_browser_manifest = ROOT / "vendor/native-browser/crates/native-browser-frame/Cargo.toml"
+    first_party.update(
+        pid for pid, pkg in packages.items()
+        if pkg["name"] == "native-browser-frame"
+        and Path(pkg["manifest_path"]) == native_browser_manifest
+    )
     lock = (ROOT / "Cargo.lock").read_bytes()
     lock_hash = sha256(lock)
     texts: dict[str, bytes] = {}
@@ -191,16 +201,19 @@ def main() -> int:
     detected_prebuilts: dict[tuple[str, str], set[str]] = {}
     for pid in sorted(seen):
         pkg = packages[pid]
-        if pkg.get("source") is None:
+        if pkg.get("source") is None and pid in first_party:
             workspace.append(pkg["name"])
             continue
+        source = pkg.get("source")
+        if source is None:
+            source = "vendored:" + Path(pkg["manifest_path"]).parent.relative_to(ROOT).as_posix()
         prebuilt = crate_prebuilt_members(pkg)
         if prebuilt:
             detected_prebuilts[(pkg["name"], pkg["version"])] = {
                 Path(member).suffix.lower() for member in prebuilt
             }
         files = crate_license_files(pkg)
-        source_kind = "crate-archive"
+        source_kind = "vendored-source" if pkg.get("source") is None else "crate-archive"
         if not files:
             files = override_files(pkg["name"], pkg["version"])
             source_kind = "committed-override"
@@ -216,12 +229,12 @@ def main() -> int:
                     "source_kind": source_kind,
                 }
             )
-        identity = f"{pkg['name']}@{pkg['version']} ({pkg['source']})"
+        identity = f"{pkg['name']}@{pkg['version']} ({source})"
         row = {
             "identity": identity,
             "name": pkg["name"],
             "version": pkg["version"],
-            "source": pkg["source"],
+            "source": source,
             "license_expression": pkg.get("license") or "",
             "notice_references": refs,
         }

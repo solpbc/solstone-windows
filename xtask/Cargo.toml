@@ -24,8 +24,9 @@ toml = "=0.8.2"
 tempfile = "=3.27.0"
 twox-hash = { version = "=2.1.2", default-features = false, features = ["xxhash64"] }
 url = "=2.5.8"
-zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "=9.0.3", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+velopack = { version = "=1.2.0", path = "../vendor/velopack", features = ["public-utils"] }
 syn = { version = "2.0.118", default-features = false, features = ["full", "visit", "parsing"] }
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }

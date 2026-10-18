@@ -196,7 +196,11 @@ impl ContainerMemberReader {
             let entry = archive
                 .by_index_raw(index)
                 .map_err(|_| ReleaseContainerError::InvalidArchive { container })?;
-            if entry.name() != central_name {
+            if entry
+                .name()
+                .map_err(|_| ReleaseContainerError::InvalidArchive { container })?
+                != central_name.as_str()
+            {
                 return Err(ReleaseContainerError::InvalidArchive { container });
             }
             if entry.encrypted() {
@@ -212,7 +216,10 @@ impl ContainerMemberReader {
             if is_target_directory {
                 target_is_directory = true;
             }
-            if unsafe_unix_mode(mode, entry.is_dir()) {
+            // zip normalizes special permission bits; the release policy checks
+            // the original archive attributes before accepting its bytes.
+            let special_bits = (entry.external_attributes() >> 16) & 0o7000;
+            if unsafe_unix_mode(mode, entry.is_dir()) || special_bits != 0 {
                 if is_target_directory {
                     continue;
                 }

@@ -287,6 +287,76 @@ fn encrypted_entry_is_rejected() {
 }
 
 #[test]
+fn unicode_entry_names_stay_nonportable_with_or_without_the_utf8_flag() {
+    let name = "é.txt";
+    let mut archive = build_zip(|writer| {
+        add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
+        add_file(writer, name, b"other", CompressionMethod::Stored);
+    });
+    assert_eq!(
+        ExecutableContainerReader::read_nupkg(&archive).expect_err("nonportable name must fail"),
+        ReleaseContainerError::InvalidEntryName {
+            container: ContainerKind::Nupkg
+        }
+    );
+    let central = central_entry_offset(&archive, name);
+    let local = usize::try_from(read_u32(&archive, central + 42)).unwrap();
+    assert_ne!(read_u16(&archive, central + 8) & 0x0800, 0);
+    for offset in [central + 8, local + 6] {
+        let flags = read_u16(&archive, offset) & !0x0800;
+        archive[offset..offset + 2].copy_from_slice(&flags.to_le_bytes());
+    }
+    assert_eq!(
+        ExecutableContainerReader::read_nupkg(&archive).expect_err("ambiguous name must fail"),
+        ReleaseContainerError::InvalidEntryName {
+            container: ContainerKind::Nupkg
+        }
+    );
+}
+
+#[test]
+fn unicode_extras_cannot_replace_the_canonical_raw_member_identity() {
+    // zlib.crc32(b"lib/app/solstone-windows-app.exe").
+    const NAME_CRC: u32 = 0xb437_a422;
+    let package = |crc: u32, unicode_name: &[u8]| {
+        let mut extra = vec![1];
+        extra.extend_from_slice(&crc.to_le_bytes());
+        extra.extend_from_slice(unicode_name);
+        build_zip(|writer| {
+            let mut options = zip::write::FullFileOptions::default()
+                .compression_method(CompressionMethod::Stored)
+                .unix_permissions(0o644);
+            options.add_extra_field(0x7075, extra, true).unwrap();
+            writer.start_file(NUPKG_MEMBER, options).unwrap();
+            writer.write_all(b"abc").unwrap();
+        })
+    };
+    let expected = evidence(
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        3,
+    );
+    for archive in [
+        package(NAME_CRC, NUPKG_MEMBER.as_bytes()),
+        package(0, b"lib/app/other.exe"),
+        package(NAME_CRC, b"\xff"),
+    ] {
+        // zip ignores malformed Unicode overrides; identity and bytes must
+        // still come from the validated canonical raw entry.
+        assert_eq!(
+            ExecutableContainerReader::read_nupkg(&archive).unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        ExecutableContainerReader::read_nupkg(&package(NAME_CRC, b"lib/app/other.exe"))
+            .expect_err("interpreted and raw names must agree"),
+        ReleaseContainerError::InvalidArchive {
+            container: ContainerKind::Nupkg
+        }
+    );
+}
+
+#[test]
 fn symlink_and_unsafe_permission_modes_are_rejected() {
     let symlink = build_zip(|writer| {
         writer
@@ -304,16 +374,19 @@ fn symlink_and_unsafe_permission_modes_are_rejected() {
         }
     );
 
-    let mut unsafe_mode = build_zip(|writer| {
-        add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
-    });
-    set_external_attributes(&mut unsafe_mode, NUPKG_MEMBER, 0o104_755 << 16);
-    assert_eq!(
-        ExecutableContainerReader::read_nupkg(&unsafe_mode).expect_err("set-id mode must fail"),
-        ReleaseContainerError::UnsafeUnixMode {
-            container: ContainerKind::Nupkg,
-        }
-    );
+    for mode in [0o104_755, 0o102_755, 0o101_755] {
+        let mut unsafe_mode = build_zip(|writer| {
+            add_file(writer, NUPKG_MEMBER, b"abc", CompressionMethod::Stored);
+        });
+        set_external_attributes(&mut unsafe_mode, NUPKG_MEMBER, mode << 16);
+        assert_eq!(
+            ExecutableContainerReader::read_nupkg(&unsafe_mode)
+                .expect_err("special mode must fail"),
+            ReleaseContainerError::UnsafeUnixMode {
+                container: ContainerKind::Nupkg,
+            }
+        );
+    }
 }
 
 #[test]

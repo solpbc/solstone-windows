@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "171fce8fb2582b20afb0032557528693862203baf2d7e0ef73f1ee1ba2c84745",
+  "cargo_lock_sha256": "484e23e29be9b1fd92378e8db41938682bb668696be361bf032f9f7be7434ffe",
   "notice_texts": [
     {
       "byte_end_exclusive": 15206,
@@ -1746,6 +1746,21 @@
       ],
       "source": "git+https://github.com/solpbc/spl-rust?rev=f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea#f0cf8b58efe6b652a1b461e6cd2be5385ea0e8ea",
       "version": "0.1.0"
+    },
+    {
+      "identity": "velopack@1.2.0 (vendored:vendor/velopack)",
+      "license_expression": "MIT",
+      "name": "velopack",
+      "notice_references": [
+        {
+          "bytes": 1091,
+          "member": "LICENSE",
+          "sha256": "91845db83551c877ebbb1118e0fb92e4e527290d23b995c55dcd438b3293943f",
+          "source_kind": "vendored-source"
+        }
+      ],
+      "source": "vendored:vendor/velopack",
+      "version": "1.2.0"
     },
     {
       "identity": "adler2@2.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -8702,21 +8717,6 @@
       "version": "1.23.3"
     },
     {
-      "identity": "velopack@1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
-      "license_expression": "MIT",
-      "name": "velopack",
-      "notice_references": [
-        {
-          "bytes": 1091,
-          "member": "LICENSE",
-          "sha256": "91845db83551c877ebbb1118e0fb92e4e527290d23b995c55dcd438b3293943f",
-          "source_kind": "committed-override"
-        }
-      ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "1.2.0"
-    },
-    {
       "identity": "version_check@0.9.5 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "MIT/Apache-2.0",
       "name": "version_check",
@@ -9944,7 +9944,7 @@
       "version": "0.11.6"
     },
     {
-      "identity": "zip@8.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "zip@9.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "MIT",
       "name": "zip",
       "notice_references": [
@@ -9956,7 +9956,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "8.6.0"
+      "version": "9.0.3"
     },
     {
       "identity": "zlib-rs@0.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -10009,7 +10009,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 283,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-10-17T03:58:04.177034+00:00",
+    "query_utc": "2026-10-18T06:26:33.066689+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 26
