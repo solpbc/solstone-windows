@@ -1280,6 +1280,17 @@ where
         .map_err(|_| "poisoned".to_string())?
         .pairing
         .setup_browser_ready = false;
+    // Recompute from this pairing's own data root so the finished handoff stops
+    // offering itself on home.
+    if let Some(data_root) = state.sync_config.state_path.parent() {
+        crate::app::update_handoff_overlay(
+            data_root,
+            &state.sync,
+            &state.setup,
+            &state.pairing_admission,
+        );
+    }
+    publish_setup(state);
     Ok(())
 }
 

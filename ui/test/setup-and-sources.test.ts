@@ -1278,6 +1278,18 @@ describe("setup recovery and proof lifetimes", () => {
       expect(invokeMock).not.toHaveBeenCalledWith("pair", expect.anything());
     });
 
+    it("explains an arriving link before offering to use or dismiss it", () => {
+      app.__test__.renderSettings(continuation({ has_deferred_link: true }));
+      const row = present(ids["settings.setup.deferredUse"]).parentElement as HTMLElement;
+      const note = row.previousElementSibling as HTMLElement | null;
+      expect(note?.tagName).toBe("P");
+      expect(note?.textContent?.trim().length ?? 0).toBeGreaterThan(0);
+
+      app.__test__.reset();
+      app.__test__.renderSettings(continuation({ has_deferred_link: false }));
+      expect(document.querySelector(".setup-deferred-note")).toBeNull();
+    });
+
     it("continues from the accepted handoff even when the pair field is dirty", async () => {
       const initial = continuation({
         handoff_id: "11111111-1111-4111-8111-111111111111",

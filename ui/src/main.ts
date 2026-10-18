@@ -2268,7 +2268,12 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     );
 
   if (dump.setup?.sequence_enabled === true && dump.setup.has_deferred_link) {
+    const deferredNote = document.createElement("p");
+    deferredNote.classList.add("setup-deferred-note");
+    deferredNote.textContent = "another pairing link arrived: use it or dismiss it.";
+    pane.append(deferredNote);
     const deferredRow = document.createElement("div");
+    deferredRow.classList.add("setup-deferred-row");
     deferredRow.style.marginTop = "8px";
     deferredRow.style.display = "flex";
     deferredRow.style.gap = "8px";

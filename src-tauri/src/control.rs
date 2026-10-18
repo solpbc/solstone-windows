@@ -700,6 +700,9 @@ mod tests {
         )
         .unwrap();
         state.sync.lock().unwrap().pairing.setup_browser_ready = false;
+        let finished = refresh();
+        assert!(finished.handoff_id.is_none());
+        assert!(!finished.handoff_new_connection);
         write(h1);
         let replay = refresh();
         assert!(replay.handoff_id.is_none());

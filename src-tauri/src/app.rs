@@ -370,6 +370,13 @@ pub(crate) fn update_handoff_overlay_enabled(
                         if bound {
                             overlay.handoff_new_connection =
                                 activation.handoff_id != progress.handoff_id;
+                            // The handoff this pairing came from, once its journal has
+                            // opened, is finished: nothing is left to continue.
+                            if !overlay.handoff_new_connection && paired.setup_browser_opened {
+                                overlay.handoff_id = None;
+                                overlay.handoff_revision = None;
+                                overlay.handoff_expired = false;
+                            }
                         } else {
                             overlay.handoff_persist_failed = true;
                         }
