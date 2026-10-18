@@ -12,7 +12,7 @@ fn inert_package() -> Vec<u8> {
     writer.start_file("Solstone.nuspec", options).unwrap();
     writer
         .write_all(
-            br"<package><metadata><id>Solstone</id><version>2.0.28</version></metadata></package>",
+            br"<package><metadata><id>Solstone</id><version>2.0.28</version><mainExe>solstone-windows-app.exe</mainExe></metadata></package>",
         )
         .unwrap();
     writer.start_file("lib/app/Squirrel.exe", options).unwrap();
