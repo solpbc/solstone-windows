@@ -8,6 +8,7 @@
 //! identity, stored under the per-user data dir so the observer resumes uploading
 //! after a restart without re-pairing. The private key never leaves the machine.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,7 @@ use crate::TransportError;
 use spl_transport::client::{TokenCommit, TokenCommitContext, TokenTransaction};
 
 const CREDENTIAL_WRAP_MARKER: &str = "dpapi:v1:";
+pub const PAIRED_STATE_FILE_NAME: &str = "pairing.json";
 
 #[derive(Debug)]
 #[allow(dead_code)] // Refusal and I/O classes are produced by the Windows DPAPI implementation.
@@ -540,6 +542,20 @@ thread_local! {
     pub(crate) static PAIR_REJECTION_CLEANUP_FAIL_POINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Outcome of recording that the setup journal was opened for one binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserOpenSave {
+    Recorded,
+    AlreadyOpen,
+}
+
+/// Association linking a setup handoff to an accepted pairing binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupActivation {
+    pub handoff_id: String,
+    pub binding: String,
+}
+
 /// The full persisted sync identity: the paired mTLS credential.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PairedState {
@@ -548,9 +564,107 @@ pub struct PairedState {
     pub access_mutation_generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement_intent: Option<RetirementIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_activation: Option<SetupActivation>,
+    #[serde(default)]
+    pub setup_browser_opened: bool,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub retired_setup_handoffs: BTreeSet<String>,
+    /// Manual pairing may repair an unreadable legacy file, but cannot recover
+    /// unknown terminal handoffs. Keep native continuation fail-closed afterward.
+    #[serde(default)]
+    pub setup_history_unavailable: bool,
 }
 
+const MAX_SETUP_HANDOFF_IDS: usize = 256;
+
 impl PairedState {
+    fn read_setup_metadata(path: &Path) -> Result<Option<Self>, TransportError> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(TransportError::Io(error)),
+        };
+        let state: Self =
+            serde_json::from_slice(&bytes).map_err(|_| TransportError::CredentialMalformed)?;
+        Self::validate_setup_ids(&state.retired_setup_handoffs)?;
+        Ok(Some(state))
+    }
+
+    fn validate_setup_ids(ids: &BTreeSet<String>) -> Result<(), TransportError> {
+        if ids.len() > MAX_SETUP_HANDOFF_IDS
+            || ids
+                .iter()
+                .any(|id| !observer_contract::is_canonical_uuid(id))
+        {
+            return Err(TransportError::Pairing(
+                "setup continuation history is unavailable".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Terminal link authority survives ordinary replacement and refused-key
+    /// recovery. Reading this metadata never unwraps the archived private key.
+    pub fn setup_handoff_history(path: &Path) -> Result<BTreeSet<String>, TransportError> {
+        let mut ids = BTreeSet::new();
+        for (source, archived) in [
+            (path.to_path_buf(), false),
+            (refused_pairing_path(path), true),
+        ] {
+            if let Some(state) = Self::read_setup_metadata(&source)? {
+                if state.setup_history_unavailable {
+                    return Err(TransportError::Pairing(
+                        "setup continuation history is unavailable".into(),
+                    ));
+                }
+                ids.extend(state.retired_setup_handoffs);
+                if archived
+                    || state.setup_browser_opened
+                    || state.credential.is_none()
+                    || state.retirement_intent.is_some()
+                {
+                    if let Some(activation) = state.setup_activation {
+                        ids.insert(activation.handoff_id);
+                    }
+                }
+            }
+        }
+        Self::validate_setup_ids(&ids)?;
+        Ok(ids)
+    }
+
+    /// Reserve capacity before acknowledging a new handoff. Outstanding progress
+    /// and activation count too, so completing or rejecting them still fits.
+    pub fn check_setup_handoff_capacity(
+        path: &Path,
+        progress_id: Option<&str>,
+        candidate_id: &str,
+    ) -> Result<(), TransportError> {
+        let mut ids = Self::setup_handoff_history(path)?;
+        if let Some(state) = Self::read_setup_metadata(path)? {
+            if let Some(activation) = state.setup_activation {
+                ids.insert(activation.handoff_id);
+            }
+        }
+        if let Some(id) = progress_id {
+            ids.insert(id.to_string());
+        }
+        ids.insert(candidate_id.to_string());
+        Self::validate_setup_ids(&ids)
+    }
+
+    /// Retire an expired/superseded draft before acknowledging its replacement.
+    pub fn retire_setup_handoff(path: &Path, handoff_id: &str) -> Result<(), TransportError> {
+        let _guard = owner_state_write_guard();
+        let mut state = Self::load(path)?;
+        state.retired_setup_handoffs.insert(handoff_id.to_string());
+        match Self::save_inner(&platform_protector(), path, &state) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(TransportError::Io(std::io::Error::other(error.to_string()))),
+        }
+    }
+
     /// Load from a JSON file, returning the default (unpaired) state if absent.
     pub fn load(path: &Path) -> Result<Self, TransportError> {
         Self::load_detailed(path).map(|loaded| loaded.state)
@@ -653,6 +767,36 @@ impl PairedState {
         self.save_with(&platform_protector(), path)
     }
 
+    /// Set `setup_browser_opened` on the file's current state when its activation
+    /// binding is still `expected_binding`. Does not take the uploader slot.
+    pub fn mark_setup_browser_opened(
+        path: &Path,
+        expected_binding: &str,
+    ) -> Result<BrowserOpenSave, StorageError> {
+        let _guard = owner_state_write_guard();
+        let mut state = Self::load(path).map_err(StorageError::Transport)?;
+        let binding_matches = state
+            .setup_activation
+            .as_ref()
+            .is_some_and(|activation| activation.binding == expected_binding)
+            && state.credential.as_ref().is_some_and(|credential| {
+                crate::ack::JournalIdentity::from_credential(credential).client_cert_sha256
+                    == expected_binding
+            })
+            && state.retirement_intent.is_none();
+        if !binding_matches {
+            return Err(StorageError::Transport(TransportError::Pairing(
+                "setup activation binding does not match".to_string(),
+            )));
+        }
+        if state.setup_browser_opened {
+            return Ok(BrowserOpenSave::AlreadyOpen);
+        }
+        state.setup_browser_opened = true;
+        Self::save_inner(&platform_protector(), path, &state)?;
+        Ok(BrowserOpenSave::Recorded)
+    }
+
     pub(crate) fn save_with(
         &self,
         protector: &dyn Protector,
@@ -677,6 +821,67 @@ impl PairedState {
         state: &PairedState,
     ) -> Result<(), StorageError> {
         let mut state = state.clone();
+        let mut previous = None;
+        for (source, archived) in [
+            (path.to_path_buf(), false),
+            (refused_pairing_path(path), true),
+        ] {
+            let metadata = match Self::read_setup_metadata(&source) {
+                Ok(metadata) => metadata,
+                Err(_) if state.setup_history_unavailable => None,
+                Err(error) => return Err(StorageError::Transport(error)),
+            };
+            if let Some(metadata) = metadata {
+                state.setup_history_unavailable |= metadata.setup_history_unavailable;
+                state
+                    .retired_setup_handoffs
+                    .extend(metadata.retired_setup_handoffs.iter().cloned());
+                if archived
+                    || metadata.setup_browser_opened
+                    || metadata.credential.is_none()
+                    || metadata.retirement_intent.is_some()
+                {
+                    if let Some(activation) = metadata.setup_activation.as_ref() {
+                        state
+                            .retired_setup_handoffs
+                            .insert(activation.handoff_id.clone());
+                    }
+                }
+                if !archived {
+                    previous = Some(metadata);
+                }
+            }
+        }
+        if let Some(previous) = previous {
+            let same_activation = previous.setup_activation == state.setup_activation;
+            let same_credential = previous
+                .credential
+                .as_ref()
+                .map(|credential| &credential.client_cert_pem)
+                == state
+                    .credential
+                    .as_ref()
+                    .map(|credential| &credential.client_cert_pem);
+            if same_activation && same_credential && previous.setup_browser_opened {
+                state.setup_browser_opened = true;
+            }
+            if !same_activation || !same_credential {
+                if let Some(activation) = previous.setup_activation {
+                    state.retired_setup_handoffs.insert(activation.handoff_id);
+                }
+            }
+        }
+        if state.setup_browser_opened
+            || state.credential.is_none()
+            || state.retirement_intent.is_some()
+        {
+            if let Some(activation) = state.setup_activation.as_ref() {
+                state
+                    .retired_setup_handoffs
+                    .insert(activation.handoff_id.clone());
+            }
+        }
+        Self::validate_setup_ids(&state.retired_setup_handoffs).map_err(StorageError::Transport)?;
         if let Some(cred) = state.credential.as_mut() {
             protect_credential(protector, cred)?;
         }
@@ -1473,6 +1678,190 @@ mod tests {
     }
 
     #[test]
+    fn manual_paired_state_default_has_no_activation() {
+        let def = PairedState::default();
+        assert!(def.setup_activation.is_none());
+        assert!(!def.setup_browser_opened);
+        assert!(!def.is_paired());
+    }
+
+    #[test]
+    fn stale_browser_binding_writes_nothing_and_does_not_resurrect_activation() {
+        let path = temp_pairing_path("stale-browser");
+        let mut state = paired_state_with("S0tLSw==", None);
+        state.setup_activation = Some(SetupActivation {
+            handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+            binding: "binding-a".into(),
+        });
+        state.save(&path).unwrap();
+        let wiped = PairedState {
+            credential: state.credential.clone(),
+            ..Default::default()
+        };
+        wiped.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(PairedState::mark_setup_browser_opened(&path, "binding-a").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let loaded = PairedState::load(&path).unwrap();
+        assert!(loaded.setup_activation.is_none());
+        assert!(!loaded.setup_browser_opened);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn duplicate_browser_completion_leaves_the_flag_true() {
+        let path = temp_pairing_path("dup-browser");
+        let mut state = paired_state_with("S0tLSw==", None);
+        let binding =
+            crate::ack::JournalIdentity::from_credential(state.credential.as_ref().unwrap())
+                .client_cert_sha256;
+        state.setup_activation = Some(SetupActivation {
+            handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+            binding: binding.clone(),
+        });
+        state.setup_browser_opened = true;
+        state.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            PairedState::mark_setup_browser_opened(&path, &binding).unwrap(),
+            BrowserOpenSave::AlreadyOpen
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(PairedState::load(&path).unwrap().setup_browser_opened);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn failed_browser_update_leaves_the_flag_false() {
+        let path = temp_pairing_path("fail-browser");
+        let mut state = paired_state_with("S0tLSw==", None);
+        let binding =
+            crate::ack::JournalIdentity::from_credential(state.credential.as_ref().unwrap())
+                .client_cert_sha256;
+        state.setup_activation = Some(SetupActivation {
+            handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+            binding: binding.clone(),
+        });
+        state.save(&path).unwrap();
+        struct ResetFail;
+        impl Drop for ResetFail {
+            fn drop(&mut self) {
+                FS_FAIL_POINT.with(|fail| fail.set(0));
+            }
+        }
+        let _reset = ResetFail;
+        FS_FAIL_POINT.with(|fail| fail.set(1));
+        assert!(PairedState::mark_setup_browser_opened(&path, &binding).is_err());
+        assert!(!PairedState::load(&path).unwrap().setup_browser_opened);
+        assert!(PairedState::setup_handoff_history(&path)
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn browser_retirement_is_atomic_and_survives_stale_and_ordinary_saves() {
+        let path = temp_pairing_path("terminal-history");
+        let mut state = paired_state_with("S0tLSw==", None);
+        let binding =
+            crate::ack::JournalIdentity::from_credential(state.credential.as_ref().unwrap())
+                .client_cert_sha256;
+        let id = "11111111-1111-4111-8111-111111111111";
+        state.setup_activation = Some(SetupActivation {
+            handoff_id: id.into(),
+            binding: binding.clone(),
+        });
+        state.save(&path).unwrap();
+        assert_eq!(
+            PairedState::mark_setup_browser_opened(&path, &binding).unwrap(),
+            BrowserOpenSave::Recorded
+        );
+        let completed = PairedState::load(&path).unwrap();
+        assert!(completed.setup_browser_opened);
+        assert!(completed.retired_setup_handoffs.contains(id));
+        state.save(&path).unwrap();
+        assert!(PairedState::load(&path).unwrap().setup_browser_opened);
+        PairedState {
+            credential: state.credential,
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        assert!(PairedState::setup_handoff_history(&path)
+            .unwrap()
+            .contains(id));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn last_native_acceptance_reserves_its_retirement_capacity() {
+        let path = temp_pairing_path("terminal-capacity");
+        let ids: BTreeSet<_> = (0..MAX_SETUP_HANDOFF_IDS - 1)
+            .map(|n| format!("00000000-0000-4000-8000-{n:012x}"))
+            .collect();
+        PairedState {
+            retired_setup_handoffs: ids,
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        let last = "11111111-1111-4111-8111-111111111111";
+        let newer = "22222222-2222-4222-8222-222222222222";
+        PairedState::check_setup_handoff_capacity(&path, None, last).unwrap();
+        PairedState::retire_setup_handoff(&path, last).unwrap();
+        assert!(PairedState::check_setup_handoff_capacity(&path, Some(last), newer).is_err());
+        assert!(PairedState::setup_handoff_history(&path)
+            .unwrap()
+            .contains(last));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn refused_key_archive_keeps_terminal_history_without_unwrapping_its_key() {
+        let path = temp_pairing_path("archived-setup-history");
+        let mut archived = paired_state_with("dpapi:v1:not-readable", None);
+        let id = "11111111-1111-4111-8111-111111111111";
+        archived.setup_activation = Some(SetupActivation {
+            handoff_id: id.into(),
+            binding: "old-binding".into(),
+        });
+        write_raw_state(&refused_pairing_path(&path), &archived);
+        assert!(PairedState::setup_handoff_history(&path)
+            .unwrap()
+            .contains(id));
+        PairedState::default().save(&path).unwrap();
+        assert!(PairedState::load(&path)
+            .unwrap()
+            .retired_setup_handoffs
+            .contains(id));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn old_pairing_json_without_new_fields_loads() {
+        let old_json = r#"{
+            "credential": {
+                "client_key_pem": "K",
+                "client_cert_pem": "C",
+                "ca_chain_pem": ["CA"],
+                "ca_fp_prefix": [1, 2, 3, 4],
+                "instance_id": "inst",
+                "home_label": "Home",
+                "endpoints": [{"host": "10.0.0.5", "port": 7657}],
+                "relay_origin": null,
+                "device_token": null,
+                "device_token_expires_at": null
+            },
+            "retirement_intent": null,
+            "access_mutation_generation": 0
+        }"#;
+        let loaded: PairedState = serde_json::from_str(old_json).unwrap();
+        assert!(loaded.is_paired());
+        assert!(loaded.setup_activation.is_none());
+        assert!(!loaded.setup_browser_opened);
+    }
+
+    #[test]
     fn legacy_plaintext_valid_base64_loads_without_unprotect() {
         let path = temp_pairing_path("legacy-valid-base64");
         let state = paired_state_with("S0tLSw==", Some("dG9rZW4="));
@@ -1946,6 +2335,24 @@ mod tests {
         assert_eq!(credential.client_key_pem, key);
         assert_eq!(credential.device_token.as_deref(), Some(token));
 
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn ordinary_repair_preserves_unknown_native_history_refusal() {
+        let path = temp_pairing_path("unknown-native-history");
+        std::fs::write(&path, b"{unreadable pairing").unwrap();
+        assert!(PairedState::default().save(&path).is_err());
+        PairedState {
+            setup_history_unavailable: true,
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        assert!(PairedState::setup_handoff_history(&path).is_err());
+        PairedState::default().save(&path).unwrap();
+        assert!(PairedState::load(&path).unwrap().setup_history_unavailable);
+        assert!(PairedState::setup_handoff_history(&path).is_err());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

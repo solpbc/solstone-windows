@@ -13,6 +13,7 @@ pub enum TrayVisual {
     Paused,
     Offline,
     Error,
+    Off,
 }
 
 pub fn pause_enabled(phase: AppPhase) -> bool {
@@ -30,6 +31,7 @@ pub fn restart_enabled(phase: AppPhase) -> bool {
 pub fn owner_fault_detail(
     sources: &[SourceReport],
     storage: Option<&StorageHealth>,
+    is_enabled: impl Fn(crate::SourceKind) -> bool,
 ) -> Option<String> {
     fn detail_for_owner(detail: &str) -> Option<String> {
         let detail = detail
@@ -43,10 +45,13 @@ pub fn owner_fault_detail(
         return Some(detail);
     }
 
-    sources.iter().find_map(|source| match &source.state {
-        SourceState::Faulted { detail, .. } => detail_for_owner(detail),
-        _ => None,
-    })
+    sources
+        .iter()
+        .filter(|source| is_enabled(source.kind))
+        .find_map(|source| match &source.state {
+            SourceState::Faulted { detail, .. } => detail_for_owner(detail),
+            _ => None,
+        })
 }
 
 pub fn classify_tray(
@@ -54,9 +59,16 @@ pub fn classify_tray(
     sync: &SyncSnapshot,
     pause: Option<&PauseSnapshot>,
     fault_detail: Option<&str>,
+    deliberate_off: bool,
 ) -> (TrayVisual, String) {
     let (visual, tooltip) = match app {
-        AppPhase::Idle => (TrayVisual::Connecting, "connecting".to_string()),
+        AppPhase::Idle => {
+            if deliberate_off {
+                (TrayVisual::Off, "off".to_string())
+            } else {
+                (TrayVisual::Connecting, "connecting".to_string())
+            }
+        }
         AppPhase::Starting => (TrayVisual::Connecting, "starting…".to_string()),
         AppPhase::Paused => {
             let tooltip = match pause.and_then(|p| p.seconds_remaining) {
@@ -157,7 +169,7 @@ mod tests {
         pause: Option<&PauseSnapshot>,
         fault_detail: Option<&str>,
     ) -> TrayVisual {
-        classify_tray(app, sync, pause, fault_detail).0
+        classify_tray(app, sync, pause, fault_detail, false).0
     }
 
     fn faulted_source(kind: SourceKind, detail: impl Into<String>) -> SourceReport {
@@ -311,7 +323,7 @@ mod tests {
         };
 
         assert_eq!(
-            owner_fault_detail(&sources, Some(&storage)).as_deref(),
+            owner_fault_detail(&sources, Some(&storage), |_| true).as_deref(),
             Some("disk full")
         );
     }
@@ -321,13 +333,14 @@ mod tests {
         let storage = StorageHealth {
             detail: "[breaker-open] disk full".into(),
         };
-        let detail = owner_fault_detail(&[], Some(&storage));
+        let detail = owner_fault_detail(&[], Some(&storage), |_| true);
 
         let (visual, tooltip) = classify_tray(
             AppPhase::Error,
             &SyncSnapshot::default(),
             None,
             detail.as_deref(),
+            false,
         );
         assert_eq!(visual, TrayVisual::Error);
         assert_eq!(tooltip, "disk full");
@@ -335,7 +348,7 @@ mod tests {
 
     #[test]
     fn no_fault_detail_uses_error_fallback() {
-        assert_eq!(owner_fault_detail(&[], None), None);
+        assert_eq!(owner_fault_detail(&[], None, |_| true), None);
         assert_eq!(
             tray_visual(AppPhase::Error, &SyncSnapshot::default(), None, None),
             TrayVisual::Error
@@ -409,7 +422,7 @@ mod tests {
         clean.upload.last_successful_sync = Some(1);
         clean.unknown_journals = vec![sighting(Some("192.168.1.50:7657"))];
 
-        let (visual, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None);
+        let (visual, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, false);
         assert_eq!(visual, TrayVisual::Healthy);
         assert_eq!(
             tooltip,
@@ -424,7 +437,7 @@ mod tests {
         clean.upload.last_successful_sync = Some(1);
         clean.unknown_journals = vec![sighting(None)];
 
-        let (_, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None);
+        let (_, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, false);
         assert_eq!(
             tooltip,
             "on, connected to your journal\nunknown journal seen through the relay"
@@ -442,8 +455,13 @@ mod tests {
             seconds_remaining: None,
         };
 
-        let (visual, tooltip) =
-            classify_tray(AppPhase::Paused, &paused_sync, Some(&indefinite), None);
+        let (visual, tooltip) = classify_tray(
+            AppPhase::Paused,
+            &paused_sync,
+            Some(&indefinite),
+            None,
+            false,
+        );
         assert_eq!(visual, TrayVisual::Paused);
         assert_eq!(tooltip, "paused\nunknown journal seen at 10.0.0.1:443");
     }
@@ -451,7 +469,7 @@ mod tests {
     #[test]
     fn no_unknown_journal_sighting_leaves_tooltip_untouched() {
         let idle = SyncSnapshot::default();
-        let (_, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None);
+        let (_, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None, false);
         assert_eq!(tooltip, "connecting");
         assert!(!tooltip.contains('\n'));
     }
@@ -459,7 +477,8 @@ mod tests {
     #[test]
     fn mark_confirmation_classify_tray_awaiting_confirmation_tooltip() {
         let awaiting_sync = sync(PairingPhase::AwaitingConfirmation);
-        let (visual, tooltip) = classify_tray(AppPhase::Observing, &awaiting_sync, None, None);
+        let (visual, tooltip) =
+            classify_tray(AppPhase::Observing, &awaiting_sync, None, None, false);
         assert_eq!(visual, TrayVisual::Paused);
         assert_eq!(
             tooltip,
@@ -468,11 +487,40 @@ mod tests {
 
         let mut with_sighting = awaiting_sync;
         with_sighting.unknown_journals = vec![sighting(Some("10.0.0.1:443"))];
-        let (visual, tooltip) = classify_tray(AppPhase::Observing, &with_sighting, None, None);
+        let (visual, tooltip) =
+            classify_tray(AppPhase::Observing, &with_sighting, None, None, false);
         assert_eq!(visual, TrayVisual::Paused);
         assert_eq!(
             tooltip,
             "solstone · waiting for you to confirm your journal's mark\nunknown journal seen at 10.0.0.1:443"
         );
+    }
+
+    #[test]
+    fn classify_deliberate_off_visual() {
+        let idle = SyncSnapshot::default();
+        let (visual, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None, true);
+        assert_eq!(visual, TrayVisual::Off);
+        assert_eq!(tooltip, "off");
+
+        // Without deliberate_off, Idle stays connecting
+        let (visual2, tooltip2) = classify_tray(AppPhase::Idle, &idle, None, None, false);
+        assert_eq!(visual2, TrayVisual::Connecting);
+        assert_eq!(tooltip2, "connecting");
+    }
+
+    #[test]
+    fn owner_fault_detail_skips_disabled_source() {
+        let sources = [
+            faulted_source(SourceKind::Screen, "screen broken"),
+            faulted_source(SourceKind::Mic, "mic broken"),
+        ];
+        // Screen is disabled, mic is enabled -> returns mic detail
+        let detail = owner_fault_detail(&sources, None, |k| k == SourceKind::Mic);
+        assert_eq!(detail.as_deref(), Some("mic broken"));
+
+        // All disabled -> returns None
+        let detail_none = owner_fault_detail(&sources, None, |_| false);
+        assert_eq!(detail_none, None);
     }
 }

@@ -98,6 +98,8 @@ interface PairingState {
   detail: string | null;
   mark?: MarkRenderSpec | null;
   binding?: string;
+  finish_connecting?: boolean;
+  setup_browser_ready?: boolean;
 }
 
 type MigrationChoice = "new_device" | "replace_device";
@@ -253,6 +255,94 @@ interface PauseSnapshot {
   seconds_remaining: number | null;
 }
 
+type WizardStep = "mic" | "system_audio" | "screen" | "connection" | "done";
+
+interface FailedSourceWrite {
+  kind: SourceKind;
+  attempted: boolean;
+}
+
+interface SetupSnapshot {
+  mic: boolean;
+  system_audio: boolean;
+  screen: boolean;
+  start_at_login: boolean;
+  wizard: WizardStep;
+  notice_dismissed: boolean;
+  failed_sources?: FailedSourceWrite[];
+  wizard_save_failed?: boolean;
+  pending_wizard?: WizardStep | null;
+  notice_save_failed?: boolean;
+  login_apply_failed?: boolean;
+  handoff_id?: string | null;
+  handoff_revision?: number | null;
+  handoff_link?: string | null;
+  handoff_expired?: boolean;
+  handoff_new_connection?: boolean;
+  handoff_deferred?: boolean;
+  mailbox_busy?: boolean;
+  handoff_rejected?: boolean;
+  native_handoff_rejected?: boolean;
+  handoff_persist_failed?: boolean;
+  deferred_link?: string | null;
+}
+
+interface ScreenPreviewFrame {
+  width: number;
+  height: number;
+  rgba: number[];
+}
+
+interface PreviewSnapshot {
+  consumer_generation?: number;
+  mic_level?: number | null;
+  system_audio_level?: number | null;
+  screen_frame?: ScreenPreviewFrame | null;
+}
+
+function isSourceEnabled(setup: SetupSnapshot | undefined, kind: SourceKind): boolean {
+  if (!setup) {
+    return true;
+  }
+  switch (kind) {
+    case "screen":
+      return setup.screen;
+    case "system_audio":
+      return setup.system_audio;
+    case "mic":
+      return setup.mic;
+  }
+}
+
+function deriveSourceStatus(
+  enabled: boolean,
+  isPaused: boolean,
+  report: SourceReport | undefined,
+): "off" | "paused" | "on" | "unavailable" | "error" | null {
+  if (!enabled) {
+    return "off";
+  }
+  if (isPaused) {
+    return "paused";
+  }
+  if (!report) {
+    return null;
+  }
+  if (report.status === "active") {
+    return "on";
+  }
+  if (
+    report.status === "no_input_device" ||
+    (report.status === "faulted" && (report.reason === "access_denied" || report.reason === "AccessDenied"))
+  ) {
+    return "unavailable";
+  }
+  if (report.status === "faulted") {
+    return "error";
+  }
+  return null;
+}
+
 interface HealthDump {
   app_state: AppPhase;
   sources: SourceReport[];
@@ -266,6 +356,7 @@ interface HealthDump {
   exclusions: ExclusionHealth | null;
   pause: PauseSnapshot | null;
   views?: Record<string, string>;
+  setup?: SetupSnapshot;
 }
 
 interface StorageInfo {
@@ -372,6 +463,13 @@ let selectedMigrationDevice: MigrationDevice | null = null;
 let activeRoute: Route = "home";
 let renderBeaconFired = false;
 let focusPaneTitleOnRender = false;
+type ProofConsumerState = "mic" | "system_audio" | "screen" | "closed";
+let openProofKind: ProofConsumerState = "closed";
+let currentAcceptedProofGeneration = 0;
+let proofRequest = 0;
+let proofWindowActive = true;
+let proofOperations: Promise<unknown> = Promise.resolve();
+let focusWizardPrimary = false;
 let markCardFocused = false;
 // Set when a background event (health/update stream) wants a full rerender but an
 // interactive control is active; the next flush or any direct rerender consumes it,
@@ -391,7 +489,79 @@ let healthReceivedAt: number | null = null;
 // The pair-link the owner typed/pasted. Held in a module var (never read back
 // from the DOM) so a health re-render never loses it.
 let pairingDraft = "";
+let pairFieldDirty = false;
 let pairingBusy = false;
+let finishInFlight = false;
+let browserInFlight = false;
+let retryInFlight = false;
+let nativeConnectInFlight = false;
+let deferredInFlight = false;
+const setupActionError = { finish: "", browser: "", retry: "", connect: "", deferred: "" };
+
+const SETUP_LINK_ERRORS: Record<string, string> = {
+  setup_connect_failed: "this connection could not finish. try again, or paste a new pair link from your journal.",
+  setup_finish_failed: "this connection could not finish. try again.",
+  setup_browser_failed: "this step could not finish. try again.",
+  setup_browser_completion_failed: "your journal opened, but setup progress could not be saved. try again.",
+  setup_link_use_failed: "this link could not be used. try again.",
+  setup_link_dismiss_failed: "this link could not be dismissed. try again.",
+  handoff_persist_failed: "this connection could not be saved. try again, or paste a pair link from your journal.",
+  handoff_busy: "setup is busy. try again in a moment.",
+  handoff_rejected: "this setup link could not be used. return to your journal for a new link, or paste a pair link here.",
+  handoff_deferred: "finish the current connection, then try again.",
+};
+
+function errorText(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return SETUP_LINK_ERRORS[error.message] ?? error.message;
+  }
+  if (typeof error === "string" && error) {
+    return SETUP_LINK_ERRORS[error] ?? error;
+  }
+  return "that did not finish";
+}
+
+function appendSetupError(
+  parent: HTMLElement,
+  kind: "finish" | "browser" | "retry" | "connect" | "deferred",
+): void {
+  const message = setupActionError[kind];
+  if (!message) {
+    return;
+  }
+  const node = document.createElement("div");
+  node.dataset.setupError = kind;
+  node.textContent = message;
+  parent.append(node);
+}
+
+function nativeContinuationPending(dump: HealthDump): boolean {
+  const setup = dump.setup;
+  const pairing = dump.sync.pairing;
+  if (pairing.setup_browser_ready || pairing.finish_connecting) {
+    return true;
+  }
+  return Boolean(
+    setup?.handoff_id && !setup.handoff_expired &&
+      (pairing.phase !== "paired" || setup.handoff_new_connection === true),
+  );
+}
+
+function homeShowsPairing(dump: HealthDump): boolean {
+  const setup = dump.setup;
+  const pairing = dump.sync.pairing;
+  return Boolean(
+    setup?.handoff_id ||
+      setup?.handoff_deferred ||
+      setup?.mailbox_busy ||
+      setup?.handoff_rejected ||
+      setup?.native_handoff_rejected ||
+      setup?.handoff_persist_failed ||
+      setup?.deferred_link ||
+      pairing.finish_connecting ||
+      pairing.setup_browser_ready,
+  );
+}
 let journalOpenError = false;
 
 type MigrationCopyKey = keyof typeof MIGRATION_COPY;
@@ -523,6 +693,7 @@ let exclusionsPersisted = true;
 // keydown listener lives on the window, added once when capture starts.
 let hotkeyCapturing = false;
 let latestMic: MicView | null = null;
+let latestPreview: PreviewSnapshot = {};
 
 // The browser extension's path, present only in a build with the browser host
 // (the backend answers `null` otherwise, and nothing here renders). States and
@@ -885,21 +1056,6 @@ a:focus-visible,
 	  overflow-wrap: anywhere;
 	}
 
-	.settings-kinship {
-	  display: grid;
-	  gap: 8px;
-	  padding: 15px;
-	  border: 1px solid var(--border);
-	  border-radius: var(--radius-card);
-	  background: var(--fill);
-	}
-
-	.settings-kinship-body {
-	  font-size: 13px;
-	  color: var(--fg-subtle);
-	  overflow-wrap: anywhere;
-	}
-
 	.settings-card-grid {
 	  display: grid;
 	  grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1017,7 +1173,7 @@ function isInteractiveControlActive(): boolean {
   const active = document.activeElement;
   return (
     active instanceof HTMLSelectElement ||
-    active instanceof HTMLInputElement ||
+    (active instanceof HTMLInputElement && active.type !== "checkbox") ||
     active instanceof HTMLTextAreaElement ||
     hotkeyCapturing
   );
@@ -1205,41 +1361,30 @@ function phaseLabel(phase: AppPhase): string {
   }
 }
 
-function sourceStatusLabel(source: SourceReport | undefined): string {
-  if (!source) {
-    return "not reported";
+function sourcePill(
+  status: "off" | "paused" | "on" | "unavailable" | "error" | null,
+  detail?: string | null,
+): HTMLElement {
+  if (status === null) {
+    const el = document.createElement("span");
+    el.classList.add("source-status");
+    return el;
   }
-
-  switch (source.status) {
-    case "active":
-      return "active";
-    case "inactive":
-      return "inactive";
-    case "no_input_device":
-      return source.kind === "mic" ? "no microphone input device" : "no input device";
-    case "faulted":
-      return source.detail ? `attention needed: ${source.detail}` : "attention needed";
-  }
+  const severity: Severity =
+    status === "on" ? "ok" : status === "error" || status === "unavailable" ? "attention" : "neutral";
+  const label = detail ? `${status}: ${detail}` : status;
+  const el = pill(label, severity);
+  el.style.flexShrink = "0";
+  el.style.whiteSpace = detail ? "normal" : "nowrap";
+  el.style.maxWidth = "100%";
+  el.dataset.status = status;
+  return el;
 }
 
-function severityForSource(source: SourceReport | undefined): Severity {
-  if (!source) {
-    return "neutral";
-  }
-
-  switch (source.status) {
-    case "active":
-      return "ok";
-    case "faulted":
-      return "attention";
-    case "inactive":
-    case "no_input_device":
-      return "neutral";
-  }
-}
-
-function sourcePill(source: SourceReport | undefined): HTMLElement {
-  return pill(sourceStatusLabel(source), severityForSource(source));
+function sourceSaveFailureMessage(failure: FailedSourceWrite): string {
+  return failure.attempted
+    ? "could not save turning this on. it stays off. try again."
+    : "could not save turning this off. it is off now, but may turn on again after a restart. try again.";
 }
 
 function sourceByKind(dump: HealthDump, kind: SourceKind): SourceReport | undefined {
@@ -1280,7 +1425,9 @@ function pairingPhaseLabel(pairing: PairingState): string {
     case "pairing":
       return "pairing…";
     case "awaiting_confirmation":
-      return "waiting for you to confirm your journal's mark";
+      return pairing.finish_connecting
+        ? "finish connecting to your journal"
+        : "waiting for you to confirm your journal's mark";
     case "paired":
       return `paired with ${markTextForm(pairing.mark)}`;
     case "failed":
@@ -1775,6 +1922,35 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   );
 
   if (pairing.phase === "awaiting_confirmation") {
+    if (pairing.finish_connecting) {
+      const card = document.createElement("div");
+      card.style.marginTop = "12px";
+      const finishBtn = actionButton(
+        "Finish connecting",
+        ids["settings.pairing.finishConnecting"],
+        !finishInFlight,
+        async () => {
+          if (finishInFlight) return;
+          finishInFlight = true;
+          try {
+            await invoke("finish_connecting", { binding: pairing.binding });
+            setupActionError.finish = "";
+          } catch (error) {
+            setupActionError.finish = errorText(error);
+          } finally {
+            finishInFlight = false;
+            retryHealth();
+          }
+        },
+        finishInFlight,
+        "accent",
+      );
+      card.append(finishBtn);
+      appendSetupError(card, "finish");
+      pane.append(card);
+      return pane;
+    }
+
     const card = document.createElement("div");
     card.style.marginTop = "12px";
 
@@ -1986,6 +2162,207 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   const migrationPanel = renderMigrationPanel();
   if (migrationPanel) pane.append(migrationPanel);
 
+  if (!pairFieldDirty && !pairingDraft) {
+    const handoffLink = dump.setup?.handoff_link ?? "";
+    void Promise.resolve(invoke<string>("pairing_prefill"))
+      .then((prefill) => {
+        if (pairFieldDirty || pairingDraft) return;
+        const link = typeof prefill === "string" && prefill ? prefill : handoffLink;
+        if (!link || pairFieldDirty || pairingDraft) return;
+        pairingDraft = link;
+        input.value = link;
+      })
+      .catch(() => {
+        if (!pairFieldDirty && !pairingDraft && handoffLink) {
+          pairingDraft = handoffLink;
+          input.value = handoffLink;
+        }
+      });
+  }
+
+  if (pairing.setup_browser_ready) {
+    const browserRow = document.createElement("div");
+    browserRow.style.marginTop = "8px";
+    const openBtn = actionButton(
+      "Open your journal",
+      ids["settings.setup.browserJournal"],
+      !browserInFlight,
+      async () => {
+        if (browserInFlight) return;
+        browserInFlight = true;
+        try {
+          await invoke("open_setup_journal", { binding: pairing.binding });
+          setupActionError.browser = "";
+        } catch (error) {
+          setupActionError.browser = errorText(error);
+        } finally {
+          browserInFlight = false;
+          retryHealth();
+        }
+      },
+      browserInFlight,
+    );
+    browserRow.append(openBtn);
+    appendSetupError(browserRow, "browser");
+    pane.append(browserRow);
+  }
+
+  const handoffId = dump.setup?.handoff_id;
+  const handoffRevision = dump.setup?.handoff_revision;
+  if (
+    handoffId && handoffRevision !== undefined && handoffRevision !== null &&
+    !dump.sync.pairing.finish_connecting &&
+    !dump.sync.pairing.setup_browser_ready &&
+    (dump.sync.pairing.phase === "not_paired" || dump.sync.pairing.phase === "failed" ||
+      (dump.sync.pairing.phase === "paired" && dump.setup?.handoff_new_connection === true &&
+        !dump.setup.handoff_expired))
+  ) {
+    const expired = Boolean(dump.setup?.handoff_expired);
+    const connectRow = document.createElement("div");
+    connectRow.style.marginTop = "8px";
+    const connectBtn = actionButton(
+      "continue this connection",
+      ids["settings.setup.nativeConnect"],
+      !expired && !nativeConnectInFlight,
+      async () => {
+        if (nativeConnectInFlight || expired) return;
+        nativeConnectInFlight = true;
+        try {
+          await invoke("connect_native_handoff", {
+            handoffId,
+            revision: handoffRevision,
+          });
+          setupActionError.connect = "";
+        } catch (error) {
+          setupActionError.connect = errorText(error);
+        } finally {
+          nativeConnectInFlight = false;
+          retryHealth();
+        }
+      },
+      nativeConnectInFlight,
+    );
+    if (expired) connectBtn.disabled = true;
+    connectRow.append(connectBtn);
+    appendSetupError(connectRow, "connect");
+    pane.append(connectRow);
+  }
+
+  const dismissDeferredButton = () =>
+    actionButton(
+      "dismiss",
+      ids["settings.setup.deferredDismiss"],
+      !deferredInFlight,
+      async () => {
+        if (deferredInFlight) return;
+        deferredInFlight = true;
+        requestRerender();
+        try {
+          await invoke("dismiss_deferred_link");
+          setupActionError.deferred = "";
+        } catch (error) {
+          setupActionError.deferred = errorText(error);
+        } finally {
+          deferredInFlight = false;
+          retryHealth();
+        }
+      },
+      deferredInFlight,
+      "standard",
+    );
+
+  if (dump.setup?.deferred_link) {
+    const deferredRow = document.createElement("div");
+    deferredRow.style.marginTop = "8px";
+    deferredRow.style.display = "flex";
+    deferredRow.style.gap = "8px";
+    const useBtn = actionButton(
+      "use this link",
+      ids["settings.setup.deferredUse"],
+      !deferredInFlight,
+      async () => {
+        if (deferredInFlight) return;
+        deferredInFlight = true;
+        requestRerender();
+        try {
+          const link = await invoke<string>("use_deferred_link");
+          if (typeof link === "string" && link) {
+            pairingDraft = link;
+            pairFieldDirty = true;
+            input.value = link;
+          }
+          setupActionError.deferred = "";
+        } catch (error) {
+          setupActionError.deferred = errorText(error);
+        } finally {
+          deferredInFlight = false;
+          retryHealth();
+        }
+      },
+      deferredInFlight,
+      "standard",
+    );
+    deferredRow.append(useBtn, dismissDeferredButton());
+    pane.append(deferredRow);
+    appendSetupError(pane, "deferred");
+  } else if (dump.setup?.handoff_rejected) {
+    const rejectedRow = document.createElement("div");
+    rejectedRow.style.marginTop = "8px";
+    rejectedRow.append(dismissDeferredButton());
+    pane.append(rejectedRow);
+    appendSetupError(pane, "deferred");
+  }
+
+  if (
+    dump.setup?.mailbox_busy ||
+    dump.setup?.handoff_rejected ||
+    dump.setup?.native_handoff_rejected ||
+    dump.setup?.handoff_deferred ||
+    dump.setup?.handoff_persist_failed
+  ) {
+    const retryRow = document.createElement("div");
+    retryRow.style.marginTop = "8px";
+    const reason = document.createElement("p");
+    const setup = dump.setup;
+    reason.textContent = setup?.handoff_persist_failed
+      ? SETUP_LINK_ERRORS.handoff_persist_failed
+      : setup?.mailbox_busy
+        ? SETUP_LINK_ERRORS.handoff_busy
+        : setup?.native_handoff_rejected
+          ? SETUP_LINK_ERRORS.handoff_rejected
+          : setup?.handoff_deferred
+            ? SETUP_LINK_ERRORS.handoff_deferred
+            : "another pairing link could not be added.";
+    retryRow.append(reason);
+    const retryBtn = actionButton(
+      "Try again",
+      ids["settings.setup.linkRetry"],
+      !retryInFlight,
+      async () => {
+        if (retryInFlight) return;
+        retryInFlight = true;
+        try {
+          await invoke("retry_setup_link");
+          setupActionError.retry = "";
+        } catch (error) {
+          setupActionError.retry = errorText(error);
+        } finally {
+          retryInFlight = false;
+          retryHealth();
+        }
+      },
+      retryInFlight,
+    );
+    retryRow.append(retryBtn);
+    appendSetupError(retryRow, "retry");
+    pane.append(retryRow);
+  }
+
+  const freshLink = document.createElement("p");
+  freshLink.textContent = "a new link from your journal can be pasted here.";
+  freshLink.dataset.automationId = ids["settings.setup.freshLink"];
+  pane.append(freshLink);
+
   const inputRow = document.createElement("div");
   inputRow.style.display = "grid";
   inputRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
@@ -2007,42 +2384,47 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   input.style.color = "var(--fg)";
   input.style.minWidth = "0";
   input.oninput = () => {
+    pairFieldDirty = true;
     pairingDraft = input.value;
   };
 
-  const button = document.createElement("button");
-  const busy = pairingBusy || pairing.phase === "pairing";
-  button.textContent = busy ? "pairing…" : "pair";
-  button.disabled = busy;
-  button.dataset.automationId = ids["settings.pairing.submit"];
-  button.classList.add("fluent-accent");
-  button.style.fontSize = "13px";
-  button.style.padding = "7px 14px";
-  button.style.border = "1px solid var(--accent)";
-  button.style.borderRadius = "var(--radius-control)";
-  button.style.background = busy ? "var(--accent-busy)" : "var(--accent)";
-  button.style.color = "var(--accent-fg)";
-  button.style.cursor = busy ? "default" : "pointer";
-  button.onclick = async () => {
-    const link = pairingDraft.trim();
-    if (!link || pairingBusy) {
-      return;
-    }
-    pairingBusy = true;
-    button.disabled = true;
-    button.textContent = "pairing…";
-    try {
-      // The result is reflected through the health dump's pairing phase; we
-      // ignore the return and let the next render paint the outcome.
-      await invoke("pair", { link });
-    } catch {
-      // Failure surfaces as pairing.phase = "failed" with a detail.
-    } finally {
-      pairingBusy = false;
-    }
-  };
+  inputRow.append(input);
 
-  inputRow.append(input, button);
+  {
+    const button = document.createElement("button");
+    const busy = pairingBusy || pairing.phase === "pairing";
+    button.textContent = busy ? "pairing…" : "pair";
+    button.disabled = busy;
+    button.dataset.automationId = ids["settings.pairing.submit"];
+    button.classList.add("fluent-accent");
+    button.style.fontSize = "13px";
+    button.style.padding = "7px 14px";
+    button.style.border = "1px solid var(--accent)";
+    button.style.borderRadius = "var(--radius-control)";
+    button.style.background = busy ? "var(--accent-busy)" : "var(--accent)";
+    button.style.color = "var(--accent-fg)";
+    button.style.cursor = busy ? "default" : "pointer";
+    button.onclick = async () => {
+      const link = pairingDraft.trim();
+      if (!link || pairingBusy) {
+        return;
+      }
+      pairingBusy = true;
+      button.disabled = true;
+      button.textContent = "pairing…";
+      try {
+        // The result is reflected through the health dump's pairing phase; we
+        // ignore the return and let the next render paint the outcome.
+        await invoke("pair", { link });
+      } catch {
+        // Failure surfaces as pairing.phase = "failed" with a detail.
+      } finally {
+        pairingBusy = false;
+      }
+    };
+    inputRow.append(button);
+  }
+
   pane.append(inputRow);
   return pane;
 }
@@ -3071,6 +3453,7 @@ function routeLabel(route: Route): string {
 
 function navigateTo(route: Route): void {
   activeRoute = route;
+  closeProofConsumer();
   focusPaneTitleOnRender = true;
   closeNavOverlay();
   rerender();
@@ -3246,6 +3629,52 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
   return rows;
 }
 
+function renderSourceControl(
+  kind: SourceKind,
+  report: SourceReport | undefined,
+  stateId: string,
+  switchId: string,
+  dump: HealthDump,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.gap = "10px";
+
+  const enabled = isSourceEnabled(dump.setup, kind);
+  const isPaused = dump.pause !== null || dump.app_state === "paused";
+  const status = deriveSourceStatus(enabled, isPaused, report);
+  const failed = dump.setup?.failed_sources?.find((f) => f.kind === kind);
+
+  const accessibleName =
+    kind === "mic" ? "microphone" : kind === "system_audio" ? "system audio" : "screen";
+
+  const toggle = toggleRow("", switchId, enabled, (on) => {
+    void invoke("set_source_enabled", { kind, enabled: on }).then(() => retryHealth());
+  });
+  const input = toggle.querySelector("input");
+  if (input) {
+    input.setAttribute("aria-label", accessibleName);
+    if (status !== null) {
+      input.dataset.status = status;
+    }
+  }
+  if (status !== null) {
+    toggle.dataset.status = status;
+  }
+
+  const pillEl = selectable(automation(sourcePill(status, report?.detail), stateId));
+  wrap.append(toggle, pillEl);
+  if (failed) {
+    const failEl = text("div", sourceSaveFailureMessage(failed));
+    failEl.classList.add("save-failure");
+    failEl.style.flexBasis = "100%";
+    wrap.style.flexWrap = "wrap";
+    wrap.append(failEl);
+  }
+  return wrap;
+}
+
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   const sources = section("sources");
   const screen = sourceByKind(dump, "screen");
@@ -3254,17 +3683,36 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   sources.append(
     valueRow(
       "screen",
-      selectable(automation(sourcePill(screen), ids["settings.sources.screen.state"])),
+      renderSourceControl("screen", screen, ids["settings.sources.screen.state"], ids["settings.sources.screen.enabled"], dump),
     ),
     valueRow(
       "system audio",
-      selectable(automation(sourcePill(systemAudio), ids["settings.sources.systemAudio.state"])),
+      renderSourceControl("system_audio", systemAudio, ids["settings.sources.systemAudio.state"], ids["settings.sources.systemAudio.enabled"], dump),
     ),
     valueRow(
       "microphone",
-      selectable(automation(sourcePill(mic), ids["settings.sources.mic.state"])),
+      renderSourceControl("mic", mic, ids["settings.sources.mic.state"], ids["settings.sources.mic.enabled"], dump),
     ),
   );
+  sources.append(renderStartAtLoginControl(dump));
+
+  const hasSourceSaveFailure = Boolean(
+    dump.setup?.failed_sources && dump.setup.failed_sources.length > 0,
+  );
+  if (hasSourceSaveFailure) {
+    const failureEl = document.createElement("div");
+    failureEl.classList.add("save-failure");
+    const retryBtn = actionButton(
+      "retry",
+      ids["settings.sources.saveRetry"],
+      true,
+      () => {
+        void invoke("retry_save").then(() => retryHealth());
+      },
+    );
+    failureEl.append(retryBtn);
+    sources.append(failureEl);
+  }
   if (latestBrowser) {
     sources.append(...renderBrowserRows(latestBrowser));
   }
@@ -3313,9 +3761,9 @@ function sourceGlanceToken(source: SourceReport | undefined, isMic: boolean): st
 
   switch (source.status) {
     case "active":
-      return "active";
+      return "on";
     case "inactive":
-      return "inactive";
+      return "off";
     case "no_input_device":
       return isMic ? "none" : "no input device";
     case "faulted":
@@ -3327,8 +3775,8 @@ function sourcesGlance(dump: HealthDump): string {
   const screen = sourceGlanceToken(sourceByKind(dump, "screen"), false);
   const systemAudio = sourceGlanceToken(sourceByKind(dump, "system_audio"), false);
   const mic = sourceGlanceToken(sourceByKind(dump, "mic"), true);
-  if (screen === "active" && systemAudio === "active") {
-    return mic === "active" ? "all sources active" : `screen + system audio active · mic: ${mic}`;
+  if (screen === "on" && systemAudio === "on") {
+    return mic === "on" ? "all sources on" : `screen + system audio on · mic: ${mic}`;
   }
   return `screen: ${screen} · system audio: ${systemAudio} · mic: ${mic}`;
 }
@@ -3456,53 +3904,606 @@ function renderUpdatesCard(): HTMLElement {
   );
 }
 
-function renderKinshipCard(): HTMLElement {
+function renderSourcesNotice(dump: HealthDump = latestHealth ?? ({} as HealthDump)): HTMLElement {
   const card = document.createElement("div");
-  card.classList.add("settings-kinship");
-  automation(card, ids["settings.home.kinship"]);
+  card.classList.add("settings-card");
+  automation(card, ids["settings.home.sourcesNotice"]);
 
-  const heading = text("h2", "welcome to solstone.");
+  const heading = text("h2", "you choose which sources are on.");
   heading.classList.add("settings-card-title");
 
-  const body1 = text(
+  const body = text(
     "div",
-    "the solstone app takes in what you share with it, and all of it goes into your journal.",
+    "you can turn each source on or off in sources.",
   );
-  body1.classList.add("settings-kinship-body");
+  body.style.fontSize = "13px";
+  body.style.color = "var(--fg-subtle)";
+  body.style.margin = "4px 0 12px";
 
-  const body2 = text("div", "your journal is always private, only yours.");
-  body2.classList.add("settings-kinship-body");
+  const dismiss = actionButton(
+    "dismiss",
+    ids["settings.home.sourcesNotice.dismiss"],
+    true,
+    () => {
+      void invoke("dismiss_notice").then(() => retryHealth());
+    },
+  );
 
-  card.append(heading, body1, body2);
+  card.append(heading, body, dismiss);
+
+  if (dump.setup?.notice_save_failed) {
+    const failEl = text("div", "could not save this dismissal. try again.");
+    failEl.classList.add("save-failure");
+    const retryBtn = actionButton(
+      "retry",
+      ids["settings.sources.saveRetry"],
+      true,
+      () => {
+        void invoke("retry_save").then(() => retryHealth());
+      },
+    );
+    card.append(failEl, retryBtn);
+  }
+
   return card;
 }
 
-// The kinship card is a first-run-only intro, not a not-paired-forever banner:
-// "not paired" is a legitimate ongoing mode for an owner who chooses local-only
-// capture, so gating solely on it would show the intro on every settings visit
-// for the life of the install. Windows has no source-level opt-in to read a
-// "has the owner done anything yet" fact from (sources activate automatically,
-// unlike the Android wish-store precedent this mirrors), so the fact this gate
-// needs is instead recorded the first time the card is actually shown. This is
-// UI-dismissal state, not an engine fact, so it lives in the webview's own
-// storage rather than HealthDump (whose fields the shell only ever reads, never
-// mints, per the module doc comment above).
-const KINSHIP_SEEN_STORAGE_KEY = "solstone.settings.kinshipSeen";
+function setAcceptedProofGeneration(generation: number): void {
+  currentAcceptedProofGeneration = generation;
+}
 
-function hasSeenKinship(): boolean {
-  try {
-    return localStorage.getItem(KINSHIP_SEEN_STORAGE_KEY) === "1";
-  } catch {
-    return false;
+function clearVisibleProof(): void {
+  latestPreview = {};
+  for (const [kind, id] of [
+    ["mic", ids["settings.setup.mic.proof"]],
+    ["system_audio", ids["settings.setup.systemAudio.proof"]],
+    ["screen", ids["settings.setup.screen.proof"]],
+  ] as const) {
+    const node = document.querySelector<HTMLElement>(`[data-automation-id="${id}"]`);
+    if (node) fillProofNode(node, kind, {});
   }
 }
 
-function markKinshipSeen(): void {
-  try {
-    localStorage.setItem(KINSHIP_SEEN_STORAGE_KEY, "1");
-  } catch {
-    // Best-effort only; a storage failure just means the intro may repeat.
+function closeProofConsumer(): void {
+  ++proofRequest;
+  currentAcceptedProofGeneration = 0;
+  openProofKind = "closed";
+  clearVisibleProof();
+  proofOperations = proofOperations.catch(() => {}).then(() => invoke("set_proof_consumer", { source: null })).catch(() => {});
+}
+
+function proofEligible(kind: SourceKind, dump: HealthDump | null = latestHealth): boolean {
+  return Boolean(dump && deriveSourceStatus(
+    isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused",
+    sourceByKind(dump, kind),
+  ) === "on");
+}
+
+function ensureProofConsumer(step: WizardStep): void {
+  const target: ProofConsumerState = proofWindowActive && document.visibilityState !== "hidden" &&
+    (step === "mic" || step === "system_audio" || step === "screen") && proofEligible(step) ? step : "closed";
+  if (openProofKind === target) return;
+  if (target === "closed") {
+    closeProofConsumer();
+    return;
   }
+  const request = ++proofRequest;
+  currentAcceptedProofGeneration = 0;
+  openProofKind = target;
+  clearVisibleProof();
+  proofOperations = proofOperations.catch(() => {}).then(() => invoke<number>("set_proof_consumer", { source: target })).then((gen) => {
+    if (request === proofRequest && openProofKind === target && typeof gen === "number") {
+      currentAcceptedProofGeneration = gen;
+      clearVisibleProof();
+    }
+  }).catch(() => {
+    if (request === proofRequest) {
+      currentAcceptedProofGeneration = 0;
+      openProofKind = "closed";
+      clearVisibleProof();
+    }
+  });
+}
+
+function setProofWindowActive(active: boolean): void {
+  proofWindowActive = active;
+  if (!active) closeProofConsumer();
+  else if (label === "settings" && activeRoute === "home" && latestHealth?.setup) {
+    ensureProofConsumer(latestHealth.setup.wizard);
+  }
+}
+
+function handleProofInactive(): void {
+  setProofWindowActive(false);
+  // A native notice may arrive after focus returned and a newer open completed.
+  // Clear that proof, then ask native authority afresh instead of latching stale inactivity.
+  if (document.hasFocus() && document.visibilityState !== "hidden") {
+    setProofWindowActive(true);
+  }
+}
+
+function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnapshot): void {
+  const enabled = latestHealth ? isSourceEnabled(latestHealth.setup, kind) : false;
+  const isPaused = latestHealth ? (latestHealth.pause !== null || latestHealth.app_state === "paused") : false;
+  const report = latestHealth ? sourceByKind(latestHealth, kind) : undefined;
+  const status = deriveSourceStatus(enabled, isPaused, report);
+
+  if (!enabled || status === "off" || isPaused || !proofWindowActive || document.visibilityState === "hidden") {
+    const withheldEl = text("span", !enabled ? "off" : isPaused ? "paused" : "preview paused");
+    withheldEl.classList.add("proof-status");
+    node.replaceChildren(withheldEl);
+    return;
+  }
+
+  if (status === "unavailable" || status === "error") {
+    const reason = report?.status === "no_input_device"
+      ? (kind === "mic"
+          ? "no microphone is available. connect or enable a microphone in windows sound settings, then retry."
+          : "no sound output is available. connect or enable an output device in windows sound settings, then retry.")
+      : report?.reason === "access_denied" || report?.reason === "AccessDenied"
+        ? "access was denied. check windows permissions for this source, then retry."
+        : report?.detail;
+    const label = reason ? `${status}: ${reason}` : status;
+    const textEl = text("span", label);
+    textEl.classList.add("proof-status");
+    const retryBtn = actionButton("retry", undefined, true, () => {
+      void invoke("set_source_enabled", { kind, enabled: true }).then(() => retryHealth());
+    });
+    retryBtn.style.marginLeft = "12px";
+    node.replaceChildren(textEl, retryBtn);
+    return;
+  }
+
+  const validSnapshot =
+    typeof preview.consumer_generation === "number" &&
+    preview.consumer_generation !== 0 &&
+    preview.consumer_generation === currentAcceptedProofGeneration
+      ? preview
+      : {};
+
+  if (kind === "mic" || kind === "system_audio") {
+    const level = kind === "mic" ? validSnapshot.mic_level : validSnapshot.system_audio_level;
+    if (typeof level === "number" && Number.isFinite(level)) {
+      const meter = document.createElement("meter");
+      meter.setAttribute("role", "meter");
+      meter.setAttribute("aria-label", kind === "mic" ? "microphone level" : "system audio level");
+      meter.min = 0;
+      meter.max = 1;
+      meter.value = level;
+      meter.setAttribute("aria-valuemin", "0");
+      meter.setAttribute("aria-valuemax", "1");
+      meter.setAttribute("aria-valuenow", String(level));
+      node.replaceChildren(meter);
+    } else {
+      const waitingEl = text("span", "waiting");
+      waitingEl.classList.add("proof-status");
+      node.replaceChildren(waitingEl);
+    }
+  } else if (kind === "screen") {
+    const frame = validSnapshot.screen_frame;
+    if (frame && Array.isArray(frame.rgba) && typeof frame.width === "number" && typeof frame.height === "number") {
+      const canvas = document.createElement("canvas");
+      canvas.setAttribute("aria-label", "screen preview");
+      canvas.width = frame.width;
+      canvas.height = frame.height;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        try {
+          const imgData = ctx.createImageData(frame.width, frame.height);
+          imgData.data.set(new Uint8ClampedArray(frame.rgba));
+          ctx.putImageData(imgData, 0, 0);
+        } catch {
+          // ignore canvas paint errors
+        }
+      }
+      node.replaceChildren(canvas);
+    } else {
+      const waitingEl = text("span", "waiting");
+      waitingEl.classList.add("proof-status");
+      node.replaceChildren(waitingEl);
+    }
+  }
+}
+
+function renderProofNode(kind: SourceKind, preview: PreviewSnapshot): HTMLElement {
+  const node = document.createElement("div");
+  node.classList.add("wizard-proof", "proof-node");
+  if (kind === "mic") {
+    automation(node, ids["settings.setup.mic.proof"]);
+  } else if (kind === "system_audio") {
+    automation(node, ids["settings.setup.systemAudio.proof"]);
+  } else if (kind === "screen") {
+    automation(node, ids["settings.setup.screen.proof"]);
+  }
+  fillProofNode(node, kind, preview);
+  return node;
+}
+
+function applyPreview(preview: PreviewSnapshot): void {
+  if (
+    !proofWindowActive || document.visibilityState === "hidden" ||
+    typeof preview.consumer_generation !== "number" ||
+    preview.consumer_generation === 0 ||
+    preview.consumer_generation !== currentAcceptedProofGeneration
+  ) {
+    return;
+  }
+  const proofNode = document.querySelector<HTMLElement>(".wizard-proof");
+  if (!proofNode) {
+    return;
+  }
+  const autoId = proofNode.dataset.automationId;
+  let kind: SourceKind | null = null;
+  if (autoId === ids["settings.setup.mic.proof"]) {
+    kind = "mic";
+  } else if (autoId === ids["settings.setup.systemAudio.proof"]) {
+    kind = "system_audio";
+  } else if (autoId === ids["settings.setup.screen.proof"]) {
+    kind = "screen";
+  }
+  if (!kind || !proofEligible(kind)) {
+    return;
+  }
+  latestPreview = preview;
+  fillProofNode(proofNode, kind, preview);
+}
+
+function renderWizardSourceControl(
+  kind: SourceKind,
+  automationId: string,
+  dump: HealthDump,
+): HTMLElement {
+  const enabled = isSourceEnabled(dump.setup, kind);
+  const isPaused = dump.pause !== null || dump.app_state === "paused";
+  const report = sourceByKind(dump, kind);
+  const status = deriveSourceStatus(enabled, isPaused, report);
+  const failure = dump.setup?.failed_sources?.find((f) => f.kind === kind);
+
+  const accessibleName =
+    kind === "mic" ? "microphone" : kind === "system_audio" ? "system audio" : "screen";
+
+  const toggle = toggleRow(enabled ? accessibleName : `turn on ${accessibleName}`, automationId, enabled, async (on) => {
+    try {
+      await invoke("set_source_enabled", { kind, enabled: on });
+    } finally {
+      retryHealth();
+    }
+  });
+  toggle.style.fontSize = "16px";
+  toggle.style.padding = "12px 0";
+  const input = toggle.querySelector("input");
+  if (input) {
+    input.setAttribute("aria-label", enabled ? accessibleName : `turn on ${accessibleName}`);
+    input.style.width = "20px";
+    input.style.height = "20px";
+    if (status !== null) {
+      input.dataset.status = status;
+    }
+  }
+  if (status !== null) {
+    toggle.dataset.status = status;
+    toggle.append(sourcePill(status, report?.detail));
+  }
+  const control = document.createElement("div");
+  control.append(toggle);
+  if (failure) {
+    const failEl = text("div", sourceSaveFailureMessage(failure));
+    failEl.classList.add("save-failure");
+    const retry = actionButton("retry", ids["settings.sources.saveRetry"], true, () => {
+      void invoke("retry_save").then(() => retryHealth());
+    });
+    retry.style.marginTop = "8px";
+    failEl.append(document.createElement("br"), retry);
+    control.append(failEl);
+  }
+  return control;
+}
+
+function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.classList.add("wizard-start-at-login");
+  const checked = dump.setup?.start_at_login ?? false;
+  const toggle = toggleRow(
+    "start at login",
+    ids["settings.setup.startAtLogin"],
+    checked,
+    async (on) => {
+      try {
+        await invoke("set_start_at_login", { enabled: on });
+      } finally {
+        retryHealth();
+      }
+    },
+  );
+  wrap.append(toggle);
+  if (dump.setup?.login_apply_failed) {
+    const err = text("div", "could not update start at login");
+    automation(err, ids["settings.setup.startAtLogin.error"]);
+    err.classList.add("wizard-error");
+    const retry = actionButton("retry", undefined, true, () => {
+      void invoke("retry_save").then(() => retryHealth());
+    });
+    wrap.append(err, retry);
+  }
+  return wrap;
+}
+
+async function advanceWizardStep(step: WizardStep): Promise<void> {
+  try {
+    const res = await invoke<{ saved: boolean; proof_generation: number }>("set_wizard_step", {
+      step,
+    });
+    if (res && res.saved === true) {
+      closeProofConsumer();
+      focusWizardPrimary = true;
+    }
+  } finally {
+    retryHealth();
+  }
+}
+
+function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
+  const wizardEl = document.createElement("div");
+  wizardEl.classList.add("settings-wizard");
+
+  const step = dump.setup?.wizard ?? "mic";
+  ensureProofConsumer(step);
+
+  const stepContainer = document.createElement("div");
+  automation(stepContainer, ids["settings.setup.step"]);
+  stepContainer.dataset.step = step;
+
+  const wizardSteps = {
+    mic: { number: 5, heading: "share your conversations" },
+    system_audio: { number: 5, heading: "share sound from this computer" },
+    screen: { number: 6, heading: "share your screen" },
+    connection: { number: 7, heading: "connect your journal" },
+  } as const;
+  const wizardStep = wizardSteps[step as keyof typeof wizardSteps];
+  if (wizardStep) {
+    const progress = text("p", `step ${wizardStep.number} of 7`);
+    progress.classList.add("wizard-progress");
+    progress.dataset.stepNumber = String(wizardStep.number);
+    automation(progress, ids["settings.setup.stepNumber"]);
+    const heading = text("h2", wizardStep.heading);
+    heading.classList.add("wizard-step-title");
+    heading.tabIndex = -1;
+    stepContainer.append(progress, heading);
+  }
+
+  const renderPauseBtn = (kind: SourceKind) => {
+    const btn = actionButton(
+      "off",
+      ids["settings.setup.pauseSource"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind, enabled: false });
+        } finally {
+          retryHealth();
+        }
+      },
+    );
+    btn.setAttribute("aria-label", "off");
+    return btn;
+  };
+
+  const sentence = text("p", "what you turn on goes into your journal.");
+  sentence.classList.add("wizard-sentence");
+
+  if (step === "mic") {
+    const sw = renderWizardSourceControl("mic", "settings.setup.mic", dump);
+    const proof = renderProofNode("mic", preview);
+    const pauseBtn = renderPauseBtn("mic");
+
+    const notNowBtn = actionButton(
+      "not now",
+      ids["settings.setup.notNow"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind: "mic", enabled: false });
+          await advanceWizardStep("system_audio");
+        } finally {
+          retryHealth();
+        }
+      },
+      false,
+      "standard",
+    );
+
+    const nextBtn = actionButton(
+      "continue with this choice",
+      ids["settings.setup.next"],
+      true,
+      async () => {
+        await advanceWizardStep("system_audio");
+      },
+      false,
+      "standard",
+    );
+
+    const navRow = document.createElement("div");
+    navRow.style.display = "flex";
+    navRow.style.gap = "8px";
+    navRow.style.marginTop = "12px";
+    navRow.append(notNowBtn);
+    if (isSourceEnabled(dump.setup, "mic")) navRow.append(nextBtn);
+
+    stepContainer.append(sw, proof);
+    if (isSourceEnabled(dump.setup, "mic")) stepContainer.append(pauseBtn);
+    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+  } else if (step === "system_audio") {
+    const sw = renderWizardSourceControl("system_audio", "settings.setup.systemAudio", dump);
+    const proof = renderProofNode("system_audio", preview);
+    const pauseBtn = renderPauseBtn("system_audio");
+
+    const backBtn = actionButton(
+      "back",
+      ids["settings.setup.back"],
+      true,
+      async () => {
+        await advanceWizardStep("mic");
+      },
+      false,
+      "standard",
+    );
+
+    const notNowBtn = actionButton(
+      "not now",
+      ids["settings.setup.notNow"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind: "system_audio", enabled: false });
+          await advanceWizardStep("screen");
+        } finally {
+          retryHealth();
+        }
+      },
+      false,
+      "standard",
+    );
+
+    const nextBtn = actionButton(
+      "continue with this choice",
+      ids["settings.setup.next"],
+      true,
+      async () => {
+        await advanceWizardStep("screen");
+      },
+      false,
+      "standard",
+    );
+
+    const navRow = document.createElement("div");
+    navRow.style.display = "flex";
+    navRow.style.gap = "8px";
+    navRow.style.marginTop = "12px";
+    navRow.append(backBtn, notNowBtn);
+    if (isSourceEnabled(dump.setup, "system_audio")) navRow.append(nextBtn);
+
+    stepContainer.append(sw, proof);
+    if (isSourceEnabled(dump.setup, "system_audio")) stepContainer.append(pauseBtn);
+    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+  } else if (step === "screen") {
+    const sw = renderWizardSourceControl("screen", "settings.setup.screen", dump);
+    const proof = renderProofNode("screen", preview);
+    const pauseBtn = renderPauseBtn("screen");
+
+    const backBtn = actionButton(
+      "back",
+      ids["settings.setup.back"],
+      true,
+      async () => {
+        await advanceWizardStep("system_audio");
+      },
+      false,
+      "standard",
+    );
+
+    const notNowBtn = actionButton(
+      "not now",
+      ids["settings.setup.notNow"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind: "screen", enabled: false });
+          await advanceWizardStep("connection");
+        } finally {
+          retryHealth();
+        }
+      },
+      false,
+      "standard",
+    );
+
+    const nextBtn = actionButton(
+      "continue with this choice",
+      ids["settings.setup.next"],
+      true,
+      async () => {
+        await advanceWizardStep("connection");
+      },
+      false,
+      "standard",
+    );
+
+    const navRow = document.createElement("div");
+    navRow.style.display = "flex";
+    navRow.style.gap = "8px";
+    navRow.style.marginTop = "12px";
+    navRow.append(backBtn, notNowBtn);
+    if (isSourceEnabled(dump.setup, "screen")) navRow.append(nextBtn);
+
+    stepContainer.append(sw, proof);
+    if (isSourceEnabled(dump.setup, "screen")) stepContainer.append(pauseBtn);
+    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+  } else if (step === "connection") {
+    const isPaired = dump.sync.pairing.phase === "paired";
+
+    const backBtn = actionButton(
+      "back",
+      ids["settings.setup.back"],
+      true,
+      async () => {
+        await advanceWizardStep("screen");
+      },
+      false,
+      "standard",
+    );
+
+    const forwardBtn = isPaired
+      ? actionButton("next", ids["settings.setup.next"], true, async () => {
+          if (!nativeContinuationPending(dump)) {
+            await advanceWizardStep("done");
+          }
+        })
+      : actionButton("skip", ids["settings.setup.notNow"], true, async () => {
+          if (!nativeContinuationPending(dump)) {
+            await advanceWizardStep("done");
+          }
+        });
+
+    const navRow = document.createElement("div");
+    navRow.style.display = "flex";
+    navRow.style.gap = "8px";
+    navRow.style.marginTop = "12px";
+    navRow.append(backBtn);
+    if (!nativeContinuationPending(dump)) navRow.append(forwardBtn);
+
+    stepContainer.append(renderPairingSection(dump), sentence, navRow);
+  }
+
+  if (dump.setup?.wizard_save_failed) {
+    const failEl = text("div", "could not save your setup progress. try again.");
+    failEl.classList.add("save-failure");
+    stepContainer.append(failEl);
+  }
+
+  const anyWizardSaveFailed = Boolean(
+    (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
+    dump.setup?.wizard_save_failed ||
+    dump.setup?.notice_save_failed
+  );
+  const currentSourceFailure = dump.setup?.failed_sources?.some((failure) => failure.kind === step);
+  if (anyWizardSaveFailed && !currentSourceFailure) {
+    const retryFailEl = document.createElement("div");
+    retryFailEl.classList.add("save-failure");
+    const retryBtn = actionButton(
+      "retry",
+      ids["settings.sources.saveRetry"],
+      true,
+      () => {
+        void invoke("retry_save").then(() => retryHealth());
+      },
+    );
+    retryFailEl.append(retryBtn);
+    stepContainer.append(retryFailEl);
+  }
+
+  wizardEl.append(stepContainer);
+  return wizardEl;
 }
 
 function renderHome(dump: HealthDump): HTMLElement {
@@ -3518,9 +4519,8 @@ function renderHome(dump: HealthDump): HTMLElement {
     renderUpdatesCard(),
   );
 
-  if (dump.sync.pairing.phase === "not_paired" && !hasSeenKinship()) {
-    markKinshipSeen();
-    home.append(renderKinshipCard(), renderStatusStrip(dump), cards);
+  if (dump.setup && dump.setup.wizard === "done" && !dump.setup.notice_dismissed) {
+    home.append(renderSourcesNotice(), renderStatusStrip(dump), cards);
   } else {
     home.append(renderStatusStrip(dump), cards);
   }
@@ -3533,7 +4533,15 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
 
   switch (route) {
     case "home":
-      content.append(renderHome(dump));
+      if (dump.setup?.wizard && dump.setup.wizard !== "done") {
+        content.append(renderWizard(dump, latestPreview));
+      } else {
+        const home = renderHome(dump);
+        if (homeShowsPairing(dump)) {
+          home.append(renderPairingSection(dump));
+        }
+        content.append(home);
+      }
       break;
     case "sources":
       content.append(renderSourcesSection(dump), latestMic ? renderMicSection(latestMic) : loadingCaption());
@@ -3652,7 +4660,8 @@ function renderPane(dump: HealthDump): HTMLElement {
   hamburgerGlyph.setAttribute("aria-hidden", "true");
   hamburger.append(hamburgerGlyph);
 
-  const title = text("h1", routeLabel(activeRoute));
+  const inSetup = activeRoute === "home" && dump.setup?.wizard && dump.setup.wizard !== "done";
+  const title = text("h1", inSetup ? "set up solstone" : routeLabel(activeRoute));
   title.classList.add("settings-pane-title");
   title.tabIndex = -1;
 
@@ -3675,6 +4684,7 @@ function renderSettingsShell(dump: HealthDump): HTMLElement {
 }
 
 function renderSettings(dump: HealthDump): void {
+  setLatestHealth(dump);
   const logText = logHelp?.querySelector("textarea");
   const logPosition = logText ? [logText.selectionStart, logText.selectionEnd, logText.scrollTop, logText.scrollLeft] : null;
   resetRoot(ids["settings.window.root"]);
@@ -3687,7 +4697,11 @@ function renderSettings(dump: HealthDump): void {
     logText.scrollTop = logPosition[2];
     logText.scrollLeft = logPosition[3];
   }
-  if (focusPaneTitleOnRender) {
+  if (focusWizardPrimary) {
+    focusWizardPrimary = false;
+    focusPaneTitleOnRender = false;
+    root.querySelector<HTMLElement>(".wizard-step-title")?.focus();
+  } else if (focusPaneTitleOnRender) {
     focusPaneTitleOnRender = false;
     root.querySelector<HTMLElement>(".settings-pane-title")?.focus();
   } else if (!markCardFocused && dump.sync?.pairing?.phase === "awaiting_confirmation") {
@@ -3769,6 +4783,7 @@ function nowSecs(): number {
 
 function setLatestHealth(dump: HealthDump | null): void {
   latestHealth = dump;
+  if (openProofKind !== "closed" && !proofEligible(openProofKind, dump)) closeProofConsumer();
   healthReceivedAt = dump ? nowSecs() : null;
 }
 
@@ -4269,6 +5284,18 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
 }
 
 function rerender(): void {
+  const hadFocusWizardPrimary = focusWizardPrimary;
+  const active = document.activeElement;
+  let activeSelector: string | null = null;
+  if (!hadFocusWizardPrimary && active && active !== document.body) {
+    const autoId = active.getAttribute("data-automation-id");
+    if (autoId) {
+      activeSelector = `[data-automation-id="${autoId}"]`;
+    } else if (active.id) {
+      activeSelector = `#${active.id}`;
+    }
+  }
+
   // Any full render satisfies a deferred background request, so direct callers
   // (commits, hotkey-capture end, boot) auto-flush a pending coalesced rerender.
   pendingRerender = false;
@@ -4280,6 +5307,13 @@ function rerender(): void {
     renderSettings(latestHealth);
   }
   scheduleRenderBeacon();
+
+  if (!hadFocusWizardPrimary && activeSelector) {
+    const el = document.querySelector(activeSelector) as HTMLElement | null;
+    if (el && typeof el.focus === "function") {
+      el.focus();
+    }
+  }
 }
 
 // Background event streams call this instead of rerender() directly: defer + coalesce
@@ -4326,9 +5360,13 @@ function renderUnavailable(): void {
 }
 
 async function retryHealth(): Promise<void> {
-  const health = await invoke<HealthDump>("get_health").catch(() => null);
-  if (health) {
-    setLatestHealth(health);
+  try {
+    const health = await invoke<HealthDump>("get_health");
+    if (health) {
+      setLatestHealth(health);
+    }
+  } catch {
+    // Ignore error
   }
   requestRerender();
 }
@@ -4542,6 +5580,15 @@ export function start(): void {
     latestUpdate = event.payload;
     requestRerender();
   });
+  window.addEventListener("blur", () => setProofWindowActive(false));
+  window.addEventListener("focus", () => setProofWindowActive(true));
+  document.addEventListener("visibilitychange", () => setProofWindowActive(document.visibilityState !== "hidden"));
+  window.addEventListener("pagehide", () => setProofWindowActive(false));
+  void listen("proof://inactive", handleProofInactive);
+  void listen("tauri://focus", () => setProofWindowActive(true));
+  void listen<PreviewSnapshot>("preview://changed", (event) => {
+    applyPreview(event.payload ?? {});
+  });
 
   // Live last-checked clock: tick the relative string once a second without a full
   // re-render (the JS analog of the macOS TimelineView; <60s -> "just now").
@@ -4605,9 +5652,20 @@ export const __test__ = {
   setBrowser(status: BrowserStatus | null) {
     latestBrowser = status;
   },
+  setPreview(v: PreviewSnapshot | null) {
+    applyPreview(v ?? {});
+  },
+  applyPreview,
+  setAcceptedProofGeneration,
+  fillProofNode,
+  setProofWindowActive,
+  handleProofInactive,
+  navigateTo,
+  proofIdle: () => proofOperations,
   renderSettings,
   renderAbout,
   renderUnavailable,
+  renderWizard,
   rerender,
   reset() {
     try {
@@ -4615,6 +5673,13 @@ export const __test__ = {
     } catch {
       // jsdom always provides localStorage; a real failure isn't testable state.
     }
+    openProofKind = "closed";
+    currentAcceptedProofGeneration = 0;
+    proofRequest += 1;
+    proofWindowActive = true;
+    proofOperations = Promise.resolve();
+    focusWizardPrimary = false;
+    latestPreview = {};
     latestHealth = null;
     aboutClipboardWriter = null;
     healthReceivedAt = null;
@@ -4651,8 +5716,21 @@ export const __test__ = {
     lastCheckedEl = null;
     pauseStatusEls = [];
     pairingDraft = "";
+    pairFieldDirty = false;
     pairingBusy = false;
+    finishInFlight = false;
+    browserInFlight = false;
+    retryInFlight = false;
+    nativeConnectInFlight = false;
+    deferredInFlight = false;
+    setupActionError.finish = "";
+    setupActionError.browser = "";
+    setupActionError.retry = "";
+    setupActionError.connect = "";
+    setupActionError.deferred = "";
     hotkeyCapturing = false;
     titleDraft = "";
   },
 };
+
+export { applyPreview, setAcceptedProofGeneration, fillProofNode };

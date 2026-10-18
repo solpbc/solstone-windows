@@ -54,8 +54,10 @@ impl CredentialAccess {
         }
         let credential = paired.credential.clone().ok_or(TransportError::NotPaired)?;
         let binding = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
-        let confirmed = cfg.confirmation.lock().unwrap();
-        let gate_open = !confirmed.is_empty() && *confirmed == binding;
+        let gate_open = {
+            let confirmed = cfg.confirmation.lock().unwrap();
+            !confirmed.is_empty() && *confirmed == binding
+        };
         let gate = Arc::new(std::sync::atomic::AtomicBool::new(gate_open));
         let client = ObserverClient::new(credential.clone(), gate)?
             .with_state_path(cfg.state_path.clone())

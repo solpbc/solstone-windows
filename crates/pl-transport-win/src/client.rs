@@ -23,6 +23,7 @@ use observer_pl::ingest::{
     SegmentsEnvelope,
 };
 use observer_pl::{OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER};
+use serde::Deserialize;
 use spl_core::http::HttpResponse;
 use spl_transport::client::{RelayFence as SharedRelayFence, RelayPermit, TokenPublication};
 use spl_transport::handshake::{HandshakeFailure, HandshakeStop, RefusalTracker};
@@ -98,6 +99,7 @@ mod tests {
             credential: Some(credential.clone()),
             access_mutation_generation: 0,
             retirement_intent: None,
+            ..Default::default()
         }
         .save(path)
         .unwrap();
@@ -700,6 +702,51 @@ pub struct SendMetadata {
     pub attempts: u32,
 }
 
+/// Link identity returned by the local loopback journal endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct LinkIdentity {
+    #[serde(default)]
+    pub committed: bool,
+    #[serde(default)]
+    pub instance_id: Option<String>,
+    #[serde(default)]
+    pub mark: Option<observer_model::MarkRenderSpec>,
+}
+
+pub fn parse_link_identity(bytes: &[u8]) -> Result<LinkIdentity, TransportError> {
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+/// Accept a committed identity whose mark is the derivation for the expected instance.
+///
+/// A missing mark returns before any mark derivation. The derivation runs only to compare.
+pub fn accept_link_identity(
+    identity: &LinkIdentity,
+    expected_instance_id: &str,
+) -> Result<observer_model::MarkRenderSpec, TransportError> {
+    let Some(mark) = identity.mark.clone() else {
+        return Err(TransportError::Pairing("link identity mark missing".into()));
+    };
+    if !identity.committed {
+        return Err(TransportError::Pairing(
+            "link identity not committed".into(),
+        ));
+    }
+    if identity.instance_id.as_deref() != Some(expected_instance_id) {
+        return Err(TransportError::Pairing(
+            "link identity instance ID mismatch".into(),
+        ));
+    }
+    let expected = crate::unknown_journals::mark_spec_for_jid(expected_instance_id)
+        .ok_or_else(|| TransportError::Pairing("unknown journal mark".into()))?;
+    if mark != expected {
+        return Err(TransportError::Pairing(
+            "link identity mark does not match".into(),
+        ));
+    }
+    Ok(mark)
+}
+
 /// An observer talking to its paired journal over framed-mTLS.
 pub struct ObserverClient {
     credential: Credential,
@@ -992,6 +1039,62 @@ impl ObserverClient {
     pub async fn system_about(&self) -> Result<HttpResponse, TransportError> {
         self.post_connect_response(OrdinaryRequest::SystemAboutGet, self.v3_headers(), &[])
             .await
+    }
+
+    /// Read the local loopback journal identity before gate confirmation.
+    pub async fn get_link_identity(&self) -> Result<LinkIdentity, TransportError> {
+        if self.credential.endpoints.is_empty() {
+            return Err(TransportError::NoEndpoint);
+        }
+        for ep in &self.credential.endpoints {
+            match ep.host.parse::<std::net::Ipv4Addr>() {
+                Ok(ip) if ip.is_loopback() => {}
+                _ => return Err(TransportError::NoEndpoint),
+            }
+        }
+
+        let mut lan_credential = crate::pairing::windows_to_shared_credential(&self.credential);
+        lan_credential.local_endpoints = None;
+        lan_credential.relay_origin = None;
+        lan_credential.device_token = None;
+        lan_credential.device_token_expires_at = None;
+
+        let publication = TokenPublication {
+            transaction: self.token_transaction.clone(),
+            fence: Some(self.relay_fence.clone()),
+            incarnation: self.relay_fence.incarnation.load(Ordering::Acquire),
+        };
+
+        let direct_client =
+            spl_transport::TransportClient::new_with_publication(lan_credential, publication)
+                .map_err(map_shared_error)?;
+
+        let spec = OrdinaryRequest::LinkIdentityGet.spec();
+        let options = spl_transport::request::RequestOptions {
+            response_cap: spec.response_cap,
+            replay: spec.replay,
+            observer: self.observer.as_deref(),
+        };
+
+        let outcome = direct_client
+            .request(
+                spec.method,
+                spec.path_pattern,
+                &self.v3_headers(),
+                &[],
+                options,
+            )
+            .await
+            .map_err(map_request_error)?;
+
+        if outcome.response.status != 200 {
+            return Err(TransportError::Rejected {
+                status: outcome.response.status,
+                body: String::from_utf8_lossy(&outcome.response.body).into_owned(),
+            });
+        }
+
+        parse_link_identity(&outcome.response.body)
     }
 
     /// Attach the persisted pairing state path for best-effort relay token refresh write-back.
@@ -1316,7 +1419,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 14);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 15);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);
@@ -1464,4 +1567,76 @@ struct SystemStatusResponse {
 #[derive(serde::Deserialize)]
 struct SystemStatusVersion {
     current: String,
+}
+
+#[cfg(test)]
+mod link_identity_tests {
+    use super::{accept_link_identity, parse_link_identity, LinkIdentity};
+
+    const JID: &str = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
+
+    #[test]
+    fn missing_null_malformed_wrong_neutral_and_one_match() {
+        let mark = crate::unknown_journals::mark_spec_for_jid(JID).expect("valid journal id");
+
+        let missing = parse_link_identity(
+            br#"{"committed":true,"instance_id":"f30ed159-ef46-8e9c-913f-e49f0fe7d201"}"#,
+        )
+        .unwrap();
+        assert!(missing.mark.is_none());
+        assert!(accept_link_identity(&missing, JID).is_err());
+
+        let null_mark = parse_link_identity(
+            br#"{"committed":true,"instance_id":"f30ed159-ef46-8e9c-913f-e49f0fe7d201","mark":null}"#,
+        )
+        .unwrap();
+        assert!(null_mark.mark.is_none());
+        assert!(accept_link_identity(&null_mark, JID).is_err());
+
+        assert!(parse_link_identity(
+            br#"{"committed":true,"instance_id":"f30ed159-ef46-8e9c-913f-e49f0fe7d201","mark":{"icon1":"bad"}}"#
+        )
+        .is_err());
+
+        let mut wrong = mark.clone();
+        wrong.words = ["no".into(), "match".into()];
+        assert!(accept_link_identity(
+            &LinkIdentity {
+                committed: true,
+                instance_id: Some(JID.to_string()),
+                mark: Some(wrong),
+            },
+            JID,
+        )
+        .is_err());
+
+        let neutral =
+            parse_link_identity(br#"{"committed":false,"instance_id":null,"mark":null}"#).unwrap();
+        assert!(!neutral.committed);
+        assert!(neutral.instance_id.is_none());
+        assert!(accept_link_identity(&neutral, JID).is_err());
+
+        assert!(accept_link_identity(
+            &LinkIdentity {
+                committed: true,
+                instance_id: Some("other".into()),
+                mark: Some(mark.clone()),
+            },
+            JID,
+        )
+        .is_err());
+
+        assert_eq!(
+            accept_link_identity(
+                &LinkIdentity {
+                    committed: true,
+                    instance_id: Some(JID.to_string()),
+                    mark: Some(mark.clone()),
+                },
+                JID,
+            )
+            .unwrap(),
+            mark
+        );
+    }
 }

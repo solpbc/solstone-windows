@@ -605,6 +605,7 @@ mod tests {
                 credential: Some(current_credential.clone()),
                 retirement_intent: Some(intent.clone()),
                 access_mutation_generation: access_generation,
+                ..Default::default()
             }
             .save(&dir.state_path())
             .unwrap();

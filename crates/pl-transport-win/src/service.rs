@@ -59,8 +59,13 @@ pub struct SyncConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundKind {
-    Paired,
-    Failed { detail: Option<String> },
+    Paired {
+        finish_connecting: bool,
+        setup_browser_ready: bool,
+    },
+    Failed {
+        detail: Option<String>,
+    },
 }
 
 // The mark spec is large. This value is moved once into publish_pairing and is not stored.
@@ -98,6 +103,8 @@ pub fn publish_pairing(
                     detail: None,
                     mark: None,
                     binding: String::new(),
+                    finish_connecting: false,
+                    setup_browser_ready: false,
                 };
             }
             PairingWrite::NotPaired { detail } => {
@@ -116,6 +123,8 @@ pub fn publish_pairing(
                     detail,
                     mark: None,
                     binding: String::new(),
+                    finish_connecting: false,
+                    setup_browser_ready: false,
                 };
             }
             PairingWrite::Failed { detail } => {
@@ -125,6 +134,8 @@ pub fn publish_pairing(
                     detail: Some(detail),
                     mark: None,
                     binding: String::new(),
+                    finish_connecting: false,
+                    setup_browser_ready: false,
                 };
             }
             PairingWrite::Bound {
@@ -166,7 +177,10 @@ pub fn publish_pairing(
                 let matches_confirmed = !confirmed.is_empty() && *confirmed == binding;
 
                 match kind {
-                    BoundKind::Paired => {
+                    BoundKind::Paired {
+                        finish_connecting,
+                        setup_browser_ready,
+                    } => {
                         let phase = if matches_confirmed {
                             PairingPhase::Paired
                         } else {
@@ -178,6 +192,8 @@ pub fn publish_pairing(
                             detail: None,
                             mark,
                             binding,
+                            finish_connecting,
+                            setup_browser_ready,
                         };
                     }
                     BoundKind::Failed { detail } => {
@@ -187,6 +203,8 @@ pub fn publish_pairing(
                             detail,
                             mark,
                             binding,
+                            finish_connecting: false,
+                            setup_browser_ready: false,
                         };
                     }
                 }
@@ -233,7 +251,10 @@ pub async fn pair(
                     binding,
                     label: journal_label,
                     mark,
-                    kind: BoundKind::Paired,
+                    kind: BoundKind::Paired {
+                        finish_connecting: false,
+                        setup_browser_ready: false,
+                    },
                 },
             );
             Ok(paired)
@@ -277,6 +298,7 @@ async fn pair_inner(
     }
     let paired = PairedState {
         credential: Some(credential),
+        setup_history_unavailable: PairedState::setup_handoff_history(&cfg.state_path).is_err(),
         ..Default::default()
     };
     paired.save(&cfg.state_path)?;
@@ -323,6 +345,22 @@ async fn setup_uploader(
     let mark = journal_mark(&client.credential().instance_id);
     let binding = client.journal_identity().client_cert_sha256;
 
+    let (finish_connecting, setup_browser_ready) = match PairedState::load(&cfg.state_path) {
+        Ok(p) => {
+            let act_match = p
+                .setup_activation
+                .as_ref()
+                .is_some_and(|act| act.binding == binding);
+            let confirmed = cfg.confirmation.lock().unwrap();
+            let confirmed_match = !confirmed.is_empty() && *confirmed == binding;
+            drop(confirmed);
+            let finish_connecting = act_match && !confirmed_match;
+            let setup_browser_ready = act_match && confirmed_match && !p.setup_browser_opened;
+            (finish_connecting, setup_browser_ready)
+        }
+        Err(_) => (false, false),
+    };
+
     publish_pairing(
         &sync,
         &cfg.confirmation,
@@ -331,7 +369,10 @@ async fn setup_uploader(
             binding,
             label: journal_label,
             mark,
-            kind: BoundKind::Paired,
+            kind: BoundKind::Paired {
+                finish_connecting,
+                setup_browser_ready,
+            },
         },
     );
 
@@ -620,7 +661,10 @@ mod tests {
                 binding: binding.clone(),
                 label: "journal-1".to_string(),
                 mark: None,
-                kind: BoundKind::Paired,
+                kind: BoundKind::Paired {
+                    finish_connecting: false,
+                    setup_browser_ready: false,
+                },
             },
         );
         let s = sync.lock().unwrap().clone();
@@ -638,7 +682,10 @@ mod tests {
                 binding: binding.clone(),
                 label: "journal-1".to_string(),
                 mark: None,
-                kind: BoundKind::Paired,
+                kind: BoundKind::Paired {
+                    finish_connecting: false,
+                    setup_browser_ready: false,
+                },
             },
         );
         let s = sync.lock().unwrap().clone();
@@ -654,7 +701,10 @@ mod tests {
                 binding: "other_binding".to_string(),
                 label: "other-journal".to_string(),
                 mark: None,
-                kind: BoundKind::Paired,
+                kind: BoundKind::Paired {
+                    finish_connecting: false,
+                    setup_browser_ready: false,
+                },
             },
         );
         let s = sync.lock().unwrap().clone();
@@ -689,7 +739,10 @@ mod tests {
                 binding: binding.clone(),
                 label: "journal-1".to_string(),
                 mark: None,
-                kind: BoundKind::Paired,
+                kind: BoundKind::Paired {
+                    finish_connecting: false,
+                    setup_browser_ready: false,
+                },
             },
         );
         let s = sync.lock().unwrap().clone();

@@ -120,6 +120,12 @@ pub fn read_answer_or_reset(path: &Path) -> Result<Option<AnswerState>, StorageE
         return Ok(answer);
     }
     let _guard = crate::credential::owner_state_write_guard();
+    read_answer_or_reset_with_owner_lock(path)
+}
+
+pub(crate) fn read_answer_or_reset_with_owner_lock(
+    path: &Path,
+) -> Result<Option<AnswerState>, StorageError> {
     if let Ok(answer) = read_answer(path) {
         return Ok(answer);
     }
@@ -184,7 +190,8 @@ pub(crate) fn write_answer_with_owner_lock(
 /// Settle grandfathering on launch or before a fresh ceremony.
 ///
 /// If `pairing-answer.json` is absent (`NotFound`):
-/// - If `pairing.json` is present and readable: writes `confirmed` = that PEM digest, `rejected` = empty.
+/// - A readable legacy pairing without setup activation is grandfathered.
+/// - A native setup activation persists an empty answer and remains held.
 /// - If `pairing.json` is absent: writes both empty.
 /// - If `pairing.json` is unreadable: writes nothing.
 ///
@@ -205,7 +212,9 @@ pub fn settle_grandfather(
             // Absent answer file. Inspect pairing.json
             match crate::credential::PairedState::load(state_path) {
                 Ok(paired) => {
-                    let (confirmed, rejected) = if let Some(cred) = paired.credential {
+                    let (confirmed, rejected) = if paired.setup_activation.is_some() {
+                        (String::new(), String::new())
+                    } else if let Some(cred) = paired.credential {
                         let digest =
                             crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
                         (digest, String::new())

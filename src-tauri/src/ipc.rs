@@ -191,9 +191,11 @@ pub async fn pair_session<S: crate::windows::JournalSurface>(
     );
 
     let journal_bridge = state.journal_bridge.clone();
+    let setup_browser = state.setup_browser.clone();
 
     let shutdown_bridge = move || {
         let journal_bridge = journal_bridge.clone();
+        let setup_browser = setup_browser.clone();
         async move {
             let bridge = journal_bridge
                 .lock()
@@ -201,6 +203,13 @@ pub async fn pair_session<S: crate::windows::JournalSurface>(
                 .and_then(|mut bridge| bridge.take());
             if let Some(bridge) = bridge {
                 bridge.shutdown_and_wait().await;
+            }
+            let s_bridge = setup_browser
+                .lock()
+                .ok()
+                .and_then(|mut bridge| bridge.take());
+            if let Some(s_bridge) = s_bridge {
+                s_bridge.handle.shutdown_and_wait().await;
             }
         }
     };
@@ -214,12 +223,11 @@ pub async fn pair_session<S: crate::windows::JournalSurface>(
             .pair_entered_lock
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
-    let journal_open_guard = state.journal_open_lock.lock().await;
+    let _journal_open_guard = state.journal_open_lock.lock().await;
 
     let close_journal_window = {
         let surface_ref = surface;
         move || {
-            let _guard = journal_open_guard;
             surface_ref.close_journal();
             async move {}
         }
@@ -231,10 +239,12 @@ pub async fn pair_session<S: crate::windows::JournalSurface>(
         sync,
         &state.uploader_slot,
         &state.credential_access,
+        &state.pairing_admission,
         shutdown_bridge,
         close_journal_window,
     )
-    .await;
+    .await
+    .map(|_| ());
 
     match result {
         Ok(_) => {
@@ -281,7 +291,8 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
     let cfg = state.sync_config.clone();
     let sync = state.sync.clone();
 
-    pl_transport_win::session::answer(
+    let _journal_open_guard = state.journal_open_lock.lock().await;
+    let effect = pl_transport_win::session::answer(
         act,
         &binding,
         &cfg,
@@ -292,10 +303,12 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
     .await
     .map_err(|e| e.to_string())?;
 
-    if act == pl_transport_win::session::PairingAction::Reject
-        || act == pl_transport_win::session::PairingAction::Cancel
-    {
-        let _journal_open_guard = state.journal_open_lock.lock().await;
+    if effect == pl_transport_win::session::AnswerEffect::Closed {
+        #[cfg(test)]
+        if let Some(probe) = &state.probe {
+            probe.answer_closed.notify_one();
+            probe.release_answer_cleanup.notified().await;
+        }
         let bridge = state
             .journal_bridge
             .lock()
@@ -303,6 +316,14 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
             .and_then(|mut bridge| bridge.take());
         if let Some(bridge) = bridge {
             bridge.shutdown_and_wait().await;
+        }
+        let s_bridge = state
+            .setup_browser
+            .lock()
+            .ok()
+            .and_then(|mut bridge| bridge.take());
+        if let Some(s_bridge) = s_bridge {
+            s_bridge.handle.shutdown_and_wait().await;
         }
         surface.close_journal();
     }
@@ -786,5 +807,506 @@ pub fn open_browser_store(app: tauri::AppHandle, brand: String) -> Result<bool, 
     {
         let _ = (app, brand);
         Err("unknown browser".to_string())
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WizardStepResult {
+    pub saved: bool,
+    pub proof_generation: u64,
+}
+
+pub(crate) fn publish_setup(state: &crate::app::AppState) {
+    let projection = if let Ok(auth) = state.setup.lock() {
+        auth.projection()
+    } else {
+        return;
+    };
+    if let Ok(mut health) = state.health.lock() {
+        health.setup = projection;
+    }
+}
+
+/// Enable or disable a single capture source.
+#[tauri::command]
+pub fn set_source_enabled(
+    state: tauri::State<'_, crate::app::AppState>,
+    kind: observer_model::SourceKind,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let running = auth.set_source(kind, enabled);
+        let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+            kind,
+            enabled: running,
+        });
+    }
+    publish_setup(&state);
+    Ok(())
+}
+
+/// Set the start-at-login preference and evaluate the login item decision.
+#[tauri::command]
+pub fn set_start_at_login(
+    state: tauri::State<'_, crate::app::AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let saved = auth.set_start_at_login(enabled);
+        let login_failed = if saved || !enabled {
+            crate::app::apply_login_decision(enabled)
+        } else {
+            true
+        };
+        auth.set_login_apply_failed(login_failed || !saved);
+    }
+    publish_setup(&state);
+    Ok(())
+}
+
+/// Advance or change the first-run wizard step.
+#[tauri::command]
+pub fn set_wizard_step(
+    state: tauri::State<'_, crate::app::AppState>,
+    step: observer_model::setup::WizardStep,
+) -> Result<WizardStepResult, String> {
+    let saved = if let Ok(mut auth) = state.setup.lock() {
+        auth.set_wizard_step(step)
+    } else {
+        return Err("failed to acquire setup lock".to_string());
+    };
+    let proof_generation = if let Ok(mut proof) = state.proof.lock() {
+        if saved {
+            proof.close()
+        } else {
+            proof.generation()
+        }
+    } else {
+        0
+    };
+    if saved {
+        let _ = state.commands.send(EngineCommand::ClearPreviews);
+    }
+    publish_setup(&state);
+    Ok(WizardStepResult {
+        saved,
+        proof_generation,
+    })
+}
+
+/// Dismiss the first-run sources notice on Settings Home.
+#[tauri::command]
+pub fn dismiss_notice(state: tauri::State<'_, crate::app::AppState>) -> Result<bool, String> {
+    let saved = if let Ok(mut auth) = state.setup.lock() {
+        auth.dismiss_notice()
+    } else {
+        return Err("failed to acquire setup lock".to_string());
+    };
+    publish_setup(&state);
+    Ok(saved)
+}
+
+/// Retry persisting unsaved source choices or setup settings.
+#[tauri::command]
+pub fn retry_save(state: tauri::State<'_, crate::app::AppState>) -> Result<(), String> {
+    {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let outcome = auth.retry();
+        if let Some(enabled) = auth.pending_login() {
+            let login_failed = if outcome.saved || !enabled {
+                crate::app::apply_login_decision(enabled)
+            } else {
+                true
+            };
+            auth.set_login_apply_failed(login_failed || !outcome.saved);
+        }
+        for kind in outcome.started {
+            let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+                kind,
+                enabled: true,
+            });
+        }
+    }
+    publish_setup(&state);
+    Ok(())
+}
+
+/// Open or close the proof consumer gate for a specific source.
+#[tauri::command]
+pub fn set_proof_consumer(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+    source: Option<observer_model::SourceKind>,
+) -> Result<u64, String> {
+    let eligible = source.is_none() || crate::windows::settings_proof_eligible(&app);
+    let generation = {
+        let mut proof = state.proof.lock().map_err(|_| "proof state unavailable")?;
+        match (source, eligible) {
+            (Some(k), true) => proof.open(k),
+            _ => proof.close(),
+        }
+    };
+    let _ = state.commands.send(EngineCommand::ClearPreviews);
+    if eligible {
+        Ok(generation)
+    } else {
+        Err("proof window is not active".into())
+    }
+}
+
+#[tauri::command]
+pub fn pairing_prefill() -> String {
+    let data_root = platform_win::local_data_root();
+    if let Some(link) = pl_transport_win::draft::read_draft(&data_root) {
+        return link;
+    }
+    if let Ok(Some(progress)) = pl_transport_win::handoff::read_active_progress(&data_root) {
+        return progress.pairing_link;
+    }
+    String::new()
+}
+
+#[tauri::command]
+pub async fn connect_native_handoff(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+    handoff_id: String,
+    revision: u64,
+) -> Result<(), String> {
+    Box::pin(connect_native_handoff_surface(
+        &app, &state, handoff_id, revision,
+    ))
+    .await
+}
+
+pub async fn connect_native_handoff_surface<S: crate::windows::JournalSurface>(
+    surface: &S,
+    state: &crate::app::AppState,
+    handoff_id: String,
+    revision: u64,
+) -> Result<(), String> {
+    let cfg = state.sync_config.clone();
+    let sync = state.sync.clone();
+    let journal_bridge = state.journal_bridge.clone();
+    let setup_browser = state.setup_browser.clone();
+    let shutdown_bridge = move || {
+        let journal_bridge = journal_bridge.clone();
+        let setup_browser = setup_browser.clone();
+        async move {
+            let bridge = journal_bridge
+                .lock()
+                .ok()
+                .and_then(|mut bridge| bridge.take());
+            if let Some(bridge) = bridge {
+                bridge.shutdown_and_wait().await;
+            }
+            let s_bridge = setup_browser
+                .lock()
+                .ok()
+                .and_then(|mut bridge| bridge.take());
+            if let Some(s_bridge) = s_bridge {
+                s_bridge.handle.shutdown_and_wait().await;
+            }
+        }
+    };
+    let _journal_open_guard = state.journal_open_lock.lock().await;
+    let close_journal_window = {
+        let surface_ref = surface;
+        move || {
+            surface_ref.close_journal();
+            async move {}
+        }
+    };
+    pl_transport_win::session::connect_native_handoff(
+        &handoff_id,
+        revision,
+        &cfg,
+        sync,
+        &state.uploader_slot,
+        &state.credential_access,
+        &state.pairing_admission,
+        shutdown_bridge,
+        close_journal_window,
+    )
+    .await
+    .map_err(|error| setup_transport_error("connect", &error))
+}
+
+#[tauri::command]
+pub fn use_deferred_link(state: tauri::State<'_, crate::app::AppState>) -> Result<String, String> {
+    let data_root = platform_win::local_data_root();
+    let link = pl_transport_win::draft::take_deferred(&data_root)
+        .map_err(|error| {
+            tracing::warn!(target: "setup", reason = ?error.kind(), "setup link write failed");
+            "setup_link_use_failed".to_string()
+        })?
+        .ok_or_else(|| "setup_link_use_failed".to_string())?;
+    crate::app::reload_setup(&state);
+    Ok(link)
+}
+
+#[tauri::command]
+pub fn dismiss_deferred_link(state: tauri::State<'_, crate::app::AppState>) -> Result<(), String> {
+    let data_root = platform_win::local_data_root();
+    if pl_transport_win::draft::read_deferred(&data_root).is_some() {
+        pl_transport_win::draft::dismiss_deferred(&data_root).map_err(|error| {
+            tracing::warn!(target: "setup", reason = ?error.kind(), "setup link dismiss failed");
+            "setup_link_dismiss_failed".to_string()
+        })?;
+    } else {
+        pl_transport_win::draft::dismiss_rejected(&data_root).map_err(|error| {
+            tracing::warn!(target: "setup", reason = ?error.kind(), "setup link dismiss failed");
+            "setup_link_dismiss_failed".to_string()
+        })?;
+    }
+    crate::app::reload_setup(&state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn retry_setup_link(state: tauri::State<'_, crate::app::AppState>) -> Result<(), String> {
+    crate::app::reload_setup(&state);
+    let snapshot = state
+        .setup
+        .lock()
+        .map_err(|_| "setup unavailable")?
+        .projection();
+    let reason = if snapshot.handoff_persist_failed {
+        Some("handoff_persist_failed")
+    } else if snapshot.mailbox_busy {
+        Some("handoff_busy")
+    } else if snapshot.native_handoff_rejected {
+        Some("handoff_rejected")
+    } else if snapshot.handoff_deferred {
+        Some("handoff_deferred")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        return Err(reason.to_string());
+    }
+    Ok(())
+}
+
+fn setup_transport_error(action: &str, error: &pl_transport_win::TransportError) -> String {
+    tracing::warn!(target: "setup", action, reason = %pl_transport_win::transport_error_code(error), "setup action failed");
+    format!("setup_{action}_failed")
+}
+
+#[tauri::command]
+pub async fn finish_connecting(
+    state: tauri::State<'_, crate::app::AppState>,
+    binding: String,
+) -> Result<(), String> {
+    let _journal_open = state.journal_open_lock.lock().await;
+    pl_transport_win::session::finish_connecting(
+        &binding,
+        &state.sync_config,
+        state.sync.clone(),
+        &state.uploader_slot,
+        &state.credential_access,
+        &state.pairing_admission,
+    )
+    .await
+    .map_err(|error| setup_transport_error("finish", &error))
+}
+
+#[tauri::command]
+pub async fn open_setup_journal(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+    binding: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    open_setup_journal_with(&state, &binding, |url| {
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|error| error.to_string())
+    })
+    .await.map_err(|error| {
+        tracing::warn!(target: "setup", reason = "setup_browser_failed", "setup browser action failed");
+        if error == "setup progress could not be saved" { "setup_browser_completion_failed".to_string() }
+        else { "setup_browser_failed".to_string() }
+    })
+}
+
+/// The production browser action and its native lifecycle tests share this
+/// composition. The only injected seam is the operating system URL opener.
+pub(crate) async fn open_setup_journal_with<F>(
+    state: &crate::app::AppState,
+    expected_binding: &str,
+    open_url: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let _journal_open = state.journal_open_lock.lock().await;
+    let _slot = state.uploader_slot.lock().await;
+    let access = state.credential_access.lock().await;
+    let access = access
+        .as_ref()
+        .ok_or_else(|| "no credential access".to_string())?;
+    let live_binding = access
+        .client_slot()
+        .load()
+        .journal_identity()
+        .client_cert_sha256;
+    if expected_binding.is_empty() || live_binding != expected_binding {
+        return Err("setup connection changed".into());
+    }
+    let pairing = state
+        .sync
+        .lock()
+        .map_err(|_| "poisoned".to_string())?
+        .pairing
+        .clone();
+    if pairing.phase != observer_model::PairingPhase::Paired || pairing.binding != live_binding {
+        return Err("not paired".into());
+    }
+    let step = state
+        .setup
+        .lock()
+        .map_err(|_| "setup unavailable".to_string())?
+        .projection()
+        .wizard;
+    if !matches!(
+        step,
+        observer_model::setup::WizardStep::Connection | observer_model::setup::WizardStep::Done
+    ) {
+        return Err("source setup is unfinished".into());
+    }
+    let paired =
+        PairedState::load(&state.sync_config.state_path).map_err(|error| error.to_string())?;
+    if paired.retirement_intent.is_some()
+        || paired
+            .setup_activation
+            .as_ref()
+            .is_none_or(|activation| activation.binding != live_binding)
+        || paired.credential.as_ref().is_none_or(|credential| {
+            pl_transport_win::ack::JournalIdentity::from_credential(credential).client_cert_sha256
+                != live_binding
+        })
+    {
+        return Err("setup connection changed".into());
+    }
+    let bridge_live = state
+        .setup_browser
+        .lock()
+        .map_err(|_| "browser state unavailable")?
+        .as_ref()
+        .is_some_and(|browser| browser.binding == live_binding);
+    if !paired.setup_browser_opened && !bridge_live {
+        let handle = pl_transport_win::journal_bridge::start_with_facts(access.clone())
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        #[cfg(test)]
+        if let Some(probe) = &state.probe {
+            probe.setup_bridge_started.notify_one();
+            probe.release_setup_browser.notified().await;
+        }
+        let still_paired = state
+            .sync
+            .lock()
+            .map(|sync| {
+                sync.pairing.phase == observer_model::PairingPhase::Paired
+                    && sync.pairing.binding == live_binding
+            })
+            .unwrap_or(false);
+        if !still_paired || access.client_slot().refusal_stop().is_some() {
+            handle.shutdown_and_wait().await;
+            return Err("setup connection changed".into());
+        }
+        let url = handle.bootstrap_url();
+        tracing::info!(target: "window", label = "setup_journal",
+            url = %observer_log::journal_open::strip_cap(&url), "opening setup journal in browser");
+        if let Err(error) = open_url(&url) {
+            handle.shutdown_and_wait().await;
+            return Err(error);
+        }
+        let old = state
+            .setup_browser
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .replace(crate::app::SetupBrowser {
+                binding: live_binding.clone(),
+                handle,
+            });
+        if let Some(old) = old {
+            old.handle.begin_shutdown();
+        }
+    }
+    PairedState::mark_setup_browser_opened(&state.sync_config.state_path, &live_binding)
+        .map_err(|error| error.to_string())?;
+    finish_setup_after_browser(state)?;
+    state
+        .sync
+        .lock()
+        .map_err(|_| "poisoned".to_string())?
+        .pairing
+        .setup_browser_ready = false;
+    Ok(())
+}
+
+fn finish_setup_after_browser(state: &crate::app::AppState) -> Result<(), String> {
+    let saved = {
+        let mut setup = state
+            .setup
+            .lock()
+            .map_err(|_| "setup unavailable".to_string())?;
+        setup.projection().wizard == observer_model::setup::WizardStep::Done
+            || setup.set_wizard_step(observer_model::setup::WizardStep::Done)
+    };
+    publish_setup(state);
+    if !saved {
+        return Err("setup progress could not be saved".into());
+    }
+    if let Ok(mut proof) = state.proof.lock() {
+        proof.close();
+    }
+    let _ = state.commands.send(EngineCommand::ClearPreviews);
+    Ok(())
+}
+
+/// Recover a crash after the durable browser-open record but before setup.json.
+/// This never opens a browser or repeats the source steps.
+pub(crate) fn recover_setup_browser_completion(state: &crate::app::AppState) {
+    let Ok(paired) = PairedState::load(&state.sync_config.state_path) else {
+        return;
+    };
+    let Some(credential) = paired.credential.as_ref() else {
+        return;
+    };
+    let binding =
+        pl_transport_win::ack::JournalIdentity::from_credential(credential).client_cert_sha256;
+    let step = state
+        .setup
+        .lock()
+        .ok()
+        .map(|setup| setup.projection().wizard);
+    if !paired.setup_browser_opened
+        || paired.retirement_intent.is_some()
+        || paired
+            .setup_activation
+            .as_ref()
+            .is_none_or(|activation| activation.binding != binding)
+        || *state.sync_config.confirmation.lock().unwrap() != binding
+        || step != Some(observer_model::setup::WizardStep::Connection)
+    {
+        return;
+    }
+    let failed = finish_setup_after_browser(state).is_err();
+    if let Ok(mut sync) = state.sync.lock() {
+        sync.pairing.setup_browser_ready = failed;
     }
 }

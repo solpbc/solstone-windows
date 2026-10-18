@@ -25,6 +25,11 @@ use pl_transport_win::{CredentialAccess, UploaderSlot};
 use tauri::{Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
+pub struct SetupBrowser {
+    pub binding: String,
+    pub handle: pl_transport_win::journal_bridge::JournalBridgeHandle,
+}
+
 pub struct AppState {
     pub commands: mpsc::UnboundedSender<EngineCommand>,
     pub health: Arc<Mutex<HealthDump>>,
@@ -44,8 +49,12 @@ pub struct AppState {
     pub journal_open_lock: Arc<tokio::sync::Mutex<()>>,
     /// Per-window loopback bridge backing the external journal window.
     pub journal_bridge: Arc<Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>>,
+    pub setup_browser: Arc<Mutex<Option<SetupBrowser>>>,
+    pub pairing_admission: std::sync::atomic::AtomicBool,
     /// Capture-exclusion rules controller (shared with the WGC screen source).
     pub exclusions: crate::exclusions::ExclusionController,
+    pub setup: Arc<Mutex<observer_model::setup::SetupAuthority>>,
+    pub proof: Arc<Mutex<capture_engine::ProofGate>>,
     #[cfg(test)]
     pub probe: Option<Arc<crate::windows::OpenPairProbe>>,
 }
@@ -77,12 +86,10 @@ fn current_raw_facts() -> pl_transport_win::RawDeviceFacts {
 /// this is:
 ///
 /// - **installed** (Setup / winget): always owns the entry;
-/// - **portable** (the ZIP, and so every scoop install, which carries Velopack's
-///   `.portable` marker): claims it only when it does not already name an
-///   installed copy, so scoop owners keep autostart but a portable copy never
-///   displaces an install;
-/// - **anything else** (a dev build, a copied binary): never touches it.
-fn ensure_owned_login_item() {
+/// Evaluate and apply the pure start-at-login decision for this copy.
+/// Returns true if applying the decision failed (so the health snapshot
+/// honestly reports `login_apply_failed = true`).
+pub(crate) fn apply_login_decision(choice: bool) -> bool {
     use velopack::locator::{auto_locate_app_manifest, LocationContext};
 
     let exe = match std::env::current_exe() {
@@ -93,72 +100,279 @@ fn ensure_owned_login_item() {
                 component = "autostart",
                 outcome = "current_exe_failed",
                 error = %error,
-                "autostart ensure"
+                "autostart evaluate"
             );
-            return;
+            return true;
         }
     };
-    match auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone())) {
-        Ok(locator) if locator.get_is_portable() => match installed_login_item_owner() {
-            Ok(None) => {}
-            Ok(Some(owner)) => {
-                tracing::info!(
-                    target: "lifecycle",
-                    component = "autostart",
-                    outcome = "skipped_portable",
-                    owner = %owner.display(),
-                    "autostart ensure"
-                );
-                return;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "lifecycle",
-                    component = "autostart",
-                    outcome = "failed",
-                    error = %error,
-                    "autostart ensure"
-                );
-                return;
-            }
-        },
-        Ok(_) => {}
+
+    let copy_class =
+        match auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone())) {
+            Ok(locator) if locator.get_is_portable() => observer_model::setup::CopyClass::Portable,
+            Ok(_) => observer_model::setup::CopyClass::Installed,
+            Err(_) => observer_model::setup::CopyClass::Dev,
+        };
+
+    let installed_owner_exists = match installed_login_item_owner() {
+        Ok(opt) => Some(opt.is_some()),
         Err(error) => {
+            tracing::warn!(
+                target: "lifecycle",
+                component = "autostart",
+                outcome = "installed_owner_check_failed",
+                error = %error,
+                "autostart evaluate"
+            );
+            None
+        }
+    };
+
+    let registry_state =
+        match platform_win::autostart::login_item_command(platform_win::autostart::LOGIN_ITEM_NAME)
+        {
+            Ok(Some(cmd)) => observer_model::setup::RegistryReadState::Present(cmd),
+            Ok(None) => observer_model::setup::RegistryReadState::Absent,
+            Err(_) => observer_model::setup::RegistryReadState::Unreadable,
+        };
+
+    let my_command =
+        platform_win::autostart::run_command(&exe, &[observer_model::FROM_AUTOSTART_ARG]);
+
+    let decision = observer_model::setup::evaluate_login_decision(
+        copy_class,
+        Some(choice),
+        &registry_state,
+        &my_command,
+        installed_owner_exists,
+    );
+
+    match decision {
+        observer_model::setup::LoginDecision::Ensure => {
+            match platform_win::autostart::ensure_login_item(
+                platform_win::autostart::LOGIN_ITEM_NAME,
+                &exe,
+                &[observer_model::FROM_AUTOSTART_ARG],
+            ) {
+                Ok(platform_win::autostart::EnsureOutcome::Registered) => {
+                    tracing::info!(
+                        target: "lifecycle",
+                        component = "autostart",
+                        outcome = "registered",
+                        "autostart ensure"
+                    );
+                    false
+                }
+                Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => {
+                    tracing::info!(
+                        target: "lifecycle",
+                        component = "autostart",
+                        outcome = "already_current",
+                        "autostart ensure"
+                    );
+                    false
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "lifecycle",
+                        component = "autostart",
+                        outcome = "failed",
+                        error = %error,
+                        "autostart ensure"
+                    );
+                    true
+                }
+            }
+        }
+        observer_model::setup::LoginDecision::Remove => {
+            match platform_win::autostart::remove_login_item_if_matches(
+                platform_win::autostart::LOGIN_ITEM_NAME,
+                &exe,
+                &[observer_model::FROM_AUTOSTART_ARG],
+            ) {
+                Ok(removed) => {
+                    tracing::info!(
+                        target: "lifecycle",
+                        component = "autostart",
+                        outcome = if removed { "removed" } else { "already_removed" },
+                        "autostart remove"
+                    );
+                    false
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "lifecycle",
+                        component = "autostart",
+                        outcome = "failed",
+                        error = %error,
+                        "autostart remove"
+                    );
+                    true
+                }
+            }
+        }
+        observer_model::setup::LoginDecision::Leave => {
             tracing::info!(
                 target: "lifecycle",
                 component = "autostart",
-                outcome = "skipped_not_installed",
-                error = %error,
-                "autostart ensure"
+                outcome = "leave",
+                "autostart leave"
             );
-            return;
+            false
+        }
+        observer_model::setup::LoginDecision::Failed => {
+            tracing::warn!(
+                target: "lifecycle",
+                component = "autostart",
+                outcome = "failed",
+                "autostart decision failed"
+            );
+            true
         }
     }
-    match platform_win::autostart::ensure_login_item(
-        platform_win::autostart::LOGIN_ITEM_NAME,
-        &exe,
-        &[observer_model::FROM_AUTOSTART_ARG],
-    ) {
-        Ok(platform_win::autostart::EnsureOutcome::Registered) => tracing::info!(
-            target: "lifecycle",
-            component = "autostart",
-            outcome = "registered",
-            "autostart ensure"
-        ),
-        Ok(platform_win::autostart::EnsureOutcome::AlreadyCurrent) => tracing::info!(
-            target: "lifecycle",
-            component = "autostart",
-            outcome = "already_current",
-            "autostart ensure"
-        ),
-        Err(error) => tracing::warn!(
-            target: "lifecycle",
-            component = "autostart",
-            outcome = "failed",
-            error = %error,
-            "autostart ensure"
-        ),
+}
+
+fn apply_scheme_decision() {
+    use velopack::locator::{auto_locate_app_manifest, LocationContext};
+
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let copy_class =
+        match auto_locate_app_manifest(LocationContext::FromSpecifiedAppExecutable(exe.clone())) {
+            Ok(locator) if locator.get_is_portable() => observer_model::setup::CopyClass::Portable,
+            Ok(_) => observer_model::setup::CopyClass::Installed,
+            Err(_) => observer_model::setup::CopyClass::Dev,
+        };
+
+    let Ok(current) = platform_win::scheme::read_scheme_command() else {
+        return;
+    };
+
+    match observer_model::scheme::scheme_launch_decision(copy_class, current.as_deref(), &exe) {
+        observer_model::scheme::SchemeLaunchDecision::Ensure => {
+            if let Some(cmd) = observer_model::scheme::scheme_open_command(&exe, "%1") {
+                let _ = platform_win::scheme::ensure_scheme_handler(&cmd);
+            }
+        }
+        observer_model::scheme::SchemeLaunchDecision::Leave => {}
     }
+}
+
+fn fill_accepted_progress(
+    overlay: &mut observer_model::HandoffOverlay,
+    progress: &pl_transport_win::handoff::SetupHandoffProgress,
+    now_ms: u64,
+) {
+    overlay.handoff_id = Some(progress.handoff_id.clone());
+    overlay.handoff_revision = Some(progress.accepted_unix_ms);
+    overlay.handoff_link = Some(progress.pairing_link.clone());
+    overlay.handoff_expired = progress.is_expired(now_ms);
+}
+
+pub(crate) fn update_handoff_overlay(
+    data_root: &std::path::Path,
+    sync: &Arc<Mutex<observer_model::SyncSnapshot>>,
+    setup: &Arc<Mutex<observer_model::setup::SetupAuthority>>,
+    pairing_admission: &std::sync::atomic::AtomicBool,
+) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let outcome = pl_transport_win::handoff::process_mailbox_live(data_root, now_ms, || {
+        pairing_admission.load(std::sync::atomic::Ordering::Acquire)
+            || matches!(
+                sync.lock().unwrap().pairing.phase,
+                observer_model::PairingPhase::Pairing
+                    | observer_model::PairingPhase::AwaitingConfirmation
+            )
+    });
+    let progress = pl_transport_win::handoff::read_active_progress(data_root);
+    let mut overlay = observer_model::HandoffOverlay {
+        deferred_link: pl_transport_win::draft::read_deferred(data_root),
+        handoff_rejected: pl_transport_win::draft::deferred_rejected(data_root),
+        handoff_persist_failed: progress.is_err(),
+        ..observer_model::HandoffOverlay::default()
+    };
+    let readable = progress
+        .as_ref()
+        .ok()
+        .and_then(|progress| progress.as_ref());
+    match &outcome {
+        Err(_) => {
+            overlay.handoff_persist_failed = true;
+            if let Some(progress) = readable {
+                fill_accepted_progress(&mut overlay, progress, now_ms);
+            }
+        }
+        Ok(pl_transport_win::handoff::MailboxOutcome::Busy) => {
+            overlay.mailbox_busy = true;
+            if let Some(progress) = readable {
+                fill_accepted_progress(&mut overlay, progress, now_ms);
+            }
+        }
+        Ok(pl_transport_win::handoff::MailboxOutcome::Rejected) => {
+            overlay.native_handoff_rejected = true;
+            if let Some(progress) = readable {
+                fill_accepted_progress(&mut overlay, progress, now_ms);
+            }
+        }
+        Ok(pl_transport_win::handoff::MailboxOutcome::Deferred) => {
+            overlay.handoff_deferred = true;
+            if let Some(progress) = readable {
+                fill_accepted_progress(&mut overlay, progress, now_ms);
+            }
+        }
+        Ok(
+            pl_transport_win::handoff::MailboxOutcome::Accepted
+            | pl_transport_win::handoff::MailboxOutcome::Replay
+            | pl_transport_win::handoff::MailboxOutcome::Absent,
+        ) => {
+            if let Some(progress) = readable {
+                fill_accepted_progress(&mut overlay, progress, now_ms);
+            }
+        }
+    }
+    if let Some(progress) = readable {
+        // This is a renderer hint only: the action revalidates admission and
+        // credential authority. A completed H1 must not hide a distinct H2,
+        // while unreadable or inconsistent saved authority stays fail-closed.
+        match pl_transport_win::PairedState::load(
+            &data_root.join(pl_transport_win::credential::PAIRED_STATE_FILE_NAME),
+        ) {
+            Ok(paired) if paired.retirement_intent.is_none() => {
+                match paired.setup_activation.as_ref() {
+                    None => overlay.handoff_new_connection = true,
+                    Some(activation) => {
+                        let bound = paired.credential.as_ref().is_some_and(|credential| {
+                            pl_transport_win::ack::JournalIdentity::from_credential(credential)
+                                .client_cert_sha256
+                                == activation.binding
+                        });
+                        if bound {
+                            overlay.handoff_new_connection =
+                                activation.handoff_id != progress.handoff_id;
+                        } else {
+                            overlay.handoff_persist_failed = true;
+                        }
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(_) => overlay.handoff_persist_failed = true,
+        }
+    }
+    setup.lock().unwrap().set_handoff_overlay(overlay);
+}
+
+pub(crate) fn reload_setup(state: &AppState) {
+    let data_root = platform_win::local_data_root();
+    update_handoff_overlay(
+        &data_root,
+        &state.sync,
+        &state.setup,
+        &state.pairing_admission,
+    );
 }
 
 /// This executable, when it is the installed (Setup) copy: the only copy that
@@ -199,7 +413,8 @@ fn installed_login_item_owner() -> std::io::Result<Option<std::path::PathBuf>> {
 fn build_sync_config() -> SyncConfig {
     let host = observer_hostname();
     let journal_version_path = platform_win::local_data_root().join("journal-version.json");
-    let state_path = platform_win::local_data_root().join("pairing.json");
+    let state_path =
+        platform_win::local_data_root().join(pl_transport_win::credential::PAIRED_STATE_FILE_NAME);
     SyncConfig {
         device_label: host,
         period_secs: EngineConfig::default().segment_secs,
@@ -294,6 +509,7 @@ pub fn run(
     open_view: Option<observer_model::View>,
     surface_on_launch: bool,
     open_journal_on_launch: bool,
+    reload_setup: bool,
 ) {
     tracing::info!(
         target: "lifecycle",
@@ -347,15 +563,21 @@ pub fn run(
             crate::ipc::browser_status,
             crate::ipc::open_browser_store,
             crate::ipc::browser_discard_waiting,
+            crate::ipc::set_source_enabled,
+            crate::ipc::set_start_at_login,
+            crate::ipc::set_wizard_step,
+            crate::ipc::dismiss_notice,
+            crate::ipc::retry_save,
+            crate::ipc::set_proof_consumer,
+            crate::ipc::pairing_prefill,
+            crate::ipc::finish_connecting,
+            crate::ipc::open_setup_journal,
+            crate::ipc::retry_setup_link,
+            crate::ipc::connect_native_handoff,
+            crate::ipc::use_deferred_link,
+            crate::ipc::dismiss_deferred_link,
         ])
         .setup(move |app| {
-            // Ensure the per-user autostart login item so the tray-resident
-            // observer relaunches at the next login, for the copy that owns
-            // it (see `ensure_owned_login_item`). Before the single-instance
-            // check, so opening the installed app while another copy runs
-            // still takes the entry back. A failure is logged, never fatal.
-            ensure_owned_login_item();
-
             match crate::lifecycle::acquire_single_instance() {
                 platform_win::InstanceLock::AlreadyRunning => {
                     tracing::info!(
@@ -363,7 +585,9 @@ pub fn run(
                         outcome = "already_running",
                         "single instance"
                     );
-                    let acknowledged = if open_journal_on_launch {
+                    let acknowledged = if reload_setup {
+                        crate::control::signal_reload_setup()
+                    } else if open_journal_on_launch {
                         crate::control::signal_open_journal()
                     } else if let Some(view) = open_view {
                         // `--open-view` has to mean the same thing whether or not
@@ -395,6 +619,29 @@ pub fn run(
                     );
                 }
             }
+
+            // Only the owning instance may classify setup or change login registration.
+            let data_root = platform_win::local_data_root();
+            let load_outcome = observer_model::setup::load_or_classify(&data_root);
+            let config = match load_outcome {
+                observer_model::setup::LoadOutcome::Abort => {
+                    tracing::warn!(
+                        target: "lifecycle",
+                        component = "setup",
+                        outcome = "abort",
+                        "setup classification aborted"
+                    );
+                    return Ok(());
+                }
+                observer_model::setup::LoadOutcome::Fresh(cfg)
+                | observer_model::setup::LoadOutcome::Legacy(cfg)
+                | observer_model::setup::LoadOutcome::Valid(cfg)
+                | observer_model::setup::LoadOutcome::FailedClosed(cfg)
+                | observer_model::setup::LoadOutcome::LegacyUnsaved(cfg) => cfg,
+            };
+
+            let login_apply_failed = apply_login_decision(config.start_at_login);
+            apply_scheme_decision();
 
             // Capture-exclusion rules: load persisted owner policy and share the
             // handle with the WGC source so edits take effect on the next frame.
@@ -446,6 +693,11 @@ pub fn run(
                     &snapshot.journal_display_line,
                 );
             }
+            engine.set_setup_root(data_root.clone());
+            let mut setup_snapshot = config.to_snapshot();
+            setup_snapshot.login_apply_failed = login_apply_failed;
+            engine.set_source_choices(setup_snapshot);
+
             // The owner's pause outlives a restart: restore it before any source
             // can start, so a held pause captures nothing at launch.
             engine.hold_owner_pause_in(Box::new(capture_engine::FilePauseStore::new(
@@ -455,6 +707,21 @@ pub fn run(
             tracing::info!(target: "engine", outcome = "started", "engine start");
 
             let watch_rx = engine.health_watch();
+            let preview_rx = engine.preview_watch();
+            tauri::async_runtime::spawn({
+                let app = app.handle().clone();
+                let mut rx = preview_rx;
+                async move {
+                    while rx.changed().await.is_ok() {
+                        let snapshot = rx.borrow_and_update().clone();
+                        if !crate::windows::settings_proof_eligible(&app) {
+                            crate::windows::revoke_settings_proof(&app, false);
+                            continue;
+                        }
+                        let _ = app.emit_to("settings", "preview://changed", &snapshot);
+                    }
+                }
+            });
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -466,11 +733,15 @@ pub fn run(
             let credential_access = tauri::async_runtime::block_on(
                 pl_transport_win::service::launch_resume(&sync_config, &sync, &mut slot),
             );
+            let pairing_admission = std::sync::atomic::AtomicBool::new(false);
+            update_handoff_overlay(&data_root, &sync, &engine.setup_authority(), &pairing_admission);
 
             app.manage(AppState {
                 commands: cmd_tx.clone(),
                 health: health.clone(),
                 sync: sync.clone(),
+                setup: engine.setup_authority(),
+                proof: engine.proof_gate(),
                 about_observation: about_observation.clone(),
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
@@ -478,10 +749,13 @@ pub fn run(
                 credential_access: tokio::sync::Mutex::new(credential_access),
                 journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
                 journal_bridge: Arc::new(Mutex::new(None)),
+                setup_browser: Arc::new(Mutex::new(None)),
+                pairing_admission,
                 exclusions,
                 #[cfg(test)]
                 probe: None,
             });
+            crate::ipc::recover_setup_browser_completion(&app.state::<AppState>());
 
             // The browser extension's native host (compiled in only with the
             // `browser-host` feature): endpoint, custody, gate and delivery.
@@ -658,6 +932,10 @@ pub fn run(
                         .lock()
                         .map(|health| health.listener_faults.clone())
                         .unwrap_or_default();
+                    let setup = health
+                        .lock()
+                        .map(|health| health.setup.clone())
+                        .unwrap_or_default();
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -674,6 +952,7 @@ pub fn run(
                         views,
                         pump_degraded,
                         listener_faults,
+                        setup,
                     };
                     log_health_transitions(previous.as_ref(), &terminal);
                     if let Ok(mut health) = health.lock() {

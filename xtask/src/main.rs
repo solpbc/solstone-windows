@@ -5,8 +5,8 @@
 //!
 //! Verbs:
 //! - `advisory-audit` — verify a signed advisory packet and self-contained bundle, then check the locked graph offline.
-//! - `contract` — regenerate `automation-contract.json` + the `ui/src/lib/contract.ts` codegen.
-//! - `contract --check` — regenerate both in memory and exit 1 on drift (the `make ci` gate invokes it).
+//! - `contract` — regenerate `automation-contract.json`, `setup-handoff-contract.json`, + the `ui/src/lib/contract.ts` codegen.
+//! - `contract --check` — regenerate in memory and exit 1 on drift (the `make ci` gate invokes it).
 //! - `observer-contract check` — verify the vendored observer-client authority bundle and adoption record.
 //! - `rust-release-manifest check` — offline schema, semantic, ledger, and bundle verification.
 //! - `rust-release-manifest advisory-config` — materialize the deterministic isolated advisory policy.
@@ -19,11 +19,13 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use observer_contract::generate_contract;
+use observer_contract::{generate_contract, generate_setup_handoff_contract};
 use xtask::release_exec::{resolve_path_program, CommandRunner};
 
 /// The committed contract artifact's filename at the repo root.
 const CONTRACT_FILE: &str = "automation-contract.json";
+/// The committed setup-handoff contract artifact's filename at the repo root.
+const SETUP_HANDOFF_CONTRACT_FILE: &str = "setup-handoff-contract.json";
 /// The generated webview binding.
 const UI_CONTRACT_TS: &str = "ui/src/lib/contract.ts";
 
@@ -76,7 +78,7 @@ fn main() -> ExitCode {
         Some("dev") => cmd_dev(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <advisory-audit | contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | transparency <publish --release-dir <candidate> | resign-pointer> | purity-check | rust-notices check | version-gate [--root <path>] | dev>\n  advisory-audit: verify the signed advisory packet and bundle, then check the locked graph offline\n  contract [--check]: generate or verify the AutomationId/state-token contract\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  transparency publish: archive and publish evidence for one validated candidate\n  transparency resign-pointer: refresh the signed latest pointer without a candidate\n  rust-notices check: verify committed Rust dependency notices match Cargo.lock\n  version-gate [--root <path>]: verify every committed release version surface"
+                "usage: cargo xtask <advisory-audit | contract [--check] | observer-contract check | rust-release-manifest <check | advisory-config --db-root <isolated-absolute-path> --out <path> | finalize --expected-release-commit <40hex> [--sign] [--delta-base-full <basename> ...] | prove-native --release-dir <candidate>> | transparency <publish --release-dir <candidate> | resign-pointer> | purity-check | rust-notices check | version-gate [--root <path>] | dev>\n  advisory-audit: verify the signed advisory packet and bundle, then check the locked graph offline\n  contract [--check]: generate or verify the AutomationId/state-token and setup-handoff contracts\n  observer-contract check: verify the vendored observer-client authority bundle\n  rust-release-manifest check: offline manifest and current-bundle verification selected by MANIFEST or RELEASE_DIR\n  rust-release-manifest advisory-config: materialize the deterministic isolated advisory policy\n  rust-release-manifest finalize: source-bound build-to-finalize transaction; selection JSON is read from stdin\n  rust-release-manifest prove-native: install and smoke one exact signed finalized candidate\n  transparency publish: archive and publish evidence for one validated candidate\n  transparency resign-pointer: refresh the signed latest pointer without a candidate\n  rust-notices check: verify committed Rust dependency notices match Cargo.lock\n  version-gate [--root <path>]: verify every committed release version surface"
             );
             ExitCode::from(2)
         }
@@ -906,14 +908,17 @@ fn repo_root() -> PathBuf {
 fn cmd_contract(check: bool) -> ExitCode {
     let root = repo_root();
     let json = generate_contract();
+    let handoff_json = generate_setup_handoff_contract();
     let ts = generate_ts_binding(&json);
 
     let json_path = root.join(CONTRACT_FILE);
+    let handoff_json_path = root.join(SETUP_HANDOFF_CONTRACT_FILE);
     let ts_path = root.join(UI_CONTRACT_TS);
 
     if check {
         let mut drift = false;
         drift |= report_drift(&json_path, &json);
+        drift |= report_drift(&handoff_json_path, &handoff_json);
         drift |= report_drift(&ts_path, &ts);
         if drift {
             eprintln!("contract drift detected — run `make contract` and commit the result");
@@ -929,11 +934,20 @@ fn cmd_contract(check: bool) -> ExitCode {
             eprintln!("failed to write {}: {e}", json_path.display());
             return ExitCode::FAILURE;
         }
+        if let Err(e) = std::fs::write(&handoff_json_path, &handoff_json) {
+            eprintln!("failed to write {}: {e}", handoff_json_path.display());
+            return ExitCode::FAILURE;
+        }
         if let Err(e) = std::fs::write(&ts_path, &ts) {
             eprintln!("failed to write {}: {e}", ts_path.display());
             return ExitCode::FAILURE;
         }
-        println!("wrote {} and {}", json_path.display(), ts_path.display());
+        println!(
+            "wrote {}, {}, and {}",
+            json_path.display(),
+            handoff_json_path.display(),
+            ts_path.display()
+        );
         ExitCode::SUCCESS
     }
 }
@@ -964,7 +978,7 @@ fn generate_ts_binding(contract_json: &str) -> String {
     out.push_str("//\n");
     out.push_str("// GENERATED — DO NOT EDIT. Run `make contract`.\n");
     out.push_str(
-        "// Source of truth: the observer-contract crate -> automation-contract.json.\n\n",
+        "// Source of truth: the observer-contract crate -> automation-contract.json and setup-handoff-contract.json.\n\n",
     );
     out.push_str("export const automationContract = ");
     // Embed the canonical JSON verbatim so the TS and JSON can never disagree.

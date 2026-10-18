@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use observer_contract::{CONTROL_PORT, LOOPBACK_HOST};
 use observer_model::{
-    control_ack_after_dispatch, send_control, ControlActions, OPEN_JOURNAL_VERB,
+    control_ack_after_dispatch, send_control, ControlActions, OPEN_JOURNAL_VERB, RELOAD_SETUP_VERB,
     SURFACE_ABOUT_VERB, SURFACE_SETTINGS_VERB,
 };
 use tokio::io::AsyncReadExt;
@@ -17,6 +17,10 @@ pub fn signal_surface() -> bool {
 
 pub fn signal_open_journal() -> bool {
     signal(OPEN_JOURNAL_VERB)
+}
+
+pub fn signal_reload_setup() -> bool {
+    signal(RELOAD_SETUP_VERB)
 }
 
 /// Surface About on an already-running instance. Without this, `--open-view
@@ -68,6 +72,16 @@ impl ControlActions for TauriControlActions {
             use tauri::Manager;
             let state = app.state::<crate::app::AppState>();
             open_journal_from_control(&state, &app, Some(&app)).await;
+        });
+    }
+
+    fn reload_setup(&self) {
+        let app = self.app.clone();
+        std::thread::spawn(move || {
+            use tauri::Manager;
+            let state = app.state::<crate::app::AppState>();
+            crate::app::reload_setup(&state);
+            let _ = crate::windows::open_settings(&app);
         });
     }
 }
@@ -207,6 +221,10 @@ mod tests {
             sync: Arc::new(std::sync::Mutex::new(
                 observer_model::SyncSnapshot::default(),
             )),
+            setup: Arc::new(std::sync::Mutex::new(
+                observer_model::setup::SetupAuthority::new(),
+            )),
+            proof: Arc::new(std::sync::Mutex::new(capture_engine::ProofGate::new())),
             about_observation: observer_model::about::WindowsObservation::default(),
             sync_config,
             _shutdown: std::sync::Mutex::new(None),
@@ -214,6 +232,8 @@ mod tests {
             credential_access: tokio::sync::Mutex::new(None),
             journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
             journal_bridge: Arc::new(std::sync::Mutex::new(None)),
+            setup_browser: Arc::new(std::sync::Mutex::new(None)),
+            pairing_admission: std::sync::atomic::AtomicBool::new(false),
             exclusions: crate::exclusions::ExclusionController::new(exclusions_path),
             probe,
         }
@@ -521,5 +541,378 @@ mod tests {
         let (pair_res, _) = joined.unwrap();
         assert!(pair_res.is_ok());
         assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 1);
+    }
+    async fn native_browser_fixture() -> (crate::app::AppState, String) {
+        let state = test_app_state(None);
+        let generated = rcgen::generate_simple_self_signed(vec!["spl.local".into()]).unwrap();
+        let credential = pl_transport_win::credential::Credential {
+            client_key_pem: generated.key_pair.serialize_pem(),
+            client_cert_pem: generated.cert.pem(),
+            ca_chain_pem: vec![generated.cert.pem()],
+            ca_fp_prefix: spl_core::ca::sha256(generated.cert.der())[..16].to_vec(),
+            instance_id: "f30ed159-ef46-8e9c-913f-e49f0fe7d201".into(),
+            home_label: "journal".into(),
+            endpoints: vec![pl_transport_win::credential::EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: 1,
+            }],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        };
+        let binding =
+            pl_transport_win::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
+        let paired = pl_transport_win::credential::PairedState {
+            credential: Some(credential),
+            setup_activation: Some(pl_transport_win::credential::SetupActivation {
+                handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+                binding: binding.clone(),
+            }),
+            ..Default::default()
+        };
+        paired.save(&state.sync_config.state_path).unwrap();
+        *state.sync_config.confirmation.lock().unwrap() = binding.clone();
+        let access = pl_transport_win::CredentialAccess::bind(
+            &paired,
+            &state.sync_config,
+            state.sync.clone(),
+            None,
+        )
+        .unwrap();
+        *state.credential_access.lock().await = Some(access);
+        {
+            let mut sync = state.sync.lock().unwrap();
+            sync.pairing.phase = observer_model::PairingPhase::Paired;
+            sync.pairing.binding = binding.clone();
+            sync.pairing.setup_browser_ready = true;
+        }
+        {
+            let mut setup = state.setup.lock().unwrap();
+            setup.set_root(state.sync_config.state_path.parent().unwrap().to_owned());
+            assert!(setup.set_wizard_step(observer_model::setup::WizardStep::Connection));
+        }
+        (state, binding)
+    }
+
+    #[tokio::test]
+    async fn handoff_overlay_keeps_completed_h1_retired_and_offers_fresh_h2_without_pairing() {
+        let (state, binding) = native_browser_fixture().await;
+        let root = state.sync_config.state_path.parent().unwrap();
+        let h1 = "11111111-1111-4111-8111-111111111111";
+        let h2 = "22222222-2222-4222-8222-222222222222";
+        let mailbox = |id: &str| pl_transport_win::handoff::SetupHandoffMailbox {
+            schema: observer_contract::MAILBOX_SCHEMA.into(),
+            handoff_id: id.into(),
+            step: observer_contract::HANDOFF_REQUIRED_STEP,
+            expected_instance_id: "journal-h2".into(),
+            expected_ca_fingerprint: "ab".repeat(32),
+            pairing_link: direct_pair_link(1, &[0xab; 16]),
+        };
+        let write = |id: &str| {
+            std::fs::write(
+                root.join(observer_contract::MAILBOX_FILE_NAME),
+                serde_json::to_vec(&mailbox(id)).unwrap(),
+            )
+            .unwrap();
+        };
+        let refresh = || {
+            crate::app::update_handoff_overlay(
+                root,
+                &state.sync,
+                &state.setup,
+                &state.pairing_admission,
+            );
+            state.setup.lock().unwrap().projection()
+        };
+        write(h1);
+        let current = refresh();
+        assert_eq!(current.handoff_id.as_deref(), Some(h1));
+        assert!(!current.handoff_new_connection);
+
+        pl_transport_win::PairedState::mark_setup_browser_opened(
+            &state.sync_config.state_path,
+            &binding,
+        )
+        .unwrap();
+        state.sync.lock().unwrap().pairing.setup_browser_ready = false;
+        write(h1);
+        let replay = refresh();
+        assert!(replay.handoff_id.is_none());
+        assert!(!replay.handoff_new_connection);
+        write(h2);
+        let next = refresh();
+        assert_eq!(next.handoff_id.as_deref(), Some(h2));
+        assert!(next.handoff_new_connection);
+        assert!(!next.handoff_expired);
+        let sync = state.sync.lock().unwrap();
+        assert_eq!(sync.pairing.phase, observer_model::PairingPhase::Paired);
+        assert_eq!(sync.pairing.binding, binding);
+        drop(sync);
+        let saved = pl_transport_win::PairedState::load(&state.sync_config.state_path).unwrap();
+        assert_eq!(saved.setup_activation.unwrap().handoff_id, h1);
+        assert!(saved.setup_browser_opened);
+
+        std::fs::write(&state.sync_config.state_path, b"unreadable authority").unwrap();
+        let unavailable = refresh();
+        assert!(!unavailable.handoff_new_connection);
+        assert!(unavailable.handoff_persist_failed);
+        stop_native_browser(&state).await;
+    }
+
+    #[tokio::test]
+    async fn handoff_overlay_requires_consistent_activation_but_allows_ordinary_incumbent() {
+        let (state, _) = native_browser_fixture().await;
+        let root = state.sync_config.state_path.parent().unwrap();
+        let progress = pl_transport_win::handoff::SetupHandoffProgress {
+            schema: observer_contract::PROGRESS_SCHEMA.into(),
+            handoff_id: "22222222-2222-4222-8222-222222222222".into(),
+            expected_instance_id: "journal-h2".into(),
+            expected_ca_fingerprint: "ab".repeat(32),
+            pairing_link: direct_pair_link(1, &[0xab; 16]),
+            accepted_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        };
+        std::fs::write(
+            root.join(observer_contract::PROGRESS_FILE_NAME),
+            serde_json::to_vec(&progress).unwrap(),
+        )
+        .unwrap();
+        let saved_bytes = std::fs::read(&state.sync_config.state_path).unwrap();
+        let mut raw: serde_json::Value = serde_json::from_slice(&saved_bytes).unwrap();
+        raw["setup_activation"]["binding"] = "another-binding".into();
+        std::fs::write(
+            &state.sync_config.state_path,
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        crate::app::update_handoff_overlay(
+            root,
+            &state.sync,
+            &state.setup,
+            &state.pairing_admission,
+        );
+        let inconsistent = state.setup.lock().unwrap().projection();
+        assert!(!inconsistent.handoff_new_connection);
+        assert!(inconsistent.handoff_persist_failed);
+
+        raw["setup_activation"] = serde_json::Value::Null;
+        std::fs::write(
+            &state.sync_config.state_path,
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        crate::app::update_handoff_overlay(
+            root,
+            &state.sync,
+            &state.setup,
+            &state.pairing_admission,
+        );
+        let ordinary = state.setup.lock().unwrap().projection();
+        assert!(ordinary.handoff_new_connection);
+        assert!(!ordinary.handoff_persist_failed);
+        stop_native_browser(&state).await;
+    }
+
+    async fn stop_native_browser(state: &crate::app::AppState) {
+        let browser = state.setup_browser.lock().unwrap().take();
+        if let Some(browser) = browser {
+            browser.handle.shutdown_and_wait().await;
+        }
+        let _ = std::fs::remove_dir_all(state.sync_config.state_path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn native_browser_open_failure_and_stale_binding_leave_completion_pending() {
+        let (state, binding) = native_browser_fixture().await;
+        let opens = AtomicUsize::new(0);
+        assert!(crate::ipc::open_setup_journal_with(&state, "stale", |_| {
+            opens.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .is_err());
+        assert!(crate::ipc::open_setup_journal_with(&state, &binding, |_| {
+            opens.fetch_add(1, Ordering::SeqCst);
+            Err("shell refused".into())
+        })
+        .await
+        .is_err());
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert!(
+            !pl_transport_win::credential::PairedState::load(&state.sync_config.state_path)
+                .unwrap()
+                .setup_browser_opened
+        );
+        assert!(state.setup_browser.lock().unwrap().is_none());
+        assert_eq!(
+            state.setup.lock().unwrap().projection().wizard,
+            observer_model::setup::WizardStep::Connection
+        );
+        stop_native_browser(&state).await;
+    }
+
+    #[tokio::test]
+    async fn native_browser_save_failure_retains_bridge_and_retry_does_not_reopen() {
+        let (state, binding) = native_browser_fixture().await;
+        let staging = state.sync_config.state_path.with_extension("json.tmp");
+        std::fs::create_dir(&staging).unwrap();
+        let opens = AtomicUsize::new(0);
+        assert!(
+            crate::ipc::open_setup_journal_with(&state, &binding, |url| {
+                assert!(url.starts_with("http://127.0.0.1:"));
+                opens.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+            .is_err()
+        );
+        assert!(state.setup_browser.lock().unwrap().is_some());
+        assert!(
+            !pl_transport_win::credential::PairedState::load(&state.sync_config.state_path)
+                .unwrap()
+                .setup_browser_opened
+        );
+        std::fs::remove_dir(staging).unwrap();
+        crate::ipc::open_setup_journal_with(&state, &binding, |_| {
+            opens.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert!(
+            pl_transport_win::credential::PairedState::load(&state.sync_config.state_path)
+                .unwrap()
+                .setup_browser_opened
+        );
+        assert_eq!(
+            state.setup.lock().unwrap().projection().wizard,
+            observer_model::setup::WizardStep::Done
+        );
+        stop_native_browser(&state).await;
+    }
+
+    #[tokio::test]
+    async fn native_browser_duplicate_calls_open_once_and_crash_completion_recovers() {
+        let (state, binding) = native_browser_fixture().await;
+        let opens = AtomicUsize::new(0);
+        let (first, second) = tokio::join!(
+            crate::ipc::open_setup_journal_with(&state, &binding, |_| {
+                opens.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+            crate::ipc::open_setup_journal_with(&state, &binding, |_| {
+                opens.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        // Reproduce the durable between-file crash state, with no browser bridge.
+        assert!(state
+            .setup
+            .lock()
+            .unwrap()
+            .set_wizard_step(observer_model::setup::WizardStep::Connection));
+        let browser = state.setup_browser.lock().unwrap().take().unwrap();
+        browser.handle.shutdown_and_wait().await;
+        crate::ipc::recover_setup_browser_completion(&state);
+        assert_eq!(
+            state.setup.lock().unwrap().projection().wizard,
+            observer_model::setup::WizardStep::Done
+        );
+        assert!(!state.sync.lock().unwrap().pairing.setup_browser_ready);
+        assert!(state.setup_browser.lock().unwrap().is_none());
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        stop_native_browser(&state).await;
+    }
+    #[tokio::test]
+    async fn native_browser_refusal_after_bridge_start_never_opens_or_completes() {
+        let (mut state, binding) = native_browser_fixture().await;
+        let probe = Arc::new(crate::windows::OpenPairProbe::new());
+        state.probe = Some(probe.clone());
+        let opens = AtomicUsize::new(0);
+        let open = crate::ipc::open_setup_journal_with(&state, &binding, |_| {
+            opens.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        let refuse = async {
+            probe.setup_bridge_started.notified().await;
+            state.sync.lock().unwrap().pairing.phase = observer_model::PairingPhase::Failed;
+            probe.release_setup_browser.notify_one();
+        };
+        let (result, _) =
+            tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(open, refuse) })
+                .await
+                .unwrap();
+        assert!(result.is_err());
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        assert!(state.setup_browser.lock().unwrap().is_none());
+        assert!(
+            !pl_transport_win::credential::PairedState::load(&state.sync_config.state_path)
+                .unwrap()
+                .setup_browser_opened
+        );
+        assert_eq!(
+            state.setup.lock().unwrap().projection().wizard,
+            observer_model::setup::WizardStep::Connection
+        );
+        stop_native_browser(&state).await;
+    }
+    #[tokio::test]
+    async fn native_rejection_cleanup_precedes_a_queued_pair_replacement() {
+        use std::future::Future;
+        let (mut state, binding) = native_browser_fixture().await;
+        let probe = Arc::new(crate::windows::OpenPairProbe::new());
+        state.probe = Some(probe.clone());
+        state.sync.lock().unwrap().pairing.phase =
+            observer_model::PairingPhase::AwaitingConfirmation;
+        state.sync_config.confirmation.lock().unwrap().clear();
+        let surface = FakeJournalSurface::new();
+        let (signing_cert, signing_key) = signing_ca();
+        let (server_cert, server_key) = journal_tls_leaf();
+        let pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let link = direct_pair_link(listener.local_addr().unwrap().port(), &pin);
+        let server = tokio::spawn(serve_one_pair_response(
+            listener,
+            acceptor,
+            signing_cert,
+            signing_key,
+        ));
+        let answer = crate::ipc::answer_pairing_surface(&surface, &state, binding, "reject".into());
+        let contender = async {
+            probe.answer_closed.notified().await;
+            assert!(
+                state.journal_open_lock.try_lock().is_err(),
+                "rejection must own journal-open through cleanup"
+            );
+            probe.release_pair.notify_one();
+            let mut pair = Box::pin(crate::ipc::pair_session(&surface, &state, link));
+            std::future::poll_fn(|cx| {
+                assert!(pair.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 0);
+            probe.release_answer_cleanup.notify_one();
+            pair.await
+        };
+        let (answer, pair, server) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(answer, contender, server)
+        })
+        .await
+        .unwrap();
+        answer.unwrap();
+        pair.unwrap();
+        server.unwrap();
+        assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 2);
+        assert!(state.credential_access.lock().await.is_some());
+        state.uploader_slot.lock().await.stop().await;
+        stop_native_browser(&state).await;
     }
 }

@@ -104,6 +104,12 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         owner: None,
     },
     ApprovedNode {
+        path: "crates/platform-win/src/window_focus.rs",
+        kind: ApprovedKind::Fn,
+        name: "is_foreground_root",
+        owner: None,
+    },
+    ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::ModDecl,
         name: "browser_pipe",

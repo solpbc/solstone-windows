@@ -75,6 +75,14 @@ fn main() -> ExitCode {
                     &exe,
                     &[observer_model::FROM_AUTOSTART_ARG],
                 );
+                if let Ok(current) = platform_win::scheme::read_scheme_command() {
+                    if observer_model::scheme::scheme_uninstall_should_remove(
+                        current.as_deref(),
+                        &exe,
+                    ) {
+                        let _ = platform_win::scheme::remove_scheme_handler();
+                    }
+                }
                 #[cfg(feature = "browser-host")]
                 browser::remove_registration(&exe);
             }
@@ -167,12 +175,53 @@ fn main() -> ExitCode {
         i += 1;
     }
 
+    let mut reload_setup = false;
+    let data_root = platform_win::local_data_root();
+    let state_path = data_root.join("pairing.json");
+    let answer_path = pl_transport_win::answer::answer_path(&state_path);
+    let paired_load = pl_transport_win::credential::PairedState::load(&state_path).ok();
+    let is_paired = paired_load.as_ref().map_or(false, |p| p.is_paired());
+    let ceremony_active = paired_load.as_ref().map_or(false, |p| {
+        if p.is_paired() {
+            let cred = p.credential.as_ref().unwrap();
+            let binding =
+                pl_transport_win::ack::JournalIdentity::from_credential(cred).client_cert_sha256;
+            let confirmed = pl_transport_win::answer::read_answer(&answer_path)
+                .ok()
+                .flatten()
+                .map_or(false, |a| a.confirmed == binding);
+            !confirmed
+        } else {
+            false
+        }
+    });
+
+    for arg in &args {
+        let trimmed = arg.trim();
+        if trimmed
+            .get(..11)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("solstone://"))
+        {
+            if let Some(canonical) = pl_transport_win::pairing::normalize_desktop_link(trimmed) {
+                reload_setup = true;
+                let _ = pl_transport_win::draft::write_draft_if_allowed(
+                    &data_root,
+                    &canonical,
+                    is_paired,
+                    ceremony_active,
+                );
+            }
+        } else if trimmed == observer_model::SETUP_HANDOFF_ARG {
+            reload_setup = true;
+        }
+    }
+
     let surface_on_launch = observer_model::launch_should_surface(&args);
 
     observer_log::init(
         &platform_win::logs_dir(),
         std::env::var("RUST_LOG").ok().as_deref(),
     );
-    app::run(open_view, surface_on_launch, open_journal);
+    app::run(open_view, surface_on_launch, open_journal, reload_setup);
     ExitCode::SUCCESS
 }

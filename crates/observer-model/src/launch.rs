@@ -133,4 +133,10 @@ mod tests {
             "settings"
         ]));
     }
+
+    #[test]
+    fn setup_handoff_and_scheme_surface() {
+        assert!(launch_should_surface(&["--setup-handoff"]));
+        assert!(launch_should_surface(&["solstone://pair#123"]));
+    }
 }

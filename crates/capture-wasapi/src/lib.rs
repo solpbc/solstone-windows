@@ -76,8 +76,8 @@ mod imp {
     use crate::reselect::{is_render_reselect_error, render_reopen_needed};
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
-        AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError, SourceKind,
-        SourceState, SystemAudioSource,
+        monotonic_us, AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError,
+        SourceKind, SourceState, SystemAudioSource,
     };
     use windows::core::{Error as WindowsError, Result as WindowsResult, PCWSTR};
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
@@ -327,6 +327,7 @@ mod imp {
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
 
         while !stop.load(Ordering::Relaxed) {
+            sink.begin_stream();
             let devices = enumerate_mic_devices(&enumerator).unwrap_or_default();
             if devices.is_empty() {
                 set_state(&state, SourceState::NoInputDevice);
@@ -409,6 +410,7 @@ mod imp {
                             seq,
                             data,
                             format: Some(audio_format),
+                            at_us: Some(monotonic_us()),
                         });
                     }
                     unsafe { capture.ReleaseBuffer(frames)? };
@@ -489,6 +491,7 @@ mod imp {
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
 
         while !stop.load(Ordering::Relaxed) {
+            sink.begin_stream();
             let device = match default_render_device(&enumerator) {
                 Ok(device) => device,
                 Err(_) => {
@@ -613,6 +616,7 @@ mod imp {
                             seq,
                             data,
                             format: Some(audio_format),
+                            at_us: Some(monotonic_us()),
                         });
                     }
                     match unsafe { capture.ReleaseBuffer(frames) } {
@@ -736,7 +740,7 @@ mod imp {
         pub fn new(config: Arc<RwLock<MicConfig>>, active: Arc<Mutex<Option<String>>>) -> Self {
             Self {
                 worker: None,
-                state: Arc::new(Mutex::new(SourceState::NoInputDevice)),
+                state: Arc::new(Mutex::new(SourceState::Inactive)),
                 seq: Arc::new(AtomicU64::new(0)),
                 config,
                 active,
@@ -774,6 +778,24 @@ mod imp {
 
         fn state(&self) -> SourceState {
             self.state.lock().unwrap().clone()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn microphone_is_inactive_until_started() {
+            let active = Arc::new(Mutex::new(None));
+            let source = WasapiMicSource::new(
+                Arc::new(RwLock::new(MicConfig::default())),
+                Arc::clone(&active),
+            );
+
+            assert_eq!(source.state(), SourceState::Inactive);
+            assert!(source.worker.is_none());
+            assert!(active.lock().unwrap().is_none());
         }
     }
 }

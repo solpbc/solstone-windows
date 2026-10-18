@@ -35,6 +35,8 @@ pub mod autostart;
 pub mod local_offset;
 #[allow(unsafe_code)]
 pub mod log_save;
+pub mod scheme;
+pub mod window_focus;
 
 /// The browser native host's same-user named pipe (Win32 security calls).
 #[allow(unsafe_code)]
@@ -97,6 +99,14 @@ fn source_fmt_file_name(source: SourceKind) -> &'static str {
     }
 }
 
+fn source_timeline_file_name(source: SourceKind) -> &'static str {
+    match source {
+        SourceKind::Screen => unreachable!("screen chunks do not have timeline sidecars"),
+        SourceKind::SystemAudio => "system-audio.timeline",
+        SourceKind::Mic => "mic.timeline",
+    }
+}
+
 fn has_sealable_media(dir: &Path) -> io::Result<bool> {
     // Partial files are never counted as sealable media because only the bare
     // final per-source filenames are probed here.
@@ -117,7 +127,9 @@ fn has_sealable_media(dir: &Path) -> io::Result<bool> {
 struct PresentSealAudioSource {
     pcm_path: PathBuf,
     fmt_path: PathBuf,
+    timeline_path: PathBuf,
     bytes: Vec<u8>,
+    timeline_bytes: Option<Vec<u8>>,
     format: AudioFormat,
 }
 
@@ -128,9 +140,13 @@ enum SealAudioSource {
 }
 
 impl SealAudioSource {
-    fn combine_input(&self) -> Option<(&[u8], AudioFormat)> {
+    fn combine_input(&self) -> Option<observer_audio::TimedSourceInput<'_>> {
         match self {
-            Self::Present(source) => Some((source.bytes.as_slice(), source.format)),
+            Self::Present(source) => Some((
+                source.bytes.as_slice(),
+                source.format,
+                source.timeline_bytes.as_deref(),
+            )),
             Self::Absent | Self::Orphan => None,
         }
     }
@@ -152,10 +168,19 @@ fn read_seal_audio_source(dir: &Path, source: SourceKind) -> io::Result<SealAudi
         return Ok(SealAudioSource::Orphan);
     };
 
+    let timeline_path = dir.join(source_timeline_file_name(source));
+    let timeline_bytes = match fs::read(&timeline_path) {
+        Ok(bytes) => Some(bytes),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err),
+    };
+
     Ok(SealAudioSource::Present(PresentSealAudioSource {
         bytes: fs::read(&pcm_path)?,
         pcm_path,
         fmt_path,
+        timeline_path,
+        timeline_bytes,
         format,
     }))
 }
@@ -167,7 +192,7 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
         return Ok(());
     }
 
-    let flac = observer_audio::combine_to_flac(mic.combine_input(), sys.combine_input())
+    let flac = observer_audio::combine_timed_to_flac(mic.combine_input(), sys.combine_input())
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
     let Some(bytes) = flac else {
@@ -183,6 +208,11 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
         if let SealAudioSource::Present(source) = source {
             fs::remove_file(&source.pcm_path)?;
             match fs::remove_file(&source.fmt_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+            match fs::remove_file(&source.timeline_path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
@@ -941,6 +971,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 struct SegmentHandle {
     file: File,
     last_flush: Option<Instant>,
+    timeline_valid: bool,
 }
 
 /// First write flushes immediately so recovery's file-length check promptly sees
@@ -974,8 +1005,74 @@ impl Default for LocalSegmentFs {
     }
 }
 
+// A predecessor has PCM without a timeline; a crash can also leave a PCM
+// suffix after its last timing row. Account for that prefix before appending a
+// new timed row, or the decoder would associate the new offset with old bytes.
+fn reconcile_audio_timeline(dir: &Path, source: SourceKind, pcm_len: u64) -> io::Result<()> {
+    let timeline_path = dir.join(source_timeline_file_name(source));
+    let bytes = match fs::read(&timeline_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let mut covered = 0u64;
+    let entries: Vec<_> = observer_audio::parse_timeline(&bytes)
+        .into_iter()
+        .filter_map(|(start, len)| {
+            let keep = (len as u64).min(pcm_len.saturating_sub(covered));
+            covered += keep;
+            (keep > 0).then_some((start, keep))
+        })
+        .collect();
+    let mut normalized = Vec::new();
+    for (start, len) in &entries {
+        writeln!(normalized, "{start} {len}")?;
+    }
+    if covered == pcm_len && normalized == bytes {
+        return Ok(());
+    }
+    let format: AudioFormat =
+        serde_json::from_slice(&fs::read(dir.join(source_fmt_file_name(source)))?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let byte_rate = u64::from(format.sample_rate_hz)
+        .saturating_mul(u64::from(format.channels))
+        .saturating_mul(u64::from(format.bits_per_sample / 8));
+    if byte_rate == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid audio format",
+        ));
+    }
+    let end_us = entries.iter().fold(0u64, |end, (start, len)| {
+        end.max(*start)
+            .saturating_add((*len).saturating_mul(1_000_000) / byte_rate)
+    });
+    if covered < pcm_len {
+        writeln!(normalized, "{end_us} {}", pcm_len - covered)?;
+    }
+    let temporary = timeline_path.with_extension("timeline.tmp");
+    let mut file = File::create(&temporary)?;
+    file.write_all(&normalized)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temporary, timeline_path)
+}
+
 impl SegmentFs for LocalSegmentFs {
     type Error = io::Error;
+
+    fn existing_incomplete(&mut self, key: SegmentKey) -> Result<Option<String>, Self::Error> {
+        let dir = incomplete_dir(&self.root, key);
+        match fs::metadata(&dir) {
+            Ok(meta) if meta.is_dir() => absolute_string(&dir).map(Some),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "incomplete segment is not a directory",
+            )),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 
     fn open_incomplete(&mut self, key: SegmentKey) -> Result<String, Self::Error> {
         fs::create_dir_all(&self.root)?;
@@ -1009,10 +1106,24 @@ impl SegmentFs for LocalSegmentFs {
             entry.insert(SegmentHandle {
                 file,
                 last_flush: None,
+                timeline_valid: false,
             });
         }
         let handle = self.handles.get_mut(&handle_key).expect("handle inserted");
+        if chunk.at_us.is_some() && !handle.timeline_valid {
+            reconcile_audio_timeline(&dir, chunk.source, handle.file.metadata()?.len())?;
+        }
+        handle.timeline_valid = false;
         handle.file.write_all(&chunk.data)?;
+        if let Some(us) = chunk.at_us {
+            let timeline_path = dir.join(source_timeline_file_name(chunk.source));
+            let mut timeline_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(timeline_path)?;
+            writeln!(timeline_file, "{us} {}", chunk.data.len())?;
+            handle.timeline_valid = true;
+        }
         // Commit durability on a ~1s per-handle cadence, not per chunk. Audio
         // flows here at the 100ms WASAPI pull cadence from two sources, so
         // per-chunk fsync was ~10-20/sec. The first chunk syncs immediately so
@@ -1185,6 +1296,7 @@ mod tests {
             seq: 0,
             data: data.to_vec(),
             format: None,
+            at_us: None,
         }
     }
 
@@ -1211,6 +1323,7 @@ mod tests {
             seq: 0,
             data: pcm_i16(samples),
             format: Some(audio_format()),
+            at_us: None,
         }
     }
 
@@ -1264,6 +1377,101 @@ mod tests {
         assert!(!root.join("7/mic.fmt.json").exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn timed_audio_seal_matches_sidecar_placement() {
+        let root = temp_root("timed-seal");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(8);
+
+        fs_impl.open_incomplete(key).unwrap();
+
+        let sys_samples = vec![1000i16; 1600];
+        let mic_samples = vec![2000i16; 1600];
+
+        let mut sys_chunk = audio_chunk(SourceKind::SystemAudio, &sys_samples);
+        sys_chunk.at_us = Some(0);
+
+        let mut mic_chunk = audio_chunk(SourceKind::Mic, &mic_samples);
+        mic_chunk.at_us = Some(100_000); // 100ms later = 1600 samples at 16kHz
+
+        fs_impl.write_chunk(key, &sys_chunk).unwrap();
+        fs_impl.write_chunk(key, &mic_chunk).unwrap();
+
+        assert!(root.join("8.incomplete/system-audio.timeline").is_file());
+        assert!(root.join("8.incomplete/mic.timeline").is_file());
+
+        fs_impl.finalize(key, None).unwrap();
+
+        assert!(!root.join("8.incomplete").exists());
+        assert!(root.join(format!("8/{AUDIO_FILE_NAME}")).is_file());
+        assert!(!root.join("8/system-audio.pcm").exists());
+        assert!(!root.join("8/mic.pcm").exists());
+        assert!(!root.join("8/system-audio.fmt.json").exists());
+        assert!(!root.join("8/mic.fmt.json").exists());
+        assert!(!root.join("8/system-audio.timeline").exists());
+        assert!(!root.join("8/mic.timeline").exists());
+
+        let flac_bytes = fs::read(root.join(format!("8/{AUDIO_FILE_NAME}"))).unwrap();
+        let expected = observer_audio::combine_timed_to_flac(
+            Some((
+                &pcm_i16(&mic_samples),
+                audio_format(),
+                Some(b"100000 3200\n"),
+            )),
+            Some((&pcm_i16(&sys_samples), audio_format(), Some(b"0 3200\n"))),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(flac_bytes, expected);
+        assert_eq!(observer_audio::flac_duration_secs(&flac_bytes), Some(0.2));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resumed_timed_audio_preserves_legacy_prefix_and_crash_suffix() {
+        for timeline in [
+            None,
+            Some(b"0 3200\npartial".as_slice()),
+            Some(b"0 6400\npartial".as_slice()),
+            Some(b"0 6400".as_slice()),
+        ] {
+            let root = temp_root("resume-timeline");
+            let mut previous = LocalSegmentFs::new(root.clone());
+            let key = key(8);
+            previous.open_incomplete(key).unwrap();
+            previous
+                .write_chunk(key, &audio_chunk(SourceKind::Mic, &vec![1200; 1600]))
+                .unwrap();
+            previous
+                .write_chunk(key, &audio_chunk(SourceKind::Mic, &vec![1800; 1600]))
+                .unwrap();
+            drop(previous);
+            if let Some(timeline) = timeline {
+                fs::write(root.join("8.incomplete/mic.timeline"), timeline).unwrap();
+            }
+            let mut resumed = LocalSegmentFs::new(root.clone());
+            let mut next = audio_chunk(SourceKind::Mic, &vec![2400; 1600]);
+            next.at_us = Some(1_000_000);
+            resumed.write_chunk(key, &next).unwrap();
+            resumed.finalize(key, None).unwrap();
+            let actual = fs::read(root.join(format!("8/{AUDIO_FILE_NAME}"))).unwrap();
+            let mut pcm = pcm_i16(&vec![1200; 1600]);
+            pcm.extend(pcm_i16(&vec![1800; 1600]));
+            pcm.extend(pcm_i16(&vec![2400; 1600]));
+            let expected = observer_audio::combine_timed_to_flac(
+                Some((&pcm, audio_format(), Some(b"0 6400\n1000000 3200\n"))),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(actual, expected);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -1360,6 +1568,7 @@ mod tests {
                     seq: 0,
                     data: pcm_i16(&[1000; 16]),
                     format: Some(first),
+                    at_us: None,
                 },
             )
             .unwrap();
@@ -1374,6 +1583,7 @@ mod tests {
                     seq: 1,
                     data: pcm_i16(&[2000; 16]),
                     format: Some(second),
+                    at_us: None,
                 },
             )
             .unwrap();

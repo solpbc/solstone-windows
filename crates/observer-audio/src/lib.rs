@@ -40,16 +40,44 @@ pub fn combine_to_flac(
     mic: Option<(&[u8], AudioFormat)>,
     sys: Option<(&[u8], AudioFormat)>,
 ) -> Result<Option<Vec<u8>>, AudioError> {
+    combine_timed_to_flac(
+        mic.map(|(b, f)| (b, f, None)),
+        sys.map(|(b, f)| (b, f, None)),
+    )
+}
+
+pub fn parse_timeline(bytes: &[u8]) -> Vec<(u64, usize)> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(us_str), Some(len_str)) = (parts.next(), parts.next()) {
+            if let (Ok(us), Ok(len)) = (us_str.parse::<u64>(), len_str.parse::<usize>()) {
+                entries.push((us, len));
+            }
+        }
+    }
+    entries
+}
+
+pub type TimedSourceInput<'a> = (&'a [u8], AudioFormat, Option<&'a [u8]>);
+
+pub fn combine_timed_to_flac(
+    mic: Option<TimedSourceInput<'_>>,
+    sys: Option<TimedSourceInput<'_>>,
+) -> Result<Option<Vec<u8>>, AudioError> {
     if mic.is_none() && sys.is_none() {
         return Ok(None);
     }
 
     let mic = match mic {
-        Some((bytes, format)) => decode_source(bytes, format)?,
+        Some((bytes, format, timeline)) => decode_source_timed(bytes, format, timeline)?,
         None => Vec::new(),
     };
     let sys = match sys {
-        Some((bytes, format)) => decode_source(bytes, format)?,
+        Some((bytes, format, timeline)) => decode_source_timed(bytes, format, timeline)?,
         None => Vec::new(),
     };
 
@@ -63,10 +91,63 @@ pub fn combine_to_flac(
     encode_flac(&samples).map(Some)
 }
 
-fn decode_source(bytes: &[u8], format: AudioFormat) -> Result<Vec<f32>, AudioError> {
+fn decode_source_timed(
+    bytes: &[u8],
+    format: AudioFormat,
+    timeline: Option<&[u8]>,
+) -> Result<Vec<f32>, AudioError> {
     validate_format(format)?;
     let mono = decode_to_mono(bytes, format)?;
-    resample_to_16k(mono, format.sample_rate_hz)
+    let Some(timeline_bytes) = timeline else {
+        return resample_to_16k(mono, format.sample_rate_hz);
+    };
+
+    let entries = parse_timeline(timeline_bytes);
+    if entries.is_empty() {
+        return resample_to_16k(mono, format.sample_rate_hz);
+    }
+
+    let channels = format.channels as usize;
+    let bytes_per_sample = (format.bits_per_sample / 8) as usize;
+    let frame_size = channels * bytes_per_sample;
+    if frame_size == 0 {
+        return resample_to_16k(mono, format.sample_rate_hz);
+    }
+
+    let mut placed = Vec::<f32>::new();
+    let mut byte_offset: usize = 0;
+
+    for (start_us, pcm_len) in entries {
+        let chunk_bytes_len = pcm_len.min(bytes.len().saturating_sub(byte_offset));
+        let chunk_frames = chunk_bytes_len / frame_size;
+        let mono_offset = byte_offset / frame_size;
+        if mono_offset >= mono.len() {
+            break;
+        }
+        let end_mono = (mono_offset + chunk_frames).min(mono.len());
+        let chunk_mono = &mono[mono_offset..end_mono];
+        byte_offset += chunk_bytes_len;
+
+        let mut target_sample =
+            ((start_us as u128 * format.sample_rate_hz as u128) / 1_000_000) as usize;
+        if target_sample < placed.len() {
+            target_sample = placed.len();
+        }
+        if target_sample > placed.len() {
+            placed.resize(target_sample, 0.0);
+        }
+        placed.extend_from_slice(chunk_mono);
+    }
+
+    let remaining_bytes = bytes.len().saturating_sub(byte_offset);
+    let remaining_frames = remaining_bytes / frame_size;
+    let mono_offset = byte_offset / frame_size;
+    if mono_offset < mono.len() && remaining_frames > 0 {
+        let end_mono = (mono_offset + remaining_frames).min(mono.len());
+        placed.extend_from_slice(&mono[mono_offset..end_mono]);
+    }
+
+    resample_to_16k(placed, format.sample_rate_hz)
 }
 
 fn validate_format(format: AudioFormat) -> Result<(), AudioError> {
@@ -484,5 +565,96 @@ mod tests {
             .unwrap();
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn mic_samples_start_later_stay_at_offset() {
+        let sys_pcm = i16_bytes(&[1000; 1600]);
+        let mic_pcm = i16_bytes(&[2000; 1600]);
+        let sys_timeline = b"0 3200\n";
+        let mic_timeline = b"100000 3200\n"; // 100ms = 1600 samples at 16kHz
+
+        let flac = combine_timed_to_flac(
+            Some((&mic_pcm, i16_format(16_000, 1), Some(mic_timeline))),
+            Some((&sys_pcm, i16_format(16_000, 1), Some(sys_timeline))),
+        )
+        .unwrap()
+        .unwrap();
+
+        let (_, _, _, samples) = decode(&flac);
+        let l = left(&samples);
+        let r = right(&samples);
+
+        assert_eq!(l.len(), 3200);
+        // Mic was silent for first 1600 samples, then active at offset 1600
+        assert!(l[..1600].iter().all(|s| *s == 0));
+        assert!(l[1600..3200].iter().all(|s| *s == 2000));
+
+        // System audio active for first 1600 samples, then silent
+        assert!(r[..1600].iter().all(|s| *s == 1000));
+        assert!(r[1600..3200].iter().all(|s| *s == 0));
+    }
+
+    #[test]
+    fn audio_gap_stays_silent() {
+        let pcm = i16_bytes(&[1000; 320]); // two chunks of 160 samples each (320 bytes each)
+                                           // chunk 1 at 0 (160 samples = 10ms), chunk 2 at 100ms (1600 samples)
+        let timeline = b"0 320\n100000 320\n";
+
+        let flac = combine_timed_to_flac(None, Some((&pcm, i16_format(16_000, 1), Some(timeline))))
+            .unwrap()
+            .unwrap();
+
+        let (_, _, _, samples) = decode(&flac);
+        let r = right(&samples);
+
+        assert_eq!(r.len(), 1760);
+        assert!(r[..160].iter().all(|s| *s == 1000));
+        // Gap between 160 and 1600 is silent
+        assert!(r[160..1600].iter().all(|s| *s == 0));
+        assert!(r[1600..1760].iter().all(|s| *s == 1000));
+    }
+
+    #[test]
+    fn simultaneous_zero_offset_keeps_channels() {
+        let mic_pcm = i16_bytes(&[3000; 160]);
+        let sys_pcm = i16_bytes(&[4000; 160]);
+        let timeline = b"0 320\n";
+
+        let flac = combine_timed_to_flac(
+            Some((&mic_pcm, i16_format(16_000, 1), Some(timeline))),
+            Some((&sys_pcm, i16_format(16_000, 1), Some(timeline))),
+        )
+        .unwrap()
+        .unwrap();
+
+        let (_, _, _, samples) = decode(&flac);
+        let l = left(&samples);
+        let r = right(&samples);
+
+        assert_eq!(l[0], 3000);
+        assert_eq!(r[0], 4000);
+    }
+
+    #[test]
+    fn none_timeline_seals_through_combine_to_flac() {
+        let mic_pcm = i16_bytes(&[1000; 160]);
+        let sys_pcm = i16_bytes(&[2000; 160]);
+
+        let flac_legacy = combine_to_flac(
+            Some((&mic_pcm, i16_format(16_000, 1))),
+            Some((&sys_pcm, i16_format(16_000, 1))),
+        )
+        .unwrap()
+        .unwrap();
+
+        let flac_timed = combine_timed_to_flac(
+            Some((&mic_pcm, i16_format(16_000, 1), None)),
+            Some((&sys_pcm, i16_format(16_000, 1), None)),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(flac_legacy, flac_timed);
     }
 }

@@ -293,6 +293,7 @@ mod imp {
     impl ScreenSource for WgcScreenSource {
         fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
             self.stop();
+            sink.begin_stream();
             self.last_sink = Some(Arc::clone(&sink));
             self.set_state(SourceState::Inactive);
             let settings = self.settings(sink)?;
@@ -316,6 +317,7 @@ mod imp {
             if let Some(control) = self.control.take() {
                 let _ = control.stop();
             }
+            self.last_sink = None;
             self.set_state(SourceState::Inactive);
         }
 

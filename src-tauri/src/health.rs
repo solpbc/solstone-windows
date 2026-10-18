@@ -41,6 +41,7 @@ pub(crate) fn record_listener_fault(
 
 /// Honest snapshot for a process that is not currently running.
 pub fn not_running_snapshot() -> HealthDump {
+    let setup = observer_model::setup::read_setup_read_only(&platform_win::local_data_root());
     HealthDump {
         app_state: AppPhase::Idle,
         sources: vec![],
@@ -57,6 +58,7 @@ pub fn not_running_snapshot() -> HealthDump {
         views: Default::default(),
         pump_degraded: false,
         listener_faults: observer_model::ListenerFaults::default(),
+        setup,
     }
 }
 

@@ -43,6 +43,8 @@ pub enum AppEvent {
     SourceFaulted(SourceKind),
     /// Segment storage entered or left a persistence fault.
     StorageFaultChanged(bool),
+    /// Operator or system enabled or disabled a source.
+    SourceEnabled { kind: SourceKind, enabled: bool },
 }
 
 /// The owner's pause, with its optional absolute deadline for automatic resume.
@@ -58,6 +60,9 @@ pub struct OwnerPause {
 pub struct StateMachine {
     engine_ready: bool,
     run_requested: bool,
+    screen_enabled: bool,
+    system_audio_enabled: bool,
+    mic_enabled: bool,
     /// The owner's pause and a system (lock/suspend) pause are held apart, so
     /// neither ends the other: an unlock does not end the owner's pause, and the
     /// owner's deadline passing does not resume a locked session.
@@ -66,8 +71,6 @@ pub struct StateMachine {
     storage_faulted: bool,
     screen: Option<SourceState>,
     system_audio: Option<SourceState>,
-    // Mic is intentionally NOT required for `Observing`: a machine with no mic
-    // (SourceState::NoInputDevice) is a fully valid observing configuration.
     mic: Option<SourceState>,
 }
 
@@ -80,28 +83,75 @@ impl StateMachine {
         self.engine_ready
     }
 
-    /// The computed phase. Reachability of `Observing` requires the engine ready,
-    /// a run requested, no active pause, and every *required* source `Active`.
+    pub fn run_requested(&self) -> bool {
+        self.run_requested
+    }
+
+    pub fn is_source_enabled(&self, kind: SourceKind) -> bool {
+        match kind {
+            SourceKind::Screen => self.screen_enabled,
+            SourceKind::SystemAudio => self.system_audio_enabled,
+            SourceKind::Mic => self.mic_enabled,
+        }
+    }
+
+    pub fn any_source_enabled(&self) -> bool {
+        self.screen_enabled || self.system_audio_enabled || self.mic_enabled
+    }
+
+    /// The computed phase.
+    /// Order: pause -> !run_requested or nothing enabled -> Idle -> !engine_ready -> Starting ->
+    /// storage fault or enabled non-AccessDenied fault -> Error -> any enabled Active -> Observing ->
+    /// any enabled None or Inactive -> Starting -> else Idle.
     pub fn phase(&self) -> AppPhase {
         if self.owner_pause.is_some() || self.system_pause.is_some() {
             return AppPhase::Paused;
         }
-        if !self.run_requested {
+        if !self.run_requested || !self.any_source_enabled() {
             return AppPhase::Idle;
         }
         if !self.engine_ready {
             return AppPhase::Starting;
         }
-        if self.storage_faulted || self.any_required_faulted() {
+        if self.storage_faulted || self.any_enabled_faulted() {
             return AppPhase::Error;
         }
-        if self.all_required_active() {
+        if self.any_enabled_active() {
             AppPhase::Observing
-        } else {
+        } else if self.any_enabled_pending() {
             AppPhase::Starting
+        } else {
+            AppPhase::Idle
         }
     }
 
+    fn any_enabled_faulted(&self) -> bool {
+        let is_faulted = |opt: &Option<SourceState>| {
+            matches!(
+                opt,
+                Some(SourceState::Faulted { reason, .. })
+                    if *reason != observer_model::ErrorReason::AccessDenied
+            )
+        };
+        (self.screen_enabled && is_faulted(&self.screen))
+            || (self.system_audio_enabled && is_faulted(&self.system_audio))
+            || (self.mic_enabled && is_faulted(&self.mic))
+    }
+
+    fn any_enabled_active(&self) -> bool {
+        let is_active = |opt: &Option<SourceState>| matches!(opt, Some(SourceState::Active));
+        (self.screen_enabled && is_active(&self.screen))
+            || (self.system_audio_enabled && is_active(&self.system_audio))
+            || (self.mic_enabled && is_active(&self.mic))
+    }
+
+    fn any_enabled_pending(&self) -> bool {
+        let is_pending =
+            |opt: &Option<SourceState>| opt.is_none() || matches!(opt, Some(SourceState::Inactive));
+        (self.screen_enabled && is_pending(&self.screen))
+            || (self.system_audio_enabled && is_pending(&self.system_audio))
+            || (self.mic_enabled && is_pending(&self.mic))
+    }
     /// The honest pause snapshot for the health dump, given the current clock.
     /// `None` when not paused; `seconds_remaining` is the live countdown to an
     /// automatic resume for a duration-bounded pause, `None` for an indefinite one.
@@ -134,23 +184,6 @@ impl StateMachine {
             .and_then(|p| p.expires_at_epoch_secs)
             .is_some_and(|exp| now_epoch_secs >= exp)
     }
-
-    fn required(&self) -> [&Option<SourceState>; 2] {
-        // Screen + system audio are required; mic is best-effort.
-        [&self.screen, &self.system_audio]
-    }
-
-    fn any_required_faulted(&self) -> bool {
-        self.required()
-            .iter()
-            .any(|s| matches!(s, Some(SourceState::Faulted { .. })))
-    }
-
-    fn all_required_active(&self) -> bool {
-        self.required()
-            .iter()
-            .all(|s| matches!(s, Some(SourceState::Active)))
-    }
 }
 
 /// The honest-state reduction. Folds one [`AppEvent`] into the machine and
@@ -158,6 +191,11 @@ impl StateMachine {
 /// only emerge from [`StateMachine::phase`] once the world warrants it.
 pub fn reduce(state: &mut StateMachine, event: AppEvent) -> AppPhase {
     match event {
+        AppEvent::SourceEnabled { kind, enabled } => match kind {
+            SourceKind::Screen => state.screen_enabled = enabled,
+            SourceKind::SystemAudio => state.system_audio_enabled = enabled,
+            SourceKind::Mic => state.mic_enabled = enabled,
+        },
         AppEvent::RequestedStart => {
             // Starting does not end a pause: an owner's pause restored at launch holds.
             state.run_requested = true;
@@ -222,6 +260,30 @@ mod tests {
         }
     }
 
+    fn enable_all(sm: &mut StateMachine) {
+        reduce(
+            sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::Screen,
+                enabled: true,
+            },
+        );
+        reduce(
+            sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::SystemAudio,
+                enabled: true,
+            },
+        );
+        reduce(
+            sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::Mic,
+                enabled: true,
+            },
+        );
+    }
+
     #[test]
     fn idle_until_start_requested() {
         let sm = StateMachine::new();
@@ -229,8 +291,17 @@ mod tests {
     }
 
     #[test]
+    fn all_off_is_idle_after_requested_start_and_engine_ready() {
+        let mut sm = StateMachine::new();
+        reduce(&mut sm, AppEvent::RequestedStart);
+        reduce(&mut sm, AppEvent::EngineReady);
+        assert_eq!(sm.phase(), AppPhase::Idle);
+    }
+
+    #[test]
     fn observing_is_computed_only_when_required_sources_active() {
         let mut sm = StateMachine::new();
+        enable_all(&mut sm);
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
         // Still Starting: no sources active yet.
@@ -239,7 +310,7 @@ mod tests {
             &mut sm,
             AppEvent::SourceUpdated(report(SourceKind::Screen, SourceState::Active)),
         );
-        assert_eq!(sm.phase(), AppPhase::Starting);
+        assert_eq!(sm.phase(), AppPhase::Observing);
         let p = reduce(
             &mut sm,
             AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
@@ -248,8 +319,87 @@ mod tests {
     }
 
     #[test]
+    fn screen_off_plus_system_audio_active_is_observing() {
+        let mut sm = StateMachine::new();
+        reduce(&mut sm, AppEvent::RequestedStart);
+        reduce(&mut sm, AppEvent::EngineReady);
+        reduce(
+            &mut sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::SystemAudio,
+                enabled: true,
+            },
+        );
+        assert_eq!(sm.phase(), AppPhase::Starting);
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
+        );
+        assert_eq!(sm.phase(), AppPhase::Observing);
+    }
+
+    #[test]
+    fn disabled_fault_is_not_error() {
+        let mut sm = StateMachine::new();
+        reduce(&mut sm, AppEvent::RequestedStart);
+        reduce(&mut sm, AppEvent::EngineReady);
+        reduce(
+            &mut sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::SystemAudio,
+                enabled: true,
+            },
+        );
+        reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::SystemAudio, SourceState::Active)),
+        );
+        assert_eq!(sm.phase(), AppPhase::Observing);
+
+        // Screen is disabled, reports Faulted: phase stays Observing
+        let p = reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(
+                SourceKind::Screen,
+                SourceState::Faulted {
+                    reason: ErrorReason::EndpointLost,
+                    detail: "endpoint lost".into(),
+                },
+            )),
+        );
+        assert_eq!(p, AppPhase::Observing);
+    }
+
+    #[test]
+    fn access_denied_on_enabled_source_is_not_error() {
+        let mut sm = StateMachine::new();
+        reduce(&mut sm, AppEvent::RequestedStart);
+        reduce(&mut sm, AppEvent::EngineReady);
+        reduce(
+            &mut sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::Mic,
+                enabled: true,
+            },
+        );
+        let p = reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(
+                SourceKind::Mic,
+                SourceState::Faulted {
+                    reason: ErrorReason::AccessDenied,
+                    detail: "mic access denied".into(),
+                },
+            )),
+        );
+        // Not Error; no active sources, no pending sources -> Idle
+        assert_eq!(p, AppPhase::Idle);
+    }
+
+    #[test]
     fn no_mic_does_not_block_observing() {
         let mut sm = StateMachine::new();
+        enable_all(&mut sm);
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
         reduce(
@@ -270,6 +420,7 @@ mod tests {
     #[test]
     fn required_fault_drops_out_of_observing() {
         let mut sm = StateMachine::new();
+        enable_all(&mut sm);
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
         reduce(
@@ -297,6 +448,7 @@ mod tests {
     #[test]
     fn storage_fault_drops_out_of_observing_but_pause_still_wins() {
         let mut sm = StateMachine::new();
+        enable_all(&mut sm);
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
         reduce(
@@ -329,6 +481,7 @@ mod tests {
     #[test]
     fn pause_overrides_even_when_sources_active() {
         let mut sm = StateMachine::new();
+        enable_all(&mut sm);
         reduce(&mut sm, AppEvent::RequestedStart);
         reduce(&mut sm, AppEvent::EngineReady);
         reduce(
@@ -344,6 +497,16 @@ mod tests {
             AppEvent::RequestedPause {
                 reason: PauseReason::Operator,
                 expires_at_epoch_secs: None,
+            },
+        );
+        assert_eq!(p, AppPhase::Paused);
+
+        // SourceEnabled during pause does not clear pause
+        let p = reduce(
+            &mut sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::Screen,
+                enabled: false,
             },
         );
         assert_eq!(p, AppPhase::Paused);

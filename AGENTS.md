@@ -8,9 +8,12 @@ product.
 ## 1. Project Overview
 
 This repo builds the Windows tray app (`solstone-windows-app`): per-user,
-non-elevated, one process per session. It writes screen and system-audio
-segments (plus the microphone when one is present) on 5-minute clock boundaries
-to local disk and, once paired with a journal, uploads them to it. It is a
+non-elevated, one process per session. A new install starts with each source off
+and writes nothing until the owner turns one on, and an install that already ran
+keeps screen, system audio, and the microphone on until the owner turns one off.
+It writes enabled screen, system-audio, and microphone segments on 5-minute
+clock boundaries to local disk and, once paired with a journal, uploads them to
+it. It is a
 **pairing client, not a journal host**: journal behavior lives in the journal's
 own repo, not here.
 
@@ -70,7 +73,7 @@ history. Reference only the public charter and license.
 | `make check-windows-target` | `cargo check` every crate for `x86_64-pc-windows-msvc` from any host, except the two whose graph compiles C with MSVC tools (`pl-transport-win`, the app) |
 | `make ci-full` | the operator gate on the final tree: `make ci`, then `check-release-advisory-config`, then `win-host-ci` (native build/test, app crate included); coding agents run `make ci` only |
 | `make audit` | verify the signed advisory packet and self-contained bundle, then check advisories against the locked graph offline |
-| `make contract` | regenerate `automation-contract.json` + the ui codegen; commit the result |
+| `make contract` | regenerate `automation-contract.json` and `setup-handoff-contract.json` + the ui codegen; commit the result |
 | `make check-observer-contract` | offline local structural/behavioral verification of the pinned observer-client authority bundle |
 | `make check-rust-release-manifest` | offline schema, checkout binding, ledger, current-bundle, and deterministic-render verification; mode selected by `MANIFEST` or `RELEASE_DIR` |
 | `make check-release-advisory-config` | materialize the isolated release advisory config and prove the real pinned cargo-deny accepts it offline |
@@ -198,8 +201,9 @@ windows-rs tier.
 
 ## 5. The contract
 
-The AutomationId identifiers and the health/state token vocabulary live in one
-generated artifact, `automation-contract.json`, at the repo root. Source of
+The AutomationId identifiers and the health/state token vocabulary live in
+two generated artifacts, `automation-contract.json` and `setup-handoff-contract.json`,
+at the repo root. Source of
 truth: the `observer-contract` crate (AutomationId `const`s + the generator); the
 token vocabulary derives from the `observer-model` enums via `strum::EnumIter`.
 
@@ -234,24 +238,29 @@ See `docs/observer-contract-adoption.md`.
 
 ## 6. Lifecycle
 
-- **Production launch:** a per-user login item into interactive Session 1; a
+- **Production launch:** an opt-in per-user login item into interactive Session 1; a
   single named value under the `HKCU\…\CurrentVersion\Run` key (no admin, no
-  machine-wide `HKLM`, no scheduled task). The copy that owns it *ensures it
-  idempotently on every launch* (write-only-when-missing-or-stale, so it
-  self-heals and never duplicates) via `platform_win::autostart`, not tied to a
-  one-shot install signal. The app uses Velopack's locator to decide who may
-  write it: the installed copy always does; a portable copy (the ZIP, and so
-  every scoop install) only when the value does not already name an installed
-  copy; a dev build or copied binary never does. The Velopack uninstall hook
-  removes it only while it still names the executable being uninstalled. **Test
-  launch:** low-privilege scheduled task (`LogonType=Interactive`) into Session
-  1 (FlaUI smoke only).
+  machine-wide `HKLM`, no scheduled task). The copy that owns it *reconciles it
+  idempotently on launch* according to the owner's choice in `setup.json`: the owning
+  copy registers the login item only when start-at-login is on, and a new install
+  does not register until the owner opts in (removing it when disabled) via
+  `platform_win::autostart`, not tied to a one-shot install signal. The app uses
+  Velopack's locator to decide who may write it: the installed copy may always
+  write; a portable copy (the ZIP, and so every scoop install) only when the value
+  does not already name an installed copy; a dev build or copied binary never does.
+  The Velopack uninstall hook removes it only while it still names the executable
+  being uninstalled. **Test launch:** low-privilege scheduled task
+  (`LogonType=Interactive`) into Session 1 (FlaUI smoke only).
   Never conflate them.
 - **Handlers:** lock/unlock pause+resume; display-change re-acquires the screen
-  source; power suspend/resume pause+resume. A required-source fault drops out of
-  `observing` into `Error` via the backoff/breaker.
-- **Single instance:** a per-session named mutex; a second launch surfaces
-  Settings on the first and exits.
+  source; power suspend/resume pause+resume. An enabled-source fault (other than
+  access denial) drops out of `observing` into `Error` via the backoff/breaker; a
+  fault leaves observing only for an enabled source. When all sources are off,
+  the phase is `idle`.
+- **Single instance:** a per-session named mutex; a second launch still signals
+  the first and exits; a pairing link only fills the field; `--setup-handoff` only
+  asks the first to read the fixed file; other second launches still surface
+  Settings; none of these pair or open a browser.
 - **Velopack hooks** the app must handle: `--veloapp-install`, `--veloapp-updated`,
   `--veloapp-obsolete`, `--veloapp-uninstall` (the uninstall fast-callback removes
   the autostart login item it owns). The app must be Velopack-aware so the hooks exit 0.

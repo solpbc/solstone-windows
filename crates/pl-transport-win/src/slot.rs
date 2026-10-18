@@ -48,6 +48,13 @@ impl UploaderSlot {
         self.wake.notify_one();
     }
 
+    #[cfg(feature = "transport-tests")]
+    pub fn has_live_task_for_test(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| !active.task.is_finished())
+    }
+
     /// Signal the incumbent with `Shutdown`, wait briefly for cooperative teardown,
     /// then spawn the replacement.
     pub async fn replace<F, Fut>(&mut self, build: F)

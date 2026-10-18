@@ -19,7 +19,7 @@ use observer_log::{
 };
 use tauri::webview::{PageLoadEvent, ScrollBarStyle};
 use tauri::window::{Effect, EffectsBuilder};
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tokio::sync::{oneshot, Notify};
 
 const WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,OverscrollHistoryNavigation,msExperimentalScrolling --disable-pinch";
@@ -29,6 +29,43 @@ const JOURNAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
 
 fn mica_effects() -> tauri::utils::config::WindowEffectsConfig {
     EffectsBuilder::new().effect(Effect::Mica).build()
+}
+
+pub(crate) fn settings_proof_eligible(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window("settings").is_some_and(|window| {
+        #[cfg(windows)]
+        {
+            window
+                .hwnd()
+                .is_ok_and(|hwnd| platform_win::window_focus::is_foreground_root(hwnd.0 as isize))
+        }
+        #[cfg(not(windows))]
+        {
+            window.is_visible().unwrap_or(false)
+                && !window.is_minimized().unwrap_or(true)
+                && window.is_focused().unwrap_or(false)
+        }
+    })
+}
+
+pub(crate) fn revoke_settings_proof(app: &tauri::AppHandle, force_notice: bool) {
+    let mut revoked = false;
+    if let Some(state) = app.try_state::<crate::app::AppState>() {
+        if let Ok(mut proof) = state.proof.lock() {
+            if proof.source().is_some() {
+                proof.close();
+                revoked = true;
+            }
+        }
+        if revoked {
+            let _ = state
+                .commands
+                .send(capture_engine::EngineCommand::ClearPreviews);
+        }
+    }
+    if revoked || force_notice {
+        let _ = app.emit_to("settings", "proof://inactive", ());
+    }
 }
 
 pub enum OpenJournalError {
@@ -49,7 +86,6 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
     if let Some(window) = app.get_webview_window("settings") {
         window.set_focus()?;
         if sources {
-            use tauri::Emitter;
             let _ = window.emit("settings://navigate", "sources");
         }
         tracing::info!(
@@ -67,7 +103,7 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
         WebviewUrl::App("index.html".into())
     };
 
-    WebviewWindowBuilder::new(app, "settings", url)
+    let window = WebviewWindowBuilder::new(app, "settings", url)
         .title("solstone settings")
         .inner_size(820.0, 580.0)
         .min_inner_size(460.0, 480.0)
@@ -77,6 +113,16 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
         .additional_browser_args(WEBVIEW_ARGS)
         .visible(true)
         .build()?;
+
+    let teardown_app = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed)
+            || (matches!(event, tauri::WindowEvent::Focused(false))
+                && !settings_proof_eligible(&teardown_app))
+        {
+            revoke_settings_proof(&teardown_app, true);
+        }
+    });
     tracing::info!(
         target: "window",
         label = "settings",
@@ -143,6 +189,10 @@ impl JournalSurface for tauri::AppHandle {
 
 #[cfg(test)]
 pub struct OpenPairProbe {
+    pub setup_bridge_started: tokio::sync::Notify,
+    pub release_setup_browser: tokio::sync::Notify,
+    pub answer_closed: tokio::sync::Notify,
+    pub release_answer_cleanup: tokio::sync::Notify,
     pub open_holds: tokio::sync::Notify,
     pub release_open: tokio::sync::Notify,
     pub pair_at_lock: tokio::sync::Notify,
@@ -154,6 +204,10 @@ pub struct OpenPairProbe {
 impl OpenPairProbe {
     pub fn new() -> Self {
         Self {
+            setup_bridge_started: tokio::sync::Notify::new(),
+            release_setup_browser: tokio::sync::Notify::new(),
+            answer_closed: tokio::sync::Notify::new(),
+            release_answer_cleanup: tokio::sync::Notify::new(),
             open_holds: tokio::sync::Notify::new(),
             release_open: tokio::sync::Notify::new(),
             pair_at_lock: tokio::sync::Notify::new(),

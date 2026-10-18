@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 
 use observer_model::{
     AppPhase, ErrorReason, PairingPhase, PauseReason, SourceKind, ViewRenderState,
+    RELOAD_SETUP_VERB, SETUP_HANDOFF_ARG,
 };
 use serde::Serialize;
 use strum::IntoEnumIterator;
@@ -75,15 +76,41 @@ pub mod settings {
     pub const STATUS_SEGMENT_DIR: &str = "settings.status.segmentDir";
     pub const STATUS_UPLOAD_STATE: &str = "settings.status.upload.state";
     pub const SOURCES_SCREEN_STATE: &str = "settings.sources.screen.state";
+    pub const SOURCES_SCREEN_ENABLED: &str = "settings.sources.screen.enabled";
     pub const SOURCES_SYSTEM_AUDIO_STATE: &str = "settings.sources.systemAudio.state";
+    pub const SOURCES_SYSTEM_AUDIO_ENABLED: &str = "settings.sources.systemAudio.enabled";
     pub const SOURCES_MIC_STATE: &str = "settings.sources.mic.state";
+    pub const SOURCES_MIC_ENABLED: &str = "settings.sources.mic.enabled";
+    pub const SOURCES_SAVE_RETRY: &str = "settings.sources.saveRetry";
     pub const SOURCES_BROWSER_OFFER: &str = "settings.sources.browser.offer";
     pub const SOURCES_BROWSER_STORES: &str = "settings.sources.browser.stores";
     pub const SOURCES_BROWSER_STORE_ERROR: &str = "settings.sources.browser.storeError";
+
+    pub const SETUP_STEP: &str = "settings.setup.step";
+    pub const SETUP_NEXT: &str = "settings.setup.next";
+    pub const SETUP_BACK: &str = "settings.setup.back";
+    pub const SETUP_NOT_NOW: &str = "settings.setup.notNow";
+    pub const SETUP_PAUSE_SOURCE: &str = "settings.setup.pauseSource";
+    pub const SETUP_START_AT_LOGIN: &str = "settings.setup.startAtLogin";
+    pub const SETUP_START_AT_LOGIN_ERROR: &str = "settings.setup.startAtLogin.error";
+    pub const SETUP_MIC_PROOF: &str = "settings.setup.mic.proof";
+    pub const SETUP_SYSTEM_AUDIO_PROOF: &str = "settings.setup.systemAudio.proof";
+    pub const SETUP_SCREEN_PROOF: &str = "settings.setup.screen.proof";
+    pub const SETUP_STEP_NUMBER: &str = "settings.setup.stepNumber";
+    pub const SETUP_FRESH_LINK: &str = "settings.setup.freshLink";
+    pub const SETUP_LINK_RETRY: &str = "settings.setup.linkRetry";
+    pub const SETUP_NATIVE_CONNECT: &str = "settings.setup.nativeConnect";
+    pub const SETUP_DEFERRED_USE: &str = "settings.setup.deferredUse";
+    pub const SETUP_DEFERRED_DISMISS: &str = "settings.setup.deferredDismiss";
+
+    pub const HOME_SOURCES_NOTICE: &str = "settings.home.sourcesNotice";
+    pub const HOME_SOURCES_NOTICE_DISMISS: &str = "settings.home.sourcesNotice.dismiss";
     /// Pairing pane (Wave 2): phase, the journal's mark, and the pair-link field + action.
     pub const PAIRING_STATE: &str = "settings.pairing.state";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
     pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
+    pub const PAIRING_FINISH_CONNECTING: &str = "settings.pairing.finishConnecting";
+    pub const SETUP_BROWSER_JOURNAL: &str = "settings.setup.browserJournal";
     /// The mark row is the journal's identity whenever the confirmation card
     /// is not on screen (generic mark before the owner confirms, the real
     /// mark once paired, unavailable mark when paired but the mark cannot be
@@ -184,10 +211,59 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             settings::SOURCES_SCREEN_STATE,
         ),
         (
+            "settings.sources.screen.enabled",
+            settings::SOURCES_SCREEN_ENABLED,
+        ),
+        (
             "settings.sources.systemAudio.state",
             settings::SOURCES_SYSTEM_AUDIO_STATE,
         ),
+        (
+            "settings.sources.systemAudio.enabled",
+            settings::SOURCES_SYSTEM_AUDIO_ENABLED,
+        ),
         ("settings.sources.mic.state", settings::SOURCES_MIC_STATE),
+        (
+            "settings.sources.mic.enabled",
+            settings::SOURCES_MIC_ENABLED,
+        ),
+        ("settings.sources.saveRetry", settings::SOURCES_SAVE_RETRY),
+        ("settings.setup.step", settings::SETUP_STEP),
+        ("settings.setup.next", settings::SETUP_NEXT),
+        ("settings.setup.back", settings::SETUP_BACK),
+        ("settings.setup.notNow", settings::SETUP_NOT_NOW),
+        ("settings.setup.pauseSource", settings::SETUP_PAUSE_SOURCE),
+        (
+            "settings.setup.startAtLogin",
+            settings::SETUP_START_AT_LOGIN,
+        ),
+        (
+            "settings.setup.startAtLogin.error",
+            settings::SETUP_START_AT_LOGIN_ERROR,
+        ),
+        ("settings.setup.mic.proof", settings::SETUP_MIC_PROOF),
+        (
+            "settings.setup.systemAudio.proof",
+            settings::SETUP_SYSTEM_AUDIO_PROOF,
+        ),
+        ("settings.setup.screen.proof", settings::SETUP_SCREEN_PROOF),
+        ("settings.setup.stepNumber", settings::SETUP_STEP_NUMBER),
+        ("settings.setup.freshLink", settings::SETUP_FRESH_LINK),
+        ("settings.setup.linkRetry", settings::SETUP_LINK_RETRY),
+        (
+            "settings.setup.nativeConnect",
+            settings::SETUP_NATIVE_CONNECT,
+        ),
+        ("settings.setup.deferredUse", settings::SETUP_DEFERRED_USE),
+        (
+            "settings.setup.deferredDismiss",
+            settings::SETUP_DEFERRED_DISMISS,
+        ),
+        ("settings.home.sourcesNotice", settings::HOME_SOURCES_NOTICE),
+        (
+            "settings.home.sourcesNotice.dismiss",
+            settings::HOME_SOURCES_NOTICE_DISMISS,
+        ),
         (
             "settings.sources.browser.offer",
             settings::SOURCES_BROWSER_OFFER,
@@ -203,6 +279,14 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.pairing.state", settings::PAIRING_STATE),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
+        (
+            "settings.pairing.finishConnecting",
+            settings::PAIRING_FINISH_CONNECTING,
+        ),
+        (
+            "settings.setup.browserJournal",
+            settings::SETUP_BROWSER_JOURNAL,
+        ),
         ("settings.pairing.mark", settings::PAIRING_MARK),
         ("settings.pairing.markCard", settings::PAIRING_MARK_CARD),
         ("settings.pairing.confirmYes", settings::PAIRING_CONFIRM_YES),
@@ -406,6 +490,264 @@ pub fn generate_contract() -> String {
     out
 }
 
+// ── Setup Handoff Contract Constants ──────────────────────────────────────────
+
+pub const MAILBOX_SCHEMA: &str = "solstone.windows-setup-handoff.v1";
+pub const PROGRESS_SCHEMA: &str = "solstone.setup-handoff-progress.v1";
+pub const RECEIPT_SCHEMA: &str = "solstone.windows-setup-receipt.v1";
+pub const DRAFT_SCHEMA: &str = "solstone.pair-link-draft.v1";
+pub const CAPABILITY_SCHEMA: &str = "solstone.windows-setup-capabilities.v1";
+
+pub const MAILBOX_FILE_NAME: &str = "solstone-setup-handoff.json";
+pub const PROGRESS_FILE_NAME: &str = "setup-handoff-progress.json";
+pub const RECEIPT_FILE_NAME: &str = "solstone-setup-handoff-receipt.json";
+pub const LOCK_FILE_NAME: &str = "solstone-setup-handoff.lock";
+pub const DRAFT_FILE_NAME: &str = "pair-link-draft.json";
+pub const DEFERRED_FILE_NAME: &str = "pair-link-deferred.json";
+pub const DEFERRED_REJECTED_FILE_NAME: &str = "pair-link-deferred-rejected";
+
+pub const MAILBOX_MAX_BYTES: usize = 16384;
+pub const RECEIPT_MAX_BYTES: usize = 4096;
+pub const PROGRESS_MAX_BYTES: usize = 4096;
+pub const DRAFT_MAX_BYTES: usize = 4096;
+pub const LOCK_ACQUIRE_MS: u64 = 5000;
+pub const CAPABILITY_RESOURCE_MAX_BYTES: usize = 4096;
+pub const UNPAIRED_DRAFT_MAX_AGE_SECS: u64 = 900;
+
+/// Literal install path the sender may launch. Scheme registration must not use it.
+pub const INSTALLED_EXECUTABLE: &str = r"%LOCALAPPDATA%\Solstone\current\solstone-windows-app.exe";
+
+/// Lowercase 8-4-4-4-12 hex with hyphens. Uppercase, missing hyphens, and braces fail.
+pub fn is_canonical_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        let hyphen = index == 8 || index == 13 || index == 18 || index == 23;
+        if hyphen {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase() {
+            return false;
+        }
+    }
+    true
+}
+
+pub const IDENTITY_METHOD: &str = "GET";
+pub const IDENTITY_PATH: &str = "/app/link/api/identity";
+
+pub const CAPABILITY_RESOURCE_NAME: &str = "SOLSTONE_SETUP_CAPABILITIES";
+pub const CAPABILITY_RESOURCE_TYPE: &str = "RT_RCDATA";
+pub const CAPABILITY_JSON: &str =
+    r#"{"schema":"solstone.windows-setup-capabilities.v1","capabilities":["setup-sequence-v1"]}"#;
+
+pub const DESKTOP_SCHEME: &str = "solstone";
+pub const DESKTOP_HOST: &str = "pair";
+pub const DESKTOP_PATHS: &[&str] = &["", "/"];
+pub const CANONICAL_PREFIX: &str = "https://go.solstone.app/p#";
+pub const HANDOFF_REQUIRED_STEP: u32 = 5;
+
+pub fn capability_resource_bytes() -> &'static [u8] {
+    CAPABILITY_JSON.as_bytes()
+}
+
+/// Quoted RC include of the capability file. A quoted RC string is null-terminated,
+/// so the resource is the file itself and not a `BEGIN` integer list.
+pub fn capability_rc_fragment(path: &std::path::Path) -> String {
+    format!(
+        "{} {} {}\n",
+        CAPABILITY_RESOURCE_NAME,
+        CAPABILITY_RESOURCE_TYPE,
+        rc_quoted_path(path)
+    )
+}
+
+fn rc_quoted_path(path: &std::path::Path) -> String {
+    let mut quoted = String::from("\"");
+    for ch in path.to_string_lossy().chars() {
+        match ch {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\"\""),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+#[derive(Serialize)]
+struct SetupHandoffContract {
+    #[serde(rename = "_generated")]
+    generated: &'static str,
+    argv: SetupHandoffArgv,
+    capability_document: serde_json::Value,
+    desktop: SetupHandoffDesktop,
+    fields: SetupHandoffFields,
+    files: SetupHandoffFiles,
+    identity: SetupHandoffIdentity,
+    limits: SetupHandoffLimits,
+    resource: SetupHandoffResource,
+    schemas: SetupHandoffSchemas,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffArgv {
+    cli_flag: &'static str,
+    control_verb: &'static str,
+    installed_executable: &'static str,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffDesktop {
+    canonical_prefix: &'static str,
+    host: &'static str,
+    paths: &'static [&'static str],
+    scheme: &'static str,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffField {
+    name: &'static str,
+    #[serde(rename = "type")]
+    type_name: &'static str,
+    #[serde(rename = "const", skip_serializing_if = "Option::is_none")]
+    const_value: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffFieldSet {
+    unknown_fields: &'static str,
+    required: Vec<SetupHandoffField>,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffFields {
+    mailbox: SetupHandoffFieldSet,
+    receipt: SetupHandoffFieldSet,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffFiles {
+    lock: &'static str,
+    mailbox: &'static str,
+    receipt: &'static str,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffIdentity {
+    method: &'static str,
+    path: &'static str,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffLimits {
+    mailbox_max_bytes: usize,
+    receipt_max_bytes: usize,
+    capability_resource_max_bytes: usize,
+    lock_acquire_ms: u64,
+    unpaired_draft_max_age_secs: u64,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffResource {
+    name: &'static str,
+    r#type: &'static str,
+}
+
+#[derive(Serialize)]
+struct SetupHandoffSchemas {
+    mailbox: &'static str,
+    receipt: &'static str,
+}
+
+fn required_field(
+    name: &'static str,
+    type_name: &'static str,
+    const_value: Option<serde_json::Value>,
+) -> SetupHandoffField {
+    SetupHandoffField {
+        name,
+        type_name,
+        const_value,
+    }
+}
+
+pub fn generate_setup_handoff_contract() -> String {
+    let contract = SetupHandoffContract {
+        generated: GENERATED_BANNER,
+        argv: SetupHandoffArgv {
+            cli_flag: SETUP_HANDOFF_ARG,
+            control_verb: std::str::from_utf8(RELOAD_SETUP_VERB)
+                .expect("reload-setup verb is valid utf-8"),
+            installed_executable: INSTALLED_EXECUTABLE,
+        },
+        capability_document: serde_json::from_str(CAPABILITY_JSON)
+            .expect("capability JSON is valid"),
+        desktop: SetupHandoffDesktop {
+            canonical_prefix: CANONICAL_PREFIX,
+            host: DESKTOP_HOST,
+            paths: DESKTOP_PATHS,
+            scheme: DESKTOP_SCHEME,
+        },
+        fields: SetupHandoffFields {
+            mailbox: SetupHandoffFieldSet {
+                unknown_fields: "forbidden",
+                required: vec![
+                    required_field("schema", "string", None),
+                    required_field("handoff_id", "uuid", None),
+                    required_field(
+                        "step",
+                        "integer",
+                        Some(serde_json::json!(HANDOFF_REQUIRED_STEP)),
+                    ),
+                    required_field("expected_instance_id", "string", None),
+                    required_field("expected_ca_fingerprint", "sha256-hex", None),
+                    required_field("pairing_link", "https-pair-link", None),
+                ],
+            },
+            receipt: SetupHandoffFieldSet {
+                unknown_fields: "forbidden",
+                required: vec![
+                    required_field("schema", "string", None),
+                    required_field("handoff_id", "uuid", None),
+                    required_field("accepted", "boolean", Some(serde_json::json!(true))),
+                ],
+            },
+        },
+        files: SetupHandoffFiles {
+            lock: LOCK_FILE_NAME,
+            mailbox: MAILBOX_FILE_NAME,
+            receipt: RECEIPT_FILE_NAME,
+        },
+        identity: SetupHandoffIdentity {
+            method: IDENTITY_METHOD,
+            path: IDENTITY_PATH,
+        },
+        limits: SetupHandoffLimits {
+            mailbox_max_bytes: MAILBOX_MAX_BYTES,
+            receipt_max_bytes: RECEIPT_MAX_BYTES,
+            capability_resource_max_bytes: CAPABILITY_RESOURCE_MAX_BYTES,
+            lock_acquire_ms: LOCK_ACQUIRE_MS,
+            unpaired_draft_max_age_secs: UNPAIRED_DRAFT_MAX_AGE_SECS,
+        },
+        resource: SetupHandoffResource {
+            name: CAPABILITY_RESOURCE_NAME,
+            r#type: CAPABILITY_RESOURCE_TYPE,
+        },
+        schemas: SetupHandoffSchemas {
+            mailbox: MAILBOX_SCHEMA,
+            receipt: RECEIPT_SCHEMA,
+        },
+    };
+    let mut out = serde_json::to_string_pretty(&contract)
+        .expect("setup-handoff contract serializes; it is plain owned data");
+    out.push('\n');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,5 +829,114 @@ mod tests {
         }
         assert_total(&SourceState::Active);
         assert_eq!(source_status_tokens().len(), 4);
+    }
+
+    #[test]
+    fn setup_handoff_contract_first_key_is_the_generated_banner() {
+        let json = generate_setup_handoff_contract();
+        let first = json.lines().nth(1).unwrap();
+        assert!(first.contains("\"_generated\""), "got: {first}");
+        assert!(first.contains(GENERATED_BANNER));
+    }
+
+    #[test]
+    fn setup_handoff_contract_ends_with_trailing_newline() {
+        assert!(generate_setup_handoff_contract().ends_with("}\n"));
+    }
+
+    #[test]
+    fn setup_handoff_contract_output_is_deterministic() {
+        assert_eq!(
+            generate_setup_handoff_contract(),
+            generate_setup_handoff_contract()
+        );
+    }
+
+    #[test]
+    fn setup_handoff_contract_matches_sender_literals() {
+        let actual: serde_json::Value =
+            serde_json::from_str(&generate_setup_handoff_contract()).unwrap();
+        assert_eq!(
+            actual["argv"]["installed_executable"],
+            "%LOCALAPPDATA%\\Solstone\\current\\solstone-windows-app.exe"
+        );
+        assert_eq!(actual["argv"]["cli_flag"], "--setup-handoff");
+        assert_eq!(actual["argv"]["control_verb"], "reload-setup\n");
+        assert_eq!(actual["files"]["mailbox"], "solstone-setup-handoff.json");
+        assert_eq!(
+            actual["files"]["receipt"],
+            "solstone-setup-handoff-receipt.json"
+        );
+        assert_eq!(actual["files"]["lock"], "solstone-setup-handoff.lock");
+        assert_eq!(
+            actual["schemas"]["mailbox"],
+            "solstone.windows-setup-handoff.v1"
+        );
+        assert_eq!(
+            actual["schemas"]["receipt"],
+            "solstone.windows-setup-receipt.v1"
+        );
+        assert_eq!(actual["limits"]["mailbox_max_bytes"], 16384);
+        assert_eq!(actual["limits"]["receipt_max_bytes"], 4096);
+        assert!(actual["limits"].get("max_document_bytes").is_none());
+        let text = generate_setup_handoff_contract();
+        assert!(!text.contains("setup-handoff-progress"));
+        assert!(!text.contains("pair-link-draft"));
+        assert!(!text.contains("pair-link-deferred"));
+        assert!(!text.contains("max_document_bytes"));
+        let mailbox_names: Vec<&str> = actual["fields"]["mailbox"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            mailbox_names,
+            [
+                "schema",
+                "handoff_id",
+                "step",
+                "expected_instance_id",
+                "expected_ca_fingerprint",
+                "pairing_link",
+            ]
+        );
+        assert_eq!(actual["fields"]["mailbox"]["unknown_fields"], "forbidden");
+        assert_eq!(actual["fields"]["mailbox"]["required"][2]["const"], 5);
+        let receipt_names: Vec<&str> = actual["fields"]["receipt"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(receipt_names, ["schema", "handoff_id", "accepted"]);
+        assert_eq!(actual["fields"]["receipt"]["required"][2]["const"], true);
+        assert_eq!(actual["fields"]["receipt"]["unknown_fields"], "forbidden");
+    }
+
+    #[test]
+    fn capability_resource_bytes_match_the_utf8_json_and_do_not_prove_pe_extraction() {
+        // This does not prove PE extraction.
+        assert_eq!(capability_resource_bytes(), CAPABILITY_JSON.as_bytes());
+        let path = std::path::Path::new(r"C:\out\solstone-setup-capabilities.json");
+        let frag = capability_rc_fragment(path);
+        assert!(frag.contains("SOLSTONE_SETUP_CAPABILITIES"));
+        assert!(frag.contains("RT_RCDATA"));
+        assert!(frag.contains("solstone-setup-capabilities.json"));
+        assert!(!frag.contains("0x"));
+        assert!(!frag.contains("BEGIN"));
+    }
+
+    #[test]
+    fn new_automation_ids_present_in_contract() {
+        let json = generate_contract();
+        assert!(json.contains("settings.setup.stepNumber"));
+        assert!(json.contains("settings.setup.freshLink"));
+        assert!(json.contains("settings.setup.linkRetry"));
+        assert!(json.contains("settings.pairing.finishConnecting"));
+        assert!(json.contains("settings.setup.browserJournal"));
+        assert!(json.contains("settings.setup.nativeConnect"));
+        assert!(json.contains("settings.setup.deferredUse"));
+        assert!(json.contains("settings.setup.deferredDismiss"));
     }
 }

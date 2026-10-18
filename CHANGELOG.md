@@ -6,6 +6,13 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- you choose which sources are on. a new install starts with screen, system audio, and the microphone off, and it does not start at login until you turn that on. an install that already ran keeps those sources on, your microphone settings, a held pause, your journal connection, and start at login, and settings points you at the new switches.
+- if a source choice cannot be saved, that source stays off for this run and settings says the last saved choice can resume after a restart.
+- you can open pairing links in the solstone app and review them before pairing.
+- when setup continues from your journal, your source choices stay in place. you can retry a failed connection or journal open from the same step.
+
 ### Fixed
 
 - updated the ZIP library used by the app's updater to address security advisories.

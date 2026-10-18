@@ -1159,7 +1159,10 @@ async fn mark_confirmation_pair_publishes_awaiting_before_bind() {
             binding: binding.clone(),
             label: "Home".into(),
             mark: None,
-            kind: BoundKind::Paired,
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
         },
     );
 
@@ -1178,7 +1181,10 @@ async fn mark_confirmation_pair_publishes_awaiting_before_bind() {
             binding: binding.clone(),
             label: "Home".into(),
             mark: None,
-            kind: BoundKind::Paired,
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
         },
     );
 
@@ -1762,7 +1768,10 @@ async fn mark_confirmation_tombstone_and_re_pair() {
             binding: digest_b.clone(),
             label: "Home B".into(),
             mark: None,
-            kind: BoundKind::Paired,
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
         },
     );
     assert_eq!(*tombstone.lock().unwrap(), Some(digest_b.clone()));
@@ -1811,7 +1820,10 @@ async fn mark_confirmation_tombstone_and_re_pair() {
             binding: digest_b.clone(),
             label: "Home B".into(),
             mark: None,
-            kind: BoundKind::Paired,
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
         },
     );
     assert_eq!(*tombstone.lock().unwrap(), Some(digest_b.clone()));
@@ -1826,7 +1838,10 @@ async fn mark_confirmation_tombstone_and_re_pair() {
             binding: digest_c.clone(),
             label: "Home C".into(),
             mark: None,
-            kind: BoundKind::Paired,
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
         },
     );
     assert_eq!(
@@ -1983,8 +1998,13 @@ async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
     let snapshot = sync.lock().unwrap().clone();
     assert_eq!(snapshot.pairing.phase, PairingPhase::AwaitingConfirmation);
 
-    let tray =
-        observer_model::classify_tray(observer_model::AppPhase::Observing, &snapshot, None, None);
+    let tray = observer_model::classify_tray(
+        observer_model::AppPhase::Observing,
+        &snapshot,
+        None,
+        None,
+        false,
+    );
     assert_eq!(
         tray.1,
         "solstone · waiting for you to confirm your journal's mark"
@@ -2045,6 +2065,7 @@ async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_
         sync.clone(),
         &slot,
         &access,
+        &std::sync::atomic::AtomicBool::new(false),
         || async {},
         || async {},
     )
@@ -2063,9 +2084,12 @@ async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_
     let cred_a = direct_credential(pin, 1);
     let paired_a = PairedState {
         credential: Some(cred_a),
+        // This fixture models the explicit ordinary repair's unknown-history fence.
+        setup_history_unavailable: true,
         ..Default::default()
     };
     paired_a.save(&state_path).unwrap();
+    assert!(PairedState::setup_handoff_history(&state_path).is_err());
 
     let mut uploader_slot = UploaderSlot::new();
     let resumed_access =
@@ -2116,6 +2140,7 @@ async fn session_pair_answer_tmp_is_dir_returns_error_and_leaves_pairing_json_un
         sync.clone(),
         &slot,
         &access,
+        &std::sync::atomic::AtomicBool::new(false),
         || async {},
         || async {},
     )
@@ -2168,6 +2193,7 @@ async fn session_pair_success_creates_empty_answer_before_saving_credential_and_
         sync.clone(),
         &slot,
         &access,
+        &std::sync::atomic::AtomicBool::new(false),
         || async {},
         || async {},
     )
@@ -2264,7 +2290,10 @@ async fn assert_failed_repair_preserves_incumbent(confirmed: bool) {
             binding: digest_a.clone(),
             label: client.home_label().to_string(),
             mark: mark_spec_for_jid(&client.credential().instance_id),
-            kind: BoundKind::Paired,
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
         },
     );
     let pairing_before = sync.lock().unwrap().pairing.clone();
@@ -2277,6 +2306,7 @@ async fn assert_failed_repair_preserves_incumbent(confirmed: bool) {
         sync.clone(),
         &slot,
         &access,
+        &std::sync::atomic::AtomicBool::new(false),
         || async {},
         || async {},
     )
@@ -2368,6 +2398,7 @@ async fn session_pair_unreadable_answer_file_is_set_aside_and_held_for_the_mark(
         sync.clone(),
         &slot,
         &access,
+        &std::sync::atomic::AtomicBool::new(false),
         || async {},
         || async {},
     )
@@ -2418,4 +2449,208 @@ async fn session_pair_unreadable_answer_file_is_set_aside_and_held_for_the_mark(
     assert_eq!(read_answer(&ans_path).unwrap().unwrap().confirmed, binding);
     assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Paired);
     slot.lock().await.stop().await;
+}
+
+#[tokio::test]
+async fn native_finish_restores_missing_access_and_refuses_a_changed_saved_generation() {
+    for (change_during_identity, existing_access) in [(false, false), (false, true), (true, false)]
+    {
+        let dir = TempDir::new(if change_during_identity {
+            "finish-stale"
+        } else {
+            "finish-recover"
+        });
+        let (cert, key) = self_signed();
+        let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+        let jid = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
+        let mark = mark_spec_for_jid(jid).unwrap();
+        let body = serde_json::to_vec(
+            &serde_json::json!({"committed":true,"instance_id":jid,"mark":mark}),
+        )
+        .unwrap();
+        let (requested, request_seen) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut tls = acceptor.accept(tcp).await.unwrap();
+            let (stream_id, request) = read_framed_request(&mut tls).await;
+            assert!(String::from_utf8_lossy(&request)
+                .starts_with(&format!("GET {} ", observer_contract::IDENTITY_PATH)));
+            requested.send(()).unwrap();
+            released.await.unwrap();
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            response.extend(body);
+            write_response(&mut tls, stream_id, response).await;
+        });
+        let mut credential = direct_credential(pin, port);
+        credential.instance_id = jid.into();
+        // A real post-connect refresh can persist LAN endpoints while the gate is closed.
+        credential
+            .endpoints
+            .push(pl_transport_win::credential::EndpointAddr {
+                host: "192.168.1.24".into(),
+                port,
+            });
+        let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+        let paired = PairedState {
+            credential: Some(credential.clone()),
+            setup_activation: Some(pl_transport_win::credential::SetupActivation {
+                handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+                binding: binding.clone(),
+            }),
+            ..Default::default()
+        };
+        let cfg = SyncConfig {
+            device_label: "native-finish".into(),
+            period_secs: 300,
+            state_path: dir.path().join("pairing.json"),
+            segments_root: dir.path().join("segments"),
+            local_offset: Arc::new(UtcOffset),
+            journal_version: Arc::new(JournalVersionController::new(
+                dir.path().join("journal-version.json"),
+            )),
+            facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+            confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
+        };
+        paired.save(&cfg.state_path).unwrap();
+        write_answer(&answer_path(&cfg.state_path), &AnswerState::default()).unwrap();
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        // A cancelled replacement can leave matching access with no uploader.
+        let incumbent = existing_access
+            .then(|| CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap());
+        let access = tokio::sync::Mutex::new(incumbent);
+        let slot = tokio::sync::Mutex::new(UploaderSlot::new());
+        let admission = AtomicBool::new(false);
+        let finish = pl_transport_win::session::finish_connecting(
+            &binding,
+            &cfg,
+            sync.clone(),
+            &slot,
+            &access,
+            &admission,
+        );
+        let intervene = async {
+            request_seen.await.unwrap();
+            if change_during_identity {
+                PairedState::mutate(
+                    &cfg.state_path,
+                    CasKey {
+                        pairing_generation: pl_transport_win::credential::pairing_generation(
+                            &credential.client_cert_pem,
+                        ),
+                        access_mutation_generation: 0,
+                    },
+                    |_| Ok(()),
+                )
+                .unwrap();
+            }
+            release.send(()).unwrap();
+        };
+        let (result, _) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(finish, intervene)
+        })
+        .await
+        .expect("native finish deadline");
+        if change_during_identity {
+            assert!(result.is_err());
+            assert!(access.lock().await.is_none());
+            assert!(read_answer(&answer_path(&cfg.state_path))
+                .unwrap()
+                .unwrap()
+                .confirmed
+                .is_empty());
+            assert!(!slot.lock().await.has_live_task_for_test());
+        } else {
+            result.unwrap();
+            let live = access.lock().await.clone().unwrap().client_slot().load();
+            assert_eq!(live.journal_identity().client_cert_sha256, binding);
+            assert!(live.gate_open());
+            assert!(slot.lock().await.has_live_task_for_test());
+            assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Paired);
+            assert!(sync.lock().unwrap().pairing.setup_browser_ready);
+            assert_eq!(
+                read_answer(&answer_path(&cfg.state_path))
+                    .unwrap()
+                    .unwrap()
+                    .confirmed,
+                binding
+            );
+        }
+        slot.lock().await.stop().await;
+        if let Some(access) = access.lock().await.take() {
+            access.retire();
+        }
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!admission.load(Ordering::Acquire));
+    }
+}
+
+#[tokio::test]
+async fn native_saved_activation_without_answer_resumes_held_for_finish() {
+    let dir = TempDir::new("native-no-grandfather");
+    let (cert, _) = self_signed();
+    let mut credential = direct_credential(spl_core::ca::sha256(cert.as_ref())[..16].to_vec(), 1);
+    credential.instance_id = "f30ed159-ef46-8e9c-913f-e49f0fe7d201".into();
+    let binding = JournalIdentity::from_credential(&credential).client_cert_sha256;
+    let paired = PairedState {
+        credential: Some(credential),
+        setup_activation: Some(pl_transport_win::credential::SetupActivation {
+            handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+            binding: binding.clone(),
+        }),
+        ..Default::default()
+    };
+    let cfg = SyncConfig {
+        device_label: "native-restart".into(),
+        period_secs: 300,
+        state_path: dir.path().join("pairing.json"),
+        segments_root: dir.path().join("segments"),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: Arc::new(JournalVersionController::new(
+            dir.path().join("journal-version.json"),
+        )),
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(String::new())),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+    paired.save(&cfg.state_path).unwrap();
+    assert!(!answer_path(&cfg.state_path).exists());
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let mut slot = UploaderSlot::new();
+    let access = pl_transport_win::service::launch_resume(&cfg, &sync, &mut slot)
+        .await
+        .unwrap();
+    assert!(!access.client_slot().load().gate_open());
+    assert!(cfg.confirmation.lock().unwrap().is_empty());
+    assert!(read_answer(&answer_path(&cfg.state_path))
+        .unwrap()
+        .unwrap()
+        .confirmed
+        .is_empty());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while sync.lock().unwrap().pairing.phase != PairingPhase::AwaitingConfirmation {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(sync.lock().unwrap().pairing.finish_connecting);
+    assert!(!sync.lock().unwrap().pairing.setup_browser_ready);
+    slot.stop().await;
+    access.retire();
 }

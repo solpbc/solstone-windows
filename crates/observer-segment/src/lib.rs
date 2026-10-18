@@ -86,6 +86,9 @@ pub fn is_live_segment(key: SegmentKey, now_epoch_secs: u64, period_secs: u64) -
 pub trait SegmentFs {
     type Error: core::fmt::Debug;
 
+    /// Return an existing incomplete directory without creating any storage.
+    fn existing_incomplete(&mut self, key: SegmentKey) -> Result<Option<String>, Self::Error>;
+
     /// Create and open the `.incomplete` directory for `key`; return its path.
     fn open_incomplete(&mut self, key: SegmentKey) -> Result<String, Self::Error>;
 

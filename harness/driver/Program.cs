@@ -5,7 +5,7 @@
 //
 // The acceptance oracle is the health dump, NOT the webview DOM:
 //   Tier 0  poll the health endpoint (loopback /healthz) against the contract's
-//           token vocabulary until app_state == "observing" (deterministic).
+//           token vocabulary until observing, or strict fresh all-off readiness.
 //   Tier 1  drive the native tray icon + menu by AutomationId (Tauri exposes
 //           these on the Win32/UIA surface) and confirm the Settings window.
 //   Tier 2  webview data-automation-id is best-effort; the green path must NOT
@@ -20,6 +20,7 @@
 //
 // Modes:
 //   (default)        await observing (Tier 0), do the Tier-1 interaction, exit 0.
+//   --fresh-state    require ready/all-off and the initial setup step.
 //   --fail-inject    after observing, expect app_state to leave observing
 //                    (a required source was killed externally) -> exit 0;
 //                    if it dishonestly stays observing past the timeout -> non-0.
@@ -130,13 +131,16 @@ namespace Solstone.Harness
                     return FailInjectStayedObserving;
                 }
 
-                // Default happy path: wait for observing (Tier 0).
-                if (!PollUntil(opts, dump => Health.AppState(dump) == observing))
+                // Fresh proof requires ready, all-off state; capture checks still
+                // require observing after deliberate owner opt-in.
+                if (!PollUntil(opts, dump => opts.FreshState
+                    ? Health.FreshState(dump)
+                    : Health.AppState(dump) == observing))
                 {
-                    Log($"FAIL: app_state never reached '{observing}' within {opts.TimeoutSecs}s (last = '{LastState}')");
+                    Log($"FAIL: expected {(opts.FreshState ? "fresh all-off readiness" : observing)} within {opts.TimeoutSecs}s (last = '{LastState}')");
                     return TimeoutNotObserving;
                 }
-                Log("OK (Tier 0): health dump reports observing");
+                Log(opts.FreshState ? "OK (Tier 0): fresh all-off readiness" : "OK (Tier 0): health dump reports observing");
 
                 // Tier R render gate (LOAD-BEARING): the view opened via --open-view
                 // must report it rendered OUR UI -- the per-view beacon
@@ -147,7 +151,8 @@ namespace Solstone.Harness
                 // the old "window resolved" Tier-1 missed. Launch the app with
                 // `--open-view <view>` so the view actually opens.
                 var rendered = contract.RenderedToken();
-                if (!PollUntil(opts, dump => Health.ViewState(dump, opts.RenderView) == rendered))
+                if (!PollUntil(opts, dump => Health.ViewState(dump, opts.RenderView) == rendered
+                    && (!opts.FreshState || Health.FreshState(dump))))
                 {
                     Log($"FAIL (Tier R): view '{opts.RenderView}' never reached '{rendered}' within {opts.TimeoutSecs}s -- the webview did not load our UI (is the app launched with --open-view {opts.RenderView}? is --features custom-protocol set?)");
                     return ViewNotRendered;
@@ -156,7 +161,7 @@ namespace Solstone.Harness
 
                 // Tier 1 native-chrome (ADVISORY): --open-view already opened the view
                 // deterministically, so a tray-menu miss here is informational, never
-                // fatal. The gate is Tier 0 (observing) + Tier R (our UI rendered).
+                // fatal. The gate is Tier 0 (selected readiness) + Tier R (our UI rendered).
                 if (opts.SkipTier1)
                 {
                     Log("SKIP (Tier 1 advisory): native-chrome interaction is separate from the gate");
@@ -306,6 +311,40 @@ namespace Solstone.Harness
             failures += Expect("app_state extract (observing)", Health.AppState(observingDump) == "observing");
             failures += Expect("app_state extract (starting)", Health.AppState(startingDump) == "starting");
 
+            var fresh = "{\"app_state\":\"idle\",\"engine_ready\":true,\"segment_dir\":null,"
+                + "\"pump_degraded\":false,\"storage\":null,\"pause\":null,\"listener_faults\":{\"health\":null,\"control\":null},"
+                + "\"setup\":{\"mic\":false,\"system_audio\":false,\"screen\":false,\"start_at_login\":false,\"wizard\":\"mic\",\"failed_sources\":[],\"wizard_save_failed\":false,\"pending_wizard\":null,\"notice_save_failed\":false,\"login_apply_failed\":false},"
+                + "\"sources\":[{\"kind\":\"mic\",\"status\":\"inactive\"},{\"kind\":\"system_audio\",\"status\":\"inactive\"},{\"kind\":\"screen\",\"status\":\"inactive\"}]}";
+            failures += Expect("fresh: ready all-off", Health.FreshState(fresh));
+            failures += Expect("fresh: missing body rejected", !Health.FreshState(null));
+            failures += Expect("fresh: malformed rejected", !Health.FreshState("{"));
+            failures += Expect("fresh: idle alone rejected", !Health.FreshState("{\"app_state\":\"idle\"}"));
+            failures += Expect("fresh: engine not ready rejected", !Health.FreshState(fresh.Replace("\"engine_ready\":true", "\"engine_ready\":false")));
+            failures += Expect("fresh: observing rejected", !Health.FreshState(fresh.Replace("\"idle\"", "\"observing\"")));
+            failures += Expect("fresh: segment rejected", !Health.FreshState(fresh.Replace("\"segment_dir\":null", "\"segment_dir\":\"media\"")));
+            foreach (var key in new[] { "storage", "pause", "health", "control", "pending_wizard" })
+            {
+                failures += Expect("fresh: fault " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":null", "\"" + key + "\":{}")));
+                failures += Expect("fresh: missing " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":null", "\"missing_" + key + "\":null")));
+            }
+            foreach (var key in new[] { "pump_degraded", "login_apply_failed", "wizard_save_failed", "notice_save_failed" })
+            {
+                failures += Expect("fresh: fault " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":false", "\"" + key + "\":true")));
+                failures += Expect("fresh: missing " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":false", "\"missing_" + key + "\":false")));
+            }
+            foreach (var invalid in new[] { "null", "{}", "[{}]", "false" })
+                failures += Expect("fresh: invalid failed_sources " + invalid + " rejected", !Health.FreshState(fresh.Replace("\"failed_sources\":[]", "\"failed_sources\":" + invalid)));
+            failures += Expect("fresh: missing failed_sources rejected", !Health.FreshState(fresh.Replace("\"failed_sources\":[],", "")));
+            foreach (var key in new[] { "mic", "system_audio", "screen", "start_at_login" })
+            {
+                failures += Expect("fresh: enabled " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":false", "\"" + key + "\":true")));
+                failures += Expect("fresh: missing " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":false,", "")));
+            }
+            failures += Expect("fresh: wizard bypass rejected", !Health.FreshState(fresh.Replace("\"wizard\":\"mic\"", "\"wizard\":\"done\"")));
+            failures += Expect("fresh: active source rejected", !Health.FreshState(fresh.Replace("\"inactive\"", "\"active\"")));
+            failures += Expect("fresh: duplicate source rejected", !Health.FreshState(fresh.Replace("\"kind\":\"screen\"", "\"kind\":\"mic\"")));
+            failures += Expect("fresh: absent source rejected", !Health.FreshState(fresh.Replace(",{\"kind\":\"screen\",\"status\":\"inactive\"}", "")));
+
             // Tier-R render-gate logic: the rendered token + views extraction.
             failures += Expect("rendered token", c.RenderedToken() == "rendered");
             var renderedDump = "{\"app_state\":\"observing\",\"views\":{\"settings\":\"rendered\"}}";
@@ -360,6 +399,7 @@ namespace Solstone.Harness
         public string HealthUrl = "";
         public int TimeoutSecs = 60;
         public bool FailInject;
+        public bool FreshState;
         public bool Selftest;
         public bool SkipTier1;
         public bool Tier1Only;
@@ -378,6 +418,7 @@ namespace Solstone.Harness
                     case "--health-url": o.HealthUrl = Next(args, ref i); break;
                     case "--timeout-secs": o.TimeoutSecs = int.Parse(Next(args, ref i)); break;
                     case "--fail-inject": o.FailInject = true; break;
+                    case "--fresh-state": o.FreshState = true; break;
                     case "--selftest": o.Selftest = true; break;
                     case "--skip-tier1": o.SkipTier1 = true; break;
                     case "--tier1-only": o.Tier1Only = true; break;
@@ -386,9 +427,14 @@ namespace Solstone.Harness
                     case "--render-view": o.RenderView = Next(args, ref i); break;
                     default:
                         Console.Error.WriteLine($"[driver] unknown arg '{args[i]}'");
-                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--render-view settings|about] [--skip-tier1] [--tier1-only] [--open-journal-only] [--tier1-timeout-secs N] [--fail-inject] | --selftest");
+                        Console.Error.WriteLine("usage: solstone-driver --contract <path> [--health-url <url>] [--timeout-secs N] [--render-view settings|about] [--skip-tier1] [--tier1-only] [--open-journal-only] [--tier1-timeout-secs N] [--fail-inject | --fresh-state] | --selftest");
                         return null;
                 }
+            }
+            if (o.FreshState && o.FailInject)
+            {
+                Console.Error.WriteLine("[driver] fresh all-off proof cannot inject a running-source fault");
+                return null;
             }
             if (!o.Selftest && string.IsNullOrEmpty(o.ContractPath))
             {
@@ -524,6 +570,50 @@ namespace Solstone.Harness
             {
                 return null;
             }
+        }
+
+        // Strict fresh-owner predicate. Missing, malformed, or merely idle is
+        // not proof: the live engine and every source must agree with consent.
+        public static bool FreshState(string? dumpJson)
+        {
+            if (string.IsNullOrEmpty(dumpJson)) return false;
+            try
+            {
+                var root = (System.Collections.Generic.Dictionary<string, object>)
+                    new JavaScriptSerializer().DeserializeObject(dumpJson);
+                bool IsFalse(System.Collections.Generic.Dictionary<string, object> obj, string key)
+                    => obj.TryGetValue(key, out var value) && value is bool b && !b;
+                bool IsNull(System.Collections.Generic.Dictionary<string, object> obj, string key)
+                    => obj.TryGetValue(key, out var value) && value == null;
+                if (!root.TryGetValue("engine_ready", out var ready) || !(ready is bool r) || !r ||
+                    !root.TryGetValue("app_state", out var phase) || !Equals(phase, "idle") ||
+                    !root.TryGetValue("segment_dir", out var segment) || segment != null ||
+                    !IsFalse(root, "pump_degraded") || !IsNull(root, "storage") || !IsNull(root, "pause") ||
+                    !root.TryGetValue("listener_faults", out var rawFaults) ||
+                    !(rawFaults is System.Collections.Generic.Dictionary<string, object> faults) ||
+                    !IsNull(faults, "health") || !IsNull(faults, "control") ||
+                    !root.TryGetValue("setup", out var rawSetup) ||
+                    !(rawSetup is System.Collections.Generic.Dictionary<string, object> setup) ||
+                    !IsFalse(setup, "mic") || !IsFalse(setup, "system_audio") ||
+                    !IsFalse(setup, "screen") || !IsFalse(setup, "start_at_login") ||
+                    !IsFalse(setup, "login_apply_failed") || !IsFalse(setup, "wizard_save_failed") ||
+                    !IsFalse(setup, "notice_save_failed") || !IsNull(setup, "pending_wizard") ||
+                    !setup.TryGetValue("failed_sources", out var rawFailedSources) ||
+                    !(rawFailedSources is object[] failedSources) || failedSources.Length != 0 ||
+                    !setup.TryGetValue("wizard", out var wizard) || !Equals(wizard, "mic") ||
+                    !root.TryGetValue("sources", out var rawSources) || !(rawSources is object[] sources) ||
+                    sources.Length != 3) return false;
+                var remaining = new System.Collections.Generic.HashSet<string>(new[] { "mic", "system_audio", "screen" });
+                foreach (var raw in sources)
+                {
+                    if (!(raw is System.Collections.Generic.Dictionary<string, object> source) ||
+                        !source.TryGetValue("kind", out var kind) || !(kind is string name) ||
+                        !remaining.Remove(name) || !source.TryGetValue("status", out var status) ||
+                        !Equals(status, "inactive")) return false;
+                }
+                return remaining.Count == 0;
+            }
+            catch { return false; }
         }
 
         // Extract the views.<view> render-state token from a health-dump JSON body

@@ -24,5 +24,21 @@ fn main() {
         println!("cargo:rustc-link-arg-bin=solstone-windows-app=/STACK:8388608");
     }
 
-    tauri_build::build();
+    // Linux does not prove the PE resource; the caller native gate does.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
+        let resource_path = std::path::Path::new(&out_dir).join("solstone-setup-capabilities.json");
+        std::fs::write(
+            &resource_path,
+            observer_contract::capability_resource_bytes(),
+        )
+        .expect("failed to write setup capability resource");
+        let attrs = tauri_build::Attributes::new().windows_attributes(
+            tauri_build::WindowsAttributes::new()
+                .append_rc_content(observer_contract::capability_rc_fragment(&resource_path)),
+        );
+        tauri_build::try_build(attrs).expect("tauri build failed");
+    } else {
+        tauri_build::try_build(tauri_build::Attributes::new()).expect("tauri build failed");
+    }
 }

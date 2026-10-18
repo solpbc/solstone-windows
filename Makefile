@@ -194,7 +194,7 @@ audit:
 	@CARGO="$(CARGO)" sh scripts/preflight-cargo-deny.sh
 	@CARGO_NET_OFFLINE=true $(CARGO) run --locked -q -p xtask -- advisory-audit
 
-# Regenerate automation-contract.json + the ui codegen; the operator commits.
+# Regenerate automation-contract.json, setup-handoff-contract.json, and the ui codegen; the operator commits.
 contract: preflight-toolchain
 	$(CARGO) run --locked -q -p xtask -- contract
 

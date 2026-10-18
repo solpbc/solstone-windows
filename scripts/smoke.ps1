@@ -2,7 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 # FlaUI smoke against the *installed* observer. Runs on the Windows build box only
-# (live target). Two stages:
+# (live target). Three stages:
 #   1. Build + publish the net48 FlaUI driver (Accessibility.dll in the publish
 #      layout; see ../harness/README.md).
 #   2. Launch the installed app in interactive Session 1.
@@ -10,22 +10,26 @@
 #      the FlaUI/UIA Tier 1 pass separately as advisory.
 #
 # The deterministic gate is the health oracle (Tier 0): poll /healthz until
-# app_state reaches the contract's `observing` token, then require the per-view
+# the selected readiness predicate passes, then require the per-view
 # render beacon (Tier R). Tier 1 drives native chrome by AutomationId, but it is
 # advisory and never decides SMOKE_OK/SMOKE_FAIL.
 #
 # Native proof runs on a shared box, so it puts back what it changes, pass or
 # fail: it records the HKCU Run\Solstone login item and any running app before
 # launch, then stops the instance it started, relaunches what was running (via a
-# Session-1 task, as the launch itself is), and restores the login item. It also requires the installed app under test to
-# have registered its own login item - the owner-visible "comes back after
-# reboot" behavior. The Uninstall entry and shortcuts that Setup.exe repoints are
+# Session-1 task, as the launch itself is), and restores the login item. A fresh
+# install must leave that item unchanged until explicit owner opt-in.
+# The Uninstall entry and shortcuts that Setup.exe repoints are
 # not this script's: xtask brackets setup and smoke with
 # scripts\native-proof-host-state.ps1, which puts those back. The app's data root
 # (config, logs, segments) follows LOCALAPPDATA, and xtask runs this script with
 # LOCALAPPDATA set to the proof root. The launch carries that value into the
 # Session-1 task, which would otherwise start with the signed-in user's own and
 # write into their real %LocalAppData%\Solstone.
+#
+# -FreshState: require ready/all-off with the first setup step intact. Native
+# package proof selects this automatically; requires the full explicit proof
+# argument set so it cannot silently use an existing owner's installed app.
 #
 # -FailInject: after the app reaches observing, stop the Windows Audio service so
 # the (required) system-audio source faults, then assert the observer honestly
@@ -37,6 +41,7 @@
 
 param(
     [switch]$FailInject,
+    [switch]$FreshState,
     [int]$TimeoutSecs = 90,
     [int]$Tier1TimeoutSecs = 15,
     [switch]$SelftestOnly,
@@ -62,6 +67,16 @@ if ($NativeProofMode -and $SelftestOnly) {
     throw "native-proof smoke cannot use -SelftestOnly"
 }
 
+# The package proof uses a fresh isolated root. It must not manufacture consent
+# merely to satisfy the observing or login-registration checks.
+$ProveFreshState = $NativeProofMode -or $FreshState
+if ($FreshState -and -not $NativeProofMode) {
+    throw "-FreshState requires the explicit native-proof argument set and isolated root"
+}
+if ($ProveFreshState -and $FailInject) {
+    throw "fresh all-off proof cannot use -FailInject; opt in to a source in a separate owner scenario"
+}
+
 $Root = Split-Path -Parent $PSScriptRoot
 $Driver = Join-Path $Root "harness\driver\Driver.csproj"
 $Contract = Join-Path $Root "automation-contract.json"
@@ -72,6 +87,8 @@ if (-not $HealthEndpoint.host -or -not $HealthEndpoint.port -or -not $HealthEndp
     throw "automation contract is missing the health endpoint"
 }
 $HealthUrl = "http://$($HealthEndpoint.host):$($HealthEndpoint.port)$($HealthEndpoint.path)"
+. (Join-Path $PSScriptRoot 'lib\smoke-fresh-gate.ps1')
+$SegmentsRoot = Join-Path $env:LOCALAPPDATA 'Solstone\segments'
 
 # Native proof uses only the resolver-selected dotnet. Default operator smoke
 # retains its PATH/default-location discovery when no explicit path is supplied.
@@ -143,7 +160,9 @@ function Invoke-InSession1([string]$name, [string]$exe, [string]$arguments) {
     $startDate = $start.ToString("MM/dd/yyyy", [System.Globalization.CultureInfo]::InvariantCulture)
     $startTime = $start.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
     schtasks /Create /TN $name /TR "`"$exe`" $arguments" /SC ONCE /ST $startTime /SD $startDate /RL LIMITED /IT /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not create smoke task $name" }
     schtasks /Run /TN $name | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not start smoke task $name" }
 }
 function Remove-Task([string]$name) { schtasks /Delete /TN $name /F 2>$null | Out-Null }
 function ConvertTo-PsSingleQuoted([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
@@ -169,6 +188,12 @@ function Set-RunValue($value) {
     } finally { $key.Dispose() }
 }
 function Get-AppProcesses { return @(Get-CimInstance Win32_Process -Filter "Name = 'solstone-windows-app.exe'") }
+function Measure-HealthOwner {
+    Get-SmokeHealthOwner -AppExe $AppExe -Port $HealthEndpoint.port -Processes @(Get-AppProcesses) -Listeners @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+}
+function Assert-HealthOwner {
+    if ((Measure-HealthOwner) -ne $script:CandidatePid) { throw 'smoke health owner changed during the gate' }
+}
 
 # Native proof: record what the cleanup below puts back.
 if ($NativeProofMode) {
@@ -182,6 +207,7 @@ $SmokeSkipped = $false
 $SmokeFailure = $null
 $AppReached = $false
 try {
+if ($ProveFreshState) { Assert-SmokeNoMedia $SegmentsRoot }
 # Launch the observer in Session 1 with --open-view settings so the Settings
 # webview actually opens -- the Tier-R render gate then polls /healthz for the
 # per-view render beacon (views.settings == rendered). The single-instance mutex
@@ -205,6 +231,18 @@ $AppLaunchLines += "`"$AppExe`" --open-view settings"
 Set-Content -Path $AppLaunchCmd -Value $AppLaunchLines -Encoding ASCII
 Invoke-InSession1 "solstone-smoke-app" $AppLaunchCmd ""
 
+if ($NativeProofMode) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSecs)
+    $CandidatePid = $null
+    do {
+        try { $CandidatePid = Measure-HealthOwner } catch { $OwnerFailure = $_ }
+        if ($null -ne $CandidatePid) { break }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+    if ($null -eq $CandidatePid) { throw "candidate never owned health listener: $OwnerFailure" }
+    Assert-HealthOwner
+}
+
 $GateArgs = @(
     "--contract", $Contract,
     "--health-url", $HealthUrl,
@@ -212,6 +250,7 @@ $GateArgs = @(
     "--render-view", "settings",
     "--skip-tier1"
 )
+if ($ProveFreshState) { $GateArgs += "--fresh-state" }
 if ($FailInject) {
     # Wait for observing, then kill system audio (stop the audio service), then
     # run the driver in --fail-inject mode to assert the honest drop.
@@ -246,6 +285,26 @@ if ($GateExit -ne 0) {
 
 $AppReached = $true
 if ($NativeProofMode) {
+    Assert-HealthOwner
+    Assert-SmokeNoMedia $SegmentsRoot
+    # Open About through the real secondary-launch path and require its exit.
+    # A second render gate must still see fresh all-off state in that response.
+    $AboutResult = Join-Path $env:TEMP 'solstone-smoke-about.exit'
+    $AboutCmd = Join-Path $env:TEMP 'solstone-smoke-about.cmd'
+    if (Test-Path -LiteralPath $AboutResult) { Remove-Item -LiteralPath $AboutResult -Force }
+    $AboutLines = @('@echo off', "set `"LOCALAPPDATA=$env:LOCALAPPDATA`"", "`"$AppExe`" --open-view about", "echo %errorlevel% > `"$AboutResult`"")
+    Set-Content -LiteralPath $AboutCmd -Value $AboutLines -Encoding ASCII
+    Invoke-InSession1 'solstone-smoke-about' $AboutCmd ''
+    $deadline = (Get-Date).AddSeconds($TimeoutSecs)
+    while (-not (Test-Path -LiteralPath $AboutResult) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+    if (-not (Test-Path -LiteralPath $AboutResult) -or (Get-Content -LiteralPath $AboutResult -Raw).Trim() -cne '0') {
+        throw 'About secondary launch did not exit successfully'
+    }
+    Assert-HealthOwner
+    & $DriverExe --contract $Contract --health-url $HealthUrl --timeout-secs $TimeoutSecs --render-view about --skip-tier1 --fresh-state
+    if ($LASTEXITCODE -ne 0) { throw "About fresh/render gate failed ($LASTEXITCODE)" }
+    Assert-HealthOwner
+    Assert-SmokeNoMedia $SegmentsRoot
     $VersionGate = Join-Path $PSScriptRoot "lib\smoke-version-gate.ps1"
     . $VersionGate
     try {
@@ -255,12 +314,11 @@ if ($NativeProofMode) {
     }
     Assert-NativeProofHealthVersion -Body ([string]$HealthResponse.Content) -ExpectedVersion $ExpectedVersion
 
-    # The installed app owns the login item: by the time it is observing it has
-    # pointed HKCU Run\Solstone at itself.
-    $ExpectedRunCommand = '"' + $AppExe + '" --from-autostart'
+    # A fresh owner has not opted into sign-in startup. Preserve any unrelated
+    # registration exactly; do not demand or create a login item for this copy.
     $RunValue = Get-RunValue
-    if ($null -eq $RunValue -or $RunValue.Data -ne $ExpectedRunCommand) {
-        throw "native-proof installed app did not register its login item: HKCU Run\$RunValueName is '$($RunValue.Data)', expected '$ExpectedRunCommand'"
+    if (-not (Test-SmokeRunValueEqual $OriginalRunValue $RunValue)) {
+        throw "native-proof fresh launch changed the sign-in registration before owner opt-in"
     }
 }
 
@@ -314,6 +372,7 @@ $ErrorActionPreference = "Continue"
 schtasks /End /TN "solstone-smoke-tier1" 2>$null | Out-Null
 Remove-Task "solstone-smoke-tier1"
 Remove-Task "solstone-smoke-app"
+Remove-Task "solstone-smoke-about"
 if ($FailInject) { try { Start-Service -Name Audiosrv } catch {} }
 if ($NativeProofMode) {
     $CleanupErrors = @()
@@ -331,6 +390,12 @@ if ($NativeProofMode) {
     if (@(Get-AppProcesses | Where-Object { $_.ProcessId -in $Launched.ProcessId -or ([string]$_.ExecutablePath).Equals($AppExe, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
         $CleanupErrors += "the launched app did not exit"
     }
+    try { Assert-SmokeNoMedia $SegmentsRoot } catch { $CleanupErrors += "$_" }
+    try {
+        if (-not (Test-SmokeRunValueEqual $OriginalRunValue (Get-RunValue))) {
+            $CleanupErrors += 'fresh app changed the sign-in registration before shutdown'
+        }
+    } catch { $CleanupErrors += "could not inspect sign-in registration after shutdown: $_" }
     $i = 0
     foreach ($app in $OriginalApps) {
         $i++
@@ -350,8 +415,7 @@ if ($NativeProofMode) {
     # Restore the login item last, after any relaunched copy has re-ensured its own.
     try { Set-RunValue $OriginalRunValue } catch { $CleanupErrors += "could not restore HKCU Run\${RunValueName}: $_" }
     $RestoredRunValue = Get-RunValue
-    if (($null -eq $OriginalRunValue) -ne ($null -eq $RestoredRunValue) -or
-        ($null -ne $OriginalRunValue -and ($RestoredRunValue.Data -ne $OriginalRunValue.Data -or $RestoredRunValue.Kind -ne $OriginalRunValue.Kind))) {
+    if (-not (Test-SmokeRunValueEqual $OriginalRunValue $RestoredRunValue)) {
         $CleanupErrors += "HKCU Run\$RunValueName did not return to its original value"
     }
     if ($CleanupErrors.Count -gt 0) {

@@ -7,8 +7,89 @@
 //! This module adapts types, translates errors, and validates route usability
 //! across the Windows boundary.
 
+use base64::Engine as _;
+use observer_contract::CANONICAL_PREFIX;
+
 use crate::credential::{Credential, EndpointAddr};
 use crate::{ObserverHandle, RelayControlEndpoint, RelayError, TransportError};
+
+/// Extract the DER-encoded byte sequence from a PEM certificate block.
+pub fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
+    let start_tag = "-----BEGIN CERTIFICATE-----";
+    let end_tag = "-----END CERTIFICATE-----";
+    let start = pem.find(start_tag)?;
+    let after_start = &pem[start + start_tag.len()..];
+    let end = after_start.find(end_tag)?;
+    let base64_str: String = after_start[..end]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(base64_str)
+        .ok()
+}
+
+/// Calculate the lowercase hex SHA-256 fingerprint of a PEM certificate's DER bytes.
+pub fn ca_cert_der_sha256_hex(pem: &str) -> Option<String> {
+    let der = pem_to_der(pem)?;
+    let hash = spl_core::ca::sha256(&der);
+    Some(crate::credential::hex_lower(&hash))
+}
+
+/// Normalize a raw desktop pair link (`solstone://pair#FRAG` or `solstone://pair/#FRAG`).
+///
+/// Accepts:
+/// - `solstone://pair#<fragment>`
+/// - `solstone://pair/#<fragment>`
+///
+/// Scheme and host match ASCII case-insensitively, and outer whitespace is trimmed.
+/// Rejects the canonical `https://go.solstone.app/p#…` form, bare fragments,
+/// userinfo, ports, queries, and any other path.
+/// If valid and parsed by `spl_core::pairlink::parse`, returns canonical `https://go.solstone.app/p#<fragment>`.
+pub fn normalize_desktop_link(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (scheme, rest) = trimmed.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case(observer_contract::DESKTOP_SCHEME) {
+        return None;
+    }
+
+    let (host_and_path, frag) = rest.split_once('#')?;
+    if frag.is_empty() {
+        return None;
+    }
+
+    if host_and_path.contains('?') || frag.contains('?') {
+        return None;
+    }
+
+    if host_and_path.contains('@') {
+        return None;
+    }
+
+    let (host, path) = match host_and_path.split_once('/') {
+        Some((h, p)) => (h, format!("/{}", p)),
+        None => (host_and_path, "".to_string()),
+    };
+
+    if !host.eq_ignore_ascii_case(observer_contract::DESKTOP_HOST) || host.contains(':') {
+        return None;
+    }
+
+    if !observer_contract::DESKTOP_PATHS.contains(&path.as_str()) {
+        return None;
+    }
+
+    let canonical = format!("{}{}", CANONICAL_PREFIX, frag);
+    if spl_core::pairlink::parse(&canonical).is_ok() {
+        Some(canonical)
+    } else {
+        None
+    }
+}
 
 /// Parse a `https://go.solstone.app/p#…` pair-link and pair against it.
 pub async fn pair_from_link(link: &str, device_label: &str) -> Result<Credential, TransportError> {
@@ -483,5 +564,70 @@ mod tests {
             assert_ne!(code, "unknown_journal");
             assert_eq!(code, "tls");
         }
+    }
+
+    #[test]
+    fn test_normalize_desktop_link_table() {
+        let mut blob = vec![0x05u8, 0x01, 0x01];
+        blob.extend_from_slice(&7657u16.to_be_bytes());
+        blob.extend_from_slice(&[192, 168, 1, 10]);
+        blob.extend_from_slice(&[0xC3; 16]);
+        blob.extend_from_slice(&[0xD4; 16]);
+        let frag = spl_core::crockford::encode(&blob);
+        let canonical = format!("https://go.solstone.app/p#{}", frag);
+
+        // Accepts
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://pair#{}", frag)),
+            Some(canonical.clone())
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://pair/#{}", frag)),
+            Some(canonical.clone())
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("SOLSTONE://PAIR#{}", frag)),
+            Some(canonical.clone())
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("  solstone://pair#{}  ", frag)),
+            Some(canonical.clone())
+        );
+
+        // Rejects
+        assert_eq!(normalize_desktop_link(&canonical), None);
+        assert_eq!(normalize_desktop_link(&frag), None);
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://user:pass@pair#{}", frag)),
+            None
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://pair:8080#{}", frag)),
+            None
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://pair?q=1#{}", frag)),
+            None
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://pair#{}?q=1", frag)),
+            None
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://pair/foo#{}", frag)),
+            None
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("other://pair#{}", frag)),
+            None
+        );
+        assert_eq!(
+            normalize_desktop_link(&format!("solstone://other#{}", frag)),
+            None
+        );
+        assert_eq!(normalize_desktop_link(""), None);
+        assert_eq!(normalize_desktop_link("   "), None);
+        assert_eq!(normalize_desktop_link("solstone://pair#"), None);
+        assert_eq!(normalize_desktop_link("solstone://pair#invalid"), None);
     }
 }

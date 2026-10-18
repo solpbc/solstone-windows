@@ -5,7 +5,7 @@
 
 mod support;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -679,4 +679,69 @@ async fn retired_slot_blocks_relay_only_helper_without_a_relay_dial() {
     assert_eq!(direct.system_status().await.unwrap(), "2026.9.14");
     server.await.unwrap();
     assert_eq!(accepts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn link_identity_against_local_loopback_peer_with_gate_closed_and_committed_true() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let response_body = br#"{"instance_id":"journal-test-instance","committed":true}"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        response_body.len()
+    )
+    .into_bytes();
+    let mut full_response = response;
+    full_response.extend_from_slice(response_body);
+
+    let server = tokio::spawn(serve_direct_once(
+        listener,
+        TlsAcceptor::from(Arc::new(server_config(cert, key))),
+        accepts.clone(),
+        full_response,
+    ));
+
+    let gate = Arc::new(AtomicBool::new(false));
+    let client = ObserverClient::new(direct_credential(pin, port), gate.clone()).unwrap();
+
+    let identity = client.get_link_identity().await.unwrap();
+    assert_eq!(
+        identity.instance_id.as_deref(),
+        Some("journal-test-instance")
+    );
+    assert!(identity.mark.is_none());
+    assert!(identity.committed);
+    assert!(!gate.load(Ordering::Acquire), "gate must remain closed");
+
+    let request = server.await.unwrap();
+    assert_eq!(accepts.load(Ordering::SeqCst), 1);
+    let first_line = String::from_utf8_lossy(&request)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert_eq!(first_line, "GET /app/link/api/identity HTTP/1.1");
+}
+
+#[tokio::test]
+async fn link_identity_refuses_non_loopback_endpoint_without_dial_and_keeps_gate_closed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (cert, _) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+
+    let mut cred = direct_credential(pin, port);
+    cred.endpoints[0].host = "192.0.2.1".to_string();
+
+    let gate = Arc::new(AtomicBool::new(false));
+    let client = ObserverClient::new(cred, gate.clone()).unwrap();
+
+    let err = client.get_link_identity().await.unwrap_err();
+    assert!(matches!(err, TransportError::NoEndpoint));
+    assert!(!gate.load(Ordering::Acquire), "gate must remain closed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
 }

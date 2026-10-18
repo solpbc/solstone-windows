@@ -22,12 +22,33 @@ use strum::{EnumIter, IntoStaticStr};
 
 pub mod about;
 pub mod launch;
+pub mod scheme;
+pub mod setup;
 pub mod tray_status;
 
 pub use launch::{is_native_messaging_launch, launch_should_surface, FROM_AUTOSTART_ARG};
+pub use scheme::{
+    extract_first_quoted_token, scheme_launch_decision, scheme_open_command,
+    scheme_uninstall_should_remove, SchemeLaunchDecision,
+};
+pub use setup::{
+    atomic_write_setup, evaluate_login_decision, has_predecessor_evidence, load_or_classify,
+    read_setup_read_only, CopyClass, FailedSourceWrite, HandoffOverlay, LoadOutcome, LoginDecision,
+    RegistryReadState, RetryOutcome, SetupAuthority, SetupConfig, SetupSnapshot, WizardStep,
+    CURRENT_SETUP_VERSION, SETUP_FILE_NAME,
+};
 pub use tray_status::{
     classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, TrayVisual,
 };
+
+/// Process-monotonic microsecond clock for timestamping capture chunks.
+pub fn monotonic_us() -> u64 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let origin = ORIGIN.get_or_init(std::time::Instant::now);
+    std::time::Instant::now()
+        .duration_since(*origin)
+        .as_micros() as u64
+}
 
 /// Final screen media filename inside a sealed segment.
 pub const SCREEN_FILE_NAME: &str = "display_1_screen.mp4";
@@ -175,6 +196,7 @@ pub struct CaptureChunk {
     pub seq: u64,
     pub data: Vec<u8>,
     pub format: Option<AudioFormat>,
+    pub at_us: Option<u64>,
 }
 
 /// CPU pixel format for screen frames crossing the pure capture seam.
@@ -194,6 +216,22 @@ pub struct ScreenFrame {
     pub height: u32,
     pub pixel_format: ScreenPixelFormat,
     pub pixels: Arc<[u8]>,
+}
+
+/// Ephemeral preview state held inside the engine, off HealthDump.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PreviewSnapshot {
+    pub consumer_generation: u64,
+    pub mic_level: Option<f32>,
+    pub system_audio_level: Option<f32>,
+    pub screen_frame: Option<ScreenPreviewFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenPreviewFrame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 /// Crop a screen frame down to even dimensions for NV12 consumers.
@@ -472,6 +510,10 @@ pub struct PairingState {
     /// Digest identifying the bound credential for confirmation matching.
     #[serde(default)]
     pub binding: String,
+    #[serde(default)]
+    pub finish_connecting: bool,
+    #[serde(default)]
+    pub setup_browser_ready: bool,
 }
 
 /// The honest upload/sync state surfaced in the health dump. Counts are earned
@@ -739,6 +781,9 @@ pub struct HealthDump {
     /// App-owned loopback listener faults. Carried forward like `pump_degraded`.
     #[serde(default)]
     pub listener_faults: ListenerFaults,
+    /// Durable setup and source preferences snapshot.
+    #[serde(default)]
+    pub setup: SetupSnapshot,
 }
 
 /// True when `next` differs from `previous` in a way the Settings/About UI
@@ -786,6 +831,9 @@ fn canonicalize_for_emit(dump: &HealthDump) -> HealthDump {
 /// The channel-backed implementation lives in `capture-engine`, keeping async
 /// runtime types out of the pure tier.
 pub trait CaptureSink: Send + Sync {
+    /// A synchronous producer calls this before admitting input from a new device
+    /// stream. Queued input from its previous stream must not become fresh again.
+    fn begin_stream(&self) {}
     fn emit(&self, chunk: CaptureChunk);
     fn emit_screen_frame(&self, frame: ScreenFrame);
 }
@@ -796,6 +844,10 @@ pub trait CaptureSink: Send + Sync {
 /// fake clock.
 pub trait Clock: Send + Sync {
     fn now_epoch_secs(&self) -> u64;
+    fn now_epoch_us(&self) -> u64 {
+        self.now_epoch_secs().saturating_mul(1_000_000)
+    }
+    fn now_monotonic_us(&self) -> u64;
 }
 
 /// Offset and optional IANA id from one [`LocalOffset`] lookup.
@@ -979,11 +1031,14 @@ pub const CONTROL_ACK: &[u8] = b"ok\n";
 pub const OPEN_JOURNAL_VERB: &[u8] = b"open-journal\n";
 pub const SURFACE_ABOUT_VERB: &[u8] = b"surface-about\n";
 pub const SURFACE_SETTINGS_VERB: &[u8] = b"surface-settings\n";
+pub const RELOAD_SETUP_VERB: &[u8] = b"reload-setup\n";
+pub const SETUP_HANDOFF_ARG: &str = "--setup-handoff";
 
 pub trait ControlActions {
     fn open_settings(&self);
     fn open_about(&self);
     fn open_journal(&self);
+    fn reload_setup(&self);
 }
 
 pub fn dispatch_control<A: ControlActions>(buf: &[u8], actions: &A) -> bool {
@@ -995,6 +1050,9 @@ pub fn dispatch_control<A: ControlActions>(buf: &[u8], actions: &A) -> bool {
         true
     } else if buf.starts_with(SURFACE_SETTINGS_VERB) {
         actions.open_settings();
+        true
+    } else if buf.starts_with(RELOAD_SETUP_VERB) {
+        actions.reload_setup();
         true
     } else {
         false
@@ -1190,6 +1248,7 @@ mod tests {
             views: BTreeMap::new(),
             pump_degraded: false,
             listener_faults: ListenerFaults::default(),
+            setup: Default::default(),
         }
     }
 
@@ -1396,6 +1455,7 @@ mod tests {
             views: BTreeMap::new(),
             pump_degraded: false,
             listener_faults: ListenerFaults::default(),
+            setup: Default::default(),
         };
 
         let empty_json = serde_json::to_string(&dump).unwrap();
@@ -1723,6 +1783,7 @@ mod tests {
         settings: std::sync::atomic::AtomicUsize,
         about: std::sync::atomic::AtomicUsize,
         journal: std::sync::atomic::AtomicUsize,
+        reload_setup: std::sync::atomic::AtomicUsize,
     }
 
     impl MockActions {
@@ -1731,6 +1792,7 @@ mod tests {
                 settings: std::sync::atomic::AtomicUsize::new(0),
                 about: std::sync::atomic::AtomicUsize::new(0),
                 journal: std::sync::atomic::AtomicUsize::new(0),
+                reload_setup: std::sync::atomic::AtomicUsize::new(0),
             }
         }
     }
@@ -1745,6 +1807,10 @@ mod tests {
         }
         fn open_journal(&self) {
             self.journal
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn reload_setup(&self) {
+            self.reload_setup
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
@@ -1773,6 +1839,29 @@ mod tests {
         );
         assert_eq!(
             control_ack_after_dispatch(b"surface-settings\n", &actions),
+            Some(CONTROL_ACK)
+        );
+
+        // reload-setup does not fire the other verbs
+        let actions2 = MockActions::new();
+        assert!(dispatch_control(RELOAD_SETUP_VERB, &actions2));
+        assert_eq!(
+            actions2
+                .reload_setup
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            actions2.settings.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(actions2.about.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            actions2.journal.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            control_ack_after_dispatch(RELOAD_SETUP_VERB, &actions2),
             Some(CONTROL_ACK)
         );
 

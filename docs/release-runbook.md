@@ -8,7 +8,8 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
 | Step | Verb |
 |---|---|
 | Build binary + webview | `make build` |
-| Deterministic composite gate (host checks · offline dependency policy · native Windows build/test) | `make ci` |
+| Code-landing gate, repository-local (host fmt/clippy/contract/tests · Windows-target check · offline locked bans/licenses/sources · UI/shell tests; no remote host) | `make ci` |
+| Operator gate on the final tree (`make ci`, then `check-release-advisory-config`, then `win-host-ci` native build/test) | `make ci-full` |
 | Verify one signed advisory packet and contained bundle, then check current advisories offline | Set the four advisory packet variables below, then run `make audit` |
 | Prove the release finalizer's separately materialized advisory config with cargo-deny 0.20.2 offline | `make check-release-advisory-config` |
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
@@ -34,7 +35,7 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
   lineage, allowed `main`/`__swsync` ref, clean source state, and SHA-256 of both
   `Cargo.lock` and `ui/package-lock.json`.
 - The app must be **Velopack-aware** so `--veloapp-*` hooks exit 0; the app
-  registers the per-user autostart login item on launch (`AGENTS.md` § 6).
+  reconciles the opt-in per-user autostart login item on launch when enabled (`AGENTS.md` § 6).
 - `THIRD_PARTY_NOTICES.md` is packed beside the app and installed at
   `%LocalAppData%\Solstone\current\THIRD_PARTY_NOTICES.md`.
 - `RUST_DEPENDENCY_NOTICES.txt` is packed beside the app and installed at

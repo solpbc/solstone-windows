@@ -28,6 +28,7 @@ pub(crate) enum OrdinaryRequest {
     MigrationStateGet,
     MigrationDecisionPut,
     LocalEndpointsGet,
+    LinkIdentityGet,
 }
 
 /// One route's transport authority.
@@ -42,7 +43,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -57,6 +58,7 @@ impl OrdinaryRequest {
         Self::MigrationStateGet,
         Self::MigrationDecisionPut,
         Self::LocalEndpointsGet,
+        Self::LinkIdentityGet,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
@@ -155,6 +157,13 @@ impl OrdinaryRequest {
             Self::LocalEndpointsGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: "/app/network/local-endpoints",
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: false,
+            },
+            Self::LinkIdentityGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: observer_contract::IDENTITY_PATH,
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: false,
@@ -326,6 +335,14 @@ mod tests {
                 OrdinaryRequest::LocalEndpointsGet,
                 "GET",
                 "/app/network/local-endpoints",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                false,
+            ),
+            (
+                OrdinaryRequest::LinkIdentityGet,
+                "GET",
+                observer_contract::IDENTITY_PATH,
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 false,

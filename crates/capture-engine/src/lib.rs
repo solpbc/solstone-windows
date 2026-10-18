@@ -15,14 +15,17 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_lifecycle::{BackoffConfig, Lifecycle, RetryDecision};
+use observer_model::setup::{SetupAuthority, SetupSnapshot};
 use observer_model::{
     AppPhase, CaptureChunk, CaptureSink, Clock, EncoderError, ErrorReason, HealthDump, MicSource,
-    PauseReason, ScreenEncoder, ScreenFrame, ScreenSource, SourceError, SourceKind, SourceReport,
-    SourceState, StorageHealth, SyncSnapshot, SystemAudioSource,
+    PauseReason, PreviewSnapshot, ScreenEncoder, ScreenFrame, ScreenPixelFormat,
+    ScreenPreviewFrame, ScreenSource, SourceError, SourceKind, SourceReport, SourceState,
+    StorageHealth, SyncSnapshot, SystemAudioSource,
 };
 use observer_recovery::{recover_all, RecoveryFs, RecoveryOutcome};
 use observer_segment::{
@@ -37,6 +40,39 @@ pub use observer_model::BREAKER_OPEN_MARKER;
 
 mod pause_store;
 pub use pause_store::{FilePauseStore, HeldPause, PauseStore};
+
+/// Ephemeral preview consumer gate. Tracks the generation and current source kind.
+#[derive(Debug, Default)]
+pub struct ProofGate {
+    generation: u64,
+    source: Option<SourceKind>,
+}
+
+impl ProofGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn open(&mut self, kind: SourceKind) -> u64 {
+        self.generation += 1;
+        self.source = Some(kind);
+        self.generation
+    }
+
+    pub fn close(&mut self) -> u64 {
+        self.generation += 1;
+        self.source = None;
+        self.generation
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn source(&self) -> Option<SourceKind> {
+        self.source
+    }
+}
 
 /// Commands the shell and lifecycle pump can send to the engine loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +94,11 @@ pub enum EngineCommand {
     /// direction because it owns the authoritative phase.
     TogglePause,
     DisplayChanged,
+    SetSourceEnabled {
+        kind: SourceKind,
+        enabled: bool,
+    },
+    ClearPreviews,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,24 +118,93 @@ impl Clock for SystemClock {
             .unwrap_or_default()
             .as_secs()
     }
+
+    fn now_epoch_us(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros()
+            .min(u64::MAX as u128) as u64
+    }
+
+    fn now_monotonic_us(&self) -> u64 {
+        observer_model::monotonic_us()
+    }
+}
+
+struct InputAdmission {
+    source_generation: u64,
+    stream_generation: u64,
+    proof_generation: u64,
 }
 
 enum CaptureEvent {
-    Audio(CaptureChunk),
-    Screen(ScreenFrame),
+    Audio(SourceKind, InputAdmission, CaptureChunk),
+    Screen(InputAdmission, ScreenFrame),
 }
 
 struct EngineSink {
     tx: mpsc::UnboundedSender<CaptureEvent>,
+    generations: BTreeMap<SourceKind, Arc<AtomicU64>>,
+    streams: BTreeMap<SourceKind, Arc<AtomicU64>>,
+    proof: Arc<Mutex<ProofGate>>,
+}
+
+impl EngineSink {
+    fn admission(&self, kind: SourceKind) -> InputAdmission {
+        InputAdmission {
+            source_generation: self.generations[&kind].load(Ordering::SeqCst),
+            stream_generation: self.streams[&kind].load(Ordering::SeqCst),
+            proof_generation: self.proof.lock().map(|p| p.generation()).unwrap_or(0),
+        }
+    }
 }
 
 impl CaptureSink for EngineSink {
     fn emit(&self, chunk: CaptureChunk) {
-        let _ = self.tx.send(CaptureEvent::Audio(chunk));
+        let admission = self.admission(chunk.source);
+        let _ = self
+            .tx
+            .send(CaptureEvent::Audio(chunk.source, admission, chunk));
     }
 
     fn emit_screen_frame(&self, frame: ScreenFrame) {
-        let _ = self.tx.send(CaptureEvent::Screen(frame));
+        let admission = self.admission(SourceKind::Screen);
+        let _ = self.tx.send(CaptureEvent::Screen(admission, frame));
+    }
+}
+
+struct SourceSink {
+    kind: SourceKind,
+    generation: u64,
+    stream: Arc<AtomicU64>,
+    proof: Arc<Mutex<ProofGate>>,
+    tx: mpsc::UnboundedSender<CaptureEvent>,
+}
+
+impl SourceSink {
+    fn admission(&self) -> InputAdmission {
+        InputAdmission {
+            source_generation: self.generation,
+            stream_generation: self.stream.load(Ordering::SeqCst),
+            proof_generation: self.proof.lock().map(|p| p.generation()).unwrap_or(0),
+        }
+    }
+}
+
+impl CaptureSink for SourceSink {
+    fn begin_stream(&self) {
+        self.stream.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn emit(&self, chunk: CaptureChunk) {
+        let _ = self
+            .tx
+            .send(CaptureEvent::Audio(self.kind, self.admission(), chunk));
+    }
+
+    fn emit_screen_frame(&self, frame: ScreenFrame) {
+        let _ = self.tx.send(CaptureEvent::Screen(self.admission(), frame));
     }
 }
 
@@ -102,6 +212,8 @@ struct OpenSegment {
     key: observer_model::SegmentKey,
     dir: String,
     opened_epoch_secs: u64,
+    opened_monotonic_us: u64,
+    boundary_offset_us: u64,
     screen_chunks: u64,
     screen_encoder_open: bool,
 }
@@ -158,6 +270,15 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     /// folded into every `HealthDump`. Default = not-paired/idle, so the engine
     /// is unchanged when sync isn't running.
     sync: Arc<Mutex<SyncSnapshot>>,
+    generations: BTreeMap<SourceKind, Arc<AtomicU64>>,
+    preview: PreviewSnapshot,
+    preview_tx: watch::Sender<PreviewSnapshot>,
+    last_mic_preview_us: Option<u64>,
+    last_sys_preview_us: Option<u64>,
+    last_screen_preview_100ns: Option<i64>,
+    setup: SetupSnapshot,
+    setup_authority: Arc<Mutex<SetupAuthority>>,
+    proof: Arc<Mutex<ProofGate>>,
 }
 
 impl<SFS> CaptureEngine<SFS>
@@ -179,9 +300,28 @@ where
         let outcomes = recover_all(recovery_fs)?;
         let (tx, rx) = mpsc::unbounded_channel();
         let (health_tx, _) = watch::channel(Self::empty_health());
-        let sink = Arc::new(EngineSink { tx });
+        let (preview_tx, _) = watch::channel(PreviewSnapshot::default());
+        let generations = BTreeMap::from([
+            (SourceKind::Screen, Arc::new(AtomicU64::new(0))),
+            (SourceKind::SystemAudio, Arc::new(AtomicU64::new(0))),
+            (SourceKind::Mic, Arc::new(AtomicU64::new(0))),
+        ]);
+        let proof = Arc::new(Mutex::new(ProofGate::new()));
+        let streams = BTreeMap::from([
+            (SourceKind::Screen, Arc::new(AtomicU64::new(0))),
+            (SourceKind::SystemAudio, Arc::new(AtomicU64::new(0))),
+            (SourceKind::Mic, Arc::new(AtomicU64::new(0))),
+        ]);
+        let sink = Arc::new(EngineSink {
+            tx,
+            generations: generations.clone(),
+            streams,
+            proof: proof.clone(),
+        });
         let mut state = StateMachine::new();
         reduce(&mut state, AppEvent::EngineReady);
+
+        let setup_authority = Arc::new(Mutex::new(SetupAuthority::new()));
 
         let mut engine = Self {
             sources,
@@ -204,10 +344,50 @@ where
             health_tx,
             pause_store: None,
             sync: Arc::new(Mutex::new(SyncSnapshot::default())),
+            generations,
+            preview: PreviewSnapshot::default(),
+            preview_tx,
+            last_mic_preview_us: None,
+            last_sys_preview_us: None,
+            last_screen_preview_100ns: None,
+            setup: SetupSnapshot::default(),
+            setup_authority,
+            proof,
         };
         engine.refresh_health();
 
         Ok((engine, outcomes))
+    }
+
+    /// Setup authority handle.
+    pub fn setup_authority(&self) -> Arc<Mutex<SetupAuthority>> {
+        self.setup_authority.clone()
+    }
+
+    /// Proof gate handle.
+    pub fn proof_gate(&self) -> Arc<Mutex<ProofGate>> {
+        self.proof.clone()
+    }
+
+    /// Bind the setup storage root.
+    pub fn set_setup_root(&self, root: std::path::PathBuf) {
+        if let Ok(mut auth) = self.setup_authority.lock() {
+            auth.set_root(root);
+        }
+    }
+
+    /// Open ephemeral proof consumer for a source kind.
+    pub fn open_proof_consumer(&mut self, kind: SourceKind) -> u64 {
+        let gen = self.proof.lock().map(|mut p| p.open(kind)).unwrap_or(0);
+        self.clear_previews();
+        gen
+    }
+
+    /// Close ephemeral proof consumer.
+    pub fn close_proof_consumer(&mut self) -> u64 {
+        let gen = self.proof.lock().map(|mut p| p.close()).unwrap_or(0);
+        self.clear_previews();
+        gen
     }
 
     /// The honest-state reducer, for the shell/health layer to read.
@@ -290,6 +470,114 @@ where
             views: Default::default(),
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
+            setup: self.setup.clone(),
+        }
+    }
+
+    /// Subscribe to ephemeral preview updates.
+    pub fn preview_watch(&self) -> watch::Receiver<PreviewSnapshot> {
+        self.preview_tx.subscribe()
+    }
+
+    /// Read the latest ephemeral preview snapshot.
+    pub fn preview_snapshot(&self) -> PreviewSnapshot {
+        self.preview.clone()
+    }
+
+    /// Update configured source choices and start-at-login preference from `setup`.
+    /// Stores `setup` and reduces `SourceEnabled` for each kind without starting sources
+    /// or clearing a pause.
+    pub fn set_source_choices(&mut self, setup: SetupSnapshot) {
+        if let Ok(mut auth) = self.setup_authority.lock() {
+            auth.seed(&setup);
+        }
+        self.reduce(AppEvent::SourceEnabled {
+            kind: SourceKind::Screen,
+            enabled: setup.screen,
+        });
+        self.reduce(AppEvent::SourceEnabled {
+            kind: SourceKind::SystemAudio,
+            enabled: setup.system_audio,
+        });
+        self.reduce(AppEvent::SourceEnabled {
+            kind: SourceKind::Mic,
+            enabled: setup.mic,
+        });
+        self.refresh_health();
+    }
+
+    /// Enable or disable a single source.
+    pub fn set_source_enabled(&mut self, kind: SourceKind, enabled: bool) {
+        if let Ok(mut auth) = self.setup_authority.lock() {
+            auth.note_running(kind, enabled);
+        }
+        if !enabled {
+            self.increment_generation(kind);
+            self.stop_source(kind);
+            self.retry_at_epoch_secs.remove(&kind);
+            self.clear_source_preview(kind);
+            self.reduce(AppEvent::SourceEnabled {
+                kind,
+                enabled: false,
+            });
+            self.apply_source_report(SourceReport {
+                kind,
+                state: SourceState::Inactive,
+                device: None,
+            });
+        } else {
+            self.reduce(AppEvent::SourceEnabled {
+                kind,
+                enabled: true,
+            });
+            if self.state.phase() == AppPhase::Paused || !self.state.run_requested() {
+                self.refresh_health();
+                return;
+            }
+            self.ensure_segment_for_now();
+            self.start_source(kind);
+        }
+        self.fold_source_states();
+        self.refresh_health();
+    }
+
+    /// Clear all ephemeral preview levels and screen frames.
+    pub fn clear_previews(&mut self) {
+        let consumer_generation = self.proof.lock().map(|p| p.generation()).unwrap_or(0);
+        self.preview = PreviewSnapshot {
+            consumer_generation,
+            ..Default::default()
+        };
+        self.last_mic_preview_us = None;
+        self.last_sys_preview_us = None;
+        self.last_screen_preview_100ns = None;
+        let _ = self.preview_tx.send(self.preview.clone());
+    }
+
+    /// Clear ephemeral preview state for a single source.
+    pub fn clear_source_preview(&mut self, kind: SourceKind) {
+        let consumer_generation = self.proof.lock().map(|p| p.generation()).unwrap_or(0);
+        self.preview.consumer_generation = consumer_generation;
+        match kind {
+            SourceKind::Mic => {
+                self.preview.mic_level = None;
+                self.last_mic_preview_us = None;
+            }
+            SourceKind::SystemAudio => {
+                self.preview.system_audio_level = None;
+                self.last_sys_preview_us = None;
+            }
+            SourceKind::Screen => {
+                self.preview.screen_frame = None;
+                self.last_screen_preview_100ns = None;
+            }
+        }
+        let _ = self.preview_tx.send(self.preview.clone());
+    }
+
+    fn increment_generation(&self, kind: SourceKind) {
+        if let Some(gen) = self.generations.get(&kind) {
+            gen.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -321,19 +609,24 @@ where
         self.refresh_health();
     }
 
-    /// Start every source and open the current segment. Source start failures are
+    /// Start enabled sources and open the current segment. Source start failures are
     /// folded into state and do not abort the engine. A pause in effect (an
     /// owner's pause restored at launch) holds: nothing starts until it ends.
     pub fn start(&mut self) {
         self.reduce(AppEvent::RequestedStart);
+        self.adopt_current_segment();
         if self.state.phase() == AppPhase::Paused {
             self.fold_source_states();
             self.refresh_health();
             return;
         }
-        self.open_current_segment();
-        for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
-            self.start_source(kind);
+        if self.state.any_source_enabled() {
+            self.ensure_segment_for_now();
+            for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
+                if self.state.is_source_enabled(kind) {
+                    self.start_source(kind);
+                }
+            }
         }
         self.fold_source_states();
         self.refresh_health();
@@ -349,6 +642,7 @@ where
         if let Some(segment) = self.current_segment.take() {
             self.seal_segment(segment);
         }
+        self.clear_previews();
         self.fold_source_states();
         self.refresh_health();
     }
@@ -356,6 +650,10 @@ where
     /// Forward display changes to the screen source. Segment rotation stays
     /// clock-driven.
     pub fn on_display_changed(&mut self) {
+        if !self.state.is_source_enabled(SourceKind::Screen) {
+            return;
+        }
+        self.clear_source_preview(SourceKind::Screen);
         self.sources.screen.on_display_changed();
     }
 
@@ -449,6 +747,14 @@ where
             EngineCommand::DisplayChanged => {
                 self.on_display_changed();
             }
+            EngineCommand::SetSourceEnabled { kind, enabled } => {
+                self.set_source_enabled(kind, enabled);
+                return;
+            }
+            EngineCommand::ClearPreviews => {
+                self.clear_previews();
+                return;
+            }
         }
         self.settle_pause(was_paused, restart, owner_before);
         self.refresh_health();
@@ -500,15 +806,22 @@ where
         self.drain_events();
         self.write_stalled = false;
         self.attempt_clear_storage();
+        self.clear_previews();
         self.fold_source_states();
     }
 
     /// Re-open the current segment and restart every source. The inverse of
     /// [`Self::pause_capture`], used by both an explicit resume and auto-resume.
     fn resume_capture(&mut self) {
-        self.open_current_segment();
+        if !self.state.any_source_enabled() {
+            self.fold_source_states();
+            return;
+        }
+        self.ensure_segment_for_now();
         for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
-            self.start_source(kind);
+            if self.state.is_source_enabled(kind) {
+                self.start_source(kind);
+            }
         }
         self.fold_source_states();
     }
@@ -520,6 +833,19 @@ where
             let owner_before = self.state.owner_pause();
             self.reduce(AppEvent::OwnerPauseExpired);
             self.settle_pause(true, false, owner_before);
+        }
+    }
+
+    fn ensure_segment_for_now(&mut self) {
+        if let Some(current) = self.current_segment.as_ref() {
+            let now = self.clock.now_epoch_secs();
+            if should_rotate(current.key, now, self.config.segment_secs) {
+                let old_segment = self.current_segment.take().expect("current checked above");
+                self.seal_segment(old_segment);
+                self.open_current_segment();
+            }
+        } else {
+            self.open_current_segment();
         }
     }
 
@@ -536,14 +862,35 @@ where
                 return;
             }
         };
+        self.attach_segment(key, dir);
+        self.attempt_clear_storage();
+    }
+
+    fn adopt_current_segment(&mut self) {
+        if self.current_segment.is_some() {
+            return;
+        }
+        let key = segment_for(self.clock.now_epoch_secs(), self.config.segment_secs);
+        match self.segment_fs.existing_incomplete(key) {
+            Ok(Some(dir)) => self.attach_segment(key, dir),
+            Ok(None) => {}
+            Err(error) => self.note_storage_fault(format!("{error:?}")),
+        }
+    }
+
+    fn attach_segment(&mut self, key: observer_model::SegmentKey, dir: String) {
         self.current_segment = Some(OpenSegment {
             key,
             dir,
-            opened_epoch_secs: now,
+            opened_epoch_secs: self.clock.now_epoch_secs(),
+            opened_monotonic_us: self.clock.now_monotonic_us(),
+            boundary_offset_us: self
+                .clock
+                .now_epoch_us()
+                .saturating_sub(key.boundary_epoch_secs.saturating_mul(1_000_000)),
             screen_chunks: 0,
             screen_encoder_open: false,
         });
-        self.attempt_clear_storage();
     }
 
     fn drain_events(&mut self) {
@@ -554,17 +901,77 @@ where
 
     fn handle_event(&mut self, event: CaptureEvent) {
         match event {
-            CaptureEvent::Audio(chunk) => self.write_audio_chunk(chunk),
-            CaptureEvent::Screen(frame) => {
+            CaptureEvent::Audio(kind, admission, chunk) => {
+                let current_gen = self
+                    .generations
+                    .get(&kind)
+                    .map(|g| g.load(Ordering::SeqCst))
+                    .unwrap_or(0);
+                if admission.source_generation != current_gen
+                    || admission.stream_generation
+                        != self.sink.streams[&kind].load(Ordering::SeqCst)
+                {
+                    return;
+                }
+                if !self.state.is_source_enabled(kind) {
+                    return;
+                }
+                let st = self.source_state(kind);
+                if matches!(
+                    st,
+                    SourceState::Inactive
+                        | SourceState::NoInputDevice
+                        | SourceState::Faulted { .. }
+                ) {
+                    self.clear_source_preview(kind);
+                    return;
+                }
+                self.update_audio_preview(kind, &chunk, admission.proof_generation);
+                self.write_audio_chunk(chunk);
+            }
+            CaptureEvent::Screen(admission, frame) => {
+                let current_gen = self
+                    .generations
+                    .get(&SourceKind::Screen)
+                    .map(|g| g.load(Ordering::SeqCst))
+                    .unwrap_or(0);
+                if admission.source_generation != current_gen
+                    || admission.stream_generation
+                        != self.sink.streams[&SourceKind::Screen].load(Ordering::SeqCst)
+                {
+                    return;
+                }
+                if !self.state.is_source_enabled(SourceKind::Screen) {
+                    return;
+                }
+                let st = self.source_state(SourceKind::Screen);
+                if matches!(
+                    st,
+                    SourceState::Inactive
+                        | SourceState::NoInputDevice
+                        | SourceState::Faulted { .. }
+                ) {
+                    self.clear_source_preview(SourceKind::Screen);
+                    return;
+                }
+                self.update_screen_preview(&frame, admission.proof_generation);
                 self.encode_screen_frame(frame);
             }
         }
     }
 
-    fn write_audio_chunk(&mut self, chunk: CaptureChunk) {
+    fn write_audio_chunk(&mut self, mut chunk: CaptureChunk) {
         let Some(segment) = self.current_segment.as_mut() else {
             return;
         };
+
+        if let Some(at_us) = chunk.at_us {
+            chunk.at_us = Some(
+                segment
+                    .boundary_offset_us
+                    .saturating_add(at_us.saturating_sub(segment.opened_monotonic_us)),
+            );
+        }
 
         match self.segment_fs.write_chunk(segment.key, &chunk) {
             Ok(()) => {
@@ -622,7 +1029,7 @@ where
         let old_segment = self.current_segment.take().expect("current checked above");
         self.seal_segment(old_segment);
 
-        if self.should_be_capturing() {
+        if self.should_be_capturing() && self.state.any_source_enabled() {
             self.open_current_segment();
         }
     }
@@ -709,7 +1116,10 @@ where
                 }
             }
 
-            if self.should_be_capturing() && self.current_segment.is_none() {
+            if self.should_be_capturing()
+                && self.state.any_source_enabled()
+                && self.current_segment.is_none()
+            {
                 self.open_current_segment();
             }
         }
@@ -725,6 +1135,14 @@ where
                 }
             };
             self.storage_retry_at = Some(now.saturating_add(delay_secs));
+        }
+    }
+
+    fn source_state(&self, kind: SourceKind) -> SourceState {
+        match kind {
+            SourceKind::Mic => self.sources.mic.state(),
+            SourceKind::SystemAudio => self.sources.system_audio.state(),
+            SourceKind::Screen => self.sources.screen.state(),
         }
     }
 
@@ -745,12 +1163,12 @@ where
             },
             SourceReport {
                 kind: SourceKind::SystemAudio,
-                state: self.sources.system_audio.state(),
+                state: self.source_state(SourceKind::SystemAudio),
                 device: None,
             },
             SourceReport {
                 kind: SourceKind::Mic,
-                state: self.sources.mic.state(),
+                state: self.source_state(SourceKind::Mic),
                 device: None,
             },
         ];
@@ -761,6 +1179,12 @@ where
     }
 
     fn apply_source_report(&mut self, mut report: SourceReport) {
+        if matches!(
+            report.state,
+            SourceState::Inactive | SourceState::NoInputDevice | SourceState::Faulted { .. }
+        ) {
+            self.clear_source_preview(report.kind);
+        }
         let previous = self
             .source_reports
             .get(&report.kind)
@@ -777,6 +1201,7 @@ where
     }
 
     fn apply_encoder_error(&mut self, error: EncoderError) {
+        self.clear_source_preview(SourceKind::Screen);
         self.apply_source_report(SourceReport {
             kind: SourceKind::Screen,
             state: SourceState::Faulted {
@@ -788,6 +1213,7 @@ where
     }
 
     fn apply_source_error(&mut self, kind: SourceKind, error: SourceError) {
+        self.clear_source_preview(kind);
         let mut state = SourceState::Faulted {
             reason: error.reason,
             detail: error.detail,
@@ -841,6 +1267,9 @@ where
     }
 
     fn retry_due_sources(&mut self) {
+        if self.state.phase() == AppPhase::Paused {
+            return;
+        }
         let now = self.clock.now_epoch_secs();
         let due: Vec<SourceKind> = self
             .retry_at_epoch_secs
@@ -850,12 +1279,17 @@ where
 
         for kind in due {
             self.retry_at_epoch_secs.remove(&kind);
-            self.stop_source(kind);
-            self.start_source(kind);
+            if self.state.is_source_enabled(kind) {
+                self.stop_source(kind);
+                self.start_source(kind);
+            }
         }
     }
 
     fn refresh_health(&mut self) {
+        if let Ok(auth) = self.setup_authority.lock() {
+            self.setup = auth.projection();
+        }
         let mut dump = self.health_dump();
         if let Ok(mut shared) = self.shared_health.lock() {
             // `views` is app-owned (the frontend writes it via the beacon command).
@@ -872,7 +1306,22 @@ where
     }
 
     fn start_source(&mut self, kind: SourceKind) {
-        let sink = self.sink();
+        if !self.state.is_source_enabled(kind) {
+            return;
+        }
+        let gen = self
+            .generations
+            .get(&kind)
+            .expect("generations map contains every source")
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        let sink: Arc<dyn CaptureSink> = Arc::new(SourceSink {
+            kind,
+            generation: gen,
+            stream: self.sink.streams[&kind].clone(),
+            proof: self.proof.clone(),
+            tx: self.sink.tx.clone(),
+        });
         let result = match kind {
             SourceKind::Screen => self.sources.screen.start(sink),
             SourceKind::SystemAudio => self.sources.system_audio.start(sink),
@@ -886,6 +1335,7 @@ where
     }
 
     fn stop_source(&mut self, kind: SourceKind) {
+        self.increment_generation(kind);
         match kind {
             SourceKind::Screen => self.sources.screen.stop(),
             SourceKind::SystemAudio => self.sources.system_audio.stop(),
@@ -922,6 +1372,77 @@ where
         }
     }
 
+    fn update_audio_preview(
+        &mut self,
+        kind: SourceKind,
+        chunk: &CaptureChunk,
+        admitted_proof: u64,
+    ) {
+        let (gate_source, gen) = self
+            .proof
+            .lock()
+            .map(|p| (p.source(), p.generation()))
+            .unwrap_or((None, 0));
+        if gate_source != Some(kind) || gen != admitted_proof {
+            return;
+        }
+        let ts_us = chunk.at_us.unwrap_or_else(|| self.clock.now_monotonic_us());
+        match kind {
+            SourceKind::Mic => {
+                if let Some(last) = self.last_mic_preview_us {
+                    if ts_us.saturating_sub(last) < 100_000 {
+                        return;
+                    }
+                }
+                let level = chunk
+                    .format
+                    .map(|fmt| compute_audio_level(&chunk.data, fmt))
+                    .unwrap_or(0.0);
+                self.last_mic_preview_us = Some(ts_us);
+                self.preview.consumer_generation = gen;
+                self.preview.mic_level = Some(level);
+                let _ = self.preview_tx.send(self.preview.clone());
+            }
+            SourceKind::SystemAudio => {
+                if let Some(last) = self.last_sys_preview_us {
+                    if ts_us.saturating_sub(last) < 100_000 {
+                        return;
+                    }
+                }
+                let level = chunk
+                    .format
+                    .map(|fmt| compute_audio_level(&chunk.data, fmt))
+                    .unwrap_or(0.0);
+                self.last_sys_preview_us = Some(ts_us);
+                self.preview.consumer_generation = gen;
+                self.preview.system_audio_level = Some(level);
+                let _ = self.preview_tx.send(self.preview.clone());
+            }
+            SourceKind::Screen => {}
+        }
+    }
+
+    fn update_screen_preview(&mut self, frame: &ScreenFrame, admitted_proof: u64) {
+        let (gate_source, gen) = self
+            .proof
+            .lock()
+            .map(|p| (p.source(), p.generation()))
+            .unwrap_or((None, 0));
+        if gate_source != Some(SourceKind::Screen) || gen != admitted_proof {
+            return;
+        }
+        let now_100ns = frame.arrival_100ns;
+        if let Some(last) = self.last_screen_preview_100ns {
+            if now_100ns.saturating_sub(last) < 2_500_000 {
+                return;
+            }
+        }
+        self.last_screen_preview_100ns = Some(now_100ns);
+        self.preview.consumer_generation = gen;
+        self.preview.screen_frame = Some(downscale_screen_frame(frame));
+        let _ = self.preview_tx.send(self.preview.clone());
+    }
+
     fn empty_health() -> HealthDump {
         HealthDump {
             app_state: AppPhase::Idle,
@@ -939,7 +1460,102 @@ where
             views: Default::default(),
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
+            setup: SetupSnapshot::default(),
         }
+    }
+}
+
+fn compute_audio_level(data: &[u8], format: observer_model::AudioFormat) -> f32 {
+    let channels = format.channels as usize;
+    let bytes_per_sample = (format.bits_per_sample / 8) as usize;
+    let frame_size = channels.saturating_mul(bytes_per_sample);
+    if frame_size == 0 || data.is_empty() {
+        return 0.0;
+    }
+    let usable_len = (data.len() / frame_size) * frame_size;
+    if usable_len == 0 {
+        return 0.0;
+    }
+    let mut peak = 0.0f32;
+    for frame in data[..usable_len].chunks_exact(frame_size) {
+        for channel in 0..channels {
+            let offset = channel * bytes_per_sample;
+            let sample = if format.is_float && format.bits_per_sample == 32 {
+                if offset + 4 <= frame.len() {
+                    f32::from_le_bytes([
+                        frame[offset],
+                        frame[offset + 1],
+                        frame[offset + 2],
+                        frame[offset + 3],
+                    ])
+                    .abs()
+                } else {
+                    0.0
+                }
+            } else if !format.is_float && format.bits_per_sample == 16 {
+                if offset + 2 <= frame.len() {
+                    (i16::from_le_bytes([frame[offset], frame[offset + 1]]) as f32 / 32768.0).abs()
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            if sample > peak {
+                peak = sample;
+            }
+        }
+    }
+    peak.clamp(0.0, 1.0)
+}
+
+fn downscale_screen_frame(frame: &ScreenFrame) -> ScreenPreviewFrame {
+    if frame.width == 0 || frame.height == 0 || frame.pixels.is_empty() {
+        return ScreenPreviewFrame {
+            width: 0,
+            height: 0,
+            rgba: Vec::new(),
+        };
+    }
+    let max_dim = frame.width.max(frame.height);
+    let (target_w, target_h) = if max_dim <= 320 {
+        (frame.width, frame.height)
+    } else {
+        let tw = (frame.width as u64 * 320 / max_dim as u64).max(1) as u32;
+        let th = (frame.height as u64 * 320 / max_dim as u64).max(1) as u32;
+        (tw, th)
+    };
+
+    let src_stride = frame.width as usize * 4;
+    let is_bgra = frame.pixel_format == ScreenPixelFormat::Bgra8;
+    let mut rgba = Vec::with_capacity((target_w as usize) * (target_h as usize) * 4);
+
+    for ty in 0..target_h {
+        let sy = (ty as u64 * frame.height as u64 / target_h as u64) as usize;
+        let row_start = sy * src_stride;
+        for tx in 0..target_w {
+            let sx = (tx as u64 * frame.width as u64 / target_w as u64) as usize;
+            let px_start = row_start + sx * 4;
+            if px_start + 4 <= frame.pixels.len() {
+                if is_bgra {
+                    let b = frame.pixels[px_start];
+                    let g = frame.pixels[px_start + 1];
+                    let r = frame.pixels[px_start + 2];
+                    let a = frame.pixels[px_start + 3];
+                    rgba.extend_from_slice(&[r, g, b, a]);
+                } else {
+                    rgba.extend_from_slice(&frame.pixels[px_start..px_start + 4]);
+                }
+            } else {
+                rgba.extend_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+    }
+
+    ScreenPreviewFrame {
+        width: target_w,
+        height: target_h,
+        rgba,
     }
 }
 
@@ -1010,23 +1626,37 @@ mod tests {
     #[derive(Clone)]
     struct FakeClock {
         now: Arc<AtomicU64>,
+        now_monotonic: Arc<AtomicU64>,
     }
 
     impl FakeClock {
         fn new(now: u64) -> Self {
             Self {
                 now: Arc::new(AtomicU64::new(now)),
+                now_monotonic: Arc::new(AtomicU64::new(0)),
             }
         }
 
         fn set(&self, now: u64) {
             self.now.store(now, Ordering::Relaxed);
         }
+
+        fn advance(&self, secs: u64) {
+            self.now.fetch_add(secs, Ordering::Relaxed);
+        }
+
+        fn set_monotonic_us(&self, us: u64) {
+            self.now_monotonic.store(us, Ordering::Relaxed);
+        }
     }
 
     impl Clock for FakeClock {
         fn now_epoch_secs(&self) -> u64 {
             self.now.load(Ordering::Relaxed)
+        }
+
+        fn now_monotonic_us(&self) -> u64 {
+            self.now_monotonic.load(Ordering::Relaxed)
         }
     }
 
@@ -1043,6 +1673,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSegmentState {
         writes: Vec<(SegmentKey, SourceKind, u64)>,
+        writes_with_at_us: Vec<(SegmentKey, SourceKind, u64, Option<u64>)>,
         video_ends: Vec<Option<f64>>,
         fail_open: bool,
         write_failures_remaining: usize,
@@ -1064,6 +1695,10 @@ mod tests {
             self.state.lock().unwrap().writes.clone()
         }
 
+        fn writes_with_at_us(&self) -> Vec<(SegmentKey, SourceKind, u64, Option<u64>)> {
+            self.state.lock().unwrap().writes_with_at_us.clone()
+        }
+
         fn video_ends(&self) -> Vec<Option<f64>> {
             self.state.lock().unwrap().video_ends.clone()
         }
@@ -1083,6 +1718,10 @@ mod tests {
 
     impl SegmentFs for FakeSegmentFs {
         type Error = &'static str;
+
+        fn existing_incomplete(&mut self, _key: SegmentKey) -> Result<Option<String>, Self::Error> {
+            Ok(None)
+        }
 
         fn open_incomplete(&mut self, key: SegmentKey) -> Result<String, Self::Error> {
             let state = self.state.lock().unwrap();
@@ -1108,6 +1747,9 @@ mod tests {
                 .unwrap()
                 .push(FsEvent::Write(key, chunk.source, chunk.seq));
             state.writes.push((key, chunk.source, chunk.seq));
+            state
+                .writes_with_at_us
+                .push((key, chunk.source, chunk.seq, chunk.at_us));
             Ok(())
         }
 
@@ -1165,6 +1807,7 @@ mod tests {
         stops: usize,
         display_changes: usize,
         start_errors: VecDeque<SourceError>,
+        last_sink: Option<Arc<dyn CaptureSink>>,
     }
 
     impl FakeSourceHandle {
@@ -1176,6 +1819,7 @@ mod tests {
                     stops: 0,
                     display_changes: 0,
                     start_errors: VecDeque::new(),
+                    last_sink: None,
                 })),
             }
         }
@@ -1196,13 +1840,18 @@ mod tests {
             self.inner.lock().unwrap().stops
         }
 
+        fn last_sink(&self) -> Option<Arc<dyn CaptureSink>> {
+            self.inner.lock().unwrap().last_sink.clone()
+        }
+
         fn display_changes(&self) -> usize {
             self.inner.lock().unwrap().display_changes
         }
 
-        fn start(&self) -> Result<(), SourceError> {
+        fn start(&self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
             let mut inner = self.inner.lock().unwrap();
             inner.starts += 1;
+            inner.last_sink = Some(sink);
             if let Some(error) = inner.start_errors.pop_front() {
                 Err(error)
             } else {
@@ -1228,8 +1877,8 @@ mod tests {
     }
 
     impl ScreenSource for FakeScreen {
-        fn start(&mut self, _sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
-            self.handle.start()
+        fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
+            self.handle.start(sink)
         }
 
         fn stop(&mut self) {
@@ -1250,8 +1899,8 @@ mod tests {
     }
 
     impl SystemAudioSource for FakeSystemAudio {
-        fn start(&mut self, _sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
-            self.handle.start()
+        fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
+            self.handle.start(sink)
         }
 
         fn stop(&mut self) {
@@ -1268,8 +1917,8 @@ mod tests {
     }
 
     impl MicSource for FakeMic {
-        fn start(&mut self, _sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
-            self.handle.start()
+        fn start(&mut self, sink: Arc<dyn CaptureSink>) -> Result<(), SourceError> {
+            self.handle.start(sink)
         }
 
         fn stop(&mut self) {
@@ -1490,9 +2139,16 @@ mod tests {
         sources: Sources,
     ) -> CaptureEngine<FakeSegmentFs> {
         let mut recovery = FakeRecoveryFs::default();
-        CaptureEngine::new(sources, config, &mut recovery, segment_fs, Box::new(clock))
-            .unwrap()
-            .0
+        let (mut engine, _) =
+            CaptureEngine::new(sources, config, &mut recovery, segment_fs, Box::new(clock))
+                .unwrap();
+        engine.set_source_choices(SetupSnapshot {
+            mic: true,
+            system_audio: true,
+            screen: true,
+            ..SetupSnapshot::default()
+        });
+        engine
     }
 
     fn breaker_open_engine() -> (CaptureEngine<FakeSegmentFs>, Handles) {
@@ -1566,6 +2222,7 @@ mod tests {
                 seq,
                 data: vec![seq as u8],
                 format: None,
+                at_us: None,
             });
         }
     }
@@ -1591,6 +2248,12 @@ mod tests {
         assert_eq!(handles.screen.starts(), 0);
         assert_eq!(engine.segment_secs(), DEFAULT_SEGMENT_SECS);
 
+        engine.set_source_choices(SetupSnapshot {
+            mic: true,
+            system_audio: true,
+            screen: true,
+            ..SetupSnapshot::default()
+        });
         engine.start();
         assert_eq!(handles.screen.starts(), 1);
         assert_eq!(handles.system_audio.starts(), 1);
@@ -2685,6 +3348,7 @@ mod tests {
             views: Default::default(),
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
+            setup: SetupSnapshot::default(),
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2707,5 +3371,848 @@ mod tests {
         let response = String::from_utf8(response).unwrap();
         let (_, body) = response.split_once("\r\n\r\n").unwrap();
         assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn all_off_opens_nothing_for_not_paired_and_paired_sync_snapshot() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut recovery = FakeRecoveryFs::default();
+        let (mut engine, _) = CaptureEngine::new(
+            sources,
+            EngineConfig::default(),
+            &mut recovery,
+            segment_fs.clone(),
+            Box::new(clock),
+        )
+        .unwrap();
+
+        engine.start();
+        assert_eq!(handles.screen.starts(), 0);
+        assert_eq!(handles.system_audio.starts(), 0);
+        assert_eq!(handles.mic.starts(), 0);
+        assert!(segment_fs.events().is_empty());
+        assert_eq!(engine.health_dump().app_state, AppPhase::Idle);
+
+        engine.sync_handle().lock().unwrap().pairing.phase = observer_model::PairingPhase::Paired;
+        engine.pump();
+
+        assert_eq!(handles.screen.starts(), 0);
+        assert_eq!(handles.system_audio.starts(), 0);
+        assert_eq!(handles.mic.starts(), 0);
+        assert!(segment_fs.events().is_empty());
+        assert_eq!(engine.health_dump().app_state, AppPhase::Idle);
+    }
+
+    #[test]
+    fn one_enabled_source_starts_only_that_source() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut recovery = FakeRecoveryFs::default();
+        let (mut engine, _) = CaptureEngine::new(
+            sources,
+            EngineConfig::default(),
+            &mut recovery,
+            segment_fs.clone(),
+            Box::new(clock),
+        )
+        .unwrap();
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::SystemAudio,
+            enabled: true,
+        });
+        engine.start();
+
+        assert_eq!(handles.system_audio.starts(), 1);
+        assert_eq!(handles.screen.starts(), 0);
+        assert_eq!(handles.mic.starts(), 0);
+        assert_eq!(
+            segment_fs.events(),
+            vec![FsEvent::Open(observer_segment::segment_for(
+                0,
+                DEFAULT_SEGMENT_SECS
+            ))]
+        );
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+    }
+
+    #[test]
+    fn queued_event_and_late_callback_after_off_are_not_written_and_re_enable_does_not_write_them()
+    {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs.clone(), EngineConfig::default(), sources);
+        engine.start();
+
+        let source_sink = handles
+            .system_audio
+            .last_sink()
+            .expect("source stored sink at start");
+
+        source_sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 1,
+            data: vec![1, 2],
+            format: None,
+            at_us: Some(1_000),
+        });
+        engine.pump();
+        assert_eq!(segment_fs.writes().len(), 1);
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::SystemAudio,
+            enabled: false,
+        });
+
+        source_sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 2,
+            data: vec![3, 4],
+            format: None,
+            at_us: Some(2_000),
+        });
+        engine.pump();
+        assert_eq!(segment_fs.writes().len(), 1);
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::SystemAudio,
+            enabled: true,
+        });
+
+        source_sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 3,
+            data: vec![5, 6],
+            format: None,
+            at_us: Some(3_000),
+        });
+        engine.pump();
+        assert_eq!(segment_fs.writes().len(), 1);
+
+        let new_sink = handles
+            .system_audio
+            .last_sink()
+            .expect("new sink stored on re-enable");
+        new_sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 4,
+            data: vec![7, 8],
+            format: None,
+            at_us: Some(4_000),
+        });
+        engine.pump();
+        assert_eq!(segment_fs.writes().len(), 2);
+    }
+
+    #[test]
+    fn an_already_written_chunk_still_seals() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(
+            clock.clone(),
+            segment_fs.clone(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start();
+
+        let sink = handles.system_audio.last_sink().unwrap();
+        sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 1,
+            data: vec![1, 2],
+            format: None,
+            at_us: Some(500),
+        });
+        engine.pump();
+        assert_eq!(segment_fs.writes().len(), 1);
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Screen,
+            enabled: false,
+        });
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::SystemAudio,
+            enabled: false,
+        });
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Mic,
+            enabled: false,
+        });
+        engine.pump();
+
+        let key = observer_segment::segment_for(0, DEFAULT_SEGMENT_SECS);
+        assert!(!segment_fs.events().contains(&FsEvent::Finalize(key)));
+        assert_eq!(segment_fs.writes().len(), 1);
+
+        clock.advance(DEFAULT_SEGMENT_SECS);
+        engine.pump();
+
+        assert!(segment_fs.events().contains(&FsEvent::Finalize(key)));
+        assert_eq!(segment_fs.writes().len(), 1);
+    }
+
+    #[test]
+    fn stop_seals_an_open_all_off_segment_without_boundary_cross() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs.clone(), EngineConfig::default(), sources);
+        engine.start();
+
+        let sink = handles.system_audio.last_sink().unwrap();
+        sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 1,
+            data: vec![1, 2],
+            format: None,
+            at_us: Some(500),
+        });
+        engine.pump();
+        assert_eq!(segment_fs.writes().len(), 1);
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Screen,
+            enabled: false,
+        });
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::SystemAudio,
+            enabled: false,
+        });
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Mic,
+            enabled: false,
+        });
+        engine.pump();
+
+        let key = observer_segment::segment_for(0, DEFAULT_SEGMENT_SECS);
+        assert!(!segment_fs.events().contains(&FsEvent::Finalize(key)));
+
+        engine.stop();
+        assert!(segment_fs.events().contains(&FsEvent::Finalize(key)));
+        assert_eq!(segment_fs.writes().len(), 1);
+    }
+
+    #[test]
+    fn the_other_source_keeps_running() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs.clone(), EngineConfig::default(), sources);
+        engine.start();
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::SystemAudio,
+            enabled: false,
+        });
+        engine.pump();
+
+        let screen_sink = handles.screen.last_sink().unwrap();
+        screen_sink.emit_screen_frame(ScreenFrame {
+            seq: 1,
+            arrival_100ns: 10_000,
+            width: 100,
+            height: 100,
+            pixel_format: ScreenPixelFormat::Rgba8,
+            pixels: Arc::from(vec![0u8; 100 * 100 * 4]),
+        });
+        engine.pump();
+
+        assert_eq!(handles.screen_encoder.frames_consumed(), 1);
+        assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
+    }
+
+    #[test]
+    fn resume_system_resume_display_change_and_retry_obey_choices() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock.clone(), segment_fs, EngineConfig::default(), sources);
+        engine.start();
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Screen,
+            enabled: false,
+        });
+        engine.pump();
+
+        let screen_starts = handles.screen.starts();
+        let audio_starts = handles.system_audio.starts();
+
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
+        engine.pump();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+
+        engine.apply_command(EngineCommand::Resume);
+        engine.pump();
+        assert_eq!(handles.screen.starts(), screen_starts);
+        assert_eq!(handles.system_audio.starts(), audio_starts + 1);
+
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::SessionLocked,
+            duration_secs: None,
+        });
+        engine.pump();
+        engine.apply_command(EngineCommand::SystemResume);
+        engine.pump();
+        assert_eq!(handles.screen.starts(), screen_starts);
+        assert_eq!(handles.system_audio.starts(), audio_starts + 2);
+
+        let display_changes = handles.screen.display_changes();
+        engine.apply_command(EngineCommand::DisplayChanged);
+        assert_eq!(handles.screen.display_changes(), display_changes);
+    }
+
+    #[test]
+    fn set_source_enabled_during_pause_does_not_clear_pause_and_does_not_start() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs, EngineConfig::default(), sources);
+        engine.start();
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Screen,
+            enabled: false,
+        });
+        engine.pump();
+
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
+        engine.pump();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+
+        let screen_starts = handles.screen.starts();
+
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Screen,
+            enabled: true,
+        });
+        engine.pump();
+
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert_eq!(handles.screen.starts(), screen_starts);
+    }
+
+    #[test]
+    fn write_chunk_rewrites_at_us_to_segment_relative() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        clock.set_monotonic_us(5_000_000);
+        let mut engine = engine_with(clock, segment_fs.clone(), EngineConfig::default(), sources);
+        engine.start();
+
+        let sink = handles.system_audio.last_sink().unwrap();
+        sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 1,
+            data: vec![1, 2],
+            format: None,
+            at_us: Some(5_250_000),
+        });
+        engine.pump();
+
+        let writes = segment_fs.writes_with_at_us();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].3, Some(250_000));
+    }
+
+    fn temp_test_dir(label: &str) -> std::path::PathBuf {
+        let base = std::path::PathBuf::from("/var/tmp/solstone-test").join(format!(
+            "{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    #[test]
+    fn set_source_choices_fresh_and_legacy_preserved_across_pump() {
+        let (sources, _handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs, EngineConfig::default(), sources);
+
+        let fresh = SetupSnapshot {
+            screen: false,
+            system_audio: false,
+            mic: false,
+            wizard: observer_model::setup::WizardStep::Mic,
+            notice_dismissed: true,
+            start_at_login: false,
+            login_apply_failed: true,
+            ..Default::default()
+        };
+        engine.set_source_choices(fresh);
+        engine.pump();
+        let dump = engine.health_dump();
+        assert_eq!(dump.setup.wizard, observer_model::setup::WizardStep::Mic);
+        assert!(dump.setup.notice_dismissed);
+        assert!(!dump.setup.start_at_login);
+        assert!(dump.setup.login_apply_failed);
+
+        let legacy = SetupSnapshot {
+            screen: true,
+            system_audio: true,
+            mic: true,
+            wizard: observer_model::setup::WizardStep::Done,
+            notice_dismissed: false,
+            start_at_login: true,
+            login_apply_failed: true,
+            ..Default::default()
+        };
+        engine.set_source_choices(legacy);
+        engine.pump();
+        let dump2 = engine.health_dump();
+        assert_eq!(dump2.setup.wizard, observer_model::setup::WizardStep::Done);
+        assert!(!dump2.setup.notice_dismissed);
+        assert!(dump2.setup.start_at_login);
+        assert!(dump2.setup.login_apply_failed);
+    }
+
+    #[test]
+    fn authority_set_source_off_publishes_projection_and_preserves_in_file() {
+        let root = temp_test_dir("authority-temp-root");
+        let (sources, _handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs, EngineConfig::default(), sources);
+        engine.set_setup_root(root.clone());
+
+        let initial = observer_model::setup::SetupConfig::legacy();
+        observer_model::setup::atomic_write_setup(&root, &initial).unwrap();
+        engine.set_source_choices(initial.to_snapshot());
+
+        let auth = engine.setup_authority();
+        let running = auth.lock().unwrap().set_source(SourceKind::Mic, false);
+        assert!(!running);
+
+        // Pump before set_source_enabled publishes setup.mic == false
+        engine.pump();
+        assert!(!engine.health_dump().setup.mic);
+
+        // A following set_wizard_step / set_start_at_login / other set_source leaves mic false in file and load_or_classify
+        assert!(auth
+            .lock()
+            .unwrap()
+            .set_wizard_step(observer_model::setup::WizardStep::SystemAudio));
+        assert!(auth.lock().unwrap().set_start_at_login(false));
+        assert!(auth.lock().unwrap().set_source(SourceKind::Screen, true));
+
+        match observer_model::setup::load_or_classify(&root) {
+            observer_model::setup::LoadOutcome::Valid(cfg) => {
+                assert!(!cfg.mic);
+                assert!(cfg.screen);
+                assert!(!cfg.start_at_login);
+                assert_eq!(cfg.wizard, observer_model::setup::WizardStep::SystemAudio);
+            }
+            other => panic!("expected Valid, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn two_failed_offs_stay_stopped_across_actions_and_retry_writes_without_extra_starts() {
+        let root = temp_test_dir("engine-two-failed-offs");
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs, EngineConfig::default(), sources);
+        engine.set_setup_root(root.clone());
+
+        let initial = observer_model::setup::SetupConfig::legacy();
+        observer_model::setup::atomic_write_setup(&root, &initial).unwrap();
+        engine.set_source_choices(initial.to_snapshot());
+        engine.start();
+
+        let mic_starts = handles.mic.starts();
+        let screen_starts = handles.screen.starts();
+
+        std::fs::create_dir(root.join("setup.json.tmp")).unwrap();
+
+        let auth = engine.setup_authority();
+        let mic_running = auth.lock().unwrap().set_source(SourceKind::Mic, false);
+        assert!(!mic_running);
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Mic,
+            enabled: false,
+        });
+
+        let screen_running = auth.lock().unwrap().set_source(SourceKind::Screen, false);
+        assert!(!screen_running);
+        engine.apply_command(EngineCommand::SetSourceEnabled {
+            kind: SourceKind::Screen,
+            enabled: false,
+        });
+
+        engine.pump();
+        assert!(!engine.state().is_source_enabled(SourceKind::Mic));
+        assert!(!engine.state().is_source_enabled(SourceKind::Screen));
+
+        auth.lock()
+            .unwrap()
+            .set_wizard_step(observer_model::setup::WizardStep::SystemAudio);
+        auth.lock().unwrap().set_start_at_login(false);
+        auth.lock().unwrap().dismiss_notice();
+        auth.lock()
+            .unwrap()
+            .set_source(SourceKind::SystemAudio, true);
+
+        engine.pump();
+        assert!(!engine.state().is_source_enabled(SourceKind::Mic));
+        assert!(!engine.state().is_source_enabled(SourceKind::Screen));
+
+        std::fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+
+        let outcome = auth.lock().unwrap().retry();
+        assert!(!outcome.started.contains(&SourceKind::Mic));
+        assert!(!outcome.started.contains(&SourceKind::Screen));
+        for kind in outcome.started {
+            engine.apply_command(EngineCommand::SetSourceEnabled {
+                kind,
+                enabled: true,
+            });
+        }
+        engine.pump();
+
+        assert_eq!(handles.mic.starts(), mic_starts);
+        assert_eq!(handles.screen.starts(), screen_starts);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn proof_consumer_gate_generation_and_clearing() {
+        let (sources, handles) = active_sources();
+        handles.mic.set_state(SourceState::Active);
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs.clone(), EngineConfig::default(), sources);
+        engine.start();
+
+        let gen1 = engine.open_proof_consumer(SourceKind::Mic);
+        assert!(gen1 > 0);
+
+        let sink = handles.mic.last_sink().unwrap();
+        sink.emit(CaptureChunk {
+            source: SourceKind::Mic,
+            seq: 1,
+            data: vec![0, 0, 0, 0],
+            format: Some(observer_model::AudioFormat {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            }),
+            at_us: Some(100_000),
+        });
+        engine.pump();
+
+        let snap = engine.preview_snapshot();
+        assert_eq!(snap.consumer_generation, gen1);
+        assert_eq!(snap.mic_level, Some(0.0));
+
+        let gen2 = engine.close_proof_consumer();
+        assert!(gen2 > gen1);
+
+        sink.emit(CaptureChunk {
+            source: SourceKind::Mic,
+            seq: 2,
+            data: vec![0, 0, 0, 0],
+            format: Some(observer_model::AudioFormat {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            }),
+            at_us: Some(300_000),
+        });
+
+        let sys_sink = handles.system_audio.last_sink().unwrap();
+        sys_sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 1,
+            data: vec![1, 2, 3, 4],
+            format: None,
+            at_us: Some(350_000),
+        });
+        engine.pump();
+
+        let snap_closed = engine.preview_snapshot();
+        assert_eq!(snap_closed.mic_level, None);
+        assert!(segment_fs
+            .writes()
+            .iter()
+            .any(|(_, kind, _)| *kind == SourceKind::SystemAudio));
+
+        let gen3 = engine.open_proof_consumer(SourceKind::Mic);
+        assert!(gen3 > gen2);
+        let snap_reopened = engine.preview_snapshot();
+        assert_eq!(snap_reopened.consumer_generation, gen3);
+        assert_eq!(snap_reopened.mic_level, None);
+
+        sink.emit(CaptureChunk {
+            source: SourceKind::Mic,
+            seq: 3,
+            data: vec![0, 0, 0, 0],
+            format: Some(observer_model::AudioFormat {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            }),
+            at_us: Some(600_000),
+        });
+        engine.pump();
+
+        let snap3 = engine.preview_snapshot();
+        assert_eq!(snap3.consumer_generation, gen3);
+        assert_eq!(snap3.mic_level, Some(0.0));
+    }
+
+    #[test]
+    fn queued_media_is_not_relabelled_as_proof_after_consumer_reopens() {
+        let (sources, handles) = active_sources();
+        handles.mic.set_state(SourceState::Active);
+        let fs = FakeSegmentFs::default();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            fs.clone(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start();
+        engine.open_proof_consumer(SourceKind::Mic);
+        let sink = handles.mic.last_sink().unwrap();
+        emit_audio(&sink, SourceKind::Mic, 1..2);
+        engine.close_proof_consumer();
+        let generation = engine.open_proof_consumer(SourceKind::Mic);
+        engine.pump();
+        assert_eq!(engine.preview_snapshot().mic_level, None);
+        assert_eq!(
+            fs.writes().len(),
+            1,
+            "authorized media still reaches storage"
+        );
+        emit_audio(&sink, SourceKind::Mic, 2..3);
+        engine.pump();
+        assert_eq!(fs.writes().len(), 2);
+        assert_eq!(engine.preview_snapshot().consumer_generation, generation);
+        assert!(engine.preview_snapshot().mic_level.is_some());
+    }
+
+    #[test]
+    fn device_stream_recovery_before_pump_rejects_old_queue_and_accepts_new_input() {
+        let (sources, handles) = active_sources();
+        let fs = FakeSegmentFs::default();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            fs.clone(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start();
+        engine.open_proof_consumer(SourceKind::Mic);
+        let sink = handles.mic.last_sink().unwrap();
+        emit_audio(&sink, SourceKind::Mic, 1..2);
+        handles.mic.set_state(SourceState::NoInputDevice);
+        // The producer reselects a device through the same controller and sink.
+        sink.begin_stream();
+        handles.mic.set_state(SourceState::Active);
+        emit_audio(&sink, SourceKind::Mic, 2..3);
+        engine.pump();
+        let written: Vec<_> = fs.writes().iter().map(|(_, _, seq)| *seq).collect();
+        assert_eq!(written, vec![2]);
+        assert!(engine.preview_snapshot().mic_level.is_some());
+        assert_eq!(handles.mic.starts(), 1);
+    }
+
+    #[test]
+    fn screen_stream_replacement_rejects_old_frames_and_accepts_new_proof() {
+        let (sources, handles) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start();
+        engine.open_proof_consumer(SourceKind::Screen);
+        let sink = handles.screen.last_sink().unwrap();
+        emit_screen(&sink, 1..2);
+        sink.begin_stream();
+        engine.pump();
+        assert_eq!(handles.screen_encoder.frames_consumed(), 0);
+        assert!(engine.preview_snapshot().screen_frame.is_none());
+        emit_screen(&sink, 2..3);
+        engine.pump();
+        assert_eq!(handles.screen_encoder.frames_consumed(), 1);
+        assert!(engine.preview_snapshot().screen_frame.is_some());
+    }
+
+    #[test]
+    fn inactive_or_no_input_device_clears_level_and_drops_chunk_without_gen_bump() {
+        let (sources, handles) = active_sources();
+        handles.mic.set_state(SourceState::Active);
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(clock, segment_fs.clone(), EngineConfig::default(), sources);
+        engine.start();
+
+        engine.open_proof_consumer(SourceKind::Mic);
+        let sink = handles.mic.last_sink().unwrap();
+        sink.emit(CaptureChunk {
+            source: SourceKind::Mic,
+            seq: 1,
+            data: vec![10, 0, 10, 0],
+            format: Some(observer_model::AudioFormat {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            }),
+            at_us: Some(100_000),
+        });
+        engine.pump();
+        assert!(engine.preview_snapshot().mic_level.is_some());
+        let initial_writes = segment_fs.writes().len();
+        let initial_starts = handles.mic.starts();
+
+        // Inactive clears level and chunk emitted before pump is not written
+        handles.mic.set_state(SourceState::Inactive);
+        sink.emit(CaptureChunk {
+            source: SourceKind::Mic,
+            seq: 2,
+            data: vec![20, 0, 20, 0],
+            format: Some(observer_model::AudioFormat {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            }),
+            at_us: Some(300_000),
+        });
+        engine.pump();
+
+        assert_eq!(engine.preview_snapshot().mic_level, None);
+        assert_eq!(segment_fs.writes().len(), initial_writes);
+
+        // Active restores writing and preview
+        handles.mic.set_state(SourceState::Active);
+        sink.emit(CaptureChunk {
+            source: SourceKind::Mic,
+            seq: 3,
+            data: vec![30, 0, 30, 0],
+            format: Some(observer_model::AudioFormat {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            }),
+            at_us: Some(500_000),
+        });
+        engine.pump();
+
+        assert_eq!(segment_fs.writes().len(), initial_writes + 1);
+        assert!(engine.preview_snapshot().mic_level.is_some());
+        assert_eq!(handles.mic.starts(), initial_starts);
+
+        // NoInputDevice clears level as well
+        handles.mic.set_state(SourceState::NoInputDevice);
+        sink.emit(CaptureChunk {
+            source: SourceKind::Mic,
+            seq: 4,
+            data: vec![40, 0, 40, 0],
+            format: Some(observer_model::AudioFormat {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            }),
+            at_us: Some(700_000),
+        });
+        engine.pump();
+
+        assert_eq!(engine.preview_snapshot().mic_level, None);
+        assert_eq!(segment_fs.writes().len(), initial_writes + 1);
+        assert_eq!(handles.mic.starts(), initial_starts);
+    }
+
+    #[test]
+    fn closing_consumer_does_not_change_source_bits_pause_or_sealed_media() {
+        let (sources, handles) = active_sources();
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut engine = engine_with(
+            clock.clone(),
+            segment_fs.clone(),
+            EngineConfig::default(),
+            sources,
+        );
+        engine.start();
+
+        let sink = handles.system_audio.last_sink().unwrap();
+        sink.emit(CaptureChunk {
+            source: SourceKind::SystemAudio,
+            seq: 1,
+            data: vec![1, 2],
+            format: None,
+            at_us: Some(100),
+        });
+        engine.pump();
+        clock.advance(DEFAULT_SEGMENT_SECS);
+        engine.pump();
+
+        let key = observer_segment::segment_for(0, DEFAULT_SEGMENT_SECS);
+        assert!(segment_fs.events().contains(&FsEvent::Finalize(key)));
+        let finalize_count = segment_fs
+            .events()
+            .iter()
+            .filter(|e| matches!(e, FsEvent::Finalize(_)))
+            .count();
+
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
+        engine.pump();
+
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+        assert!(engine.state().is_source_enabled(SourceKind::Mic));
+
+        engine.open_proof_consumer(SourceKind::Mic);
+        engine.close_proof_consumer();
+
+        // Source bits unchanged
+        assert!(engine.state().is_source_enabled(SourceKind::Mic));
+        assert!(engine.state().is_source_enabled(SourceKind::Screen));
+        assert!(engine.state().is_source_enabled(SourceKind::SystemAudio));
+
+        // Held pause unchanged
+        assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+
+        // Sealed media unchanged
+        let finalize_count_after = segment_fs
+            .events()
+            .iter()
+            .filter(|e| matches!(e, FsEvent::Finalize(_)))
+            .count();
+        assert_eq!(finalize_count, finalize_count_after);
     }
 }

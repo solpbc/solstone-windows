@@ -418,6 +418,9 @@ impl PostConnectController {
     }
 
     fn retry_pending_durable_clear_owned(&self) {
+        if self.client_slot.is_retired() {
+            return;
+        }
         let pending_cas = {
             let state = self.state.lock().unwrap();
             state.pending_durable_clear
@@ -1662,6 +1665,7 @@ mod tests {
             credential: Some(cred.clone()),
             access_mutation_generation: 0,
             retirement_intent: None,
+            ..Default::default()
         };
         paired.save(&path).unwrap();
 
@@ -2197,6 +2201,19 @@ mod tests {
         let disk_cred = loaded.credential.unwrap();
         assert_eq!(disk_cred.relay_origin, None);
 
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn retired_pending_clear_cannot_mutate_the_rebound_same_credential() {
+        let (controller, slot, path, _) = test_setup(true);
+        let cas = slot.load().current_cas_key().unwrap();
+        controller.state.lock().unwrap().pending_durable_clear = Some(cas);
+        let before = std::fs::read(&path).unwrap();
+        slot.retire();
+        controller.retry_pending_durable_clear().await;
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(controller.pending_durable_clear(), Some(cas));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

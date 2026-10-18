@@ -220,8 +220,7 @@ fn relay_client(credential: Credential) -> ObserverClient {
     let path = temp_pairing_path("shared-relay-client");
     PairedState {
         credential: Some(credential.clone()),
-        access_mutation_generation: 0,
-        retirement_intent: None,
+        ..Default::default()
     }
     .save(&path)
     .unwrap();

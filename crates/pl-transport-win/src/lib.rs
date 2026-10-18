@@ -28,6 +28,8 @@ pub mod client;
 pub mod coordinator;
 pub mod credential;
 pub mod device_metadata;
+pub mod draft;
+pub mod handoff;
 pub mod integration;
 pub mod journal_bridge;
 pub mod journal_version;
