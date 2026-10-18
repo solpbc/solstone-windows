@@ -305,29 +305,42 @@ mod tests {
 
     #[tokio::test]
     async fn answer_pairing_reject_and_cancel_close_journal_surface() {
-        let state = test_app_state(None);
-        let binding =
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
-        state.sync.lock().unwrap().pairing.phase =
-            observer_model::PairingPhase::AwaitingConfirmation;
-        state.sync.lock().unwrap().pairing.binding = binding.clone();
         let surface = FakeJournalSurface::new();
+        for (index, action) in ["reject", "cancel"].into_iter().enumerate() {
+            let (state, binding, stop, server) = native_rejection_fixture().await;
+            crate::ipc::answer_pairing_surface(&surface, &state, binding, action.into())
+                .await
+                .unwrap();
+            let _ = stop.send(());
+            assert!(
+                server.await.unwrap() > 0,
+                "controlled retirement refusal did not run"
+            );
+            assert_eq!(surface.journal_closed.load(Ordering::SeqCst), index + 1);
+            assert!(
+                pl_transport_win::PairedState::load(&state.sync_config.state_path)
+                    .unwrap()
+                    .credential
+                    .is_none()
+            );
+            assert!(state.credential_access.lock().await.is_none());
+        }
+    }
 
-        let res =
-            crate::ipc::answer_pairing_surface(&surface, &state, binding.clone(), "reject".into())
-                .await;
-        assert!(res.is_ok());
-        assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 1);
-
-        state.sync.lock().unwrap().pairing.phase =
-            observer_model::PairingPhase::AwaitingConfirmation;
-        state.sync.lock().unwrap().pairing.binding = binding.clone();
-
-        let res =
-            crate::ipc::answer_pairing_surface(&surface, &state, binding.clone(), "cancel".into())
-                .await;
-        assert!(res.is_ok());
-        assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 2);
+    #[tokio::test]
+    async fn answer_pairing_without_durable_authority_does_not_close_surface() {
+        let state = test_app_state(None);
+        let binding = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        {
+            let mut sync = state.sync.lock().unwrap();
+            sync.pairing.phase = observer_model::PairingPhase::AwaitingConfirmation;
+            sync.pairing.binding = binding.into();
+        }
+        let surface = FakeJournalSurface::new();
+        crate::ipc::answer_pairing_surface(&surface, &state, binding.into(), "reject".into())
+            .await
+            .unwrap();
+        assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 0);
     }
 
     fn signing_ca() -> (rcgen::Certificate, KeyPair) {
@@ -543,6 +556,16 @@ mod tests {
         assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 1);
     }
     async fn native_browser_fixture() -> (crate::app::AppState, String) {
+        native_browser_fixture_at(pl_transport_win::credential::EndpointAddr {
+            host: "127.0.0.1".into(),
+            port: 1,
+        })
+        .await
+    }
+
+    async fn native_browser_fixture_at(
+        endpoint: pl_transport_win::credential::EndpointAddr,
+    ) -> (crate::app::AppState, String) {
         let state = test_app_state(None);
         let generated = rcgen::generate_simple_self_signed(vec!["spl.local".into()]).unwrap();
         let credential = pl_transport_win::credential::Credential {
@@ -552,10 +575,7 @@ mod tests {
             ca_fp_prefix: spl_core::ca::sha256(generated.cert.der())[..16].to_vec(),
             instance_id: "f30ed159-ef46-8e9c-913f-e49f0fe7d201".into(),
             home_label: "journal".into(),
-            endpoints: vec![pl_transport_win::credential::EndpointAddr {
-                host: "127.0.0.1".into(),
-                port: 1,
-            }],
+            endpoints: vec![endpoint],
             relay_origin: None,
             device_token: None,
             device_token_expires_at: None,
@@ -592,6 +612,43 @@ mod tests {
             assert!(setup.set_wizard_step(observer_model::setup::WizardStep::Connection));
         }
         (state, binding)
+    }
+
+    async fn native_rejection_fixture() -> (
+        crate::app::AppState,
+        String,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<usize>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let port = listener.local_addr().unwrap().port();
+        // Keep the listener alive across the transport's retry backoff. Every
+        // attempt reaches this controlled refusal, never a Windows port race.
+        let server = tokio::spawn(async move {
+            let mut accepted = 0;
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    connection = listener.accept() => {
+                        let (stream, _) = connection.unwrap();
+                        accepted += 1;
+                        drop(stream);
+                    }
+                }
+            }
+            accepted
+        });
+        let (state, binding) =
+            native_browser_fixture_at(pl_transport_win::credential::EndpointAddr {
+                host: "127.0.0.1".into(),
+                port,
+            })
+            .await;
+        state.sync.lock().unwrap().pairing.phase =
+            observer_model::PairingPhase::AwaitingConfirmation;
+        state.sync_config.confirmation.lock().unwrap().clear();
+        (state, binding, stop, server)
     }
 
     #[tokio::test]
@@ -867,7 +924,8 @@ mod tests {
     #[tokio::test]
     async fn native_rejection_cleanup_precedes_a_queued_pair_replacement() {
         use std::future::Future;
-        let (mut state, binding) = native_browser_fixture().await;
+        let (mut state, binding, stop_retirement, retirement_server) =
+            native_rejection_fixture().await;
         let probe = Arc::new(crate::windows::OpenPairProbe::new());
         state.probe = Some(probe.clone());
         state.sync.lock().unwrap().pairing.phase =
@@ -889,6 +947,10 @@ mod tests {
         let answer = crate::ipc::answer_pairing_surface(&surface, &state, binding, "reject".into());
         let contender = async {
             probe.answer_closed.notified().await;
+            let retired =
+                pl_transport_win::PairedState::load(&state.sync_config.state_path).unwrap();
+            assert!(retired.credential.is_none() && retired.retirement_intent.is_none());
+            assert!(state.credential_access.lock().await.is_none());
             assert!(
                 state.journal_open_lock.try_lock().is_err(),
                 "rejection must own journal-open through cleanup"
@@ -912,6 +974,11 @@ mod tests {
         answer.unwrap();
         pair.unwrap();
         server.unwrap();
+        let _ = stop_retirement.send(());
+        assert!(
+            retirement_server.await.unwrap() > 0,
+            "controlled retirement refusal did not run"
+        );
         assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 2);
         assert!(state.credential_access.lock().await.is_some());
         state.uploader_slot.lock().await.stop().await;

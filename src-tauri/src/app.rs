@@ -19,7 +19,6 @@ use observer_model::{
     control_client_exit_code, should_emit, AppPhase, HealthDump, PauseReason, SourceKind,
     SourceState, SyncSnapshot,
 };
-use pl_transport_win::credential::PairedState;
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::{CredentialAccess, UploaderSlot};
 use tauri::{Emitter, Manager};
