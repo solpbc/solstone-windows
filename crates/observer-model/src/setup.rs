@@ -16,6 +16,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::SourceKind;
 
+/// Release activation is changed only after native owner qualification.
+pub const SETUP_SEQUENCE_ENABLED: bool = false;
+
+pub fn is_setup_ingress(arg: &str) -> bool {
+    let arg = arg.trim();
+    arg == crate::SETUP_HANDOFF_ARG
+        || arg
+            .get(..11)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("solstone://"))
+}
+
 pub const CURRENT_SETUP_VERSION: u32 = 1;
 pub const SETUP_FILE_NAME: &str = "setup.json";
 
@@ -81,6 +92,7 @@ impl SetupConfig {
 
     pub fn to_snapshot(&self) -> SetupSnapshot {
         SetupSnapshot {
+            sequence_enabled: SETUP_SEQUENCE_ENABLED,
             mic: self.mic,
             system_audio: self.system_audio,
             screen: self.screen,
@@ -116,6 +128,8 @@ pub struct FailedSourceWrite {
 /// Honest setup snapshot folded into HealthDump.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetupSnapshot {
+    #[serde(default)]
+    pub sequence_enabled: bool,
     pub mic: bool,
     pub system_audio: bool,
     pub screen: bool,
@@ -157,6 +171,7 @@ pub struct SetupSnapshot {
 impl Default for SetupSnapshot {
     fn default() -> Self {
         Self {
+            sequence_enabled: SETUP_SEQUENCE_ENABLED,
             mic: false,
             system_audio: false,
             screen: false,
@@ -324,6 +339,26 @@ pub fn read_readonly(data_root: &Path) -> SetupSnapshot {
     }
 }
 
+/// Dark builds preserve existing consent without creating or migrating setup state.
+/// Only a genuinely absent file selects the published legacy source defaults.
+pub fn load_for_startup(data_root: &Path, sequence_enabled: bool) -> LoadOutcome {
+    if sequence_enabled {
+        return load_or_classify(data_root);
+    }
+    match fs::read(data_root.join(SETUP_FILE_NAME)) {
+        Ok(bytes) => match serde_json::from_slice::<SetupConfig>(&bytes) {
+            Ok(config) if config.version == CURRENT_SETUP_VERSION => LoadOutcome::Valid(config),
+            _ => LoadOutcome::FailedClosed(SetupConfig::fail_closed()),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut legacy = SetupConfig::legacy();
+            legacy.notice_dismissed = true;
+            LoadOutcome::LegacyUnsaved(legacy)
+        }
+        Err(_) => LoadOutcome::FailedClosed(SetupConfig::fail_closed()),
+    }
+}
+
 /// Load existing `setup.json` or classify and migrate.
 pub fn load_or_classify(data_root: &Path) -> LoadOutcome {
     let setup_path = data_root.join(SETUP_FILE_NAME);
@@ -456,6 +491,7 @@ impl SetupAuthority {
 
     pub fn projection(&self) -> SetupSnapshot {
         SetupSnapshot {
+            sequence_enabled: SETUP_SEQUENCE_ENABLED,
             mic: self.running_mic,
             system_audio: self.running_system_audio,
             screen: self.running_screen,
@@ -1197,5 +1233,27 @@ mod tests {
         assert_eq!(after.mic, before.mic);
         assert_eq!(after.system_audio, before.system_audio);
         assert_eq!(after.screen, before.screen);
+    }
+}
+
+#[cfg(test)]
+mod activation_controls {
+    #[test]
+    fn setup_ingress_uses_the_dispatch_whitespace_rules() {
+        for arg in [
+            "--setup-handoff",
+            " --setup-handoff ",
+            "solstone://pair#x",
+            " \tSOLSTONE://pair#x \r\n",
+        ] {
+            assert!(super::is_setup_ingress(arg));
+        }
+        for arg in [
+            "--open-view",
+            "--setup-handoff-other",
+            "https://go.solstone.app/p#x",
+        ] {
+            assert!(!super::is_setup_ingress(arg));
+        }
     }
 }

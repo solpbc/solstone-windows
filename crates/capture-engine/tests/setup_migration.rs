@@ -156,3 +156,26 @@ fn missing_file_with_unpaired_prior_use_migrates_to_legacy_and_preserves_bytes()
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn dark_startup_creates_nothing_and_retains_existing_off_and_corrupt_choices() {
+    use observer_model::setup::{atomic_write_setup, load_for_startup};
+    let root = std::env::temp_dir().join(format!("solstone-dark-startup-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let missing = load_for_startup(&root, false);
+    assert!(
+        matches!(missing, LoadOutcome::LegacyUnsaved(ref cfg) if cfg.screen && cfg.mic && cfg.system_audio && cfg.start_at_login && cfg.notice_dismissed)
+    );
+    assert!(!root.join("setup.json").exists());
+    let off = SetupConfig::fresh();
+    atomic_write_setup(&root, &off).unwrap();
+    let before = fs::read(root.join("setup.json")).unwrap();
+    assert!(matches!(load_for_startup(&root, false), LoadOutcome::Valid(ref cfg) if cfg == &off));
+    assert_eq!(fs::read(root.join("setup.json")).unwrap(), before);
+    fs::write(root.join("setup.json"), b"corrupt").unwrap();
+    assert!(
+        matches!(load_for_startup(&root, false), LoadOutcome::FailedClosed(ref cfg) if !cfg.screen && !cfg.mic && !cfg.system_audio && !cfg.start_at_login)
+    );
+    assert_eq!(fs::read(root.join("setup.json")).unwrap(), b"corrupt");
+    fs::remove_dir_all(root).unwrap();
+}

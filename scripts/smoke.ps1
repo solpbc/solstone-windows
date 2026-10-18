@@ -69,7 +69,7 @@ if ($NativeProofMode -and $SelftestOnly) {
 
 # The package proof uses a fresh isolated root. It must not manufacture consent
 # merely to satisfy the observing or login-registration checks.
-$ProveFreshState = $NativeProofMode -or $FreshState
+$ProveFreshState = [bool]$FreshState
 if ($FreshState -and -not $NativeProofMode) {
     throw "-FreshState requires the explicit native-proof argument set and isolated root"
 }
@@ -241,6 +241,10 @@ if ($NativeProofMode) {
     } while ((Get-Date) -lt $deadline)
     if ($null -eq $CandidatePid) { throw "candidate never owned health listener: $OwnerFailure" }
     Assert-HealthOwner
+    $Readiness = (Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5).Content | ConvertFrom-Json
+    Assert-HealthOwner
+    $ProveFreshState = Select-SmokeFreshState -Setup $Readiness.setup -RequestedFresh ([bool]$FreshState)
+    if ($ProveFreshState -and $FailInject) { throw 'fresh all-off proof cannot use fail injection' }
 }
 
 $GateArgs = @(
@@ -286,7 +290,7 @@ if ($GateExit -ne 0) {
 $AppReached = $true
 if ($NativeProofMode) {
     Assert-HealthOwner
-    Assert-SmokeNoMedia $SegmentsRoot
+    if ($ProveFreshState) { Assert-SmokeNoMedia $SegmentsRoot }
     # Open About through the real secondary-launch path and require its exit.
     # A second render gate must still see fresh all-off state in that response.
     $AboutResult = Join-Path $env:TEMP 'solstone-smoke-about.exit'
@@ -301,10 +305,12 @@ if ($NativeProofMode) {
         throw 'About secondary launch did not exit successfully'
     }
     Assert-HealthOwner
-    & $DriverExe --contract $Contract --health-url $HealthUrl --timeout-secs $TimeoutSecs --render-view about --skip-tier1 --fresh-state
+    $AboutArgs = @('--contract', $Contract, '--health-url', $HealthUrl, '--timeout-secs', $TimeoutSecs, '--render-view', 'about', '--skip-tier1')
+    if ($ProveFreshState) { $AboutArgs += '--fresh-state' }
+    & $DriverExe @AboutArgs
     if ($LASTEXITCODE -ne 0) { throw "About fresh/render gate failed ($LASTEXITCODE)" }
     Assert-HealthOwner
-    Assert-SmokeNoMedia $SegmentsRoot
+    if ($ProveFreshState) { Assert-SmokeNoMedia $SegmentsRoot }
     $VersionGate = Join-Path $PSScriptRoot "lib\smoke-version-gate.ps1"
     . $VersionGate
     try {
@@ -317,8 +323,15 @@ if ($NativeProofMode) {
     # A fresh owner has not opted into sign-in startup. Preserve any unrelated
     # registration exactly; do not demand or create a login item for this copy.
     $RunValue = Get-RunValue
-    if (-not (Test-SmokeRunValueEqual $OriginalRunValue $RunValue)) {
-        throw "native-proof fresh launch changed the sign-in registration before owner opt-in"
+    if ($ProveFreshState) {
+        if (-not (Test-SmokeRunValueEqual $OriginalRunValue $RunValue)) {
+            throw 'native-proof fresh launch changed the sign-in registration before owner opt-in'
+        }
+    } else {
+        $ExpectedRunCommand = '"' + $AppExe + '" --from-autostart'
+        if ($null -eq $RunValue -or $RunValue.Data -cne $ExpectedRunCommand) {
+            throw 'native-proof legacy launch did not register its installed login item'
+        }
     }
 }
 
@@ -390,9 +403,9 @@ if ($NativeProofMode) {
     if (@(Get-AppProcesses | Where-Object { $_.ProcessId -in $Launched.ProcessId -or ([string]$_.ExecutablePath).Equals($AppExe, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
         $CleanupErrors += "the launched app did not exit"
     }
-    try { Assert-SmokeNoMedia $SegmentsRoot } catch { $CleanupErrors += "$_" }
+    try { if ($ProveFreshState) { Assert-SmokeNoMedia $SegmentsRoot } } catch { $CleanupErrors += "$_" }
     try {
-        if (-not (Test-SmokeRunValueEqual $OriginalRunValue (Get-RunValue))) {
+        if ($ProveFreshState -and -not (Test-SmokeRunValueEqual $OriginalRunValue (Get-RunValue))) {
             $CleanupErrors += 'fresh app changed the sign-in registration before shutdown'
         }
     } catch { $CleanupErrors += "could not inspect sign-in registration after shutdown: $_" }

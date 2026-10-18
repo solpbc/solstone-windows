@@ -43,6 +43,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -64,6 +65,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -85,6 +87,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -111,6 +114,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -132,6 +136,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -160,6 +165,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -188,6 +194,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: false,
           system_audio: true,
           screen: true,
@@ -209,6 +216,7 @@ describe("setup and source transitions", () => {
       const activeDump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -228,6 +236,7 @@ describe("setup and source transitions", () => {
       const offDump = {
         ...activeDump,
         setup: {
+          sequence_enabled: true,
           ...activeDump.setup,
           mic: false,
         },
@@ -245,6 +254,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -267,6 +277,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -289,6 +300,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -313,6 +325,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -342,6 +355,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: false,
           system_audio: true,
           screen: true,
@@ -371,6 +385,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: false,
           system_audio: false,
           screen: true,
@@ -400,6 +415,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -428,6 +444,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -469,6 +486,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -503,6 +521,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -520,6 +539,7 @@ describe("setup and source transitions", () => {
       const offDump = {
         ...dump,
         setup: {
+          sequence_enabled: true,
           ...dump.setup,
           mic: false,
         },
@@ -533,6 +553,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -577,6 +598,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -606,6 +628,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -627,6 +650,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -648,6 +672,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -672,6 +697,7 @@ describe("setup and source transitions", () => {
       const doneDump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -687,6 +713,7 @@ describe("setup and source transitions", () => {
       const micDump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -717,6 +744,7 @@ describe("setup and source transitions", () => {
         const dump = {
           ...observingDump(),
           setup: {
+          sequence_enabled: true,
             mic: true,
             system_audio: true,
             screen: true,
@@ -758,6 +786,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -777,6 +806,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -798,6 +828,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -825,6 +856,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -849,6 +881,7 @@ describe("setup and source transitions", () => {
       const dump = {
         ...observingDump(),
         setup: {
+          sequence_enabled: true,
           mic: true,
           system_audio: true,
           screen: true,
@@ -863,6 +896,7 @@ describe("setup and source transitions", () => {
       const sysDump = {
         ...dump,
         setup: {
+          sequence_enabled: true,
           ...dump.setup,
           wizard: "system_audio" as const,
         },
@@ -895,6 +929,7 @@ describe("setup recovery and proof lifetimes", () => {
   const dump = () => ({
     ...observingDump(),
     setup: {
+          sequence_enabled: true,
       mic: true, system_audio: false, screen: false, start_at_login: false,
       wizard: "mic" as const, notice_dismissed: false,
     },
@@ -1049,6 +1084,7 @@ describe("setup recovery and proof lifetimes", () => {
           app.__test__.renderSettings({
             ...observingDump(),
             setup: {
+          sequence_enabled: true,
               mic: false,
               system_audio: false,
               screen: false,
@@ -1078,6 +1114,7 @@ describe("setup recovery and proof lifetimes", () => {
         },
       },
       setup: {
+          sequence_enabled: true,
         mic: false,
         system_audio: true,
         screen: false,
@@ -1473,6 +1510,7 @@ describe("setup recovery and proof lifetimes", () => {
           },
         },
         setup: {
+          sequence_enabled: true,
           mic: false,
           system_audio: false,
           screen: false,
@@ -1499,6 +1537,7 @@ describe("setup recovery and proof lifetimes", () => {
           pairing: { phase: "not_paired", journal_label: null, detail: null },
         },
         setup: {
+          sequence_enabled: true,
           mic: false,
           system_audio: false,
           screen: false,
@@ -1510,5 +1549,23 @@ describe("setup recovery and proof lifetimes", () => {
       present(ids["settings.setup.notNow"]).click();
       await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("set_wizard_step", { step: "done" }));
     });
+  });
+});
+
+describe("dark release composition", () => {
+  beforeEach(() => { resetRoot(); invokeMock.mockReset(); invokeMock.mockResolvedValue(undefined as never); });
+  it("keeps legacy Home and read-only Sources despite retained setup progress", () => {
+    const dump = { ...observingDump(), setup: { sequence_enabled: false, mic: false, screen: false, system_audio: false, start_at_login: false, wizard: "mic" as const, notice_dismissed: false } };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dump);
+    expect(byId(ids["settings.setup.step"])).toBeNull();
+    expect(byId(ids["settings.home.sourcesNotice"])).toBeNull();
+    expect(document.querySelector(".settings-home")).not.toBeNull();
+    app.__test__.setRoute("sources");
+    app.__test__.renderSettings(dump);
+    expect(byId(ids["settings.sources.screen.state"])).not.toBeNull();
+    expect(byId(ids["settings.sources.screen.enabled"])).toBeNull();
+    expect(byId(ids["settings.setup.startAtLogin"])).toBeNull();
+    expect(invokeMock.mock.calls.some(([name]) => name === "pairing_prefill")).toBe(false);
   });
 });

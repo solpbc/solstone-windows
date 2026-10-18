@@ -273,6 +273,17 @@ pub(crate) fn update_handoff_overlay(
     setup: &Arc<Mutex<observer_model::setup::SetupAuthority>>,
     pairing_admission: &std::sync::atomic::AtomicBool,
 ) {
+    if observer_model::setup::SETUP_SEQUENCE_ENABLED {
+        update_handoff_overlay_enabled(data_root, sync, setup, pairing_admission);
+    }
+}
+
+pub(crate) fn update_handoff_overlay_enabled(
+    data_root: &std::path::Path,
+    sync: &Arc<Mutex<observer_model::SyncSnapshot>>,
+    setup: &Arc<Mutex<observer_model::setup::SetupAuthority>>,
+    pairing_admission: &std::sync::atomic::AtomicBool,
+) {
     let outcome = pl_transport_win::handoff::process_mailbox_live(
         data_root,
         || {
@@ -629,7 +640,9 @@ pub fn run(
 
             // Only the owning instance may classify setup or change login registration.
             let data_root = platform_win::local_data_root();
-            let load_outcome = observer_model::setup::load_or_classify(&data_root);
+            let load_outcome = observer_model::setup::load_for_startup(
+                &data_root, observer_model::setup::SETUP_SEQUENCE_ENABLED,
+            );
             let config = match load_outcome {
                 observer_model::setup::LoadOutcome::Abort => {
                     tracing::warn!(
@@ -648,7 +661,9 @@ pub fn run(
             };
 
             let login_apply_failed = apply_login_decision(config.start_at_login);
-            apply_scheme_decision();
+            if observer_model::setup::SETUP_SEQUENCE_ENABLED {
+                apply_scheme_decision();
+            }
 
             // Capture-exclusion rules: load persisted owner policy and share the
             // handle with the WGC source so edits take effect on the next frame.
@@ -700,7 +715,9 @@ pub fn run(
                     &snapshot.journal_display_line,
                 );
             }
-            engine.set_setup_root(data_root.clone());
+            if observer_model::setup::SETUP_SEQUENCE_ENABLED {
+                engine.set_setup_root(data_root.clone());
+            }
             let mut setup_snapshot = config.to_snapshot();
             setup_snapshot.login_apply_failed = login_apply_failed;
             engine.set_source_choices(setup_snapshot);
@@ -762,7 +779,9 @@ pub fn run(
                 #[cfg(test)]
                 probe: None,
             });
-            crate::ipc::recover_setup_browser_completion(&app.state::<AppState>());
+            if observer_model::setup::SETUP_SEQUENCE_ENABLED {
+                crate::ipc::recover_setup_browser_completion(&app.state::<AppState>());
+            }
 
             // The browser extension's native host (compiled in only with the
             // `browser-host` feature): endpoint, custody, gate and delivery.

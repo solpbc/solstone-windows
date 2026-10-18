@@ -24,10 +24,12 @@
 
 use std::collections::BTreeMap;
 
+pub use observer_model::setup::SETUP_SEQUENCE_ENABLED;
 use observer_model::{
     AppPhase, ErrorReason, PairingPhase, PauseReason, SourceKind, ViewRenderState,
     RELOAD_SETUP_VERB, SETUP_HANDOFF_ARG,
 };
+
 use serde::Serialize;
 use strum::IntoEnumIterator;
 

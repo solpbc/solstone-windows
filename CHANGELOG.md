@@ -6,6 +6,9 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+The new setup sequence is prepared but remains off in this build. The setup
+entries below describe the sequence after activation.
+
 ### Added
 
 - you choose which sources are on. a new install starts with screen, system audio, and the microphone off, and it does not start at login until you turn that on. an install that already ran keeps those sources on, your microphone settings, a held pause, your journal connection, and start at login, and settings points you at the new switches.

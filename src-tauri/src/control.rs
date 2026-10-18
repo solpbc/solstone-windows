@@ -75,7 +75,14 @@ impl ControlActions for TauriControlActions {
         });
     }
 
+    fn setup_sequence_enabled(&self) -> bool {
+        observer_model::setup::SETUP_SEQUENCE_ENABLED
+    }
+
     fn reload_setup(&self) {
+        if !observer_model::setup::SETUP_SEQUENCE_ENABLED {
+            return;
+        }
         let app = self.app.clone();
         std::thread::spawn(move || {
             use tauri::Manager;
@@ -674,7 +681,7 @@ mod tests {
             .unwrap();
         };
         let refresh = || {
-            crate::app::update_handoff_overlay(
+            crate::app::update_handoff_overlay_enabled(
                 root,
                 &state.sync,
                 &state.setup,
@@ -746,7 +753,7 @@ mod tests {
             serde_json::to_vec(&raw).unwrap(),
         )
         .unwrap();
-        crate::app::update_handoff_overlay(
+        crate::app::update_handoff_overlay_enabled(
             root,
             &state.sync,
             &state.setup,
@@ -762,7 +769,7 @@ mod tests {
             serde_json::to_vec(&raw).unwrap(),
         )
         .unwrap();
-        crate::app::update_handoff_overlay(
+        crate::app::update_handoff_overlay_enabled(
             root,
             &state.sync,
             &state.setup,

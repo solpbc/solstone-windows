@@ -175,6 +175,15 @@ fn main() -> ExitCode {
         i += 1;
     }
 
+    if !observer_model::setup::SETUP_SEQUENCE_ENABLED
+        && args
+            .iter()
+            .any(|arg| observer_model::setup::is_setup_ingress(arg))
+    {
+        eprintln!("setup continuation is unavailable in this build");
+        return ExitCode::FAILURE;
+    }
+
     let mut reload_setup = false;
     let data_root = platform_win::local_data_root();
     let state_path = data_root.join("pairing.json");

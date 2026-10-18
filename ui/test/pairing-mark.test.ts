@@ -116,6 +116,7 @@ describe("setup handoff and finish connecting in pairing", () => {
   it("finish-connecting shows settings.pairing.finishConnecting and not the mark card", () => {
     const dump = {
       ...notPairedDump(),
+      setup: { sequence_enabled: true, mic: false, screen: false, system_audio: false, start_at_login: false, wizard: "done" as const, notice_dismissed: true },
       sync: {
         ...notPairedDump().sync,
         pairing: {
@@ -172,6 +173,7 @@ describe("setup handoff and finish connecting in pairing", () => {
     const dump = {
       ...notPairedDump(),
       setup: {
+          sequence_enabled: true,
         ...notPairedDump().setup,
         mailbox_busy: true,
       },
@@ -187,6 +189,7 @@ describe("setup handoff and finish connecting in pairing", () => {
   it("browser control invokes open_setup_journal", () => {
     const dump = {
       ...notPairedDump(),
+      setup: { sequence_enabled: true, mic: false, screen: false, system_audio: false, start_at_login: false, wizard: "done" as const, notice_dismissed: true },
       sync: {
         ...notPairedDump().sync,
         pairing: {

@@ -25,7 +25,9 @@ fn main() {
     }
 
     // Linux does not prove the PE resource; the caller native gate does.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    if observer_contract::SETUP_SEQUENCE_ENABLED
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+    {
         let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
         let resource_path = std::path::Path::new(&out_dir).join("solstone-setup-capabilities.json");
         std::fs::write(

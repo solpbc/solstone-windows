@@ -827,6 +827,14 @@ pub(crate) fn publish_setup(state: &crate::app::AppState) {
     }
 }
 
+fn require_setup_sequence() -> Result<(), String> {
+    if observer_model::setup::SETUP_SEQUENCE_ENABLED {
+        Ok(())
+    } else {
+        Err("setup sequence is unavailable in this build".into())
+    }
+}
+
 /// Enable or disable a single capture source.
 #[tauri::command]
 pub fn set_source_enabled(
@@ -834,6 +842,7 @@ pub fn set_source_enabled(
     kind: observer_model::SourceKind,
     enabled: bool,
 ) -> Result<(), String> {
+    require_setup_sequence()?;
     {
         let mut auth = state
             .setup
@@ -855,6 +864,7 @@ pub fn set_start_at_login(
     state: tauri::State<'_, crate::app::AppState>,
     enabled: bool,
 ) -> Result<(), String> {
+    require_setup_sequence()?;
     {
         let mut auth = state
             .setup
@@ -878,6 +888,7 @@ pub fn set_wizard_step(
     state: tauri::State<'_, crate::app::AppState>,
     step: observer_model::setup::WizardStep,
 ) -> Result<WizardStepResult, String> {
+    require_setup_sequence()?;
     let saved = if let Ok(mut auth) = state.setup.lock() {
         auth.set_wizard_step(step)
     } else {
@@ -905,6 +916,7 @@ pub fn set_wizard_step(
 /// Dismiss the first-run sources notice on Settings Home.
 #[tauri::command]
 pub fn dismiss_notice(state: tauri::State<'_, crate::app::AppState>) -> Result<bool, String> {
+    require_setup_sequence()?;
     let saved = if let Ok(mut auth) = state.setup.lock() {
         auth.dismiss_notice()
     } else {
@@ -917,6 +929,7 @@ pub fn dismiss_notice(state: tauri::State<'_, crate::app::AppState>) -> Result<b
 /// Retry persisting unsaved source choices or setup settings.
 #[tauri::command]
 pub fn retry_save(state: tauri::State<'_, crate::app::AppState>) -> Result<(), String> {
+    require_setup_sequence()?;
     {
         let mut auth = state
             .setup
@@ -949,6 +962,9 @@ pub fn set_proof_consumer(
     state: tauri::State<'_, crate::app::AppState>,
     source: Option<observer_model::SourceKind>,
 ) -> Result<u64, String> {
+    if source.is_some() {
+        require_setup_sequence()?;
+    }
     let eligible = source.is_none() || crate::windows::settings_proof_eligible(&app);
     let generation = {
         let mut proof = state.proof.lock().map_err(|_| "proof state unavailable")?;
@@ -967,6 +983,9 @@ pub fn set_proof_consumer(
 
 #[tauri::command]
 pub fn pairing_prefill() -> String {
+    if !observer_model::setup::SETUP_SEQUENCE_ENABLED {
+        return String::new();
+    }
     let data_root = platform_win::local_data_root();
     if let Some(link) = pl_transport_win::draft::read_draft(&data_root) {
         return link;
@@ -984,6 +1003,7 @@ pub async fn connect_native_handoff(
     handoff_id: String,
     revision: u64,
 ) -> Result<(), String> {
+    require_setup_sequence()?;
     Box::pin(connect_native_handoff_surface(
         &app, &state, handoff_id, revision,
     ))
@@ -1045,6 +1065,7 @@ pub async fn connect_native_handoff_surface<S: crate::windows::JournalSurface>(
 
 #[tauri::command]
 pub fn use_deferred_link(state: tauri::State<'_, crate::app::AppState>) -> Result<String, String> {
+    require_setup_sequence()?;
     let data_root = platform_win::local_data_root();
     let link = pl_transport_win::draft::take_deferred(&data_root)
         .map_err(|error| {
@@ -1058,6 +1079,7 @@ pub fn use_deferred_link(state: tauri::State<'_, crate::app::AppState>) -> Resul
 
 #[tauri::command]
 pub fn dismiss_deferred_link(state: tauri::State<'_, crate::app::AppState>) -> Result<(), String> {
+    require_setup_sequence()?;
     let data_root = platform_win::local_data_root();
     if pl_transport_win::draft::read_deferred(&data_root).is_some() {
         pl_transport_win::draft::dismiss_deferred(&data_root).map_err(|error| {
@@ -1076,6 +1098,7 @@ pub fn dismiss_deferred_link(state: tauri::State<'_, crate::app::AppState>) -> R
 
 #[tauri::command]
 pub fn retry_setup_link(state: tauri::State<'_, crate::app::AppState>) -> Result<(), String> {
+    require_setup_sequence()?;
     crate::app::reload_setup(&state);
     let snapshot = state
         .setup
@@ -1109,6 +1132,7 @@ pub async fn finish_connecting(
     state: tauri::State<'_, crate::app::AppState>,
     binding: String,
 ) -> Result<(), String> {
+    require_setup_sequence()?;
     let _journal_open = state.journal_open_lock.lock().await;
     pl_transport_win::session::finish_connecting(
         &binding,
@@ -1128,6 +1152,7 @@ pub async fn open_setup_journal(
     state: tauri::State<'_, crate::app::AppState>,
     binding: String,
 ) -> Result<(), String> {
+    require_setup_sequence()?;
     use tauri_plugin_opener::OpenerExt;
     open_setup_journal_with(&state, &binding, |url| {
         app.opener()

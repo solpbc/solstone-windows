@@ -36,4 +36,16 @@ try {
         Remove-Item -LiteralPath $child
     }
 } finally { if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force } }
+
+if (Select-SmokeFreshState -Setup ([pscustomobject]@{sequence_enabled=$false}) -RequestedFresh $false) { throw 'dark candidate selected fresh proof' }
+if (-not (Select-SmokeFreshState -Setup ([pscustomobject]@{sequence_enabled=$true}) -RequestedFresh $false)) { throw 'activated candidate selected legacy proof' }
+foreach ($setup in @($null, [pscustomobject]@{}, [pscustomobject]@{sequence_enabled='false'})) {
+    $refused = $false
+    try { Select-SmokeFreshState -Setup $setup -RequestedFresh $false } catch { $refused=$true }
+    if (-not $refused) { throw 'unknown activation was accepted' }
+}
+$refused = $false
+try { Select-SmokeFreshState -Setup ([pscustomobject]@{sequence_enabled=$false}) -RequestedFresh $true } catch { $refused=$true }
+if (-not $refused) { throw 'dark candidate satisfied explicit fresh proof' }
+
 Write-Host 'smoke-fresh-gate.test.ps1: passed'

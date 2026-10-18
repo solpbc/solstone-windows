@@ -263,6 +263,7 @@ interface FailedSourceWrite {
 }
 
 interface SetupSnapshot {
+  sequence_enabled?: boolean;
   mic: boolean;
   system_audio: boolean;
   screen: boolean;
@@ -535,6 +536,7 @@ function appendSetupError(
 }
 
 function nativeContinuationPending(dump: HealthDump): boolean {
+  if (dump.setup?.sequence_enabled !== true) return false;
   const setup = dump.setup;
   const pairing = dump.sync.pairing;
   if (pairing.setup_browser_ready || pairing.finish_connecting) {
@@ -547,6 +549,7 @@ function nativeContinuationPending(dump: HealthDump): boolean {
 }
 
 function homeShowsPairing(dump: HealthDump): boolean {
+  if (dump.setup?.sequence_enabled !== true) return false;
   const setup = dump.setup;
   const pairing = dump.sync.pairing;
   return Boolean(
@@ -1921,7 +1924,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   );
 
   if (pairing.phase === "awaiting_confirmation") {
-    if (pairing.finish_connecting) {
+    if (dump.setup?.sequence_enabled === true && pairing.finish_connecting) {
       const card = document.createElement("div");
       card.style.marginTop = "12px";
       const finishBtn = actionButton(
@@ -2161,7 +2164,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   const migrationPanel = renderMigrationPanel();
   if (migrationPanel) pane.append(migrationPanel);
 
-  if (!pairFieldDirty && !pairingDraft) {
+  if (dump.setup?.sequence_enabled === true && !pairFieldDirty && !pairingDraft) {
     void Promise.resolve(invoke<string>("pairing_prefill"))
       .then((prefill) => {
         if (pairFieldDirty || pairingDraft) return;
@@ -2173,7 +2176,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       .catch(() => {});
   }
 
-  if (pairing.setup_browser_ready) {
+  if (dump.setup?.sequence_enabled === true && pairing.setup_browser_ready) {
     const browserRow = document.createElement("div");
     browserRow.style.marginTop = "8px";
     const openBtn = actionButton(
@@ -2203,7 +2206,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
   const handoffId = dump.setup?.handoff_id;
   const handoffRevision = dump.setup?.handoff_revision;
   if (
-    handoffId && handoffRevision !== undefined && handoffRevision !== null &&
+    dump.setup?.sequence_enabled === true && handoffId && handoffRevision !== undefined && handoffRevision !== null &&
     !dump.sync.pairing.finish_connecting &&
     !dump.sync.pairing.setup_browser_ready &&
     (dump.sync.pairing.phase === "not_paired" || dump.sync.pairing.phase === "failed" ||
@@ -2264,7 +2267,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
       "standard",
     );
 
-  if (dump.setup?.has_deferred_link) {
+  if (dump.setup?.sequence_enabled === true && dump.setup.has_deferred_link) {
     const deferredRow = document.createElement("div");
     deferredRow.style.marginTop = "8px";
     deferredRow.style.display = "flex";
@@ -2298,7 +2301,7 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     deferredRow.append(useBtn, dismissDeferredButton());
     pane.append(deferredRow);
     appendSetupError(pane, "deferred");
-  } else if (dump.setup?.handoff_rejected) {
+  } else if (dump.setup?.sequence_enabled === true && dump.setup.handoff_rejected) {
     const rejectedRow = document.createElement("div");
     rejectedRow.style.marginTop = "8px";
     rejectedRow.append(dismissDeferredButton());
@@ -2306,13 +2309,13 @@ function renderPairingSection(dump: HealthDump): HTMLElement {
     appendSetupError(pane, "deferred");
   }
 
-  if (
+  if (dump.setup?.sequence_enabled === true && (
     dump.setup?.mailbox_busy ||
     dump.setup?.handoff_rejected ||
     dump.setup?.native_handoff_rejected ||
     dump.setup?.handoff_deferred ||
     dump.setup?.handoff_persist_failed
-  ) {
+  )) {
     const retryRow = document.createElement("div");
     retryRow.style.marginTop = "8px";
     const reason = document.createElement("p");
@@ -3669,6 +3672,19 @@ function renderSourceControl(
 }
 
 function renderSourcesSection(dump: HealthDump): HTMLElement {
+  if (dump.setup?.sequence_enabled !== true) {
+    const sources = section("sources");
+    for (const [kind, label, id] of [
+      ["screen", "screen", ids["settings.sources.screen.state"]],
+      ["system_audio", "system audio", ids["settings.sources.systemAudio.state"]],
+      ["mic", "microphone", ids["settings.sources.mic.state"]],
+    ] as const) {
+      const report = sourceByKind(dump, kind);
+      sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused", report), report?.detail), id))));
+    }
+    if (latestBrowser) sources.append(...renderBrowserRows(latestBrowser));
+    return sources;
+  }
   const sources = section("sources");
   const screen = sourceByKind(dump, "screen");
   const systemAudio = sourceByKind(dump, "system_audio");
@@ -4512,7 +4528,7 @@ function renderHome(dump: HealthDump): HTMLElement {
     renderUpdatesCard(),
   );
 
-  if (dump.setup && dump.setup.wizard === "done" && !dump.setup.notice_dismissed) {
+  if (dump.setup?.sequence_enabled === true && dump.setup.wizard === "done" && !dump.setup.notice_dismissed) {
     home.append(renderSourcesNotice(), renderStatusStrip(dump), cards);
   } else {
     home.append(renderStatusStrip(dump), cards);
@@ -4526,7 +4542,7 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
 
   switch (route) {
     case "home":
-      if (dump.setup?.wizard && dump.setup.wizard !== "done") {
+      if (dump.setup?.sequence_enabled === true && dump.setup.wizard !== "done") {
         content.append(renderWizard(dump, latestPreview));
       } else {
         const home = renderHome(dump);
@@ -4653,7 +4669,7 @@ function renderPane(dump: HealthDump): HTMLElement {
   hamburgerGlyph.setAttribute("aria-hidden", "true");
   hamburger.append(hamburgerGlyph);
 
-  const inSetup = activeRoute === "home" && dump.setup?.wizard && dump.setup.wizard !== "done";
+  const inSetup = activeRoute === "home" && dump.setup?.sequence_enabled === true && dump.setup.wizard !== "done";
   const title = text("h1", inSetup ? "set up solstone" : routeLabel(activeRoute));
   title.classList.add("settings-pane-title");
   title.tabIndex = -1;

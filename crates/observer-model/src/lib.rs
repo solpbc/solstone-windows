@@ -1039,6 +1039,9 @@ pub trait ControlActions {
     fn open_about(&self);
     fn open_journal(&self);
     fn reload_setup(&self);
+    fn setup_sequence_enabled(&self) -> bool {
+        false
+    }
 }
 
 pub fn dispatch_control<A: ControlActions>(buf: &[u8], actions: &A) -> bool {
@@ -1051,7 +1054,7 @@ pub fn dispatch_control<A: ControlActions>(buf: &[u8], actions: &A) -> bool {
     } else if buf.starts_with(SURFACE_SETTINGS_VERB) {
         actions.open_settings();
         true
-    } else if buf.starts_with(RELOAD_SETUP_VERB) {
+    } else if buf.starts_with(RELOAD_SETUP_VERB) && actions.setup_sequence_enabled() {
         actions.reload_setup();
         true
     } else {
@@ -1813,6 +1816,25 @@ mod tests {
             self.reload_setup
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+        fn setup_sequence_enabled(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn disabled_control_refuses_reload_without_dispatch() {
+        struct Dark;
+        impl ControlActions for Dark {
+            fn open_settings(&self) {}
+            fn open_about(&self) {}
+            fn open_journal(&self) {}
+            fn reload_setup(&self) {
+                panic!("inactive setup dispatched");
+            }
+        }
+        assert!(!dispatch_control(RELOAD_SETUP_VERB, &Dark));
+        assert_eq!(control_ack_after_dispatch(RELOAD_SETUP_VERB, &Dark), None);
+        assert!(dispatch_control(SURFACE_SETTINGS_VERB, &Dark));
     }
 
     #[test]

@@ -28,3 +28,13 @@ function Get-SmokeHealthOwner([string]$AppExe, [int]$Port, [object[]]$Processes,
     }
     return [int]$apps[0].ProcessId
 }
+
+function Select-SmokeFreshState([object]$Setup, [bool]$RequestedFresh) {
+    if ($null -eq $Setup -or $Setup.sequence_enabled -isnot [bool]) {
+        throw 'candidate did not report setup activation'
+    }
+    if ($RequestedFresh -and -not $Setup.sequence_enabled) {
+        throw 'fresh setup proof requires an activated candidate'
+    }
+    return $Setup.sequence_enabled
+}
