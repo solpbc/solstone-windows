@@ -557,10 +557,11 @@ pub fn capability_resource_bytes() -> &'static [u8] {
 /// Quoted RC include of the capability file. A quoted RC string is null-terminated,
 /// so the resource is the file itself and not a `BEGIN` integer list.
 pub fn capability_rc_fragment(path: &std::path::Path) -> String {
+    // RC's reserved RCDATA keyword emits numeric RT_RCDATA (10). The API macro
+    // name becomes a custom string type when the RC script has no Windows header.
     format!(
-        "{} {} {}\n",
+        "{} RCDATA {}\n",
         CAPABILITY_RESOURCE_NAME,
-        CAPABILITY_RESOURCE_TYPE,
         rc_quoted_path(path)
     )
 }
@@ -923,7 +924,7 @@ mod tests {
         let path = std::path::Path::new(r"C:\out\solstone-setup-capabilities.json");
         let frag = capability_rc_fragment(path);
         assert!(frag.contains("SOLSTONE_SETUP_CAPABILITIES"));
-        assert!(frag.contains("RT_RCDATA"));
+        assert_eq!(frag.split_whitespace().nth(1), Some("RCDATA"));
         assert!(frag.contains("solstone-setup-capabilities.json"));
         assert!(!frag.contains("0x"));
         assert!(!frag.contains("BEGIN"));
