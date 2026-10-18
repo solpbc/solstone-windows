@@ -545,6 +545,46 @@ where
     FWin: FnOnce() -> FutWin,
     FutWin: std::future::Future<Output = ()>,
 {
+    connect_native_handoff_with_clock(
+        handoff_id,
+        revision,
+        cfg,
+        sync,
+        slot_mutex,
+        access_mutex,
+        pairing_admission,
+        shutdown_bridge,
+        close_journal_window,
+        || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn connect_native_handoff_with_clock<FBridge, FWin, FutBridge, FutWin, FClock>(
+    handoff_id: &str,
+    revision: u64,
+    cfg: &SyncConfig,
+    sync: Arc<Mutex<SyncSnapshot>>,
+    slot_mutex: &tokio::sync::Mutex<UploaderSlot>,
+    access_mutex: &tokio::sync::Mutex<Option<CredentialAccess>>,
+    pairing_admission: &std::sync::atomic::AtomicBool,
+    shutdown_bridge: FBridge,
+    close_journal_window: FWin,
+    clock: FClock,
+) -> Result<(), TransportError>
+where
+    FClock: Fn() -> u64,
+    FBridge: FnOnce() -> FutBridge,
+    FutBridge: std::future::Future<Output = ()>,
+    FWin: FnOnce() -> FutWin,
+    FutWin: std::future::Future<Output = ()>,
+{
     let data_root = cfg.state_path.parent().ok_or_else(|| {
         TransportError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -562,10 +602,7 @@ where
                 }
                 Err(error) => return Err(TransportError::Io(error)),
             };
-            let now_unix_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let now_unix_ms = clock();
             if progress.is_expired(now_unix_ms) {
                 return Err(TransportError::Pairing(
                     "handoff progress has expired".to_string(),
@@ -587,6 +624,11 @@ where
     let mut slot = slot_mutex.lock().await;
     let mut access_guard = access_mutex.lock().await;
 
+    if progress.is_expired(clock()) {
+        return Err(TransportError::Pairing(
+            "handoff progress has expired".into(),
+        ));
+    }
     crate::service::ensure_pairable(&cfg.state_path)?;
 
     publish_pairing(
@@ -809,6 +851,72 @@ mod pure_session_tests {
     }
 
     #[tokio::test]
+    async fn native_connect_rechecks_deadline_after_each_session_lock_wait() {
+        use std::future::Future;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        for wait_for_access in [false, true] {
+            let root = TestRoot::new();
+            let cfg = test_config(root.path());
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            let progress = SetupHandoffProgress {
+                schema: observer_contract::PROGRESS_SCHEMA.into(),
+                handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+                pairing_link: "https://go.solstone.app/p#0G0W000258DSX8DJRFAEBXG7308J4CT4ANK7F26YNPZEZJQYQAZ028T5CY4TQKFF".into(),
+                expected_ca_fingerprint: "ab".repeat(32),
+                expected_instance_id: "inst".into(),
+                accepted_unix_ms: 1_000,
+                expires_at_unix_ms: 2_000,
+            };
+            let path = root.path().join(observer_contract::PROGRESS_FILE_NAME);
+            let before = serde_json::to_vec(&progress).unwrap();
+            std::fs::write(&path, &before).unwrap();
+            let slot = tokio::sync::Mutex::new(UploaderSlot::new());
+            let access = tokio::sync::Mutex::new(None);
+            let slot_guard = if wait_for_access {
+                None
+            } else {
+                Some(slot.lock().await)
+            };
+            let access_guard = if wait_for_access {
+                Some(access.lock().await)
+            } else {
+                None
+            };
+            let clock = AtomicU64::new(1_000);
+            let admission = AtomicBool::new(false);
+            let mut connect = Box::pin(connect_native_handoff_with_clock(
+                &progress.handoff_id,
+                progress.accepted_unix_ms,
+                &cfg,
+                sync.clone(),
+                &slot,
+                &access,
+                &admission,
+                || async { panic!("expired link closed incumbent bridge") },
+                || async { panic!("expired link closed incumbent window") },
+                || clock.load(Ordering::Acquire),
+            ));
+            std::future::poll_fn(|cx| {
+                assert!(connect.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert!(admission.load(Ordering::Acquire));
+            clock.store(2_000, Ordering::Release);
+            drop(slot_guard);
+            drop(access_guard);
+            let error = connect.await.unwrap_err();
+            assert!(
+                matches!(error, TransportError::Pairing(ref detail) if detail == "handoff progress has expired")
+            );
+            assert!(!admission.load(Ordering::Acquire));
+            assert!(!cfg.state_path.exists());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(*sync.lock().unwrap(), SyncSnapshot::default());
+        }
+    }
+
+    #[tokio::test]
     async fn native_admission_survives_delayed_bound_while_waiting_and_releases_on_cancel() {
         use std::future::Future;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -820,6 +928,7 @@ mod pure_session_tests {
             .unwrap()
             .as_millis() as u64;
         let progress = SetupHandoffProgress {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::PROGRESS_SCHEMA.into(),
             handoff_id: "11111111-1111-4111-8111-111111111111".into(),
             pairing_link: "https://go.solstone.app/p#0R0J6HB7H6NWVVR1VTPVXVYAZTXBW0938NKRKAYDXWAPGX3ME1SKMBSFE9JPRRBS5SJQGRBDE1P6A".into(),
@@ -865,6 +974,7 @@ mod pure_session_tests {
             },
         );
         let mailbox = crate::handoff::SetupHandoffMailbox {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::MAILBOX_SCHEMA.into(),
             handoff_id: "22222222-2222-4222-8222-222222222222".into(),
             step: observer_contract::HANDOFF_REQUIRED_STEP,
@@ -879,8 +989,11 @@ mod pure_session_tests {
         .unwrap();
         let expired = now + observer_contract::UNPAIRED_DRAFT_MAX_AGE_SECS * 1000;
         assert_eq!(
-            crate::handoff::process_mailbox_live(root.path(), expired, || admission
-                .load(Ordering::Acquire))
+            crate::handoff::process_mailbox_live(
+                root.path(),
+                || expired,
+                || admission.load(Ordering::Acquire)
+            )
             .unwrap(),
             crate::handoff::MailboxOutcome::Deferred
         );
@@ -889,8 +1002,11 @@ mod pure_session_tests {
         assert!(!admission.load(Ordering::Acquire));
         drop(held);
         assert_eq!(
-            crate::handoff::process_mailbox_live(root.path(), expired, || admission
-                .load(Ordering::Acquire))
+            crate::handoff::process_mailbox_live(
+                root.path(),
+                || expired,
+                || admission.load(Ordering::Acquire)
+            )
             .unwrap(),
             crate::handoff::MailboxOutcome::Accepted
         );
@@ -989,6 +1105,7 @@ mod pure_session_tests {
             .unwrap_or_default()
             .as_millis() as u64;
         let progress = SetupHandoffProgress {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::PROGRESS_SCHEMA.to_string(),
             handoff_id: "11111111-1111-4111-8111-111111111111".to_string(),
             pairing_link: relay_link.to_string(),
@@ -1065,6 +1182,7 @@ mod pure_session_tests {
             .unwrap_or_default()
             .as_millis() as u64;
         let progress = SetupHandoffProgress {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::PROGRESS_SCHEMA.to_string(),
             handoff_id: "11111111-1111-4111-8111-111111111111".to_string(),
             pairing_link: direct_link.to_string(),
@@ -1144,6 +1262,7 @@ mod pure_session_tests {
 
         let direct_link = "https://go.solstone.app/p#0G0W000258DSX8DJRFAEBXG7308J4CT4ANK7F26YNPZEZJQYQAZ028T5CY4TQKFF";
         let progress = SetupHandoffProgress {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::PROGRESS_SCHEMA.to_string(),
             handoff_id: "11111111-1111-4111-8111-111111111111".to_string(),
             pairing_link: direct_link.to_string(),
@@ -1152,34 +1271,46 @@ mod pure_session_tests {
             expected_instance_id: "inst".to_string(),
             accepted_unix_ms: 1000,
         };
-        let progress_bytes = serde_json::to_vec_pretty(&progress).unwrap();
-        std::fs::write(
-            dir.join(observer_contract::PROGRESS_FILE_NAME),
-            progress_bytes,
-        )
-        .unwrap();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        for absolute_deadline in [false, true] {
+            let mut progress = progress.clone();
+            if absolute_deadline {
+                progress.accepted_unix_ms = now_ms;
+                progress.expires_at_unix_ms = now_ms.saturating_sub(1);
+            }
+            let progress_bytes = serde_json::to_vec_pretty(&progress).unwrap();
+            std::fs::write(
+                dir.join(observer_contract::PROGRESS_FILE_NAME),
+                progress_bytes,
+            )
+            .unwrap();
 
-        let err = connect_native_handoff(
-            &progress.handoff_id,
-            progress.accepted_unix_ms,
-            &cfg,
-            sync.clone(),
-            &slot,
-            &access_mutex,
-            &std::sync::atomic::AtomicBool::new(false),
-            || async {},
-            || async {},
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(err, TransportError::Pairing(ref msg) if msg == "handoff progress has expired")
-        );
-        assert!(
-            !state_path.exists(),
-            "pairing file must not be created on refusal"
-        );
+            let err = connect_native_handoff(
+                &progress.handoff_id,
+                progress.accepted_unix_ms,
+                &cfg,
+                sync.clone(),
+                &slot,
+                &access_mutex,
+                &std::sync::atomic::AtomicBool::new(false),
+                || async {},
+                || async {},
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, TransportError::Pairing(ref msg) if msg == "handoff progress has expired")
+            );
+            assert!(
+                !state_path.exists(),
+                "pairing file must not be created on refusal"
+            );
 
+            assert_eq!(crate::handoff::read_progress(&dir).unwrap(), Some(progress));
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1221,6 +1352,7 @@ mod pure_session_tests {
             .unwrap_or_default()
             .as_millis() as u64;
         let progress = SetupHandoffProgress {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::PROGRESS_SCHEMA.to_string(),
             handoff_id: "22222222-2222-4222-8222-222222222222".to_string(),
             pairing_link: direct_link.to_string(),
@@ -1825,6 +1957,7 @@ mod tests {
             .unwrap_or_default()
             .as_millis() as u64;
         let progress = crate::handoff::SetupHandoffProgress {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::PROGRESS_SCHEMA.to_string(),
             handoff_id: "11111111-1111-4111-8111-111111111111".to_string(),
             pairing_link: link,

@@ -601,6 +601,7 @@ mod tests {
         let h1 = "11111111-1111-4111-8111-111111111111";
         let h2 = "22222222-2222-4222-8222-222222222222";
         let mailbox = |id: &str| pl_transport_win::handoff::SetupHandoffMailbox {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::MAILBOX_SCHEMA.into(),
             handoff_id: id.into(),
             step: observer_contract::HANDOFF_REQUIRED_STEP,
@@ -664,6 +665,7 @@ mod tests {
         let (state, _) = native_browser_fixture().await;
         let root = state.sync_config.state_path.parent().unwrap();
         let progress = pl_transport_win::handoff::SetupHandoffProgress {
+            expires_at_unix_ms: u64::MAX,
             schema: observer_contract::PROGRESS_SCHEMA.into(),
             handoff_id: "22222222-2222-4222-8222-222222222222".into(),
             expected_instance_id: "journal-h2".into(),

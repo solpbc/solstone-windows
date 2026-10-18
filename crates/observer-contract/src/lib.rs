@@ -706,6 +706,7 @@ pub fn generate_setup_handoff_contract() -> String {
                     required_field("expected_instance_id", "string", None),
                     required_field("expected_ca_fingerprint", "sha256-hex", None),
                     required_field("pairing_link", "https-pair-link", None),
+                    required_field("expires_at_unix_ms", "unix-milliseconds", None),
                 ],
             },
             receipt: SetupHandoffFieldSet {
@@ -899,6 +900,7 @@ mod tests {
                 "expected_instance_id",
                 "expected_ca_fingerprint",
                 "pairing_link",
+                "expires_at_unix_ms",
             ]
         );
         assert_eq!(actual["fields"]["mailbox"]["unknown_fields"], "forbidden");

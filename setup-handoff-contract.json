@@ -48,6 +48,10 @@
         {
           "name": "pairing_link",
           "type": "https-pair-link"
+        },
+        {
+          "name": "expires_at_unix_ms",
+          "type": "unix-milliseconds"
         }
       ]
     },

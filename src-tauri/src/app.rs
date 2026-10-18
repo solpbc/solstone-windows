@@ -274,18 +274,27 @@ pub(crate) fn update_handoff_overlay(
     setup: &Arc<Mutex<observer_model::setup::SetupAuthority>>,
     pairing_admission: &std::sync::atomic::AtomicBool,
 ) {
+    let outcome = pl_transport_win::handoff::process_mailbox_live(
+        data_root,
+        || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        },
+        || {
+            pairing_admission.load(std::sync::atomic::Ordering::Acquire)
+                || matches!(
+                    sync.lock().unwrap().pairing.phase,
+                    observer_model::PairingPhase::Pairing
+                        | observer_model::PairingPhase::AwaitingConfirmation
+                )
+        },
+    );
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    let outcome = pl_transport_win::handoff::process_mailbox_live(data_root, now_ms, || {
-        pairing_admission.load(std::sync::atomic::Ordering::Acquire)
-            || matches!(
-                sync.lock().unwrap().pairing.phase,
-                observer_model::PairingPhase::Pairing
-                    | observer_model::PairingPhase::AwaitingConfirmation
-            )
-    });
     let progress = pl_transport_win::handoff::read_active_progress(data_root);
     let mut overlay = observer_model::HandoffOverlay {
         has_deferred_link: pl_transport_win::draft::read_deferred(data_root).is_some(),

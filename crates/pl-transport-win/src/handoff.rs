@@ -29,6 +29,7 @@ pub struct SetupHandoffMailbox {
     pub expected_instance_id: String,
     pub expected_ca_fingerprint: String,
     pub pairing_link: String,
+    pub expires_at_unix_ms: u64,
 }
 
 impl SetupHandoffMailbox {
@@ -36,7 +37,7 @@ impl SetupHandoffMailbox {
         if self.schema != MAILBOX_SCHEMA || !is_canonical_uuid(&self.handoff_id) {
             return false;
         }
-        if self.step != HANDOFF_REQUIRED_STEP {
+        if self.step != HANDOFF_REQUIRED_STEP || self.expires_at_unix_ms == 0 {
             return false;
         }
         valid_expectations(
@@ -82,11 +83,13 @@ pub struct SetupHandoffProgress {
     pub expected_ca_fingerprint: String,
     pub expected_instance_id: String,
     pub accepted_unix_ms: u64,
+    pub expires_at_unix_ms: u64,
 }
 
 impl SetupHandoffProgress {
     pub fn validate(&self) -> bool {
         self.schema == PROGRESS_SCHEMA
+            && self.expires_at_unix_ms > 0
             && is_canonical_uuid(&self.handoff_id)
             && valid_expectations(
                 &self.expected_ca_fingerprint,
@@ -96,7 +99,9 @@ impl SetupHandoffProgress {
     }
 
     pub fn is_expired(&self, now_unix_ms: u64) -> bool {
-        now_unix_ms.saturating_sub(self.accepted_unix_ms) >= UNPAIRED_DRAFT_MAX_AGE_SECS * 1000
+        now_unix_ms >= self.expires_at_unix_ms
+            || now_unix_ms.saturating_sub(self.accepted_unix_ms)
+                >= UNPAIRED_DRAFT_MAX_AGE_SECS * 1000
     }
 }
 
@@ -298,7 +303,7 @@ pub fn process_mailbox(
 ) -> io::Result<MailboxOutcome> {
     process_mailbox_with_hooks(
         data_root,
-        now_unix_ms,
+        || now_unix_ms,
         || ceremony_active,
         |_, _| Ok(()),
         |_, _| Ok(()),
@@ -307,7 +312,7 @@ pub fn process_mailbox(
 
 pub fn process_mailbox_live<F>(
     data_root: &Path,
-    now_unix_ms: u64,
+    clock: impl FnOnce() -> u64,
     ceremony_active: F,
 ) -> io::Result<MailboxOutcome>
 where
@@ -315,7 +320,7 @@ where
 {
     process_mailbox_with_hooks(
         data_root,
-        now_unix_ms,
+        clock,
         ceremony_active,
         |_, _| Ok(()),
         |_, _| Ok(()),
@@ -324,7 +329,7 @@ where
 
 pub fn process_mailbox_with_hooks<FProgress, FReceipt>(
     data_root: &Path,
-    now_unix_ms: u64,
+    clock: impl FnOnce() -> u64,
     ceremony_active: impl FnOnce() -> bool,
     before_progress: FProgress,
     after_receipt: FReceipt,
@@ -379,6 +384,10 @@ where
     }
 
     invalidate_matching_receipt(data_root, &mailbox.handoff_id)?;
+    let now_unix_ms = clock();
+    if now_unix_ms >= mailbox.expires_at_unix_ms {
+        return Ok(MailboxOutcome::Rejected);
+    }
     if ceremony_active() {
         return Ok(MailboxOutcome::Deferred);
     }
@@ -410,6 +419,7 @@ where
         expected_ca_fingerprint: mailbox.expected_ca_fingerprint.clone(),
         expected_instance_id: mailbox.expected_instance_id.clone(),
         accepted_unix_ms: now_unix_ms,
+        expires_at_unix_ms: mailbox.expires_at_unix_ms,
     };
     before_progress(data_root, &progress)?;
     write_atomic_json(
@@ -515,6 +525,7 @@ mod tests {
             schema: MAILBOX_SCHEMA.to_string(),
             handoff_id: id.to_string(),
             step: HANDOFF_REQUIRED_STEP,
+            expires_at_unix_ms: u64::MAX,
             pairing_link: SAMPLE_LINK.to_string(),
             expected_ca_fingerprint: SAMPLE_FP.to_string(),
             expected_instance_id: "test-instance-id".to_string(),
@@ -548,6 +559,7 @@ mod tests {
             "schema": "solstone.windows-setup-handoff.v1",
             "handoff_id": "11111111-1111-4111-8111-111111111111",
             "step": 5,
+            "expires_at_unix_ms": 301000,
             "expected_instance_id": "test-instance-id",
             "expected_ca_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "pairing_link": "https://go.solstone.app/p#0G0W000258DSX8DJRFAEBXG7308J4CT4ANK7F26YNPZEZJQYQAZ028T5CY4TQKFF"
@@ -579,6 +591,15 @@ mod tests {
     fn mailbox_validation_reject_table() {
         let valid = sample_mailbox(ID_A);
         assert!(valid.validate());
+        let mut no_deadline = valid.clone();
+        no_deadline.expires_at_unix_ms = 0;
+        assert!(!no_deadline.validate());
+        let mut missing_deadline = serde_json::to_value(&valid).unwrap();
+        missing_deadline
+            .as_object_mut()
+            .unwrap()
+            .remove("expires_at_unix_ms");
+        assert!(serde_json::from_value::<SetupHandoffMailbox>(missing_deadline).is_err());
 
         let mut bad_schema = valid.clone();
         bad_schema.schema = "solstone.setup-handoff.v1".to_string();
@@ -714,7 +735,7 @@ mod tests {
         write_mailbox(dir.path(), &sample_mailbox(ID_A));
         let error = process_mailbox_with_hooks(
             dir.path(),
-            1000,
+            || 1000,
             || false,
             |_, _| Err(io::Error::other("progress hook")),
             |_, _| Ok(()),
@@ -730,7 +751,7 @@ mod tests {
         write_mailbox(dir.path(), &sample_mailbox(ID_A));
         let error = process_mailbox_with_hooks(
             dir.path(),
-            1000,
+            || 1000,
             || false,
             |_, _| Ok(()),
             |_, _| Err(io::Error::other("receipt hook error")),
@@ -745,7 +766,7 @@ mod tests {
         write_mailbox(dir.path(), &sample_mailbox(ID_A));
         let outcome = process_mailbox_with_hooks(
             dir.path(),
-            1000,
+            || 1000,
             || false,
             |_, _| Ok(()),
             |data_root, _| {
@@ -805,6 +826,117 @@ mod tests {
     }
 
     #[test]
+    fn absolute_expiry_survives_delayed_acceptance_and_replay_then_admits_fresh_h2() {
+        let dir = TestDir::new("absolute-expiry");
+        let mut h1 = sample_mailbox(ID_A);
+        h1.expires_at_unix_ms = 301_000;
+        write_mailbox(dir.path(), &h1);
+        assert_eq!(
+            process_mailbox(dir.path(), 201_000, false).unwrap(),
+            MailboxOutcome::Accepted
+        );
+        let accepted = read_progress(dir.path()).unwrap().unwrap();
+        assert_eq!(accepted.expires_at_unix_ms, 301_000);
+        assert!(!accepted.is_expired(300_999));
+        assert!(accepted.is_expired(301_000));
+        fs::remove_file(dir.path().join(RECEIPT_FILE_NAME)).unwrap();
+        write_mailbox(dir.path(), &h1);
+        assert_eq!(
+            process_mailbox(dir.path(), 302_000, false).unwrap(),
+            MailboxOutcome::Replay
+        );
+        assert_eq!(read_progress(dir.path()).unwrap().unwrap(), accepted);
+        assert!(read_receipt_doc(dir.path()).unwrap().accepted);
+
+        let mut h2 = sample_mailbox(ID_B);
+        h2.expires_at_unix_ms = 603_000;
+        write_mailbox(dir.path(), &h2);
+        assert_eq!(
+            process_mailbox(dir.path(), 303_000, true).unwrap(),
+            MailboxOutcome::Deferred
+        );
+        assert_eq!(read_progress(dir.path()).unwrap().unwrap(), accepted);
+        assert_eq!(
+            process_mailbox(dir.path(), 304_000, false).unwrap(),
+            MailboxOutcome::Accepted
+        );
+        let current = read_progress(dir.path()).unwrap().unwrap();
+        assert_eq!(current.handoff_id, ID_B);
+        assert_eq!(current.expires_at_unix_ms, h2.expires_at_unix_ms);
+        assert!(
+            PairedState::setup_handoff_history(&dir.path().join(PAIRED_STATE_FILE_NAME))
+                .unwrap()
+                .contains(ID_A)
+        );
+    }
+
+    #[test]
+    fn expired_new_or_deferred_mailbox_never_replaces_or_gets_a_receipt() {
+        let dir = TestDir::new("deferred-expiry");
+        let mut h1 = sample_mailbox(ID_A);
+        h1.expires_at_unix_ms = 201_000;
+        write_mailbox(dir.path(), &h1);
+        assert_eq!(
+            process_mailbox(dir.path(), 1_000, false).unwrap(),
+            MailboxOutcome::Accepted
+        );
+        let incumbent = read_progress(dir.path()).unwrap().unwrap();
+        let mut h2 = sample_mailbox(ID_B);
+        h2.expires_at_unix_ms = 301_000;
+        write_mailbox(dir.path(), &h2);
+        assert_eq!(
+            process_mailbox(dir.path(), 2_000, true).unwrap(),
+            MailboxOutcome::Deferred
+        );
+        assert_eq!(
+            process_mailbox(dir.path(), 301_000, false).unwrap(),
+            MailboxOutcome::Rejected
+        );
+        assert_eq!(read_progress(dir.path()).unwrap().unwrap(), incumbent);
+        assert_ne!(read_receipt_doc(dir.path()).unwrap().handoff_id, ID_B);
+        assert!(dir.path().join(MAILBOX_FILE_NAME).exists());
+        assert!(
+            !PairedState::setup_handoff_history(&dir.path().join(PAIRED_STATE_FILE_NAME))
+                .unwrap()
+                .contains(ID_A)
+        );
+    }
+
+    #[test]
+    fn admission_samples_clock_under_lock_and_refuses_newly_expired_mailbox() {
+        let dir = TestDir::new("post-lock-expiry");
+        let mut mailbox = sample_mailbox(ID_A);
+        mailbox.expires_at_unix_ms = 301_000;
+        write_mailbox(dir.path(), &mailbox);
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.path().join(LOCK_FILE_NAME))
+            .unwrap();
+        probe.try_lock().unwrap();
+        probe.unlock().unwrap();
+        let outcome = process_mailbox_live(
+            dir.path(),
+            || {
+                assert!(matches!(
+                    probe.try_lock(),
+                    Err(std::fs::TryLockError::WouldBlock)
+                ));
+                301_000
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(outcome, MailboxOutcome::Rejected);
+        assert!(read_progress(dir.path()).unwrap().is_none());
+        assert!(!dir.path().join(RECEIPT_FILE_NAME).exists());
+        assert!(dir.path().join(MAILBOX_FILE_NAME).exists());
+        probe.try_lock().unwrap();
+    }
+
+    #[test]
     fn progress_expiry_logic() {
         let progress = SetupHandoffProgress {
             schema: PROGRESS_SCHEMA.to_string(),
@@ -813,6 +945,7 @@ mod tests {
             expected_ca_fingerprint: SAMPLE_FP.to_string(),
             expected_instance_id: "inst-1".to_string(),
             accepted_unix_ms: 10_000,
+            expires_at_unix_ms: u64::MAX,
         };
         assert!(!progress.is_expired(10_000 + 899 * 1000));
         assert!(progress.is_expired(10_000 + 900 * 1000));
@@ -880,7 +1013,7 @@ mod tests {
         assert!(read_progress(dir.path()).unwrap().is_none());
         let result = process_mailbox_with_hooks(
             dir.path(),
-            1_000,
+            || 1_000,
             || false,
             |root, _| {
                 assert!(!root.join(RECEIPT_FILE_NAME).exists());
@@ -906,6 +1039,7 @@ mod tests {
             expected_ca_fingerprint: mailbox.expected_ca_fingerprint,
             expected_instance_id: mailbox.expected_instance_id,
             accepted_unix_ms: 1_000,
+            expires_at_unix_ms: mailbox.expires_at_unix_ms,
         };
         let path = dir.path().join(PROGRESS_FILE_NAME);
         let valid = serde_json::to_value(&progress).unwrap();
@@ -960,14 +1094,14 @@ mod tests {
         let (guard, ()) = claim_pairing_admission(dir.path(), &active, || Ok(())).unwrap();
         write_mailbox(dir.path(), &sample_mailbox(ID_A));
         assert_eq!(
-            process_mailbox_live(dir.path(), 1_000, || active.load(Ordering::Acquire)).unwrap(),
+            process_mailbox_live(dir.path(), || 1_000, || active.load(Ordering::Acquire)).unwrap(),
             MailboxOutcome::Deferred
         );
         assert!(read_progress(dir.path()).unwrap().is_none());
         assert!(!dir.path().join(RECEIPT_FILE_NAME).exists());
         drop(guard);
         assert_eq!(
-            process_mailbox_live(dir.path(), 2_000, || active.load(Ordering::Acquire)).unwrap(),
+            process_mailbox_live(dir.path(), || 2_000, || active.load(Ordering::Acquire)).unwrap(),
             MailboxOutcome::Accepted
         );
     }
