@@ -156,7 +156,7 @@ and `'`/`"` in scripts that run on the box.
 ```text
 crates/
   ── pure tier ── (no `windows` in the shipped normal+build graph; #![forbid(unsafe_code)]; host-testable)
-  observer-model/      shared vocabulary + the three source traits + HealthDump
+  observer-model/      shared vocabulary + the source traits + HealthDump
   observer-segment/    5-min clock-boundary rotation + segment-key math
   observer-state/      honest reducer — Observing is computed, never settable
   observer-health/     --dump-state / /healthz serialization of HealthDump
@@ -251,11 +251,14 @@ See `docs/observer-contract-adoption.md`.
   being uninstalled. **Test launch:** low-privilege scheduled task
   (`LogonType=Interactive`) into Session 1 (FlaUI smoke only).
   Never conflate them.
-- **Handlers:** lock/unlock pause+resume; display-change re-acquires the screen
-  source; power suspend/resume pause+resume. An enabled-source fault (other than
-  access denial) drops out of `observing` into `Error` via the backoff/breaker; a
-  fault leaves observing only for an enabled source. When all sources are off,
-  the phase is `idle`.
+- **Handlers:** lock pauses, and unlock resumes only when the session is active
+  and unlocked; locked, disconnected, or unknown stays paused, and owner pause is
+  not cleared; display-change re-acquires the screen source; power suspend
+  pauses, and resume resumes only when the session is active and unlocked; locked,
+  disconnected, or unknown stays paused, and owner pause is not cleared. An
+  enabled-source fault (other than access denial) drops out of `observing` into
+  `Error` via the backoff/breaker; a fault leaves observing only for an enabled
+  source. When all sources are off, the phase is `idle`.
 - **Single instance:** a per-session named mutex; a second launch still signals
   the first and exits; a pairing link only fills the field; `--setup-handoff` only
   asks the first to read the fixed file; other second launches still surface

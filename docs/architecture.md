@@ -26,7 +26,7 @@ transitions, recovery scans, contract codegen — is tested off-Windows.
 
 - **observer-model** — shared vocabulary: `AppPhase`, `SourceKind`,
   `SourceState` (incl. the first-class `NoInputDevice`), `PauseReason`,
-  `ErrorReason`, `SegmentKey`, the three source traits, and the `HealthDump`
+  `ErrorReason`, `SegmentKey`, the source traits, and the `HealthDump`
   honest-state payload.
 - **observer-segment** — 5-minute clock-boundary rotation and segment-key math
   over a `SegmentFs` seam; property-tested with a synthetic clock.

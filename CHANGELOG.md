@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- you can now turn on desktop activity in settings to share app names, window titles and page addresses with your journal, with screen and audio off if you prefer.
+
 ### Fixed
 
 - after you pair, the pairing field is empty again instead of keeping the link you just used.

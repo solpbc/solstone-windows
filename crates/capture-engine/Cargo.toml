@@ -18,6 +18,8 @@ observer-state.workspace = true
 observer-health.workspace = true
 observer-recovery.workspace = true
 observer-lifecycle.workspace = true
+observer-exclusion.workspace = true
+observer-pl.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
 tracing.workspace = true
 

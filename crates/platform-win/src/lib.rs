@@ -32,6 +32,8 @@ pub mod about_observation;
 pub mod app_paths;
 pub mod autostart;
 #[allow(unsafe_code)]
+pub mod desktop_activity;
+#[allow(unsafe_code)]
 pub mod local_offset;
 #[allow(unsafe_code)]
 pub mod log_save;
@@ -48,6 +50,8 @@ pub mod browser_registration;
 #[allow(unsafe_code)]
 pub mod journal_document_filter;
 
+pub use desktop_activity::DesktopActivityProbe;
+pub use desktop_activity::{is_pump_degraded, is_session_eligible, set_pump_degraded};
 pub use local_offset::WindowsLocalOffset;
 
 /// The per-user data root: `%LocalAppData%\Solstone`. Falls back to a temp path
@@ -88,6 +92,9 @@ fn source_file_name(source: SourceKind) -> &'static str {
         SourceKind::Screen => SCREEN_FILE_NAME,
         SourceKind::SystemAudio => "system-audio.pcm",
         SourceKind::Mic => "mic.pcm",
+        SourceKind::DesktopActivity => {
+            unreachable!("desktop activity files are named per-process with segment key")
+        }
     }
 }
 
@@ -96,6 +103,9 @@ fn source_fmt_file_name(source: SourceKind) -> &'static str {
         SourceKind::Screen => unreachable!("screen chunks do not have audio format sidecars"),
         SourceKind::SystemAudio => "system-audio.fmt.json",
         SourceKind::Mic => "mic.fmt.json",
+        SourceKind::DesktopActivity => {
+            unreachable!("desktop activity chunks do not have audio format sidecars")
+        }
     }
 }
 
@@ -104,7 +114,28 @@ fn source_timeline_file_name(source: SourceKind) -> &'static str {
         SourceKind::Screen => unreachable!("screen chunks do not have timeline sidecars"),
         SourceKind::SystemAudio => "system-audio.timeline",
         SourceKind::Mic => "mic.timeline",
+        SourceKind::DesktopActivity => {
+            unreachable!("desktop activity chunks do not have timeline sidecars")
+        }
     }
+}
+
+fn has_retained_activity(dir: &Path) -> io::Result<bool> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with("_desktop_activity.jsonl") {
+            let meta = entry.metadata()?;
+            if meta.is_file() && meta.len() > 0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn has_sealable_media(dir: &Path) -> io::Result<bool> {
@@ -121,7 +152,7 @@ fn has_sealable_media(dir: &Path) -> io::Result<bool> {
             return Ok(true);
         }
     }
-    Ok(false)
+    has_retained_activity(dir)
 }
 
 struct PresentSealAudioSource {
@@ -234,7 +265,13 @@ fn persist_seal_len(dir: &Path, video_end_secs: Option<f64>, period_secs: u64) -
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
-    let len = observer_segment::duration::resolve_len_secs(audio_secs, video_end_secs, period_secs);
+    let retained_activity = has_retained_activity(dir)?;
+    let len = observer_segment::duration::resolve_len_secs(
+        audio_secs,
+        video_end_secs,
+        period_secs,
+        retained_activity,
+    );
     let mut file = File::create(dir.join(LEN_FILE_NAME))?;
     file.write_all(len.to_string().as_bytes())?;
     file.sync_all()?;
@@ -259,13 +296,22 @@ fn next_quarantine_path(quarantine: &Path, preferred_name: &str) -> PathBuf {
     candidate
 }
 
-fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
+fn remove_marker_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn seal_or_merge(incomplete: &Path, sealed: &Path, period_secs: u64) -> io::Result<()> {
     if !sealed.exists() {
         return fs::rename(incomplete, sealed);
     }
 
     let mut incoming_entries = Vec::new();
     let mut has_media_collision = false;
+    let mut has_new_activity = false;
 
     for entry in fs::read_dir(incomplete)? {
         let entry = entry?;
@@ -275,6 +321,12 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
             name_str != LEN_FILE_NAME && name_str != ".uploaded" && name_str != ".uploaded.tmp";
         if is_media && sealed.join(&name).exists() {
             has_media_collision = true;
+        }
+        if is_media && name_str.ends_with("_desktop_activity.jsonl") {
+            let meta = entry.metadata()?;
+            if meta.len() > 0 && !sealed.join(&name).exists() {
+                has_new_activity = true;
+            }
         }
         incoming_entries.push((entry.path(), name, is_media));
     }
@@ -294,10 +346,20 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
                 drop_entry(&source)?;
             }
         }
-        // One rename moves the whole incoming set, so a failure leaves it intact
-        // for the next attempt rather than split between here and the quarantine.
         let dest = next_quarantine_path(&quarantine, preferred);
         return fs::rename(incomplete, dest);
+    }
+
+    if has_new_activity {
+        let temp_len_path = sealed.join(format!("{LEN_FILE_NAME}.tmp"));
+        {
+            let mut file = File::create(&temp_len_path)?;
+            file.write_all(period_secs.to_string().as_bytes())?;
+            file.sync_all()?;
+        }
+        fs::rename(&temp_len_path, sealed.join(LEN_FILE_NAME))?;
+        remove_marker_if_exists(&sealed.join(".uploaded"))?;
+        remove_marker_if_exists(&sealed.join(".uploaded.tmp"))?;
     }
 
     for (source, name, _is_media) in incoming_entries {
@@ -308,7 +370,9 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path) -> io::Result<()> {
             fs::rename(&source, target)?;
         }
     }
-    fs::remove_dir(incomplete)
+    fs::remove_dir(incomplete)?;
+
+    Ok(())
 }
 
 fn remove_partial_media(dir: &Path) -> io::Result<()> {
@@ -1082,10 +1146,10 @@ impl SegmentFs for LocalSegmentFs {
     }
 
     fn write_chunk(&mut self, key: SegmentKey, chunk: &CaptureChunk) -> Result<(), Self::Error> {
-        if chunk.source == SourceKind::Screen {
+        if chunk.source == SourceKind::Screen || chunk.source == SourceKind::DesktopActivity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "screen frames are encoded through ScreenEncoder",
+                "screen frames are encoded through ScreenEncoder and desktop activity uses append_activity",
             ));
         }
         let dir = incomplete_dir(&self.root, key);
@@ -1140,6 +1204,30 @@ impl SegmentFs for LocalSegmentFs {
         Ok(())
     }
 
+    fn append_activity(
+        &mut self,
+        key: SegmentKey,
+        file_name: &str,
+        line: &str,
+    ) -> Result<(), Self::Error> {
+        let dir = incomplete_dir(&self.root, key);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(file_name);
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let committed_len = file.metadata()?.len();
+        if let Err(err) = file.write_all(line.as_bytes()) {
+            let _ = file.set_len(committed_len);
+            let _ = file.sync_data();
+            return Err(err);
+        }
+        if let Err(err) = file.sync_data() {
+            let _ = file.set_len(committed_len);
+            let _ = file.sync_data();
+            return Err(err);
+        }
+        Ok(())
+    }
+
     fn finalize(
         &mut self,
         key: SegmentKey,
@@ -1160,7 +1248,7 @@ impl SegmentFs for LocalSegmentFs {
         let dir = incomplete_dir(&self.root, key);
         seal_audio_flac(&dir)?;
         persist_seal_len(&dir, video_end_secs, DEFAULT_SEGMENT_SECS)?;
-        seal_or_merge(&dir, &sealed_dir(&self.root, key))
+        seal_or_merge(&dir, &sealed_dir(&self.root, key), DEFAULT_SEGMENT_SECS)
     }
 }
 
@@ -1248,7 +1336,7 @@ impl RecoveryFs for LocalRecoveryFs {
         remove_partial_media(dir)?;
         seal_audio_flac(dir)?;
         persist_seal_len(dir, None, self.period_secs)?;
-        seal_or_merge(dir, &sealed_dir(&self.root, seg.key))
+        seal_or_merge(dir, &sealed_dir(&self.root, seg.key), self.period_secs)
     }
 
     fn quarantine(&mut self, seg: &StaleSegment) -> Result<(), Self::Error> {
@@ -2136,7 +2224,7 @@ mod tests {
 
         // The quarantine cannot be created: the attempt fails and moves nothing.
         fs::write(root.join("quarantine"), b"not a directory").unwrap();
-        assert!(seal_or_merge(&incoming, &sealed_dir).is_err());
+        assert!(seal_or_merge(&incoming, &sealed_dir, 300).is_err());
         assert_eq!(
             fs::read(incoming.join(SCREEN_FILE_NAME)).unwrap(),
             b"conflicting screen"
@@ -2153,7 +2241,7 @@ mod tests {
 
         // The retry sets the whole incoming set aside and merges nothing.
         fs::remove_file(root.join("quarantine")).unwrap();
-        seal_or_merge(&incoming, &sealed_dir).unwrap();
+        seal_or_merge(&incoming, &sealed_dir, 300).unwrap();
         assert!(!incoming.exists());
         assert!(!sealed_dir.join(AUDIO_FILE_NAME).exists());
         assert_eq!(
@@ -2197,7 +2285,7 @@ mod tests {
         fs::write(incoming.join(SCREEN_FILE_NAME), b"conflicting screen").unwrap();
         fs::write(incoming.join(AUDIO_FILE_NAME), b"new audio").unwrap();
 
-        seal_or_merge(&incoming, &sealed_dir).unwrap();
+        seal_or_merge(&incoming, &sealed_dir, 300).unwrap();
 
         assert_eq!(
             fs::read(sealed_dir.join(SCREEN_FILE_NAME)).unwrap(),
@@ -2222,6 +2310,89 @@ mod tests {
             fs::read_to_string(root.join(format!("quarantine/10/{LEN_FILE_NAME}"))).unwrap(),
             "300"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seal_or_merge_len_rewrite_failure_leaves_incoming_recoverable() {
+        let root = temp_root("seal-merge-len-failure");
+        let _ = fs::remove_dir_all(&root);
+        let sealed_dir = root.join("10");
+        fs::create_dir_all(&sealed_dir).unwrap();
+        fs::write(sealed_dir.join(LEN_FILE_NAME), "60").unwrap();
+        fs::write(sealed_dir.join(AUDIO_FILE_NAME), b"existing audio").unwrap();
+        fs::write(sealed_dir.join(".uploaded"), b"ack").unwrap();
+
+        let incoming = root.join("10.incomplete");
+        fs::create_dir_all(&incoming).unwrap();
+        let act_name = "2026-10-19T120000_test1_desktop_activity.jsonl";
+        fs::write(incoming.join(act_name), b"{\"v\":1}\n").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&sealed_dir, fs::Permissions::from_mode(0o555)).unwrap();
+            let res = seal_or_merge(&incoming, &sealed_dir, 300);
+            assert!(res.is_err());
+            assert!(incoming.exists());
+            assert!(incoming.join(act_name).exists());
+            assert_eq!(
+                fs::read_to_string(sealed_dir.join(LEN_FILE_NAME)).unwrap(),
+                "60"
+            );
+            assert!(sealed_dir.join(".uploaded").exists());
+            fs::set_permissions(&sealed_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        seal_or_merge(&incoming, &sealed_dir, 300).unwrap();
+        assert_eq!(
+            fs::read_to_string(sealed_dir.join(LEN_FILE_NAME)).unwrap(),
+            "300"
+        );
+        assert!(sealed_dir.join(act_name).exists());
+        assert!(sealed_dir.join(AUDIO_FILE_NAME).exists());
+        assert!(!sealed_dir.join(".uploaded").exists());
+        assert!(!incoming.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn has_retained_activity_metadata_error_propagates() {
+        let root = temp_root("has-retained-act-meta-err");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let act_file = root.join("test_desktop_activity.jsonl");
+        fs::write(&act_file, b"data").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+            let res = has_retained_activity(&root);
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(res.is_err());
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_activity_failure_restores_committed_line() {
+        let root = temp_root("append-act-failure");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let k = key(20);
+        let file_name = "test_desktop_activity.jsonl";
+
+        fs_impl.append_activity(k, file_name, "line 1\n").unwrap();
+        let dir = root.join("20.incomplete");
+        let path = dir.join(file_name);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\n");
+
+        fs_impl.append_activity(k, file_name, "line 2\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\nline 2\n");
 
         let _ = fs::remove_dir_all(&root);
     }

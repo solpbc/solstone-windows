@@ -51,6 +51,12 @@ pub struct SetupConfig {
     pub start_at_login: bool,
     pub wizard: WizardStep,
     pub notice_dismissed: bool,
+    #[serde(default)]
+    pub desktop_activity: bool,
+    #[serde(default)]
+    pub desktop_activity_window_titles: bool,
+    #[serde(default)]
+    pub desktop_activity_page_addresses: bool,
 }
 
 impl SetupConfig {
@@ -63,6 +69,9 @@ impl SetupConfig {
             start_at_login: false,
             wizard: WizardStep::Mic,
             notice_dismissed: true,
+            desktop_activity: false,
+            desktop_activity_window_titles: false,
+            desktop_activity_page_addresses: false,
         }
     }
 
@@ -75,6 +84,9 @@ impl SetupConfig {
             start_at_login: true,
             wizard: WizardStep::Done,
             notice_dismissed: false,
+            desktop_activity: false,
+            desktop_activity_window_titles: false,
+            desktop_activity_page_addresses: false,
         }
     }
 
@@ -87,6 +99,9 @@ impl SetupConfig {
             start_at_login: false,
             wizard: WizardStep::Done,
             notice_dismissed: true,
+            desktop_activity: false,
+            desktop_activity_window_titles: false,
+            desktop_activity_page_addresses: false,
         }
     }
 
@@ -99,6 +114,9 @@ impl SetupConfig {
             start_at_login: self.start_at_login,
             wizard: self.wizard,
             notice_dismissed: self.notice_dismissed,
+            desktop_activity: self.desktop_activity,
+            desktop_activity_window_titles: self.desktop_activity_window_titles,
+            desktop_activity_page_addresses: self.desktop_activity_page_addresses,
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
@@ -136,6 +154,12 @@ pub struct SetupSnapshot {
     pub start_at_login: bool,
     pub wizard: WizardStep,
     pub notice_dismissed: bool,
+    #[serde(default)]
+    pub desktop_activity: bool,
+    #[serde(default)]
+    pub desktop_activity_window_titles: bool,
+    #[serde(default)]
+    pub desktop_activity_page_addresses: bool,
     #[serde(default)]
     pub failed_sources: Vec<FailedSourceWrite>,
     #[serde(default)]
@@ -178,6 +202,9 @@ impl Default for SetupSnapshot {
             start_at_login: false,
             wizard: WizardStep::Done,
             notice_dismissed: true,
+            desktop_activity: false,
+            desktop_activity_window_titles: false,
+            desktop_activity_page_addresses: false,
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
@@ -218,11 +245,12 @@ impl SetupSnapshot {
             SourceKind::Screen => self.screen,
             SourceKind::SystemAudio => self.system_audio,
             SourceKind::Mic => self.mic,
+            SourceKind::DesktopActivity => self.desktop_activity,
         }
     }
 
     pub fn any_enabled(&self) -> bool {
-        self.mic || self.system_audio || self.screen
+        self.mic || self.system_audio || self.screen || self.desktop_activity
     }
 
     pub fn deliberate_off(&self) -> bool {
@@ -429,12 +457,15 @@ pub struct SetupAuthority {
     running_mic: bool,
     running_system_audio: bool,
     running_screen: bool,
+    running_desktop_activity: bool,
     failed_sources: Vec<FailedSourceWrite>,
     wizard_save_failed: bool,
     pending_wizard: Option<WizardStep>,
     notice_save_failed: bool,
     login_apply_failed: bool,
     pending_login: Option<bool>,
+    pending_window_titles: Option<bool>,
+    pending_page_addresses: Option<bool>,
     overlay: HandoffOverlay,
 }
 
@@ -452,12 +483,15 @@ impl SetupAuthority {
             running_mic: false,
             running_system_audio: false,
             running_screen: false,
+            running_desktop_activity: false,
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
             notice_save_failed: false,
             login_apply_failed: false,
             pending_login: None,
+            pending_window_titles: None,
+            pending_page_addresses: None,
             overlay: HandoffOverlay::default(),
         }
     }
@@ -474,14 +508,20 @@ impl SetupAuthority {
         self.durable.mic = snapshot.mic;
         self.durable.system_audio = snapshot.system_audio;
         self.durable.screen = snapshot.screen;
+        self.durable.desktop_activity = snapshot.desktop_activity;
+        self.durable.desktop_activity_window_titles = snapshot.desktop_activity_window_titles;
+        self.durable.desktop_activity_page_addresses = snapshot.desktop_activity_page_addresses;
         self.running_mic = snapshot.mic;
         self.running_system_audio = snapshot.system_audio;
         self.running_screen = snapshot.screen;
+        self.running_desktop_activity = snapshot.desktop_activity;
         self.durable.wizard = snapshot.wizard;
         self.durable.notice_dismissed = snapshot.notice_dismissed;
         self.durable.start_at_login = snapshot.start_at_login;
         self.login_apply_failed = snapshot.login_apply_failed;
         self.pending_login = None;
+        self.pending_window_titles = None;
+        self.pending_page_addresses = None;
 
         self.failed_sources.clear();
         self.wizard_save_failed = false;
@@ -495,6 +535,13 @@ impl SetupAuthority {
             mic: self.running_mic,
             system_audio: self.running_system_audio,
             screen: self.running_screen,
+            desktop_activity: self.running_desktop_activity,
+            desktop_activity_window_titles: self
+                .pending_window_titles
+                .unwrap_or(self.durable.desktop_activity_window_titles),
+            desktop_activity_page_addresses: self
+                .pending_page_addresses
+                .unwrap_or(self.durable.desktop_activity_page_addresses),
             start_at_login: self.pending_login.unwrap_or(self.durable.start_at_login),
             wizard: self.durable.wizard,
             notice_dismissed: self.durable.notice_dismissed,
@@ -523,6 +570,12 @@ impl SetupAuthority {
         if self.pending_login == Some(false) {
             candidate.start_at_login = false;
         }
+        if self.pending_window_titles == Some(false) {
+            candidate.desktop_activity_window_titles = false;
+        }
+        if self.pending_page_addresses == Some(false) {
+            candidate.desktop_activity_page_addresses = false;
+        }
         for failed in self
             .failed_sources
             .iter()
@@ -532,6 +585,7 @@ impl SetupAuthority {
                 SourceKind::Screen => candidate.screen = false,
                 SourceKind::SystemAudio => candidate.system_audio = false,
                 SourceKind::Mic => candidate.mic = false,
+                SourceKind::DesktopActivity => candidate.desktop_activity = false,
             }
         }
         candidate
@@ -559,6 +613,7 @@ impl SetupAuthority {
             SourceKind::Screen => candidate.screen = enabled,
             SourceKind::SystemAudio => candidate.system_audio = enabled,
             SourceKind::Mic => candidate.mic = enabled,
+            SourceKind::DesktopActivity => candidate.desktop_activity = enabled,
         }
         if self.persist(candidate) {
             self.set_running(kind, enabled);
@@ -578,6 +633,7 @@ impl SetupAuthority {
                 SourceKind::Screen => self.durable.screen = enabled,
                 SourceKind::SystemAudio => self.durable.system_audio = enabled,
                 SourceKind::Mic => self.durable.mic = enabled,
+                SourceKind::DesktopActivity => self.durable.desktop_activity = enabled,
             }
             self.remove_failed_source(kind);
         }
@@ -621,6 +677,52 @@ impl SetupAuthority {
         saved
     }
 
+    pub fn set_desktop_activity_window_titles(&mut self, enabled: bool) -> bool {
+        let mut candidate = self.candidate_with_pending_off();
+        candidate.desktop_activity_window_titles = enabled;
+        if self.persist(candidate) {
+            self.pending_window_titles = None;
+            true
+        } else {
+            if !enabled {
+                self.pending_window_titles = Some(false);
+            } else {
+                self.pending_window_titles = None;
+            }
+            false
+        }
+    }
+
+    pub fn set_desktop_activity_page_addresses(&mut self, enabled: bool) -> bool {
+        let mut candidate = self.candidate_with_pending_off();
+        candidate.desktop_activity_page_addresses = enabled;
+        if self.persist(candidate) {
+            self.pending_page_addresses = None;
+            true
+        } else {
+            if !enabled {
+                self.pending_page_addresses = Some(false);
+            } else {
+                self.pending_page_addresses = None;
+            }
+            false
+        }
+    }
+
+    pub fn set_desktop_activity_preferences(
+        &mut self,
+        window_titles: bool,
+        page_addresses: bool,
+    ) -> bool {
+        let wt = self.set_desktop_activity_window_titles(window_titles);
+        let pa = self.set_desktop_activity_page_addresses(page_addresses);
+        wt && pa
+    }
+
+    pub fn set_preferences(&mut self, window_titles: bool, page_addresses: bool) -> bool {
+        self.set_desktop_activity_preferences(window_titles, page_addresses)
+    }
+
     pub fn retry(&mut self) -> RetryOutcome {
         let mut candidate = self.durable.clone();
         for fs in &self.failed_sources {
@@ -628,6 +730,7 @@ impl SetupAuthority {
                 SourceKind::Screen => candidate.screen = fs.attempted,
                 SourceKind::SystemAudio => candidate.system_audio = fs.attempted,
                 SourceKind::Mic => candidate.mic = fs.attempted,
+                SourceKind::DesktopActivity => candidate.desktop_activity = fs.attempted,
             }
         }
         if let Some(step) = self.pending_wizard {
@@ -639,6 +742,12 @@ impl SetupAuthority {
         if let Some(choice) = self.pending_login {
             candidate.start_at_login = choice;
         }
+        if let Some(choice) = self.pending_window_titles {
+            candidate.desktop_activity_window_titles = choice;
+        }
+        if let Some(choice) = self.pending_page_addresses {
+            candidate.desktop_activity_page_addresses = choice;
+        }
 
         let write_ok = if let Some(root) = &self.root {
             atomic_write_setup(root, &candidate).is_ok()
@@ -648,6 +757,8 @@ impl SetupAuthority {
 
         if write_ok {
             self.durable = candidate;
+            self.pending_window_titles = None;
+            self.pending_page_addresses = None;
             let mut started = Vec::new();
             let failed = std::mem::take(&mut self.failed_sources);
             for fs in failed {
@@ -678,6 +789,7 @@ impl SetupAuthority {
             SourceKind::Screen => self.running_screen = enabled,
             SourceKind::SystemAudio => self.running_system_audio = enabled,
             SourceKind::Mic => self.running_mic = enabled,
+            SourceKind::DesktopActivity => self.running_desktop_activity = enabled,
         }
     }
 

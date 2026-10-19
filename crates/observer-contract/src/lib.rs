@@ -83,6 +83,12 @@ pub mod settings {
     pub const SOURCES_SYSTEM_AUDIO_ENABLED: &str = "settings.sources.systemAudio.enabled";
     pub const SOURCES_MIC_STATE: &str = "settings.sources.mic.state";
     pub const SOURCES_MIC_ENABLED: &str = "settings.sources.mic.enabled";
+    pub const SOURCES_DESKTOP_ACTIVITY_STATE: &str = "settings.sources.desktopActivity.state";
+    pub const SOURCES_DESKTOP_ACTIVITY_ENABLED: &str = "settings.sources.desktopActivity.enabled";
+    pub const SOURCES_DESKTOP_ACTIVITY_WINDOW_TITLES: &str =
+        "settings.sources.desktopActivity.windowTitles";
+    pub const SOURCES_DESKTOP_ACTIVITY_PAGE_ADDRESSES: &str =
+        "settings.sources.desktopActivity.pageAddresses";
     pub const SOURCES_SAVE_RETRY: &str = "settings.sources.saveRetry";
     pub const SOURCES_BROWSER_OFFER: &str = "settings.sources.browser.offer";
     pub const SOURCES_BROWSER_STORES: &str = "settings.sources.browser.stores";
@@ -227,6 +233,22 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         (
             "settings.sources.mic.enabled",
             settings::SOURCES_MIC_ENABLED,
+        ),
+        (
+            "settings.sources.desktopActivity.state",
+            settings::SOURCES_DESKTOP_ACTIVITY_STATE,
+        ),
+        (
+            "settings.sources.desktopActivity.enabled",
+            settings::SOURCES_DESKTOP_ACTIVITY_ENABLED,
+        ),
+        (
+            "settings.sources.desktopActivity.windowTitles",
+            settings::SOURCES_DESKTOP_ACTIVITY_WINDOW_TITLES,
+        ),
+        (
+            "settings.sources.desktopActivity.pageAddresses",
+            settings::SOURCES_DESKTOP_ACTIVITY_PAGE_ADDRESSES,
         ),
         ("settings.sources.saveRetry", settings::SOURCES_SAVE_RETRY),
         ("settings.setup.step", settings::SETUP_STEP),

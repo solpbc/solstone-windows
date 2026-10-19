@@ -4,12 +4,16 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources};
+use observer_model::desktop_activity::{
+    DesktopActivityProbeEvent, DesktopActivitySource, DesktopActivityUrlRequest,
+    DesktopActivityUrlResult, ForegroundSnapshot,
+};
 use observer_model::{
     AudioFormat, CaptureChunk, CaptureSink, Clock, EncoderError, EncoderHealth, MicSource,
-    ScreenEncoder, ScreenFrame, ScreenSource, SourceError, SourceKind, SourceState,
+    ScreenEncoder, ScreenFrame, ScreenSource, SourceError, SourceKind, SourceState, StorageHealth,
     SystemAudioSource, AUDIO_FILE_NAME,
 };
 use observer_pl::civil::segment_key_string_local;
@@ -36,6 +40,10 @@ impl FakeClock {
 impl Clock for FakeClock {
     fn now_epoch_secs(&self) -> u64 {
         self.now.load(Ordering::Relaxed)
+    }
+
+    fn now_epoch_us(&self) -> u64 {
+        self.now.load(Ordering::Relaxed) * 1_000_000
     }
 
     fn now_monotonic_us(&self) -> u64 {
@@ -116,6 +124,65 @@ impl MicSource for ActiveMic {
     }
 }
 
+struct FakeDesktopActivityHandle {
+    state: SourceState,
+    events: Vec<DesktopActivityProbeEvent>,
+    url_results: Vec<DesktopActivityUrlResult>,
+    snapshot: Option<ForegroundSnapshot>,
+}
+
+impl Default for FakeDesktopActivityHandle {
+    fn default() -> Self {
+        Self {
+            state: SourceState::Active,
+            events: Vec::new(),
+            url_results: Vec::new(),
+            snapshot: None,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct FakeDesktopActivity {
+    inner: Arc<Mutex<FakeDesktopActivityHandle>>,
+}
+
+impl DesktopActivitySource for FakeDesktopActivity {
+    fn start(&mut self) -> Result<(), SourceError> {
+        self.inner.lock().unwrap().state = SourceState::Active;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.inner.lock().unwrap().state = SourceState::Inactive;
+    }
+
+    fn state(&self) -> SourceState {
+        self.inner.lock().unwrap().state.clone()
+    }
+
+    fn poll_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
+        std::mem::take(&mut self.inner.lock().unwrap().events)
+    }
+
+    fn request_url(&mut self, _request: DesktopActivityUrlRequest) {}
+
+    fn poll_url_result(&mut self) -> Option<DesktopActivityUrlResult> {
+        let mut lock = self.inner.lock().unwrap();
+        if lock.url_results.is_empty() {
+            None
+        } else {
+            Some(lock.url_results.remove(0))
+        }
+    }
+
+    fn cancel_url(&mut self) {}
+
+    fn foreground_snapshot(&mut self) -> Option<ForegroundSnapshot> {
+        self.inner.lock().unwrap().snapshot.clone()
+    }
+}
+
 #[derive(Default)]
 struct FakeEncoder;
 
@@ -178,6 +245,7 @@ fn sources() -> (Sources, ScreenHandle) {
             screen_encoder: Box::new(FakeEncoder),
             system_audio: Box::new(FakeSystemAudio),
             mic: Box::new(FakeMic),
+            desktop_activity: Box::new(FakeDesktopActivity::default()),
         },
         screen,
     )
@@ -191,6 +259,7 @@ fn active_mic_sources() -> Sources {
         screen_encoder: Box::new(FakeEncoder),
         system_audio: Box::new(FakeSystemAudio),
         mic: Box::new(ActiveMic),
+        desktop_activity: Box::new(FakeDesktopActivity::default()),
     }
 }
 
@@ -670,4 +739,473 @@ fn restarted_process_preserves_gap_with_reset_monotonic_clock() {
     assert!(samples[1_760..first_b].iter().all(|&sample| sample == 0));
     assert!(!root.join("quarantine").exists());
     std::fs::remove_dir_all(root).unwrap();
+}
+
+struct FaultyAppendSegmentFs {
+    inner: platform_win::LocalSegmentFs,
+    fail_append: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl observer_segment::SegmentFs for FaultyAppendSegmentFs {
+    type Error = std::io::Error;
+
+    fn existing_incomplete(
+        &mut self,
+        key: observer_model::SegmentKey,
+    ) -> Result<Option<String>, Self::Error> {
+        self.inner.existing_incomplete(key)
+    }
+
+    fn open_incomplete(&mut self, key: observer_model::SegmentKey) -> Result<String, Self::Error> {
+        self.inner.open_incomplete(key)
+    }
+
+    fn write_chunk(
+        &mut self,
+        key: observer_model::SegmentKey,
+        chunk: &CaptureChunk,
+    ) -> Result<(), Self::Error> {
+        self.inner.write_chunk(key, chunk)
+    }
+
+    fn append_activity(
+        &mut self,
+        key: observer_model::SegmentKey,
+        file_name: &str,
+        line: &str,
+    ) -> Result<(), Self::Error> {
+        if self.fail_append.load(Ordering::SeqCst) {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated append failure",
+            ))
+        } else {
+            self.inner.append_activity(key, file_name, line)
+        }
+    }
+
+    fn finalize(
+        &mut self,
+        key: observer_model::SegmentKey,
+        video_end_secs: Option<f64>,
+    ) -> Result<(), Self::Error> {
+        self.inner.finalize(key, video_end_secs)
+    }
+}
+
+#[test]
+fn activity_only_seals_segment_and_doesnt_start_media_four_off_creates_none() {
+    let root = temp_root();
+    let _ = std::fs::remove_dir_all(&root);
+    let clock = FakeClock::new(100);
+    let (mut sources1, _screen) = sources();
+    let activity_handle = FakeDesktopActivityHandle::default();
+    let fake_activity = FakeDesktopActivity {
+        inner: Arc::new(Mutex::new(activity_handle)),
+    };
+    sources1.desktop_activity = Box::new(fake_activity.clone());
+
+    let mut recovery = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+    let segment_fs = platform_win::LocalSegmentFs::new(root.clone());
+    let (mut engine, _) = CaptureEngine::new(
+        sources1,
+        EngineConfig::default(),
+        &mut recovery,
+        segment_fs,
+        Box::new(clock.clone()),
+    )
+    .unwrap();
+
+    // Part A: All 4 off creates none
+    engine.set_source_choices(observer_model::setup::SetupSnapshot {
+        mic: false,
+        system_audio: false,
+        screen: false,
+        desktop_activity: false,
+        ..Default::default()
+    });
+    engine.start();
+    clock.set(450); // Cross 300 boundary
+    engine.pump();
+    engine.stop();
+
+    let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
+    assert!(
+        store.scan().unwrap().is_empty(),
+        "all 4 off must create no segments"
+    );
+
+    // Part B: Desktop activity enabled only
+    let (mut sources2, _screen2) = sources();
+    let mut activity_handle2 = FakeDesktopActivityHandle::default();
+    activity_handle2
+        .events
+        .push(DesktopActivityProbeEvent::Foreground {
+            window_id: 1,
+            app: "TestApp".into(),
+            exe_name: "test.exe".into(),
+            title: "Test Title".into(),
+        });
+    let fake_activity2 = FakeDesktopActivity {
+        inner: Arc::new(Mutex::new(activity_handle2)),
+    };
+    sources2.desktop_activity = Box::new(fake_activity2);
+
+    let mut recovery2 = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+    let segment_fs2 = platform_win::LocalSegmentFs::new(root.clone());
+    let (mut engine2, _) = CaptureEngine::new(
+        sources2,
+        EngineConfig::default(),
+        &mut recovery2,
+        segment_fs2,
+        Box::new(clock.clone()),
+    )
+    .unwrap();
+
+    engine2.set_source_choices(observer_model::setup::SetupSnapshot {
+        mic: false,
+        system_audio: false,
+        screen: false,
+        desktop_activity: true,
+        ..Default::default()
+    });
+    clock.set(500);
+    engine2.start();
+    engine2.pump();
+    clock.set(550);
+    engine2.pump();
+    engine2.stop();
+
+    let sealed = store.scan().unwrap();
+    assert_eq!(sealed.len(), 1, "activity only must seal a segment");
+    let seg_idx = sealed[0].index;
+    assert!(
+        store.read_file(seg_idx, AUDIO_FILE_NAME).is_err(),
+        "media (audio.flac) must not be started"
+    );
+    assert!(
+        store.read_file(seg_idx, "screen.mp4").is_err(),
+        "media (screen.mp4) must not be started"
+    );
+    let files = &sealed[0].files;
+    assert!(
+        files.iter().any(|f| f.ends_with("_desktop_activity.jsonl")),
+        "activity file must be present"
+    );
+    assert_eq!(sealed[0].len_secs, Some(300), "len must be 300");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn two_runs_in_one_boundary_before_ack_and_after_ack() {
+    let root = temp_root();
+    let _ = std::fs::remove_dir_all(&root);
+    let clock = FakeClock::new(100);
+
+    // Run 1:
+    let (mut s1, _) = sources();
+    let mut ah1 = FakeDesktopActivityHandle::default();
+    ah1.events.push(DesktopActivityProbeEvent::Foreground {
+        window_id: 1,
+        app: "Run1App".into(),
+        exe_name: "app1.exe".into(),
+        title: "Title 1".into(),
+    });
+    s1.desktop_activity = Box::new(FakeDesktopActivity {
+        inner: Arc::new(Mutex::new(ah1)),
+    });
+    let mut r1 = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+    let (mut engine1, _) = CaptureEngine::new(
+        s1,
+        EngineConfig::default(),
+        &mut r1,
+        platform_win::LocalSegmentFs::new(root.clone()),
+        Box::new(clock.clone()),
+    )
+    .unwrap();
+    engine1.set_source_choices(observer_model::setup::SetupSnapshot {
+        desktop_activity: true,
+        ..Default::default()
+    });
+    engine1.start();
+    engine1.pump();
+    engine1.stop(); // Seals segment at key for t=100 (boundary 0..300)
+
+    let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
+    let sealed = store.scan().unwrap();
+    assert_eq!(sealed.len(), 1);
+    let files1 = &sealed[0].files;
+    let act_file1 = files1
+        .iter()
+        .find(|f| f.ends_with("_desktop_activity.jsonl"))
+        .unwrap()
+        .clone();
+    let content1 = store.read_file(sealed[0].index, &act_file1).unwrap();
+
+    // Run 2: in same boundary (t=200) before ack
+    clock.set(200);
+    let (mut s2, _) = sources();
+    let mut ah2 = FakeDesktopActivityHandle::default();
+    ah2.events.push(DesktopActivityProbeEvent::Foreground {
+        window_id: 2,
+        app: "Run2App".into(),
+        exe_name: "app2.exe".into(),
+        title: "Title 2".into(),
+    });
+    s2.desktop_activity = Box::new(FakeDesktopActivity {
+        inner: Arc::new(Mutex::new(ah2)),
+    });
+    let mut r2 = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+    let (mut engine2, _) = CaptureEngine::new(
+        s2,
+        EngineConfig::default(),
+        &mut r2,
+        platform_win::LocalSegmentFs::new(root.clone()),
+        Box::new(clock.clone()),
+    )
+    .unwrap();
+    engine2.set_source_choices(observer_model::setup::SetupSnapshot {
+        desktop_activity: true,
+        ..Default::default()
+    });
+    engine2.start();
+    engine2.pump();
+    engine2.stop(); // Seals again into same boundary
+
+    let sealed2 = store.scan().unwrap();
+    let files2 = &sealed2[0].files;
+    let act_files2: Vec<_> = files2
+        .iter()
+        .filter(|f| f.ends_with("_desktop_activity.jsonl"))
+        .collect();
+    assert_eq!(
+        act_files2.len(),
+        2,
+        "two activity files must exist in same sealed segment"
+    );
+    assert_ne!(act_files2[0], act_files2[1], "names must differ");
+    // Prior bytes remain:
+    assert_eq!(
+        store.read_file(sealed2[0].index, &act_file1).unwrap(),
+        content1
+    );
+
+    // Stale .uploaded simulation:
+    // Mark act_file1 as uploaded:
+    let seg_dir = root.join(sealed2[0].index.to_string());
+    std::fs::write(seg_dir.join(".uploaded"), b"").unwrap();
+
+    // Run 3: after earlier ack, still in same boundary (t=250)
+    clock.set(250);
+    let (mut s3, _) = sources();
+    let mut ah3 = FakeDesktopActivityHandle::default();
+    ah3.events.push(DesktopActivityProbeEvent::Foreground {
+        window_id: 3,
+        app: "Run3App".into(),
+        exe_name: "app3.exe".into(),
+        title: "Title 3".into(),
+    });
+    s3.desktop_activity = Box::new(FakeDesktopActivity {
+        inner: Arc::new(Mutex::new(ah3)),
+    });
+    let mut r3 = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+    let (mut engine3, _) = CaptureEngine::new(
+        s3,
+        EngineConfig::default(),
+        &mut r3,
+        platform_win::LocalSegmentFs::new(root.clone()),
+        Box::new(clock.clone()),
+    )
+    .unwrap();
+    engine3.set_source_choices(observer_model::setup::SetupSnapshot {
+        desktop_activity: true,
+        ..Default::default()
+    });
+    engine3.start();
+    engine3.pump();
+    engine3.stop();
+
+    // Stale .uploaded was removed by seal_or_merge, so segment is scanned and pending
+    let sealed3 = store.scan().unwrap();
+    assert_eq!(sealed3.len(), 1, "stale .uploaded must not hide segment");
+    let files3 = &sealed3[0].files;
+    let act_files3: Vec<_> = files3
+        .iter()
+        .filter(|f| f.ends_with("_desktop_activity.jsonl"))
+        .collect();
+    assert_eq!(act_files3.len(), 3, "three activity files must exist");
+    // Check .len file is 300
+    assert_eq!(sealed3[0].len_secs, Some(300), "len must be 300");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn multi_boundary_step_keeps_emitted_intervals_inside_delivered_segment_range() {
+    let root = temp_root();
+    let _ = std::fs::remove_dir_all(&root);
+    let clock = FakeClock::new(100);
+
+    let (mut s, _) = sources();
+    let mut ah = FakeDesktopActivityHandle::default();
+    ah.events.push(DesktopActivityProbeEvent::Foreground {
+        window_id: 1,
+        app: "LongApp".into(),
+        exe_name: "long.exe".into(),
+        title: "Long Running App".into(),
+    });
+    s.desktop_activity = Box::new(FakeDesktopActivity {
+        inner: Arc::new(Mutex::new(ah)),
+    });
+    let mut r = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+    let (mut engine, _) = CaptureEngine::new(
+        s,
+        EngineConfig::default(),
+        &mut r,
+        platform_win::LocalSegmentFs::new(root.clone()),
+        Box::new(clock.clone()),
+    )
+    .unwrap();
+    engine.set_source_choices(observer_model::setup::SetupSnapshot {
+        desktop_activity: true,
+        ..Default::default()
+    });
+    engine.start();
+    engine.pump(); // Starts in segment 0..300 at t=100
+
+    // Step across multiple boundaries sequentially
+    clock.set(350);
+    engine.pump();
+    clock.set(650);
+    engine.pump();
+    clock.set(750);
+    engine.stop();
+
+    let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
+    let sealed = store.scan().unwrap();
+    assert_eq!(
+        sealed.len(),
+        3,
+        "must have sealed 3 segments for 0..300, 300..600, 600..900"
+    );
+
+    for seg in &sealed {
+        let seg_start_ms = seg.boundary_epoch_secs * 1000;
+        let seg_end_ms = (seg.boundary_epoch_secs + DEFAULT_SEGMENT_SECS) * 1000;
+        let files = &seg.files;
+        let act_file = files
+            .iter()
+            .find(|f| f.ends_with("_desktop_activity.jsonl"))
+            .unwrap();
+        let content = String::from_utf8(store.read_file(seg.index, act_file).unwrap()).unwrap();
+        for line in content.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).unwrap();
+            let row_type = row.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if row_type == "foreground" || row_type == "activity" {
+                let ts = row.get("ts").and_then(|v| v.as_u64()).unwrap();
+                let end_ts = row.get("end_ts").and_then(|v| v.as_u64()).unwrap();
+                assert!(
+                    ts >= seg_start_ms,
+                    "row ts {ts} must be >= seg_start_ms {seg_start_ms}"
+                );
+                assert!(
+                    end_ts <= seg_end_ms,
+                    "row end_ts {end_ts} must be <= seg_end_ms {seg_end_ms}"
+                );
+            }
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn failed_append_stays_queued_fault_remains_until_retry_writes_line_once_detail_has_no_row_text() {
+    let root = temp_root();
+    let _ = std::fs::remove_dir_all(&root);
+    let clock = FakeClock::new(100);
+
+    let (mut s, _) = sources();
+    let mut ah = FakeDesktopActivityHandle::default();
+    ah.events.push(DesktopActivityProbeEvent::Foreground {
+        window_id: 42,
+        app: "SecretSuperSensitiveApp".into(),
+        exe_name: "sensitive.exe".into(),
+        title: "SuperSecretConfidentialWindowTitle".into(),
+    });
+    ah.events
+        .push(DesktopActivityProbeEvent::ForegroundUnavailable);
+    s.desktop_activity = Box::new(FakeDesktopActivity {
+        inner: Arc::new(Mutex::new(ah)),
+    });
+
+    let fail_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let faulty_fs = FaultyAppendSegmentFs {
+        inner: platform_win::LocalSegmentFs::new(root.clone()),
+        fail_append: fail_flag.clone(),
+    };
+
+    let mut r = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+    let (mut engine, _) = CaptureEngine::new(
+        s,
+        EngineConfig::default(),
+        &mut r,
+        faulty_fs,
+        Box::new(clock.clone()),
+    )
+    .unwrap();
+    engine.set_source_choices(observer_model::setup::SetupSnapshot {
+        desktop_activity: true,
+        desktop_activity_window_titles: true,
+        ..Default::default()
+    });
+    engine.start();
+
+    // Pump when fail_flag is true: append_activity fails!
+    engine.pump();
+
+    // 1. Fault remains:
+    let dump = engine.health_dump();
+    match dump.storage {
+        Some(StorageHealth { ref detail }) => {
+            // 2. Detail has NO row text (no app name, no window title)
+            assert!(!detail.contains("SecretSuperSensitiveApp"));
+            assert!(!detail.contains("SuperSecretConfidentialWindowTitle"));
+        }
+        None => panic!("expected storage fault, got None"),
+    }
+
+    // 3. Clear the failure condition and retry
+    fail_flag.store(false, Ordering::SeqCst);
+    engine.pump();
+
+    // Fault cleared
+    assert_eq!(engine.health_dump().storage, None);
+
+    // Stop and inspect sealed segment
+    engine.stop();
+
+    let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
+    let sealed = store.scan().unwrap();
+    assert_eq!(sealed.len(), 1);
+    let files = &sealed[0].files;
+    let act_file = files
+        .iter()
+        .find(|f| f.ends_with("_desktop_activity.jsonl"))
+        .unwrap();
+    let content = String::from_utf8(store.read_file(sealed[0].index, act_file).unwrap()).unwrap();
+
+    // 4. Line written ONCE
+    let fg_lines: Vec<_> = content
+        .lines()
+        .filter(|l| l.contains("SuperSecretConfidentialWindowTitle"))
+        .collect();
+    assert_eq!(
+        fg_lines.len(),
+        1,
+        "failed row must be written exactly once upon retry"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

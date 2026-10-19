@@ -63,6 +63,7 @@ pub struct StateMachine {
     screen_enabled: bool,
     system_audio_enabled: bool,
     mic_enabled: bool,
+    desktop_activity_enabled: bool,
     /// The owner's pause and a system (lock/suspend) pause are held apart, so
     /// neither ends the other: an unlock does not end the owner's pause, and the
     /// owner's deadline passing does not resume a locked session.
@@ -72,6 +73,7 @@ pub struct StateMachine {
     screen: Option<SourceState>,
     system_audio: Option<SourceState>,
     mic: Option<SourceState>,
+    desktop_activity: Option<SourceState>,
 }
 
 impl StateMachine {
@@ -92,11 +94,15 @@ impl StateMachine {
             SourceKind::Screen => self.screen_enabled,
             SourceKind::SystemAudio => self.system_audio_enabled,
             SourceKind::Mic => self.mic_enabled,
+            SourceKind::DesktopActivity => self.desktop_activity_enabled,
         }
     }
 
     pub fn any_source_enabled(&self) -> bool {
-        self.screen_enabled || self.system_audio_enabled || self.mic_enabled
+        self.screen_enabled
+            || self.system_audio_enabled
+            || self.mic_enabled
+            || self.desktop_activity_enabled
     }
 
     /// The computed phase.
@@ -136,6 +142,7 @@ impl StateMachine {
         (self.screen_enabled && is_faulted(&self.screen))
             || (self.system_audio_enabled && is_faulted(&self.system_audio))
             || (self.mic_enabled && is_faulted(&self.mic))
+            || (self.desktop_activity_enabled && is_faulted(&self.desktop_activity))
     }
 
     fn any_enabled_active(&self) -> bool {
@@ -143,6 +150,7 @@ impl StateMachine {
         (self.screen_enabled && is_active(&self.screen))
             || (self.system_audio_enabled && is_active(&self.system_audio))
             || (self.mic_enabled && is_active(&self.mic))
+            || (self.desktop_activity_enabled && is_active(&self.desktop_activity))
     }
 
     fn any_enabled_pending(&self) -> bool {
@@ -151,6 +159,7 @@ impl StateMachine {
         (self.screen_enabled && is_pending(&self.screen))
             || (self.system_audio_enabled && is_pending(&self.system_audio))
             || (self.mic_enabled && is_pending(&self.mic))
+            || (self.desktop_activity_enabled && is_pending(&self.desktop_activity))
     }
     /// The honest pause snapshot for the health dump, given the current clock.
     /// `None` when not paused; `seconds_remaining` is the live countdown to an
@@ -195,6 +204,7 @@ pub fn reduce(state: &mut StateMachine, event: AppEvent) -> AppPhase {
             SourceKind::Screen => state.screen_enabled = enabled,
             SourceKind::SystemAudio => state.system_audio_enabled = enabled,
             SourceKind::Mic => state.mic_enabled = enabled,
+            SourceKind::DesktopActivity => state.desktop_activity_enabled = enabled,
         },
         AppEvent::RequestedStart => {
             // Starting does not end a pause: an owner's pause restored at launch holds.
@@ -228,6 +238,7 @@ pub fn reduce(state: &mut StateMachine, event: AppEvent) -> AppPhase {
             SourceKind::Screen => state.screen = Some(report.state),
             SourceKind::SystemAudio => state.system_audio = Some(report.state),
             SourceKind::Mic => state.mic = Some(report.state),
+            SourceKind::DesktopActivity => state.desktop_activity = Some(report.state),
         },
         AppEvent::SourceFaulted(kind) => {
             let faulted = SourceState::Faulted {
@@ -238,6 +249,7 @@ pub fn reduce(state: &mut StateMachine, event: AppEvent) -> AppPhase {
                 SourceKind::Screen => state.screen = Some(faulted),
                 SourceKind::SystemAudio => state.system_audio = Some(faulted),
                 SourceKind::Mic => state.mic = Some(faulted),
+                SourceKind::DesktopActivity => state.desktop_activity = Some(faulted),
             }
         }
         AppEvent::StorageFaultChanged(faulted) => {
@@ -656,5 +668,26 @@ mod tests {
         let p = reduce(&mut sm, AppEvent::RequestedResume);
         assert_ne!(p, AppPhase::Paused);
         assert!(sm.pause_snapshot(0).is_none());
+    }
+
+    #[test]
+    fn observing_with_desktop_activity_only() {
+        let mut sm = StateMachine::new();
+        reduce(
+            &mut sm,
+            AppEvent::SourceEnabled {
+                kind: SourceKind::DesktopActivity,
+                enabled: true,
+            },
+        );
+        reduce(&mut sm, AppEvent::RequestedStart);
+        reduce(&mut sm, AppEvent::EngineReady);
+        assert_eq!(sm.phase(), AppPhase::Starting);
+
+        let p = reduce(
+            &mut sm,
+            AppEvent::SourceUpdated(report(SourceKind::DesktopActivity, SourceState::Active)),
+        );
+        assert_eq!(p, AppPhase::Observing);
     }
 }

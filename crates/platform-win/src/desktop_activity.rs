@@ -1,0 +1,1846 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+//! Desktop activity source probe, Win32 WinEvent/session/idle integration, and URL helper containment.
+
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use observer_model::desktop_activity::{
+    ActivityState, DesktopActivityProbeEvent, DesktopActivitySource, DesktopActivityUrlRequest,
+    DesktopActivityUrlResult,
+};
+#[cfg(windows)]
+use observer_model::ErrorReason;
+use observer_model::{SourceError, SourceState};
+
+/// Query Windows session eligibility using WTSQuerySessionInformationW.
+/// Returns true only when connect state is WTSActive and session state is unlocked.
+#[cfg(windows)]
+pub fn is_session_eligible() -> bool {
+    use windows::core::PWSTR;
+    use windows::Win32::System::RemoteDesktop::{
+        WTSActive, WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx,
+        WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_UNLOCK,
+    };
+
+    unsafe {
+        let mut buffer = PWSTR::null();
+        let mut bytes_returned = 0u32;
+        if WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &mut buffer,
+            &mut bytes_returned,
+        )
+        .is_err()
+            || buffer.is_null()
+        {
+            return false;
+        }
+
+        let info = buffer.as_ptr() as *const windows::Win32::System::RemoteDesktop::WTSINFOEXW;
+        let (conn_state, session_flags) = if (bytes_returned as usize)
+            >= std::mem::size_of::<windows::Win32::System::RemoteDesktop::WTSINFOEXW>()
+        {
+            if (*info).Level != 1 {
+                WTSFreeMemory(buffer.as_ptr() as *mut _);
+                return false;
+            }
+            let level1 = &(*info).Data.WTSInfoExLevel1;
+            (level1.SessionState, level1.SessionFlags)
+        } else {
+            WTSFreeMemory(buffer.as_ptr() as *mut _);
+            return false;
+        };
+
+        WTSFreeMemory(buffer.as_ptr() as *mut _);
+
+        conn_state == WTSActive && (session_flags as u32) == WTS_SESSIONSTATE_UNLOCK
+    }
+}
+
+#[cfg(not(windows))]
+pub fn is_session_eligible() -> bool {
+    false
+}
+
+static PUMP_DEGRADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_pump_degraded(degraded: bool) {
+    PUMP_DEGRADED.store(degraded, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn is_pump_degraded() -> bool {
+    PUMP_DEGRADED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Query FileDescription from an executable's version resource.
+#[cfg(windows)]
+pub fn get_file_description(exe_path: &str) -> Option<String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide: Vec<u16> = OsStr::new(exe_path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let size = GetFileVersionInfoSizeW(PCWSTR(wide.as_ptr()), None);
+        if size == 0 {
+            return None;
+        }
+
+        let mut data = vec![0u8; size as usize];
+        if GetFileVersionInfoW(PCWSTR(wide.as_ptr()), 0, size, data.as_mut_ptr() as *mut _).is_err()
+        {
+            return None;
+        }
+
+        let subblocks = [
+            r"\StringFileInfo\040904b0\FileDescription",
+            r"\StringFileInfo\040904e4\FileDescription",
+            r"\StringFileInfo\000004b0\FileDescription",
+        ];
+
+        for subblock in subblocks {
+            let wide_sub: Vec<u16> = OsStr::new(subblock)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut ptr = std::ptr::null_mut();
+            let mut len = 0u32;
+            if VerQueryValueW(
+                data.as_ptr() as *const _,
+                PCWSTR(wide_sub.as_ptr()),
+                &mut ptr,
+                &mut len,
+            )
+            .as_bool()
+                && !ptr.is_null()
+                && len > 1
+            {
+                let slice = std::slice::from_raw_parts(ptr as *const u16, (len - 1) as usize);
+                let desc = String::from_utf16_lossy(slice);
+                let trimmed = desc.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
+        None
+    }
+}
+
+#[cfg(not(windows))]
+pub fn get_file_description(_exe_path: &str) -> Option<String> {
+    None
+}
+
+/// Abstract UI Automation node interface for bounded tree walking.
+pub trait UiaNode: Sized {
+    fn control_type(&self) -> Result<i32, ()>;
+    fn is_password(&self) -> Result<bool, ()>;
+    fn value_property(&self) -> Option<String>;
+    fn legacy_value_property(&self) -> Option<String>;
+    fn first_child(&self) -> Option<Self>;
+    fn next_sibling(&self) -> Option<Self>;
+}
+
+enum WalkResult {
+    Found(String),
+    NotFound,
+    Stop,
+}
+
+fn walk_node<N: UiaNode>(
+    node: &N,
+    depth: usize,
+    count: &mut usize,
+    start: Instant,
+    deadline: Duration,
+) -> WalkResult {
+    *count += 1;
+    if *count > 400 || start.elapsed() >= deadline {
+        return WalkResult::Stop;
+    }
+
+    const UIA_DOCUMENT_CONTROL_TYPE_ID: i32 = 50030;
+
+    match node.is_password() {
+        Err(_) => return WalkResult::Stop,
+        Ok(true) => match node.control_type() {
+            Ok(ct) if ct == UIA_DOCUMENT_CONTROL_TYPE_ID => return WalkResult::Stop,
+            Err(_) => return WalkResult::Stop,
+            Ok(_) => return WalkResult::NotFound,
+        },
+        Ok(false) => {}
+    }
+
+    let control_type = match node.control_type() {
+        Ok(ct) => ct,
+        Err(_) => return WalkResult::NotFound,
+    };
+
+    if control_type == UIA_DOCUMENT_CONTROL_TYPE_ID {
+        let val_str = node.value_property();
+        let leg_str = node.legacy_value_property();
+
+        let norm_val = val_str.as_deref().and_then(observer_model::normalize_url);
+        let norm_leg = leg_str.as_deref().and_then(observer_model::normalize_url);
+
+        return match (norm_val, norm_leg) {
+            (Some(v), Some(l)) => {
+                if v == l {
+                    WalkResult::Found(v)
+                } else {
+                    WalkResult::Stop
+                }
+            }
+            (Some(v), None) => WalkResult::Found(v),
+            (None, Some(l)) => WalkResult::Found(l),
+            (None, None) => WalkResult::Stop,
+        };
+    }
+
+    if depth < 24 {
+        if let Some(first_child) = node.first_child() {
+            let mut curr = Some(first_child);
+            while let Some(child) = curr {
+                match walk_node(&child, depth + 1, count, start, deadline) {
+                    WalkResult::Found(url) => return WalkResult::Found(url),
+                    WalkResult::Stop => return WalkResult::Stop,
+                    WalkResult::NotFound => {}
+                }
+                curr = child.next_sibling();
+            }
+        }
+    }
+
+    WalkResult::NotFound
+}
+
+/// Pure bounded UI Automation tree walk.
+pub fn walk_uia_tree<N: UiaNode>(root: &N) -> Option<String> {
+    let start = Instant::now();
+    let deadline = Duration::from_secs(2);
+    let mut count = 0usize;
+    match walk_node(root, 0, &mut count, start, deadline) {
+        WalkResult::Found(url) => Some(url),
+        WalkResult::NotFound | WalkResult::Stop => None,
+    }
+}
+
+#[cfg(windows)]
+pub struct ProductionUiaNode {
+    pub element: windows::Win32::UI::Accessibility::IUIAutomationElement,
+    pub walker: windows::Win32::UI::Accessibility::IUIAutomationTreeWalker,
+}
+
+#[cfg(windows)]
+impl UiaNode for ProductionUiaNode {
+    fn control_type(&self) -> Result<i32, ()> {
+        unsafe {
+            self.element
+                .CurrentControlType()
+                .map(|ct| ct.0)
+                .map_err(|_| ())
+        }
+    }
+
+    fn is_password(&self) -> Result<bool, ()> {
+        unsafe {
+            self.element
+                .CurrentIsPassword()
+                .map(|b| b.as_bool())
+                .map_err(|_| ())
+        }
+    }
+
+    fn value_property(&self) -> Option<String> {
+        use windows::core::BSTR;
+        use windows::Win32::UI::Accessibility::UIA_ValueValuePropertyId;
+        unsafe {
+            self.element
+                .GetCurrentPropertyValue(UIA_ValueValuePropertyId)
+                .ok()
+                .and_then(|v| BSTR::try_from(&v).ok().map(|b| b.to_string()))
+        }
+    }
+
+    fn legacy_value_property(&self) -> Option<String> {
+        use windows::core::BSTR;
+        use windows::Win32::UI::Accessibility::UIA_LegacyIAccessibleValuePropertyId;
+        unsafe {
+            self.element
+                .GetCurrentPropertyValue(UIA_LegacyIAccessibleValuePropertyId)
+                .ok()
+                .and_then(|v| BSTR::try_from(&v).ok().map(|b| b.to_string()))
+        }
+    }
+
+    fn first_child(&self) -> Option<Self> {
+        unsafe {
+            self.walker
+                .GetFirstChildElement(&self.element)
+                .ok()
+                .map(|element| Self {
+                    element,
+                    walker: self.walker.clone(),
+                })
+        }
+    }
+
+    fn next_sibling(&self) -> Option<Self> {
+        unsafe {
+            self.walker
+                .GetNextSiblingElement(&self.element)
+                .ok()
+                .map(|element| Self {
+                    element,
+                    walker: self.walker.clone(),
+                })
+        }
+    }
+}
+
+/// Query committed URL from the first top-level browser Document via UI Automation.
+#[cfg(windows)]
+pub fn query_browser_document_url(hwnd_val: isize, exe_name: &str) -> Option<String> {
+    let lower_exe = exe_name.to_ascii_lowercase();
+    if lower_exe != "msedge.exe" && lower_exe != "chrome.exe" {
+        return None;
+    }
+
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+            COINIT_MULTITHREADED,
+        };
+        use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
+
+        if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
+            return None;
+        }
+        struct CoUninitGuard;
+        impl Drop for CoUninitGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+        let _guard = CoUninitGuard;
+
+        let automation: IUIAutomation =
+            match CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) {
+                Ok(a) => a,
+                Err(_) => return None,
+            };
+
+        let hwnd = HWND(hwnd_val as *mut _);
+        let root_elem = match automation.ElementFromHandle(hwnd) {
+            Ok(el) => el,
+            Err(_) => return None,
+        };
+
+        let walker = match automation.RawViewWalker() {
+            Ok(w) => w,
+            Err(_) => return None,
+        };
+
+        let root_node = ProductionUiaNode {
+            element: root_elem,
+            walker,
+        };
+
+        walk_uia_tree(&root_node)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn query_browser_document_url(_hwnd_val: isize, _exe_name: &str) -> Option<String> {
+    None
+}
+
+/// Same-binary URL helper entry point dispatched early from main before GUI/mutex.
+pub fn run_url_helper_cli() -> i32 {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 4 {
+        println!("UNAVAILABLE");
+        return 0;
+    }
+    let Ok(window_id) = args[2].parse::<isize>() else {
+        println!("UNAVAILABLE");
+        return 0;
+    };
+    let exe_name = &args[3];
+    match query_browser_document_url(window_id, exe_name) {
+        Some(url) => println!("URL:{url}"),
+        None => println!("UNAVAILABLE"),
+    }
+    0
+}
+
+/// Contained single worker process management for out-of-process URL querying.
+#[derive(Debug, Default)]
+pub struct UrlWorker {
+    child: Option<Child>,
+    pending_generation: Option<u64>,
+    pending_window_id: Option<u64>,
+    spawn_time: Option<Instant>,
+    reap_failed: bool,
+    killed: bool,
+}
+
+impl UrlWorker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn request_program(
+        &mut self,
+        program: &Path,
+        args: &[&str],
+        generation: u64,
+        window_id: u64,
+    ) {
+        if self.reap_failed {
+            return;
+        }
+
+        if let Some(child) = self.child.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    self.child = None;
+                    self.killed = false;
+                    self.pending_generation = None;
+                    self.pending_window_id = None;
+                    self.spawn_time = None;
+                }
+                Ok(None) => {
+                    // Child is still alive, do not spawn replacement.
+                    return;
+                }
+                Err(_) => {
+                    self.reap_failed = true;
+                    return;
+                }
+            }
+        }
+
+        let mut cmd = Command::new(program);
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::null());
+
+        match cmd.spawn() {
+            Ok(child) => {
+                self.child = Some(child);
+                self.killed = false;
+                self.pending_generation = Some(generation);
+                self.pending_window_id = Some(window_id);
+                self.spawn_time = Some(Instant::now());
+            }
+            Err(_) => {
+                self.child = None;
+                self.killed = false;
+                self.pending_generation = None;
+                self.pending_window_id = None;
+                self.spawn_time = None;
+            }
+        }
+    }
+
+    pub fn request_url(&mut self, req: DesktopActivityUrlRequest) {
+        let Ok(current_exe) = std::env::current_exe() else {
+            return;
+        };
+        let win_id_str = req.window_id.to_string();
+        let args = ["--desktop-url-helper", &win_id_str, &req.exe_name];
+        self.request_program(&current_exe, &args, req.generation, req.window_id);
+    }
+
+    pub fn poll_result(&mut self) -> Option<DesktopActivityUrlResult> {
+        if self.reap_failed {
+            if let (Some(generation), Some(window_id)) = (
+                self.pending_generation.take(),
+                self.pending_window_id.take(),
+            ) {
+                self.spawn_time = None;
+                return Some(DesktopActivityUrlResult {
+                    generation,
+                    window_id,
+                    url: None,
+                    unavailable: true,
+                });
+            }
+            return None;
+        }
+
+        let child = self.child.as_mut()?;
+        let spawn_time = self.spawn_time?;
+
+        if !self.killed && spawn_time.elapsed() >= Duration::from_secs(2) {
+            if child.kill().is_err() {
+                self.reap_failed = true;
+            } else {
+                self.killed = true;
+            }
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let generation = self.pending_generation.take();
+                let window_id = self.pending_window_id.take();
+                self.spawn_time = None;
+
+                let result = if !self.killed && status.success() {
+                    let outcome = if let Some(stdout) = child.stdout.take() {
+                        read_bounded_stdout(stdout)
+                    } else {
+                        UrlHelperOutcome::Unavailable
+                    };
+                    let (url, unavailable) = match outcome {
+                        UrlHelperOutcome::Url(u) => (Some(u), false),
+                        UrlHelperOutcome::Unavailable => (None, true),
+                    };
+                    if let (Some(generation), Some(window_id)) = (generation, window_id) {
+                        Some(DesktopActivityUrlResult {
+                            generation,
+                            window_id,
+                            url,
+                            unavailable,
+                        })
+                    } else {
+                        None
+                    }
+                } else if let (Some(generation), Some(window_id)) = (generation, window_id) {
+                    Some(DesktopActivityUrlResult {
+                        generation,
+                        window_id,
+                        url: None,
+                        unavailable: true,
+                    })
+                } else {
+                    None
+                };
+
+                self.child = None;
+                self.killed = false;
+                result
+            }
+            Ok(None) => {
+                if self.killed {
+                    if let (Some(generation), Some(window_id)) = (
+                        self.pending_generation.take(),
+                        self.pending_window_id.take(),
+                    ) {
+                        self.spawn_time = None;
+                        return Some(DesktopActivityUrlResult {
+                            generation,
+                            window_id,
+                            url: None,
+                            unavailable: true,
+                        });
+                    }
+                }
+                None
+            }
+            Err(_) => {
+                self.reap_failed = true;
+                if let (Some(generation), Some(window_id)) = (
+                    self.pending_generation.take(),
+                    self.pending_window_id.take(),
+                ) {
+                    self.spawn_time = None;
+                    return Some(DesktopActivityUrlResult {
+                        generation,
+                        window_id,
+                        url: None,
+                        unavailable: true,
+                    });
+                }
+                None
+            }
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            if !self.killed {
+                if child.kill().is_err() {
+                    self.reap_failed = true;
+                } else {
+                    self.killed = true;
+                }
+            }
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    self.child = None;
+                    self.killed = false;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.reap_failed = true;
+                }
+            }
+        }
+        self.pending_generation = None;
+        self.pending_window_id = None;
+        self.spawn_time = None;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum UrlHelperOutcome {
+    Url(String),
+    Unavailable,
+}
+
+pub fn parse_url_helper_output(bytes: &[u8]) -> UrlHelperOutcome {
+    if bytes.len() > 4096 {
+        return UrlHelperOutcome::Unavailable;
+    }
+    let newline_pos = match bytes.iter().position(|&b| b == b'\n') {
+        Some(pos) => pos,
+        None => return UrlHelperOutcome::Unavailable,
+    };
+    let line_bytes = &bytes[..newline_pos];
+    let line = match std::str::from_utf8(line_bytes) {
+        Ok(s) => s.trim_end_matches('\r').trim(),
+        Err(_) => return UrlHelperOutcome::Unavailable,
+    };
+
+    if line == "UNAVAILABLE" {
+        UrlHelperOutcome::Unavailable
+    } else if let Some(url) = line.strip_prefix("URL:") {
+        let trimmed_url = url.trim();
+        if trimmed_url.is_empty() {
+            UrlHelperOutcome::Unavailable
+        } else {
+            UrlHelperOutcome::Url(trimmed_url.to_string())
+        }
+    } else {
+        UrlHelperOutcome::Unavailable
+    }
+}
+
+#[cfg(windows)]
+pub fn read_bounded_stdout<R: std::os::windows::io::AsRawHandle + std::io::Read>(
+    mut reader: R,
+) -> UrlHelperOutcome {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Pipes::PeekNamedPipe;
+
+    let handle = HANDLE(reader.as_raw_handle() as _);
+    let start = Instant::now();
+
+    let available;
+    loop {
+        let mut avail = 0u32;
+        let peek_res = unsafe { PeekNamedPipe(handle, None, 0, None, Some(&mut avail), None) };
+        if peek_res.is_err() {
+            return UrlHelperOutcome::Unavailable;
+        }
+        if avail > 0 {
+            available = avail;
+            break;
+        }
+        if start.elapsed() >= Duration::from_millis(50) {
+            return UrlHelperOutcome::Unavailable;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    if available > 4096 {
+        return UrlHelperOutcome::Unavailable;
+    }
+
+    let to_read = available as usize;
+    let mut buf = vec![0u8; to_read];
+    if reader.read_exact(&mut buf).is_err() {
+        return UrlHelperOutcome::Unavailable;
+    }
+
+    parse_url_helper_output(&buf)
+}
+
+#[cfg(not(windows))]
+fn set_unix_nonblocking(fd: std::os::unix::io::RawFd) -> std::io::Result<()> {
+    extern "C" {
+        fn fcntl(fd: std::os::raw::c_int, cmd: std::os::raw::c_int, ...) -> std::os::raw::c_int;
+    }
+    const F_GETFL: std::os::raw::c_int = 3;
+    const F_SETFL: std::os::raw::c_int = 4;
+    const O_NONBLOCK: std::os::raw::c_int = 0o4000;
+
+    unsafe {
+        let flags = fcntl(fd, F_GETFL);
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn read_bounded_stdout<R: std::os::unix::io::AsRawFd + std::io::Read>(
+    mut reader: R,
+) -> UrlHelperOutcome {
+    use std::io::ErrorKind;
+
+    let fd = reader.as_raw_fd();
+    if set_unix_nonblocking(fd).is_err() {
+        return UrlHelperOutcome::Unavailable;
+    }
+
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 512];
+    let start = Instant::now();
+
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() > 4096 {
+                    return UrlHelperOutcome::Unavailable;
+                }
+                if buf.contains(&b'\n') {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                if start.elapsed() >= Duration::from_millis(50) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(_) => return UrlHelperOutcome::Unavailable,
+        }
+    }
+
+    parse_url_helper_output(&buf)
+}
+
+#[cfg(windows)]
+static DIRTY_FOREGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(windows)]
+static DIRTY_TITLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+const OBJID_WINDOW: i32 = 0;
+#[cfg(windows)]
+const CHILDID_SELF: i32 = 0;
+
+#[cfg(windows)]
+unsafe extern "system" fn win_event_proc(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    event: u32,
+    _hwnd: windows::Win32::Foundation::HWND,
+    id_object: i32,
+    id_child: i32,
+    _id_event_thread: u32,
+    _dwms_event_time: u32,
+) {
+    if event == windows::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND {
+        DIRTY_FOREGROUND.store(true, std::sync::atomic::Ordering::SeqCst);
+    } else if event == windows::Win32::UI::WindowsAndMessaging::EVENT_OBJECT_NAMECHANGE {
+        if id_object == OBJID_WINDOW && id_child == CHILDID_SELF {
+            DIRTY_TITLE.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct HookThread {
+    thread_id: Option<u32>,
+    join_handle: Option<std::thread::JoinHandle<()>>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum WindowTitleReadResult {
+    Complete(String),
+    Truncated,
+    Error,
+}
+
+pub fn evaluate_window_title_read(
+    buf: &[u16],
+    copied: usize,
+    last_error: u32,
+) -> WindowTitleReadResult {
+    let capacity = buf.len();
+    if capacity == 0 {
+        return WindowTitleReadResult::Error;
+    }
+    if copied == 0 {
+        if last_error == 0 {
+            WindowTitleReadResult::Complete(String::new())
+        } else {
+            WindowTitleReadResult::Error
+        }
+    } else if copied >= capacity - 1 {
+        WindowTitleReadResult::Truncated
+    } else {
+        WindowTitleReadResult::Complete(String::from_utf16_lossy(&buf[..copied]))
+    }
+}
+
+#[cfg(windows)]
+fn read_window_title(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
+    unsafe {
+        let mut buf = vec![0u16; 512];
+        windows::Win32::Foundation::SetLastError(windows::Win32::Foundation::WIN32_ERROR(0));
+        let copied =
+            windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf) as usize;
+        let last_err = windows::Win32::Foundation::GetLastError().0;
+        match evaluate_window_title_read(&buf, copied, last_err) {
+            WindowTitleReadResult::Complete(title) => Some(title),
+            WindowTitleReadResult::Error => None,
+            WindowTitleReadResult::Truncated => {
+                let mut buf = vec![0u16; 2048];
+                windows::Win32::Foundation::SetLastError(windows::Win32::Foundation::WIN32_ERROR(
+                    0,
+                ));
+                let copied = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf)
+                    as usize;
+                let last_err = windows::Win32::Foundation::GetLastError().0;
+                match evaluate_window_title_read(&buf, copied, last_err) {
+                    WindowTitleReadResult::Complete(title) => Some(title),
+                    WindowTitleReadResult::Truncated | WindowTitleReadResult::Error => None,
+                }
+            }
+        }
+    }
+}
+
+/// Real Windows desktop activity probe.
+pub struct DesktopActivityProbe {
+    state: SourceState,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    current_window_id: Option<u64>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    current_activity_state: Option<ActivityState>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    last_input_check: Option<Instant>,
+    url_worker: UrlWorker,
+    #[cfg(windows)]
+    hook_thread: Option<HookThread>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    thread_stuck: bool,
+}
+
+impl Default for DesktopActivityProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DesktopActivityProbe {
+    pub fn new() -> Self {
+        #[cfg(windows)]
+        let state = if !is_session_eligible() || is_pump_degraded() {
+            SourceState::Faulted {
+                reason: ErrorReason::Unknown,
+                detail: String::new(),
+            }
+        } else {
+            SourceState::Inactive
+        };
+        #[cfg(not(windows))]
+        let state = SourceState::Inactive;
+
+        Self {
+            state,
+            current_window_id: None,
+            current_activity_state: None,
+            last_input_check: None,
+            url_worker: UrlWorker::new(),
+            #[cfg(windows)]
+            hook_thread: None,
+            thread_stuck: false,
+        }
+    }
+}
+
+impl DesktopActivitySource for DesktopActivityProbe {
+    fn start(&mut self) -> Result<(), SourceError> {
+        #[cfg(windows)]
+        {
+            if self.thread_stuck || !is_session_eligible() || is_pump_degraded() {
+                self.state = SourceState::Faulted {
+                    reason: ErrorReason::Unknown,
+                    detail: String::new(),
+                };
+                return Ok(());
+            }
+
+            if let Some(thread) = &mut self.hook_thread {
+                if let Some(handle) = thread.join_handle.as_ref() {
+                    if handle.is_finished() {
+                        let _ = thread.join_handle.take().unwrap().join();
+                        self.hook_thread = None;
+                    } else {
+                        self.thread_stuck = true;
+                        self.state = SourceState::Faulted {
+                            reason: ErrorReason::Unknown,
+                            detail: String::new(),
+                        };
+                        return Ok(());
+                    }
+                }
+            }
+
+            let published_thread_id = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let published_thread_id_clone = published_thread_id.clone();
+            let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let shutdown_clone = shutdown.clone();
+
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<u32, ()>>();
+
+            let join_handle = std::thread::spawn(move || unsafe {
+                let thread_id = windows::Win32::System::Threading::GetCurrentThreadId();
+                published_thread_id_clone.store(thread_id, std::sync::atomic::Ordering::SeqCst);
+
+                let hook1 = windows::Win32::UI::Accessibility::SetWinEventHook(
+                    windows::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND,
+                    windows::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND,
+                    windows::Win32::Foundation::HMODULE::default(),
+                    Some(win_event_proc),
+                    0,
+                    0,
+                    windows::Win32::UI::WindowsAndMessaging::WINEVENT_OUTOFCONTEXT,
+                );
+                let hook2 = windows::Win32::UI::Accessibility::SetWinEventHook(
+                    windows::Win32::UI::WindowsAndMessaging::EVENT_OBJECT_NAMECHANGE,
+                    windows::Win32::UI::WindowsAndMessaging::EVENT_OBJECT_NAMECHANGE,
+                    windows::Win32::Foundation::HMODULE::default(),
+                    Some(win_event_proc),
+                    0,
+                    0,
+                    windows::Win32::UI::WindowsAndMessaging::WINEVENT_OUTOFCONTEXT,
+                );
+
+                if hook1.is_invalid() || hook2.is_invalid() {
+                    if !hook1.is_invalid() {
+                        let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook1);
+                    }
+                    if !hook2.is_invalid() {
+                        let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook2);
+                    }
+                    let _ = ready_tx.send(Err(()));
+                    return;
+                }
+
+                let _ = ready_tx.send(Ok(thread_id));
+
+                let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+                loop {
+                    if shutdown_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    let res = windows::Win32::UI::WindowsAndMessaging::GetMessageW(
+                        &mut msg,
+                        windows::Win32::Foundation::HWND::default(),
+                        0,
+                        0,
+                    );
+                    if res.0 == 0 || res.0 == -1 {
+                        break;
+                    }
+                    let _ = windows::Win32::UI::WindowsAndMessaging::TranslateMessage(&msg);
+                    windows::Win32::UI::WindowsAndMessaging::DispatchMessageW(&msg);
+                }
+
+                let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook1);
+                let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook2);
+            });
+
+            match ready_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(Ok(thread_id)) => {
+                    self.hook_thread = Some(HookThread {
+                        thread_id: Some(thread_id),
+                        join_handle: Some(join_handle),
+                        shutdown,
+                    });
+                    self.state = SourceState::Active;
+                    self.last_input_check = Some(Instant::now());
+
+                    DIRTY_FOREGROUND.store(true, std::sync::atomic::Ordering::SeqCst);
+
+                    Ok(())
+                }
+                _ => {
+                    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let tid = published_thread_id.load(std::sync::atomic::Ordering::SeqCst);
+                    if tid != 0 {
+                        unsafe {
+                            let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                                tid,
+                                windows::Win32::UI::WindowsAndMessaging::WM_QUIT,
+                                windows::Win32::Foundation::WPARAM(0),
+                                windows::Win32::Foundation::LPARAM(0),
+                            );
+                        }
+                    }
+                    let finished = join_handle.is_finished();
+                    self.hook_thread = Some(HookThread {
+                        thread_id: if tid != 0 { Some(tid) } else { None },
+                        join_handle: Some(join_handle),
+                        shutdown,
+                    });
+                    if !finished {
+                        self.thread_stuck = true;
+                    }
+                    self.state = SourceState::Faulted {
+                        reason: ErrorReason::Unknown,
+                        detail: String::new(),
+                    };
+                    Ok(())
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            self.state = SourceState::Inactive;
+            Ok(())
+        }
+    }
+
+    fn stop(&mut self) {
+        self.url_worker.cancel();
+        #[cfg(windows)]
+        {
+            if let Some(thread) = &mut self.hook_thread {
+                thread
+                    .shutdown
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(tid) = thread.thread_id {
+                    unsafe {
+                        let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                            tid,
+                            windows::Win32::UI::WindowsAndMessaging::WM_QUIT,
+                            windows::Win32::Foundation::WPARAM(0),
+                            windows::Win32::Foundation::LPARAM(0),
+                        );
+                    }
+                }
+                let mut joined = false;
+                if let Some(handle) = thread.join_handle.as_ref() {
+                    for _ in 0..50 {
+                        if handle.is_finished() {
+                            joined = true;
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+                if joined {
+                    let _ = thread.join_handle.take().unwrap().join();
+                    self.hook_thread = None;
+                } else {
+                    self.thread_stuck = true;
+                    self.state = SourceState::Faulted {
+                        reason: ErrorReason::Unknown,
+                        detail: String::new(),
+                    };
+                    return;
+                }
+            }
+        }
+        self.state = SourceState::Inactive;
+        self.current_window_id = None;
+        self.current_activity_state = None;
+    }
+
+    fn state(&self) -> SourceState {
+        #[cfg(windows)]
+        if !is_session_eligible() || is_pump_degraded() {
+            return SourceState::Faulted {
+                reason: ErrorReason::Unknown,
+                detail: String::new(),
+            };
+        }
+        self.state.clone()
+    }
+
+    fn poll_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
+        if self.state != SourceState::Active {
+            return Vec::new();
+        }
+
+        #[cfg(windows)]
+        {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+            let mut events = Vec::new();
+
+            if !is_session_eligible() || is_pump_degraded() {
+                self.url_worker.cancel();
+                DIRTY_FOREGROUND.store(false, std::sync::atomic::Ordering::SeqCst);
+                DIRTY_TITLE.store(false, std::sync::atomic::Ordering::SeqCst);
+                self.current_window_id = None;
+                if self.current_activity_state != Some(ActivityState::Locked) {
+                    self.current_activity_state = Some(ActivityState::Locked);
+                    events.push(DesktopActivityProbeEvent::ActivityStateChanged(
+                        ActivityState::Locked,
+                    ));
+                }
+                return events;
+            }
+
+            // Idle timer check (5s cadence, 60s idle threshold)
+            let now = Instant::now();
+            let check_idle = match self.last_input_check {
+                None => true,
+                Some(last) => now.duration_since(last) >= Duration::from_secs(5),
+            };
+
+            if check_idle {
+                self.last_input_check = Some(now);
+                unsafe {
+                    let mut lii = LASTINPUTINFO {
+                        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+                        dwTime: 0,
+                    };
+                    if GetLastInputInfo(&mut lii).as_bool() {
+                        let tick_count = windows::Win32::System::SystemInformation::GetTickCount();
+                        let idle_ms = tick_count.wrapping_sub(lii.dwTime);
+                        let new_state = if idle_ms >= 60_000 {
+                            ActivityState::Idle
+                        } else {
+                            ActivityState::Active
+                        };
+                        if self.current_activity_state != Some(new_state) {
+                            self.current_activity_state = Some(new_state);
+                            events.push(DesktopActivityProbeEvent::ActivityStateChanged(new_state));
+                        }
+                    } else {
+                        self.current_activity_state = None;
+                        events.push(DesktopActivityProbeEvent::IdleUnavailable);
+                    }
+                }
+            }
+
+            let dirty_fg = DIRTY_FOREGROUND.swap(false, std::sync::atomic::Ordering::SeqCst);
+            let dirty_title = DIRTY_TITLE.swap(false, std::sync::atomic::Ordering::SeqCst);
+
+            if dirty_fg || dirty_title {
+                let fg_hwnd =
+                    unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+                if fg_hwnd.0 == 0 as *mut _ {
+                    if self.current_window_id.is_some() {
+                        self.current_window_id = None;
+                        events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
+                    }
+                } else {
+                    let window_id = fg_hwnd.0 as u64;
+                    let title = match read_window_title(fg_hwnd) {
+                        Some(t) => t,
+                        None => {
+                            self.current_window_id = None;
+                            events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
+                            return events;
+                        }
+                    };
+
+                    let mut pid = 0u32;
+                    unsafe {
+                        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                            fg_hwnd,
+                            Some(&mut pid),
+                        );
+                    }
+
+                    let exe_path = get_process_image_path(pid);
+                    let (app, exe_name) = match exe_path {
+                        Some(ref path_str) => {
+                            let path = Path::new(path_str);
+                            let exe_n = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            let file_desc = get_file_description(path_str);
+                            let app_name = file_desc.unwrap_or_else(|| exe_n.clone());
+                            (app_name, exe_n)
+                        }
+                        None => {
+                            self.current_window_id = None;
+                            events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
+                            return events;
+                        }
+                    };
+
+                    self.current_window_id = Some(window_id);
+                    events.push(DesktopActivityProbeEvent::Foreground {
+                        window_id,
+                        app,
+                        exe_name,
+                        title,
+                    });
+                }
+            }
+
+            events
+        }
+        #[cfg(not(windows))]
+        {
+            Vec::new()
+        }
+    }
+
+    fn request_url(&mut self, request: DesktopActivityUrlRequest) {
+        self.url_worker.request_url(request);
+    }
+
+    fn poll_url_result(&mut self) -> Option<DesktopActivityUrlResult> {
+        self.url_worker.poll_result()
+    }
+
+    fn cancel_url(&mut self) {
+        self.url_worker.cancel();
+    }
+
+    fn foreground_snapshot(
+        &mut self,
+    ) -> Option<observer_model::desktop_activity::ForegroundSnapshot> {
+        #[cfg(windows)]
+        {
+            if !is_session_eligible() || is_pump_degraded() {
+                return None;
+            }
+            let fg_hwnd = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+            if fg_hwnd.0 == 0 as *mut _ {
+                return None;
+            }
+            let window_id = fg_hwnd.0 as u64;
+            let title = read_window_title(fg_hwnd)?;
+            let mut pid = 0u32;
+            unsafe {
+                windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                    fg_hwnd,
+                    Some(&mut pid),
+                );
+            }
+            let exe_path = get_process_image_path(pid)?;
+            let path = Path::new(&exe_path);
+            let exe_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let file_desc = get_file_description(&exe_path);
+            let app = file_desc.unwrap_or_else(|| exe_name.clone());
+            Some(observer_model::desktop_activity::ForegroundSnapshot {
+                window_id,
+                app,
+                exe_name,
+                title,
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+fn get_process_image_path(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return None;
+    }
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = vec![0u16; 1024];
+        let mut size = buf.len() as u32;
+        let success = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        );
+        let _ = CloseHandle(handle);
+        if success.is_ok() && size > 0 {
+            Some(String::from_utf16_lossy(&buf[..size as usize]))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct MockArena {
+        nodes: Vec<MockNodeData>,
+        value_reads: usize,
+        next_sibling_calls: usize,
+        first_child_calls: usize,
+    }
+
+    #[derive(Clone)]
+    struct MockNodeData {
+        control_type: Result<i32, ()>,
+        is_password: Result<bool, ()>,
+        value: Option<String>,
+        legacy_value: Option<String>,
+        first_child: Option<usize>,
+        next_sibling: Option<usize>,
+    }
+
+    #[derive(Clone)]
+    struct MockNode {
+        id: usize,
+        arena: Arc<Mutex<MockArena>>,
+    }
+
+    impl UiaNode for MockNode {
+        fn control_type(&self) -> Result<i32, ()> {
+            let arena = self.arena.lock().unwrap();
+            arena.nodes[self.id].control_type
+        }
+
+        fn is_password(&self) -> Result<bool, ()> {
+            let arena = self.arena.lock().unwrap();
+            arena.nodes[self.id].is_password
+        }
+
+        fn value_property(&self) -> Option<String> {
+            let mut arena = self.arena.lock().unwrap();
+            arena.value_reads += 1;
+            arena.nodes[self.id].value.clone()
+        }
+
+        fn legacy_value_property(&self) -> Option<String> {
+            let arena = self.arena.lock().unwrap();
+            arena.nodes[self.id].legacy_value.clone()
+        }
+
+        fn first_child(&self) -> Option<Self> {
+            let mut arena = self.arena.lock().unwrap();
+            arena.first_child_calls += 1;
+            arena.nodes[self.id].first_child.map(|id| MockNode {
+                id,
+                arena: self.arena.clone(),
+            })
+        }
+
+        fn next_sibling(&self) -> Option<Self> {
+            let mut arena = self.arena.lock().unwrap();
+            arena.next_sibling_calls += 1;
+            arena.nodes[self.id].next_sibling.map(|id| MockNode {
+                id,
+                arena: self.arena.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn test_500_siblings_stop_by_400_and_do_not_read_the_rest() {
+        let mut nodes = Vec::new();
+
+        // Node 0: root
+        nodes.push(MockNodeData {
+            control_type: Ok(50000), // Group
+            is_password: Ok(false),
+            value: None,
+            legacy_value: None,
+            first_child: Some(1),
+            next_sibling: None,
+        });
+
+        // 500 siblings
+        for i in 1..=500 {
+            let next = if i < 500 { Some(i + 1) } else { None };
+            nodes.push(MockNodeData {
+                control_type: Ok(50004), // Edit box
+                is_password: Ok(false),
+                value: None,
+                legacy_value: None,
+                first_child: None,
+                next_sibling: next,
+            });
+        }
+
+        let arena = Arc::new(Mutex::new(MockArena {
+            nodes,
+            value_reads: 0,
+            next_sibling_calls: 0,
+            first_child_calls: 0,
+        }));
+
+        let root = MockNode {
+            id: 0,
+            arena: arena.clone(),
+        };
+
+        let result = walk_uia_tree(&root);
+        assert_eq!(result, None);
+
+        let calls = arena.lock().unwrap().next_sibling_calls;
+        assert!(calls <= 400, "expected <= 400 sibling calls, got {calls}");
+        assert!(calls < 500, "expected fewer than 500 calls, got {calls}");
+    }
+
+    #[test]
+    fn test_password_node_does_not_get_value_read_and_children_not_walked() {
+        let mut nodes = Vec::new();
+
+        // Node 0: root
+        nodes.push(MockNodeData {
+            control_type: Ok(50000),
+            is_password: Ok(false),
+            value: None,
+            legacy_value: None,
+            first_child: Some(1),
+            next_sibling: None,
+        });
+
+        // Node 1: Password field with Document child
+        nodes.push(MockNodeData {
+            control_type: Ok(50030), // Document
+            is_password: Ok(true),   // Password!
+            value: Some("https://password-leak.com".into()),
+            legacy_value: None,
+            first_child: Some(2),
+            next_sibling: None,
+        });
+
+        // Node 2: Child of password node
+        nodes.push(MockNodeData {
+            control_type: Ok(50030),
+            is_password: Ok(false),
+            value: Some("https://child-doc.com".into()),
+            legacy_value: None,
+            first_child: None,
+            next_sibling: None,
+        });
+
+        let arena = Arc::new(Mutex::new(MockArena {
+            nodes,
+            value_reads: 0,
+            next_sibling_calls: 0,
+            first_child_calls: 0,
+        }));
+
+        let root = MockNode {
+            id: 0,
+            arena: arena.clone(),
+        };
+
+        let result = walk_uia_tree(&root);
+        assert_eq!(result, None);
+
+        let lock = arena.lock().unwrap();
+        assert_eq!(lock.value_reads, 0, "password value must never be read");
+        assert_eq!(
+            lock.first_child_calls, 1,
+            "children of password node must not be walked"
+        );
+    }
+
+    #[test]
+    fn test_focused_and_blurred_address_edit_box_drafts_are_not_the_result() {
+        let mut nodes = Vec::new();
+
+        // Node 0: root
+        nodes.push(MockNodeData {
+            control_type: Ok(50000),
+            is_password: Ok(false),
+            value: None,
+            legacy_value: None,
+            first_child: Some(1),
+            next_sibling: None,
+        });
+
+        // Node 1: addressEditBox (Edit ControlType 50004) with draft URL
+        nodes.push(MockNodeData {
+            control_type: Ok(50004),
+            is_password: Ok(false),
+            value: Some("https://draft-in-address-bar.com/draft".into()),
+            legacy_value: Some("https://draft-in-address-bar.com/draft".into()),
+            first_child: None,
+            next_sibling: Some(2),
+        });
+
+        // Node 2: Document (ControlType 50030) with committed URL
+        nodes.push(MockNodeData {
+            control_type: Ok(50030),
+            is_password: Ok(false),
+            value: Some("https://committed.example.com/page?query#frag".into()),
+            legacy_value: Some("https://committed.example.com/page?query#frag".into()),
+            first_child: None,
+            next_sibling: None,
+        });
+
+        let arena = Arc::new(Mutex::new(MockArena {
+            nodes,
+            value_reads: 0,
+            next_sibling_calls: 0,
+            first_child_calls: 0,
+        }));
+
+        let root = MockNode {
+            id: 0,
+            arena: arena.clone(),
+        };
+
+        let result = walk_uia_tree(&root);
+        assert_eq!(result, Some("https://committed.example.com/page".into()));
+    }
+
+    #[test]
+    fn test_document_value_admitted_when_present_and_withheld_when_absent() {
+        // 1. Present
+        let nodes1 = vec![
+            MockNodeData {
+                control_type: Ok(50000),
+                is_password: Ok(false),
+                value: None,
+                legacy_value: None,
+                first_child: Some(1),
+                next_sibling: None,
+            },
+            MockNodeData {
+                control_type: Ok(50030),
+                is_password: Ok(false),
+                value: Some("https://example.com/foo".into()),
+                legacy_value: None,
+                first_child: None,
+                next_sibling: None,
+            },
+        ];
+        let root1 = MockNode {
+            id: 0,
+            arena: Arc::new(Mutex::new(MockArena {
+                nodes: nodes1,
+                value_reads: 0,
+                next_sibling_calls: 0,
+                first_child_calls: 0,
+            })),
+        };
+        assert_eq!(
+            walk_uia_tree(&root1),
+            Some("https://example.com/foo".into())
+        );
+
+        // 2. Absent (no value or legacy value)
+        let nodes2 = vec![
+            MockNodeData {
+                control_type: Ok(50000),
+                is_password: Ok(false),
+                value: None,
+                legacy_value: None,
+                first_child: Some(1),
+                next_sibling: None,
+            },
+            MockNodeData {
+                control_type: Ok(50030),
+                is_password: Ok(false),
+                value: None,
+                legacy_value: None,
+                first_child: None,
+                next_sibling: None,
+            },
+        ];
+        let root2 = MockNode {
+            id: 0,
+            arena: Arc::new(Mutex::new(MockArena {
+                nodes: nodes2,
+                value_reads: 0,
+                next_sibling_calls: 0,
+                first_child_calls: 0,
+            })),
+        };
+        assert_eq!(walk_uia_tree(&root2), None);
+
+        // 3. Withheld when both values normalize and differ
+        let nodes3 = vec![
+            MockNodeData {
+                control_type: Ok(50000),
+                is_password: Ok(false),
+                value: None,
+                legacy_value: None,
+                first_child: Some(1),
+                next_sibling: None,
+            },
+            MockNodeData {
+                control_type: Ok(50030),
+                is_password: Ok(false),
+                value: Some("https://site-a.com/".into()),
+                legacy_value: Some("https://site-b.com/".into()),
+                first_child: None,
+                next_sibling: None,
+            },
+        ];
+        let root3 = MockNode {
+            id: 0,
+            arena: Arc::new(Mutex::new(MockArena {
+                nodes: nodes3,
+                value_reads: 0,
+                next_sibling_calls: 0,
+                first_child_calls: 0,
+            })),
+        };
+        assert_eq!(walk_uia_tree(&root3), None);
+    }
+
+    #[test]
+    fn test_two_document_siblings_first_password_stops_walk_second_not_read() {
+        let mut nodes = Vec::new();
+
+        // Node 0: root
+        nodes.push(MockNodeData {
+            control_type: Ok(50000), // Group
+            is_password: Ok(false),
+            value: None,
+            legacy_value: None,
+            first_child: Some(1),
+            next_sibling: None,
+        });
+
+        // Node 1: First Document (ControlType 50030), is_password Ok(true)
+        nodes.push(MockNodeData {
+            control_type: Ok(50030), // Document
+            is_password: Ok(true),   // Secure password node
+            value: Some("https://should-not-read-pass.com".into()),
+            legacy_value: None,
+            first_child: None,
+            next_sibling: Some(2),
+        });
+
+        // Node 2: Second Document (ControlType 50030), is_password Ok(false), has valid URL
+        nodes.push(MockNodeData {
+            control_type: Ok(50030), // Document
+            is_password: Ok(false),
+            value: Some("https://example.com/should-not-read".into()),
+            legacy_value: Some("https://example.com/should-not-read".into()),
+            first_child: None,
+            next_sibling: None,
+        });
+
+        let arena = Arc::new(Mutex::new(MockArena {
+            nodes,
+            value_reads: 0,
+            next_sibling_calls: 0,
+            first_child_calls: 0,
+        }));
+
+        let root = MockNode {
+            id: 0,
+            arena: arena.clone(),
+        };
+
+        let result = walk_uia_tree(&root);
+        assert_eq!(
+            result, None,
+            "walk must return None when first document is password"
+        );
+
+        let lock = arena.lock().unwrap();
+        assert_eq!(
+            lock.value_reads, 0,
+            "no value reads allowed on either document"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn containment_hung_stop_returns_without_waiting() {
+        let mut worker = UrlWorker::new();
+        worker.request_program(Path::new("ping"), &["-n", "60", "127.0.0.1"], 1, 123);
+
+        let start = Instant::now();
+        worker.cancel();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "cancel took too long: {elapsed:?}"
+        );
+
+        // A second request_program does not spawn while that child is unreaped
+        worker.request_program(Path::new("ping"), &["-n", "60", "127.0.0.1"], 2, 456);
+        assert_ne!(
+            worker.pending_generation,
+            Some(2),
+            "second request must not spawn while unreaped"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_bounded_stdout_returns_while_descendant_holds_write_end() {
+        let mut child = Command::new("cmd")
+            .arg("/c")
+            .arg("echo URL:https://example.com/held& start /b ping -n 6 127.0.0.1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn cmd");
+
+        let status = child.wait().expect("wait on cmd parent");
+        assert!(status.success());
+
+        let stdout = child.stdout.take().expect("piped stdout");
+
+        let start = Instant::now();
+        let outcome = read_bounded_stdout(stdout);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "read_bounded_stdout took too long: {elapsed:?}"
+        );
+        assert_eq!(
+            outcome,
+            UrlHelperOutcome::Url("https://example.com/held".to_string())
+        );
+    }
+
+    #[test]
+    fn test_evaluate_window_title_read_empty_and_errors() {
+        let buf = [0u16; 512];
+        // Empty title with last_error == 0 -> Complete("")
+        assert_eq!(
+            evaluate_window_title_read(&buf, 0, 0),
+            WindowTitleReadResult::Complete(String::new())
+        );
+
+        // Empty title with last_error != 0 -> Error
+        assert_eq!(
+            evaluate_window_title_read(&buf, 0, 123),
+            WindowTitleReadResult::Error
+        );
+
+        // Zero capacity buffer -> Error
+        assert_eq!(
+            evaluate_window_title_read(&[], 0, 0),
+            WindowTitleReadResult::Error
+        );
+    }
+
+    #[test]
+    fn test_evaluate_window_title_read_truncation_and_success() {
+        let mut buf = [0u16; 512];
+        for i in 0..510 {
+            buf[i] = 'a' as u16;
+        }
+
+        // Fits comfortably in buffer (copied < capacity - 1)
+        assert_eq!(
+            evaluate_window_title_read(&buf, 10, 0),
+            WindowTitleReadResult::Complete("aaaaaaaaaa".to_string())
+        );
+
+        // Fills buffer to capacity - 1 -> Truncated
+        assert_eq!(
+            evaluate_window_title_read(&buf, 511, 0),
+            WindowTitleReadResult::Truncated
+        );
+
+        // Fills buffer to capacity -> Truncated
+        assert_eq!(
+            evaluate_window_title_read(&buf, 512, 0),
+            WindowTitleReadResult::Truncated
+        );
+    }
+
+    #[test]
+    fn test_parse_url_helper_output() {
+        assert_eq!(
+            parse_url_helper_output(b"URL:https://example.com/foo\n"),
+            UrlHelperOutcome::Url("https://example.com/foo".to_string())
+        );
+        assert_eq!(
+            parse_url_helper_output(b"URL:https://example.com/foo\r\n"),
+            UrlHelperOutcome::Url("https://example.com/foo".to_string())
+        );
+        assert_eq!(
+            parse_url_helper_output(b"UNAVAILABLE\n"),
+            UrlHelperOutcome::Unavailable
+        );
+        assert_eq!(
+            parse_url_helper_output(b"UNAVAILABLE\r\n"),
+            UrlHelperOutcome::Unavailable
+        );
+        assert_eq!(
+            parse_url_helper_output(b"URL:https://example.com/foo"),
+            UrlHelperOutcome::Unavailable
+        );
+        assert_eq!(
+            parse_url_helper_output(b"URL:   \n"),
+            UrlHelperOutcome::Unavailable
+        );
+        assert_eq!(
+            parse_url_helper_output(b"unknown output\n"),
+            UrlHelperOutcome::Unavailable
+        );
+        assert_eq!(
+            parse_url_helper_output(&vec![b'a'; 4097]),
+            UrlHelperOutcome::Unavailable
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_pipe_writer_stays_open_reader_returns_without_blocking() {
+        use std::io::Write;
+        use std::os::unix::io::FromRawFd;
+
+        extern "C" {
+            #[link_name = "pipe"]
+            fn libc_pipe(fds: *mut std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+
+        let mut fds = [0 as std::os::raw::c_int; 2];
+        let ret = unsafe { libc_pipe(fds.as_mut_ptr()) };
+        assert_eq!(ret, 0);
+
+        let mut read_file = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+        let mut write_file = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+
+        // Write a complete line but keep write end open
+        write_file
+            .write_all(b"URL:https://example.com/unclosed_writer\n")
+            .unwrap();
+        write_file.flush().unwrap();
+
+        let start = Instant::now();
+        let outcome = read_bounded_stdout(read_file);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "read took too long: {elapsed:?}"
+        );
+        assert_eq!(
+            outcome,
+            UrlHelperOutcome::Url("https://example.com/unclosed_writer".to_string())
+        );
+
+        drop(write_file);
+    }
+}

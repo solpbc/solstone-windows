@@ -36,7 +36,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
 
+use observer_model::desktop_activity::{DesktopActivityRow, DesktopActivitySource};
 pub use observer_model::BREAKER_OPEN_MARKER;
+
+pub mod desktop_activity;
+use desktop_activity::DesktopActivityScheduler;
 
 mod pause_store;
 pub use pause_store::{FilePauseStore, HeldPause, PauseStore};
@@ -97,6 +101,10 @@ pub enum EngineCommand {
     SetSourceEnabled {
         kind: SourceKind,
         enabled: bool,
+    },
+    SetDesktopActivityPreferences {
+        window_titles: bool,
+        page_addresses: bool,
     },
     ClearPreviews,
 }
@@ -226,6 +234,7 @@ pub struct Sources {
     pub screen_encoder: Box<dyn ScreenEncoder>,
     pub system_audio: Box<dyn SystemAudioSource>,
     pub mic: Box<dyn MicSource>,
+    pub desktop_activity: Box<dyn DesktopActivitySource>,
 }
 
 /// Engine configuration.
@@ -279,6 +288,9 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     setup: SetupSnapshot,
     setup_authority: Arc<Mutex<SetupAuthority>>,
     proof: Arc<Mutex<ProofGate>>,
+    desktop_activity_scheduler: DesktopActivityScheduler,
+    pending_activity_rows: std::collections::VecDeque<String>,
+    activity_batch_written: bool,
 }
 
 impl<SFS> CaptureEngine<SFS>
@@ -305,12 +317,14 @@ where
             (SourceKind::Screen, Arc::new(AtomicU64::new(0))),
             (SourceKind::SystemAudio, Arc::new(AtomicU64::new(0))),
             (SourceKind::Mic, Arc::new(AtomicU64::new(0))),
+            (SourceKind::DesktopActivity, Arc::new(AtomicU64::new(0))),
         ]);
         let proof = Arc::new(Mutex::new(ProofGate::new()));
         let streams = BTreeMap::from([
             (SourceKind::Screen, Arc::new(AtomicU64::new(0))),
             (SourceKind::SystemAudio, Arc::new(AtomicU64::new(0))),
             (SourceKind::Mic, Arc::new(AtomicU64::new(0))),
+            (SourceKind::DesktopActivity, Arc::new(AtomicU64::new(0))),
         ]);
         let sink = Arc::new(EngineSink {
             tx,
@@ -353,6 +367,21 @@ where
             setup: SetupSnapshot::default(),
             setup_authority,
             proof,
+            desktop_activity_scheduler: DesktopActivityScheduler::new(
+                false,
+                false,
+                observer_exclusion::ExclusionRules::default(),
+                format!(
+                    "{:016x}",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64
+                        ^ (std::process::id() as u64)
+                ),
+            ),
+            pending_activity_rows: std::collections::VecDeque::new(),
+            activity_batch_written: false,
         };
         engine.refresh_health();
 
@@ -503,6 +532,20 @@ where
             kind: SourceKind::Mic,
             enabled: setup.mic,
         });
+        self.reduce(AppEvent::SourceEnabled {
+            kind: SourceKind::DesktopActivity,
+            enabled: setup.desktop_activity,
+        });
+        let now_ms = self.clock.now_epoch_secs() * 1000;
+        let closed = self.desktop_activity_scheduler.set_preferences(
+            self.sources.desktop_activity.as_mut(),
+            setup.desktop_activity_window_titles,
+            setup.desktop_activity_page_addresses,
+            now_ms,
+        );
+        for row in closed {
+            self.append_activity_row(&row);
+        }
         self.refresh_health();
     }
 
@@ -571,6 +614,7 @@ where
                 self.preview.screen_frame = None;
                 self.last_screen_preview_100ns = None;
             }
+            SourceKind::DesktopActivity => {}
         }
         let _ = self.preview_tx.send(self.preview.clone());
     }
@@ -622,7 +666,12 @@ where
         }
         if self.state.any_source_enabled() {
             self.ensure_segment_for_now();
-            for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
+            for kind in [
+                SourceKind::Screen,
+                SourceKind::SystemAudio,
+                SourceKind::Mic,
+                SourceKind::DesktopActivity,
+            ] {
                 if self.state.is_source_enabled(kind) {
                     self.start_source(kind);
                 }
@@ -637,6 +686,16 @@ where
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
+        let now_ms = self.clock.now_epoch_us() / 1000;
+        let closed = self
+            .desktop_activity_scheduler
+            .close_all(self.sources.desktop_activity.as_mut(), now_ms);
+        if self.current_segment.is_some() {
+            for row in closed {
+                self.append_activity_row(&row);
+            }
+        }
+        self.sources.desktop_activity.stop();
         self.drain_events();
 
         if let Some(segment) = self.current_segment.take() {
@@ -664,6 +723,7 @@ where
         self.rotate_if_needed();
         self.service_storage();
         self.retry_due_sources();
+        self.pump_desktop_activity();
         self.fold_source_states();
         self.refresh_health();
     }
@@ -699,6 +759,7 @@ where
                     self.rotate_if_needed();
                     self.service_storage();
                     self.retry_due_sources();
+                    self.pump_desktop_activity();
                     self.fold_source_states();
                     self.refresh_health();
                 }
@@ -749,6 +810,26 @@ where
             }
             EngineCommand::SetSourceEnabled { kind, enabled } => {
                 self.set_source_enabled(kind, enabled);
+                return;
+            }
+            EngineCommand::SetDesktopActivityPreferences {
+                window_titles,
+                page_addresses,
+            } => {
+                if let Ok(mut auth) = self.setup_authority.lock() {
+                    auth.set_preferences(window_titles, page_addresses);
+                }
+                let now_ms = self.clock.now_epoch_us() / 1000;
+                let closed = self.desktop_activity_scheduler.set_preferences(
+                    self.sources.desktop_activity.as_mut(),
+                    window_titles,
+                    page_addresses,
+                    now_ms,
+                );
+                for row in closed {
+                    self.append_activity_row(&row);
+                }
+                self.refresh_health();
                 return;
             }
             EngineCommand::ClearPreviews => {
@@ -803,6 +884,15 @@ where
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
+        self.ensure_segment_for_now();
+        let now_ms = self.clock.now_epoch_us() / 1000;
+        let closed = self
+            .desktop_activity_scheduler
+            .close_all(self.sources.desktop_activity.as_mut(), now_ms);
+        for row in closed {
+            self.append_activity_row(&row);
+        }
+        self.sources.desktop_activity.stop();
         self.drain_events();
         self.write_stalled = false;
         self.attempt_clear_storage();
@@ -818,7 +908,12 @@ where
             return;
         }
         self.ensure_segment_for_now();
-        for kind in [SourceKind::Screen, SourceKind::SystemAudio, SourceKind::Mic] {
+        for kind in [
+            SourceKind::Screen,
+            SourceKind::SystemAudio,
+            SourceKind::Mic,
+            SourceKind::DesktopActivity,
+        ] {
             if self.state.is_source_enabled(kind) {
                 self.start_source(kind);
             }
@@ -837,14 +932,21 @@ where
     }
 
     fn ensure_segment_for_now(&mut self) {
-        if let Some(current) = self.current_segment.as_ref() {
+        while let Some(current) = self.current_segment.as_ref() {
             let now = self.clock.now_epoch_secs();
-            if should_rotate(current.key, now, self.config.segment_secs) {
-                let old_segment = self.current_segment.take().expect("current checked above");
-                self.seal_segment(old_segment);
-                self.open_current_segment();
+            if !should_rotate(current.key, now, self.config.segment_secs) {
+                break;
             }
-        } else {
+            let boundary_ms = (current.key.boundary_epoch_secs + self.config.segment_secs) * 1000;
+            let closed = self.desktop_activity_scheduler.on_boundary(boundary_ms);
+            for row in closed {
+                self.append_activity_row(&row);
+            }
+            let old_segment = self.current_segment.take().expect("current checked above");
+            self.seal_segment(old_segment);
+            self.open_current_segment();
+        }
+        if self.current_segment.is_none() {
             self.open_current_segment();
         }
     }
@@ -891,6 +993,7 @@ where
             screen_chunks: 0,
             screen_encoder_open: false,
         });
+        self.flush_activity_queue();
     }
 
     fn drain_events(&mut self) {
@@ -1019,18 +1122,25 @@ where
 
     fn rotate_if_needed(&mut self) {
         let now = self.clock.now_epoch_secs();
-        let Some(current) = self.current_segment.as_ref() else {
-            return;
-        };
-        if !should_rotate(current.key, now, self.config.segment_secs) {
-            return;
-        }
+        while let Some(current) = self.current_segment.as_ref() {
+            if !should_rotate(current.key, now, self.config.segment_secs) {
+                break;
+            }
 
-        let old_segment = self.current_segment.take().expect("current checked above");
-        self.seal_segment(old_segment);
+            let boundary_ms = (current.key.boundary_epoch_secs + self.config.segment_secs) * 1000;
+            let closed = self.desktop_activity_scheduler.on_boundary(boundary_ms);
+            for row in closed {
+                self.append_activity_row(&row);
+            }
 
-        if self.should_be_capturing() && self.state.any_source_enabled() {
-            self.open_current_segment();
+            let old_segment = self.current_segment.take().expect("current checked above");
+            self.seal_segment(old_segment);
+
+            if self.should_be_capturing() && self.state.any_source_enabled() {
+                self.open_current_segment();
+            } else {
+                break;
+            }
         }
     }
 
@@ -1058,6 +1168,7 @@ where
     fn storage_healthy(&self) -> bool {
         self.pending_seals.is_empty()
             && !self.write_stalled
+            && self.pending_activity_rows.is_empty()
             && !(self.should_be_capturing() && self.current_segment.is_none())
     }
 
@@ -1087,6 +1198,7 @@ where
                 self.pending_seals.insert(segment.key, video_end);
                 self.note_storage_fault(format!("{error:?}"));
             } else {
+                self.renew_artifact_id();
                 self.attempt_clear_storage();
             }
         }
@@ -1109,12 +1221,15 @@ where
                 match self.segment_fs.finalize(key, video_end) {
                     Ok(()) => {
                         self.pending_seals.remove(&key);
+                        self.renew_artifact_id();
                     }
                     Err(error) => {
                         self.note_storage_fault(format!("{error:?}"));
                     }
                 }
             }
+
+            self.flush_activity_queue();
 
             if self.should_be_capturing()
                 && self.state.any_source_enabled()
@@ -1143,6 +1258,7 @@ where
             SourceKind::Mic => self.sources.mic.state(),
             SourceKind::SystemAudio => self.sources.system_audio.state(),
             SourceKind::Screen => self.sources.screen.state(),
+            SourceKind::DesktopActivity => self.sources.desktop_activity.state(),
         }
     }
 
@@ -1171,10 +1287,136 @@ where
                 state: self.source_state(SourceKind::Mic),
                 device: None,
             },
+            SourceReport {
+                kind: SourceKind::DesktopActivity,
+                state: self.source_state(SourceKind::DesktopActivity),
+                device: None,
+            },
         ];
 
         for report in reports {
             self.apply_source_report(report);
+        }
+    }
+
+    pub fn set_exclusion_rules(&mut self, rules: observer_exclusion::ExclusionRules) {
+        let now_ms = self.clock.now_epoch_us() / 1000;
+        let closed = self.desktop_activity_scheduler.set_exclusion_rules(
+            self.sources.desktop_activity.as_mut(),
+            rules,
+            now_ms,
+        );
+        for row in closed {
+            self.append_activity_row(&row);
+        }
+    }
+
+    fn generate_artifact_id(&self) -> String {
+        static ARTIFACT_COUNTER: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+        let count = ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let id_val = nanos ^ (std::process::id() as u64).rotate_left(16) ^ count;
+        format!("{:016x}", id_val)
+    }
+
+    pub fn renew_artifact_id(&mut self) {
+        self.desktop_activity_scheduler.artifact_id = self.generate_artifact_id();
+        self.activity_batch_written = false;
+    }
+
+    fn ensure_unique_artifact_id(&mut self, key: observer_model::SegmentKey) {
+        let dir_path_buf = match self.current_segment.as_ref() {
+            Some(s) => std::path::PathBuf::from(&s.dir),
+            None => return,
+        };
+        let sealed_dir = dir_path_buf.parent().map(|p| p.join(key.index.to_string()));
+
+        for _ in 0..100 {
+            let file_name = desktop_activity::activity_file_name(
+                key.boundary_epoch_secs,
+                0,
+                &self.desktop_activity_scheduler.artifact_id,
+                self.config.segment_secs,
+            );
+            let in_incomplete = dir_path_buf.join(&file_name).exists();
+            let in_sealed = sealed_dir
+                .as_ref()
+                .map(|p| p.join(&file_name).exists())
+                .unwrap_or(false);
+            if in_incomplete || in_sealed {
+                self.renew_artifact_id();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn append_activity_row(&mut self, row: &DesktopActivityRow) {
+        let line = match row.to_jsonl_line() {
+            Ok(line) => line,
+            Err(error) => {
+                tracing::warn!(target: "engine", %error, "could not serialize desktop activity row");
+                return;
+            }
+        };
+        self.pending_activity_rows.push_back(line);
+        self.flush_activity_queue();
+    }
+
+    fn flush_activity_queue(&mut self) {
+        let (key, boundary_epoch_secs) = match self.current_segment.as_ref() {
+            Some(s) => (s.key, s.key.boundary_epoch_secs),
+            None => return,
+        };
+
+        if self.pending_activity_rows.is_empty() {
+            return;
+        }
+
+        if !self.activity_batch_written {
+            self.ensure_unique_artifact_id(key);
+            self.activity_batch_written = true;
+        }
+
+        let file_name = desktop_activity::activity_file_name(
+            boundary_epoch_secs,
+            0,
+            &self.desktop_activity_scheduler.artifact_id,
+            self.config.segment_secs,
+        );
+
+        while let Some(line) = self.pending_activity_rows.front() {
+            match self.segment_fs.append_activity(key, &file_name, line) {
+                Ok(()) => {
+                    self.pending_activity_rows.pop_front();
+                }
+                Err(error) => {
+                    self.note_storage_fault(format!("{error:?}"));
+                    return;
+                }
+            }
+        }
+
+        if self.pending_activity_rows.is_empty() {
+            self.attempt_clear_storage();
+        }
+    }
+
+    fn pump_desktop_activity(&mut self) {
+        if !self.should_be_capturing() || !self.state.is_source_enabled(SourceKind::DesktopActivity)
+        {
+            return;
+        }
+        let now_ms = self.clock.now_epoch_us() / 1000;
+        let rows = self
+            .desktop_activity_scheduler
+            .poll_and_step(self.sources.desktop_activity.as_mut(), now_ms);
+        for row in rows {
+            self.append_activity_row(&row);
         }
     }
 
@@ -1326,6 +1568,7 @@ where
             SourceKind::Screen => self.sources.screen.start(sink),
             SourceKind::SystemAudio => self.sources.system_audio.start(sink),
             SourceKind::Mic => self.sources.mic.start(sink),
+            SourceKind::DesktopActivity => self.sources.desktop_activity.start(),
         };
 
         match result {
@@ -1340,6 +1583,17 @@ where
             SourceKind::Screen => self.sources.screen.stop(),
             SourceKind::SystemAudio => self.sources.system_audio.stop(),
             SourceKind::Mic => self.sources.mic.stop(),
+            SourceKind::DesktopActivity => {
+                self.ensure_segment_for_now();
+                let now_ms = self.clock.now_epoch_us() / 1000;
+                let closed = self
+                    .desktop_activity_scheduler
+                    .close_all(self.sources.desktop_activity.as_mut(), now_ms);
+                for row in closed {
+                    self.append_activity_row(&row);
+                }
+                self.sources.desktop_activity.stop();
+            }
         }
     }
 
@@ -1362,6 +1616,7 @@ where
             (SourceKind::Screen, Lifecycle::new(config)),
             (SourceKind::SystemAudio, Lifecycle::new(config)),
             (SourceKind::Mic, Lifecycle::new(config)),
+            (SourceKind::DesktopActivity, Lifecycle::new(config)),
         ])
     }
 
@@ -1418,7 +1673,7 @@ where
                 self.preview.system_audio_level = Some(level);
                 let _ = self.preview_tx.send(self.preview.clone());
             }
-            SourceKind::Screen => {}
+            SourceKind::Screen | SourceKind::DesktopActivity => {}
         }
     }
 
@@ -1674,6 +1929,7 @@ mod tests {
     struct FakeSegmentState {
         writes: Vec<(SegmentKey, SourceKind, u64)>,
         writes_with_at_us: Vec<(SegmentKey, SourceKind, u64, Option<u64>)>,
+        activities: Vec<(SegmentKey, String, String)>,
         video_ends: Vec<Option<f64>>,
         fail_open: bool,
         write_failures_remaining: usize,
@@ -1697,6 +1953,10 @@ mod tests {
 
         fn writes_with_at_us(&self) -> Vec<(SegmentKey, SourceKind, u64, Option<u64>)> {
             self.state.lock().unwrap().writes_with_at_us.clone()
+        }
+
+        fn activities(&self) -> Vec<(SegmentKey, String, String)> {
+            self.state.lock().unwrap().activities.clone()
         }
 
         fn video_ends(&self) -> Vec<Option<f64>> {
@@ -1765,6 +2025,23 @@ mod tests {
             }
             state.video_ends.push(video_end_secs);
             self.events.lock().unwrap().push(FsEvent::Finalize(key));
+            Ok(())
+        }
+
+        fn append_activity(
+            &mut self,
+            key: SegmentKey,
+            file_name: &str,
+            line: &str,
+        ) -> Result<(), Self::Error> {
+            let mut state = self.state.lock().unwrap();
+            if state.write_failures_remaining > 0 {
+                state.write_failures_remaining -= 1;
+                return Err("write failed");
+            }
+            state
+                .activities
+                .push((key, file_name.to_string(), line.to_string()));
             Ok(())
         }
     }
@@ -2084,11 +2361,140 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FakeDesktopActivityHandle {
+        inner: Arc<Mutex<FakeDesktopActivityState>>,
+    }
+
+    struct FakeDesktopActivityState {
+        state: SourceState,
+        starts: usize,
+        stops: usize,
+        cancels: usize,
+        events: Vec<observer_model::desktop_activity::DesktopActivityProbeEvent>,
+        url_results: Vec<observer_model::desktop_activity::DesktopActivityUrlResult>,
+        url_requests: Vec<observer_model::desktop_activity::DesktopActivityUrlRequest>,
+        snapshot: Option<observer_model::desktop_activity::ForegroundSnapshot>,
+    }
+
+    impl FakeDesktopActivityHandle {
+        fn new(state: SourceState) -> Self {
+            Self {
+                inner: Arc::new(Mutex::new(FakeDesktopActivityState {
+                    state,
+                    starts: 0,
+                    stops: 0,
+                    cancels: 0,
+                    events: Vec::new(),
+                    url_results: Vec::new(),
+                    url_requests: Vec::new(),
+                    snapshot: None,
+                })),
+            }
+        }
+
+        fn state(&self) -> SourceState {
+            self.inner.lock().unwrap().state.clone()
+        }
+
+        fn set_state(&self, state: SourceState) {
+            self.inner.lock().unwrap().state = state;
+        }
+
+        fn starts(&self) -> usize {
+            self.inner.lock().unwrap().starts
+        }
+
+        fn stops(&self) -> usize {
+            self.inner.lock().unwrap().stops
+        }
+
+        fn cancels(&self) -> usize {
+            self.inner.lock().unwrap().cancels
+        }
+
+        fn push_event(&self, event: observer_model::desktop_activity::DesktopActivityProbeEvent) {
+            self.inner.lock().unwrap().events.push(event);
+        }
+
+        fn push_url_result(
+            &self,
+            result: observer_model::desktop_activity::DesktopActivityUrlResult,
+        ) {
+            self.inner.lock().unwrap().url_results.push(result);
+        }
+
+        fn url_requests(&self) -> Vec<observer_model::desktop_activity::DesktopActivityUrlRequest> {
+            self.inner.lock().unwrap().url_requests.clone()
+        }
+
+        fn set_snapshot(
+            &self,
+            snapshot: Option<observer_model::desktop_activity::ForegroundSnapshot>,
+        ) {
+            self.inner.lock().unwrap().snapshot = snapshot;
+        }
+    }
+
+    struct FakeDesktopActivity {
+        handle: FakeDesktopActivityHandle,
+    }
+
+    impl DesktopActivitySource for FakeDesktopActivity {
+        fn start(&mut self) -> Result<(), SourceError> {
+            self.handle.inner.lock().unwrap().starts += 1;
+            Ok(())
+        }
+
+        fn stop(&mut self) {
+            self.handle.inner.lock().unwrap().stops += 1;
+        }
+
+        fn state(&self) -> SourceState {
+            self.handle.state()
+        }
+
+        fn poll_events(
+            &mut self,
+        ) -> Vec<observer_model::desktop_activity::DesktopActivityProbeEvent> {
+            std::mem::take(&mut self.handle.inner.lock().unwrap().events)
+        }
+
+        fn request_url(
+            &mut self,
+            request: observer_model::desktop_activity::DesktopActivityUrlRequest,
+        ) {
+            self.handle.inner.lock().unwrap().url_requests.push(request);
+        }
+
+        fn poll_url_result(
+            &mut self,
+        ) -> Option<observer_model::desktop_activity::DesktopActivityUrlResult> {
+            let mut inner = self.handle.inner.lock().unwrap();
+            if inner.url_results.is_empty() {
+                None
+            } else {
+                Some(inner.url_results.remove(0))
+            }
+        }
+
+        fn cancel_url(&mut self) {
+            self.handle.inner.lock().unwrap().cancels += 1;
+        }
+
+        fn foreground_snapshot(
+            &mut self,
+        ) -> Option<observer_model::desktop_activity::ForegroundSnapshot> {
+            self.handle.inner.lock().unwrap().snapshot.clone()
+        }
+    }
+
     struct Handles {
         screen: FakeSourceHandle,
         screen_encoder: FakeScreenEncoder,
         system_audio: FakeSourceHandle,
         mic: FakeSourceHandle,
+        desktop_activity: FakeDesktopActivityHandle,
     }
 
     fn fake_sources(
@@ -2096,11 +2502,26 @@ mod tests {
         system_audio_state: SourceState,
         mic_state: SourceState,
     ) -> (Sources, Handles) {
+        fake_sources_with_activity(
+            screen_state,
+            system_audio_state,
+            mic_state,
+            SourceState::Inactive,
+        )
+    }
+
+    fn fake_sources_with_activity(
+        screen_state: SourceState,
+        system_audio_state: SourceState,
+        mic_state: SourceState,
+        desktop_activity_state: SourceState,
+    ) -> (Sources, Handles) {
         let handles = Handles {
             screen: FakeSourceHandle::new(screen_state),
             screen_encoder: FakeScreenEncoder::default(),
             system_audio: FakeSourceHandle::new(system_audio_state),
             mic: FakeSourceHandle::new(mic_state),
+            desktop_activity: FakeDesktopActivityHandle::new(desktop_activity_state),
         };
         let sources = Sources {
             screen: Box::new(FakeScreen {
@@ -2112,6 +2533,9 @@ mod tests {
             }),
             mic: Box::new(FakeMic {
                 handle: handles.mic.clone(),
+            }),
+            desktop_activity: Box::new(FakeDesktopActivity {
+                handle: handles.desktop_activity.clone(),
             }),
         };
         (sources, handles)
@@ -4214,5 +4638,79 @@ mod tests {
             .filter(|e| matches!(e, FsEvent::Finalize(_)))
             .count();
         assert_eq!(finalize_count, finalize_count_after);
+    }
+
+    #[test]
+    fn activity_only_opens_segment_and_does_not_start_media() {
+        let (sources, handles) = fake_sources_with_activity(
+            SourceState::Inactive,
+            SourceState::Inactive,
+            SourceState::Inactive,
+            SourceState::Active,
+        );
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut recovery = FakeRecoveryFs::default();
+        let (mut engine, _) = CaptureEngine::new(
+            sources,
+            EngineConfig::default(),
+            &mut recovery,
+            segment_fs.clone(),
+            Box::new(clock),
+        )
+        .unwrap();
+        engine.set_source_choices(SetupSnapshot {
+            mic: false,
+            system_audio: false,
+            screen: false,
+            desktop_activity: true,
+            ..SetupSnapshot::default()
+        });
+        engine.start();
+        engine.pump();
+
+        assert_eq!(handles.screen.starts(), 0);
+        assert_eq!(handles.system_audio.starts(), 0);
+        assert_eq!(handles.mic.starts(), 0);
+        assert_eq!(handles.desktop_activity.starts(), 1);
+
+        let key = observer_segment::segment_for(0, DEFAULT_SEGMENT_SECS);
+        assert!(segment_fs.events().contains(&FsEvent::Open(key)));
+    }
+
+    #[test]
+    fn all_four_off_creates_no_segment() {
+        let (sources, handles) = fake_sources_with_activity(
+            SourceState::Inactive,
+            SourceState::Inactive,
+            SourceState::Inactive,
+            SourceState::Inactive,
+        );
+        let segment_fs = FakeSegmentFs::default();
+        let clock = FakeClock::new(0);
+        let mut recovery = FakeRecoveryFs::default();
+        let (mut engine, _) = CaptureEngine::new(
+            sources,
+            EngineConfig::default(),
+            &mut recovery,
+            segment_fs.clone(),
+            Box::new(clock),
+        )
+        .unwrap();
+        engine.set_source_choices(SetupSnapshot {
+            mic: false,
+            system_audio: false,
+            screen: false,
+            desktop_activity: false,
+            ..SetupSnapshot::default()
+        });
+        engine.start();
+        engine.pump();
+
+        assert_eq!(handles.screen.starts(), 0);
+        assert_eq!(handles.system_audio.starts(), 0);
+        assert_eq!(handles.mic.starts(), 0);
+        assert_eq!(handles.desktop_activity.starts(), 0);
+        assert_eq!(segment_fs.events(), Vec::new());
     }
 }

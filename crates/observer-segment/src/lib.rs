@@ -22,14 +22,19 @@ pub const DEFAULT_SEGMENT_SECS: u64 = 5 * 60;
 pub mod duration {
     /// Honest whole-second LEN for the segment key, clamped to [1, period_secs].
     ///
-    /// Precedence: audio duration -> (normal-seal only) video end -> ceiling(period).
+    /// Precedence: retained activity -> audio duration -> (normal-seal only) video end -> ceiling(period).
     pub fn resolve_len_secs(
         audio_secs: Option<f64>,
         video_secs: Option<f64>,
         period_secs: u64,
+        retained_activity: bool,
     ) -> u64 {
+        let max_period = period_secs.max(1);
+        if retained_activity {
+            return max_period;
+        }
         let raw = audio_secs.or(video_secs).unwrap_or(period_secs as f64);
-        (raw.round().max(0.0) as u64).clamp(1, period_secs.max(1))
+        (raw.round().max(0.0) as u64).clamp(1, max_period)
     }
 }
 
@@ -95,6 +100,14 @@ pub trait SegmentFs {
     /// Append one owned chunk to the per-source file for `key`.
     fn write_chunk(&mut self, key: SegmentKey, chunk: &CaptureChunk) -> Result<(), Self::Error>;
 
+    /// Append one line of serialized desktop activity to the activity file for `key`.
+    fn append_activity(
+        &mut self,
+        key: SegmentKey,
+        file_name: &str,
+        line: &str,
+    ) -> Result<(), Self::Error>;
+
     /// Atomically seal the `.incomplete` segment for `key` to its final name.
     fn finalize(&mut self, key: SegmentKey, video_end_secs: Option<f64>)
         -> Result<(), Self::Error>;
@@ -105,38 +118,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn duration_retained_activity_forces_period() {
+        assert_eq!(
+            duration::resolve_len_secs(Some(42.0), Some(50.0), 300, true),
+            300
+        );
+        assert_eq!(duration::resolve_len_secs(None, None, 300, true), 300);
+    }
+
+    #[test]
     fn duration_audio_near_ceiling_rounds_to_period() {
-        assert_eq!(duration::resolve_len_secs(Some(299.95), None, 300), 300);
+        assert_eq!(
+            duration::resolve_len_secs(Some(299.95), None, 300, false),
+            300
+        );
     }
 
     #[test]
     fn duration_audio_rounds_to_whole_seconds() {
-        assert_eq!(duration::resolve_len_secs(Some(42.4), None, 300), 42);
+        assert_eq!(duration::resolve_len_secs(Some(42.4), None, 300, false), 42);
     }
 
     #[test]
     fn duration_audio_rounds_up_to_minimum_one() {
-        assert_eq!(duration::resolve_len_secs(Some(0.3), None, 300), 1);
+        assert_eq!(duration::resolve_len_secs(Some(0.3), None, 300, false), 1);
     }
 
     #[test]
     fn duration_absent_media_uses_ceiling() {
-        assert_eq!(duration::resolve_len_secs(None, None, 300), 300);
+        assert_eq!(duration::resolve_len_secs(None, None, 300, false), 300);
     }
 
     #[test]
     fn duration_uses_video_when_audio_absent() {
-        assert_eq!(duration::resolve_len_secs(None, Some(120.0), 300), 120);
+        assert_eq!(
+            duration::resolve_len_secs(None, Some(120.0), 300, false),
+            120
+        );
     }
 
     #[test]
     fn duration_audio_wins_over_video() {
-        assert_eq!(duration::resolve_len_secs(Some(50.0), Some(120.0), 300), 50);
+        assert_eq!(
+            duration::resolve_len_secs(Some(50.0), Some(120.0), 300, false),
+            50
+        );
     }
 
     #[test]
     fn duration_clamps_to_period() {
-        assert_eq!(duration::resolve_len_secs(Some(500.0), None, 300), 300);
+        assert_eq!(
+            duration::resolve_len_secs(Some(500.0), None, 300, false),
+            300
+        );
     }
 
     #[test]

@@ -38,6 +38,10 @@ fn main() -> ExitCode {
     // before Velopack's hooks, logging, the single-instance gate or a window:
     // it is the browser host relay (when this build has it) or it exits.
     let early_args: Vec<String> = std::env::args().skip(1).collect();
+    if early_args.iter().any(|a| a == "--desktop-url-helper") {
+        let code = platform_win::desktop_activity::run_url_helper_cli();
+        return ExitCode::from(code as u8);
+    }
     if let Some(code) = browser::dispatch(&early_args) {
         return code;
     }

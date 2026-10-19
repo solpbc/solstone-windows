@@ -123,6 +123,7 @@ describe("settings renderer characterization", () => {
     present(ids["settings.sources.screen.state"]);
     present(ids["settings.sources.systemAudio.state"]);
     present(ids["settings.sources.mic.state"]);
+    present(ids["settings.sources.desktopActivity.state"]);
   });
 
   it("renders a bounded pause state on home", () => {
@@ -187,6 +188,7 @@ describe("settings renderer characterization", () => {
     );
     present(ids["settings.sources.systemAudio.state"]);
     present(ids["settings.sources.mic.state"]);
+    present(ids["settings.sources.desktopActivity.state"]);
   });
 
   it("renders exclusions chips and filters the app picker", () => {

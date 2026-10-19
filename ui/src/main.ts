@@ -77,7 +77,7 @@ function forwardFrontendError(record: FrontendErrorRecord): void {
 }
 
 type AppPhase = "idle" | "starting" | "observing" | "paused" | "error";
-type SourceKind = "screen" | "system_audio" | "mic";
+type SourceKind = "screen" | "system_audio" | "mic" | "desktop_activity";
 type SourceStatus = "active" | "inactive" | "no_input_device" | "faulted";
 type Severity = "ok" | "neutral" | "attention";
 type Route = "home" | "sources" | "privacy" | "journal" | "shortcut" | "storage" | "updates" | "help";
@@ -270,6 +270,9 @@ interface SetupSnapshot {
   start_at_login: boolean;
   wizard: WizardStep;
   notice_dismissed: boolean;
+  desktop_activity?: boolean;
+  desktop_activity_window_titles?: boolean;
+  desktop_activity_page_addresses?: boolean;
   failed_sources?: FailedSourceWrite[];
   wizard_save_failed?: boolean;
   pending_wizard?: WizardStep | null;
@@ -302,7 +305,7 @@ interface PreviewSnapshot {
 
 function isSourceEnabled(setup: SetupSnapshot | undefined, kind: SourceKind): boolean {
   if (!setup) {
-    return true;
+    return kind === "desktop_activity" ? false : true;
   }
   switch (kind) {
     case "screen":
@@ -311,6 +314,8 @@ function isSourceEnabled(setup: SetupSnapshot | undefined, kind: SourceKind): bo
       return setup.system_audio;
     case "mic":
       return setup.mic;
+    case "desktop_activity":
+      return Boolean(setup.desktop_activity);
   }
 }
 
@@ -3681,7 +3686,13 @@ function renderSourceControl(
   const failed = dump.setup?.failed_sources?.find((f) => f.kind === kind);
 
   const accessibleName =
-    kind === "mic" ? "microphone" : kind === "system_audio" ? "system audio" : "screen";
+    kind === "mic"
+      ? "microphone"
+      : kind === "system_audio"
+        ? "system audio"
+        : kind === "desktop_activity"
+          ? "desktop activity"
+          : "screen";
 
   const toggle = toggleRow("", switchId, enabled, (on) => {
     void invoke("set_source_enabled", { kind, enabled: on }).then(() => retryHealth());
@@ -3709,6 +3720,57 @@ function renderSourceControl(
   return wrap;
 }
 
+function renderDesktopActivityControl(
+  report: SourceReport | undefined,
+  dump: HealthDump,
+): HTMLElement {
+  const container = document.createElement("div");
+  const control = renderSourceControl(
+    "desktop_activity",
+    report,
+    ids["settings.sources.desktopActivity.state"],
+    ids["settings.sources.desktopActivity.enabled"],
+    dump,
+  );
+  container.append(control);
+
+  const sentence = text(
+    "div",
+    "share app names, window titles and page addresses with your journal. page addresses include the site and path, with nothing after ? or #.",
+  );
+  sentence.style.fontSize = "12px";
+  sentence.style.color = "var(--fg-subtle)";
+  sentence.style.margin = "8px 0 6px";
+  sentence.style.lineHeight = "1.4";
+  container.append(sentence);
+
+  const titlesEnabled = dump.setup?.desktop_activity_window_titles ?? false;
+  const addressesEnabled = dump.setup?.desktop_activity_page_addresses ?? false;
+
+  const titlesToggle = toggleRow(
+    "window titles",
+    ids["settings.sources.desktopActivity.windowTitles"],
+    titlesEnabled,
+    (on) => {
+      void invoke("set_desktop_activity_window_titles", { enabled: on }).then(() => retryHealth());
+    },
+  );
+  titlesToggle.style.padding = "2px 0";
+
+  const addressesToggle = toggleRow(
+    "page addresses",
+    ids["settings.sources.desktopActivity.pageAddresses"],
+    addressesEnabled,
+    (on) => {
+      void invoke("set_desktop_activity_page_addresses", { enabled: on }).then(() => retryHealth());
+    },
+  );
+  addressesToggle.style.padding = "2px 0";
+
+  container.append(titlesToggle, addressesToggle);
+  return container;
+}
+
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   if (dump.setup?.sequence_enabled !== true) {
     const sources = section("sources");
@@ -3716,6 +3778,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
       ["screen", "screen", ids["settings.sources.screen.state"]],
       ["system_audio", "system audio", ids["settings.sources.systemAudio.state"]],
       ["mic", "microphone", ids["settings.sources.mic.state"]],
+      ["desktop_activity", "desktop activity", ids["settings.sources.desktopActivity.state"]],
     ] as const) {
       const report = sourceByKind(dump, kind);
       sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused", report), report?.detail), id))));
@@ -3727,6 +3790,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   const screen = sourceByKind(dump, "screen");
   const systemAudio = sourceByKind(dump, "system_audio");
   const mic = sourceByKind(dump, "mic");
+  const desktopActivity = sourceByKind(dump, "desktop_activity");
   sources.append(
     valueRow(
       "screen",
@@ -3739,6 +3803,10 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
     valueRow(
       "microphone",
       renderSourceControl("mic", mic, ids["settings.sources.mic.state"], ids["settings.sources.mic.enabled"], dump),
+    ),
+    valueRow(
+      "desktop activity",
+      renderDesktopActivityControl(desktopActivity, dump),
     ),
   );
   sources.append(renderStartAtLoginControl(dump));

@@ -97,6 +97,7 @@ pub fn content_type_for(name: &str) -> String {
     match name {
         AUDIO_FILE_NAME => "audio/flac".to_string(),
         name if name.ends_with(".mp4") => "video/mp4".to_string(),
+        name if name.ends_with("_desktop_activity.jsonl") => "application/jsonl".to_string(),
         _ => "application/octet-stream".to_string(),
     }
 }
@@ -136,6 +137,9 @@ fn list_files(dir: &Path) -> std::io::Result<Vec<String>> {
         let entry = entry?;
         if entry.file_type()?.is_file() {
             if let Some(name) = entry.file_name().to_str() {
+                if name.ends_with("_desktop_activity.jsonl") && entry.metadata()?.len() == 0 {
+                    continue;
+                }
                 files.push(name.to_string());
             }
         }
@@ -435,6 +439,36 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(content_type_for("mic.pcm"), "application/octet-stream");
+        assert_eq!(
+            content_type_for("000000_1234567890abcdef_desktop_activity.jsonl"),
+            "application/jsonl"
+        );
+    }
+
+    #[test]
+    fn scan_skips_empty_activity_files() {
+        let root = temp_root();
+        let seg = root.join("7");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(SCREEN_FILE_NAME), b"MP4").unwrap();
+        std::fs::write(seg.join("000000_empty_desktop_activity.jsonl"), b"").unwrap();
+        std::fs::write(
+            seg.join("000000_nonempty_desktop_activity.jsonl"),
+            b"{\"v\":1}\n",
+        )
+        .unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        let segs = store.scan().unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(
+            segs[0].files,
+            vec![
+                "000000_nonempty_desktop_activity.jsonl".to_string(),
+                SCREEN_FILE_NAME.to_string(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

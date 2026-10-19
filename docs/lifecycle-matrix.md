@@ -25,10 +25,10 @@ pair or open a browser.
 |---|---|---|
 | Operator pause | stop sources, hold | `Paused` |
 | Session locked | pause (`SessionLocked`) | `Paused` |
-| Session unlocked | resume | recomputed |
+| Session unlocked | resume only when the session is active and unlocked; locked, disconnected, or unknown stays paused | recomputed |
 | Display changed | re-acquire screen source | recomputed |
 | System suspending | pause (`SystemSuspending`) | `Paused` |
-| System resumed | resume | recomputed |
+| System resumed | resume only when the session is active and unlocked; locked, disconnected, or unknown stays paused | recomputed |
 | Enabled source faulted (not access denial) | feed to backoff/breaker; cannot claim observing | `Error` |
 | No microphone present / access denied | first-class `NoInputDevice` / `AccessDenied` (not an error by themselves) | unaffected |
 

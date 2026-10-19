@@ -233,10 +233,15 @@ fn title_excluded(title: &str, patterns: &[String]) -> bool {
         .any(|p| !p.is_empty() && title.contains(&p.to_ascii_lowercase()))
 }
 
+/// Match a foreground window against exclusion rules (exe, title substring, and private browsing).
+pub fn foreground_excluded(rules: &ExclusionRules, exe_name: &str, title: &str) -> bool {
+    exe_excluded(exe_name, &rules.excluded_exes)
+        || title_excluded(title, &rules.title_patterns)
+        || (rules.exclude_private_browsing && is_private_window(exe_name, title))
+}
+
 fn window_excluded(rules: &ExclusionRules, window: &WindowInfo) -> bool {
-    exe_excluded(&window.exe_name, &rules.excluded_exes)
-        || title_excluded(&window.title, &rules.title_patterns)
-        || (rules.exclude_private_browsing && is_private_window(&window.exe_name, &window.title))
+    foreground_excluded(rules, &window.exe_name, &window.title)
 }
 
 /// Decide what to do with a captured frame given the rules and the windows

@@ -313,8 +313,8 @@ namespace Solstone.Harness
 
             var fresh = "{\"app_state\":\"idle\",\"engine_ready\":true,\"segment_dir\":null,"
                 + "\"pump_degraded\":false,\"storage\":null,\"pause\":null,\"listener_faults\":{\"health\":null,\"control\":null},"
-                + "\"setup\":{\"mic\":false,\"system_audio\":false,\"screen\":false,\"start_at_login\":false,\"wizard\":\"mic\",\"failed_sources\":[],\"wizard_save_failed\":false,\"pending_wizard\":null,\"notice_save_failed\":false,\"login_apply_failed\":false},"
-                + "\"sources\":[{\"kind\":\"mic\",\"status\":\"inactive\"},{\"kind\":\"system_audio\",\"status\":\"inactive\"},{\"kind\":\"screen\",\"status\":\"inactive\"}]}";
+                + "\"setup\":{\"mic\":false,\"system_audio\":false,\"screen\":false,\"desktop_activity\":false,\"start_at_login\":false,\"wizard\":\"mic\",\"failed_sources\":[],\"wizard_save_failed\":false,\"pending_wizard\":null,\"notice_save_failed\":false,\"login_apply_failed\":false},"
+                + "\"sources\":[{\"kind\":\"mic\",\"status\":\"inactive\"},{\"kind\":\"system_audio\",\"status\":\"inactive\"},{\"kind\":\"screen\",\"status\":\"inactive\"},{\"kind\":\"desktop_activity\",\"status\":\"inactive\"}]}";
             failures += Expect("fresh: ready all-off", Health.FreshState(fresh));
             failures += Expect("fresh: missing body rejected", !Health.FreshState(null));
             failures += Expect("fresh: malformed rejected", !Health.FreshState("{"));
@@ -335,13 +335,14 @@ namespace Solstone.Harness
             foreach (var invalid in new[] { "null", "{}", "[{}]", "false" })
                 failures += Expect("fresh: invalid failed_sources " + invalid + " rejected", !Health.FreshState(fresh.Replace("\"failed_sources\":[]", "\"failed_sources\":" + invalid)));
             failures += Expect("fresh: missing failed_sources rejected", !Health.FreshState(fresh.Replace("\"failed_sources\":[],", "")));
-            foreach (var key in new[] { "mic", "system_audio", "screen", "start_at_login" })
+            foreach (var key in new[] { "mic", "system_audio", "screen", "desktop_activity", "start_at_login" })
             {
                 failures += Expect("fresh: enabled " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":false", "\"" + key + "\":true")));
                 failures += Expect("fresh: missing " + key + " rejected", !Health.FreshState(fresh.Replace("\"" + key + "\":false,", "")));
             }
             failures += Expect("fresh: wizard bypass rejected", !Health.FreshState(fresh.Replace("\"wizard\":\"mic\"", "\"wizard\":\"done\"")));
             failures += Expect("fresh: active source rejected", !Health.FreshState(fresh.Replace("\"inactive\"", "\"active\"")));
+            failures += Expect("fresh: active desktop_activity rejected", !Health.FreshState(fresh.Replace("{\"kind\":\"desktop_activity\",\"status\":\"inactive\"}", "{\"kind\":\"desktop_activity\",\"status\":\"active\"}")));
             failures += Expect("fresh: duplicate source rejected", !Health.FreshState(fresh.Replace("\"kind\":\"screen\"", "\"kind\":\"mic\"")));
             failures += Expect("fresh: absent source rejected", !Health.FreshState(fresh.Replace(",{\"kind\":\"screen\",\"status\":\"inactive\"}", "")));
 
@@ -595,15 +596,16 @@ namespace Solstone.Harness
                     !root.TryGetValue("setup", out var rawSetup) ||
                     !(rawSetup is System.Collections.Generic.Dictionary<string, object> setup) ||
                     !IsFalse(setup, "mic") || !IsFalse(setup, "system_audio") ||
-                    !IsFalse(setup, "screen") || !IsFalse(setup, "start_at_login") ||
+                    !IsFalse(setup, "screen") || !IsFalse(setup, "desktop_activity") ||
+                    !IsFalse(setup, "start_at_login") ||
                     !IsFalse(setup, "login_apply_failed") || !IsFalse(setup, "wizard_save_failed") ||
                     !IsFalse(setup, "notice_save_failed") || !IsNull(setup, "pending_wizard") ||
                     !setup.TryGetValue("failed_sources", out var rawFailedSources) ||
                     !(rawFailedSources is object[] failedSources) || failedSources.Length != 0 ||
                     !setup.TryGetValue("wizard", out var wizard) || !Equals(wizard, "mic") ||
                     !root.TryGetValue("sources", out var rawSources) || !(rawSources is object[] sources) ||
-                    sources.Length != 3) return false;
-                var remaining = new System.Collections.Generic.HashSet<string>(new[] { "mic", "system_audio", "screen" });
+                    sources.Length != 4) return false;
+                var remaining = new System.Collections.Generic.HashSet<string>(new[] { "mic", "system_audio", "screen", "desktop_activity" });
                 foreach (var raw in sources)
                 {
                     if (!(raw is System.Collections.Generic.Dictionary<string, object> source) ||

@@ -179,3 +179,174 @@ fn dark_startup_creates_nothing_and_retains_existing_off_and_corrupt_choices() {
     assert_eq!(fs::read(root.join("setup.json")).unwrap(), b"corrupt");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn legacy_activity_false() {
+    let legacy = SetupConfig::legacy();
+    assert!(!legacy.desktop_activity);
+    assert!(!legacy.desktop_activity_window_titles);
+    assert!(!legacy.desktop_activity_page_addresses);
+}
+
+#[test]
+fn version_1_file_missing_new_fields_leaves_activity_and_preferences_false() {
+    let root = temp_root("v1-missing");
+    let v1_json = r#"{
+      "version": 1,
+      "screen": true,
+      "system_audio": true,
+      "mic": true,
+      "start_at_login": true,
+      "wizard": "done",
+      "notice_dismissed": true
+    }"#;
+    fs::write(root.join("setup.json"), v1_json.as_bytes()).unwrap();
+    let outcome = load_or_classify(&root);
+    match outcome {
+        LoadOutcome::Valid(cfg) => {
+            assert!(cfg.screen);
+            assert!(cfg.system_audio);
+            assert!(cfg.mic);
+            assert!(cfg.start_at_login);
+            assert!(cfg.notice_dismissed);
+            assert!(!cfg.desktop_activity);
+            assert!(!cfg.desktop_activity_window_titles);
+            assert!(!cfg.desktop_activity_page_addresses);
+        }
+        other => panic!("expected Valid, got {other:?}"),
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn corrupt_setup_fails_closed_with_activity_off() {
+    let root = temp_root("corrupt");
+    fs::write(root.join("setup.json"), b"{ invalid json").unwrap();
+    let outcome = load_or_classify(&root);
+    match outcome {
+        LoadOutcome::FailedClosed(cfg) => {
+            assert!(!cfg.screen);
+            assert!(!cfg.system_audio);
+            assert!(!cfg.mic);
+            assert!(!cfg.start_at_login);
+            assert!(!cfg.desktop_activity);
+            assert!(!cfg.desktop_activity_window_titles);
+            assert!(!cfg.desktop_activity_page_addresses);
+        }
+        other => panic!("expected FailedClosed, got {other:?}"),
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn failed_on_does_not_run() {
+    use observer_model::setup::SetupAuthority;
+    use observer_model::{SetupSnapshot, SourceKind};
+
+    let root = temp_root("failed-on");
+    // Make root a file so atomic_write_setup fails
+    let bad_root = root.join("file_blocking_dir");
+    fs::write(&bad_root, b"blocking").unwrap();
+
+    let mut auth = SetupAuthority::new();
+    auth.set_root(bad_root.clone());
+    auth.seed(&SetupSnapshot::default());
+
+    let res = auth.set_source(SourceKind::DesktopActivity, true);
+    assert!(!res, "failed persist must return false");
+    let proj = auth.projection();
+    assert!(!proj.desktop_activity, "projection must not run failed ON");
+
+    let _ = fs::remove_file(&bad_root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn failed_off_is_replayed() {
+    use observer_model::setup::{load_or_classify, SetupAuthority};
+    use observer_model::{SetupSnapshot, SourceKind};
+
+    let root = temp_root("failed-off");
+    let mut auth = SetupAuthority::new();
+    auth.set_root(root.clone());
+    auth.seed(&SetupSnapshot {
+        desktop_activity: true,
+        ..Default::default()
+    });
+    // First save succeeds
+    assert!(auth.set_source(SourceKind::DesktopActivity, true));
+    assert!(auth.projection().desktop_activity);
+
+    // Make directory read-only so write fails
+    let blocked_root = root.join("blocked_dir");
+    fs::write(&blocked_root, b"file").unwrap();
+    auth.set_root(blocked_root.clone());
+
+    // Turn OFF, fails persist
+    let res = auth.set_source(SourceKind::DesktopActivity, false);
+    assert!(!res);
+    // Running is immediately false
+    assert!(!auth.projection().desktop_activity);
+
+    // Switch back to writable root
+    auth.set_root(root.clone());
+    let retry_res = auth.retry();
+    assert!(retry_res.saved);
+
+    // File on disk now reflects OFF
+    match load_or_classify(&root) {
+        LoadOutcome::Valid(cfg) => {
+            assert!(!cfg.desktop_activity);
+        }
+        other => panic!("expected Valid, got {other:?}"),
+    }
+
+    let _ = fs::remove_file(&blocked_root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_two_preferences_fail_independently() {
+    use observer_model::setup::{load_or_classify, SetupAuthority};
+    use observer_model::SetupSnapshot;
+
+    let root = temp_root("indep-prefs");
+    let blocking = root.join("blocking");
+    fs::write(&blocking, b"blocking").unwrap();
+
+    let mut auth = SetupAuthority::new();
+    auth.set_root(blocking.clone());
+    auth.seed(&SetupSnapshot {
+        desktop_activity: true,
+        desktop_activity_window_titles: true,
+        desktop_activity_page_addresses: true,
+        ..Default::default()
+    });
+
+    // Turning window_titles OFF fails persist
+    assert!(!auth.set_desktop_activity_window_titles(false));
+    // Projection reflects pending OFF for window_titles
+    assert!(!auth.projection().desktop_activity_window_titles);
+    // page_addresses remains true
+    assert!(auth.projection().desktop_activity_page_addresses);
+
+    // Now turn page_addresses OFF as well, also fails persist
+    assert!(!auth.set_desktop_activity_page_addresses(false));
+    assert!(!auth.projection().desktop_activity_page_addresses);
+
+    // Switch to writable root and retry
+    auth.set_root(root.clone());
+    let retry_res = auth.retry();
+    assert!(retry_res.saved);
+
+    match load_or_classify(&root) {
+        LoadOutcome::Valid(cfg) => {
+            assert!(!cfg.desktop_activity_window_titles);
+            assert!(!cfg.desktop_activity_page_addresses);
+        }
+        other => panic!("expected Valid, got {other:?}"),
+    }
+
+    let _ = fs::remove_file(&blocking);
+    let _ = fs::remove_dir_all(&root);
+}

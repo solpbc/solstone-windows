@@ -62,6 +62,10 @@ export const automationContract = {
     "settings.sources.browser.offer": "settings.sources.browser.offer",
     "settings.sources.browser.storeError": "settings.sources.browser.storeError",
     "settings.sources.browser.stores": "settings.sources.browser.stores",
+    "settings.sources.desktopActivity.enabled": "settings.sources.desktopActivity.enabled",
+    "settings.sources.desktopActivity.pageAddresses": "settings.sources.desktopActivity.pageAddresses",
+    "settings.sources.desktopActivity.state": "settings.sources.desktopActivity.state",
+    "settings.sources.desktopActivity.windowTitles": "settings.sources.desktopActivity.windowTitles",
     "settings.sources.mic.enabled": "settings.sources.mic.enabled",
     "settings.sources.mic.state": "settings.sources.mic.state",
     "settings.sources.saveRetry": "settings.sources.saveRetry",
@@ -145,6 +149,7 @@ export const automationContract = {
       "system_suspending"
     ],
     "source_kind": [
+      "desktop_activity",
       "mic",
       "screen",
       "system_audio"

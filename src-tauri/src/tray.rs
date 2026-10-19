@@ -246,13 +246,10 @@ pub fn apply_state(
     browsers: Option<&MenuItem<Wry>>,
     dump: &HealthDump,
 ) {
-    let is_enabled = |kind: SourceKind| match kind {
-        SourceKind::Screen => dump.setup.screen,
-        SourceKind::SystemAudio => dump.setup.system_audio,
-        SourceKind::Mic => dump.setup.mic,
-    };
-    let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), is_enabled);
-    let deliberate_off = !dump.setup.screen && !dump.setup.system_audio && !dump.setup.mic;
+    let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), |kind| {
+        dump.setup.is_enabled(kind)
+    });
+    let deliberate_off = dump.setup.deliberate_off();
     let (visual, tooltip) = classify_tray(
         dump.app_state,
         &dump.sync,

@@ -5,7 +5,8 @@
 //!
 //! Bridges the platform notification pump (`platform-win`) into engine intents:
 //! a session lock pauses with `SessionLocked`, a suspend pauses with
-//! `SystemSuspending`, resume/unlock resumes. The per-session named-mutex
+//! `SystemSuspending`, unlock and generic resume re-check that the session is
+//! active and unlocked before resuming. The per-session named-mutex
 //! single-instance gate is acquired here at boot; a second launch exits cleanly
 //! for Wave 1.
 //!

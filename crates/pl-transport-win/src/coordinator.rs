@@ -845,21 +845,52 @@ impl UploadCoordinator {
                         }
                     };
                     match physical_match {
-                        Ok(true) => match self.try_gate_delete(index, &ack.files) {
-                            Ok(DeleteGate::Blocked) => {
-                                self.set_hold(index, now.saturating_add(3600));
+                        Ok(true) => {
+                            let entries = match self.store.list_entries(index) {
+                                Ok(e) => e,
+                                Err(_) => {
+                                    self.set_hold(index, now.saturating_add(3600));
+                                    continue;
+                                }
+                            };
+                            let has_unacked_activity = entries.iter().any(|entry| {
+                                if !entry.is_file
+                                    || !entry.name.ends_with("_desktop_activity.jsonl")
+                                    || entry.size_bytes == 0
+                                {
+                                    return false;
+                                }
+                                !ack.files.iter().any(|af| {
+                                    af.submitted == entry.name && af.size == entry.size_bytes
+                                })
+                            });
+
+                            if has_unacked_activity {
+                                // An acknowledgement that does not list a later immutable activity file is stale, so the marker is removed and that file stays on disk.
+                                if let Err(e) = self.store.remove_entry(index, UPLOADED_MARKER) {
+                                    if e.kind() != std::io::ErrorKind::NotFound {
+                                        self.set_hold(index, now.saturating_add(3600));
+                                    }
+                                }
+                                continue;
                             }
-                            Ok(_) => {}
-                            Err(e) => {
-                                self.set_hold(index, now.saturating_add(3600));
-                                tracing::warn!(
-                                    target: "pl_upload",
-                                    index,
-                                    error = %e,
-                                    "local_finish try_gate_delete failed"
-                                );
+
+                            match self.try_gate_delete(index, &ack.files) {
+                                Ok(DeleteGate::Blocked) => {
+                                    self.set_hold(index, now.saturating_add(3600));
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    self.set_hold(index, now.saturating_add(3600));
+                                    tracing::warn!(
+                                        target: "pl_upload",
+                                        index,
+                                        error = %e,
+                                        "local_finish try_gate_delete failed"
+                                    );
+                                }
                             }
-                        },
+                        }
                         Ok(false) => {
                             if let Err(e) = self.store.remove_entry(index, UPLOADED_MARKER) {
                                 if e.kind() != std::io::ErrorKind::NotFound {
@@ -5822,6 +5853,50 @@ mod tests {
             }]
         );
         assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn local_finish_removes_uploaded_marker_only_when_activity_file_outside_ack() {
+        // An acknowledgement that does not list a later immutable activity file is stale, so the marker is removed and that file stays on disk.
+        let root = TestRoot::new("activity_outside_ack");
+        let dir = root.path().join(TEST_INDEX.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("screen.mp4"), b"screen payload").unwrap();
+        std::fs::write(
+            dir.join("000000_1234567890abcdef_desktop_activity.jsonl"),
+            b"{\"v\":1}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(observer_model::LEN_FILE_NAME), "300").unwrap();
+        write_marker(
+            &dir,
+            test_identity(
+                "test",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            &[written_descriptor("screen.mp4", b"screen payload")],
+        );
+
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            FakeClient::new(vec![], vec![]),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            sync.clone(),
+        );
+
+        coordinator.local_finish(coordinator.monotonic_now_epoch_secs());
+        // Prior files stay
+        assert!(dir.join("screen.mp4").exists());
+        assert!(dir
+            .join("000000_1234567890abcdef_desktop_activity.jsonl")
+            .exists());
+        // Marker removed
+        assert!(!dir.join(UPLOADED_MARKER).exists());
+        // .len is not shrunk
+        assert_eq!(
+            std::fs::read_to_string(dir.join(observer_model::LEN_FILE_NAME)).unwrap(),
+            "300"
+        );
     }
 
     #[tokio::test]

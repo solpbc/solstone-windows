@@ -591,6 +591,8 @@ pub fn run(
             crate::ipc::open_browser_store,
             crate::ipc::browser_discard_waiting,
             crate::ipc::set_source_enabled,
+            crate::ipc::set_desktop_activity_window_titles,
+            crate::ipc::set_desktop_activity_page_addresses,
             crate::ipc::set_start_at_login,
             crate::ipc::set_wizard_step,
             crate::ipc::dismiss_notice,
@@ -694,6 +696,7 @@ pub fn run(
                     mic.config_handle(),
                     mic.active_handle(),
                 )),
+                desktop_activity: Box::new(platform_win::DesktopActivityProbe::new()),
             };
             let engine_config = EngineConfig::default();
             let mut recovery =
@@ -1014,6 +1017,9 @@ pub fn run(
                 move || {
                     let mut pump =
                         platform_win::NotificationPump::with_hotkey(hotkey_desired, hotkey_outcome);
+                    if pump.is_degraded() {
+                        platform_win::set_pump_degraded(true);
+                    }
                     if let Ok(mut h) = health.lock() {
                         h.pump_degraded = pump.is_degraded();
                     }
@@ -1036,7 +1042,14 @@ pub fn run(
                                 // pause holds until the owner resumes.
                                 platform_win::SystemNotification::SessionUnlocked
                                 | platform_win::SystemNotification::Resumed => {
-                                    Some(EngineCommand::SystemResume)
+                                    if platform_win::is_session_eligible() {
+                                        Some(EngineCommand::SystemResume)
+                                    } else {
+                                        Some(EngineCommand::Pause {
+                                            reason: PauseReason::SessionLocked,
+                                            duration_secs: None,
+                                        })
+                                    }
                                 }
                                 platform_win::SystemNotification::DisplayChanged => {
                                     Some(EngineCommand::DisplayChanged)

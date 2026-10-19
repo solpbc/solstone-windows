@@ -21,11 +21,17 @@ use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoStaticStr};
 
 pub mod about;
+pub mod desktop_activity;
 pub mod launch;
 pub mod scheme;
 pub mod setup;
 pub mod tray_status;
 
+pub use desktop_activity::{
+    normalize_url, ActivityState, AvailabilityCapability, AvailabilityStatus,
+    DesktopActivityProbeEvent, DesktopActivityRow, DesktopActivitySource,
+    DesktopActivityUrlRequest, DesktopActivityUrlResult,
+};
 pub use launch::{is_native_messaging_launch, launch_should_surface, FROM_AUTOSTART_ARG};
 pub use scheme::{
     extract_first_quoted_token, scheme_launch_decision, scheme_open_command,
@@ -112,6 +118,8 @@ pub enum SourceKind {
     SystemAudio,
     /// WASAPI eCapture microphone.
     Mic,
+    /// Desktop activity (foreground window, idle, page address).
+    DesktopActivity,
 }
 
 /// Why a pause is in effect.
