@@ -1452,7 +1452,7 @@ function pairingPhaseLabel(pairing: PairingState): string {
         ? "finish connecting to your journal"
         : "waiting for you to confirm your journal's mark";
     case "paired":
-      return `paired with ${markTextForm(pairing.mark)}`;
+      return `connected to ${markTextForm(pairing.mark)}`;
     case "failed":
       return failedPairingLabel(pairing.detail);
   }
