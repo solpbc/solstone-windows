@@ -170,7 +170,7 @@ ci: preflight-toolchain preflight-cargo-deny
 	$(CARGO) deny --offline --locked check bans licenses sources
 	$(MAKE) ui-test
 	$(MAKE) test-scripts
-	@echo "ci: not run here: native Windows build/test, the app crate ($(TAURI_BIN)), pl-transport-win on Windows, release advisory config (make ci-full); package, install, sign, smoke"
+	@echo "ci: not run here: native Windows build/test, the app crate ($(TAURI_BIN)), pl-transport-win on Windows, release advisory config (make ci-full); pl-transport-win's real TCP/TLS/process tests (make test-transport); package, install, sign, smoke"
 
 # Windows-target compile of every crate whose build needs no MSVC tools, from
 # any host. Catches Windows-only (cfg(windows)) type errors that the host build
