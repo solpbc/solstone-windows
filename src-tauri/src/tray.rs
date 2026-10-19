@@ -17,7 +17,7 @@
 use capture_engine::EngineCommand;
 use observer_model::{
     classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, AppPhase,
-    HealthDump, PauseReason, SourceKind, SyncSnapshot, TrayVisual,
+    HealthDump, PauseReason, SyncSnapshot, TrayVisual,
 };
 use tauri::image::Image;
 use tauri::menu::{

@@ -1140,7 +1140,7 @@ pub fn run(
                 {
                     Ok(Ok(_)) => app.exit(code),
                     _ => tracing::error!(target: "engine", "engine shutdown did not complete"),
-                }
+                };
             });
         }
     });
