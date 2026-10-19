@@ -92,7 +92,6 @@ pub mod settings {
     pub const SETUP_NEXT: &str = "settings.setup.next";
     pub const SETUP_BACK: &str = "settings.setup.back";
     pub const SETUP_NOT_NOW: &str = "settings.setup.notNow";
-    pub const SETUP_PAUSE_SOURCE: &str = "settings.setup.pauseSource";
     pub const SETUP_START_AT_LOGIN: &str = "settings.setup.startAtLogin";
     pub const SETUP_START_AT_LOGIN_ERROR: &str = "settings.setup.startAtLogin.error";
     pub const SETUP_MIC_PROOF: &str = "settings.setup.mic.proof";
@@ -234,7 +233,6 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.setup.next", settings::SETUP_NEXT),
         ("settings.setup.back", settings::SETUP_BACK),
         ("settings.setup.notNow", settings::SETUP_NOT_NOW),
-        ("settings.setup.pauseSource", settings::SETUP_PAUSE_SOURCE),
         (
             "settings.setup.startAtLogin",
             settings::SETUP_START_AT_LOGIN,

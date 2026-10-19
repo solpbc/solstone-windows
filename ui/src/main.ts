@@ -2383,7 +2383,9 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   }
 
   const freshLink = document.createElement("p");
-  freshLink.textContent = "a new link from your journal can be pasted here.";
+  freshLink.textContent = pairing.phase === "paired"
+    ? "a new link from your journal can be pasted here."
+    : 'in your journal, choose "pair a device" and paste the link here.';
   freshLink.dataset.automationId = ids["settings.setup.freshLink"];
   if (!connectedInSetup) pane.append(freshLink);
 
@@ -2440,6 +2442,13 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
         // The result is reflected through the health dump's pairing phase; we
         // ignore the return and let the next render paint the outcome.
         await invoke("pair", { link });
+        // The link is spent once pairing succeeds. Keep the field only when a
+        // different link replaced it while pairing ran.
+        if (pairingDraft.trim() === link) {
+          pairingDraft = "";
+          pairFieldDirty = false;
+          input.value = "";
+        }
       } catch {
         // Failure surfaces as pairing.phase = "failed" with a detail.
       } finally {
@@ -4091,7 +4100,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
     textEl.classList.add("proof-status");
     const retryBtn = actionButton("retry", undefined, true, () => {
       void invoke("set_source_enabled", { kind, enabled: true }).then(() => retryHealth());
-    });
+    }, false, "standard");
     retryBtn.style.marginLeft = "12px";
     node.replaceChildren(textEl, retryBtn);
     return;
@@ -4320,30 +4329,12 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     stepContainer.append(heading);
   }
 
-  const renderPauseBtn = (kind: SourceKind) => {
-    const btn = actionButton(
-      "off",
-      ids["settings.setup.pauseSource"],
-      true,
-      async () => {
-        try {
-          await invoke("set_source_enabled", { kind, enabled: false });
-        } finally {
-          retryHealth();
-        }
-      },
-    );
-    btn.setAttribute("aria-label", "off");
-    return btn;
-  };
-
   const sentence = text("p", "what you turn on goes into your journal.");
   sentence.classList.add("wizard-sentence");
 
   if (step === "mic") {
     const sw = renderWizardSourceControl("mic", "settings.setup.mic", dump);
     const proof = renderProofNode("mic", preview);
-    const pauseBtn = renderPauseBtn("mic");
 
     const notNowBtn = actionButton(
       "not now",
@@ -4380,12 +4371,10 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     if (isSourceEnabled(dump.setup, "mic")) navRow.append(nextBtn);
 
     stepContainer.append(sw, proof);
-    if (isSourceEnabled(dump.setup, "mic")) stepContainer.append(pauseBtn);
     stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
   } else if (step === "system_audio") {
     const sw = renderWizardSourceControl("system_audio", "settings.setup.systemAudio", dump);
     const proof = renderProofNode("system_audio", preview);
-    const pauseBtn = renderPauseBtn("system_audio");
 
     const backBtn = actionButton(
       "back",
@@ -4433,12 +4422,10 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     if (isSourceEnabled(dump.setup, "system_audio")) navRow.append(nextBtn);
 
     stepContainer.append(sw, proof);
-    if (isSourceEnabled(dump.setup, "system_audio")) stepContainer.append(pauseBtn);
     stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
   } else if (step === "screen") {
     const sw = renderWizardSourceControl("screen", "settings.setup.screen", dump);
     const proof = renderProofNode("screen", preview);
-    const pauseBtn = renderPauseBtn("screen");
 
     const backBtn = actionButton(
       "back",
@@ -4486,7 +4473,6 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     if (isSourceEnabled(dump.setup, "screen")) navRow.append(nextBtn);
 
     stepContainer.append(sw, proof);
-    if (isSourceEnabled(dump.setup, "screen")) stepContainer.append(pauseBtn);
     stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
   } else if (step === "connection") {
     const isPaired = dump.sync.pairing.phase === "paired";
@@ -4521,7 +4507,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(backBtn);
     if (!nativeContinuationPending(dump)) navRow.append(forwardBtn);
 
-    stepContainer.append(renderPairingSection(dump, { setupStep: true }), sentence, navRow);
+    stepContainer.append(renderPairingSection(dump, { setupStep: true }), navRow);
   }
 
   if (dump.setup?.wizard_save_failed) {

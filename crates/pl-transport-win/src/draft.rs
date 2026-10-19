@@ -159,6 +159,39 @@ pub fn take_deferred(data_root: &Path) -> io::Result<Option<String>> {
     Ok(link)
 }
 
+/// Remove the stored link once pairing has used it. A different link stored
+/// while pairing ran is newly waiting, so it stays.
+pub fn clear_used_draft(data_root: &Path, used: &str) -> io::Result<bool> {
+    let Some(_lock) = held_lock(data_root)? else {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "handoff lock busy",
+        ));
+    };
+    let Some(stored) = read_draft(data_root) else {
+        return Ok(false);
+    };
+    if !same_link(&stored, used) {
+        return Ok(false);
+    }
+    match fs::remove_file(data_root.join(DRAFT_FILE_NAME)) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn same_link(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    if a == b {
+        return true;
+    }
+    match (spl_core::pairlink::parse(a), spl_core::pairlink::parse(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 pub fn dismiss_deferred(data_root: &Path) -> io::Result<()> {
     let Some(_lock) = held_lock(data_root)? else {
         return Err(io::Error::new(
@@ -203,6 +236,33 @@ mod tests {
             observer_model::monotonic_us()
         ));
         path
+    }
+
+    #[test]
+    fn used_draft_is_cleared_and_a_later_link_is_stored_again() {
+        let root = test_root("used");
+        let link = "https://go.solstone.app/p#0G0W000258DSX8DJRFAEBXG7308J4CT4ANK7F26YNPZEZJQYQAZ028T5CY4TQKFF";
+        let later = "https://go.solstone.app/p#0R0J6HB7H6NWVVR1VTPVXVYAZTXBW0938NKRKAYDXWAPGX3ME1SKMBSFE9JPRRBS5SJQGRBDE1P6A";
+        write_draft_if_allowed(&root, link, false, false).unwrap();
+        assert!(clear_used_draft(&root, &format!("  {link}\n")).unwrap());
+        assert_eq!(read_draft(&root), None);
+        assert!(!clear_used_draft(&root, link).unwrap());
+        assert_eq!(
+            write_draft_if_allowed(&root, later, false, false).unwrap(),
+            DraftWriteOutcome::Stored
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_different_waiting_draft_survives_a_used_link() {
+        let root = test_root("waiting");
+        let used = "https://go.solstone.app/p#0G0W000258DSX8DJRFAEBXG7308J4CT4ANK7F26YNPZEZJQYQAZ028T5CY4TQKFF";
+        let waiting = "https://go.solstone.app/p#0R0J6HB7H6NWVVR1VTPVXVYAZTXBW0938NKRKAYDXWAPGX3ME1SKMBSFE9JPRRBS5SJQGRBDE1P6A";
+        write_draft_if_allowed(&root, waiting, false, false).unwrap();
+        assert!(!clear_used_draft(&root, used).unwrap());
+        assert_eq!(read_draft(&root).as_deref(), Some(waiting));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

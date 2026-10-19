@@ -249,6 +249,11 @@ pub async fn pair_session<S: crate::windows::JournalSurface>(
     match result {
         Ok(_) => {
             tracing::info!(target: "sync", outcome = "paired", "pairing result");
+            if let Some(data_root) = cfg.state_path.parent() {
+                if let Err(error) = pl_transport_win::draft::clear_used_draft(data_root, &link) {
+                    tracing::warn!(target: "sync", error = %error, "used pairing link not cleared");
+                }
+            }
             Ok(())
         }
         Err(error) => {

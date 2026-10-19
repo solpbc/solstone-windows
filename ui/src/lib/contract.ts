@@ -53,7 +53,6 @@ export const automationContract = {
     "settings.setup.nativeConnect": "settings.setup.nativeConnect",
     "settings.setup.next": "settings.setup.next",
     "settings.setup.notNow": "settings.setup.notNow",
-    "settings.setup.pauseSource": "settings.setup.pauseSource",
     "settings.setup.screen.proof": "settings.setup.screen.proof",
     "settings.setup.startAtLogin": "settings.setup.startAtLogin",
     "settings.setup.startAtLogin.error": "settings.setup.startAtLogin.error",

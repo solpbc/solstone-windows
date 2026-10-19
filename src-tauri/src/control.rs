@@ -563,6 +563,46 @@ mod tests {
         assert!(pair_res.is_ok());
         assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 1);
     }
+
+    #[tokio::test]
+    async fn pairing_success_clears_the_link_it_used() {
+        let state = Arc::new(test_app_state(None));
+        let surface = Arc::new(FakeJournalSurface::new());
+
+        let (signing_cert, signing_key) = signing_ca();
+        let (server_cert, server_key) = journal_tls_leaf();
+        let server_pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pair_server = tokio::spawn(serve_one_pair_response(
+            listener,
+            acceptor,
+            signing_cert,
+            signing_key,
+        ));
+        let link = direct_pair_link(port, &server_pin);
+        let data_root = state.sync_config.state_path.parent().unwrap().to_path_buf();
+        pl_transport_win::draft::write_draft_if_allowed(&data_root, &link, false, false).unwrap();
+
+        let state_pair = state.clone();
+        let surface_pair = surface.clone();
+        let link_pair = link.clone();
+        let pair_task = tokio::spawn(async move {
+            crate::ipc::pair_session(&*surface_pair, &state_pair, link_pair).await
+        });
+
+        let joined = tokio::time::timeout(Duration::from_secs(5), async {
+            let (pair_res, server_res) = tokio::join!(pair_task, pair_server);
+            (pair_res.unwrap(), server_res.unwrap())
+        })
+        .await;
+
+        assert!(joined.is_ok(), "pairing timed out after 5s");
+        let (pair_res, _) = joined.unwrap();
+        assert!(pair_res.is_ok());
+        assert_eq!(pl_transport_win::draft::read_draft(&data_root), None);
+    }
     async fn native_browser_fixture() -> (crate::app::AppState, String) {
         native_browser_fixture_at(pl_transport_win::credential::EndpointAddr {
             host: "127.0.0.1".into(),

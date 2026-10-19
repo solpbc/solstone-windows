@@ -4,6 +4,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- after you pair, the pairing field is empty again instead of keeping the link you just used.
+- the first time you pair, setup's connect step now tells you where to find a pairing link in your journal.
+- setup's source steps no longer show a separate "off" button. the switch beside each source turns it on and off, and "retry" now looks like the other buttons.
+
 ## [2.0.31] - 2026-10-19
 
 ### Fixed

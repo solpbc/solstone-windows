@@ -411,7 +411,7 @@ describe("setup and source transitions", () => {
       });
     });
 
-    it("clicks pauseSource on mic step and turns off source without global pause", async () => {
+    it("turns a source off from its own switch, with no separate off button, and no global pause", async () => {
       const dump = {
         ...observingDump(),
         setup: {
@@ -427,8 +427,15 @@ describe("setup and source transitions", () => {
       app.__test__.setRoute("home");
       app.__test__.renderSettings(dump);
 
-      const pauseBtn = present(ids["settings.setup.pauseSource"]);
-      pauseBtn.click();
+      const step = present(ids["settings.setup.step"]);
+      expect(step.querySelector('[data-automation-id="settings.setup.pauseSource"]')).toBeNull();
+      const actions = Array.from(step.querySelectorAll("button")).map((b) => b.dataset.automationId);
+      expect(actions).toEqual([ids["settings.setup.notNow"], ids["settings.setup.next"]]);
+
+      const sw = present("settings.setup.mic") as HTMLInputElement;
+      expect(sw.checked).toBe(true);
+      sw.checked = false;
+      sw.dispatchEvent(new Event("change"));
       await Promise.resolve();
 
       expect(invokeMock).toHaveBeenCalledWith("set_source_enabled", {
@@ -436,6 +443,27 @@ describe("setup and source transitions", () => {
         enabled: false,
       });
       expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
+    });
+
+    it("says what goes into the journal on source steps, not on the connect step", () => {
+      const base = {
+        sequence_enabled: true,
+        mic: false,
+        system_audio: false,
+        screen: false,
+        start_at_login: false,
+        notice_dismissed: false,
+      };
+      for (const wizard of ["mic", "system_audio", "screen"] as const) {
+        resetRoot();
+        app.__test__.setRoute("home");
+        app.__test__.renderSettings({ ...observingDump(), setup: { ...base, wizard } });
+        expect(present(ids["settings.setup.step"]).querySelector(".wizard-sentence")).not.toBeNull();
+      }
+      resetRoot();
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings({ ...observingDump(), setup: { ...base, wizard: "connection" as const } });
+      expect(present(ids["settings.setup.step"]).querySelector(".wizard-sentence")).toBeNull();
     });
   });
 
@@ -782,26 +810,6 @@ describe("setup and source transitions", () => {
 
         expect(invokeMock).not.toHaveBeenCalledWith("set_source_enabled", expect.anything());
       }
-    });
-
-    it("displays pause text as off", () => {
-      const dump = {
-        ...observingDump(),
-        setup: {
-          sequence_enabled: true,
-          mic: true,
-          system_audio: true,
-          screen: true,
-          start_at_login: false,
-          wizard: "mic" as const,
-          notice_dismissed: false,
-        },
-      };
-      app.__test__.setRoute("home");
-      app.__test__.renderSettings(dump);
-
-      const pauseBtn = present(ids["settings.setup.pauseSource"]);
-      expect(pauseBtn.textContent).toBe("off");
     });
 
     it("displays notice text exactly: you can turn each source on or off in sources.", () => {
@@ -1203,6 +1211,65 @@ describe("setup recovery and proof lifetimes", () => {
       input.dispatchEvent(new Event("input"));
       app.__test__.renderSettings(initial);
       expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe("typed-by-owner");
+    });
+
+    it("empties the field once pairing has used its link", async () => {
+      const link = "https://go.solstone.app/p#used";
+      app.__test__.setRoute("journal");
+      app.__test__.renderSettings(continuation({}));
+      const input = present(ids["settings.pairing.input"]) as HTMLInputElement;
+      input.value = link;
+      input.dispatchEvent(new Event("input"));
+      present(ids["settings.pairing.submit"]).click();
+      await vi.waitFor(() => expect(input.value).toBe(""));
+      expect(invokeMock).toHaveBeenCalledWith("pair", { link });
+
+      app.__test__.renderSettings(continuation({}, { phase: "paired", journal_label: "journal", binding: "bound" }));
+      expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe("");
+    });
+
+    it("keeps a link that replaced the used one while pairing ran, and keeps a link that failed", async () => {
+      let release: () => void = () => {};
+      invokeMock.mockImplementation((command) =>
+        command === "pair"
+          ? (new Promise<void>((resolve) => {
+              release = resolve;
+            }) as never)
+          : (Promise.resolve(undefined) as never),
+      );
+      app.__test__.setRoute("journal");
+      app.__test__.renderSettings(continuation({}));
+      const input = present(ids["settings.pairing.input"]) as HTMLInputElement;
+      input.value = "https://go.solstone.app/p#used";
+      input.dispatchEvent(new Event("input"));
+      present(ids["settings.pairing.submit"]).click();
+      input.value = "https://go.solstone.app/p#waiting";
+      input.dispatchEvent(new Event("input"));
+      release();
+      await Promise.resolve();
+      await Promise.resolve();
+      app.__test__.renderSettings(continuation({}, { phase: "paired", journal_label: "journal", binding: "bound" }));
+      expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe(
+        "https://go.solstone.app/p#waiting",
+      );
+
+      resetRoot();
+      invokeMock.mockImplementation(async (command) => {
+        if (command === "pair") throw new Error("pairing failed");
+        return undefined as never;
+      });
+      app.__test__.setRoute("journal");
+      app.__test__.renderSettings(continuation({}));
+      const failed = present(ids["settings.pairing.input"]) as HTMLInputElement;
+      failed.value = "https://go.solstone.app/p#failed";
+      failed.dispatchEvent(new Event("input"));
+      present(ids["settings.pairing.submit"]).click();
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("pair", { link: "https://go.solstone.app/p#failed" }));
+      await Promise.resolve();
+      app.__test__.renderSettings(continuation({}, { phase: "failed" }));
+      expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe(
+        "https://go.solstone.app/p#failed",
+      );
     });
 
     it("reads a link that arrived while the window was open once it comes forward", async () => {
