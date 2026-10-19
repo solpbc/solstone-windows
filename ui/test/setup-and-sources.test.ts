@@ -1205,6 +1205,44 @@ describe("setup recovery and proof lifetimes", () => {
       expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe("typed-by-owner");
     });
 
+    it("reads a link that arrived while the window was open once it comes forward", async () => {
+      let link = "";
+      invokeMock.mockImplementation(async (command) =>
+        command === "pairing_prefill" ? (link as never) : (undefined as never),
+      );
+      app.__test__.renderSettings(continuation({ wizard: "connection" as const }));
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("pairing_prefill"));
+      expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe("");
+      link = "https://go.solstone.app/p#arrived";
+      app.__test__.refreshPairingPrefillOnFocus();
+      await vi.waitFor(() => {
+        expect((byId(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe(link);
+      });
+    });
+
+    it("coming forward leaves typed text and a paired journal as they are", async () => {
+      invokeMock.mockImplementation(async (command) =>
+        command === "pairing_prefill" ? ("https://go.solstone.app/p#arrived" as never) : (undefined as never),
+      );
+      const prefillCalls = () => invokeMock.mock.calls.filter((call) => call[0] === "pairing_prefill").length;
+      app.__test__.renderSettings(continuation({ wizard: "connection" as const }));
+      const input = present(ids["settings.pairing.input"]) as HTMLInputElement;
+      input.value = "typed-by-owner";
+      input.dispatchEvent(new Event("input"));
+      const typedCalls = prefillCalls();
+      app.__test__.refreshPairingPrefillOnFocus();
+      await Promise.resolve();
+      expect(prefillCalls()).toBe(typedCalls);
+      expect((present(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe("typed-by-owner");
+
+      app.__test__.reset();
+      app.__test__.renderSettings(continuation({}, { phase: "paired", journal_label: "incumbent", binding: "bound" }));
+      const pairedCalls = prefillCalls();
+      app.__test__.refreshPairingPrefillOnFocus();
+      await Promise.resolve();
+      expect(prefillCalls()).toBe(pairedCalls);
+    });
+
     it("shows native connect on a finished wizard without changing sources", () => {
       const initial = continuation({
         handoff_id: "11111111-1111-4111-8111-111111111111",

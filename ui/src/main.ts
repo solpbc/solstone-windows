@@ -5348,6 +5348,17 @@ function rerender(): void {
 // Background event streams call this instead of rerender() directly: defer + coalesce
 // the full rerender while a control is active so an open native popup / in-progress
 // edit / hotkey capture isn't torn down; otherwise render immediately (no added latency).
+// A pairing link opened while this window is already open is stored by a
+// second launch, which only brings this window forward: nothing in health
+// changes, so no render would read it. Coming forward re-reads it into a
+// field the owner hasn't touched.
+function refreshPairingPrefillOnFocus(): void {
+  if (label !== "settings" || latestHealth?.setup?.sequence_enabled !== true) return;
+  if (latestHealth.sync.pairing.phase !== "not_paired") return;
+  if (pairFieldDirty || pairingDraft) return;
+  requestRerender();
+}
+
 function requestRerender(): void {
   if (isInteractiveControlActive()) {
     pendingRerender = true;
@@ -5610,11 +5621,17 @@ export function start(): void {
     requestRerender();
   });
   window.addEventListener("blur", () => setProofWindowActive(false));
-  window.addEventListener("focus", () => setProofWindowActive(true));
+  window.addEventListener("focus", () => {
+    setProofWindowActive(true);
+    refreshPairingPrefillOnFocus();
+  });
   document.addEventListener("visibilitychange", () => setProofWindowActive(document.visibilityState !== "hidden"));
   window.addEventListener("pagehide", () => setProofWindowActive(false));
   void listen("proof://inactive", handleProofInactive);
-  void listen("tauri://focus", () => setProofWindowActive(true));
+  void listen("tauri://focus", () => {
+    setProofWindowActive(true);
+    refreshPairingPrefillOnFocus();
+  });
   void listen<PreviewSnapshot>("preview://changed", (event) => {
     applyPreview(event.payload ?? {});
   });
@@ -5630,6 +5647,7 @@ export function start(): void {
 }
 
 export const __test__ = {
+  refreshPairingPrefillOnFocus,
   setRoot(el: HTMLDivElement) {
     root = el;
   },
