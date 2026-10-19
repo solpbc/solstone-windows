@@ -11,7 +11,7 @@ use observer_model::{
 
 use crate::access::CredentialAccess;
 use crate::answer::{answer_path, read_answer, write_answer};
-use crate::credential::{PairedState, StorageError};
+use crate::credential::{Credential, PairedState, StorageError};
 use crate::service::{publish_pairing, BoundKind, PairingWrite, SyncConfig};
 use crate::slot::UploaderSlot;
 use crate::unknown_journals::mark_spec_for_jid;
@@ -193,6 +193,103 @@ fn confirm_current(
     Ok(AnswerEffect::Confirmed)
 }
 
+pub(crate) fn narrow_ipv4_loopback_credential(mut credential: Credential) -> Credential {
+    credential.endpoints.retain(|endpoint| {
+        endpoint
+            .host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    });
+    credential.relay_origin = None;
+    credential.device_token = None;
+    credential.device_token_expires_at = None;
+    credential
+}
+
+fn direct_link_is_ipv4_loopback(link: &str) -> bool {
+    let Ok(spl_core::pairlink::ParsedPairLink::Direct(direct)) = spl_core::pairlink::parse(link)
+    else {
+        return false;
+    };
+    if direct.candidates.is_empty() {
+        return false;
+    }
+    direct.candidates.iter().all(|candidate| {
+        candidate
+            .host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    })
+}
+
+fn publish_ordinary_miss(
+    sync: &Arc<Mutex<SyncSnapshot>>,
+    cfg: &SyncConfig,
+    credential: &Credential,
+    binding: &str,
+) {
+    publish_pairing(
+        sync,
+        &cfg.confirmation,
+        &cfg.tombstone,
+        PairingWrite::Bound {
+            binding: binding.to_string(),
+            label: credential.home_label.clone(),
+            mark: mark_spec_for_jid(&credential.instance_id),
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
+        },
+    );
+}
+
+/// An ordinary submit confirms only when every parsed candidate is numeric IPv4
+/// loopback and the pinned identity is the committed mark for this credential,
+/// and the confirm finishes before the uploader starts.
+#[allow(clippy::too_many_arguments)]
+async fn prove_ordinary_same_pc<R, Fut>(
+    link: &str,
+    credential: &Credential,
+    binding: &str,
+    cfg: &SyncConfig,
+    sync: &Arc<Mutex<SyncSnapshot>>,
+    access: Option<&CredentialAccess>,
+    slot: &UploaderSlot,
+    read_identity: R,
+) where
+    R: FnOnce(Credential) -> Fut,
+    Fut: std::future::Future<Output = Result<crate::client::LinkIdentity, TransportError>>,
+{
+    if !direct_link_is_ipv4_loopback(link) {
+        return;
+    }
+    publish_pairing(
+        sync,
+        &cfg.confirmation,
+        &cfg.tombstone,
+        PairingWrite::BeginCeremony,
+    );
+    let narrowed = narrow_ipv4_loopback_credential(credential.clone());
+    let identity = match read_identity(narrowed).await {
+        Ok(id) => id,
+        Err(_) => {
+            publish_ordinary_miss(sync, cfg, credential, binding);
+            return;
+        }
+    };
+    if crate::client::accept_link_identity(&identity, &credential.instance_id).is_err() {
+        publish_ordinary_miss(sync, cfg, credential, binding);
+        return;
+    }
+    match confirm_current(binding, cfg, sync, access, slot) {
+        Ok(AnswerEffect::Confirmed) => {}
+        _ => {
+            publish_ordinary_miss(sync, cfg, credential, binding);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn pair<FBridge, FWin, FutBridge, FutWin>(
     link: &str,
@@ -249,6 +346,15 @@ where
         }
     };
 
+    if paired.credential.is_some() && direct_link_is_ipv4_loopback(link) {
+        publish_pairing(
+            &sync,
+            &cfg.confirmation,
+            &cfg.tombstone,
+            PairingWrite::BeginCeremony,
+        );
+    }
+
     let access = match CredentialAccess::bind(&paired, cfg, sync.clone(), None) {
         Ok(access) => access,
         Err(error) => {
@@ -265,6 +371,26 @@ where
 
     shutdown_bridge().await;
     close_journal_window().await;
+
+    if let Some(cred) = paired.credential.as_ref() {
+        let proof_cred = cred.clone();
+        let binding = crate::ack::JournalIdentity::from_credential(&proof_cred).client_cert_sha256;
+        let closed_gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        prove_ordinary_same_pc(
+            link,
+            &proof_cred,
+            &binding,
+            cfg,
+            &sync,
+            access_guard.as_ref(),
+            &slot,
+            |narrowed| async move {
+                let client = crate::ObserverClient::new(narrowed, closed_gate)?;
+                client.get_link_identity().await
+            },
+        )
+        .await;
+    }
 
     let wake = slot.wake();
     let access_clone = access.clone();
@@ -393,15 +519,7 @@ pub async fn finish_connecting(
     // Post-connect may have refreshed saved LAN endpoints before confirmation.
     // Recovery uses only the retained same-PC endpoints; the initial ceremony
     // still requires every candidate in the accepted link to be loopback.
-    credential.endpoints.retain(|endpoint| {
-        endpoint
-            .host
-            .parse::<std::net::Ipv4Addr>()
-            .is_ok_and(|ip| ip.is_loopback())
-    });
-    credential.relay_origin = None;
-    credential.device_token = None;
-    credential.device_token_expires_at = None;
+    credential = narrow_ipv4_loopback_credential(credential);
     let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let client = crate::ObserverClient::new(credential, gate)?;
     let identity = client.get_link_identity().await?;
@@ -1559,6 +1677,898 @@ mod pure_session_tests {
             binding
         );
     }
+
+    const REAL_JID: &str = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
+
+    fn test_credential_with_instance(label: &str, instance_id: &str) -> Credential {
+        let generated = rcgen::generate_simple_self_signed(vec![label.to_owned()]).unwrap();
+        Credential {
+            client_key_pem: generated.key_pair.serialize_pem(),
+            client_cert_pem: generated.cert.pem(),
+            ca_chain_pem: vec![generated.cert.pem()],
+            ca_fp_prefix: vec![1, 2, 3, 4],
+            instance_id: instance_id.to_owned(),
+            home_label: "Test Journal".to_owned(),
+            endpoints: vec![crate::credential::EndpointAddr {
+                host: "127.0.0.1".to_owned(),
+                port: 7657,
+            }],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        }
+    }
+
+    fn v04_loopback_link(port: u16, ca_fp: &[u8; 16]) -> String {
+        let mut blob = Vec::with_capacity(40);
+        blob.push(0x04);
+        blob.push(0x01);
+        blob.extend_from_slice(&[127, 0, 0, 1]);
+        blob.extend_from_slice(&port.to_be_bytes());
+        blob.extend_from_slice(&[0x11; 16]);
+        blob.extend_from_slice(ca_fp);
+        format!(
+            "https://go.solstone.app/p#{}",
+            spl_core::crockford::encode(&blob)
+        )
+    }
+
+    fn v05_direct_link(ips: &[[u8; 4]], port: u16, ca_fp: &[u8; 16]) -> String {
+        let mut blob = vec![0x05u8, 0x01, u8::try_from(ips.len()).unwrap()];
+        blob.extend_from_slice(&port.to_be_bytes());
+        for ip in ips {
+            blob.extend_from_slice(ip);
+        }
+        blob.extend_from_slice(&[0xC3; 16]);
+        blob.extend_from_slice(ca_fp);
+        format!(
+            "https://go.solstone.app/p#{}",
+            spl_core::crockford::encode(&blob)
+        )
+    }
+
+    fn v06_relay_link(origin: &str, ca_fp_spki: &[u8; 16]) -> String {
+        let origin_bytes = origin.as_bytes();
+        let mut blob = vec![0x06u8];
+        blob.extend_from_slice(&[0xA1; 8]);
+        blob.push(0x01);
+        blob.extend_from_slice(ca_fp_spki);
+        blob.push(u8::try_from(origin_bytes.len()).unwrap());
+        blob.extend_from_slice(origin_bytes);
+        format!(
+            "https://go.solstone.app/p#{}",
+            spl_core::crockford::encode(&blob)
+        )
+    }
+
+    /// Public parser rejects count 0, so this produces the empty-candidate input as a link string.
+    fn v05_empty_candidates_link() -> String {
+        let mut blob = vec![0x05u8, 0x01, 0x00];
+        blob.extend_from_slice(&7657u16.to_be_bytes());
+        blob.extend_from_slice(&[0xC3; 16]);
+        blob.extend_from_slice(&[0xD4; 16]);
+        format!(
+            "https://go.solstone.app/p#{}",
+            spl_core::crockford::encode(&blob)
+        )
+    }
+
+    struct TestHarness {
+        _root: TestRoot,
+        cfg: SyncConfig,
+        sync: Arc<Mutex<SyncSnapshot>>,
+        access: CredentialAccess,
+        slot: UploaderSlot,
+        cred: Credential,
+        binding: String,
+    }
+
+    fn setup_test_harness(instance_id: &str) -> TestHarness {
+        let root = TestRoot::new();
+        let cfg = test_config(root.path());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cred = test_credential_with_instance("test-device", instance_id);
+        let paired = PairedState {
+            credential: Some(cred.clone()),
+            ..Default::default()
+        };
+        paired.save(&cfg.state_path).unwrap();
+        let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+        let slot = UploaderSlot::new();
+        let binding = crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+        {
+            let mut snap = sync.lock().unwrap();
+            snap.pairing.phase = observer_model::PairingPhase::AwaitingConfirmation;
+            snap.pairing.binding = binding.clone();
+        }
+        TestHarness {
+            _root: root,
+            cfg,
+            sync,
+            access,
+            slot,
+            cred,
+            binding,
+        }
+    }
+
+    #[test]
+    fn narrow_ipv4_loopback_credential_drops_lan_endpoints() {
+        let mut cred = test_credential_with_instance("label", "inst");
+        cred.endpoints.push(crate::credential::EndpointAddr {
+            host: "192.168.1.10".into(),
+            port: 8080,
+        });
+        cred.endpoints.push(crate::credential::EndpointAddr {
+            host: "10.0.0.1".into(),
+            port: 8080,
+        });
+        let narrowed = narrow_ipv4_loopback_credential(cred);
+        assert_eq!(narrowed.endpoints.len(), 1);
+        assert_eq!(narrowed.endpoints[0].host, "127.0.0.1");
+    }
+
+    #[test]
+    fn narrow_ipv4_loopback_credential_clears_relay_origin_and_tokens() {
+        let mut cred = test_credential_with_instance("label", "inst");
+        cred.relay_origin = Some("https://relay.example.com".into());
+        cred.device_token = Some("token".into());
+        cred.device_token_expires_at = Some(123456);
+        let narrowed = narrow_ipv4_loopback_credential(cred);
+        assert!(narrowed.relay_origin.is_none());
+        assert!(narrowed.device_token.is_none());
+        assert!(narrowed.device_token_expires_at.is_none());
+    }
+
+    #[test]
+    fn narrow_ipv4_loopback_credential_drops_ipv6_endpoints() {
+        let mut cred = test_credential_with_instance("label", "inst");
+        cred.endpoints.push(crate::credential::EndpointAddr {
+            host: "::1".into(),
+            port: 8080,
+        });
+        cred.endpoints.push(crate::credential::EndpointAddr {
+            host: "2001:db8::1".into(),
+            port: 8080,
+        });
+        let narrowed = narrow_ipv4_loopback_credential(cred);
+        assert_eq!(narrowed.endpoints.len(), 1);
+        assert_eq!(narrowed.endpoints[0].host, "127.0.0.1");
+    }
+
+    #[test]
+    fn narrow_ipv4_loopback_credential_drops_dns_host_endpoints() {
+        let mut cred = test_credential_with_instance("label", "inst");
+        cred.endpoints.push(crate::credential::EndpointAddr {
+            host: "localhost".into(),
+            port: 8080,
+        });
+        cred.endpoints.push(crate::credential::EndpointAddr {
+            host: "journal.local".into(),
+            port: 8080,
+        });
+        let narrowed = narrow_ipv4_loopback_credential(cred);
+        assert_eq!(narrowed.endpoints.len(), 1);
+        assert_eq!(narrowed.endpoints[0].host, "127.0.0.1");
+    }
+
+    #[test]
+    fn narrow_ipv4_loopback_credential_preserves_empty_endpoints() {
+        let mut cred = test_credential_with_instance("label", "inst");
+        cred.endpoints.clear();
+        cred.relay_origin = Some("https://relay.example.com".into());
+        cred.device_token = Some("token".into());
+        cred.device_token_expires_at = Some(123456);
+        let narrowed = narrow_ipv4_loopback_credential(cred);
+        assert!(narrowed.endpoints.is_empty());
+        assert!(narrowed.relay_origin.is_none());
+        assert!(narrowed.device_token.is_none());
+        assert!(narrowed.device_token_expires_at.is_none());
+    }
+
+    #[test]
+    fn narrow_ipv4_loopback_credential_retains_loopback_subnet() {
+        let mut cred = test_credential_with_instance("label", "inst");
+        cred.endpoints.push(crate::credential::EndpointAddr {
+            host: "127.0.0.2".into(),
+            port: 8081,
+        });
+        let narrowed = narrow_ipv4_loopback_credential(cred);
+        assert_eq!(narrowed.endpoints.len(), 2);
+        assert_eq!(narrowed.endpoints[0].host, "127.0.0.1");
+        assert_eq!(narrowed.endpoints[1].host, "127.0.0.2");
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_ineligible_unparseable_link_does_not_call_reader() {
+        let harness = setup_test_harness(REAL_JID);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        prove_ordinary_same_pc(
+            "https://go.solstone.app/p#badlink",
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("reader must not be called for ineligible link");
+            },
+        )
+        .await;
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_ineligible_relay_link_does_not_call_reader() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v06_relay_link("http://127.0.0.1:1", &[0x11; 16]);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("reader must not be called for relay link");
+            },
+        )
+        .await;
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_ineligible_remote_direct_link_does_not_call_reader() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v05_direct_link(&[[192, 168, 1, 10]], 7657, &[0x11; 16]);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("reader must not be called for remote direct link");
+            },
+        )
+        .await;
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_ineligible_mixed_loopback_then_remote_does_not_call_reader() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v05_direct_link(&[[127, 0, 0, 1], [192, 168, 1, 9]], 7657, &[0x11; 16]);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("reader must not be called for mixed loopback-then-remote link");
+            },
+        )
+        .await;
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_ineligible_mixed_remote_then_loopback_does_not_call_reader() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v05_direct_link(&[[192, 168, 1, 9], [127, 0, 0, 1]], 7657, &[0x11; 16]);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("reader must not be called for mixed remote-then-loopback link");
+            },
+        )
+        .await;
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_ineligible_empty_candidates_does_not_call_reader() {
+        let harness = setup_test_harness(REAL_JID);
+        // The public parser rejects count 0, so this link string is refused by direct_link_is_ipv4_loopback.
+        let link = v05_empty_candidates_link();
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("reader must not be called for empty candidates link");
+            },
+        )
+        .await;
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_passes_narrowed_credential_to_reader() {
+        let mut harness = setup_test_harness(REAL_JID);
+        harness.cred.endpoints = vec![
+            crate::credential::EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: 7657,
+            },
+            crate::credential::EndpointAddr {
+                host: "127.0.0.2".into(),
+                port: 7658,
+            },
+            crate::credential::EndpointAddr {
+                host: "192.168.1.100".into(),
+                port: 7657,
+            },
+            crate::credential::EndpointAddr {
+                host: "::1".into(),
+                port: 7657,
+            },
+            crate::credential::EndpointAddr {
+                host: "localhost".into(),
+                port: 7657,
+            },
+        ];
+        harness.cred.relay_origin = Some("https://relay.solstone.app".into());
+        harness.cred.device_token = Some("token-123".into());
+        harness.cred.device_token_expires_at = Some(999999);
+
+        let link = v05_direct_link(&[[127, 0, 0, 1], [127, 0, 0, 2]], 7657, &[0x11; 16]);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |narrowed| {
+                let captured = captured_clone.clone();
+                async move {
+                    *captured.lock().unwrap() = Some(narrowed);
+                    Err(TransportError::NoEndpoint)
+                }
+            },
+        )
+        .await;
+
+        let recorded = captured.lock().unwrap().take().expect("reader called");
+        assert_eq!(
+            recorded,
+            narrow_ipv4_loopback_credential(harness.cred.clone())
+        );
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_malformed_identity_leaves_awaiting_and_gate_closed() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let err = crate::client::parse_link_identity(b"invalid json").unwrap_err();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move { Err(err) },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_reader_transport_error_leaves_awaiting_and_gate_closed() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let sync_clone = harness.sync.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                assert_eq!(
+                    sync_clone.lock().unwrap().pairing.phase,
+                    observer_model::PairingPhase::Pairing
+                );
+                Err(TransportError::NoEndpoint)
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_uncommitted_identity_leaves_awaiting_and_gate_closed() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let mark = mark_spec_for_jid(REAL_JID).unwrap();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: false,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(mark),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_missing_mark_leaves_awaiting_and_gate_closed() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: None,
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_wrong_instance_id_leaves_awaiting_and_gate_closed() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let mark = mark_spec_for_jid(REAL_JID).unwrap();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some("wrong-instance-id".to_string()),
+                    mark: Some(mark),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_noncanonical_mark_leaves_awaiting_and_gate_closed() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let mut noncanonical = mark_spec_for_jid(REAL_JID).unwrap();
+        noncanonical.words = ["mismatched".into(), "words".into()];
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(noncanonical),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert!(!crate::answer::answer_path(&harness.cfg.state_path).exists());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_changed_disk_binding_returns_ignored_and_leaves_awaiting() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let mark = mark_spec_for_jid(REAL_JID).unwrap();
+
+        // Write a different credential to disk
+        let different_cred = test_credential_with_instance("different", REAL_JID);
+        let different_paired = PairedState {
+            credential: Some(different_cred),
+            ..Default::default()
+        };
+        different_paired.save(&harness.cfg.state_path).unwrap();
+
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(mark),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_pending_retirement_returns_ignored_and_leaves_awaiting() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let mark = mark_spec_for_jid(REAL_JID).unwrap();
+
+        let mut paired = PairedState::load(&harness.cfg.state_path).unwrap();
+        paired.retirement_intent = Some(crate::credential::RetirementIntent {
+            schema: 1,
+            operation_id: "pending".into(),
+            phase: crate::credential::RetirementPhase::Prepared,
+            owner_generation: crate::credential::pairing_generation(&harness.cred.client_cert_pem),
+            access_mutation_generation: 0,
+            client_id: "sha256:fixture".into(),
+            credential: harness.cred.clone(),
+        });
+        paired.save(&harness.cfg.state_path).unwrap();
+
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(mark),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_retired_or_missing_access_returns_ignored_and_leaves_awaiting()
+    {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let mark = mark_spec_for_jid(REAL_JID).unwrap();
+
+        // 1. Live client mismatch via replace
+        let other_cred = test_credential_with_instance("other", REAL_JID);
+        let other_client = Arc::new(
+            crate::ObserverClient::new(
+                other_cred,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap(),
+        );
+        harness.access.client_slot().replace(other_client);
+
+        let mark1 = mark.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(mark1),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+
+        // 2. access: None
+        let mark2 = mark.clone();
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            None,
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(mark2),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_answer_write_storage_error_leaves_awaiting() {
+        let harness = setup_test_harness(REAL_JID);
+        let link = v04_loopback_link(7657, &[0x11; 16]);
+        let mark = mark_spec_for_jid(REAL_JID).unwrap();
+
+        // Make the staging file path a directory so File::create fails with StorageError
+        let tmp = answer_path(&harness.cfg.state_path).with_extension("json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        prove_ordinary_same_pc(
+            &link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(mark),
+                })
+            },
+        )
+        .await;
+
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert!(!harness.access.client_slot().load().gate_open());
+        assert_eq!(*harness.cfg.confirmation.lock().unwrap(), "");
+        let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_success_then_remote_pair_leaves_second_pair_awaiting() {
+        let harness = setup_test_harness(REAL_JID);
+        let loopback_link = v04_loopback_link(7657, &[0x11; 16]);
+        let mark = mark_spec_for_jid(REAL_JID).unwrap();
+
+        // First call: eligible loopback link and canonical identity
+        let sync_clone = harness.sync.clone();
+        prove_ordinary_same_pc(
+            &loopback_link,
+            &harness.cred,
+            &harness.binding,
+            &harness.cfg,
+            &harness.sync,
+            Some(&harness.access),
+            &harness.slot,
+            |_| async move {
+                assert_eq!(
+                    sync_clone.lock().unwrap().pairing.phase,
+                    observer_model::PairingPhase::Pairing
+                );
+                Ok(crate::client::LinkIdentity {
+                    committed: true,
+                    instance_id: Some(REAL_JID.to_string()),
+                    mark: Some(mark),
+                })
+            },
+        )
+        .await;
+
+        // Verify first call succeeded
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::Paired
+        );
+        assert!(harness.access.client_slot().load().gate_open());
+        assert_eq!(
+            read_answer(&answer_path(&harness.cfg.state_path))
+                .unwrap()
+                .unwrap()
+                .confirmed,
+            harness.binding
+        );
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.mark,
+            mark_spec_for_jid(REAL_JID)
+        );
+        assert_eq!(*harness.cfg.confirmation.lock().unwrap(), harness.binding);
+
+        // Second call: new cert, new bind, remote link
+        let cred_b = test_credential_with_instance("device-b", REAL_JID);
+        let paired_b = PairedState {
+            credential: Some(cred_b.clone()),
+            ..Default::default()
+        };
+        paired_b.save(&harness.cfg.state_path).unwrap();
+
+        // bind leaves delivery gate closed because confirmation cache is still binding A
+        let access_b =
+            CredentialAccess::bind(&paired_b, &harness.cfg, harness.sync.clone(), None).unwrap();
+        let binding_b = crate::ack::JournalIdentity::from_credential(&cred_b).client_cert_sha256;
+        assert_ne!(harness.binding, binding_b);
+        assert!(!access_b.client_slot().load().gate_open());
+
+        {
+            let mut snap = harness.sync.lock().unwrap();
+            snap.pairing.phase = observer_model::PairingPhase::AwaitingConfirmation;
+            snap.pairing.binding = binding_b.clone();
+        }
+
+        let remote_link = v05_direct_link(&[[192, 168, 1, 10]], 7657, &[0x11; 16]);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        prove_ordinary_same_pc(
+            &remote_link,
+            &cred_b,
+            &binding_b,
+            &harness.cfg,
+            &harness.sync,
+            Some(&access_b),
+            &harness.slot,
+            |_| async move {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("reader must not be called for second remote pairing");
+            },
+        )
+        .await;
+
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!access_b.client_slot().load().gate_open());
+        assert_eq!(*harness.cfg.confirmation.lock().unwrap(), harness.binding);
+        assert_eq!(
+            harness.sync.lock().unwrap().pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+    }
 }
 
 // The rejection test needs a real (closed) TCP endpoint: transport lane only.
@@ -2038,6 +3048,563 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    async fn serve_pair_and_identity_response(
+        listener: TcpListener,
+        acceptor: TlsAcceptor,
+        signing_cert: rcgen::Certificate,
+        signing_key: KeyPair,
+        instance_id: &str,
+        state_path: std::path::PathBuf,
+        sync: Arc<Mutex<SyncSnapshot>>,
+    ) {
+        // Connection 1: pair
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let mut decoder = FrameDecoder::new();
+        let mut request = Vec::new();
+        let mut stream_id = 1u32;
+        let mut buf = [0u8; 4096];
+        let mut closed = false;
+        while !closed {
+            let n = tls.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            decoder.feed(&buf[..n]);
+            for frame in decoder.drain().unwrap() {
+                stream_id = frame.stream_id;
+                if frame.flags & FLAG_DATA != 0 {
+                    request.extend_from_slice(&frame.payload);
+                }
+                if frame.flags & FLAG_CLOSE != 0 {
+                    closed = true;
+                }
+            }
+        }
+
+        let body_str = String::from_utf8_lossy(&request);
+        let body_idx = body_str.find("\r\n\r\n").unwrap() + 4;
+        let body_json: serde_json::Value = serde_json::from_str(&body_str[body_idx..]).unwrap();
+        let csr = body_json["csr"].as_str().unwrap();
+
+        let client_cert = CertificateSigningRequestParams::from_pem(csr)
+            .unwrap()
+            .signed_by(&signing_cert, &signing_key)
+            .unwrap();
+
+        let response_body = serde_json::json!({
+            "client_cert": client_cert.pem(),
+            "ca_chain": [signing_cert.pem()],
+            "instance_id": instance_id,
+            "home_label": "Fixture Journal",
+            "fingerprint": format!("sha256:{}", spl_core::ca::sha256_hex(client_cert.der())),
+        });
+        let body_bytes = serde_json::to_vec(&response_body).unwrap();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body_bytes.len()
+        );
+        let mut full = head.into_bytes();
+        full.extend_from_slice(&body_bytes);
+
+        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, full);
+        tls.write_all(&frame.encode().unwrap()).await.unwrap();
+        tls.flush().await.unwrap();
+        let mut drain = [0u8; 1024];
+        while tls.read(&mut drain).await.unwrap_or(0) != 0 {}
+        drop(tls);
+
+        // Connection 2: identity GET
+        let (tcp2, _) = listener.accept().await.unwrap();
+        let mut tls2 = acceptor.accept(tcp2).await.unwrap();
+        let mut decoder2 = FrameDecoder::new();
+        let mut request2 = Vec::new();
+        let mut stream_id2 = 1u32;
+        let mut closed2 = false;
+        while !closed2 {
+            let n = tls2.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            decoder2.feed(&buf[..n]);
+            for frame in decoder2.drain().unwrap() {
+                stream_id2 = frame.stream_id;
+                if frame.flags & FLAG_DATA != 0 {
+                    request2.extend_from_slice(&frame.payload);
+                }
+                if frame.flags & FLAG_CLOSE != 0 {
+                    closed2 = true;
+                }
+            }
+        }
+
+        let req2_str = String::from_utf8_lossy(&request2);
+        assert!(req2_str.starts_with(&format!("GET {} ", observer_contract::IDENTITY_PATH)));
+
+        // Inside the identity handler, before the response:
+        // answer file still unconfirmed, sync phase still AwaitingConfirmation.
+        // Do not lock access_mutex there. session::pair holds it across the read.
+        let ans_path = answer_path(&state_path);
+        assert!(
+            read_answer(&ans_path)
+                .unwrap()
+                .is_none_or(|a| a.confirmed.is_empty()),
+            "answer file must not be confirmed before identity response"
+        );
+        assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
+
+        let mark = mark_spec_for_jid(instance_id).expect("valid mark for instance");
+        let id_body = serde_json::json!({
+            "committed": true,
+            "instance_id": instance_id,
+            "mark": mark,
+        });
+        let id_bytes = serde_json::to_vec(&id_body).unwrap();
+        let head2 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            id_bytes.len()
+        );
+        let mut full2 = head2.into_bytes();
+        full2.extend_from_slice(&id_bytes);
+
+        let frame2 = Frame::new(stream_id2, FLAG_DATA | FLAG_CLOSE, full2);
+        tls2.write_all(&frame2.encode().unwrap()).await.unwrap();
+        tls2.flush().await.unwrap();
+        while tls2.read(&mut drain).await.unwrap_or(0) != 0 {}
+    }
+
+    #[tokio::test]
+    async fn session_pair_ordinary_same_pc_pinned_mtls_success() {
+        let instance_id = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "session-pinned-mtls-success-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("pairing.json");
+
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+        let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let signing_cert = params.self_signed(&signing_key).unwrap();
+
+        let ca_der = signing_cert.der();
+        let mut link_pin = [0u8; 16];
+        link_pin.copy_from_slice(&spl_core::ca::sha256(ca_der)[..16]);
+
+        let mut leaf_params = CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+        leaf_params.is_ca = IsCa::NoCa;
+        leaf_params
+            .extended_key_usages
+            .push(ExtendedKeyUsagePurpose::ServerAuth);
+        let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &signing_cert, &signing_key)
+            .unwrap();
+
+        let server_leaf_der = CertificateDer::from(leaf_cert.der().to_vec());
+        let server_ca_der = CertificateDer::from(ca_der.to_vec());
+        let server_key_der =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+
+        let server_cfg =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![server_leaf_der, server_ca_der], server_key_der)
+                .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server_cfg));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cfg = SyncConfig {
+            device_label: "device".to_owned(),
+            period_secs: 300,
+            state_path: state_path.clone(),
+            segments_root: dir.join("segments"),
+            local_offset: Arc::new(FixedOffset),
+            journal_version: Arc::new(JournalVersionController::new(
+                dir.join("journal-version.json"),
+            )),
+            facts_fn: Arc::new(RawDeviceFacts::default),
+            confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
+        };
+
+        let server = tokio::spawn(serve_pair_and_identity_response(
+            listener,
+            acceptor,
+            signing_cert,
+            signing_key,
+            instance_id,
+            state_path.clone(),
+            sync.clone(),
+        ));
+
+        let link = direct_loopback_link(port, &link_pin);
+        let access_mutex = tokio::sync::Mutex::new(None);
+        let slot = tokio::sync::Mutex::new(UploaderSlot::new());
+
+        let paired = pair(
+            &link,
+            &cfg,
+            sync.clone(),
+            &slot,
+            &access_mutex,
+            &std::sync::atomic::AtomicBool::new(false),
+            || async {},
+            || async {},
+        )
+        .await
+        .unwrap();
+
+        server.await.unwrap();
+
+        let answer_state = read_answer(&answer_path(&state_path))
+            .unwrap()
+            .expect("answer file must exist");
+        let cred = paired.credential.as_ref().unwrap();
+        let binding = crate::ack::JournalIdentity::from_credential(cred).client_cert_sha256;
+        assert_eq!(answer_state.confirmed, binding);
+        assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Paired);
+        assert_eq!(
+            sync.lock().unwrap().pairing.mark,
+            mark_spec_for_jid(instance_id)
+        );
+        let access_guard = access_mutex.lock().await;
+        assert!(access_guard
+            .as_ref()
+            .unwrap()
+            .client_slot()
+            .load()
+            .gate_open());
+        drop(access_guard);
+
+        slot.lock().await.stop().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn local_lan_ipv4() -> std::net::Ipv4Addr {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").expect("bind udp");
+        socket.connect("192.0.2.1:9").expect("connect udp");
+        match socket.local_addr().expect("local addr").ip() {
+            std::net::IpAddr::V4(ip) if !ip.is_loopback() => ip,
+            other => panic!("expected non-loopback IPv4 LAN address, found {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_wrong_tls_pin_leaves_awaiting_and_does_not_dial_lan_or_relay() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "session-wrong-tls-pin-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("pairing.json");
+
+        let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+        let signing_cert = params.clone().self_signed(&signing_key).unwrap();
+        let ca_der = signing_cert.der();
+        let mut link_pin = [0u8; 16];
+        link_pin.copy_from_slice(&spl_core::ca::sha256(ca_der)[..16]);
+
+        let other_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let other_ca = params.self_signed(&other_key).unwrap();
+        let other_leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut other_leaf_params = CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
+        other_leaf_params.is_ca = IsCa::NoCa;
+        other_leaf_params
+            .extended_key_usages
+            .push(ExtendedKeyUsagePurpose::ServerAuth);
+        let other_leaf = other_leaf_params
+            .signed_by(&other_leaf_key, &other_ca, &other_key)
+            .unwrap();
+
+        let server_cfg =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![
+                        CertificateDer::from(other_leaf.der().to_vec()),
+                        CertificateDer::from(other_ca.der().to_vec()),
+                    ],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(other_leaf_key.serialize_der())),
+                )
+                .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server_cfg));
+
+        let loopback_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let loopback_port = loopback_listener.local_addr().unwrap().port();
+        let loopback_accepts = Arc::new(AtomicUsize::new(0));
+        let loopback_accepts_clone = loopback_accepts.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = loopback_listener.accept().await {
+                loopback_accepts_clone.fetch_add(1, Ordering::SeqCst);
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+
+        let lan_ip = local_lan_ipv4();
+        assert!(!lan_ip.is_loopback());
+        let lan_listener = TcpListener::bind((lan_ip, 0)).await.unwrap();
+        let lan_port = lan_listener.local_addr().unwrap().port();
+        let lan_accepts = Arc::new(AtomicUsize::new(0));
+        let lan_accepts_clone = lan_accepts.clone();
+        tokio::spawn(async move {
+            while let Ok((_, _)) = lan_listener.accept().await {
+                lan_accepts_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = relay_listener.local_addr().unwrap().port();
+        let relay_accepts = Arc::new(AtomicUsize::new(0));
+        let relay_accepts_clone = relay_accepts.clone();
+        tokio::spawn(async move {
+            while let Ok((_, _)) = relay_listener.accept().await {
+                relay_accepts_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let mut cred = test_credential("wrong-pin-cred");
+        cred.ca_chain_pem = vec![signing_cert.pem()];
+        cred.endpoints = vec![
+            crate::credential::EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: loopback_port,
+            },
+            crate::credential::EndpointAddr {
+                host: lan_ip.to_string(),
+                port: lan_port,
+            },
+        ];
+        cred.relay_origin = Some(format!("https://127.0.0.1:{relay_port}"));
+        cred.device_token = Some("live-token".into());
+        cred.device_token_expires_at = Some(i64::MAX);
+
+        let paired = PairedState {
+            credential: Some(cred.clone()),
+            ..Default::default()
+        };
+        paired.save(&state_path).unwrap();
+
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let binding = crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+        {
+            let mut snap = sync.lock().unwrap();
+            snap.pairing.phase = PairingPhase::AwaitingConfirmation;
+            snap.pairing.binding = binding.clone();
+        }
+
+        let cfg = SyncConfig {
+            device_label: "device".to_owned(),
+            period_secs: 300,
+            state_path: state_path.clone(),
+            segments_root: dir.join("segments"),
+            local_offset: Arc::new(FixedOffset),
+            journal_version: Arc::new(JournalVersionController::new(
+                dir.join("journal-version.json"),
+            )),
+            facts_fn: Arc::new(RawDeviceFacts::default),
+            confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
+        };
+
+        let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+        let slot = UploaderSlot::new();
+        let link = direct_loopback_link(loopback_port, &link_pin);
+
+        let closed_gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        prove_ordinary_same_pc(
+            &link,
+            &cred,
+            &binding,
+            &cfg,
+            &sync,
+            Some(&access),
+            &slot,
+            |narrowed| async move {
+                let client = crate::ObserverClient::new(narrowed, closed_gate)?;
+                client.get_link_identity().await
+            },
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(loopback_accepts.load(Ordering::SeqCst) >= 1);
+        assert_eq!(lan_accepts.load(Ordering::SeqCst), 0);
+        assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            sync.lock().unwrap().pairing.phase,
+            PairingPhase::AwaitingConfirmation
+        );
+        assert!(!access.client_slot().load().gate_open());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn prove_ordinary_same_pc_failed_loopback_leaves_awaiting_and_does_not_dial_lan_or_relay()
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "session-failed-loopback-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("pairing.json");
+
+        let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+        let signing_cert = params.self_signed(&signing_key).unwrap();
+        let ca_der = signing_cert.der();
+        let mut link_pin = [0u8; 16];
+        link_pin.copy_from_slice(&spl_core::ca::sha256(ca_der)[..16]);
+
+        let loopback_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let loopback_port = loopback_listener.local_addr().unwrap().port();
+        let loopback_accepts = Arc::new(AtomicUsize::new(0));
+        let loopback_accepts_clone = loopback_accepts.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = loopback_listener.accept().await {
+                loopback_accepts_clone.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+
+        let lan_ip = local_lan_ipv4();
+        assert!(!lan_ip.is_loopback());
+        let lan_listener = TcpListener::bind((lan_ip, 0)).await.unwrap();
+        let lan_port = lan_listener.local_addr().unwrap().port();
+        let lan_accepts = Arc::new(AtomicUsize::new(0));
+        let lan_accepts_clone = lan_accepts.clone();
+        tokio::spawn(async move {
+            while let Ok((_, _)) = lan_listener.accept().await {
+                lan_accepts_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = relay_listener.local_addr().unwrap().port();
+        let relay_accepts = Arc::new(AtomicUsize::new(0));
+        let relay_accepts_clone = relay_accepts.clone();
+        tokio::spawn(async move {
+            while let Ok((_, _)) = relay_listener.accept().await {
+                relay_accepts_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let mut cred = test_credential("failed-loopback-cred");
+        cred.ca_chain_pem = vec![signing_cert.pem()];
+        cred.endpoints = vec![
+            crate::credential::EndpointAddr {
+                host: "127.0.0.1".into(),
+                port: loopback_port,
+            },
+            crate::credential::EndpointAddr {
+                host: lan_ip.to_string(),
+                port: lan_port,
+            },
+        ];
+        cred.relay_origin = Some(format!("https://127.0.0.1:{relay_port}"));
+        cred.device_token = Some("live-token".into());
+        cred.device_token_expires_at = Some(i64::MAX);
+
+        let paired = PairedState {
+            credential: Some(cred.clone()),
+            ..Default::default()
+        };
+        paired.save(&state_path).unwrap();
+
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let binding = crate::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+        {
+            let mut snap = sync.lock().unwrap();
+            snap.pairing.phase = PairingPhase::AwaitingConfirmation;
+            snap.pairing.binding = binding.clone();
+        }
+
+        let cfg = SyncConfig {
+            device_label: "device".to_owned(),
+            period_secs: 300,
+            state_path: state_path.clone(),
+            segments_root: dir.join("segments"),
+            local_offset: Arc::new(FixedOffset),
+            journal_version: Arc::new(JournalVersionController::new(
+                dir.join("journal-version.json"),
+            )),
+            facts_fn: Arc::new(RawDeviceFacts::default),
+            confirmation: Arc::new(Mutex::new(String::new())),
+            tombstone: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "awaiting-hold")]
+            awaiting_hold: None,
+        };
+
+        let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).unwrap();
+        let slot = UploaderSlot::new();
+        let link = direct_loopback_link(loopback_port, &link_pin);
+
+        let closed_gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        prove_ordinary_same_pc(
+            &link,
+            &cred,
+            &binding,
+            &cfg,
+            &sync,
+            Some(&access),
+            &slot,
+            |narrowed| async move {
+                let client = crate::ObserverClient::new(narrowed, closed_gate)?;
+                client.get_link_identity().await
+            },
+        )
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(loopback_accepts.load(Ordering::SeqCst) >= 1);
+        assert_eq!(lan_accepts.load(Ordering::SeqCst), 0);
+        assert_eq!(relay_accepts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            sync.lock().unwrap().pairing.phase,
+            PairingPhase::AwaitingConfirmation
+        );
+        assert!(!access.client_slot().load().gate_open());
 
         let _ = std::fs::remove_dir_all(dir);
     }

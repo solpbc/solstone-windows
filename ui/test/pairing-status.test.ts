@@ -513,4 +513,107 @@ describe("awaiting mark confirmation", () => {
     const text = present(ids["settings.pairing.state"]).textContent ?? "";
     expect(text).toBe("not paired");
   });
+
+  it("keeps pending presentation while pair call is pending and renders comparison only after proof settles as awaiting", async () => {
+    invokeMock.mockReset();
+    const mark = sampleMarkSpec("liquefy", "smock", "#3b82f6");
+    const initialDump = notPairedDump();
+    const awaitingDump = {
+      ...awaitingConfirmationDump(mark),
+      sync: {
+        ...awaitingConfirmationDump(mark).sync,
+        pairing: {
+          ...awaitingConfirmationDump(mark).sync.pairing,
+          finish_connecting: false,
+        },
+      },
+    };
+
+    // First case: pending pair resolves to paired
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(initialDump);
+    app.__test__.renderSettings(initialDump);
+
+    const input = present(ids["settings.pairing.input"]) as HTMLInputElement;
+    input.value = "https://go.solstone.app/p#testlink1";
+    input.dispatchEvent(new Event("input"));
+
+    let resolvePair!: () => void;
+    const pairPromise = new Promise<void>((resolve) => {
+      resolvePair = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd) => {
+      if (cmd === "pair") return pairPromise;
+      return undefined;
+    });
+
+    const submitBtn = present(ids["settings.pairing.submit"]) as HTMLButtonElement;
+    submitBtn.click();
+
+    // While that call is pending, renderSettings with awaiting_confirmation and a mark, finish_connecting false
+    app.__test__.renderSettings(awaitingDump);
+
+    // settings.pairing.confirmYes, confirmReject, confirmContinue, and confirmCancel are absent
+    expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmReject"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmContinue"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmCancel"])).toBeNull();
+
+    // Resolve after setHealth of a paired dump with a mark
+    const pairedDump = {
+      ...notPairedDump(),
+      sync: {
+        ...notPairedDump().sync,
+        pairing: {
+          ...notPairedDump().sync.pairing,
+          phase: "paired" as const,
+          mark,
+          binding: "abc123binding",
+        },
+      },
+    };
+    app.__test__.setHealth(pairedDump);
+    resolvePair();
+    await pairPromise;
+    await new Promise((r) => setTimeout(r, 0));
+
+    // those controls stay absent, and settings.pairing.mark is present
+    expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmReject"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmContinue"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmCancel"])).toBeNull();
+    expect(byId(ids["settings.pairing.mark"])).not.toBeNull();
+
+    // Second case, same pending start, resolves while health stays awaiting_confirmation with a mark
+    resetRoot();
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(initialDump);
+    app.__test__.renderSettings(initialDump);
+
+    const input2 = present(ids["settings.pairing.input"]) as HTMLInputElement;
+    input2.value = "https://go.solstone.app/p#testlink2";
+    input2.dispatchEvent(new Event("input"));
+
+    let resolvePair2!: () => void;
+    const pairPromise2 = new Promise<void>((resolve) => {
+      resolvePair2 = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd) => {
+      if (cmd === "pair") return pairPromise2;
+      return undefined;
+    });
+
+    const submitBtn2 = present(ids["settings.pairing.submit"]) as HTMLButtonElement;
+    submitBtn2.click();
+
+    app.__test__.setHealth(awaitingDump);
+    app.__test__.renderSettings(awaitingDump);
+    expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
+
+    resolvePair2();
+    await pairPromise2;
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(byId(ids["settings.pairing.confirmYes"])).not.toBeNull();
+  });
 });
