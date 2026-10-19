@@ -437,6 +437,10 @@ mod tests {
         signing_key: KeyPair,
     ) {
         let (tcp, _) = listener.accept().await.unwrap();
+        // This fixture serves only the pairing handshake, not link identity.
+        // Close admission before responding so the subsequent same-PC proof
+        // gets a refusal instead of connecting to an unserved TCP backlog.
+        drop(listener);
         let mut tls = acceptor.accept(tcp).await.unwrap();
         let (stream_id, request) = read_framed_request(&mut tls).await;
         let body_json = request_body(&request);
