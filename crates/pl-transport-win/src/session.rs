@@ -335,7 +335,14 @@ where
         write_answer(&ans_path, &crate::answer::AnswerState::default())?;
     }
 
-    let paired = match crate::service::pair(link, cfg, sync.clone()).await {
+    let paired = match crate::service::pair_with_identity_pending(
+        link,
+        cfg,
+        sync.clone(),
+        direct_link_is_ipv4_loopback(link),
+    )
+    .await
+    {
         Ok(paired) => paired,
         Err(error) => {
             if settle_failed_pair(cfg, &sync, &mut access_guard, &mut slot).await {
@@ -3054,13 +3061,15 @@ mod tests {
 
     async fn serve_pair_and_identity_response(
         listener: TcpListener,
-        acceptor: TlsAcceptor,
-        signing_cert: rcgen::Certificate,
-        signing_key: KeyPair,
+        acceptors: (TlsAcceptor, TlsAcceptor),
+        signer: (rcgen::Certificate, KeyPair),
+        case: &'static str,
         instance_id: &str,
         state_path: std::path::PathBuf,
         sync: Arc<Mutex<SyncSnapshot>>,
     ) {
+        let (acceptor, identity_acceptor) = acceptors;
+        let (signing_cert, signing_key) = signer;
         // Connection 1: pair
         let (tcp, _) = listener.accept().await.unwrap();
         let mut tls = acceptor.accept(tcp).await.unwrap();
@@ -3118,9 +3127,18 @@ mod tests {
         while tls.read(&mut drain).await.unwrap_or(0) != 0 {}
         drop(tls);
 
-        // Connection 2: identity GET
+        if matches!(case, "remote" | "unavailable" | "pending-service") {
+            return;
+        }
+        // Connection 2 must authenticate with the certificate just minted.
         let (tcp2, _) = listener.accept().await.unwrap();
-        let mut tls2 = acceptor.accept(tcp2).await.unwrap();
+        let mut tls2 = identity_acceptor.accept(tcp2).await.unwrap();
+        let presented = tls2
+            .get_ref()
+            .1
+            .peer_certificates()
+            .expect("client certificate required");
+        assert_eq!(presented[0].as_ref(), client_cert.der().as_ref());
         let mut decoder2 = FrameDecoder::new();
         let mut request2 = Vec::new();
         let mut stream_id2 = 1u32;
@@ -3146,7 +3164,7 @@ mod tests {
         assert!(req2_str.starts_with(&format!("GET {} ", observer_contract::IDENTITY_PATH)));
 
         // Inside the identity handler, before the response:
-        // answer file still unconfirmed, sync phase still AwaitingConfirmation.
+        // The answer is still unconfirmed and the presentation is still pending.
         // Do not lock access_mutex there. session::pair holds it across the read.
         let ans_path = answer_path(&state_path);
         assert!(
@@ -3158,11 +3176,30 @@ mod tests {
         assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
 
         let mark = mark_spec_for_jid(instance_id).expect("valid mark for instance");
-        let id_body = serde_json::json!({
+        let mut id_body = serde_json::json!({
             "committed": true,
             "instance_id": instance_id,
             "mark": mark,
         });
+        match case {
+            "uncommitted" => id_body["committed"] = serde_json::json!(false),
+            "wrong-instance" => {
+                id_body["instance_id"] = serde_json::json!("5dda9388-857e-41a7-b89e-dd990a9ee026")
+            }
+            "wrong-mark" => id_body["mark"]["words"][0] = serde_json::json!("wrong"),
+            "malformed" => id_body["committed"] = serde_json::json!("yes"),
+            "write-failure" => {
+                std::fs::create_dir_all(answer_path(&state_path).with_extension("json.tmp"))
+                    .unwrap();
+            }
+            "replaced" => {
+                let mut changed = PairedState::load(&state_path).unwrap();
+                changed.access_mutation_generation += 1;
+                changed.save(&state_path).unwrap();
+            }
+            "success" => {}
+            _ => panic!("unknown fixture case"),
+        }
         let id_bytes = serde_json::to_vec(&id_body).unwrap();
         let head2 = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
@@ -3177,20 +3214,86 @@ mod tests {
         while tls2.read(&mut drain).await.unwrap_or(0) != 0 {}
     }
 
-    #[tokio::test]
-    async fn session_pair_ordinary_same_pc_pinned_mtls_success() {
-        let instance_id = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "session-pinned-mtls-success-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let state_path = dir.join("pairing.json");
+    struct OrdinaryPairFixture {
+        dir: std::path::PathBuf,
+        cfg: SyncConfig,
+        sync: Arc<Mutex<SyncSnapshot>>,
+        slot: tokio::sync::Mutex<UploaderSlot>,
+        access: tokio::sync::Mutex<Option<CredentialAccess>>,
+    }
 
+    impl OrdinaryPairFixture {
+        fn new(case: &str) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "ordinary-pair-{case}-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let cfg = SyncConfig {
+                device_label: "device".to_owned(),
+                period_secs: 300,
+                state_path: dir.join("pairing.json"),
+                segments_root: dir.join("segments"),
+                local_offset: Arc::new(FixedOffset),
+                journal_version: Arc::new(JournalVersionController::new(
+                    dir.join("journal-version.json"),
+                )),
+                facts_fn: Arc::new(RawDeviceFacts::default),
+                confirmation: Arc::new(Mutex::new(String::new())),
+                tombstone: Arc::new(Mutex::new(None)),
+                #[cfg(feature = "awaiting-hold")]
+                awaiting_hold: None,
+            };
+            Self {
+                dir,
+                cfg,
+                sync: Arc::new(Mutex::new(SyncSnapshot::default())),
+                slot: tokio::sync::Mutex::new(UploaderSlot::new()),
+                access: tokio::sync::Mutex::new(None),
+            }
+        }
+
+        async fn assert_confirmation(&self, paired: &PairedState, confirmed: bool) {
+            let answer = read_answer(&answer_path(&self.cfg.state_path))
+                .unwrap()
+                .unwrap();
+            let cred = paired.credential.as_ref().unwrap();
+            let binding = crate::ack::JournalIdentity::from_credential(cred).client_cert_sha256;
+            assert_eq!(answer.confirmed == binding, confirmed);
+            let phase = if confirmed {
+                PairingPhase::Paired
+            } else {
+                PairingPhase::AwaitingConfirmation
+            };
+            assert_eq!(self.sync.lock().unwrap().pairing.phase, phase);
+            assert_eq!(
+                self.access
+                    .lock()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .client_slot()
+                    .load()
+                    .gate_open(),
+                confirmed
+            );
+        }
+
+        async fn finish(self) {
+            self.slot.lock().await.stop().await;
+            std::fs::remove_dir_all(self.dir).unwrap();
+        }
+    }
+
+    async fn run_ordinary_pair_fixture(
+        fixture: &OrdinaryPairFixture,
+        case: &'static str,
+    ) -> PairedState {
+        let instance_id = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages.push(KeyUsagePurpose::DigitalSignature);
@@ -3217,85 +3320,165 @@ mod tests {
         let server_key_der =
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
 
-        let server_cfg =
-            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_no_client_auth()
-                .with_single_cert(vec![server_leaf_der, server_ca_der], server_key_der)
-                .unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let chain = vec![server_leaf_der, server_ca_der.clone()];
+        let server_cfg = ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(chain.clone(), server_key_der.clone_key())
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(server_ca_der).unwrap();
+        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            Arc::new(roots),
+            provider.clone(),
+        )
+        .build()
+        .unwrap();
+        let identity_cfg = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(chain, server_key_der)
+            .unwrap();
         let acceptor = TlsAcceptor::from(Arc::new(server_cfg));
+        let identity_acceptor = TlsAcceptor::from(Arc::new(identity_cfg));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
-        let cfg = SyncConfig {
-            device_label: "device".to_owned(),
-            period_secs: 300,
-            state_path: state_path.clone(),
-            segments_root: dir.join("segments"),
-            local_offset: Arc::new(FixedOffset),
-            journal_version: Arc::new(JournalVersionController::new(
-                dir.join("journal-version.json"),
-            )),
-            facts_fn: Arc::new(RawDeviceFacts::default),
-            confirmation: Arc::new(Mutex::new(String::new())),
-            tombstone: Arc::new(Mutex::new(None)),
-            #[cfg(feature = "awaiting-hold")]
-            awaiting_hold: None,
-        };
-
         let server = tokio::spawn(serve_pair_and_identity_response(
             listener,
-            acceptor,
-            signing_cert,
-            signing_key,
+            (acceptor, identity_acceptor),
+            (signing_cert, signing_key),
+            case,
             instance_id,
-            state_path.clone(),
-            sync.clone(),
+            fixture.cfg.state_path.clone(),
+            fixture.sync.clone(),
         ));
-
-        let link = direct_loopback_link(port, &link_pin);
-        let access_mutex = tokio::sync::Mutex::new(None);
-        let slot = tokio::sync::Mutex::new(UploaderSlot::new());
-
-        let paired = pair(
-            &link,
-            &cfg,
-            sync.clone(),
-            &slot,
-            &access_mutex,
-            &std::sync::atomic::AtomicBool::new(false),
-            || async {},
-            || async {},
-        )
-        .await
-        .unwrap();
-
-        server.await.unwrap();
-
-        let answer_state = read_answer(&answer_path(&state_path))
+        let link = if case == "remote" {
+            // Handshake succeeds on loopback, but one network candidate forbids local proof.
+            let mut blob = vec![5, 1, 2];
+            blob.extend_from_slice(&port.to_be_bytes());
+            blob.extend_from_slice(&[127, 0, 0, 1, 192, 168, 1, 10]);
+            blob.extend_from_slice(&[0x11; 16]);
+            blob.extend_from_slice(&link_pin);
+            format!(
+                "https://go.solstone.app/p#{}",
+                spl_core::crockford::encode(&blob)
+            )
+        } else {
+            direct_loopback_link(port, &link_pin)
+        };
+        let paired = if case == "pending-service" {
+            crate::service::pair_with_identity_pending(
+                &link,
+                &fixture.cfg,
+                fixture.sync.clone(),
+                true,
+            )
+            .await
             .unwrap()
-            .expect("answer file must exist");
-        let cred = paired.credential.as_ref().unwrap();
-        let binding = crate::ack::JournalIdentity::from_credential(cred).client_cert_sha256;
-        assert_eq!(answer_state.confirmed, binding);
-        assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Paired);
+        } else {
+            pair(
+                &link,
+                &fixture.cfg,
+                fixture.sync.clone(),
+                &fixture.slot,
+                &fixture.access,
+                &std::sync::atomic::AtomicBool::new(false),
+                || async {},
+                || async {},
+            )
+            .await
+            .unwrap()
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .unwrap()
+            .unwrap();
+        paired
+    }
+
+    #[tokio::test]
+    async fn service_pair_keeps_identity_pending_without_publishing_comparison() {
+        let fixture = OrdinaryPairFixture::new("pending-service");
+        let paired = run_ordinary_pair_fixture(&fixture, "pending-service").await;
+        assert!(paired.credential.is_some());
         assert_eq!(
-            sync.lock().unwrap().pairing.mark,
-            mark_spec_for_jid(instance_id)
+            fixture.sync.lock().unwrap().pairing.phase,
+            PairingPhase::Pairing
         );
-        let access_guard = access_mutex.lock().await;
-        assert!(access_guard
-            .as_ref()
-            .unwrap()
-            .client_slot()
-            .load()
-            .gate_open());
-        drop(access_guard);
+        assert!(fixture.access.lock().await.is_none());
+        fixture.finish().await;
+    }
 
-        slot.lock().await.stop().await;
-        let _ = std::fs::remove_dir_all(dir);
+    #[tokio::test]
+    async fn session_pair_ordinary_same_pc_pinned_mtls_success() {
+        let fixture = OrdinaryPairFixture::new("success");
+        let paired = run_ordinary_pair_fixture(&fixture, "success").await;
+        fixture.assert_confirmation(&paired, true).await;
+        assert_eq!(
+            fixture.sync.lock().unwrap().pairing.mark,
+            mark_spec_for_jid("f30ed159-ef46-8e9c-913f-e49f0fe7d201")
+        );
+        fixture.finish().await;
+    }
+
+    #[tokio::test]
+    async fn session_pair_proof_misses_preserve_manual_confirmation() {
+        for case in [
+            "uncommitted",
+            "wrong-instance",
+            "wrong-mark",
+            "malformed",
+            "unavailable",
+            "write-failure",
+            "replaced",
+            "remote",
+        ] {
+            let fixture = OrdinaryPairFixture::new(case);
+            let paired = run_ordinary_pair_fixture(&fixture, case).await;
+            fixture.assert_confirmation(&paired, false).await;
+            fixture.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn session_pair_remote_after_local_has_no_inherited_confirmation() {
+        let fixture = OrdinaryPairFixture::new("sequential");
+        let first = run_ordinary_pair_fixture(&fixture, "success").await;
+        fixture.assert_confirmation(&first, true).await;
+        let old = fixture.access.lock().await.as_ref().unwrap().clone();
+        let second = run_ordinary_pair_fixture(&fixture, "remote").await;
+        assert_ne!(
+            first.credential.unwrap().client_cert_pem,
+            second.credential.as_ref().unwrap().client_cert_pem
+        );
+        fixture.assert_confirmation(&second, false).await;
+        assert!(old.client_slot().is_retired());
+        fixture.finish().await;
+    }
+
+    fn valid_identity_credential(ca: &rcgen::Certificate, ca_key: &KeyPair) -> Credential {
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params
+            .extended_key_usages
+            .push(ExtendedKeyUsagePurpose::ClientAuth);
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let cert = params.signed_by(&key, ca, ca_key).unwrap();
+        Credential {
+            client_key_pem: key.serialize_pem(),
+            client_cert_pem: cert.pem(),
+            ca_chain_pem: vec![ca.pem()],
+            ca_fp_prefix: spl_core::ca::sha256(ca.der())[..16].to_vec(),
+            instance_id: "f30ed159-ef46-8e9c-913f-e49f0fe7d201".to_owned(),
+            home_label: "Fixture Journal".to_owned(),
+            endpoints: Vec::new(),
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        }
     }
 
     fn local_lan_ipv4() -> std::net::Ipv4Addr {
@@ -3392,8 +3575,7 @@ mod tests {
             }
         });
 
-        let mut cred = test_credential("wrong-pin-cred");
-        cred.ca_chain_pem = vec![signing_cert.pem()];
+        let mut cred = valid_identity_credential(&signing_cert, &signing_key);
         cred.endpoints = vec![
             crate::credential::EndpointAddr {
                 host: "127.0.0.1".into(),
@@ -3530,8 +3712,7 @@ mod tests {
             }
         });
 
-        let mut cred = test_credential("failed-loopback-cred");
-        cred.ca_chain_pem = vec![signing_cert.pem()];
+        let mut cred = valid_identity_credential(&signing_cert, &signing_key);
         cred.endpoints = vec![
             crate::credential::EndpointAddr {
                 host: "127.0.0.1".into(),

@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- when the app can verify your journal on this PC, it connects without asking you to compare marks. other pairings keep the comparison.
+
 ### Fixed
 
 - after you pair, the pairing field is empty again instead of keeping the link you just used.

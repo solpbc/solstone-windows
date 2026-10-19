@@ -616,4 +616,39 @@ describe("awaiting mark confirmation", () => {
 
     expect(byId(ids["settings.pairing.confirmYes"])).not.toBeNull();
   });
+  it.each([true, false])("waits for delayed settled health after the pair RPC (confirmed=%s)", async (confirmed) => {
+    const initial = notPairedDump();
+    const mark = sampleMarkSpec("liquefy", "smock", "#3b82f6");
+    let resolvePair!: () => void;
+    const pending = new Promise<void>((resolve) => { resolvePair = resolve; });
+    invokeMock.mockImplementation(async (cmd) => cmd === "pair" ? pending : undefined);
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(initial);
+    app.__test__.renderSettings(initial);
+    const input = present(ids["settings.pairing.input"]) as HTMLInputElement;
+    input.value = "https://go.solstone.app/p#fixture";
+    input.dispatchEvent(new Event("input"));
+    (present(ids["settings.pairing.submit"]) as HTMLButtonElement).click();
+    // Eligible pairing never publishes Awaiting before its proof has settled.
+    const inFlight = { ...initial, sync: { ...initial.sync, pairing: {
+      ...initial.sync.pairing, phase: "pairing" as const,
+    } } };
+    app.__test__.setHealth(inFlight);
+    app.__test__.renderSettings(inFlight);
+    resolvePair();
+    await pending;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
+    expect(byId(ids["settings.pairing.confirmReject"])).toBeNull();
+    const settled = { ...initial, sync: { ...initial.sync, pairing: {
+      ...initial.sync.pairing, phase: confirmed ? "paired" as const : "awaiting_confirmation" as const,
+      mark, binding: "fixture-binding", finish_connecting: false,
+    } } };
+    app.__test__.setHealth(settled);
+    app.__test__.renderSettings(settled);
+    expect(Boolean(byId(ids["settings.pairing.confirmYes"]))).toBe(!confirmed);
+    expect(byId(ids[confirmed ? "settings.pairing.mark" : "settings.pairing.markCard"])).not.toBeNull();
+    if (!confirmed) expect(byId(ids["settings.pairing.mark"])).toBeNull();
+  });
+
 });
