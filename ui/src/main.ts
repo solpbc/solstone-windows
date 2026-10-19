@@ -1458,6 +1458,13 @@ function pairingPhaseLabel(pairing: PairingState): string {
   }
 }
 
+function presentedPairing(pairing: PairingState): PairingState {
+  if (pairingBusy && pairing.phase === "awaiting_confirmation" && !pairing.finish_connecting) {
+    return { ...pairing, phase: "pairing" };
+  }
+  return pairing;
+}
+
 function quarantinedCount(upload: UploadStatus): number {
   return upload.quarantined_segments ?? 0;
 }
@@ -1522,15 +1529,16 @@ function storageRow(storage: StorageInfo | null): HTMLElement {
 }
 
 function syncRow(sync: SyncSnapshot): HTMLElement {
+  const pairing = presentedPairing(sync.pairing);
   let label: string;
-  switch (sync.pairing.phase) {
+  switch (pairing.phase) {
     case "not_paired":
       label = "not paired. pair to sync your journal";
       break;
     case "pairing":
     case "awaiting_confirmation":
     case "failed":
-      label = pairingPhaseLabel(sync.pairing);
+      label = pairingPhaseLabel(pairing);
       break;
     case "paired":
       label = uploadLabel(sync.upload);
@@ -1545,7 +1553,7 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
 
 function renderJournalOpenSection(dump: HealthDump): HTMLElement {
   const pane = section("your journal");
-  const pairing = dump.sync.pairing;
+  const pairing = presentedPairing(dump.sync.pairing);
 
   if (pairing.phase === "awaiting_confirmation") {
     pane.append(
@@ -1936,6 +1944,7 @@ function renderMigrationPanel(): HTMLElement | null {
 
 function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean } = {}): HTMLElement {
   const pairing = dump.sync.pairing;
+  const presented = presentedPairing(pairing);
   // Once setup's connect step has paired, opening the journal is the only action
   // left there; pasting another link stays available from the journal page.
   const connectedInSetup = options.setupStep === true && pairing.phase === "paired";
@@ -1943,11 +1952,11 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   pane.append(
     valueRow(
       "status",
-      selectable(automation(text("div", pairingPhaseLabel(pairing)), ids["settings.pairing.state"])),
+      selectable(automation(text("div", pairingPhaseLabel(presented)), ids["settings.pairing.state"])),
     ),
   );
 
-  if (pairing.phase === "awaiting_confirmation") {
+  if (presented.phase === "awaiting_confirmation") {
     if (dump.setup?.sequence_enabled === true && pairing.finish_connecting) {
       const card = document.createElement("div");
       card.style.marginTop = "12px";
@@ -2454,6 +2463,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
         // Failure surfaces as pairing.phase = "failed" with a detail.
       } finally {
         pairingBusy = false;
+        rerender();
       }
     };
     inputRow.append(button);
@@ -3780,13 +3790,14 @@ function statusSeverity(phase: AppPhase): Severity {
 }
 
 function syncSummary(sync: SyncSnapshot): string {
-  switch (sync.pairing.phase) {
+  const pairing = presentedPairing(sync.pairing);
+  switch (pairing.phase) {
     case "not_paired":
       return "pair to deliver to your journal";
     case "pairing":
     case "awaiting_confirmation":
     case "failed":
-      return pairingPhaseLabel(sync.pairing);
+      return pairingPhaseLabel(pairing);
     case "paired": {
       const upload = sync.upload;
       const quarantined = quarantinedCount(upload);

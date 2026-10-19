@@ -222,6 +222,28 @@ fn direct_link_is_ipv4_loopback(link: &str) -> bool {
     })
 }
 
+fn publish_ordinary_miss(
+    sync: &Arc<Mutex<SyncSnapshot>>,
+    cfg: &SyncConfig,
+    credential: &Credential,
+    binding: &str,
+) {
+    publish_pairing(
+        sync,
+        &cfg.confirmation,
+        &cfg.tombstone,
+        PairingWrite::Bound {
+            binding: binding.to_string(),
+            label: credential.home_label.clone(),
+            mark: mark_spec_for_jid(&credential.instance_id),
+            kind: BoundKind::Paired {
+                finish_connecting: false,
+                setup_browser_ready: false,
+            },
+        },
+    );
+}
+
 /// An ordinary submit confirms only when every parsed candidate is numeric IPv4
 /// loopback and the pinned identity is the committed mark for this credential,
 /// and the confirm finishes before the uploader starts.
@@ -242,15 +264,30 @@ async fn prove_ordinary_same_pc<R, Fut>(
     if !direct_link_is_ipv4_loopback(link) {
         return;
     }
+    publish_pairing(
+        sync,
+        &cfg.confirmation,
+        &cfg.tombstone,
+        PairingWrite::BeginCeremony,
+    );
     let narrowed = narrow_ipv4_loopback_credential(credential.clone());
     let identity = match read_identity(narrowed).await {
         Ok(id) => id,
-        Err(_) => return,
+        Err(_) => {
+            publish_ordinary_miss(sync, cfg, credential, binding);
+            return;
+        }
     };
     if crate::client::accept_link_identity(&identity, &credential.instance_id).is_err() {
+        publish_ordinary_miss(sync, cfg, credential, binding);
         return;
     }
-    let _ = confirm_current(binding, cfg, sync, access, slot);
+    match confirm_current(binding, cfg, sync, access, slot) {
+        Ok(AnswerEffect::Confirmed) => {}
+        _ => {
+            publish_ordinary_miss(sync, cfg, credential, binding);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -308,6 +345,15 @@ where
             return Err(error);
         }
     };
+
+    if paired.credential.is_some() && direct_link_is_ipv4_loopback(link) {
+        publish_pairing(
+            &sync,
+            &cfg.confirmation,
+            &cfg.tombstone,
+            PairingWrite::BeginCeremony,
+        );
+    }
 
     let access = match CredentialAccess::bind(&paired, cfg, sync.clone(), None) {
         Ok(access) => access,
@@ -2097,6 +2143,7 @@ mod pure_session_tests {
     async fn prove_ordinary_same_pc_reader_transport_error_leaves_awaiting_and_gate_closed() {
         let harness = setup_test_harness(REAL_JID);
         let link = v04_loopback_link(7657, &[0x11; 16]);
+        let sync_clone = harness.sync.clone();
         prove_ordinary_same_pc(
             &link,
             &harness.cred,
@@ -2105,7 +2152,13 @@ mod pure_session_tests {
             &harness.sync,
             Some(&harness.access),
             &harness.slot,
-            |_| async move { Err(TransportError::NoEndpoint) },
+            |_| async move {
+                assert_eq!(
+                    sync_clone.lock().unwrap().pairing.phase,
+                    observer_model::PairingPhase::Pairing
+                );
+                Err(TransportError::NoEndpoint)
+            },
         )
         .await;
         assert_eq!(
@@ -2427,6 +2480,7 @@ mod pure_session_tests {
         let mark = mark_spec_for_jid(REAL_JID).unwrap();
 
         // First call: eligible loopback link and canonical identity
+        let sync_clone = harness.sync.clone();
         prove_ordinary_same_pc(
             &loopback_link,
             &harness.cred,
@@ -2436,6 +2490,10 @@ mod pure_session_tests {
             Some(&harness.access),
             &harness.slot,
             |_| async move {
+                assert_eq!(
+                    sync_clone.lock().unwrap().pairing.phase,
+                    observer_model::PairingPhase::Pairing
+                );
                 Ok(crate::client::LinkIdentity {
                     committed: true,
                     instance_id: Some(REAL_JID.to_string()),
@@ -3097,10 +3155,7 @@ mod tests {
                 .is_none_or(|a| a.confirmed.is_empty()),
             "answer file must not be confirmed before identity response"
         );
-        assert_eq!(
-            sync.lock().unwrap().pairing.phase,
-            PairingPhase::AwaitingConfirmation
-        );
+        assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
 
         let mark = mark_spec_for_jid(instance_id).expect("valid mark for instance");
         let id_body = serde_json::json!({
