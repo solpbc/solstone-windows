@@ -21,7 +21,7 @@
 //! Off-Windows, this crate exposes the same public source as an honest inert
 //! stub so the Linux dev host can compile the workspace.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use observer_exclusion::ExclusionRules;
@@ -53,8 +53,13 @@ impl ExclusionStats {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn resolve_rules_or_drop(
     rules: &RwLock<ExclusionRules>,
+    available: &AtomicBool,
     stats: &ExclusionStats,
 ) -> Option<ExclusionRules> {
+    if !available.load(Ordering::SeqCst) {
+        stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
     match rules.read() {
         Ok(guard) => Some(guard.clone()),
         Err(_) => {
@@ -69,6 +74,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unavailable_policy_drops_before_rules_read_and_explicit_repair_restores_frames() {
+        let mut configured = ExclusionRules::default();
+        configured.excluded_exes.push("private-app.exe".into());
+        let rules = RwLock::new(configured.clone());
+        let available = AtomicBool::new(false);
+        let stats = ExclusionStats::default();
+        // A held writer proves unknown-policy admission does not even read rules.
+        let writer = rules.write().unwrap();
+        assert!(resolve_rules_or_drop(&rules, &available, &stats).is_none());
+        assert_eq!(stats.snapshot(true).frames_dropped, 1);
+        drop(writer);
+        available.store(true, Ordering::SeqCst);
+        assert_eq!(
+            resolve_rules_or_drop(&rules, &available, &stats),
+            Some(configured)
+        );
+        assert_eq!(stats.snapshot(true).frames_dropped, 1);
+    }
+
+    #[test]
     fn poisoned_rules_lock_drops_frame_and_counts_it() {
         let rules = RwLock::new(ExclusionRules::default());
         let stats = ExclusionStats::default();
@@ -77,7 +102,7 @@ mod tests {
             panic!("poison rules lock");
         });
 
-        assert!(resolve_rules_or_drop(&rules, &stats).is_none());
+        assert!(resolve_rules_or_drop(&rules, &AtomicBool::new(true), &stats).is_none());
         assert_eq!(stats.snapshot(false).frames_dropped, 1);
     }
 }
@@ -85,7 +110,7 @@ mod tests {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod imp {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
     use std::time::Duration;
 
@@ -123,6 +148,7 @@ mod imp {
         seq: Arc<AtomicU64>,
         color_format: ColorFormat,
         rules: Arc<RwLock<ExclusionRules>>,
+        policy_available: Arc<AtomicBool>,
         stats: Arc<ExclusionStats>,
     }
 
@@ -132,6 +158,7 @@ mod imp {
         seq: Arc<AtomicU64>,
         color_format: ColorFormat,
         rules: Arc<RwLock<ExclusionRules>>,
+        policy_available: Arc<AtomicBool>,
         stats: Arc<ExclusionStats>,
         scratch: Vec<u8>,
     }
@@ -153,6 +180,7 @@ mod imp {
                 seq: ctx.flags.seq,
                 color_format: ctx.flags.color_format,
                 rules: ctx.flags.rules,
+                policy_available: ctx.flags.policy_available,
                 stats: ctx.flags.stats,
                 scratch: Vec::new(),
             })
@@ -163,6 +191,14 @@ mod imp {
             frame: &mut Frame,
             _capture_control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
+            // Unreadable saved policy must never become default-policy capture.
+            // Resolve admission before mapping or copying any frame pixels.
+            let Some(rules) =
+                resolve_rules_or_drop(&self.rules, &self.policy_available, &self.stats)
+            else {
+                self.set_state(SourceState::Active);
+                return Ok(());
+            };
             let pixel_format = match self.color_format {
                 ColorFormat::Rgba8 => ScreenPixelFormat::Rgba8,
                 ColorFormat::Bgra8 => ScreenPixelFormat::Bgra8,
@@ -182,10 +218,6 @@ mod imp {
             // closed). Skipped entirely when no rule is configured (no per-frame
             // cost). A dropped frame still keeps the source `Active` — the observer
             // is healthy, just excluding — and is counted into health.
-            let Some(rules) = resolve_rules_or_drop(&self.rules, &self.stats) else {
-                self.set_state(SourceState::Active);
-                return Ok(());
-            };
             if rules.is_active() {
                 match window_enum::enumerate_primary_monitor_windows(width, height) {
                     Ok(windows) => match evaluate(&rules, &windows) {
@@ -239,6 +271,7 @@ mod imp {
         last_sink: Option<Arc<dyn CaptureSink>>,
         seq: Arc<AtomicU64>,
         rules: Arc<RwLock<ExclusionRules>>,
+        policy_available: Arc<AtomicBool>,
         stats: Arc<ExclusionStats>,
     }
 
@@ -246,13 +279,14 @@ mod imp {
         /// Construct over the shared exclusion-rules handle. The owner edits the
         /// rules over IPC (writing the same `Arc`), so changes take effect on the
         /// next captured frame without a restart.
-        pub fn new(rules: Arc<RwLock<ExclusionRules>>) -> Self {
+        pub fn new(rules: Arc<RwLock<ExclusionRules>>, policy_available: Arc<AtomicBool>) -> Self {
             Self {
                 control: None,
                 state: Arc::new(Mutex::new(SourceState::Inactive)),
                 last_sink: None,
                 seq: Arc::new(AtomicU64::new(0)),
                 rules,
+                policy_available,
                 stats: Arc::new(ExclusionStats::default()),
             }
         }
@@ -284,6 +318,7 @@ mod imp {
                     seq: Arc::clone(&self.seq),
                     color_format: SCREEN_COLOR_FORMAT,
                     rules: Arc::clone(&self.rules),
+                    policy_available: Arc::clone(&self.policy_available),
                     stats: Arc::clone(&self.stats),
                 },
             ))
@@ -329,6 +364,12 @@ mod imp {
         /// freshness signal did not usefully cover this because it false-fired on
         /// every healthy static screen.
         fn state(&self) -> SourceState {
+            if self.last_sink.is_some() && !self.policy_available.load(Ordering::SeqCst) {
+                return SourceState::Faulted {
+                    reason: ErrorReason::Unknown,
+                    detail: String::new(),
+                };
+            }
             self.state.lock().unwrap().clone()
         }
 
@@ -372,6 +413,7 @@ mod imp {
                 seq: Arc::new(AtomicU64::new(0)),
                 color_format: SCREEN_COLOR_FORMAT,
                 rules: Arc::new(RwLock::new(ExclusionRules::default())),
+                policy_available: Arc::new(AtomicBool::new(true)),
                 stats: Arc::new(ExclusionStats::default()),
                 scratch: Vec::new(),
             };
@@ -390,7 +432,10 @@ mod imp {
 
         #[test]
         fn stop_transitions_active_source_to_inactive() {
-            let mut src = WgcScreenSource::new(Arc::new(RwLock::new(ExclusionRules::default())));
+            let mut src = WgcScreenSource::new(
+                Arc::new(RwLock::new(ExclusionRules::default())),
+                Arc::new(AtomicBool::new(true)),
+            );
             *src.state.lock().unwrap() = SourceState::Active;
 
             src.stop();
@@ -400,8 +445,35 @@ mod imp {
 
         #[test]
         fn fresh_source_without_frames_reports_inactive() {
-            let src = WgcScreenSource::new(Arc::new(RwLock::new(ExclusionRules::default())));
+            let src = WgcScreenSource::new(
+                Arc::new(RwLock::new(ExclusionRules::default())),
+                Arc::new(AtomicBool::new(true)),
+            );
 
+            assert_eq!(src.state(), SourceState::Inactive);
+        }
+
+        #[test]
+        fn running_source_reports_unavailable_policy_and_recovers_after_repair() {
+            let available = Arc::new(AtomicBool::new(false));
+            let mut src = WgcScreenSource::new(
+                Arc::new(RwLock::new(ExclusionRules::default())),
+                Arc::clone(&available),
+            );
+            assert_eq!(src.state(), SourceState::Inactive);
+            src.last_sink = Some(Arc::new(FakeSink));
+            *src.state.lock().unwrap() = SourceState::Active;
+            assert_eq!(
+                src.state(),
+                SourceState::Faulted {
+                    reason: ErrorReason::Unknown,
+                    detail: String::new(),
+                }
+            );
+            available.store(true, Ordering::SeqCst);
+            assert_eq!(src.state(), SourceState::Active);
+            available.store(false, Ordering::SeqCst);
+            src.stop();
             assert_eq!(src.state(), SourceState::Inactive);
         }
     }
@@ -409,7 +481,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use std::sync::{Arc, RwLock};
+    use std::sync::{atomic::AtomicBool, Arc, RwLock};
 
     use observer_exclusion::{ExclusionRules, RunningApp};
     use observer_model::{CaptureSink, ScreenSource, SourceError, SourceState};
@@ -427,11 +499,15 @@ mod imp {
     /// WGC-backed screen source. Non-Windows stub: never produces frames.
     pub struct WgcScreenSource {
         _rules: Arc<RwLock<ExclusionRules>>,
+        _policy_available: Arc<AtomicBool>,
     }
 
     impl WgcScreenSource {
-        pub fn new(rules: Arc<RwLock<ExclusionRules>>) -> Self {
-            Self { _rules: rules }
+        pub fn new(rules: Arc<RwLock<ExclusionRules>>, policy_available: Arc<AtomicBool>) -> Self {
+            Self {
+                _rules: rules,
+                _policy_available: policy_available,
+            }
         }
     }
 

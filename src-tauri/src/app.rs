@@ -691,7 +691,7 @@ pub fn run(
                 crate::mic::MicController::new(platform_win::local_data_root().join("mic.json"));
 
             let sources = Sources {
-                screen: Box::new(capture_wgc::WgcScreenSource::new(exclusions.rules_handle())),
+                screen: Box::new(capture_wgc::WgcScreenSource::new(exclusions.rules_handle(), exclusions.availability_handle())),
                 screen_encoder: Box::new(capture_screen_encode::MfScreenEncoder::new()),
                 system_audio: Box::new(capture_wasapi::WasapiSystemAudioSource::new()),
                 mic: Box::new(capture_wasapi::WasapiMicSource::new(
