@@ -198,12 +198,21 @@ pub enum DesktopActivityProbeEvent {
     IdleUnavailable,
 }
 
+/// Internal admission token; the window title itself never enters child arguments.
+pub fn title_fingerprint(title: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    title.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// URL request sent to the probe's URL helper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopActivityUrlRequest {
     pub generation: u64,
     pub window_id: u64,
     pub exe_name: String,
+    pub title_fingerprint: u64,
 }
 
 /// URL result returned by the probe's URL helper.
@@ -230,6 +239,10 @@ pub trait DesktopActivitySource: Send {
     fn stop(&mut self);
     fn state(&self) -> crate::SourceState;
     fn poll_events(&mut self) -> Vec<DesktopActivityProbeEvent>;
+    /// Content-free idle/session facts, without reading foreground identity/title.
+    fn poll_coarse_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
+        Vec::new()
+    }
     fn request_url(&mut self, request: DesktopActivityUrlRequest);
     fn poll_url_result(&mut self) -> Option<DesktopActivityUrlResult>;
     fn cancel_url(&mut self);

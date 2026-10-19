@@ -85,6 +85,14 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "imp",
         owner: None,
     },
+    // WinEvent/WTS/UIA and atomically job-contained helper creation were reviewed
+    // together; portable scheduling and row logic remain outside this boundary.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "desktop_activity",
+        owner: None,
+    },
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::ModDecl,

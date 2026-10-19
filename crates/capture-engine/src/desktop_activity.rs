@@ -238,6 +238,13 @@ impl DesktopActivityScheduler {
             // Discard open foreground without emitting foreground app/title/url
             self.open_foreground = None;
 
+            for event in source.poll_coarse_events() {
+                if matches!(event, observer_model::desktop_activity::DesktopActivityProbeEvent::ActivityStateChanged(_)
+                    | observer_model::desktop_activity::DesktopActivityProbeEvent::IdleUnavailable) {
+                    rows.extend(self.handle_event(source, event, now_ms));
+                }
+            }
+
             // Emit content-free availability rows: foreground and url as unavailable
             if let Some(row) = self.transition_availability(
                 now_ms,
@@ -254,18 +261,6 @@ impl DesktopActivityScheduler {
                 AvailabilityStatus::Unavailable,
             ) {
                 rows.push(row);
-            }
-
-            // Still process probe events, but only ActivityStateChanged!
-            let events = source.poll_events();
-            for event in events {
-                if let observer_model::desktop_activity::DesktopActivityProbeEvent::ActivityStateChanged(new_state) = event {
-                    rows.extend(self.handle_event(
-                        source,
-                        observer_model::desktop_activity::DesktopActivityProbeEvent::ActivityStateChanged(new_state),
-                        now_ms,
-                    ));
-                }
             }
 
             return rows;
@@ -359,6 +354,9 @@ impl DesktopActivityScheduler {
                             generation: self.url_state.generation,
                             window_id: fg.window_id,
                             exe_name: fg.exe_name.clone(),
+                            title_fingerprint: observer_model::desktop_activity::title_fingerprint(
+                                &fg.raw_title,
+                            ),
                         });
                     }
                 } else {
@@ -384,6 +382,9 @@ impl DesktopActivityScheduler {
         now_ms: u64,
     ) -> Vec<DesktopActivityRow> {
         let mut rows = Vec::new();
+        if !self.is_exclusion_available() {
+            return rows;
+        }
 
         let new_rules = self
             .exclusion_rules_handle
@@ -642,6 +643,13 @@ impl DesktopActivityScheduler {
                             generation: self.url_state.generation,
                             window_id,
                             exe_name,
+                            title_fingerprint: observer_model::desktop_activity::title_fingerprint(
+                                &self
+                                    .open_foreground
+                                    .as_ref()
+                                    .expect("foreground opened")
+                                    .raw_title,
+                            ),
                         });
                     } else if let Some(avail_row) = self.transition_availability(
                         now_ms,
@@ -736,6 +744,13 @@ impl DesktopActivityScheduler {
                             generation: self.url_state.generation,
                             window_id,
                             exe_name: old.exe_name,
+                            title_fingerprint: observer_model::desktop_activity::title_fingerprint(
+                                &self
+                                    .open_foreground
+                                    .as_ref()
+                                    .expect("foreground opened")
+                                    .raw_title,
+                            ),
                         });
                     } else if let Some(avail_row) = self.transition_availability(
                         now_ms,
@@ -948,11 +963,37 @@ impl DesktopActivityScheduler {
     }
 
     /// Close all open intervals at stop or pause.
+    pub fn source_unavailable<S: DesktopActivitySource + ?Sized>(
+        &mut self,
+        source: &mut S,
+        now_ms: u64,
+    ) -> Vec<DesktopActivityRow> {
+        let mut rows = if self.open_foreground.is_some()
+            || self.open_activity.is_some()
+            || self.url_state.in_flight
+        {
+            self.close_all(source, now_ms)
+        } else {
+            source.cancel_url();
+            Vec::new()
+        };
+        if let Some(row) = self.transition_availability(
+            now_ms,
+            "winevent",
+            AvailabilityCapability::Foreground,
+            AvailabilityStatus::Unavailable,
+        ) {
+            rows.push(row);
+        }
+        rows
+    }
+
     pub fn close_all<S: DesktopActivitySource + ?Sized>(
         &mut self,
         source: &mut S,
         now_ms: u64,
     ) -> Vec<DesktopActivityRow> {
+        self.is_locked = false;
         self.url_state.generation += 1;
         self.url_state.in_flight = false;
         self.url_state.requested_window_id = None;
@@ -1029,6 +1070,23 @@ mod tests {
             } else {
                 SourceState::Inactive
             }
+        }
+
+        fn poll_coarse_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
+            let mut coarse = Vec::new();
+            self.events.retain(|event| {
+                if matches!(
+                    event,
+                    DesktopActivityProbeEvent::ActivityStateChanged(_)
+                        | DesktopActivityProbeEvent::IdleUnavailable
+                ) {
+                    coarse.push(event.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            coarse
         }
 
         fn poll_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
@@ -1213,8 +1271,7 @@ mod tests {
             .iter()
             .find(|r| r.kind == "foreground")
             .expect("must emit foreground row on timeout");
-        if let observer_model::desktop_activity::DesktopActivityPayload::Foreground(p) =
-            &fg.payload
+        if let observer_model::desktop_activity::DesktopActivityPayload::Foreground(p) = &fg.payload
         {
             assert_eq!(p.url, Some("https://example.com/page".into()));
         }
@@ -1484,8 +1541,7 @@ mod tests {
             .iter()
             .find(|r| r.kind == "foreground")
             .expect("must emit foreground row");
-        if let observer_model::desktop_activity::DesktopActivityPayload::Foreground(p) =
-            &fg.payload
+        if let observer_model::desktop_activity::DesktopActivityPayload::Foreground(p) = &fg.payload
         {
             assert_eq!(p.url, None);
         }
@@ -1630,16 +1686,27 @@ mod tests {
         assert!(rows.iter().all(|r| r.kind != "foreground"));
         assert!(scheduler.open_foreground.is_none());
         assert!(probe.last_request.is_none(), "must not request url read");
+        assert!(
+            probe.last_title.is_none(),
+            "content polling must never run with unavailable policy"
+        );
+        assert!(
+            probe
+                .events
+                .iter()
+                .any(|event| matches!(event, DesktopActivityProbeEvent::Foreground { .. })),
+            "the content event must remain unread"
+        );
 
         // 2. Closed output from close_all contains coarse active/idle/lock rows and unavailable availability
         let closed = scheduler.close_all(&mut probe, 2000);
         let act = closed.iter().find(|r| r.kind == "activity");
-        assert!(act.is_some(), "coarse activity row must be emitted upon close");
+        assert!(
+            act.is_some(),
+            "coarse activity row must be emitted upon close"
+        );
 
-        let avail_rows: Vec<_> = closed
-            .iter()
-            .filter(|r| r.kind == "availability")
-            .collect();
+        let avail_rows: Vec<_> = closed.iter().filter(|r| r.kind == "availability").collect();
         assert!(!avail_rows.is_empty());
         for ar in avail_rows {
             if let observer_model::desktop_activity::DesktopActivityPayload::Availability(p) =

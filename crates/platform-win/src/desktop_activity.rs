@@ -4,7 +4,14 @@
 //! Desktop activity source probe, Win32 WinEvent/session/idle integration, and URL helper containment.
 
 use std::path::Path;
+#[cfg(not(windows))]
 use std::process::{Child, Command, Stdio};
+#[cfg(all(windows, test))]
+use std::process::{Command, Stdio};
+#[cfg(windows)]
+mod helper_process;
+#[cfg(windows)]
+use helper_process::Child;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -81,9 +88,6 @@ pub fn is_pump_degraded() -> bool {
 static PUMP_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn is_pump_ready() -> bool {
-    if std::env::var("SOLSTONE_PUMP_READY").map(|v| v == "1").unwrap_or(false) {
-        return true;
-    }
     PUMP_READY.load(std::sync::atomic::Ordering::SeqCst)
 }
 
@@ -389,10 +393,42 @@ pub fn query_browser_document_url(_hwnd_val: isize, _exe_name: &str) -> Option<S
     None
 }
 
+#[cfg(windows)]
+fn helper_identity_matches(window_id: u64, exe_name: &str, expected_title: u64) -> bool {
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId,
+        };
+        let window = GetForegroundWindow();
+        if window.0 as u64 != window_id {
+            return false;
+        }
+        let Some(title) = read_window_title(window) else {
+            return false;
+        };
+        if observer_model::desktop_activity::title_fingerprint(&title) != expected_title {
+            return false;
+        }
+        let mut pid = 0;
+        GetWindowThreadProcessId(window, Some(&mut pid));
+        get_process_image_path(pid)
+            .and_then(|image| {
+                Path::new(&image)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .is_some_and(|name| name.eq_ignore_ascii_case(exe_name))
+    }
+}
+#[cfg(not(windows))]
+fn helper_identity_matches(_: u64, _: &str, _: u64) -> bool {
+    false
+}
+
 /// Same-binary URL helper entry point dispatched early from main before GUI/mutex.
 pub fn run_url_helper_cli() -> i32 {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 4 {
+    if args.len() < 5 {
         println!("UNAVAILABLE");
         return 0;
     }
@@ -402,18 +438,17 @@ pub fn run_url_helper_cli() -> i32 {
     };
     let exe_name = &args[3];
 
-    if !is_session_eligible() || !is_pump_ready() || is_pump_degraded() {
+    let Ok(expected_title) = args[4].parse::<u64>() else {
         println!("UNAVAILABLE");
         return 0;
-    }
-
-    #[cfg(windows)]
-    unsafe {
-        let fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
-        if fg.0 as isize != window_id {
-            println!("UNAVAILABLE");
-            return 0;
-        }
+    };
+    let parent_ready = std::env::var("SOLSTONE_PUMP_READY").is_ok_and(|value| value == "1");
+    if !parent_ready
+        || !is_session_eligible()
+        || !helper_identity_matches(window_id as u64, exe_name, expected_title)
+    {
+        println!("UNAVAILABLE");
+        return 0;
     }
 
     match query_browser_document_url(window_id, exe_name) {
@@ -446,9 +481,8 @@ impl Drop for JobHandle {
 #[cfg(windows)]
 fn create_kill_on_close_job() -> Option<JobHandle> {
     use windows::Win32::System::JobObjects::{
-        CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     unsafe {
         let job = CreateJobObjectW(None, None).ok()?;
@@ -472,10 +506,10 @@ fn create_kill_on_close_job() -> Option<JobHandle> {
 /// Contained single worker process management for out-of-process URL querying.
 #[derive(Debug, Default)]
 pub struct UrlWorker {
-    pub(crate) child: Option<Arc<Mutex<Child>>>,
+    child: Option<Arc<Mutex<Child>>>,
     watchdog_cancel: Option<std::sync::mpsc::Sender<()>>,
     #[cfg(windows)]
-    job: Option<JobHandle>,
+    job: Option<Arc<JobHandle>>,
     pending_generation: Option<u64>,
     pending_window_id: Option<u64>,
     spawn_time: Option<Instant>,
@@ -552,96 +586,24 @@ impl UrlWorker {
 
         #[cfg(windows)]
         let job = match create_kill_on_close_job() {
-            Some(j) => j,
+            Some(j) => Arc::new(j),
             None => {
                 return;
             }
         };
 
-        let mut cmd = Command::new(program);
-        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::null());
-        cmd.env("SOLSTONE_PUMP_READY", "1");
+        let spawn_instant = Instant::now();
+        let deadline = spawn_instant + Duration::from_secs(2);
+        #[cfg(not(windows))]
+        let spawned = Command::new(program)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
         #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(windows::Win32::System::Threading::CREATE_SUSPENDED.0);
-        }
-
-        match cmd.spawn() {
+        let spawned = Child::spawn(program, args, Arc::clone(&job));
+        match spawned {
             Ok(child) => {
-                #[cfg(windows)]
-                let mut child = child;
-                #[cfg(windows)]
-                unsafe {
-                    use std::os::windows::io::AsRawHandle;
-                    use windows::Win32::Foundation::HANDLE;
-                    use windows::Win32::System::Diagnostics::ToolHelp::{
-                        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
-                        THREADENTRY32,
-                    };
-                    use windows::Win32::System::JobObjects::AssignProcessToJobObject;
-                    use windows::Win32::System::Threading::{
-                        OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
-                    };
-
-                    let proc_handle = HANDLE(child.as_raw_handle() as *mut core::ffi::c_void);
-                    let pid = child.id();
-
-                    if AssignProcessToJobObject(job.0, proc_handle).is_err() {
-                        let _ = child.kill();
-                        if child.wait().is_err() {
-                            self.reap_failed = true;
-                        }
-                        return;
-                    }
-
-                    let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            let _ = child.kill();
-                            if child.wait().is_err() {
-                                self.reap_failed = true;
-                            }
-                            return;
-                        }
-                    };
-
-                    let mut te = THREADENTRY32 {
-                        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-                        ..Default::default()
-                    };
-
-                    let mut found = false;
-                    if Thread32First(snapshot, &mut te).is_ok() {
-                        loop {
-                            if te.th32OwnerProcessID == pid {
-                                if let Ok(th) =
-                                    OpenThread(THREAD_SUSPEND_RESUME, false, te.th32ThreadID)
-                                {
-                                    let _ = ResumeThread(th);
-                                    let _ = windows::Win32::Foundation::CloseHandle(th);
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if Thread32Next(snapshot, &mut te).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    let _ = windows::Win32::Foundation::CloseHandle(snapshot);
-
-                    if !found {
-                        let _ = child.kill();
-                        if child.wait().is_err() {
-                            self.reap_failed = true;
-                        }
-                        return;
-                    }
-                }
-
-                let spawn_instant = Instant::now();
-                let deadline = spawn_instant + Duration::from_secs(2);
                 let child_arc = Arc::new(Mutex::new(child));
                 let (tx, rx) = std::sync::mpsc::channel();
                 let child_for_watchdog = Arc::clone(&child_arc);
@@ -662,6 +624,15 @@ impl UrlWorker {
                         }
                     }
                 });
+
+                #[cfg(windows)]
+                if let Ok(mut child) = child_arc.lock() {
+                    // The watchdog is armed while the contained process is still suspended.
+                    if Instant::now() >= deadline || child.resume().is_err() {
+                        let _ = child.kill();
+                        killed_by_watchdog.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
 
                 self.child = Some(child_arc);
                 self.watchdog_cancel = Some(tx);
@@ -696,18 +667,15 @@ impl UrlWorker {
         if !is_session_eligible() || !is_pump_ready() || is_pump_degraded() {
             return;
         }
-        #[cfg(windows)]
-        unsafe {
-            let fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
-            if fg.0 as isize != req.window_id as isize {
-                return;
-            }
+        if !helper_identity_matches(req.window_id, &req.exe_name, req.title_fingerprint) {
+            return;
         }
         let Ok(current_exe) = std::env::current_exe() else {
             return;
         };
         let win_id_str = req.window_id.to_string();
-        let args = ["--desktop-url-helper", &win_id_str, &req.exe_name];
+        let title = req.title_fingerprint.to_string();
+        let args = ["--desktop-url-helper", &win_id_str, &req.exe_name, &title];
         self.request_program(&current_exe, &args, req.generation, req.window_id);
     }
 
@@ -743,15 +711,21 @@ impl UrlWorker {
 
         match child.try_wait() {
             Ok(Some(status)) => {
-                let killed_by_watchdog =
-                    self.killed_by_watchdog.load(std::sync::atomic::Ordering::SeqCst);
+                let killed_by_watchdog = self
+                    .killed_by_watchdog
+                    .load(std::sync::atomic::Ordering::SeqCst);
                 self.disarm_watchdog();
                 let generation = self.pending_generation.take();
                 let window_id = self.pending_window_id.take();
                 self.spawn_time = None;
                 self.deadline = None;
 
-                let result = if !self.killed && !killed_by_watchdog && status.success() {
+                #[cfg(windows)]
+                let timely = child.finished_before_deadline();
+                #[cfg(not(windows))]
+                let timely =
+                    Instant::now().saturating_duration_since(_spawn_time) <= Duration::from_secs(2);
+                let result = if !self.killed && !killed_by_watchdog && timely && status.success() {
                     let outcome = if let Some(stdout) = child.stdout.take() {
                         read_bounded_stdout(stdout)
                     } else {
@@ -1160,14 +1134,163 @@ impl DesktopActivityProbe {
     }
 }
 
+impl DesktopActivityProbe {
+    fn poll_native_events(&mut self, include_content: bool) -> Vec<DesktopActivityProbeEvent> {
+        #[cfg(not(windows))]
+        let _ = include_content;
+        if self.state != SourceState::Active {
+            return Vec::new();
+        }
+
+        #[cfg(windows)]
+        {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+            let mut events = Vec::new();
+
+            if !is_session_eligible() || !is_pump_ready() || is_pump_degraded() {
+                self.was_ineligible = true;
+                self.url_worker.cancel();
+                DIRTY_FOREGROUND.store(false, std::sync::atomic::Ordering::SeqCst);
+                DIRTY_TITLE.store(false, std::sync::atomic::Ordering::SeqCst);
+                self.current_window_id = None;
+                if self.current_activity_state != Some(ActivityState::Locked) {
+                    self.current_activity_state = Some(ActivityState::Locked);
+                    events.push(DesktopActivityProbeEvent::ActivityStateChanged(
+                        ActivityState::Locked,
+                    ));
+                }
+                return events;
+            }
+
+            let was_ineligible = self.was_ineligible;
+            self.was_ineligible = false;
+
+            // Idle timer check (5s cadence, 60s idle threshold)
+            let now = Instant::now();
+            let check_idle = match self.last_input_check {
+                None => true,
+                Some(last) => now.duration_since(last) >= Duration::from_secs(5),
+            };
+
+            if check_idle {
+                self.last_input_check = Some(now);
+                unsafe {
+                    let mut lii = LASTINPUTINFO {
+                        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+                        dwTime: 0,
+                    };
+                    if GetLastInputInfo(&mut lii).as_bool() {
+                        let tick_count = windows::Win32::System::SystemInformation::GetTickCount();
+                        let idle_ms = tick_count.wrapping_sub(lii.dwTime);
+                        let new_state = if idle_ms >= 60_000 {
+                            ActivityState::Idle
+                        } else {
+                            ActivityState::Active
+                        };
+                        if self.current_activity_state != Some(new_state) {
+                            self.current_activity_state = Some(new_state);
+                            events.push(DesktopActivityProbeEvent::ActivityStateChanged(new_state));
+                        }
+                    } else {
+                        self.current_activity_state = None;
+                        events.push(DesktopActivityProbeEvent::IdleUnavailable);
+                    }
+                }
+            }
+
+            if !include_content {
+                return events;
+            }
+
+            let dirty_fg = DIRTY_FOREGROUND.swap(false, std::sync::atomic::Ordering::SeqCst);
+            let dirty_title = DIRTY_TITLE.swap(false, std::sync::atomic::Ordering::SeqCst);
+
+            if dirty_fg || dirty_title || was_ineligible {
+                let fg_hwnd =
+                    unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+                if fg_hwnd.0 == 0 as *mut _ {
+                    if self.current_window_id.is_some() {
+                        self.current_window_id = None;
+                        events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
+                    }
+                } else {
+                    let window_id = fg_hwnd.0 as u64;
+                    let title = match read_window_title(fg_hwnd) {
+                        Some(t) => t,
+                        None => {
+                            self.current_window_id = None;
+                            events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
+                            return events;
+                        }
+                    };
+
+                    let mut pid = 0u32;
+                    unsafe {
+                        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                            fg_hwnd,
+                            Some(&mut pid),
+                        );
+                    }
+
+                    let exe_path = get_process_image_path(pid);
+                    let (app, exe_name) = match exe_path {
+                        Some(ref path_str) => {
+                            let path = Path::new(path_str);
+                            let exe_n = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            let file_desc = get_file_description(path_str);
+                            let app_name = file_desc.unwrap_or_else(|| exe_n.clone());
+                            (app_name, exe_n)
+                        }
+                        None => {
+                            self.current_window_id = None;
+                            events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
+                            return events;
+                        }
+                    };
+
+                    self.current_window_id = Some(window_id);
+                    events.push(DesktopActivityProbeEvent::Foreground {
+                        window_id,
+                        app,
+                        exe_name,
+                        title,
+                    });
+                }
+            }
+
+            events
+        }
+        #[cfg(not(windows))]
+        {
+            Vec::new()
+        }
+    }
+}
+
 impl DesktopActivitySource for DesktopActivityProbe {
     fn start(&mut self) -> Result<(), SourceError> {
         #[cfg(windows)]
         {
-            if self.thread_stuck
-                || !is_session_eligible()
-                || is_pump_degraded()
-                || !is_pump_ready()
+            if let Some(thread) = &mut self.hook_thread {
+                if thread
+                    .join_handle
+                    .as_ref()
+                    .is_some_and(|handle| handle.is_finished())
+                {
+                    let _ = thread.join_handle.take().unwrap().join();
+                    self.hook_thread = None;
+                    self.thread_stuck = false;
+                }
+            }
+            if self.hook_thread.is_none() {
+                self.thread_stuck = false;
+            }
+            if self.thread_stuck || !is_session_eligible() || is_pump_degraded() || !is_pump_ready()
             {
                 self.state = SourceState::Faulted {
                     reason: ErrorReason::Unknown,
@@ -1182,6 +1305,16 @@ impl DesktopActivitySource for DesktopActivityProbe {
                         let _ = thread.join_handle.take().unwrap().join();
                         self.hook_thread = None;
                     } else {
+                        if thread.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                            self.state = SourceState::Faulted {
+                                reason: ErrorReason::Unknown,
+                                detail: String::new(),
+                            };
+                            return Ok(());
+                        }
+                        DIRTY_FOREGROUND.store(true, std::sync::atomic::Ordering::SeqCst);
+                        self.last_input_check = None;
+                        self.current_activity_state = None;
                         self.state = SourceState::Active;
                         return Ok(());
                     }
@@ -1352,7 +1485,7 @@ impl DesktopActivitySource for DesktopActivityProbe {
 
     fn state(&self) -> SourceState {
         #[cfg(windows)]
-        if !is_session_eligible() || is_pump_degraded() {
+        if !is_session_eligible() || !is_pump_ready() || is_pump_degraded() {
             return SourceState::Faulted {
                 reason: ErrorReason::Unknown,
                 detail: String::new(),
@@ -1362,133 +1495,10 @@ impl DesktopActivitySource for DesktopActivityProbe {
     }
 
     fn poll_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
-        if self.state != SourceState::Active {
-            return Vec::new();
-        }
-
-        #[cfg(windows)]
-        {
-            use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
-
-            let mut events = Vec::new();
-
-            if !is_session_eligible() || is_pump_degraded() {
-                self.was_ineligible = true;
-                self.url_worker.cancel();
-                DIRTY_FOREGROUND.store(false, std::sync::atomic::Ordering::SeqCst);
-                DIRTY_TITLE.store(false, std::sync::atomic::Ordering::SeqCst);
-                self.current_window_id = None;
-                if self.current_activity_state != Some(ActivityState::Locked) {
-                    self.current_activity_state = Some(ActivityState::Locked);
-                    events.push(DesktopActivityProbeEvent::ActivityStateChanged(
-                        ActivityState::Locked,
-                    ));
-                }
-                return events;
-            }
-
-            let was_ineligible = self.was_ineligible;
-            self.was_ineligible = false;
-
-            // Idle timer check (5s cadence, 60s idle threshold)
-            let now = Instant::now();
-            let check_idle = match self.last_input_check {
-                None => true,
-                Some(last) => now.duration_since(last) >= Duration::from_secs(5),
-            };
-
-            if check_idle {
-                self.last_input_check = Some(now);
-                unsafe {
-                    let mut lii = LASTINPUTINFO {
-                        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
-                        dwTime: 0,
-                    };
-                    if GetLastInputInfo(&mut lii).as_bool() {
-                        let tick_count = windows::Win32::System::SystemInformation::GetTickCount();
-                        let idle_ms = tick_count.wrapping_sub(lii.dwTime);
-                        let new_state = if idle_ms >= 60_000 {
-                            ActivityState::Idle
-                        } else {
-                            ActivityState::Active
-                        };
-                        if self.current_activity_state != Some(new_state) {
-                            self.current_activity_state = Some(new_state);
-                            events.push(DesktopActivityProbeEvent::ActivityStateChanged(new_state));
-                        }
-                    } else {
-                        self.current_activity_state = None;
-                        events.push(DesktopActivityProbeEvent::IdleUnavailable);
-                    }
-                }
-            }
-
-            let dirty_fg = DIRTY_FOREGROUND.swap(false, std::sync::atomic::Ordering::SeqCst);
-            let dirty_title = DIRTY_TITLE.swap(false, std::sync::atomic::Ordering::SeqCst);
-
-            if dirty_fg || dirty_title || was_ineligible {
-                let fg_hwnd =
-                    unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
-                if fg_hwnd.0 == 0 as *mut _ {
-                    if self.current_window_id.is_some() {
-                        self.current_window_id = None;
-                        events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
-                    }
-                } else {
-                    let window_id = fg_hwnd.0 as u64;
-                    let title = match read_window_title(fg_hwnd) {
-                        Some(t) => t,
-                        None => {
-                            self.current_window_id = None;
-                            events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
-                            return events;
-                        }
-                    };
-
-                    let mut pid = 0u32;
-                    unsafe {
-                        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
-                            fg_hwnd,
-                            Some(&mut pid),
-                        );
-                    }
-
-                    let exe_path = get_process_image_path(pid);
-                    let (app, exe_name) = match exe_path {
-                        Some(ref path_str) => {
-                            let path = Path::new(path_str);
-                            let exe_n = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_ascii_lowercase();
-                            let file_desc = get_file_description(path_str);
-                            let app_name = file_desc.unwrap_or_else(|| exe_n.clone());
-                            (app_name, exe_n)
-                        }
-                        None => {
-                            self.current_window_id = None;
-                            events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
-                            return events;
-                        }
-                    };
-
-                    self.current_window_id = Some(window_id);
-                    events.push(DesktopActivityProbeEvent::Foreground {
-                        window_id,
-                        app,
-                        exe_name,
-                        title,
-                    });
-                }
-            }
-
-            events
-        }
-        #[cfg(not(windows))]
-        {
-            Vec::new()
-        }
+        self.poll_native_events(true)
+    }
+    fn poll_coarse_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
+        self.poll_native_events(false)
     }
 
     fn request_url(&mut self, request: DesktopActivityUrlRequest) {
@@ -1508,7 +1518,11 @@ impl DesktopActivitySource for DesktopActivityProbe {
     ) -> Option<observer_model::desktop_activity::ForegroundSnapshot> {
         #[cfg(windows)]
         {
-            if !is_session_eligible() || is_pump_degraded() {
+            if self.state != SourceState::Active
+                || !is_session_eligible()
+                || !is_pump_ready()
+                || is_pump_degraded()
+            {
                 return None;
             }
             let fg_hwnd = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
@@ -1960,7 +1974,19 @@ mod tests {
     #[test]
     fn containment_hung_stop_returns_without_waiting() {
         let mut worker = UrlWorker::new();
-        worker.request_program(Path::new("ping"), &["-n", "60", "127.0.0.1"], 1, 123);
+        let ping = Path::new(&std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32/ping.exe");
+        worker.request_program(&ping, &["-n", "60", "127.0.0.1"], 1, 123);
+        assert!(
+            worker.is_unreaped(),
+            "must exercise a live contained helper"
+        );
+        worker.request_program(&ping, &["-n", "60", "127.0.0.1"], 2, 456);
+        assert_eq!(
+            worker.pending_generation,
+            Some(1),
+            "a live helper prevents overlap"
+        );
 
         let start = Instant::now();
         worker.cancel();
@@ -1970,24 +1996,28 @@ mod tests {
             "cancel took too long: {elapsed:?}"
         );
 
-        let unreaped = worker.is_unreaped();
-        worker.request_program(Path::new("ping"), &["-n", "60", "127.0.0.1"], 2, 456);
-        if unreaped {
-            assert_ne!(
-                worker.pending_generation,
-                Some(2),
-                "second request must not spawn while unreaped"
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while worker.is_unreaped() {
+            assert!(
+                Instant::now() < deadline,
+                "cancelled helper must retire promptly"
             );
+            std::thread::sleep(Duration::from_millis(5));
         }
+        worker.request_program(&ping, &["-n", "60", "127.0.0.1"], 2, 456);
+        assert_eq!(worker.pending_generation, Some(2));
+        assert!(!worker.reap_failed);
+        worker.cancel();
     }
 
     #[cfg(windows)]
     #[test]
     fn watchdog_kills_unpolled_child_at_two_seconds() {
         let mut worker = UrlWorker::new();
-        let (prog, args): (&str, &[&str]) = ("ping", &["-n", "30", "127.0.0.1"]);
-
-        worker.request_program(Path::new(prog), args, 1, 100);
+        let ping = Path::new(&std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32/ping.exe");
+        worker.request_program(&ping, &["-n", "30", "127.0.0.1"], 1, 100);
+        assert!(worker.is_unreaped(), "must start a live contained helper");
         let start = Instant::now();
         let mut exited = false;
         while start.elapsed() < Duration::from_millis(2200) {
@@ -2005,6 +2035,30 @@ mod tests {
             exited,
             "child must have exited within 2.2 seconds without polling"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancel_after_helper_exit_does_not_poison_future_requests() {
+        let ping = Path::new(&std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32/ping.exe");
+        let mut worker = UrlWorker::new();
+        worker.request_program(&ping, &["-n", "1", "127.0.0.1"], 1, 100);
+        let child = worker.child.as_ref().expect("spawned helper").clone();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if child.lock().unwrap().try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "helper must exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        worker.cancel();
+        assert!(!worker.reap_failed);
+        worker.request_program(&ping, &["-n", "60", "127.0.0.1"], 2, 100);
+        assert_eq!(worker.pending_generation, Some(2));
+        assert!(worker.is_unreaped());
+        worker.cancel();
     }
 
     #[cfg(windows)]

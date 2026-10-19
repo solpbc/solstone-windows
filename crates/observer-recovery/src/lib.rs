@@ -28,6 +28,8 @@ pub struct StaleSegment {
 pub enum RecoveryOutcome {
     Finalized(SegmentKey),
     Quarantined(SegmentKey),
+    /// Usable bytes remain in place for the engine storage retry loop.
+    Deferred(SegmentKey),
 }
 
 /// Filesystem seam for recovery. Real impl in `platform-win`; fake in tests.
@@ -45,8 +47,8 @@ pub trait RecoveryFs {
 }
 
 /// Scan and resolve every stale segment. Runs once at construction; returns the
-/// per-segment outcomes (recovery is best-effort: a per-segment error is mapped
-/// to quarantine rather than aborting the whole sweep).
+/// per-segment outcomes. Usable data that cannot be sealed stays in place and
+/// returns `Deferred`; only unusable data is quarantined.
 pub fn recover_all<F: RecoveryFs>(fs: &mut F) -> Result<Vec<RecoveryOutcome>, F::Error> {
     let stale = fs.scan_incomplete()?;
     let mut outcomes = Vec::with_capacity(stale.len());
@@ -54,6 +56,8 @@ pub fn recover_all<F: RecoveryFs>(fs: &mut F) -> Result<Vec<RecoveryOutcome>, F:
         if seg.has_usable_data {
             if fs.finalize(&seg).is_ok() {
                 outcomes.push(RecoveryOutcome::Finalized(seg.key));
+            } else {
+                outcomes.push(RecoveryOutcome::Deferred(seg.key));
             }
         } else {
             fs.quarantine(&seg)?;
@@ -154,8 +158,7 @@ mod tests {
             quarantined: Vec::new(),
         };
         let out = recover_all(&mut fs).unwrap();
-        assert!(out.is_empty());
+        assert_eq!(out, vec![RecoveryOutcome::Deferred(seg(1, true).key)]);
         assert!(fs.quarantined.is_empty());
     }
 }
-

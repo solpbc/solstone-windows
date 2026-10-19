@@ -466,6 +466,8 @@ pub struct SetupAuthority {
     running_system_audio: bool,
     running_screen: bool,
     running_desktop_activity: bool,
+    running_window_titles: bool,
+    running_page_addresses: bool,
     failed_sources: Vec<FailedSourceWrite>,
     wizard_save_failed: bool,
     pending_wizard: Option<WizardStep>,
@@ -494,6 +496,8 @@ impl SetupAuthority {
             running_system_audio: false,
             running_screen: false,
             running_desktop_activity: false,
+            running_window_titles: false,
+            running_page_addresses: false,
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
@@ -527,6 +531,8 @@ impl SetupAuthority {
         self.running_system_audio = snapshot.system_audio;
         self.running_screen = snapshot.screen;
         self.running_desktop_activity = snapshot.desktop_activity;
+        self.running_window_titles = snapshot.desktop_activity_window_titles;
+        self.running_page_addresses = snapshot.desktop_activity_page_addresses;
         self.durable.wizard = snapshot.wizard;
         self.durable.notice_dismissed = snapshot.notice_dismissed;
         self.durable.start_at_login = snapshot.start_at_login;
@@ -550,8 +556,8 @@ impl SetupAuthority {
             system_audio: self.running_system_audio,
             screen: self.running_screen,
             desktop_activity: self.running_desktop_activity,
-            desktop_activity_window_titles: self.durable.desktop_activity_window_titles,
-            desktop_activity_page_addresses: self.durable.desktop_activity_page_addresses,
+            desktop_activity_window_titles: self.running_window_titles,
+            desktop_activity_page_addresses: self.running_page_addresses,
             desktop_activity_window_titles_save_failed: self.window_titles_save_failed,
             desktop_activity_page_addresses_save_failed: self.page_addresses_save_failed,
             start_at_login: self.pending_login.unwrap_or(self.durable.start_at_login),
@@ -582,11 +588,11 @@ impl SetupAuthority {
         if self.pending_login == Some(false) {
             candidate.start_at_login = false;
         }
-        if self.pending_window_titles == Some(false) {
-            candidate.desktop_activity_window_titles = false;
+        if self.pending_window_titles.is_some() {
+            candidate.desktop_activity_window_titles = self.running_window_titles;
         }
-        if self.pending_page_addresses == Some(false) {
-            candidate.desktop_activity_page_addresses = false;
+        if self.pending_page_addresses.is_some() {
+            candidate.desktop_activity_page_addresses = self.running_page_addresses;
         }
         for failed in self
             .failed_sources
@@ -690,36 +696,36 @@ impl SetupAuthority {
     }
 
     pub fn set_desktop_activity_window_titles(&mut self, enabled: bool) -> bool {
+        if !enabled {
+            self.running_window_titles = false;
+        }
         let mut candidate = self.candidate_with_pending_off();
         candidate.desktop_activity_window_titles = enabled;
         if self.persist(candidate) {
+            self.running_window_titles = enabled;
             self.pending_window_titles = None;
             self.window_titles_save_failed = false;
             true
         } else {
-            if !enabled {
-                self.pending_window_titles = Some(false);
-            } else {
-                self.pending_window_titles = None;
-            }
+            self.pending_window_titles = Some(enabled);
             self.window_titles_save_failed = true;
             false
         }
     }
 
     pub fn set_desktop_activity_page_addresses(&mut self, enabled: bool) -> bool {
+        if !enabled {
+            self.running_page_addresses = false;
+        }
         let mut candidate = self.candidate_with_pending_off();
         candidate.desktop_activity_page_addresses = enabled;
         if self.persist(candidate) {
+            self.running_page_addresses = enabled;
             self.pending_page_addresses = None;
             self.page_addresses_save_failed = false;
             true
         } else {
-            if !enabled {
-                self.pending_page_addresses = Some(false);
-            } else {
-                self.pending_page_addresses = None;
-            }
+            self.pending_page_addresses = Some(enabled);
             self.page_addresses_save_failed = true;
             false
         }
@@ -772,6 +778,8 @@ impl SetupAuthority {
         };
 
         if write_ok {
+            self.running_window_titles = candidate.desktop_activity_window_titles;
+            self.running_page_addresses = candidate.desktop_activity_page_addresses;
             self.durable = candidate;
             self.pending_window_titles = None;
             self.pending_page_addresses = None;
@@ -1366,7 +1374,113 @@ mod tests {
     }
 
     #[test]
-    fn failed_desktop_activity_preferences_keep_durable_value_and_set_failure_flags() {
+    fn failed_off_survives_other_preference_and_failed_reenable_in_both_orders() {
+        for titles_first in [true, false] {
+            let root = temp_test_dir(if titles_first {
+                "off-titles-first"
+            } else {
+                "off-address-first"
+            });
+            let mut config = SetupConfig::fresh();
+            config.desktop_activity_window_titles = true;
+            config.desktop_activity_page_addresses = true;
+            atomic_write_setup(&root, &config).unwrap();
+            let mut auth = SetupAuthority::new();
+            auth.set_root(root.clone());
+            auth.seed(&config.to_snapshot());
+            fs::create_dir(root.join("setup.json.tmp")).unwrap();
+            if titles_first {
+                assert!(!auth.set_desktop_activity_window_titles(false));
+                assert!(!auth.set_desktop_activity_page_addresses(false));
+                assert!(!auth.set_desktop_activity_window_titles(true));
+            } else {
+                assert!(!auth.set_desktop_activity_page_addresses(false));
+                assert!(!auth.set_desktop_activity_window_titles(false));
+                assert!(!auth.set_desktop_activity_page_addresses(true));
+            }
+            assert!(!auth.projection().desktop_activity_window_titles);
+            assert!(!auth.projection().desktop_activity_page_addresses);
+            fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+            assert!(auth.retry().saved);
+            let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
+                panic!("saved config");
+            };
+            assert_eq!(saved.desktop_activity_window_titles, titles_first);
+            assert_eq!(saved.desktop_activity_page_addresses, !titles_first);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn unrelated_save_preserves_effective_off_after_off_then_on_both_fail() {
+        for titles in [false, true] {
+            let root = temp_test_dir(if titles {
+                "pending-titles-off-on"
+            } else {
+                "pending-urls-off-on"
+            });
+            let mut config = SetupConfig::fresh();
+            config.desktop_activity_window_titles = true;
+            config.desktop_activity_page_addresses = true;
+            atomic_write_setup(&root, &config).unwrap();
+            let mut auth = SetupAuthority::new();
+            auth.set_root(root.clone());
+            auth.seed(&config.to_snapshot());
+            fs::create_dir(root.join("setup.json.tmp")).unwrap();
+            if titles {
+                assert!(!auth.set_desktop_activity_window_titles(false));
+                assert!(!auth.set_desktop_activity_window_titles(true));
+            } else {
+                assert!(!auth.set_desktop_activity_page_addresses(false));
+                assert!(!auth.set_desktop_activity_page_addresses(true));
+            }
+            fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+            assert!(auth.set_wizard_step(WizardStep::Done));
+            let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
+                panic!("saved config");
+            };
+            assert_eq!(saved.desktop_activity_window_titles, !titles);
+            assert_eq!(saved.desktop_activity_page_addresses, titles);
+            assert_eq!(auth.projection().desktop_activity_window_titles, !titles);
+            assert_eq!(auth.projection().desktop_activity_page_addresses, titles);
+            assert!(auth.retry().saved);
+            assert!(
+                auth.projection().desktop_activity_window_titles
+                    && auth.projection().desktop_activity_page_addresses
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_optional_ons_stay_off_until_retry_saves_the_requested_choices() {
+        let root = temp_test_dir("optional-on-retry");
+        let config = SetupConfig::fresh();
+        atomic_write_setup(&root, &config).unwrap();
+        let mut auth = SetupAuthority::new();
+        auth.set_root(root.clone());
+        auth.seed(&config.to_snapshot());
+        fs::create_dir(root.join("setup.json.tmp")).unwrap();
+        assert!(!auth.set_desktop_activity_window_titles(true));
+        assert!(!auth.set_desktop_activity_page_addresses(true));
+        assert!(!auth.projection().desktop_activity_window_titles);
+        assert!(!auth.projection().desktop_activity_page_addresses);
+        assert!(!auth.retry().saved);
+        assert!(!auth.projection().desktop_activity_window_titles);
+        assert!(!auth.projection().desktop_activity_page_addresses);
+        fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+        assert!(auth.retry().saved);
+        assert!(auth.projection().desktop_activity_window_titles);
+        assert!(auth.projection().desktop_activity_page_addresses);
+        let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
+            panic!("saved config");
+        };
+        assert!(saved.desktop_activity_window_titles && saved.desktop_activity_page_addresses);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_desktop_activity_offs_stay_off_and_retry_persists_both() {
         let root = temp_test_dir("failed-da-prefs");
         let mut initial = SetupConfig::fresh();
         initial.desktop_activity = true;
@@ -1384,13 +1498,14 @@ mod tests {
         // Turning window_titles OFF fails persist
         assert!(!auth.set_desktop_activity_window_titles(false));
         let proj = auth.projection();
-        assert!(proj.desktop_activity_window_titles);
+        assert!(!proj.desktop_activity_window_titles);
         assert!(proj.desktop_activity_window_titles_save_failed);
 
         // Turning page_addresses OFF fails persist
         assert!(!auth.set_desktop_activity_page_addresses(false));
         let proj = auth.projection();
-        assert!(proj.desktop_activity_page_addresses);
+        assert!(!proj.desktop_activity_page_addresses);
+        assert!(!proj.desktop_activity_window_titles);
         assert!(proj.desktop_activity_page_addresses_save_failed);
 
         // Remove blocker and retry

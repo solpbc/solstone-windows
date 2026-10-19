@@ -39,7 +39,7 @@ pub struct AppState {
     /// Static identity + paths the sync layer needs to pair/upload.
     pub sync_config: SyncConfig,
     pub _shutdown: Mutex<Option<oneshot::Sender<()>>>,
-    pub engine_stopped: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    pub shutdown_complete: tokio::sync::watch::Receiver<bool>,
     /// Single uploader lifecycle slot; also serializes pair/replace requests.
     pub uploader_slot: tokio::sync::Mutex<UploaderSlot>,
     /// The sole paired credential transport authority shared by upload and bridge.
@@ -59,21 +59,6 @@ pub struct AppState {
     pub proof: Arc<Mutex<capture_engine::ProofGate>>,
     #[cfg(test)]
     pub probe: Option<Arc<crate::windows::OpenPairProbe>>,
-}
-
-/// Drains engine shutdown and exits cleanly.
-pub fn drain_and_exit(app: tauri::AppHandle, state: &AppState) {
-    if let Ok(mut lock) = state._shutdown.lock() {
-        if let Some(tx) = lock.take() {
-            let _ = tx.send(());
-        }
-    }
-    if let Ok(mut lock) = state.engine_stopped.lock() {
-        if let Some(rx) = lock.take() {
-            let _ = rx.recv_timeout(Duration::from_secs(3));
-        }
-    }
-    app.exit(0);
 }
 
 /// The observer's device label for the pairing CSR, best-effort.
@@ -568,9 +553,9 @@ pub fn run(
         // No opener:* permission is granted to either webview.
         .plugin(native_opener_plugin())
         .invoke_handler(tauri::generate_handler![
-            crate::ipc::quit_and_drain,
             crate::ipc::pause,
             crate::ipc::resume,
+            crate::ipc::quit,
             crate::ipc::get_health,
             crate::logs::read_recent_logs,
             crate::logs::save_recent_logs,
@@ -779,7 +764,7 @@ pub fn run(
             });
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
-            let (engine_stopped_tx, engine_stopped_rx) = std::sync::mpsc::channel();
+            let (shutdown_complete_tx, shutdown_complete_rx) = tokio::sync::watch::channel(false);
 
             // Resume an existing pairing: if a credential is on disk, start the
             // upload loop now. A fresh pairing is started by the
@@ -801,7 +786,7 @@ pub fn run(
                 about_observation: about_observation.clone(),
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
-                engine_stopped: Mutex::new(Some(engine_stopped_rx)),
+                shutdown_complete: shutdown_complete_rx,
                 uploader_slot: tokio::sync::Mutex::new(slot),
                 credential_access: tokio::sync::Mutex::new(credential_access),
                 journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -849,8 +834,9 @@ pub fn run(
 
             tauri::async_runtime::spawn(async move {
                 let exit = engine.run(shutdown_rx, cmd_rx).await;
+                drop(engine);
+                shutdown_complete_tx.send_replace(true);
                 tracing::info!(target: "engine", reason = ?exit, "capture engine loop exited");
-                let _ = engine_stopped_tx.send(());
             });
 
             tauri::async_runtime::spawn({
@@ -1126,11 +1112,36 @@ pub fn run(
         .build(tauri::generate_context!())
         .expect("error while building the observer");
 
-    app.run(|_, event| {
+    app.run(|app, event| {
         if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
-            if code.is_none() {
+            let Some(code) = code else {
                 api.prevent_exit();
+                return;
+            };
+            let Some(state) = app.try_state::<AppState>() else {
+                return;
+            };
+            if *state.shutdown_complete.borrow() {
+                return;
             }
+            api.prevent_exit();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let (shutdown, mut complete) = {
+                    let state = app.state::<AppState>();
+                    let shutdown = state._shutdown.lock().ok().and_then(|mut slot| slot.take());
+                    (shutdown, state.shutdown_complete.clone())
+                };
+                if let Some(shutdown) = shutdown {
+                    let _ = shutdown.send(());
+                }
+                match tokio::time::timeout(Duration::from_secs(5), complete.wait_for(|done| *done))
+                    .await
+                {
+                    Ok(Ok(_)) => app.exit(code),
+                    _ => tracing::error!(target: "engine", "engine shutdown did not complete"),
+                }
+            });
         }
     });
 }

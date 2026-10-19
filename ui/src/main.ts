@@ -3754,7 +3754,7 @@ function renderDesktopActivityControl(
     ids["settings.sources.desktopActivity.windowTitles"],
     titlesEnabled,
     (on) => {
-      void invoke("set_desktop_activity_window_titles", { enabled: on }).then(() => retryHealth());
+      void invoke("set_desktop_activity_window_titles", { enabled: on }).catch(() => undefined).then(() => retryHealth());
     },
   );
   titlesToggle.style.padding = "2px 0";
@@ -3764,12 +3764,22 @@ function renderDesktopActivityControl(
     ids["settings.sources.desktopActivity.pageAddresses"],
     addressesEnabled,
     (on) => {
-      void invoke("set_desktop_activity_page_addresses", { enabled: on }).then(() => retryHealth());
+      void invoke("set_desktop_activity_page_addresses", { enabled: on }).catch(() => undefined).then(() => retryHealth());
     },
   );
   addressesToggle.style.padding = "2px 0";
 
-  container.append(titlesToggle, addressesToggle);
+  for (const [toggle, failed] of [
+    [titlesToggle, dump.setup?.desktop_activity_window_titles_save_failed],
+    [addressesToggle, dump.setup?.desktop_activity_page_addresses_save_failed],
+  ] as const) {
+    container.append(toggle);
+    if (failed) {
+      const failure = text("div", "could not save this choice. it may change after a restart. try again.");
+      failure.classList.add("save-failure");
+      container.append(failure);
+    }
+  }
   return container;
 }
 
@@ -3814,7 +3824,9 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   sources.append(renderStartAtLoginControl(dump));
 
   const hasSourceSaveFailure = Boolean(
-    dump.setup?.failed_sources && dump.setup.failed_sources.length > 0,
+    (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
+    dump.setup?.desktop_activity_window_titles_save_failed ||
+    dump.setup?.desktop_activity_page_addresses_save_failed,
   );
   if (hasSourceSaveFailure) {
     const failureEl = document.createElement("div");

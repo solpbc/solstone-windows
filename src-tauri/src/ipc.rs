@@ -47,6 +47,12 @@ pub fn resume(state: tauri::State<'_, crate::app::AppState>) -> Result<(), Strin
         .map_err(|error| error.to_string())
 }
 
+/// Request the same draining process exit as the tray's Quit action.
+#[tauri::command]
+pub fn quit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 /// Return the current honest health snapshot (same payload as `--dump-state`
 /// and `/healthz`).
 #[tauri::command]
@@ -1011,6 +1017,15 @@ pub fn retry_save(state: tauri::State<'_, crate::app::AppState>) -> Result<(), S
             };
             auth.set_login_apply_failed(login_failed || !outcome.saved);
         }
+        if outcome.saved {
+            let projection = auth.projection();
+            let _ = state
+                .commands
+                .send(EngineCommand::SetDesktopActivityPreferences {
+                    window_titles: projection.desktop_activity_window_titles,
+                    page_addresses: projection.desktop_activity_page_addresses,
+                });
+        }
         for kind in outcome.started {
             let _ = state.commands.send(EngineCommand::SetSourceEnabled {
                 kind,
@@ -1413,13 +1428,3 @@ pub(crate) fn recover_setup_browser_completion(state: &crate::app::AppState) {
         sync.pairing.setup_browser_ready = failed;
     }
 }
-
-#[tauri::command]
-pub async fn quit_and_drain(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, crate::app::AppState>,
-) -> Result<(), ()> {
-    crate::app::drain_and_exit(app, &state);
-    Ok(())
-}
-

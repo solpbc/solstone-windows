@@ -1044,69 +1044,74 @@ fn two_runs_in_one_boundary_before_ack_and_after_ack() {
 }
 
 #[test]
-fn multi_boundary_step_keeps_emitted_intervals_inside_delivered_segment_range() {
-    let root = temp_root();
-    let _ = std::fs::remove_dir_all(&root);
-    let clock = FakeClock::new(100);
+fn one_clock_jump_then_stop_or_pause_preserves_each_segment_and_the_full_interval() {
+    for pause in [false, true] {
+        let root = temp_root();
+        let _ = std::fs::remove_dir_all(&root);
+        let clock = FakeClock::new(100);
 
-    let (mut s, _) = sources();
-    let mut ah = FakeDesktopActivityHandle::default();
-    ah.events.push(DesktopActivityProbeEvent::Foreground {
-        window_id: 1,
-        app: "LongApp".into(),
-        exe_name: "long.exe".into(),
-        title: "Long Running App".into(),
-    });
-    s.desktop_activity = Box::new(FakeDesktopActivity {
-        inner: Arc::new(Mutex::new(ah)),
-    });
-    let mut r = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
-    let (mut engine, _) = CaptureEngine::new(
-        s,
-        EngineConfig::default(),
-        &mut r,
-        platform_win::LocalSegmentFs::new(root.clone()),
-        Box::new(clock.clone()),
-    )
-    .unwrap();
-    engine.set_source_choices(observer_model::setup::SetupSnapshot {
-        desktop_activity: true,
-        ..Default::default()
-    });
-    engine.start();
-    engine.pump(); // Starts in segment 0..300 at t=100
+        let (mut s, _) = sources();
+        let mut ah = FakeDesktopActivityHandle::default();
+        ah.events.push(DesktopActivityProbeEvent::Foreground {
+            window_id: 1,
+            app: "LongApp".into(),
+            exe_name: "long.exe".into(),
+            title: "Long Running App".into(),
+        });
+        s.desktop_activity = Box::new(FakeDesktopActivity {
+            inner: Arc::new(Mutex::new(ah)),
+        });
+        let mut r = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+        let (mut engine, _) = CaptureEngine::new(
+            s,
+            EngineConfig::default(),
+            &mut r,
+            platform_win::LocalSegmentFs::new(root.clone()),
+            Box::new(clock.clone()),
+        )
+        .unwrap();
+        engine.set_source_choices(observer_model::setup::SetupSnapshot {
+            desktop_activity: true,
+            ..Default::default()
+        });
+        engine.start();
+        engine.pump(); // Starts in segment 0..300 at t=100
 
-    // Step across multiple boundaries sequentially
-    clock.set(350);
-    engine.pump();
-    clock.set(650);
-    engine.pump();
-    clock.set(750);
-    engine.stop();
+        clock.set(950);
+        if pause {
+            engine.apply_command(EngineCommand::Pause {
+                reason: observer_model::PauseReason::Operator,
+                duration_secs: None,
+            });
+            engine.stop();
+        } else {
+            engine.stop();
+        }
 
-    let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
-    let sealed = store.scan().unwrap();
-    assert_eq!(
-        sealed.len(),
-        3,
-        "must have sealed 3 segments for 0..300, 300..600, 600..900"
-    );
+        let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
+        let sealed = store.scan().unwrap();
+        assert_eq!(
+            sealed.len(),
+            4,
+            "must seal every segment reached by the open interval, including on pause"
+        );
 
-    for seg in &sealed {
-        let seg_start_ms = seg.boundary_epoch_secs * 1000;
-        let seg_end_ms = (seg.boundary_epoch_secs + DEFAULT_SEGMENT_SECS) * 1000;
-        let files = &seg.files;
-        let act_file = files
-            .iter()
-            .find(|f| f.ends_with("_desktop_activity.jsonl"))
-            .unwrap();
-        let content = String::from_utf8(store.read_file(seg.index, act_file).unwrap()).unwrap();
-        for line in content.lines() {
-            let row: serde_json::Value = serde_json::from_str(line).unwrap();
-            let row_kind = row.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            if row_kind == "foreground" || row_kind == "activity" {
+        let mut foreground = Vec::new();
+        for seg in &sealed {
+            let seg_start_ms = seg.boundary_epoch_secs * 1000;
+            let seg_end_ms = (seg.boundary_epoch_secs + DEFAULT_SEGMENT_SECS) * 1000;
+            let files = &seg.files;
+            let act_file = files
+                .iter()
+                .find(|f| f.ends_with("_desktop_activity.jsonl"))
+                .unwrap();
+            let content = String::from_utf8(store.read_file(seg.index, act_file).unwrap()).unwrap();
+            for line in content.lines() {
+                let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                let kind = row.get("kind").and_then(|v| v.as_str()).unwrap();
                 let ts = row.get("ts").and_then(|v| v.as_u64()).unwrap();
                 let end_ts = row.get("end_ts").and_then(|v| v.as_u64()).unwrap();
+                assert!(end_ts >= ts);
                 assert!(
                     ts >= seg_start_ms,
                     "row ts {ts} must be >= seg_start_ms {seg_start_ms}"
@@ -1115,11 +1120,26 @@ fn multi_boundary_step_keeps_emitted_intervals_inside_delivered_segment_range() 
                     end_ts <= seg_end_ms,
                     "row end_ts {end_ts} must be <= seg_end_ms {seg_end_ms}"
                 );
+                if kind == "foreground" {
+                    assert_eq!(row["app"], "LongApp");
+                    foreground.push((ts, end_ts));
+                }
             }
         }
-    }
+        foreground.sort_unstable();
+        assert_eq!(foreground.first().map(|interval| interval.0), Some(100_000));
+        assert_eq!(foreground.last().map(|interval| interval.1), Some(950_000));
+        assert!(foreground.windows(2).all(|pair| pair[0].1 == pair[1].0));
+        assert_eq!(
+            foreground
+                .iter()
+                .map(|(start, end)| end - start)
+                .sum::<u64>(),
+            850_000
+        );
 
-    let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[test]
@@ -1255,8 +1275,21 @@ fn failed_append_stays_queued_fault_remains_until_retry_writes_line_once_detail_
         None => panic!("expected storage fault, got None"),
     }
 
+    // Cross a boundary while the row is still unwritten. Nothing may expose
+    // this segment to an uploader until every queued byte is durable.
+    clock.set(350);
+    engine.pump();
+    let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
+    assert!(store
+        .scan()
+        .unwrap()
+        .iter()
+        .all(|segment| segment.index != 0));
+    assert!(root.join("0.incomplete").exists());
+
     // 3. Clear the failure condition and retry
     fail_flag.store(false, Ordering::SeqCst);
+    clock.set(400);
     engine.pump();
 
     // Fault cleared
@@ -1267,13 +1300,13 @@ fn failed_append_stays_queued_fault_remains_until_retry_writes_line_once_detail_
 
     let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
     let sealed = store.scan().unwrap();
-    assert_eq!(sealed.len(), 1);
-    let files = &sealed[0].files;
+    let sealed_zero = sealed.iter().find(|segment| segment.index == 0).unwrap();
+    let files = &sealed_zero.files;
     let act_file = files
         .iter()
         .find(|f| f.ends_with("_desktop_activity.jsonl"))
         .unwrap();
-    let content = String::from_utf8(store.read_file(sealed[0].index, act_file).unwrap()).unwrap();
+    let content = String::from_utf8(store.read_file(sealed_zero.index, act_file).unwrap()).unwrap();
 
     // 4. Line written ONCE
     let fg_lines: Vec<_> = content
@@ -1414,7 +1447,11 @@ fn append_activity_local_fs_no_nul_prefix_and_line_two_adjacent() {
         .iter()
         .filter(|f| f.ends_with("_desktop_activity.jsonl"))
         .collect();
-    assert_eq!(act_files.len(), 2, "a later batch uses a different file name");
+    assert_eq!(
+        act_files.len(),
+        2,
+        "a later batch uses a different file name"
+    );
     assert!(act_files.contains(&&act_file));
     let original_bytes = store.read_file(sealed2[0].index, &act_file).unwrap();
     assert_eq!(
@@ -1425,3 +1462,80 @@ fn append_activity_local_fs_no_nul_prefix_and_line_two_adjacent() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn backward_clock_rebases_without_infinite_rotation_on_pump_stop_or_pause() {
+    for action in [0, 1, 2] {
+        let root = temp_root();
+        let clock = FakeClock::new(950);
+        let (mut sources, _) = sources();
+        let mut activity = FakeDesktopActivityHandle::default();
+        activity.events.push(DesktopActivityProbeEvent::Foreground {
+            window_id: 1,
+            app: "BeforeClockStep".into(),
+            exe_name: "before.exe".into(),
+            title: "before".into(),
+        });
+        sources.desktop_activity = Box::new(FakeDesktopActivity {
+            inner: Arc::new(Mutex::new(activity)),
+        });
+        let mut recovery = platform_win::LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+        let (mut engine, _) = CaptureEngine::new(
+            sources,
+            EngineConfig::default(),
+            &mut recovery,
+            platform_win::LocalSegmentFs::new(root.clone()),
+            Box::new(clock.clone()),
+        )
+        .unwrap();
+        engine.set_source_choices(observer_model::setup::SetupSnapshot {
+            desktop_activity: true,
+            ..Default::default()
+        });
+        engine.start();
+        engine.pump();
+        clock.set(100);
+        match action {
+            0 => engine.pump(),
+            1 => engine.stop(),
+            _ => engine.apply_command(EngineCommand::Pause {
+                reason: observer_model::PauseReason::Operator,
+                duration_secs: None,
+            }),
+        }
+        engine.stop();
+        let store = LocalSealedStore::new(&root, DEFAULT_SEGMENT_SECS);
+        let segments = store.scan().unwrap();
+        assert!(
+            segments.iter().any(|segment| segment.index == 3),
+            "prior clock segment must survive"
+        );
+        let mut prior_foreground = 0;
+        for segment in segments {
+            assert!(segment.index == 0 || segment.index == 3);
+            for name in segment
+                .files
+                .iter()
+                .filter(|name| name.ends_with("_desktop_activity.jsonl"))
+            {
+                let bytes = store.read_file(segment.index, name).unwrap();
+                for line in std::str::from_utf8(&bytes).unwrap().lines() {
+                    let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                    if row["app"] == "BeforeClockStep" {
+                        prior_foreground += 1;
+                    }
+                    assert!(row["end_ts"].as_u64().unwrap() >= row["ts"].as_u64().unwrap());
+                    assert!(row["ts"].as_u64().unwrap() >= segment.boundary_epoch_secs * 1000);
+                    assert!(
+                        row["end_ts"].as_u64().unwrap()
+                            <= (segment.boundary_epoch_secs + 300) * 1000
+                    );
+                }
+            }
+        }
+        assert!(
+            prior_foreground > 0,
+            "previous foreground row must survive the clock step"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

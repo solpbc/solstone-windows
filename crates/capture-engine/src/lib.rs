@@ -393,6 +393,14 @@ where
             committed_activity_lens: std::collections::HashMap::new(),
             activity_batch_written: false,
         };
+        for outcome in &outcomes {
+            if let RecoveryOutcome::Deferred(key) = outcome {
+                engine.pending_seals.insert(*key, None);
+            }
+        }
+        if !engine.pending_seals.is_empty() {
+            engine.note_storage_fault("recovered segment awaits sealing".into());
+        }
         engine.refresh_health();
 
         Ok((engine, outcomes))
@@ -711,7 +719,7 @@ where
 
     /// Stop every source and seal the current segment, when one is open.
     pub fn stop(&mut self) {
-        self.rotate_if_needed();
+        self.rotate_segments(true);
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
@@ -801,6 +809,7 @@ where
     }
 
     pub fn apply_command(&mut self, command: EngineCommand) {
+        self.rotate_if_needed();
         let was_paused = self.state.phase() == AppPhase::Paused;
         let owner_before = self.state.owner_pause();
         // A resume also restarts sources that faulted or tripped their breaker,
@@ -845,9 +854,6 @@ where
                 window_titles,
                 page_addresses,
             } => {
-                if let Ok(mut auth) = self.setup_authority.lock() {
-                    auth.set_preferences(window_titles, page_addresses);
-                }
                 let now_ms = self.clock.now_epoch_us() / 1000;
                 let closed = self.desktop_activity_scheduler.set_preferences(
                     self.sources.desktop_activity.as_mut(),
@@ -913,7 +919,7 @@ where
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
-        self.ensure_segment_for_now();
+        self.rotate_segments(true);
         let now_ms = self.clock.now_epoch_us() / 1000;
         let closed = self
             .desktop_activity_scheduler
@@ -1141,9 +1147,32 @@ where
     }
 
     fn rotate_if_needed(&mut self) {
+        self.rotate_segments(false);
+    }
+
+    fn rotate_segments(&mut self, closing: bool) {
         let now = self.clock.now_epoch_secs();
         while let Some(current) = self.current_segment.as_ref() {
             if !should_rotate(current.key, now, self.config.segment_secs) {
+                break;
+            }
+
+            if now < current.key.boundary_epoch_secs {
+                // A backward clock step cannot be reached by advancing boundaries.
+                // End old intervals at their own start, then require a fresh probe.
+                let rows = self.desktop_activity_scheduler.close_all(
+                    self.sources.desktop_activity.as_mut(),
+                    now.saturating_mul(1000),
+                );
+                for row in rows {
+                    self.append_activity_row(&row);
+                }
+                self.sources.desktop_activity.stop();
+                let old = self.current_segment.take().expect("current checked above");
+                self.seal_segment(old);
+                if closing || (self.should_be_capturing() && self.state.any_source_enabled()) {
+                    self.open_segment_key(segment_for(now, self.config.segment_secs));
+                }
                 break;
             }
 
@@ -1157,7 +1186,7 @@ where
             let old_segment = self.current_segment.take().expect("current checked above");
             self.seal_segment(old_segment);
 
-            if self.should_be_capturing() && self.state.any_source_enabled() {
+            if closing || (self.should_be_capturing() && self.state.any_source_enabled()) {
                 let next_key = segment_for(next_boundary_secs, self.config.segment_secs);
                 self.open_segment_key(next_key);
             } else {
@@ -1216,10 +1245,21 @@ where
     fn seal_segment(&mut self, segment: OpenSegment) {
         if self.finalize_screen_encoder().is_ok() {
             let video_end = self.video_end_for_finalized_segment(&segment);
+            if self
+                .pending_activity_rows
+                .iter()
+                .any(|row| row.key == segment.key)
+            {
+                self.pending_seals.insert(segment.key, video_end);
+                self.note_storage_fault("activity rows await durable write before sealing".into());
+                self.renew_artifact_id();
+                return;
+            }
             if let Err(error) = self.segment_fs.finalize(segment.key, video_end) {
                 self.pending_seals.insert(segment.key, video_end);
                 self.note_storage_fault(format!("{error:?}"));
             } else {
+                self.pending_seals.remove(&segment.key);
                 self.renew_artifact_id();
                 self.attempt_clear_storage();
             }
@@ -1234,12 +1274,21 @@ where
         let now = self.clock.now_epoch_secs();
         let retry_due = self.storage_retry_at.is_none_or(|retry_at| now >= retry_at);
         if retry_due {
+            self.flush_activity_queue();
             let pending: Vec<_> = self
                 .pending_seals
                 .iter()
                 .map(|(key, video_end)| (*key, *video_end))
                 .collect();
             for (key, video_end) in pending {
+                if self
+                    .current_segment
+                    .as_ref()
+                    .is_some_and(|segment| segment.key == key)
+                    || self.pending_activity_rows.iter().any(|row| row.key == key)
+                {
+                    continue;
+                }
                 match self.segment_fs.finalize(key, video_end) {
                     Ok(()) => {
                         self.pending_seals.remove(&key);
@@ -1250,8 +1299,6 @@ where
                     }
                 }
             }
-
-            self.flush_activity_queue();
 
             if self.should_be_capturing()
                 && self.state.any_source_enabled()
@@ -1458,6 +1505,15 @@ where
             let _ = self.sources.desktop_activity.start();
         }
         let now_ms = self.clock.now_epoch_us() / 1000;
+        if self.sources.desktop_activity.state() != SourceState::Active {
+            let rows = self
+                .desktop_activity_scheduler
+                .source_unavailable(self.sources.desktop_activity.as_mut(), now_ms);
+            for row in rows {
+                self.append_activity_row(&row);
+            }
+            return;
+        }
         let rows = self
             .desktop_activity_scheduler
             .poll_and_step(self.sources.desktop_activity.as_mut(), now_ms);
@@ -2001,7 +2057,6 @@ mod tests {
             self.state.lock().unwrap().writes_with_at_us.clone()
         }
 
-
         fn video_ends(&self) -> Vec<Option<f64>> {
             self.state.lock().unwrap().video_ends.clone()
         }
@@ -2096,6 +2151,7 @@ mod tests {
         finalized: Vec<SegmentKey>,
         quarantined: Vec<SegmentKey>,
         stale: Vec<StaleSegment>,
+        fail_finalize: bool,
     }
 
     impl RecoveryFs for FakeRecoveryFs {
@@ -2107,6 +2163,9 @@ mod tests {
         }
 
         fn finalize(&mut self, seg: &StaleSegment) -> Result<(), ()> {
+            if self.fail_finalize {
+                return Err(());
+            }
             self.finalized.push(seg.key);
             Ok(())
         }
@@ -2693,6 +2752,36 @@ mod tests {
         assert_eq!(handles.system_audio.starts(), 1);
         assert_eq!(handles.mic.starts(), 1);
         engine.stop();
+    }
+
+    #[test]
+    fn deferred_recovery_is_visible_then_existing_storage_retry_clears_it() {
+        let (sources, _) = active_sources();
+        let key = segment_for(0, DEFAULT_SEGMENT_SECS);
+        let mut recovery = FakeRecoveryFs {
+            stale: vec![StaleSegment {
+                key,
+                path: "stale.incomplete".into(),
+                has_usable_data: true,
+            }],
+            fail_finalize: true,
+            ..Default::default()
+        };
+        let segment_fs = FakeSegmentFs::default();
+        let (mut engine, outcomes) = CaptureEngine::new(
+            sources,
+            EngineConfig::default(),
+            &mut recovery,
+            segment_fs.clone(),
+            Box::new(FakeClock::new(1000)),
+        )
+        .unwrap();
+        assert_eq!(outcomes, vec![RecoveryOutcome::Deferred(key)]);
+        assert!(engine.health_dump().storage.is_some());
+        assert!(engine.pending_seals.contains_key(&key));
+        engine.pump();
+        assert!(!engine.pending_seals.contains_key(&key));
+        assert!(engine.health_dump().storage.is_none());
     }
 
     #[test]

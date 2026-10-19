@@ -11,26 +11,38 @@
 //! `observer-exclusion` crate; this is only I/O + sharing.
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use observer_exclusion::ExclusionRules;
 use serde::Serialize;
 
 /// Agent-native diagnostic for `--dump-windows`: the windows the exclusion
-/// enumerator currently sees on the primary monitor, the active rules, and the
-/// per-frame verdict those rules produce — as JSON. Lets an operator confirm
+/// enumerator admits on the primary monitor and the content-free per-frame
+/// verdict. Excluded or uncertain windows and unreadable policies disclose no
+/// observed window content. Lets an operator confirm
 /// exclusion behavior headlessly (run it in the interactive session) without
 /// inspecting a captured segment. Read-only: it does not touch `exclusions.json`.
 pub fn dump_windows_json() -> String {
-    let rules = std::fs::read_to_string(platform_win::local_data_root().join("exclusions.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<ExclusionRules>(&text).ok())
-        .unwrap_or_default()
-        .normalized();
-    let windows = capture_wgc::dump_primary_monitor_windows();
+    let (rules, available) =
+        match load_rules(&platform_win::local_data_root().join("exclusions.json")) {
+            RulesLoadOutcome::Fresh(rules) | RulesLoadOutcome::Available(rules) => (rules, true),
+            RulesLoadOutcome::Unavailable => (ExclusionRules::default(), false),
+        };
+    let windows = if available {
+        capture_wgc::dump_primary_monitor_windows()
+    } else {
+        Vec::new()
+    };
     let decision = observer_exclusion::evaluate(&rules, &windows);
+    let windows: Vec<_> = windows
+        .into_iter()
+        .filter(|window| {
+            !window.identity_uncertain
+                && !observer_exclusion::foreground_excluded(&rules, &window.exe_name, &window.title)
+        })
+        .collect();
     serde_json::to_string_pretty(&serde_json::json!({
-        "rules": rules,
+        "rules_available": available,
         "windows": windows,
         "decision": decision,
     }))
@@ -43,6 +55,7 @@ pub struct ExclusionController {
     rules: Arc<RwLock<ExclusionRules>>,
     path: Arc<PathBuf>,
     available: Arc<std::sync::atomic::AtomicBool>,
+    writes: Arc<Mutex<()>>,
 }
 
 /// IPC outcome of a `set_exclusions`: whether the new rules were durably
@@ -58,8 +71,6 @@ impl ExclusionController {
     /// when corrupt or unreadable), normalize them, hold them behind a shared lock,
     /// and seed the file on disk only on a fresh install.
     pub fn new(path: PathBuf) -> Self {
-        use observer_exclusion::{load_rules, RulesLoadOutcome};
-
         let (loaded, is_avail, should_seed) = match load_rules(&path) {
             RulesLoadOutcome::Fresh(defaults) => (defaults, true, true),
             RulesLoadOutcome::Available(rules) => (rules, true, false),
@@ -71,6 +82,7 @@ impl ExclusionController {
             rules: Arc::new(RwLock::new(loaded)),
             path: Arc::new(path),
             available,
+            writes: Arc::new(Mutex::new(())),
         };
         if should_seed {
             let _ = ctrl.persist(&ctrl.get());
@@ -97,22 +109,32 @@ impl ExclusionController {
         self.rules.read().map(|r| r.clone()).unwrap_or_default()
     }
 
-    /// Replace the rules: normalize, persist to disk (via temp file plus rename),
-    /// and on success update the live shared handle and set the available flag true.
+    /// Apply owner rules immediately and report whether they were also saved.
+    /// An unreadable saved policy stays unavailable until a valid repair is saved.
     pub fn set(&self, rules: ExclusionRules) -> SetExclusionsOutcome {
+        let Ok(_write) = self.writes.lock() else {
+            self.available
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            return SetExclusionsOutcome { persisted: false };
+        };
         let normalized = rules.normalized();
+        if let Ok(mut guard) = self.rules.write() {
+            *guard = normalized.clone();
+        } else {
+            self.available
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            return SetExclusionsOutcome { persisted: false };
+        }
         let persisted = self.persist(&normalized);
         if persisted {
-            if let Ok(mut guard) = self.rules.write() {
-                *guard = normalized;
-            }
-            self.available.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.available
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         SetExclusionsOutcome { persisted }
     }
 
     fn persist(&self, rules: &ExclusionRules) -> bool {
-        match observer_exclusion::persist_rules(self.path.as_path(), rules) {
+        match persist_rules(self.path.as_path(), rules) {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(
@@ -126,6 +148,68 @@ impl ExclusionController {
             }
         }
     }
+}
+
+/// Outcome of loading exclusion rules from disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RulesLoadOutcome {
+    /// File was absent: fresh-install default rules, which may be seeded to disk.
+    Fresh(ExclusionRules),
+    /// File was present and successfully parsed.
+    Available(ExclusionRules),
+    /// File exists but cannot be read or parsed. Do not overwrite or treat as empty.
+    Unavailable,
+}
+
+/// Load exclusion rules from `path`.
+/// - Missing file: returns `Fresh` with default rules.
+/// - File exists and is valid JSON matching `ExclusionRules`: returns `Available` with normalized rules.
+/// - File exists but cannot be read or contains invalid JSON: returns `Unavailable`.
+fn load_rules(path: &std::path::Path) -> RulesLoadOutcome {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<ExclusionRules>(&text) {
+            Ok(rules) => RulesLoadOutcome::Available(rules.normalized()),
+            Err(_) => RulesLoadOutcome::Unavailable,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            RulesLoadOutcome::Fresh(ExclusionRules::default().normalized())
+        }
+        Err(_) => RulesLoadOutcome::Unavailable,
+    }
+}
+
+/// Persist exclusion rules to `path` via a temporary sibling file and atomic rename.
+/// If writing or renaming fails, the original file at `path` is preserved intact.
+fn persist_rules(path: &std::path::Path, rules: &ExclusionRules) -> std::io::Result<()> {
+    use std::io::Write;
+    let normalized = rules.normalized();
+    let text = serde_json::to_string_pretty(&normalized)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file_stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("exclusions");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("json");
+    let tmp_name = format!("{file_stem}.tmp.{}.{ext}", std::process::id());
+    let tmp_path = path.with_file_name(tmp_name);
+    let mut file = std::fs::File::create(&tmp_path)?;
+    if let Err(error) = file
+        .write_all(text.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(error);
+    }
+    drop(file);
+    if let Err(err) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -189,5 +273,61 @@ mod tests {
         assert_ne!(std::fs::read(&path).unwrap(), corrupt);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn unreadable_exclusions_do_not_become_allow_all_and_repair_restores_availability() {
+        let dir = std::env::temp_dir().join(format!(
+            "solstone-test-unreadable-exclusions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("exclusions.json");
+
+        // 1. Missing file -> Fresh default
+        assert!(matches!(load_rules(&path), RulesLoadOutcome::Fresh(_)));
+
+        // 2. Corrupt JSON -> Unavailable, bytes stay put
+        let corrupt_bytes = b"not json at all { unclosed";
+        std::fs::write(&path, corrupt_bytes).unwrap();
+        assert_eq!(load_rules(&path), RulesLoadOutcome::Unavailable);
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt_bytes);
+
+        // Failed repair to an invalid path leaves the original file untouched
+        let not_a_dir = dir.join("not_a_dir");
+        std::fs::write(&not_a_dir, b"file").unwrap();
+        let bad_path = not_a_dir.join("exclusions.json");
+        let repair_rules = ExclusionRules {
+            excluded_exes: vec!["secret.exe".into()],
+            title_patterns: vec!["confidential".into()],
+            exclude_private_browsing: true,
+        };
+        assert!(persist_rules(&bad_path, &repair_rules).is_err());
+        // Original corrupt bytes still stay put
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt_bytes);
+
+        // 3. Unreadable input (directory at path on Unix)
+        #[cfg(unix)]
+        {
+            let dir_as_file = dir.join("unreadable_dir.json");
+            std::fs::create_dir_all(&dir_as_file).unwrap();
+            assert_eq!(load_rules(&dir_as_file), RulesLoadOutcome::Unavailable);
+            let _ = std::fs::remove_dir_all(&dir_as_file);
+        }
+
+        // 4. Successful repair replaces file via temp + rename and loads as Available
+        persist_rules(&path, &repair_rules).expect("repair must succeed");
+        match load_rules(&path) {
+            RulesLoadOutcome::Available(loaded) => {
+                assert_eq!(loaded, repair_rules.normalized());
+            }
+            other => panic!("expected Available after repair, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

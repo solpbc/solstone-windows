@@ -235,7 +235,7 @@ mod tests {
             about_observation: observer_model::about::WindowsObservation::default(),
             sync_config,
             _shutdown: std::sync::Mutex::new(None),
-            engine_stopped: std::sync::Mutex::new(None),
+            shutdown_complete: tokio::sync::watch::channel(true).1,
             uploader_slot: tokio::sync::Mutex::new(pl_transport_win::UploaderSlot::new()),
             credential_access: tokio::sync::Mutex::new(None),
             journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),

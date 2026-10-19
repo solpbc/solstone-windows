@@ -332,25 +332,6 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path, period_secs: u64) -> io::Resu
         incoming_entries.push((entry.path(), name, is_media));
     }
 
-    if has_media_collision {
-        let segments_root = sealed
-            .parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no segments root"))?;
-        let quarantine = segments_root.join("quarantine");
-        fs::create_dir_all(&quarantine)?;
-        let preferred = sealed
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("conflict");
-        for (source, name, is_media) in incoming_entries {
-            if !is_media && name.to_string_lossy() != LEN_FILE_NAME {
-                drop_entry(&source)?;
-            }
-        }
-        let dest = next_quarantine_path(&quarantine, preferred);
-        return fs::rename(incomplete, dest);
-    }
-
     if has_new_activity {
         let temp_len_path = sealed.join(format!("{LEN_FILE_NAME}.tmp"));
         {
@@ -364,6 +345,37 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path, period_secs: u64) -> io::Resu
         }
         remove_marker_if_exists(&sealed.join(".uploaded"))?;
         remove_marker_if_exists(&sealed.join(".uploaded.tmp"))?;
+    }
+
+    if has_media_collision {
+        // New immutable activity survives media-name collisions on a restart.
+        // Invalidate the old acknowledgement before exposing any new file.
+        if has_new_activity {
+            for (source, name, is_payload) in &incoming_entries {
+                if *is_payload
+                    && name.to_string_lossy().ends_with("_desktop_activity.jsonl")
+                    && !sealed.join(name).exists()
+                    && source.metadata()?.len() > 0
+                {
+                    fs::rename(source, sealed.join(name))?;
+                }
+            }
+        }
+        let segments_root = sealed
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no segments root"))?;
+        let quarantine = segments_root.join("quarantine");
+        fs::create_dir_all(&quarantine)?;
+        let preferred = sealed
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("conflict");
+        for (source, name, is_payload) in &incoming_entries {
+            if !is_payload && name.to_string_lossy() != LEN_FILE_NAME && source.exists() {
+                drop_entry(source)?;
+            }
+        }
+        return fs::rename(incomplete, next_quarantine_path(&quarantine, preferred));
     }
 
     for (source, name, _is_media) in incoming_entries {
@@ -1221,35 +1233,14 @@ impl SegmentFs for LocalSegmentFs {
     ) -> Result<(), Self::Error> {
         let inc_dir = incomplete_dir(&self.root, key);
         let sealed_dir = self.root.join(key.index.to_string());
-        let (dir, is_sealed) = if inc_dir.exists() {
-            (inc_dir, false)
-        } else if sealed_dir.exists() {
-            (sealed_dir, true)
-        } else {
-            fs::create_dir_all(&inc_dir)?;
-            (inc_dir, false)
-        };
-        if is_sealed {
-            let uploaded_path = dir.join(".uploaded");
-            if uploaded_path.exists() {
-                let bytes = fs::read(&uploaded_path)?;
-                let val: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, format!("invalid .uploaded json: {e}"))
-                })?;
-                if let Some(files) = val.get("files").and_then(|f| f.as_array()) {
-                    let already_uploaded = files.iter().any(|f| {
-                        f.get("submitted").and_then(|s| s.as_str()) == Some(file_name)
-                            || f.get("written").and_then(|s| s.as_str()) == Some(file_name)
-                    });
-                    if already_uploaded {
-                        return Err(io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "cannot append into an already-uploaded file",
-                        ));
-                    }
-                }
-            }
+        if !inc_dir.exists() && sealed_dir.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "sealed activity artifacts are immutable",
+            ));
         }
+        fs::create_dir_all(&inc_dir)?;
+        let dir = inc_dir;
         let path = dir.join(file_name);
         let mut file = OpenOptions::new()
             .create(true)
@@ -1258,6 +1249,12 @@ impl SegmentFs for LocalSegmentFs {
             .write(true)
             .open(&path)?;
         let current_len = file.metadata()?.len();
+        if current_len < committed_len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "activity file is shorter than its committed offset",
+            ));
+        }
         if current_len > committed_len {
             #[cfg(test)]
             if self.fail_set_len {
@@ -1279,10 +1276,6 @@ impl SegmentFs for LocalSegmentFs {
             file.set_len(committed_len)?;
             file.sync_data()?;
             return Err(err);
-        }
-        if is_sealed {
-            remove_marker_if_exists(&dir.join(".uploaded"))?;
-            remove_marker_if_exists(&dir.join(".uploaded.tmp"))?;
         }
         Ok(())
     }
@@ -2438,7 +2431,7 @@ mod tests {
     }
 
     #[test]
-    fn append_activity_recovers_from_torn_tail_and_clears_sealed_uploaded_marker() {
+    fn append_activity_repairs_torn_tail_but_never_mutates_a_sealed_artifact() {
         let root = temp_root("append-act-torn-tail");
         let _ = fs::remove_dir_all(&root);
         let mut fs_impl = LocalSegmentFs::new(root.clone());
@@ -2446,7 +2439,9 @@ mod tests {
         let file_name = "test_desktop_activity.jsonl";
 
         // First write: line 1
-        fs_impl.append_activity(k, file_name, "line 1\n", 0).unwrap();
+        fs_impl
+            .append_activity(k, file_name, "line 1\n", 0)
+            .unwrap();
         let inc_dir = root.join("20.incomplete");
         let path = inc_dir.join(file_name);
         assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\n");
@@ -2463,7 +2458,9 @@ mod tests {
         );
 
         // Next append with committed_len 7 truncates torn tail and writes line 2
-        fs_impl.append_activity(k, file_name, "line 2\n", 7).unwrap();
+        fs_impl
+            .append_activity(k, file_name, "line 2\n", 7)
+            .unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\nline 2\n");
 
         // Simulate segment sealing to final directory with .uploaded marker
@@ -2487,17 +2484,91 @@ mod tests {
         .unwrap();
         assert!(sealed_dir.join(".uploaded").exists());
 
-        // Append to sealed segment succeeds and clears .uploaded
-        fs_impl
+        // Even an unacknowledged sealed file is immutable.
+        assert!(fs_impl
             .append_activity(k, file_name, "line 3\n", 14)
-            .unwrap();
+            .is_err());
         assert_eq!(
             fs::read_to_string(sealed_dir.join(file_name)).unwrap(),
-            "line 1\nline 2\nline 3\n"
+            "line 1\nline 2\n"
         );
-        assert!(!sealed_dir.join(".uploaded").exists());
+        assert!(sealed_dir.join(".uploaded").exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mixed_restart_media_collision_preserves_unique_activity_and_invalidates_ack() {
+        for recovery in [false, true] {
+            let root = temp_root(if recovery {
+                "mixed-recovery"
+            } else {
+                "mixed-finalize"
+            });
+            let k = key(20);
+            let sealed = root.join("20");
+            let inc = root.join("20.incomplete");
+            fs::create_dir_all(&sealed).unwrap();
+            fs::create_dir_all(&inc).unwrap();
+            fs::write(sealed.join("screen.mp4"), b"old-screen").unwrap();
+            fs::write(sealed.join("old_desktop_activity.jsonl"), b"old-activity\n").unwrap();
+            fs::write(sealed.join(".len"), b"20").unwrap();
+            fs::write(sealed.join(".uploaded"), b"old-ack").unwrap();
+            fs::write(inc.join("screen.mp4"), b"new-screen").unwrap();
+            fs::write(inc.join("new_desktop_activity.jsonl"), b"new-activity\n").unwrap();
+            if recovery {
+                LocalRecoveryFs::new(root.clone(), 300)
+                    .finalize(&StaleSegment {
+                        key: k,
+                        path: inc.to_string_lossy().into_owned(),
+                        has_usable_data: true,
+                    })
+                    .unwrap();
+            } else {
+                LocalSegmentFs::new(root.clone())
+                    .finalize(k, Some(20.0))
+                    .unwrap();
+            }
+            assert_eq!(fs::read(sealed.join("screen.mp4")).unwrap(), b"old-screen");
+            assert_eq!(
+                fs::read(sealed.join("old_desktop_activity.jsonl")).unwrap(),
+                b"old-activity\n"
+            );
+            assert_eq!(
+                fs::read(sealed.join("new_desktop_activity.jsonl")).unwrap(),
+                b"new-activity\n"
+            );
+            assert_eq!(fs::read_to_string(sealed.join(".len")).unwrap(), "300");
+            assert!(!sealed.join(".uploaded").exists());
+            let quarantined = fs::read_dir(root.join("quarantine"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            assert_eq!(
+                fs::read(quarantined.join("screen.mp4")).unwrap(),
+                b"new-screen"
+            );
+            assert!(!inc.exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn append_activity_refuses_a_missing_committed_prefix() {
+        let root = temp_root("missing-activity-prefix");
+        let mut segment_fs = LocalSegmentFs::new(root.clone());
+        assert!(segment_fs
+            .append_activity(key(20), "new_desktop_activity.jsonl", "second\n", 7)
+            .is_err());
+        assert_eq!(
+            fs::metadata(root.join("20.incomplete/new_desktop_activity.jsonl"))
+                .unwrap()
+                .len(),
+            0
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
