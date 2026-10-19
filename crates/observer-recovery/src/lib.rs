@@ -52,12 +52,8 @@ pub fn recover_all<F: RecoveryFs>(fs: &mut F) -> Result<Vec<RecoveryOutcome>, F:
     let mut outcomes = Vec::with_capacity(stale.len());
     for seg in stale {
         if seg.has_usable_data {
-            match fs.finalize(&seg) {
-                Ok(()) => outcomes.push(RecoveryOutcome::Finalized(seg.key)),
-                Err(_) => {
-                    fs.quarantine(&seg)?;
-                    outcomes.push(RecoveryOutcome::Quarantined(seg.key));
-                }
+            if fs.finalize(&seg).is_ok() {
+                outcomes.push(RecoveryOutcome::Finalized(seg.key));
             }
         } else {
             fs.quarantine(&seg)?;
@@ -133,4 +129,33 @@ mod tests {
         let mut fs = FakeFs::default();
         assert!(recover_all(&mut fs).unwrap().is_empty());
     }
+
+    #[test]
+    fn usable_data_finalize_error_leaves_directory_in_place() {
+        struct FailingFinalizeFs {
+            stale: Vec<StaleSegment>,
+            quarantined: Vec<SegmentKey>,
+        }
+        impl RecoveryFs for FailingFinalizeFs {
+            type Error = ();
+            fn scan_incomplete(&mut self) -> Result<Vec<StaleSegment>, ()> {
+                Ok(self.stale.clone())
+            }
+            fn finalize(&mut self, _seg: &StaleSegment) -> Result<(), ()> {
+                Err(())
+            }
+            fn quarantine(&mut self, seg: &StaleSegment) -> Result<(), ()> {
+                self.quarantined.push(seg.key);
+                Ok(())
+            }
+        }
+        let mut fs = FailingFinalizeFs {
+            stale: vec![seg(1, true)],
+            quarantined: Vec::new(),
+        };
+        let out = recover_all(&mut fs).unwrap();
+        assert!(out.is_empty());
+        assert!(fs.quarantined.is_empty());
+    }
 }
+

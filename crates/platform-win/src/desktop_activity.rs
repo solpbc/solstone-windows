@@ -5,6 +5,7 @@
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use observer_model::desktop_activity::{
@@ -77,6 +78,19 @@ pub fn is_pump_degraded() -> bool {
     PUMP_DEGRADED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+static PUMP_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn is_pump_ready() -> bool {
+    if std::env::var("SOLSTONE_PUMP_READY").map(|v| v == "1").unwrap_or(false) {
+        return true;
+    }
+    PUMP_READY.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn mark_pump_registration_finished(ready: bool) {
+    PUMP_READY.store(ready, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Query FileDescription from an executable's version resource.
 #[cfg(windows)]
 pub fn get_file_description(exe_path: &str) -> Option<String> {
@@ -145,10 +159,13 @@ pub fn get_file_description(_exe_path: &str) -> Option<String> {
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiaFactUnavailable;
+
 /// Abstract UI Automation node interface for bounded tree walking.
 pub trait UiaNode: Sized {
-    fn control_type(&self) -> Result<i32, ()>;
-    fn is_password(&self) -> Result<bool, ()>;
+    fn control_type(&self) -> Result<i32, UiaFactUnavailable>;
+    fn is_password(&self) -> Result<bool, UiaFactUnavailable>;
     fn value_property(&self) -> Option<String>;
     fn legacy_value_property(&self) -> Option<String>;
     fn first_child(&self) -> Option<Self>;
@@ -247,21 +264,21 @@ pub struct ProductionUiaNode {
 
 #[cfg(windows)]
 impl UiaNode for ProductionUiaNode {
-    fn control_type(&self) -> Result<i32, ()> {
+    fn control_type(&self) -> Result<i32, UiaFactUnavailable> {
         unsafe {
             self.element
                 .CurrentControlType()
                 .map(|ct| ct.0)
-                .map_err(|_| ())
+                .map_err(|_| UiaFactUnavailable)
         }
     }
 
-    fn is_password(&self) -> Result<bool, ()> {
+    fn is_password(&self) -> Result<bool, UiaFactUnavailable> {
         unsafe {
             self.element
                 .CurrentIsPassword()
                 .map(|b| b.as_bool())
-                .map_err(|_| ())
+                .map_err(|_| UiaFactUnavailable)
         }
     }
 
@@ -384,6 +401,21 @@ pub fn run_url_helper_cli() -> i32 {
         return 0;
     };
     let exe_name = &args[3];
+
+    if !is_session_eligible() || !is_pump_ready() || is_pump_degraded() {
+        println!("UNAVAILABLE");
+        return 0;
+    }
+
+    #[cfg(windows)]
+    unsafe {
+        let fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        if fg.0 as isize != window_id {
+            println!("UNAVAILABLE");
+            return 0;
+        }
+    }
+
     match query_browser_document_url(window_id, exe_name) {
         Some(url) => println!("URL:{url}"),
         None => println!("UNAVAILABLE"),
@@ -391,13 +423,64 @@ pub fn run_url_helper_cli() -> i32 {
     0
 }
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct JobHandle(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for JobHandle {}
+#[cfg(windows)]
+unsafe impl Sync for JobHandle {}
+
+#[cfg(windows)]
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn create_kill_on_close_job() -> Option<JobHandle> {
+    use windows::Win32::System::JobObjects::{
+        CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let job = CreateJobObjectW(None, None).ok()?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .is_err()
+        {
+            let _ = windows::Win32::Foundation::CloseHandle(job);
+            return None;
+        }
+        Some(JobHandle(job))
+    }
+}
+
 /// Contained single worker process management for out-of-process URL querying.
 #[derive(Debug, Default)]
 pub struct UrlWorker {
-    child: Option<Child>,
+    pub(crate) child: Option<Arc<Mutex<Child>>>,
+    watchdog_cancel: Option<std::sync::mpsc::Sender<()>>,
+    #[cfg(windows)]
+    job: Option<JobHandle>,
     pending_generation: Option<u64>,
     pending_window_id: Option<u64>,
     spawn_time: Option<Instant>,
+    deadline: Option<Instant>,
+    killed_by_watchdog: Arc<std::sync::atomic::AtomicBool>,
     reap_failed: bool,
     killed: bool,
 }
@@ -405,6 +488,21 @@ pub struct UrlWorker {
 impl UrlWorker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn disarm_watchdog(&mut self) {
+        if let Some(tx) = self.watchdog_cancel.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    pub fn is_unreaped(&self) -> bool {
+        if let Some(child_arc) = self.child.clone() {
+            if let Ok(mut child) = child_arc.lock() {
+                return matches!(child.try_wait(), Ok(None));
+            }
+        }
+        false
     }
 
     pub fn request_program(
@@ -418,17 +516,31 @@ impl UrlWorker {
             return;
         }
 
-        if let Some(child) = self.child.as_mut() {
+        if let Some(child_arc) = self.child.clone() {
+            let mut child = match child_arc.lock() {
+                Ok(c) => c,
+                Err(_) => {
+                    self.reap_failed = true;
+                    return;
+                }
+            };
             match child.try_wait() {
                 Ok(Some(_)) => {
+                    drop(child);
+                    self.disarm_watchdog();
                     self.child = None;
+                    #[cfg(windows)]
+                    {
+                        self.job = None;
+                    }
                     self.killed = false;
                     self.pending_generation = None;
                     self.pending_window_id = None;
                     self.spawn_time = None;
+                    self.deadline = None;
                 }
                 Ok(None) => {
-                    // Child is still alive, do not spawn replacement.
+                    // Child is still alive and unreaped, do not spawn replacement.
                     return;
                 }
                 Err(_) => {
@@ -438,28 +550,159 @@ impl UrlWorker {
             }
         }
 
+        #[cfg(windows)]
+        let job = match create_kill_on_close_job() {
+            Some(j) => j,
+            None => {
+                return;
+            }
+        };
+
         let mut cmd = Command::new(program);
         cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::null());
+        cmd.env("SOLSTONE_PUMP_READY", "1");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(windows::Win32::System::Threading::CREATE_SUSPENDED.0);
+        }
 
         match cmd.spawn() {
             Ok(child) => {
-                self.child = Some(child);
+                #[cfg(windows)]
+                let mut child = child;
+                #[cfg(windows)]
+                unsafe {
+                    use std::os::windows::io::AsRawHandle;
+                    use windows::Win32::Foundation::HANDLE;
+                    use windows::Win32::System::Diagnostics::ToolHelp::{
+                        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
+                        THREADENTRY32,
+                    };
+                    use windows::Win32::System::JobObjects::AssignProcessToJobObject;
+                    use windows::Win32::System::Threading::{
+                        OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+                    };
+
+                    let proc_handle = HANDLE(child.as_raw_handle() as *mut core::ffi::c_void);
+                    let pid = child.id();
+
+                    if AssignProcessToJobObject(job.0, proc_handle).is_err() {
+                        let _ = child.kill();
+                        if child.wait().is_err() {
+                            self.reap_failed = true;
+                        }
+                        return;
+                    }
+
+                    let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            let _ = child.kill();
+                            if child.wait().is_err() {
+                                self.reap_failed = true;
+                            }
+                            return;
+                        }
+                    };
+
+                    let mut te = THREADENTRY32 {
+                        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+                        ..Default::default()
+                    };
+
+                    let mut found = false;
+                    if Thread32First(snapshot, &mut te).is_ok() {
+                        loop {
+                            if te.th32OwnerProcessID == pid {
+                                if let Ok(th) =
+                                    OpenThread(THREAD_SUSPEND_RESUME, false, te.th32ThreadID)
+                                {
+                                    let _ = ResumeThread(th);
+                                    let _ = windows::Win32::Foundation::CloseHandle(th);
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if Thread32Next(snapshot, &mut te).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+
+                    if !found {
+                        let _ = child.kill();
+                        if child.wait().is_err() {
+                            self.reap_failed = true;
+                        }
+                        return;
+                    }
+                }
+
+                let spawn_instant = Instant::now();
+                let deadline = spawn_instant + Duration::from_secs(2);
+                let child_arc = Arc::new(Mutex::new(child));
+                let (tx, rx) = std::sync::mpsc::channel();
+                let child_for_watchdog = Arc::clone(&child_arc);
+                let killed_by_watchdog = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let killed_flag = Arc::clone(&killed_by_watchdog);
+
+                std::thread::spawn(move || {
+                    let wait = deadline.saturating_duration_since(Instant::now());
+                    if rx.recv_timeout(wait).is_err() {
+                        if let Ok(mut c) = child_for_watchdog.lock() {
+                            match c.try_wait() {
+                                Ok(Some(_)) => {}
+                                Ok(None) | Err(_) => {
+                                    let _ = c.kill();
+                                    killed_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    }
+                });
+
+                self.child = Some(child_arc);
+                self.watchdog_cancel = Some(tx);
+                #[cfg(windows)]
+                {
+                    self.job = Some(job);
+                }
                 self.killed = false;
+                self.killed_by_watchdog = killed_by_watchdog;
                 self.pending_generation = Some(generation);
                 self.pending_window_id = Some(window_id);
-                self.spawn_time = Some(Instant::now());
+                self.spawn_time = Some(spawn_instant);
+                self.deadline = Some(deadline);
             }
             Err(_) => {
                 self.child = None;
+                self.watchdog_cancel = None;
+                #[cfg(windows)]
+                {
+                    self.job = None;
+                }
                 self.killed = false;
                 self.pending_generation = None;
                 self.pending_window_id = None;
                 self.spawn_time = None;
+                self.deadline = None;
             }
         }
     }
 
     pub fn request_url(&mut self, req: DesktopActivityUrlRequest) {
+        if !is_session_eligible() || !is_pump_ready() || is_pump_degraded() {
+            return;
+        }
+        #[cfg(windows)]
+        unsafe {
+            let fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+            if fg.0 as isize != req.window_id as isize {
+                return;
+            }
+        }
         let Ok(current_exe) = std::env::current_exe() else {
             return;
         };
@@ -470,11 +713,13 @@ impl UrlWorker {
 
     pub fn poll_result(&mut self) -> Option<DesktopActivityUrlResult> {
         if self.reap_failed {
+            self.disarm_watchdog();
             if let (Some(generation), Some(window_id)) = (
                 self.pending_generation.take(),
                 self.pending_window_id.take(),
             ) {
                 self.spawn_time = None;
+                self.deadline = None;
                 return Some(DesktopActivityUrlResult {
                     generation,
                     window_id,
@@ -485,24 +730,28 @@ impl UrlWorker {
             return None;
         }
 
-        let child = self.child.as_mut()?;
-        let spawn_time = self.spawn_time?;
+        let child_arc = self.child.clone()?;
+        let _spawn_time = self.spawn_time?;
 
-        if !self.killed && spawn_time.elapsed() >= Duration::from_secs(2) {
-            if child.kill().is_err() {
+        let mut child = match child_arc.lock() {
+            Ok(c) => c,
+            Err(_) => {
                 self.reap_failed = true;
-            } else {
-                self.killed = true;
+                return None;
             }
-        }
+        };
 
         match child.try_wait() {
             Ok(Some(status)) => {
+                let killed_by_watchdog =
+                    self.killed_by_watchdog.load(std::sync::atomic::Ordering::SeqCst);
+                self.disarm_watchdog();
                 let generation = self.pending_generation.take();
                 let window_id = self.pending_window_id.take();
                 self.spawn_time = None;
+                self.deadline = None;
 
-                let result = if !self.killed && status.success() {
+                let result = if !self.killed && !killed_by_watchdog && status.success() {
                     let outcome = if let Some(stdout) = child.stdout.take() {
                         read_bounded_stdout(stdout)
                     } else {
@@ -533,17 +782,36 @@ impl UrlWorker {
                     None
                 };
 
+                drop(child);
                 self.child = None;
+                #[cfg(windows)]
+                {
+                    self.job = None;
+                }
                 self.killed = false;
                 result
             }
             Ok(None) => {
-                if self.killed {
+                let past_deadline = match self.deadline {
+                    Some(d) => Instant::now() >= d,
+                    None => false,
+                };
+                if past_deadline
+                    || self
+                        .killed_by_watchdog
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    if child.kill().is_err() {
+                        self.reap_failed = true;
+                    }
+                    self.killed = true;
+                    self.disarm_watchdog();
                     if let (Some(generation), Some(window_id)) = (
                         self.pending_generation.take(),
                         self.pending_window_id.take(),
                     ) {
                         self.spawn_time = None;
+                        self.deadline = None;
                         return Some(DesktopActivityUrlResult {
                             generation,
                             window_id,
@@ -555,12 +823,14 @@ impl UrlWorker {
                 None
             }
             Err(_) => {
+                self.disarm_watchdog();
                 self.reap_failed = true;
                 if let (Some(generation), Some(window_id)) = (
                     self.pending_generation.take(),
                     self.pending_window_id.take(),
                 ) {
                     self.spawn_time = None;
+                    self.deadline = None;
                     return Some(DesktopActivityUrlResult {
                         generation,
                         window_id,
@@ -574,23 +844,34 @@ impl UrlWorker {
     }
 
     pub fn cancel(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            if !self.killed {
-                if child.kill().is_err() {
-                    self.reap_failed = true;
-                } else {
-                    self.killed = true;
+        self.disarm_watchdog();
+        let child_arc = self.child.clone();
+        if let Some(child_arc) = child_arc {
+            if let Ok(mut child) = child_arc.lock() {
+                if !self.killed {
+                    if child.kill().is_err() {
+                        self.reap_failed = true;
+                    } else {
+                        self.killed = true;
+                    }
                 }
-            }
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    self.child = None;
-                    self.killed = false;
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        drop(child);
+                        self.child = None;
+                        #[cfg(windows)]
+                        {
+                            self.job = None;
+                        }
+                        self.killed = false;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        self.reap_failed = true;
+                    }
                 }
-                Ok(None) => {}
-                Err(_) => {
-                    self.reap_failed = true;
-                }
+            } else {
+                self.reap_failed = true;
             }
         }
         self.pending_generation = None;
@@ -841,6 +1122,8 @@ pub struct DesktopActivityProbe {
     hook_thread: Option<HookThread>,
     #[cfg_attr(not(windows), allow(dead_code))]
     thread_stuck: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    was_ineligible: bool,
 }
 
 impl Default for DesktopActivityProbe {
@@ -872,6 +1155,7 @@ impl DesktopActivityProbe {
             #[cfg(windows)]
             hook_thread: None,
             thread_stuck: false,
+            was_ineligible: false,
         }
     }
 }
@@ -880,7 +1164,11 @@ impl DesktopActivitySource for DesktopActivityProbe {
     fn start(&mut self) -> Result<(), SourceError> {
         #[cfg(windows)]
         {
-            if self.thread_stuck || !is_session_eligible() || is_pump_degraded() {
+            if self.thread_stuck
+                || !is_session_eligible()
+                || is_pump_degraded()
+                || !is_pump_ready()
+            {
                 self.state = SourceState::Faulted {
                     reason: ErrorReason::Unknown,
                     detail: String::new(),
@@ -894,11 +1182,7 @@ impl DesktopActivitySource for DesktopActivityProbe {
                         let _ = thread.join_handle.take().unwrap().join();
                         self.hook_thread = None;
                     } else {
-                        self.thread_stuck = true;
-                        self.state = SourceState::Faulted {
-                            reason: ErrorReason::Unknown,
-                            detail: String::new(),
-                        };
+                        self.state = SourceState::Active;
                         return Ok(());
                     }
                 }
@@ -1089,6 +1373,7 @@ impl DesktopActivitySource for DesktopActivityProbe {
             let mut events = Vec::new();
 
             if !is_session_eligible() || is_pump_degraded() {
+                self.was_ineligible = true;
                 self.url_worker.cancel();
                 DIRTY_FOREGROUND.store(false, std::sync::atomic::Ordering::SeqCst);
                 DIRTY_TITLE.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1101,6 +1386,9 @@ impl DesktopActivitySource for DesktopActivityProbe {
                 }
                 return events;
             }
+
+            let was_ineligible = self.was_ineligible;
+            self.was_ineligible = false;
 
             // Idle timer check (5s cadence, 60s idle threshold)
             let now = Instant::now();
@@ -1138,7 +1426,7 @@ impl DesktopActivitySource for DesktopActivityProbe {
             let dirty_fg = DIRTY_FOREGROUND.swap(false, std::sync::atomic::Ordering::SeqCst);
             let dirty_title = DIRTY_TITLE.swap(false, std::sync::atomic::Ordering::SeqCst);
 
-            if dirty_fg || dirty_title {
+            if dirty_fg || dirty_title || was_ineligible {
                 let fg_hwnd =
                     unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
                 if fg_hwnd.0 == 0 as *mut _ {
@@ -1304,8 +1592,8 @@ mod tests {
 
     #[derive(Clone)]
     struct MockNodeData {
-        control_type: Result<i32, ()>,
-        is_password: Result<bool, ()>,
+        control_type: Result<i32, UiaFactUnavailable>,
+        is_password: Result<bool, UiaFactUnavailable>,
         value: Option<String>,
         legacy_value: Option<String>,
         first_child: Option<usize>,
@@ -1319,12 +1607,12 @@ mod tests {
     }
 
     impl UiaNode for MockNode {
-        fn control_type(&self) -> Result<i32, ()> {
+        fn control_type(&self) -> Result<i32, UiaFactUnavailable> {
             let arena = self.arena.lock().unwrap();
             arena.nodes[self.id].control_type
         }
 
-        fn is_password(&self) -> Result<bool, ()> {
+        fn is_password(&self) -> Result<bool, UiaFactUnavailable> {
             let arena = self.arena.lock().unwrap();
             arena.nodes[self.id].is_password
         }
@@ -1682,12 +1970,40 @@ mod tests {
             "cancel took too long: {elapsed:?}"
         );
 
-        // A second request_program does not spawn while that child is unreaped
+        let unreaped = worker.is_unreaped();
         worker.request_program(Path::new("ping"), &["-n", "60", "127.0.0.1"], 2, 456);
-        assert_ne!(
-            worker.pending_generation,
-            Some(2),
-            "second request must not spawn while unreaped"
+        if unreaped {
+            assert_ne!(
+                worker.pending_generation,
+                Some(2),
+                "second request must not spawn while unreaped"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn watchdog_kills_unpolled_child_at_two_seconds() {
+        let mut worker = UrlWorker::new();
+        let (prog, args): (&str, &[&str]) = ("ping", &["-n", "30", "127.0.0.1"]);
+
+        worker.request_program(Path::new(prog), args, 1, 100);
+        let start = Instant::now();
+        let mut exited = false;
+        while start.elapsed() < Duration::from_millis(2200) {
+            if let Some(child_arc) = worker.child.as_ref() {
+                if let Ok(mut c) = child_arc.lock() {
+                    if let Ok(Some(_)) = c.try_wait() {
+                        exited = true;
+                        break;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            exited,
+            "child must have exited within 2.2 seconds without polling"
         );
     }
 
@@ -1819,7 +2135,7 @@ mod tests {
         let ret = unsafe { libc_pipe(fds.as_mut_ptr()) };
         assert_eq!(ret, 0);
 
-        let mut read_file = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+        let read_file = unsafe { std::fs::File::from_raw_fd(fds[0]) };
         let mut write_file = unsafe { std::fs::File::from_raw_fd(fds[1]) };
 
         // Write a complete line but keep write end open

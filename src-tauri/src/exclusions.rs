@@ -42,6 +42,7 @@ pub fn dump_windows_json() -> String {
 pub struct ExclusionController {
     rules: Arc<RwLock<ExclusionRules>>,
     path: Arc<PathBuf>,
+    available: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// IPC outcome of a `set_exclusions`: whether the new rules were durably
@@ -53,21 +54,27 @@ pub struct SetExclusionsOutcome {
 }
 
 impl ExclusionController {
-    /// Load rules from `path` (defaulting when absent or corrupt), normalize
-    /// them, hold them behind a shared lock, and seed/normalize the file on disk.
+    /// Load rules from `path` (defaulting when absent, but flagging unavailable
+    /// when corrupt or unreadable), normalize them, hold them behind a shared lock,
+    /// and seed the file on disk only on a fresh install.
     pub fn new(path: PathBuf) -> Self {
-        let loaded = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<ExclusionRules>(&text).ok())
-            .unwrap_or_default()
-            .normalized();
-        let ctrl = Self {
-            rules: Arc::new(RwLock::new(loaded.clone())),
-            path: Arc::new(path),
+        use observer_exclusion::{load_rules, RulesLoadOutcome};
+
+        let (loaded, is_avail, should_seed) = match load_rules(&path) {
+            RulesLoadOutcome::Fresh(defaults) => (defaults, true, true),
+            RulesLoadOutcome::Available(rules) => (rules, true, false),
+            RulesLoadOutcome::Unavailable => (ExclusionRules::default().normalized(), false, false),
         };
-        // A seed-write failure is non-fatal: rules are live in memory and the
-        // failure was already logged.
-        let _ = ctrl.persist(&loaded);
+
+        let available = Arc::new(std::sync::atomic::AtomicBool::new(is_avail));
+        let ctrl = Self {
+            rules: Arc::new(RwLock::new(loaded)),
+            path: Arc::new(path),
+            available,
+        };
+        if should_seed {
+            let _ = ctrl.persist(&ctrl.get());
+        }
         ctrl
     }
 
@@ -76,48 +83,44 @@ impl ExclusionController {
         Arc::clone(&self.rules)
     }
 
+    /// Availability flag: false when exclusions file exists but cannot be read or parsed.
+    pub fn availability_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.available)
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.available.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The current rules (for the Settings initial render).
     pub fn get(&self) -> ExclusionRules {
         self.rules.read().map(|r| r.clone()).unwrap_or_default()
     }
 
-    /// Replace the rules: normalize, update the live shared handle (effective on
-    /// the next frame), and persist to disk.
+    /// Replace the rules: normalize, persist to disk (via temp file plus rename),
+    /// and on success update the live shared handle and set the available flag true.
     pub fn set(&self, rules: ExclusionRules) -> SetExclusionsOutcome {
         let normalized = rules.normalized();
-        if let Ok(mut guard) = self.rules.write() {
-            *guard = normalized.clone();
+        let persisted = self.persist(&normalized);
+        if persisted {
+            if let Ok(mut guard) = self.rules.write() {
+                *guard = normalized;
+            }
+            self.available.store(true, std::sync::atomic::Ordering::SeqCst);
         }
-        SetExclusionsOutcome {
-            persisted: self.persist(&normalized),
-        }
+        SetExclusionsOutcome { persisted }
     }
 
     fn persist(&self, rules: &ExclusionRules) -> bool {
-        match serde_json::to_string_pretty(rules) {
-            Ok(text) => {
-                if let Some(dir) = self.path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                if let Err(e) = std::fs::write(self.path.as_path(), text) {
-                    tracing::warn!(
-                        target: "config",
-                        area = "exclusions",
-                        path = %self.path.display(),
-                        error = %e,
-                        "persist failed"
-                    );
-                    false
-                } else {
-                    true
-                }
-            }
+        match observer_exclusion::persist_rules(self.path.as_path(), rules) {
+            Ok(()) => true,
             Err(e) => {
                 tracing::warn!(
                     target: "config",
                     area = "exclusions",
+                    path = %self.path.display(),
                     error = %e,
-                    "serialize failed"
+                    "persist failed"
                 );
                 false
             }
@@ -164,6 +167,27 @@ mod tests {
 
         assert!(outcome.persisted);
         assert!(path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_exclusions_starts_unavailable_and_repairs_on_set() {
+        let root = unique_root("corrupt-repair");
+        let path = root.join("exclusions.json");
+        std::fs::create_dir_all(&root).unwrap();
+        let corrupt = b"not json";
+        std::fs::write(&path, corrupt).unwrap();
+
+        let ctrl = ExclusionController::new(path.clone());
+        assert!(!ctrl.is_available());
+        // Corrupt file was not overwritten on new
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+
+        let outcome = ctrl.set(ExclusionRules::default());
+        assert!(outcome.persisted);
+        assert!(ctrl.is_available());
+        assert_ne!(std::fs::read(&path).unwrap(), corrupt);
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

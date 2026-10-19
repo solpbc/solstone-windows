@@ -273,6 +273,8 @@ interface SetupSnapshot {
   desktop_activity?: boolean;
   desktop_activity_window_titles?: boolean;
   desktop_activity_page_addresses?: boolean;
+  desktop_activity_window_titles_save_failed?: boolean;
+  desktop_activity_page_addresses_save_failed?: boolean;
   failed_sources?: FailedSourceWrite[];
   wizard_save_failed?: boolean;
   pending_wizard?: WizardStep | null;
@@ -3758,7 +3760,7 @@ function renderDesktopActivityControl(
   titlesToggle.style.padding = "2px 0";
 
   const addressesToggle = toggleRow(
-    "page addresses",
+    "page addresses (Edge and Chrome)",
     ids["settings.sources.desktopActivity.pageAddresses"],
     addressesEnabled,
     (on) => {
@@ -3890,10 +3892,11 @@ function sourcesGlance(dump: HealthDump): string {
   const screen = sourceGlanceToken(sourceByKind(dump, "screen"), false);
   const systemAudio = sourceGlanceToken(sourceByKind(dump, "system_audio"), false);
   const mic = sourceGlanceToken(sourceByKind(dump, "mic"), true);
-  if (screen === "on" && systemAudio === "on") {
-    return mic === "on" ? "all sources on" : `screen + system audio on · mic: ${mic}`;
+  const activity = sourceGlanceToken(sourceByKind(dump, "desktop_activity"), false);
+  if (screen === "on" && systemAudio === "on" && mic === "on" && activity === "on") {
+    return "all sources on";
   }
-  return `screen: ${screen} · system audio: ${systemAudio} · mic: ${mic}`;
+  return `screen: ${screen} · system audio: ${systemAudio} · mic: ${mic} · desktop activity: ${activity}`;
 }
 
 function statusLabelNode(labelText: string): HTMLElement {

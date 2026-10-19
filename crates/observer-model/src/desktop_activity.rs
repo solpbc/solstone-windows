@@ -286,12 +286,12 @@ pub fn normalize_url(raw: &str) -> Option<String> {
 
     let explicit_scheme = if s
         .get(..7)
-        .map_or(false, |p| p.eq_ignore_ascii_case("http://"))
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
     {
         Some(ExplicitScheme::Http)
     } else if s
         .get(..8)
-        .map_or(false, |p| p.eq_ignore_ascii_case("https://"))
+        .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
     {
         Some(ExplicitScheme::Https)
     } else {

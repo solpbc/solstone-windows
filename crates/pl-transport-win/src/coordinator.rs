@@ -6061,6 +6061,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn directory_with_only_len_tmp_does_not_upload() {
+        let root = TestRoot::new("len-tmp-no-upload");
+        let dir = root.path().join("10");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(crate::sealed::LEN_TMP_MARKER), b"300").unwrap();
+
+        let client = FakeClient::new(vec![], vec![]);
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let coordinator = coordinator_with_client(
+            client.clone(),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            sync,
+        );
+        let uploaded = coordinator.tick().await.unwrap();
+        assert_eq!(uploaded, 0);
+        assert!(client.posts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn gate_io_errors_hold_the_segment_for_an_hour() {
         // Local finish: the gate cannot list the directory.
         {

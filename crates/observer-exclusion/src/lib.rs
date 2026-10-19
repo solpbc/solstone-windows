@@ -109,6 +109,61 @@ fn dedupe_lower(values: &[String]) -> Vec<String> {
     out
 }
 
+/// Outcome of loading exclusion rules from disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RulesLoadOutcome {
+    /// File was absent: fresh-install default rules, which may be seeded to disk.
+    Fresh(ExclusionRules),
+    /// File was present and successfully parsed.
+    Available(ExclusionRules),
+    /// File exists but cannot be read or parsed. Do not overwrite or treat as empty.
+    Unavailable,
+}
+
+/// Load exclusion rules from `path`.
+/// - Missing file: returns `Fresh` with default rules.
+/// - File exists and is valid JSON matching `ExclusionRules`: returns `Available` with normalized rules.
+/// - File exists but cannot be read or contains invalid JSON: returns `Unavailable`.
+pub fn load_rules(path: &std::path::Path) -> RulesLoadOutcome {
+    if !path.exists() {
+        return RulesLoadOutcome::Fresh(ExclusionRules::default().normalized());
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<ExclusionRules>(&text) {
+            Ok(rules) => RulesLoadOutcome::Available(rules.normalized()),
+            Err(_) => RulesLoadOutcome::Unavailable,
+        },
+        Err(_) => RulesLoadOutcome::Unavailable,
+    }
+}
+
+/// Persist exclusion rules to `path` via a temporary sibling file and atomic rename.
+/// If writing or renaming fails, the original file at `path` is preserved intact.
+pub fn persist_rules(path: &std::path::Path, rules: &ExclusionRules) -> std::io::Result<()> {
+    let normalized = rules.normalized();
+    let text = serde_json::to_string_pretty(&normalized)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file_stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("exclusions");
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("json");
+    let tmp_name = format!("{file_stem}.tmp.{}.{ext}", std::process::id());
+    let tmp_path = path.with_file_name(tmp_name);
+    std::fs::write(&tmp_path, text)?;
+    if let Err(err) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    Ok(())
+}
+
 /// A rectangle in the captured monitor's physical-pixel space (origin at the
 /// monitor's top-left). `x`/`y` may be negative when a window straddles the
 /// monitor's top/left edge; [`apply_redaction`] clamps to the frame bounds.
@@ -803,5 +858,62 @@ mod tests {
         let back: ExclusionRules = serde_json::from_str(r#"{"excluded_exes":[]}"#).unwrap();
         assert!(back.exclude_private_browsing);
         assert!(back.title_patterns.is_empty());
+    }
+
+    #[test]
+    fn unreadable_exclusions_do_not_become_allow_all_and_repair_restores_availability() {
+        let dir = std::env::temp_dir().join(format!(
+            "solstone-test-unreadable-exclusions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("exclusions.json");
+
+        // 1. Missing file -> Fresh default
+        assert!(matches!(load_rules(&path), RulesLoadOutcome::Fresh(_)));
+
+        // 2. Corrupt JSON -> Unavailable, bytes stay put
+        let corrupt_bytes = b"not json at all { unclosed";
+        std::fs::write(&path, corrupt_bytes).unwrap();
+        assert_eq!(load_rules(&path), RulesLoadOutcome::Unavailable);
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt_bytes);
+
+        // Failed repair to an invalid path leaves the original file untouched
+        let not_a_dir = dir.join("not_a_dir");
+        std::fs::write(&not_a_dir, b"file").unwrap();
+        let bad_path = not_a_dir.join("exclusions.json");
+        let repair_rules = ExclusionRules {
+            excluded_exes: vec!["secret.exe".into()],
+            title_patterns: vec!["confidential".into()],
+            exclude_private_browsing: true,
+        };
+        assert!(persist_rules(&bad_path, &repair_rules).is_err());
+        // Original corrupt bytes still stay put
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt_bytes);
+
+        // 3. Unreadable input (directory at path on Unix)
+        #[cfg(unix)]
+        {
+            let dir_as_file = dir.join("unreadable_dir.json");
+            std::fs::create_dir_all(&dir_as_file).unwrap();
+            assert_eq!(load_rules(&dir_as_file), RulesLoadOutcome::Unavailable);
+            let _ = std::fs::remove_dir_all(&dir_as_file);
+        }
+
+        // 4. Successful repair replaces file via temp + rename and loads as Available
+        persist_rules(&path, &repair_rules).expect("repair must succeed");
+        match load_rules(&path) {
+            RulesLoadOutcome::Available(loaded) => {
+                assert_eq!(loaded, repair_rules.normalized());
+            }
+            other => panic!("expected Available after repair, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

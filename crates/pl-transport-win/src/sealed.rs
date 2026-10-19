@@ -44,6 +44,7 @@ pub struct DirEntryFact {
 /// it (never re-uploads) and local finish removes that directory.
 pub const UPLOADED_MARKER: &str = ".uploaded";
 pub const UPLOADED_TMP_MARKER: &str = ".uploaded.tmp";
+pub const LEN_TMP_MARKER: &str = ".len.tmp";
 /// Written into a segment the journal refused, naming that journal's instance.
 /// It lets a later journal get its own chance at the segment: a refusal binds
 /// only the journal that made it.
@@ -196,6 +197,7 @@ impl LocalSealedStore {
                     .filter(|f| {
                         f != UPLOADED_MARKER
                             && f != LEN_FILE_NAME
+                            && f != LEN_TMP_MARKER
                             && f != UPLOADED_TMP_MARKER
                             && f != REFUSED_BY_MARKER
                     })
@@ -528,6 +530,22 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].len_secs, Some(42));
         assert_eq!(segs[0].files, vec![SCREEN_FILE_NAME]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_filters_len_tmp_from_files() {
+        let root = temp_root();
+        let seg = root.join("10");
+        std::fs::create_dir_all(&seg).unwrap();
+        std::fs::write(seg.join(LEN_TMP_MARKER), b"300").unwrap();
+
+        let store = LocalSealedStore::new(&root, 300);
+        let segs = store.scan().unwrap();
+
+        assert_eq!(segs.len(), 1);
+        assert!(segs[0].files.is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }

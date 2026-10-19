@@ -5,6 +5,7 @@
 //! URL re-read cadence, generation validation, and availability tracking.
 
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use observer_exclusion::{foreground_excluded, ExclusionRules};
 use observer_model::desktop_activity::{
@@ -61,6 +62,8 @@ pub struct DesktopActivityScheduler {
     pub window_titles: bool,
     pub page_addresses: bool,
     pub exclusion_rules: ExclusionRules,
+    pub exclusion_rules_handle: Option<Arc<RwLock<ExclusionRules>>>,
+    pub exclusion_available_handle: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub artifact_id: String,
     pub open_foreground: Option<OpenForeground>,
     pub open_activity: Option<OpenActivity>,
@@ -80,6 +83,8 @@ impl DesktopActivityScheduler {
             window_titles,
             page_addresses,
             exclusion_rules,
+            exclusion_rules_handle: None,
+            exclusion_available_handle: None,
             artifact_id,
             open_foreground: None,
             open_activity: None,
@@ -87,6 +92,24 @@ impl DesktopActivityScheduler {
             url_state: UrlScheduleState::default(),
             is_locked: false,
         }
+    }
+
+    pub fn set_exclusion_rules_handle(&mut self, handle: Arc<RwLock<ExclusionRules>>) {
+        self.exclusion_rules_handle = Some(handle);
+    }
+
+    pub fn set_exclusion_availability_handle(
+        &mut self,
+        handle: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.exclusion_available_handle = Some(handle);
+    }
+
+    pub fn is_exclusion_available(&self) -> bool {
+        self.exclusion_available_handle
+            .as_ref()
+            .map(|h| h.load(std::sync::atomic::Ordering::SeqCst))
+            .unwrap_or(true)
     }
 
     pub fn set_preferences<S: DesktopActivitySource + ?Sized>(
@@ -192,13 +215,88 @@ impl DesktopActivityScheduler {
     ) -> Vec<DesktopActivityRow> {
         let mut rows = Vec::new();
 
+        // 0. Check exclusion rules change before anything else
+        let new_rules = self
+            .exclusion_rules_handle
+            .as_ref()
+            .and_then(|h| h.read().ok().map(|r| r.clone()))
+            .filter(|r| *r != self.exclusion_rules);
+        if let Some(rules) = new_rules {
+            let closed = self.set_exclusion_rules(source, rules, now_ms);
+            rows.extend(closed);
+        }
+
+        if !self.is_exclusion_available() {
+            // Cancel any in-flight URL
+            if self.url_state.in_flight {
+                self.url_state.generation += 1;
+                self.url_state.in_flight = false;
+                self.url_state.requested_at_ms = None;
+                self.url_state.requested_window_id = None;
+                source.cancel_url();
+            }
+            // Discard open foreground without emitting foreground app/title/url
+            self.open_foreground = None;
+
+            // Emit content-free availability rows: foreground and url as unavailable
+            if let Some(row) = self.transition_availability(
+                now_ms,
+                "winevent",
+                AvailabilityCapability::Foreground,
+                AvailabilityStatus::Unavailable,
+            ) {
+                rows.push(row);
+            }
+            if let Some(row) = self.transition_availability(
+                now_ms,
+                "uia",
+                AvailabilityCapability::Url,
+                AvailabilityStatus::Unavailable,
+            ) {
+                rows.push(row);
+            }
+
+            // Still process probe events, but only ActivityStateChanged!
+            let events = source.poll_events();
+            for event in events {
+                if let observer_model::desktop_activity::DesktopActivityProbeEvent::ActivityStateChanged(new_state) = event {
+                    rows.extend(self.handle_event(
+                        source,
+                        observer_model::desktop_activity::DesktopActivityProbeEvent::ActivityStateChanged(new_state),
+                        now_ms,
+                    ));
+                }
+            }
+
+            return rows;
+        }
+
         // 1. Poll probe events
         let events = source.poll_events();
         for event in events {
             rows.extend(self.handle_event(source, event, now_ms));
         }
 
-        // 2. Check URL request timeout (2s deadline)
+        // If we have no open foreground (e.g. after recovering from unavailable exclusions),
+        // query current foreground from probe
+        if self.open_foreground.is_none() && !self.is_locked {
+            if let Some(snap) = source.foreground_snapshot() {
+                let ev = observer_model::desktop_activity::DesktopActivityProbeEvent::Foreground {
+                    window_id: snap.window_id,
+                    app: snap.app,
+                    exe_name: snap.exe_name,
+                    title: snap.title,
+                };
+                rows.extend(self.handle_event(source, ev, now_ms));
+            }
+        }
+
+        // 2. Poll URL result from source before checking deadline
+        if let Some(result) = source.poll_url_result() {
+            rows.extend(self.handle_url_result(source, result, now_ms));
+        }
+
+        // 3. Check URL request timeout (2s deadline)
         if self.url_state.in_flight {
             if let Some(req_time) = self.url_state.requested_at_ms {
                 if now_ms.saturating_sub(req_time) >= 2000 {
@@ -235,11 +333,6 @@ impl DesktopActivityScheduler {
                     self.url_state.requested_window_id = None;
                 }
             }
-        }
-
-        // 3. Poll URL result from source
-        if let Some(result) = source.poll_url_result() {
-            rows.extend(self.handle_url_result(source, result, now_ms));
         }
 
         // 4. Cadence check for browser document URL (4s re-read)
@@ -292,6 +385,16 @@ impl DesktopActivityScheduler {
     ) -> Vec<DesktopActivityRow> {
         let mut rows = Vec::new();
 
+        let new_rules = self
+            .exclusion_rules_handle
+            .as_ref()
+            .and_then(|h| h.read().ok().map(|r| r.clone()))
+            .filter(|r| *r != self.exclusion_rules);
+        if let Some(rules) = new_rules {
+            let closed = self.set_exclusion_rules(source, rules, now_ms);
+            rows.extend(closed);
+        }
+
         if result.generation != self.url_state.generation {
             return rows;
         }
@@ -324,6 +427,7 @@ impl DesktopActivityScheduler {
 
         if snapshot.window_id != fg_window_id
             || snapshot.exe_name != fg_exe_name
+            || snapshot.title != fg_raw_title
             || foreground_excluded(&self.exclusion_rules, &snapshot.exe_name, &snapshot.title)
         {
             return rows;
@@ -756,7 +860,7 @@ impl DesktopActivityScheduler {
             }
         }
 
-        self.open_availabilities.insert(
+        let prev = self.open_availabilities.insert(
             key,
             OpenAvailability {
                 start_ms: now_ms,
@@ -764,20 +868,33 @@ impl DesktopActivityScheduler {
             },
         );
 
-        Some(DesktopActivityRow::availability(
-            now_ms, now_ms, method, capability, status,
-        ))
+        prev.map(|old| {
+            DesktopActivityRow::availability(
+                old.start_ms,
+                now_ms.max(old.start_ms),
+                method,
+                capability,
+                old.status,
+            )
+        })
     }
 
     fn close_availability(
         &mut self,
-        _now_ms: u64,
+        now_ms: u64,
         method: &str,
         capability: AvailabilityCapability,
     ) -> Option<DesktopActivityRow> {
         let key = (capability, method.to_string());
-        self.open_availabilities.remove(&key);
-        None
+        self.open_availabilities.remove(&key).map(|old| {
+            DesktopActivityRow::availability(
+                old.start_ms,
+                now_ms.max(old.start_ms),
+                method,
+                capability,
+                old.status,
+            )
+        })
     }
 
     /// Split open intervals across a rotation boundary.
@@ -814,6 +931,17 @@ impl DesktopActivityScheduler {
                 start_ms: boundary_ms,
                 state: act.state,
             });
+        }
+
+        for ((cap, method), avail) in self.open_availabilities.iter_mut() {
+            rows.push(DesktopActivityRow::availability(
+                avail.start_ms,
+                boundary_ms.max(avail.start_ms),
+                method,
+                *cap,
+                avail.status,
+            ));
+            avail.start_ms = boundary_ms;
         }
 
         rows
@@ -882,6 +1010,7 @@ mod tests {
         worker_count: usize,
         cancels: usize,
         snapshot: Option<ForegroundSnapshot>,
+        last_title: Option<String>,
     }
 
     impl DesktopActivitySource for FakeDesktopActivityProbe {
@@ -903,6 +1032,17 @@ mod tests {
         }
 
         fn poll_events(&mut self) -> Vec<DesktopActivityProbeEvent> {
+            for ev in &self.events {
+                match ev {
+                    DesktopActivityProbeEvent::Foreground { title, .. } => {
+                        self.last_title = Some(title.clone());
+                    }
+                    DesktopActivityProbeEvent::TitleChanged { title, .. } => {
+                        self.last_title = Some(title.clone());
+                    }
+                    _ => {}
+                }
+            }
             std::mem::take(&mut self.events)
         }
 
@@ -928,11 +1068,12 @@ mod tests {
                 return Some(snap.clone());
             }
             if let Some(req) = &self.last_request {
+                let title = self.last_title.clone()?;
                 return Some(ForegroundSnapshot {
                     window_id: req.window_id,
                     app: req.exe_name.clone(),
                     exe_name: req.exe_name.clone(),
-                    title: "Browser Title".into(),
+                    title,
                 });
             }
             None
@@ -941,6 +1082,49 @@ mod tests {
 
     fn test_rules() -> ExclusionRules {
         ExclusionRules::default()
+    }
+
+    #[test]
+    fn result_ready_at_deadline_tick_is_admitted_without_timeout() {
+        let mut scheduler =
+            DesktopActivityScheduler::new(true, true, test_rules(), "testart".into());
+        let mut probe = FakeDesktopActivityProbe::default();
+
+        probe.events.push(DesktopActivityProbeEvent::Foreground {
+            window_id: 25,
+            app: "Edge".into(),
+            exe_name: "msedge.exe".into(),
+            title: "Prompt Page".into(),
+        });
+        scheduler.poll_and_step(&mut probe, 1000);
+        assert!(scheduler.url_state.in_flight);
+
+        // At exactly 2000ms elapsed (3000ms tick), result is ready in probe
+        probe.next_result = Some(DesktopActivityUrlResult {
+            generation: scheduler.url_state.generation,
+            window_id: 25,
+            url: Some("https://example.com/ontime".into()),
+            unavailable: false,
+        });
+        let rows = scheduler.poll_and_step(&mut probe, 3000);
+
+        // Result was admitted, not canceled
+        assert_eq!(probe.cancels, 0);
+        assert!(!scheduler.url_state.in_flight);
+        assert_eq!(
+            scheduler.open_foreground.as_ref().unwrap().url,
+            Some("https://example.com/ontime".into())
+        );
+        // Did not emit availability unavailable
+        assert!(rows.iter().all(|r| {
+            if let observer_model::desktop_activity::DesktopActivityPayload::Availability(p) =
+                &r.payload
+            {
+                p.status != "unavailable"
+            } else {
+                true
+            }
+        }));
     }
 
     #[test]
@@ -1018,30 +1202,45 @@ mod tests {
         scheduler.poll_and_step(&mut probe, 5100);
         assert!(scheduler.url_state.in_flight);
 
-        // Advance 2100ms past deadline (7200ms) with a hung result arriving on timeout poll
+        let old_gen = scheduler.url_state.generation;
+        // Advance 2100ms past deadline (7200ms) with no result returned in time
+        let rows = scheduler.poll_and_step(&mut probe, 7200);
+
+        // Timeout split open foreground to url: None
+        assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
+        assert_eq!(probe.cancels, 1);
+        let fg = rows
+            .iter()
+            .find(|r| r.kind == "foreground")
+            .expect("must emit foreground row on timeout");
+        if let observer_model::desktop_activity::DesktopActivityPayload::Foreground(p) =
+            &fg.payload
+        {
+            assert_eq!(p.url, Some("https://example.com/page".into()));
+        }
+
+        // A stale result arriving after timeout is dropped
         probe.next_result = Some(DesktopActivityUrlResult {
-            generation: scheduler.url_state.generation,
+            generation: old_gen,
             window_id: 20,
             url: Some("https://example.com/late".into()),
             unavailable: false,
         });
-        let rows = scheduler.poll_and_step(&mut probe, 7200);
+        let late_rows = scheduler.poll_and_step(&mut probe, 7300);
+        assert!(late_rows.is_empty());
+        assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
 
-        // Timeout emitted availability unavailable and split open foreground to url: None
-        let avail = rows
+        let closed = scheduler.close_all(&mut probe, 8000);
+        let unavail = closed
             .iter()
             .find(|r| r.kind == "availability")
-            .expect("must emit availability row on timeout");
-        assert_eq!(avail.method, "uia");
+            .expect("must emit closed unavailable row");
         if let observer_model::desktop_activity::DesktopActivityPayload::Availability(p) =
-            &avail.payload
+            &unavail.payload
         {
             assert_eq!(p.capability, "url");
             assert_eq!(p.status, "unavailable");
         }
-
-        assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
-        assert_eq!(probe.cancels, 1);
     }
 
     #[test]
@@ -1106,8 +1305,15 @@ mod tests {
             probe.last_request.is_none(),
             "must not request URL for firefox"
         );
+        assert!(rows.is_empty());
 
-        let avail = rows
+        // Deduped: second poll does not re-emit
+        let rows2 = scheduler.poll_and_step(&mut probe, 5100);
+        assert!(rows2.is_empty());
+        assert!(probe.last_request.is_none());
+
+        let closed = scheduler.close_all(&mut probe, 6000);
+        let avail = closed
             .iter()
             .find(|r| r.kind == "availability")
             .expect("must emit availability row");
@@ -1118,11 +1324,6 @@ mod tests {
             assert_eq!(p.capability, "url");
             assert_eq!(p.status, "unavailable");
         }
-
-        // Deduped: second poll does not re-emit
-        let rows2 = scheduler.poll_and_step(&mut probe, 5100);
-        assert!(rows2.is_empty());
-        assert!(probe.last_request.is_none());
     }
 
     #[test]
@@ -1278,7 +1479,26 @@ mod tests {
             unavailable: false,
         });
         let rows = scheduler.poll_and_step(&mut probe, 5300);
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
+        let fg = rows
+            .iter()
+            .find(|r| r.kind == "foreground")
+            .expect("must emit foreground row");
+        if let observer_model::desktop_activity::DesktopActivityPayload::Foreground(p) =
+            &fg.payload
+        {
+            assert_eq!(p.url, None);
+        }
+        let avail = rows
+            .iter()
+            .find(|r| r.kind == "availability")
+            .expect("must emit closed unavailable row");
+        if let observer_model::desktop_activity::DesktopActivityPayload::Availability(p) =
+            &avail.payload
+        {
+            assert_eq!(p.capability, "url");
+            assert_eq!(p.status, "unavailable");
+        }
         assert_eq!(
             scheduler.open_foreground.as_ref().unwrap().url,
             Some("https://example.com/app/view1".into())
@@ -1360,5 +1580,86 @@ mod tests {
         let rows2 = scheduler.poll_and_step(&mut probe, 5300);
         assert!(rows2.is_empty());
         assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
+
+        // 3. Snapshot has window A, same exe, but different non-excluded title
+        scheduler.url_state.in_flight = false;
+        scheduler.poll_and_step(&mut probe, 9400);
+        let gen3 = scheduler.url_state.generation;
+
+        probe.snapshot = Some(ForegroundSnapshot {
+            window_id: 100,
+            app: "Edge".into(),
+            exe_name: "msedge.exe".into(),
+            title: "Different Non-Secret Window".into(),
+        });
+        probe.next_result = Some(DesktopActivityUrlResult {
+            generation: gen3,
+            window_id: 100,
+            url: Some("https://example.com/should_drop_3".into()),
+            unavailable: false,
+        });
+        let rows3 = scheduler.poll_and_step(&mut probe, 9500);
+        assert!(rows3.is_empty());
+        assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
+    }
+
+    #[test]
+    fn unavailable_exclusions_suppress_foreground_and_url_and_emit_availability_and_activity() {
+        let mut scheduler =
+            DesktopActivityScheduler::new(true, true, test_rules(), "testart".into());
+        let avail_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        scheduler.set_exclusion_availability_handle(avail_flag.clone());
+
+        let mut probe = FakeDesktopActivityProbe::default();
+        probe.events.push(DesktopActivityProbeEvent::Foreground {
+            window_id: 1,
+            app: "SensitiveApp".into(),
+            exe_name: "secret.exe".into(),
+            title: "SuperSecretTitle".into(),
+        });
+        probe
+            .events
+            .push(DesktopActivityProbeEvent::ActivityStateChanged(
+                ActivityState::Active,
+            ));
+
+        // Poll while exclusions unavailable
+        let rows = scheduler.poll_and_step(&mut probe, 1000);
+
+        // 1. Emits no foreground app, title, or url
+        assert!(rows.iter().all(|r| r.kind != "foreground"));
+        assert!(scheduler.open_foreground.is_none());
+        assert!(probe.last_request.is_none(), "must not request url read");
+
+        // 2. Closed output from close_all contains coarse active/idle/lock rows and unavailable availability
+        let closed = scheduler.close_all(&mut probe, 2000);
+        let act = closed.iter().find(|r| r.kind == "activity");
+        assert!(act.is_some(), "coarse activity row must be emitted upon close");
+
+        let avail_rows: Vec<_> = closed
+            .iter()
+            .filter(|r| r.kind == "availability")
+            .collect();
+        assert!(!avail_rows.is_empty());
+        for ar in avail_rows {
+            if let observer_model::desktop_activity::DesktopActivityPayload::Availability(p) =
+                &ar.payload
+            {
+                assert_eq!(p.status, "unavailable");
+            }
+        }
+
+        // 4. Owner repairs exclusions: flag becomes true
+        avail_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        probe.events.push(DesktopActivityProbeEvent::Foreground {
+            window_id: 1,
+            app: "SensitiveApp".into(),
+            exe_name: "secret.exe".into(),
+            title: "RepairedTitle".into(),
+        });
+        let _rows2 = scheduler.poll_and_step(&mut probe, 3000);
+        assert!(scheduler.open_foreground.is_some());
+        let fg = scheduler.open_foreground.as_ref().unwrap();
+        assert_eq!(fg.raw_title, "RepairedTitle");
     }
 }

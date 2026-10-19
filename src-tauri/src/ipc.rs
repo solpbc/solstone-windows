@@ -870,7 +870,7 @@ pub fn set_desktop_activity_window_titles(
     enabled: bool,
 ) -> Result<(), String> {
     require_setup_sequence()?;
-    {
+    let persisted = {
         let mut auth = state
             .setup
             .lock()
@@ -885,8 +885,12 @@ pub fn set_desktop_activity_window_titles(
                     page_addresses: projection.desktop_activity_page_addresses,
                 });
         }
-    }
+        persisted
+    };
     publish_setup(&state);
+    if !persisted {
+        return Err("failed to save setup preference".to_string());
+    }
     Ok(())
 }
 
@@ -897,7 +901,7 @@ pub fn set_desktop_activity_page_addresses(
     enabled: bool,
 ) -> Result<(), String> {
     require_setup_sequence()?;
-    {
+    let persisted = {
         let mut auth = state
             .setup
             .lock()
@@ -912,8 +916,12 @@ pub fn set_desktop_activity_page_addresses(
                     page_addresses: enabled,
                 });
         }
-    }
+        persisted
+    };
     publish_setup(&state);
+    if !persisted {
+        return Err("failed to save setup preference".to_string());
+    }
     Ok(())
 }
 
@@ -1405,3 +1413,13 @@ pub(crate) fn recover_setup_browser_completion(state: &crate::app::AppState) {
         sync.pairing.setup_browser_ready = failed;
     }
 }
+
+#[tauri::command]
+pub async fn quit_and_drain(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<(), ()> {
+    crate::app::drain_and_exit(app, &state);
+    Ok(())
+}
+

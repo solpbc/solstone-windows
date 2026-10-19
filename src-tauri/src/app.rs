@@ -39,6 +39,7 @@ pub struct AppState {
     /// Static identity + paths the sync layer needs to pair/upload.
     pub sync_config: SyncConfig,
     pub _shutdown: Mutex<Option<oneshot::Sender<()>>>,
+    pub engine_stopped: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     /// Single uploader lifecycle slot; also serializes pair/replace requests.
     pub uploader_slot: tokio::sync::Mutex<UploaderSlot>,
     /// The sole paired credential transport authority shared by upload and bridge.
@@ -58,6 +59,21 @@ pub struct AppState {
     pub proof: Arc<Mutex<capture_engine::ProofGate>>,
     #[cfg(test)]
     pub probe: Option<Arc<crate::windows::OpenPairProbe>>,
+}
+
+/// Drains engine shutdown and exits cleanly.
+pub fn drain_and_exit(app: tauri::AppHandle, state: &AppState) {
+    if let Ok(mut lock) = state._shutdown.lock() {
+        if let Some(tx) = lock.take() {
+            let _ = tx.send(());
+        }
+    }
+    if let Ok(mut lock) = state.engine_stopped.lock() {
+        if let Some(rx) = lock.take() {
+            let _ = rx.recv_timeout(Duration::from_secs(3));
+        }
+    }
+    app.exit(0);
 }
 
 /// The observer's device label for the pairing CSR, best-effort.
@@ -552,6 +568,7 @@ pub fn run(
         // No opener:* permission is granted to either webview.
         .plugin(native_opener_plugin())
         .invoke_handler(tauri::generate_handler![
+            crate::ipc::quit_and_drain,
             crate::ipc::pause,
             crate::ipc::resume,
             crate::ipc::get_health,
@@ -739,6 +756,8 @@ pub fn run(
             engine.hold_owner_pause_in(Box::new(capture_engine::FilePauseStore::new(
                 platform_win::local_data_root().join("pause.txt"),
             )));
+            engine.set_exclusion_rules_handle(exclusions.rules_handle());
+            engine.set_exclusion_availability_handle(exclusions.availability_handle());
             engine.start();
             tracing::info!(target: "engine", outcome = "started", "engine start");
 
@@ -760,6 +779,7 @@ pub fn run(
             });
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
+            let (engine_stopped_tx, engine_stopped_rx) = std::sync::mpsc::channel();
 
             // Resume an existing pairing: if a credential is on disk, start the
             // upload loop now. A fresh pairing is started by the
@@ -781,6 +801,7 @@ pub fn run(
                 about_observation: about_observation.clone(),
                 sync_config,
                 _shutdown: Mutex::new(Some(shutdown_tx)),
+                engine_stopped: Mutex::new(Some(engine_stopped_rx)),
                 uploader_slot: tokio::sync::Mutex::new(slot),
                 credential_access: tokio::sync::Mutex::new(credential_access),
                 journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -829,6 +850,7 @@ pub fn run(
             tauri::async_runtime::spawn(async move {
                 let exit = engine.run(shutdown_rx, cmd_rx).await;
                 tracing::info!(target: "engine", reason = ?exit, "capture engine loop exited");
+                let _ = engine_stopped_tx.send(());
             });
 
             tauri::async_runtime::spawn({
@@ -1017,6 +1039,7 @@ pub fn run(
                 move || {
                     let mut pump =
                         platform_win::NotificationPump::with_hotkey(hotkey_desired, hotkey_outcome);
+                    platform_win::mark_pump_registration_finished(!pump.is_degraded());
                     if pump.is_degraded() {
                         platform_win::set_pump_degraded(true);
                     }

@@ -325,19 +325,26 @@ fn the_two_preferences_fail_independently() {
 
     // Turning window_titles OFF fails persist
     assert!(!auth.set_desktop_activity_window_titles(false));
-    // Projection reflects pending OFF for window_titles
-    assert!(!auth.projection().desktop_activity_window_titles);
+    // Projection keeps durable bool for checkbox and sets failure flag
+    assert!(auth.projection().desktop_activity_window_titles);
+    assert!(auth.projection().desktop_activity_window_titles_save_failed);
     // page_addresses remains true
     assert!(auth.projection().desktop_activity_page_addresses);
+    assert!(!auth.projection().desktop_activity_page_addresses_save_failed);
 
     // Now turn page_addresses OFF as well, also fails persist
     assert!(!auth.set_desktop_activity_page_addresses(false));
-    assert!(!auth.projection().desktop_activity_page_addresses);
+    assert!(auth.projection().desktop_activity_page_addresses);
+    assert!(auth.projection().desktop_activity_page_addresses_save_failed);
 
     // Switch to writable root and retry
     auth.set_root(root.clone());
     let retry_res = auth.retry();
     assert!(retry_res.saved);
+    assert!(!auth.projection().desktop_activity_window_titles_save_failed);
+    assert!(!auth.projection().desktop_activity_page_addresses_save_failed);
+    assert!(!auth.projection().desktop_activity_window_titles);
+    assert!(!auth.projection().desktop_activity_page_addresses);
 
     match load_or_classify(&root) {
         LoadOutcome::Valid(cfg) => {

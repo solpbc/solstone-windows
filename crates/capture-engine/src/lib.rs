@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_lifecycle::{BackoffConfig, Lifecycle, RetryDecision};
@@ -253,6 +253,14 @@ impl Default for EngineConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingActivityRow {
+    pub key: observer_model::SegmentKey,
+    pub file_name: String,
+    pub line: String,
+    pub committed_len: u64,
+}
+
 /// The orchestrator. Owns sources, segment fs, the reducer, and the chunk queue.
 pub struct CaptureEngine<SFS: SegmentFs> {
     sources: Sources,
@@ -289,7 +297,8 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     setup_authority: Arc<Mutex<SetupAuthority>>,
     proof: Arc<Mutex<ProofGate>>,
     desktop_activity_scheduler: DesktopActivityScheduler,
-    pending_activity_rows: std::collections::VecDeque<String>,
+    pending_activity_rows: std::collections::VecDeque<PendingActivityRow>,
+    committed_activity_lens: std::collections::HashMap<(observer_model::SegmentKey, String), u64>,
     activity_batch_written: bool,
 }
 
@@ -381,11 +390,30 @@ where
                 ),
             ),
             pending_activity_rows: std::collections::VecDeque::new(),
+            committed_activity_lens: std::collections::HashMap::new(),
             activity_batch_written: false,
         };
         engine.refresh_health();
 
         Ok((engine, outcomes))
+    }
+
+    /// Stores the shared exclusion rules handle for desktop activity.
+    pub fn set_exclusion_rules_handle(
+        &mut self,
+        handle: Arc<RwLock<observer_exclusion::ExclusionRules>>,
+    ) {
+        self.desktop_activity_scheduler
+            .set_exclusion_rules_handle(handle);
+    }
+
+    /// Stores the shared exclusion availability handle for desktop activity.
+    pub fn set_exclusion_availability_handle(
+        &mut self,
+        handle: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.desktop_activity_scheduler
+            .set_exclusion_availability_handle(handle);
     }
 
     /// Setup authority handle.
@@ -683,6 +711,7 @@ where
 
     /// Stop every source and seal the current segment, when one is open.
     pub fn stop(&mut self) {
+        self.rotate_if_needed();
         self.sources.screen.stop();
         self.sources.system_audio.stop();
         self.sources.mic.stop();
@@ -690,13 +719,12 @@ where
         let closed = self
             .desktop_activity_scheduler
             .close_all(self.sources.desktop_activity.as_mut(), now_ms);
-        if self.current_segment.is_some() {
-            for row in closed {
-                self.append_activity_row(&row);
-            }
+        for row in closed {
+            self.append_activity_row(&row);
         }
         self.sources.desktop_activity.stop();
         self.drain_events();
+        self.flush_activity_queue();
 
         if let Some(segment) = self.current_segment.take() {
             self.seal_segment(segment);
@@ -739,6 +767,7 @@ where
         loop {
             tokio::select! {
                 _ = &mut shutdown => {
+                    self.stop();
                     return EngineExit::Shutdown;
                 }
                 cmd = command_rx.recv() => {
@@ -932,31 +961,16 @@ where
     }
 
     fn ensure_segment_for_now(&mut self) {
-        while let Some(current) = self.current_segment.as_ref() {
-            let now = self.clock.now_epoch_secs();
-            if !should_rotate(current.key, now, self.config.segment_secs) {
-                break;
-            }
-            let boundary_ms = (current.key.boundary_epoch_secs + self.config.segment_secs) * 1000;
-            let closed = self.desktop_activity_scheduler.on_boundary(boundary_ms);
-            for row in closed {
-                self.append_activity_row(&row);
-            }
-            let old_segment = self.current_segment.take().expect("current checked above");
-            self.seal_segment(old_segment);
-            self.open_current_segment();
-        }
+        self.rotate_if_needed();
         if self.current_segment.is_none() {
             self.open_current_segment();
         }
     }
 
-    fn open_current_segment(&mut self) {
+    fn open_segment_key(&mut self, key: observer_model::SegmentKey) {
         if self.current_segment.is_some() {
             return;
         }
-        let now = self.clock.now_epoch_secs();
-        let key = segment_for(now, self.config.segment_secs);
         let dir = match self.segment_fs.open_incomplete(key) {
             Ok(dir) => dir,
             Err(error) => {
@@ -966,6 +980,12 @@ where
         };
         self.attach_segment(key, dir);
         self.attempt_clear_storage();
+    }
+
+    fn open_current_segment(&mut self) {
+        let now = self.clock.now_epoch_secs();
+        let key = segment_for(now, self.config.segment_secs);
+        self.open_segment_key(key);
     }
 
     fn adopt_current_segment(&mut self) {
@@ -1127,7 +1147,8 @@ where
                 break;
             }
 
-            let boundary_ms = (current.key.boundary_epoch_secs + self.config.segment_secs) * 1000;
+            let next_boundary_secs = current.key.boundary_epoch_secs + self.config.segment_secs;
+            let boundary_ms = next_boundary_secs * 1000;
             let closed = self.desktop_activity_scheduler.on_boundary(boundary_ms);
             for row in closed {
                 self.append_activity_row(&row);
@@ -1137,7 +1158,8 @@ where
             self.seal_segment(old_segment);
 
             if self.should_be_capturing() && self.state.any_source_enabled() {
-                self.open_current_segment();
+                let next_key = segment_for(next_boundary_secs, self.config.segment_secs);
+                self.open_segment_key(next_key);
             } else {
                 break;
             }
@@ -1258,7 +1280,16 @@ where
             SourceKind::Mic => self.sources.mic.state(),
             SourceKind::SystemAudio => self.sources.system_audio.state(),
             SourceKind::Screen => self.sources.screen.state(),
-            SourceKind::DesktopActivity => self.sources.desktop_activity.state(),
+            SourceKind::DesktopActivity => {
+                if !self.desktop_activity_scheduler.is_exclusion_available() {
+                    SourceState::Faulted {
+                        reason: ErrorReason::Unknown,
+                        detail: String::new(),
+                    }
+                } else {
+                    self.sources.desktop_activity.state()
+                }
+            }
         }
     }
 
@@ -1363,34 +1394,46 @@ where
                 return;
             }
         };
-        self.pending_activity_rows.push_back(line);
-        self.flush_activity_queue();
-    }
-
-    fn flush_activity_queue(&mut self) {
-        let (key, boundary_epoch_secs) = match self.current_segment.as_ref() {
-            Some(s) => (s.key, s.key.boundary_epoch_secs),
-            None => return,
-        };
-
-        if self.pending_activity_rows.is_empty() {
-            return;
-        }
-
+        let key = segment_for(row.ts / 1000, self.config.segment_secs);
         if !self.activity_batch_written {
             self.ensure_unique_artifact_id(key);
             self.activity_batch_written = true;
         }
 
         let file_name = desktop_activity::activity_file_name(
-            boundary_epoch_secs,
+            key.boundary_epoch_secs,
             0,
             &self.desktop_activity_scheduler.artifact_id,
             self.config.segment_secs,
         );
+        let committed_len_entry = self
+            .committed_activity_lens
+            .entry((key, file_name.clone()))
+            .or_insert(0);
+        let committed_len = *committed_len_entry;
+        *committed_len_entry += line.len() as u64;
 
-        while let Some(line) = self.pending_activity_rows.front() {
-            match self.segment_fs.append_activity(key, &file_name, line) {
+        self.pending_activity_rows.push_back(PendingActivityRow {
+            key,
+            file_name,
+            line,
+            committed_len,
+        });
+        self.flush_activity_queue();
+    }
+
+    fn flush_activity_queue(&mut self) {
+        if self.pending_activity_rows.is_empty() {
+            return;
+        }
+
+        while let Some(pending) = self.pending_activity_rows.front() {
+            match self.segment_fs.append_activity(
+                pending.key,
+                &pending.file_name,
+                &pending.line,
+                pending.committed_len,
+            ) {
                 Ok(()) => {
                     self.pending_activity_rows.pop_front();
                 }
@@ -1410,6 +1453,9 @@ where
         if !self.should_be_capturing() || !self.state.is_source_enabled(SourceKind::DesktopActivity)
         {
             return;
+        }
+        if self.sources.desktop_activity.state() != SourceState::Active {
+            let _ = self.sources.desktop_activity.start();
         }
         let now_ms = self.clock.now_epoch_us() / 1000;
         let rows = self
@@ -1955,9 +2001,6 @@ mod tests {
             self.state.lock().unwrap().writes_with_at_us.clone()
         }
 
-        fn activities(&self) -> Vec<(SegmentKey, String, String)> {
-            self.state.lock().unwrap().activities.clone()
-        }
 
         fn video_ends(&self) -> Vec<Option<f64>> {
             self.state.lock().unwrap().video_ends.clone()
@@ -2033,6 +2076,7 @@ mod tests {
             key: SegmentKey,
             file_name: &str,
             line: &str,
+            _committed_len: u64,
         ) -> Result<(), Self::Error> {
             let mut state = self.state.lock().unwrap();
             if state.write_failures_remaining > 0 {
@@ -2397,42 +2441,8 @@ mod tests {
             self.inner.lock().unwrap().state.clone()
         }
 
-        fn set_state(&self, state: SourceState) {
-            self.inner.lock().unwrap().state = state;
-        }
-
         fn starts(&self) -> usize {
             self.inner.lock().unwrap().starts
-        }
-
-        fn stops(&self) -> usize {
-            self.inner.lock().unwrap().stops
-        }
-
-        fn cancels(&self) -> usize {
-            self.inner.lock().unwrap().cancels
-        }
-
-        fn push_event(&self, event: observer_model::desktop_activity::DesktopActivityProbeEvent) {
-            self.inner.lock().unwrap().events.push(event);
-        }
-
-        fn push_url_result(
-            &self,
-            result: observer_model::desktop_activity::DesktopActivityUrlResult,
-        ) {
-            self.inner.lock().unwrap().url_results.push(result);
-        }
-
-        fn url_requests(&self) -> Vec<observer_model::desktop_activity::DesktopActivityUrlRequest> {
-            self.inner.lock().unwrap().url_requests.clone()
-        }
-
-        fn set_snapshot(
-            &self,
-            snapshot: Option<observer_model::desktop_activity::ForegroundSnapshot>,
-        ) {
-            self.inner.lock().unwrap().snapshot = snapshot;
         }
     }
 

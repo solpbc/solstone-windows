@@ -117,6 +117,8 @@ impl SetupConfig {
             desktop_activity: self.desktop_activity,
             desktop_activity_window_titles: self.desktop_activity_window_titles,
             desktop_activity_page_addresses: self.desktop_activity_page_addresses,
+            desktop_activity_window_titles_save_failed: false,
+            desktop_activity_page_addresses_save_failed: false,
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
@@ -160,6 +162,10 @@ pub struct SetupSnapshot {
     pub desktop_activity_window_titles: bool,
     #[serde(default)]
     pub desktop_activity_page_addresses: bool,
+    #[serde(default)]
+    pub desktop_activity_window_titles_save_failed: bool,
+    #[serde(default)]
+    pub desktop_activity_page_addresses_save_failed: bool,
     #[serde(default)]
     pub failed_sources: Vec<FailedSourceWrite>,
     #[serde(default)]
@@ -205,6 +211,8 @@ impl Default for SetupSnapshot {
             desktop_activity: false,
             desktop_activity_window_titles: false,
             desktop_activity_page_addresses: false,
+            desktop_activity_window_titles_save_failed: false,
+            desktop_activity_page_addresses_save_failed: false,
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
@@ -466,6 +474,8 @@ pub struct SetupAuthority {
     pending_login: Option<bool>,
     pending_window_titles: Option<bool>,
     pending_page_addresses: Option<bool>,
+    window_titles_save_failed: bool,
+    page_addresses_save_failed: bool,
     overlay: HandoffOverlay,
 }
 
@@ -492,6 +502,8 @@ impl SetupAuthority {
             pending_login: None,
             pending_window_titles: None,
             pending_page_addresses: None,
+            window_titles_save_failed: false,
+            page_addresses_save_failed: false,
             overlay: HandoffOverlay::default(),
         }
     }
@@ -522,6 +534,8 @@ impl SetupAuthority {
         self.pending_login = None;
         self.pending_window_titles = None;
         self.pending_page_addresses = None;
+        self.window_titles_save_failed = false;
+        self.page_addresses_save_failed = false;
 
         self.failed_sources.clear();
         self.wizard_save_failed = false;
@@ -536,12 +550,10 @@ impl SetupAuthority {
             system_audio: self.running_system_audio,
             screen: self.running_screen,
             desktop_activity: self.running_desktop_activity,
-            desktop_activity_window_titles: self
-                .pending_window_titles
-                .unwrap_or(self.durable.desktop_activity_window_titles),
-            desktop_activity_page_addresses: self
-                .pending_page_addresses
-                .unwrap_or(self.durable.desktop_activity_page_addresses),
+            desktop_activity_window_titles: self.durable.desktop_activity_window_titles,
+            desktop_activity_page_addresses: self.durable.desktop_activity_page_addresses,
+            desktop_activity_window_titles_save_failed: self.window_titles_save_failed,
+            desktop_activity_page_addresses_save_failed: self.page_addresses_save_failed,
             start_at_login: self.pending_login.unwrap_or(self.durable.start_at_login),
             wizard: self.durable.wizard,
             notice_dismissed: self.durable.notice_dismissed,
@@ -682,6 +694,7 @@ impl SetupAuthority {
         candidate.desktop_activity_window_titles = enabled;
         if self.persist(candidate) {
             self.pending_window_titles = None;
+            self.window_titles_save_failed = false;
             true
         } else {
             if !enabled {
@@ -689,6 +702,7 @@ impl SetupAuthority {
             } else {
                 self.pending_window_titles = None;
             }
+            self.window_titles_save_failed = true;
             false
         }
     }
@@ -698,6 +712,7 @@ impl SetupAuthority {
         candidate.desktop_activity_page_addresses = enabled;
         if self.persist(candidate) {
             self.pending_page_addresses = None;
+            self.page_addresses_save_failed = false;
             true
         } else {
             if !enabled {
@@ -705,6 +720,7 @@ impl SetupAuthority {
             } else {
                 self.pending_page_addresses = None;
             }
+            self.page_addresses_save_failed = true;
             false
         }
     }
@@ -759,6 +775,8 @@ impl SetupAuthority {
             self.durable = candidate;
             self.pending_window_titles = None;
             self.pending_page_addresses = None;
+            self.window_titles_save_failed = false;
+            self.page_addresses_save_failed = false;
             let mut started = Vec::new();
             let failed = std::mem::take(&mut self.failed_sources);
             for fs in failed {
@@ -1345,6 +1363,56 @@ mod tests {
         assert_eq!(after.mic, before.mic);
         assert_eq!(after.system_audio, before.system_audio);
         assert_eq!(after.screen, before.screen);
+    }
+
+    #[test]
+    fn failed_desktop_activity_preferences_keep_durable_value_and_set_failure_flags() {
+        let root = temp_test_dir("failed-da-prefs");
+        let mut initial = SetupConfig::fresh();
+        initial.desktop_activity = true;
+        initial.desktop_activity_window_titles = true;
+        initial.desktop_activity_page_addresses = true;
+        atomic_write_setup(&root, &initial).unwrap();
+
+        let mut auth = SetupAuthority::new();
+        auth.set_root(root.clone());
+        auth.seed(&initial.to_snapshot());
+
+        // Block writing to setup.json
+        fs::create_dir(root.join("setup.json.tmp")).unwrap();
+
+        // Turning window_titles OFF fails persist
+        assert!(!auth.set_desktop_activity_window_titles(false));
+        let proj = auth.projection();
+        assert!(proj.desktop_activity_window_titles);
+        assert!(proj.desktop_activity_window_titles_save_failed);
+
+        // Turning page_addresses OFF fails persist
+        assert!(!auth.set_desktop_activity_page_addresses(false));
+        let proj = auth.projection();
+        assert!(proj.desktop_activity_page_addresses);
+        assert!(proj.desktop_activity_page_addresses_save_failed);
+
+        // Remove blocker and retry
+        fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+        let outcome = auth.retry();
+        assert!(outcome.saved);
+
+        let proj = auth.projection();
+        assert!(!proj.desktop_activity_window_titles);
+        assert!(!proj.desktop_activity_page_addresses);
+        assert!(!proj.desktop_activity_window_titles_save_failed);
+        assert!(!proj.desktop_activity_page_addresses_save_failed);
+
+        match load_or_classify(&root) {
+            LoadOutcome::Valid(cfg) => {
+                assert!(!cfg.desktop_activity_window_titles);
+                assert!(!cfg.desktop_activity_page_addresses);
+            }
+            other => panic!("expected Valid, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

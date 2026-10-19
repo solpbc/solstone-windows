@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -33,6 +33,7 @@ pub mod app_paths;
 pub mod autostart;
 #[allow(unsafe_code)]
 pub mod desktop_activity;
+pub use desktop_activity::{is_pump_ready, mark_pump_registration_finished};
 #[allow(unsafe_code)]
 pub mod local_offset;
 #[allow(unsafe_code)]
@@ -357,7 +358,10 @@ fn seal_or_merge(incomplete: &Path, sealed: &Path, period_secs: u64) -> io::Resu
             file.write_all(period_secs.to_string().as_bytes())?;
             file.sync_all()?;
         }
-        fs::rename(&temp_len_path, sealed.join(LEN_FILE_NAME))?;
+        if let Err(err) = fs::rename(&temp_len_path, sealed.join(LEN_FILE_NAME)) {
+            let _ = fs::remove_file(&temp_len_path);
+            return Err(err);
+        }
         remove_marker_if_exists(&sealed.join(".uploaded"))?;
         remove_marker_if_exists(&sealed.join(".uploaded.tmp"))?;
     }
@@ -1052,6 +1056,8 @@ fn flush_due(elapsed_since_last: Option<Duration>) -> bool {
 pub struct LocalSegmentFs {
     root: PathBuf,
     handles: BTreeMap<(SegmentKey, SourceKind), SegmentHandle>,
+    #[cfg(test)]
+    pub fail_set_len: bool,
 }
 
 impl LocalSegmentFs {
@@ -1059,6 +1065,8 @@ impl LocalSegmentFs {
         Self {
             root,
             handles: BTreeMap::new(),
+            #[cfg(test)]
+            fail_set_len: false,
         }
     }
 }
@@ -1209,21 +1217,72 @@ impl SegmentFs for LocalSegmentFs {
         key: SegmentKey,
         file_name: &str,
         line: &str,
+        committed_len: u64,
     ) -> Result<(), Self::Error> {
-        let dir = incomplete_dir(&self.root, key);
-        fs::create_dir_all(&dir)?;
+        let inc_dir = incomplete_dir(&self.root, key);
+        let sealed_dir = self.root.join(key.index.to_string());
+        let (dir, is_sealed) = if inc_dir.exists() {
+            (inc_dir, false)
+        } else if sealed_dir.exists() {
+            (sealed_dir, true)
+        } else {
+            fs::create_dir_all(&inc_dir)?;
+            (inc_dir, false)
+        };
+        if is_sealed {
+            let uploaded_path = dir.join(".uploaded");
+            if uploaded_path.exists() {
+                let bytes = fs::read(&uploaded_path)?;
+                let val: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("invalid .uploaded json: {e}"))
+                })?;
+                if let Some(files) = val.get("files").and_then(|f| f.as_array()) {
+                    let already_uploaded = files.iter().any(|f| {
+                        f.get("submitted").and_then(|s| s.as_str()) == Some(file_name)
+                            || f.get("written").and_then(|s| s.as_str()) == Some(file_name)
+                    });
+                    if already_uploaded {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "cannot append into an already-uploaded file",
+                        ));
+                    }
+                }
+            }
+        }
         let path = dir.join(file_name);
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let committed_len = file.metadata()?.len();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let current_len = file.metadata()?.len();
+        if current_len > committed_len {
+            #[cfg(test)]
+            if self.fail_set_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "simulated set_len failure",
+                ));
+            }
+            file.set_len(committed_len)?;
+            file.sync_data()?;
+        }
+        file.seek(SeekFrom::Start(committed_len))?;
         if let Err(err) = file.write_all(line.as_bytes()) {
-            let _ = file.set_len(committed_len);
-            let _ = file.sync_data();
+            file.set_len(committed_len)?;
+            file.sync_data()?;
             return Err(err);
         }
         if let Err(err) = file.sync_data() {
-            let _ = file.set_len(committed_len);
-            let _ = file.sync_data();
+            file.set_len(committed_len)?;
+            file.sync_data()?;
             return Err(err);
+        }
+        if is_sealed {
+            remove_marker_if_exists(&dir.join(".uploaded"))?;
+            remove_marker_if_exists(&dir.join(".uploaded.tmp"))?;
         }
         Ok(())
     }
@@ -2379,20 +2438,147 @@ mod tests {
     }
 
     #[test]
-    fn append_activity_failure_restores_committed_line() {
-        let root = temp_root("append-act-failure");
+    fn append_activity_recovers_from_torn_tail_and_clears_sealed_uploaded_marker() {
+        let root = temp_root("append-act-torn-tail");
         let _ = fs::remove_dir_all(&root);
         let mut fs_impl = LocalSegmentFs::new(root.clone());
         let k = key(20);
         let file_name = "test_desktop_activity.jsonl";
 
-        fs_impl.append_activity(k, file_name, "line 1\n").unwrap();
-        let dir = root.join("20.incomplete");
-        let path = dir.join(file_name);
+        // First write: line 1
+        fs_impl.append_activity(k, file_name, "line 1\n", 0).unwrap();
+        let inc_dir = root.join("20.incomplete");
+        let path = inc_dir.join(file_name);
         assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\n");
 
-        fs_impl.append_activity(k, file_name, "line 2\n").unwrap();
+        // Simulate torn tail written directly into the file
+        {
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(b"torn extra bytes").unwrap();
+            file.sync_data().unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "line 1\ntorn extra bytes"
+        );
+
+        // Next append with committed_len 7 truncates torn tail and writes line 2
+        fs_impl.append_activity(k, file_name, "line 2\n", 7).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\nline 2\n");
+
+        // Simulate segment sealing to final directory with .uploaded marker
+        let sealed_dir = root.join("20");
+        fs::rename(&inc_dir, &sealed_dir).unwrap();
+        let ack = serde_json::json!({
+            "schema": "solstone.local-upload-ack.v1",
+            "files": [
+                {
+                    "submitted": "other_file.flac",
+                    "written": "other_file.flac",
+                    "size": 100,
+                    "sha256": "abcdef",
+                }
+            ]
+        });
+        fs::write(
+            sealed_dir.join(".uploaded"),
+            serde_json::to_vec(&ack).unwrap(),
+        )
+        .unwrap();
+        assert!(sealed_dir.join(".uploaded").exists());
+
+        // Append to sealed segment succeeds and clears .uploaded
+        fs_impl
+            .append_activity(k, file_name, "line 3\n", 14)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(sealed_dir.join(file_name)).unwrap(),
+            "line 1\nline 2\nline 3\n"
+        );
+        assert!(!sealed_dir.join(".uploaded").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_activity_truncate_failure_propagates_error() {
+        let root = temp_root("append-act-truncate-fail");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let k = key(21);
+        let file_name = "test_desktop_activity.jsonl";
+        let inc_dir = root.join("21.incomplete");
+        fs::create_dir_all(&inc_dir).unwrap();
+        let path = inc_dir.join(file_name);
+        fs::write(&path, b"line 1\ntorn bytes").unwrap();
+
+        // Force set_len to fail
+        fs_impl.fail_set_len = true;
+
+        let res = fs_impl.append_activity(k, file_name, "line 2\n", 7);
+        assert!(res.is_err());
+
+        // Initial torn file was not modified
+        assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\ntorn bytes");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_activity_corrupt_uploaded_marker_propagates_error_and_keeps_marker() {
+        let root = temp_root("append-act-corrupt-uploaded");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let k = key(23);
+        let file_name = "test_desktop_activity.jsonl";
+        let sealed_dir = root.join("23");
+        fs::create_dir_all(&sealed_dir).unwrap();
+        let path = sealed_dir.join(file_name);
+        fs::write(&path, b"line 1\n").unwrap();
+
+        fs::write(sealed_dir.join(".uploaded"), b"corrupt not json").unwrap();
+
+        let res = fs_impl.append_activity(k, file_name, "line 2\n", 7);
+        assert!(res.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\n");
+        assert!(sealed_dir.join(".uploaded").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_activity_refuses_to_append_into_already_uploaded_file() {
+        let root = temp_root("append-act-already-uploaded");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let k = key(22);
+        let file_name = "test_desktop_activity.jsonl";
+        let sealed_dir = root.join("22");
+        fs::create_dir_all(&sealed_dir).unwrap();
+        let path = sealed_dir.join(file_name);
+        fs::write(&path, b"line 1\n").unwrap();
+
+        let ack = serde_json::json!({
+            "schema": "solstone.local-upload-ack.v1",
+            "files": [
+                {
+                    "submitted": file_name,
+                    "written": file_name,
+                    "size": 7,
+                    "sha256": "abcdef",
+                }
+            ]
+        });
+        fs::write(
+            sealed_dir.join(".uploaded"),
+            serde_json::to_vec(&ack).unwrap(),
+        )
+        .unwrap();
+
+        let res = fs_impl.append_activity(k, file_name, "line 2\n", 7);
+        assert!(res.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "line 1\n");
+        assert!(sealed_dir.join(".uploaded").exists());
 
         let _ = fs::remove_dir_all(&root);
     }

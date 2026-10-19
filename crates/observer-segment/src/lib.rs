@@ -106,6 +106,7 @@ pub trait SegmentFs {
         key: SegmentKey,
         file_name: &str,
         line: &str,
+        committed_len: u64,
     ) -> Result<(), Self::Error>;
 
     /// Atomically seal the `.incomplete` segment for `key` to its final name.
