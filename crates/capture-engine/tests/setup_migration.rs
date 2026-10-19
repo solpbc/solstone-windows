@@ -164,7 +164,7 @@ fn dark_startup_creates_nothing_and_retains_existing_off_and_corrupt_choices() {
     fs::create_dir_all(&root).unwrap();
     let missing = load_for_startup(&root, false);
     assert!(
-        matches!(missing, LoadOutcome::LegacyUnsaved(ref cfg) if cfg.screen && cfg.mic && cfg.system_audio && cfg.start_at_login && cfg.notice_dismissed)
+        matches!(missing, LoadOutcome::LegacyUnsaved(ref cfg) if cfg.screen && cfg.mic && cfg.system_audio && cfg.start_at_login.choice() == Some(true) && cfg.notice_dismissed)
     );
     assert!(!root.join("setup.json").exists());
     let off = SetupConfig::fresh();
@@ -174,7 +174,7 @@ fn dark_startup_creates_nothing_and_retains_existing_off_and_corrupt_choices() {
     assert_eq!(fs::read(root.join("setup.json")).unwrap(), before);
     fs::write(root.join("setup.json"), b"corrupt").unwrap();
     assert!(
-        matches!(load_for_startup(&root, false), LoadOutcome::FailedClosed(ref cfg) if !cfg.screen && !cfg.mic && !cfg.system_audio && !cfg.start_at_login)
+        matches!(load_for_startup(&root, false), LoadOutcome::FailedClosed(ref cfg) if !cfg.screen && !cfg.mic && !cfg.system_audio && cfg.start_at_login.choice().is_none())
     );
     assert_eq!(fs::read(root.join("setup.json")).unwrap(), b"corrupt");
     fs::remove_dir_all(root).unwrap();
@@ -207,7 +207,7 @@ fn version_1_file_missing_new_fields_leaves_activity_and_preferences_false() {
             assert!(cfg.screen);
             assert!(cfg.system_audio);
             assert!(cfg.mic);
-            assert!(cfg.start_at_login);
+            assert_eq!(cfg.start_at_login.choice(), Some(true));
             assert!(cfg.notice_dismissed);
             assert!(!cfg.desktop_activity);
             assert!(!cfg.desktop_activity_window_titles);
@@ -228,7 +228,7 @@ fn corrupt_setup_fails_closed_with_activity_off() {
             assert!(!cfg.screen);
             assert!(!cfg.system_audio);
             assert!(!cfg.mic);
-            assert!(!cfg.start_at_login);
+            assert_eq!(cfg.start_at_login.choice(), None);
             assert!(!cfg.desktop_activity);
             assert!(!cfg.desktop_activity_window_titles);
             assert!(!cfg.desktop_activity_page_addresses);

@@ -267,7 +267,7 @@ interface SetupSnapshot {
   mic: boolean;
   system_audio: boolean;
   screen: boolean;
-  start_at_login: boolean;
+  start_at_login: boolean | null;
   wizard: WizardStep;
   notice_dismissed: boolean;
   desktop_activity?: boolean;
@@ -280,6 +280,7 @@ interface SetupSnapshot {
   pending_wizard?: WizardStep | null;
   notice_save_failed?: boolean;
   login_apply_failed?: boolean;
+  setup_read_failed?: boolean;
   handoff_id?: string | null;
   handoff_revision?: number | null;
   handoff_expired?: boolean;
@@ -504,6 +505,10 @@ let retryInFlight = false;
 let nativeConnectInFlight = false;
 let deferredInFlight = false;
 const setupActionError = { finish: "", browser: "", retry: "", connect: "", deferred: "" };
+// Setup pause and unknown-login failures survive a health rerender. They clear
+// on a successful retry, or when the dump shows the pause or login choice landed.
+let wizardPauseFailure: "pause" | "resume" | null = null;
+let unknownLoginAttempt: boolean | null = null;
 
 const SETUP_LINK_ERRORS: Record<string, string> = {
   setup_connect_failed: "this connection could not finish. try again, or paste a new pairing link from your journal.",
@@ -1459,10 +1464,17 @@ function pairingPhaseLabel(pairing: PairingState): string {
         ? "finish connecting to your journal"
         : "waiting for you to confirm your journal's mark";
     case "paired":
-      return `paired with ${markTextForm(pairing.mark)}`;
+      return `connected to ${markTextForm(pairing.mark)}`;
     case "failed":
       return failedPairingLabel(pairing.detail);
   }
+}
+
+function presentedPairing(pairing: PairingState): PairingState {
+  if (pairingBusy && pairing.phase === "awaiting_confirmation" && !pairing.finish_connecting) {
+    return { ...pairing, phase: "pairing" };
+  }
+  return pairing;
 }
 
 function quarantinedCount(upload: UploadStatus): number {
@@ -1529,15 +1541,16 @@ function storageRow(storage: StorageInfo | null): HTMLElement {
 }
 
 function syncRow(sync: SyncSnapshot): HTMLElement {
+  const pairing = presentedPairing(sync.pairing);
   let label: string;
-  switch (sync.pairing.phase) {
+  switch (pairing.phase) {
     case "not_paired":
       label = "not paired. pair to sync your journal";
       break;
     case "pairing":
     case "awaiting_confirmation":
     case "failed":
-      label = pairingPhaseLabel(sync.pairing);
+      label = pairingPhaseLabel(pairing);
       break;
     case "paired":
       label = uploadLabel(sync.upload);
@@ -1552,7 +1565,7 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
 
 function renderJournalOpenSection(dump: HealthDump): HTMLElement {
   const pane = section("your journal");
-  const pairing = dump.sync.pairing;
+  const pairing = presentedPairing(dump.sync.pairing);
 
   if (pairing.phase === "awaiting_confirmation") {
     pane.append(
@@ -1943,6 +1956,7 @@ function renderMigrationPanel(): HTMLElement | null {
 
 function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean } = {}): HTMLElement {
   const pairing = dump.sync.pairing;
+  const presented = presentedPairing(pairing);
   // Once setup's connect step has paired, opening the journal is the only action
   // left there; pasting another link stays available from the journal page.
   const connectedInSetup = options.setupStep === true && pairing.phase === "paired";
@@ -1950,11 +1964,11 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   pane.append(
     valueRow(
       "status",
-      selectable(automation(text("div", pairingPhaseLabel(pairing)), ids["settings.pairing.state"])),
+      selectable(automation(text("div", pairingPhaseLabel(presented)), ids["settings.pairing.state"])),
     ),
   );
 
-  if (pairing.phase === "awaiting_confirmation") {
+  if (presented.phase === "awaiting_confirmation") {
     if (dump.setup?.sequence_enabled === true && pairing.finish_connecting) {
       const card = document.createElement("div");
       card.style.marginTop = "12px";
@@ -2461,6 +2475,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
         // Failure surfaces as pairing.phase = "failed" with a detail.
       } finally {
         pairingBusy = false;
+        rerender();
       }
     };
     inputRow.append(button);
@@ -3782,10 +3797,17 @@ function renderDesktopActivityControl(
   }
   return container;
 }
+const savedChoicesUnread =
+  "couldn't read your saved source choices. sources are off. choose your sources again in settings.";
 
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   if (dump.setup?.sequence_enabled !== true) {
     const sources = section("sources");
+    if (dump.setup?.setup_read_failed === true) {
+      const failureNotice = text("div", savedChoicesUnread);
+      failureNotice.classList.add("save-failure");
+      sources.prepend(failureNotice);
+    }
     for (const [kind, label, id] of [
       ["screen", "screen", ids["settings.sources.screen.state"]],
       ["system_audio", "system audio", ids["settings.sources.systemAudio.state"]],
@@ -3799,6 +3821,11 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
     return sources;
   }
   const sources = section("sources");
+  if (dump.setup?.setup_read_failed === true) {
+    const failureNotice = text("div", savedChoicesUnread);
+    failureNotice.classList.add("save-failure");
+    sources.prepend(failureNotice);
+  }
   const screen = sourceByKind(dump, "screen");
   const systemAudio = sourceByKind(dump, "system_audio");
   const mic = sourceByKind(dump, "mic");
@@ -3862,13 +3889,14 @@ function statusSeverity(phase: AppPhase): Severity {
 }
 
 function syncSummary(sync: SyncSnapshot): string {
-  switch (sync.pairing.phase) {
+  const pairing = presentedPairing(sync.pairing);
+  switch (pairing.phase) {
     case "not_paired":
       return "pair to deliver to your journal";
     case "pairing":
     case "awaiting_confirmation":
     case "failed":
-      return pairingPhaseLabel(sync.pairing);
+      return pairingPhaseLabel(pairing);
     case "paired": {
       const upload = sync.upload;
       const quarantined = quarantinedCount(upload);
@@ -3983,25 +4011,86 @@ function storageGlance(): HTMLElement {
   return text("div", "stored on this pc");
 }
 
-function renderPauseCard(dump: HealthDump): HTMLElement {
+function globalPauseActive(dump: HealthDump): boolean {
+  return dump.pause !== null || dump.app_state === "paused";
+}
+
+function reconcileWizardPauseFailure(dump: HealthDump): void {
+  const active = globalPauseActive(dump);
+  if (wizardPauseFailure === "pause" && active) wizardPauseFailure = null;
+  if (wizardPauseFailure === "resume" && !active) wizardPauseFailure = null;
+}
+
+function reconcileUnknownLoginAttempt(dump: HealthDump): void {
+  const choice = dump.setup?.start_at_login;
+  if ((choice === true || choice === false) && !dump.setup?.login_apply_failed) {
+    unknownLoginAttempt = null;
+  }
+}
+
+// Home keeps its phase gate: pause only while observing, resume while paused,
+// restart from error, and a disabled pause otherwise. Setup uses the control below.
+function createPauseButton(dump: HealthDump): HTMLButtonElement {
   const phase = latestHealth?.app_state ?? dump.app_state;
-  let action: HTMLButtonElement;
   if (phase === "observing") {
-    action = actionButton("pause", undefined, true, () => {
-      void invoke("pause", { reason: "operator", durationSecs: null }).then(() => retryHealth());
+    return actionButton("pause", undefined, true, async () => {
+      try {
+        await invoke("pause", { reason: "operator", durationSecs: null });
+        retryHealth();
+      } catch {
+        // The home card does not keep a rejection. Setup stores its own.
+      }
     });
   } else if (phase === "paused") {
-    action = actionButton("resume", undefined, true, () => {
-      void invoke("resume").then(() => retryHealth());
+    return actionButton("resume", undefined, true, async () => {
+      try {
+        await invoke("resume");
+        retryHealth();
+      } catch {
+        // The home card does not keep a rejection. Setup stores its own.
+      }
     });
   } else if (phase === "error") {
-    action = actionButton("restart intake", undefined, true, () => {
-      void invoke("resume").then(() => retryHealth());
+    return actionButton("restart intake", undefined, true, async () => {
+      try {
+        await invoke("resume");
+        retryHealth();
+      } catch {
+        // The home card does not keep a rejection. Setup stores its own.
+      }
     });
   } else {
-    action = actionButton("pause", undefined, false, () => {});
+    return actionButton("pause", undefined, false, () => {});
   }
+}
 
+function createSetupPauseButton(dump: HealthDump): HTMLButtonElement {
+  if (globalPauseActive(dump)) {
+    return actionButton("resume", undefined, true, async () => {
+      try {
+        await invoke("resume");
+        wizardPauseFailure = null;
+      } catch {
+        wizardPauseFailure = "resume";
+      } finally {
+        void retryHealth();
+      }
+    });
+  }
+  return actionButton("pause", undefined, true, async () => {
+    try {
+      await invoke("pause", { reason: "operator", durationSecs: null });
+      wizardPauseFailure = null;
+    } catch {
+      wizardPauseFailure = "pause";
+    } finally {
+      void retryHealth();
+    }
+  });
+}
+
+function renderPauseCard(dump: HealthDump): HTMLElement {
+  const action = createPauseButton(dump);
   const statePill = pill(statusStateLabel(dump), statusSeverity(dump.app_state));
   trackPausePill(dump, statePill);
 
@@ -4335,10 +4424,61 @@ function renderWizardSourceControl(
   return control;
 }
 
+async function commitUnknownLogin(enabled: boolean): Promise<void> {
+  try {
+    await invoke("set_start_at_login", { enabled });
+    unknownLoginAttempt = null;
+  } catch {
+    unknownLoginAttempt = enabled;
+  } finally {
+    void retryHealth();
+  }
+}
+
 function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
+  reconcileUnknownLoginAttempt(dump);
   const wrap = document.createElement("div");
   wrap.classList.add("wizard-start-at-login");
-  const checked = dump.setup?.start_at_login ?? false;
+
+  if (dump.setup?.start_at_login === null) {
+    const toggle = toggleRow(
+      "start at login",
+      ids["settings.setup.startAtLogin"],
+      false,
+      () => {},
+    );
+    const box = toggle.querySelector("input");
+    if (box) {
+      box.indeterminate = true;
+      box.disabled = true;
+    }
+    const onBtn = actionButton("start at login", undefined, true, () => {
+      void commitUnknownLogin(true);
+    });
+    const offBtn = actionButton("don't start at login", undefined, true, () => {
+      void commitUnknownLogin(false);
+    });
+    wrap.style.display = "flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "8px";
+    wrap.append(toggle, onBtn, offBtn);
+    if (unknownLoginAttempt !== null || dump.setup.login_apply_failed) {
+      const err = text("div", "could not update start at login");
+      automation(err, ids["settings.setup.startAtLogin.error"]);
+      err.classList.add("save-failure");
+      const retry = actionButton("retry", undefined, true, () => {
+        if (unknownLoginAttempt !== null) {
+          void commitUnknownLogin(unknownLoginAttempt);
+          return;
+        }
+        void invoke("retry_save").then(() => retryHealth());
+      });
+      wrap.append(err, retry);
+    }
+    return wrap;
+  }
+
+  const checked = dump.setup?.start_at_login === true;
   const toggle = toggleRow(
     "start at login",
     ids["settings.setup.startAtLogin"],
@@ -4378,7 +4518,31 @@ async function advanceWizardStep(step: WizardStep): Promise<void> {
   }
 }
 
+function mountWizardProof(dump: HealthDump, kind: SourceKind, proof: HTMLElement): HTMLElement {
+  if (!isSourceEnabled(dump.setup, kind)) {
+    return proof;
+  }
+  const pauseBtn = createSetupPauseButton(dump);
+  const proofRow = document.createElement("div");
+  proofRow.style.display = "flex";
+  proofRow.style.gap = "8px";
+  proofRow.style.marginTop = "12px";
+  proofRow.append(proof, pauseBtn, text("span", "pauses all sources."));
+  return proofRow;
+}
+
+function placeWizardPauseFailure(stepContainer: HTMLElement, navRow: HTMLElement): void {
+  if (!wizardPauseFailure) return;
+  const pauseFailureEl = text(
+    "div",
+    wizardPauseFailure === "pause" ? "could not pause. try again." : "could not resume. try again.",
+  );
+  pauseFailureEl.classList.add("save-failure");
+  stepContainer.insertBefore(pauseFailureEl, navRow);
+}
+
 function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
+  reconcileWizardPauseFailure(dump);
   const wizardEl = document.createElement("div");
   wizardEl.classList.add("settings-wizard");
 
@@ -4389,25 +4553,29 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   automation(stepContainer, ids["settings.setup.step"]);
   stepContainer.dataset.step = step;
 
-  const wizardSteps = {
-    mic: { number: 5, heading: "share your conversations" },
-    system_audio: { number: 5, heading: "share sound from this computer" },
-    screen: { number: 6, heading: "share your screen" },
-    connection: { number: 7, heading: "connect your journal" },
-  } as const;
-  const wizardStep = wizardSteps[step as keyof typeof wizardSteps];
-  // Steps 1-4 happen in the journal window on this PC. Number the steps only when
-  // setup is continuing from there; otherwise the count points at steps never shown.
   const continuingFromJournal = Boolean(dump.setup?.handoff_id);
-  if (wizardStep) {
-    if (continuingFromJournal) {
-      const progress = text("p", `step ${wizardStep.number} of 7`);
-      progress.classList.add("wizard-progress");
-      progress.dataset.stepNumber = String(wizardStep.number);
-      automation(progress, ids["settings.setup.stepNumber"]);
-      stepContainer.append(progress);
-    }
-    const heading = text("h2", wizardStep.heading);
+  const totalSteps = continuingFromJournal ? 8 : 4;
+  const stepNumberMap = continuingFromJournal
+    ? { mic: 5, system_audio: 6, screen: 7, connection: 8 }
+    : { mic: 1, system_audio: 2, screen: 3, connection: 4 };
+
+  const headings = {
+    mic: "share your conversations",
+    system_audio: "share sound from this computer",
+    screen: "share your screen",
+    connection: "connect your journal",
+  } as const;
+
+  const headingText = headings[step as keyof typeof headings];
+  const stepNum = stepNumberMap[step as keyof typeof stepNumberMap];
+  if (headingText && stepNum !== undefined) {
+    const progress = text("p", `step ${stepNum} of ${totalSteps}`);
+    progress.classList.add("wizard-progress");
+    progress.dataset.stepNumber = String(stepNum);
+    automation(progress, ids["settings.setup.stepNumber"]);
+    stepContainer.append(progress);
+
+    const heading = text("h2", headingText);
     heading.classList.add("wizard-step-title");
     heading.tabIndex = -1;
     stepContainer.append(heading);
@@ -4454,8 +4622,9 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(notNowBtn);
     if (isSourceEnabled(dump.setup, "mic")) navRow.append(nextBtn);
 
-    stepContainer.append(sw, proof);
+    stepContainer.append(sw, mountWizardProof(dump, "mic", proof));
     stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+    if (isSourceEnabled(dump.setup, "mic")) placeWizardPauseFailure(stepContainer, navRow);
   } else if (step === "system_audio") {
     const sw = renderWizardSourceControl("system_audio", "settings.setup.systemAudio", dump);
     const proof = renderProofNode("system_audio", preview);
@@ -4505,8 +4674,9 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(backBtn, notNowBtn);
     if (isSourceEnabled(dump.setup, "system_audio")) navRow.append(nextBtn);
 
-    stepContainer.append(sw, proof);
-    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+    stepContainer.append(sw, mountWizardProof(dump, "system_audio", proof));
+    stepContainer.append(sentence, navRow);
+    if (isSourceEnabled(dump.setup, "system_audio")) placeWizardPauseFailure(stepContainer, navRow);
   } else if (step === "screen") {
     const sw = renderWizardSourceControl("screen", "settings.setup.screen", dump);
     const proof = renderProofNode("screen", preview);
@@ -4556,8 +4726,9 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(backBtn, notNowBtn);
     if (isSourceEnabled(dump.setup, "screen")) navRow.append(nextBtn);
 
-    stepContainer.append(sw, proof);
-    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+    stepContainer.append(sw, mountWizardProof(dump, "screen", proof));
+    stepContainer.append(sentence, navRow);
+    if (isSourceEnabled(dump.setup, "screen")) placeWizardPauseFailure(stepContainer, navRow);
   } else if (step === "connection") {
     const isPaired = dump.sync.pairing.phase === "paired";
 
@@ -4642,6 +4813,12 @@ function renderHome(dump: HealthDump): HTMLElement {
     home.append(renderSourcesNotice(), renderStatusStrip(dump), cards);
   } else {
     home.append(renderStatusStrip(dump), cards);
+  }
+  if (dump.setup?.setup_read_failed === true) {
+    const failureNotice = text("div", savedChoicesUnread);
+    failureNotice.classList.add("save-failure");
+    home.prepend(failureNotice);
+    home.append(renderStartAtLoginControl(dump));
   }
   return home;
 }
@@ -5871,6 +6048,8 @@ export const __test__ = {
     setupActionError.retry = "";
     setupActionError.connect = "";
     setupActionError.deferred = "";
+    wizardPauseFailure = null;
+    unknownLoginAttempt = null;
     hotkeyCapturing = false;
     titleDraft = "";
   },

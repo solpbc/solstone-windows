@@ -137,7 +137,7 @@ describe("unknown journal settings UI", () => {
     app.__test__.renderSettings(dump);
 
     const pairedEl = present(ids["settings.pairing.state"]);
-    expect(pairedEl.textContent).toContain("paired with");
+    expect(pairedEl.textContent).toContain("connected to");
 
     const syncSummaryEl = present(ids["settings.status.upload.state"]);
     expect(syncSummaryEl.textContent).toContain("delivered");

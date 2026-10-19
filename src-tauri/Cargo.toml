@@ -70,6 +70,8 @@ tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 default = ["browser-host"]
 # Default keeps the custom protocol off; release builds enable as needed.
 custom-protocol = ["tauri/custom-protocol"]
+# Keep the app's optional transport hold fields aligned with the transport.
+awaiting-hold = ["pl-transport-win/awaiting-hold"]
 # The browser extension's native host: host mode, the same-user endpoint,
 # registration and the `browser` source. Enabled for owner builds by the default
 # feature; the development ids still require the separate preview feature.

@@ -229,6 +229,17 @@ pub async fn pair(
     cfg: &SyncConfig,
     sync: Arc<Mutex<SyncSnapshot>>,
 ) -> Result<PairedState, TransportError> {
+    pair_with_identity_pending(link, cfg, sync, false).await
+}
+
+/// Keep the ceremony pending until the caller finishes its authenticated
+/// identity check. No intermediate comparison is published on that path.
+pub(crate) async fn pair_with_identity_pending(
+    link: &str,
+    cfg: &SyncConfig,
+    sync: Arc<Mutex<SyncSnapshot>>,
+    hold_identity_pending: bool,
+) -> Result<PairedState, TransportError> {
     ensure_pairable(&cfg.state_path)?;
     // Only a pairing made from an unpaired profile carries the replacement
     // offer. An unreadable state file is overwritten as before.
@@ -243,20 +254,22 @@ pub async fn pair(
     match pair_inner(link, cfg, fresh_pair).await {
         Ok((paired, journal_label, mark, binding)) => {
             cfg.journal_version.clear(&sync);
-            publish_pairing(
-                &sync,
-                &cfg.confirmation,
-                &cfg.tombstone,
-                PairingWrite::Bound {
-                    binding,
-                    label: journal_label,
-                    mark,
-                    kind: BoundKind::Paired {
-                        finish_connecting: false,
-                        setup_browser_ready: false,
+            if !hold_identity_pending {
+                publish_pairing(
+                    &sync,
+                    &cfg.confirmation,
+                    &cfg.tombstone,
+                    PairingWrite::Bound {
+                        binding,
+                        label: journal_label,
+                        mark,
+                        kind: BoundKind::Paired {
+                            finish_connecting: false,
+                            setup_browser_ready: false,
+                        },
                     },
-                },
-            );
+                );
+            }
             Ok(paired)
         }
         Err(e) => {

@@ -170,15 +170,17 @@ pub struct UiaFactUnavailable;
 pub trait UiaNode: Sized {
     fn control_type(&self) -> Result<i32, UiaFactUnavailable>;
     fn is_password(&self) -> Result<bool, UiaFactUnavailable>;
+    fn is_control_element(&self) -> Result<bool, UiaFactUnavailable>;
     fn value_property(&self) -> Option<String>;
     fn legacy_value_property(&self) -> Option<String>;
-    fn first_child(&self) -> Option<Self>;
-    fn next_sibling(&self) -> Option<Self>;
+    fn first_child(&self) -> Result<Option<Self>, UiaFactUnavailable>;
+    fn next_sibling(&self) -> Result<Option<Self>, UiaFactUnavailable>;
 }
 
 enum WalkResult {
     Found(String),
     NotFound,
+    DocumentReady,
     Stop,
 }
 
@@ -188,6 +190,7 @@ fn walk_node<N: UiaNode>(
     count: &mut usize,
     start: Instant,
     deadline: Duration,
+    read_values: bool,
 ) -> WalkResult {
     *count += 1;
     if *count > 400 || start.elapsed() >= deadline {
@@ -208,11 +211,27 @@ fn walk_node<N: UiaNode>(
 
     let control_type = match node.control_type() {
         Ok(ct) => ct,
-        Err(_) => return WalkResult::NotFound,
+        Err(_) => return WalkResult::Stop,
     };
 
     if control_type == UIA_DOCUMENT_CONTROL_TYPE_ID {
+        match node.is_control_element() {
+            Err(_) => return WalkResult::Stop,
+            // Browser accessibility can initially expose a non-control Document
+            // placeholder. It supplies no URL and is never a content subtree.
+            Ok(false) => return WalkResult::NotFound,
+            Ok(true) => {}
+        }
+        if !read_values {
+            return WalkResult::DocumentReady;
+        }
+        if start.elapsed() >= deadline {
+            return WalkResult::Stop;
+        }
         let val_str = node.value_property();
+        if start.elapsed() >= deadline {
+            return WalkResult::Stop;
+        }
         let leg_str = node.legacy_value_property();
 
         let norm_val = val_str.as_deref().and_then(observer_model::normalize_url);
@@ -232,16 +251,30 @@ fn walk_node<N: UiaNode>(
         };
     }
 
-    if depth < 24 {
-        if let Some(first_child) = node.first_child() {
+    if depth >= 24 || *count >= 400 || start.elapsed() >= deadline {
+        return WalkResult::Stop;
+    }
+    {
+        let first_child = match node.first_child() {
+            Ok(child) => child,
+            Err(_) => return WalkResult::Stop,
+        };
+        if let Some(first_child) = first_child {
             let mut curr = Some(first_child);
             while let Some(child) = curr {
-                match walk_node(&child, depth + 1, count, start, deadline) {
+                match walk_node(&child, depth + 1, count, start, deadline, read_values) {
                     WalkResult::Found(url) => return WalkResult::Found(url),
+                    WalkResult::DocumentReady => return WalkResult::DocumentReady,
                     WalkResult::Stop => return WalkResult::Stop,
                     WalkResult::NotFound => {}
                 }
-                curr = child.next_sibling();
+                if *count >= 400 || start.elapsed() >= deadline {
+                    return WalkResult::Stop;
+                }
+                curr = match child.next_sibling() {
+                    Ok(sibling) => sibling,
+                    Err(_) => return WalkResult::Stop,
+                };
             }
         }
     }
@@ -254,9 +287,36 @@ pub fn walk_uia_tree<N: UiaNode>(root: &N) -> Option<String> {
     let start = Instant::now();
     let deadline = Duration::from_secs(2);
     let mut count = 0usize;
-    match walk_node(root, 0, &mut count, start, deadline) {
+    match walk_node(root, 0, &mut count, start, deadline, true) {
         WalkResult::Found(url) => Some(url),
-        WalkResult::NotFound | WalkResult::Stop => None,
+        WalkResult::NotFound | WalkResult::DocumentReady | WalkResult::Stop => None,
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+/// Control-view discovery can initialize Chromium accessibility. It reads only
+/// password/type metadata and navigation. Only the subsequent RAW pass can read
+/// a Document URL, after checking every raw ancestor. Both passes share limits.
+fn walk_uia_views<N: UiaNode>(
+    control_root: &N,
+    raw_root: impl FnOnce() -> Option<N>,
+) -> Option<String> {
+    let start = Instant::now();
+    let deadline = Duration::from_secs(2);
+    let mut count = 0;
+    if matches!(
+        walk_node(control_root, 0, &mut count, start, deadline, false),
+        WalkResult::Stop
+    ) {
+        return None;
+    }
+    if count >= 400 || start.elapsed() >= deadline {
+        return None;
+    }
+    let raw_root = raw_root()?;
+    match walk_node(&raw_root, 0, &mut count, start, deadline, true) {
+        WalkResult::Found(url) => Some(url),
+        WalkResult::NotFound | WalkResult::DocumentReady | WalkResult::Stop => None,
     }
 }
 
@@ -286,6 +346,15 @@ impl UiaNode for ProductionUiaNode {
         }
     }
 
+    fn is_control_element(&self) -> Result<bool, UiaFactUnavailable> {
+        unsafe {
+            self.element
+                .CurrentIsControlElement()
+                .map(|b| b.as_bool())
+                .map_err(|_| UiaFactUnavailable)
+        }
+    }
+
     fn value_property(&self) -> Option<String> {
         use windows::core::BSTR;
         use windows::Win32::UI::Accessibility::UIA_ValueValuePropertyId;
@@ -308,28 +377,62 @@ impl UiaNode for ProductionUiaNode {
         }
     }
 
-    fn first_child(&self) -> Option<Self> {
-        unsafe {
-            self.walker
-                .GetFirstChildElement(&self.element)
-                .ok()
-                .map(|element| Self {
-                    element,
-                    walker: self.walker.clone(),
-                })
-        }
+    fn first_child(&self) -> Result<Option<Self>, UiaFactUnavailable> {
+        self.navigate(true)
     }
 
-    fn next_sibling(&self) -> Option<Self> {
+    fn next_sibling(&self) -> Result<Option<Self>, UiaFactUnavailable> {
+        self.navigate(false)
+    }
+}
+
+#[cfg(windows)]
+impl ProductionUiaNode {
+    fn navigate(&self, first_child: bool) -> Result<Option<Self>, UiaFactUnavailable> {
+        use windows::core::Interface;
+        use windows::Win32::UI::Accessibility::IUIAutomationElement;
+        // The generated non-null return wrapper maps S_OK/null (normal end of
+        // a branch) to an error. Preserve the HRESULT separately so a provider
+        // failure cannot skip an unread subtree and admit a later Document.
         unsafe {
-            self.walker
-                .GetNextSiblingElement(&self.element)
-                .ok()
-                .map(|element| Self {
-                    element,
-                    walker: self.walker.clone(),
-                })
+            let mut raw = std::ptr::null_mut();
+            let vtable = Interface::vtable(&self.walker);
+            let navigate = if first_child {
+                vtable.GetFirstChildElement
+            } else {
+                vtable.GetNextSiblingElement
+            };
+            let status = navigate(self.walker.as_raw(), self.element.as_raw(), &mut raw);
+            let element = if raw.is_null() {
+                None
+            } else {
+                // A successful COM out-parameter transfers exactly one reference.
+                Some(IUIAutomationElement::from_raw(raw))
+            };
+            status.ok().map_err(|_| UiaFactUnavailable)?;
+            Ok(element.map(|element| Self {
+                element,
+                walker: self.walker.clone(),
+            }))
         }
+    }
+}
+
+#[cfg(windows)]
+fn uia_root(hwnd: windows::Win32::Foundation::HWND, control: bool) -> Option<ProductionUiaNode> {
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
+    unsafe {
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let element = automation.ElementFromHandle(hwnd).ok()?;
+        let walker = if control {
+            automation.ControlViewWalker()
+        } else {
+            automation.RawViewWalker()
+        }
+        .ok()?;
+        Some(ProductionUiaNode { element, walker })
     }
 }
 
@@ -343,11 +446,7 @@ pub fn query_browser_document_url(hwnd_val: isize, exe_name: &str) -> Option<Str
 
     unsafe {
         use windows::Win32::Foundation::HWND;
-        use windows::Win32::System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-            COINIT_MULTITHREADED,
-        };
-        use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
         if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
             return None;
@@ -362,29 +461,10 @@ pub fn query_browser_document_url(hwnd_val: isize, exe_name: &str) -> Option<Str
         }
         let _guard = CoUninitGuard;
 
-        let automation: IUIAutomation =
-            match CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) {
-                Ok(a) => a,
-                Err(_) => return None,
-            };
-
         let hwnd = HWND(hwnd_val as *mut _);
-        let root_elem = match automation.ElementFromHandle(hwnd) {
-            Ok(el) => el,
-            Err(_) => return None,
-        };
-
-        let walker = match automation.RawViewWalker() {
-            Ok(w) => w,
-            Err(_) => return None,
-        };
-
-        let root_node = ProductionUiaNode {
-            element: root_elem,
-            walker,
-        };
-
-        walk_uia_tree(&root_node)
+        let control_root = uia_root(hwnd, true)?;
+        // Reacquire the raw root after metadata-only accessibility initialization.
+        walk_uia_views(&control_root, || uia_root(hwnd, false))
     }
 }
 
@@ -1602,12 +1682,15 @@ mod tests {
         value_reads: usize,
         next_sibling_calls: usize,
         first_child_calls: usize,
+        navigation_error: Option<(usize, bool)>,
+        node_acquisitions: usize,
     }
 
     #[derive(Clone)]
     struct MockNodeData {
         control_type: Result<i32, UiaFactUnavailable>,
         is_password: Result<bool, UiaFactUnavailable>,
+        is_control: Result<bool, UiaFactUnavailable>,
         value: Option<String>,
         legacy_value: Option<String>,
         first_child: Option<usize>,
@@ -1631,6 +1714,10 @@ mod tests {
             arena.nodes[self.id].is_password
         }
 
+        fn is_control_element(&self) -> Result<bool, UiaFactUnavailable> {
+            self.arena.lock().unwrap().nodes[self.id].is_control
+        }
+
         fn value_property(&self) -> Option<String> {
             let mut arena = self.arena.lock().unwrap();
             arena.value_reads += 1;
@@ -1642,22 +1729,218 @@ mod tests {
             arena.nodes[self.id].legacy_value.clone()
         }
 
-        fn first_child(&self) -> Option<Self> {
+        fn first_child(&self) -> Result<Option<Self>, UiaFactUnavailable> {
             let mut arena = self.arena.lock().unwrap();
             arena.first_child_calls += 1;
-            arena.nodes[self.id].first_child.map(|id| MockNode {
+            if arena.navigation_error == Some((self.id, true)) {
+                return Err(UiaFactUnavailable);
+            }
+            if arena.nodes[self.id].first_child.is_some() {
+                arena.node_acquisitions += 1;
+            }
+            Ok(arena.nodes[self.id].first_child.map(|id| MockNode {
                 id,
                 arena: self.arena.clone(),
-            })
+            }))
         }
 
-        fn next_sibling(&self) -> Option<Self> {
+        fn next_sibling(&self) -> Result<Option<Self>, UiaFactUnavailable> {
             let mut arena = self.arena.lock().unwrap();
             arena.next_sibling_calls += 1;
-            arena.nodes[self.id].next_sibling.map(|id| MockNode {
+            if arena.navigation_error == Some((self.id, false)) {
+                return Err(UiaFactUnavailable);
+            }
+            if arena.nodes[self.id].next_sibling.is_some() {
+                arena.node_acquisitions += 1;
+            }
+            Ok(arena.nodes[self.id].next_sibling.map(|id| MockNode {
                 id,
                 arena: self.arena.clone(),
-            })
+            }))
+        }
+    }
+
+    #[test]
+    fn non_control_document_is_skipped_without_value_reads_or_descending() {
+        let node = |control_type, is_control, value: Option<&str>, first_child, next_sibling| {
+            MockNodeData {
+                control_type: Ok(control_type),
+                is_password: Ok(false),
+                is_control: Ok(is_control),
+                value: value.map(str::to_owned),
+                legacy_value: None,
+                first_child,
+                next_sibling,
+            }
+        };
+        let arena = Arc::new(Mutex::new(MockArena {
+            nodes: vec![
+                node(50000, true, None, Some(1), None),
+                node(
+                    50030,
+                    false,
+                    Some("https://invalid.test/non-control"),
+                    Some(3),
+                    Some(2),
+                ),
+                node(
+                    50030,
+                    true,
+                    Some("https://example.test/committed?secret=1#fragment"),
+                    None,
+                    None,
+                ),
+                node(50030, true, Some("https://invalid.test/nested"), None, None),
+            ],
+            value_reads: 0,
+            next_sibling_calls: 0,
+            first_child_calls: 0,
+            navigation_error: None,
+            node_acquisitions: 0,
+        }));
+        let root = MockNode {
+            id: 0,
+            arena: Arc::clone(&arena),
+        };
+        assert_eq!(
+            walk_uia_tree(&root).as_deref(),
+            Some("https://example.test/committed")
+        );
+        let locked = arena.lock().unwrap();
+        assert_eq!(locked.value_reads, 1);
+        assert_eq!(locked.first_child_calls, 1);
+    }
+
+    fn mock_tree(nodes: Vec<MockNodeData>) -> MockNode {
+        MockNode {
+            id: 0,
+            arena: Arc::new(Mutex::new(MockArena {
+                nodes,
+                value_reads: 0,
+                next_sibling_calls: 0,
+                first_child_calls: 0,
+                navigation_error: None,
+                node_acquisitions: 0,
+            })),
+        }
+    }
+
+    fn mock_fact(control_type: i32, value: Option<&str>) -> MockNodeData {
+        MockNodeData {
+            control_type: Ok(control_type),
+            is_password: Ok(false),
+            is_control: Ok(true),
+            value: value.map(str::to_owned),
+            legacy_value: None,
+            first_child: None,
+            next_sibling: None,
+        }
+    }
+
+    #[test]
+    fn warmup_reads_no_values_and_raw_pass_still_checks_secure_ancestors() {
+        let control = mock_tree(vec![mock_fact(50030, Some("https://invalid.test/warmup"))]);
+        let raw = mock_tree(vec![mock_fact(
+            50030,
+            Some("https://example.test/committed?q=secret"),
+        )]);
+        assert_eq!(
+            walk_uia_views(&control, || Some(raw.clone())).as_deref(),
+            Some("https://example.test/committed")
+        );
+        assert_eq!(control.arena.lock().unwrap().value_reads, 0);
+        assert_eq!(raw.arena.lock().unwrap().value_reads, 1);
+
+        let mut secure_parent = mock_fact(50000, None);
+        secure_parent.is_password = Ok(true);
+        secure_parent.first_child = Some(1);
+        let raw = mock_tree(vec![
+            secure_parent,
+            mock_fact(50030, Some("https://invalid.test/secure")),
+        ]);
+        assert_eq!(walk_uia_views(&control, || Some(raw.clone())), None);
+        assert_eq!(raw.arena.lock().unwrap().value_reads, 0);
+        assert_eq!(raw.arena.lock().unwrap().first_child_calls, 0);
+    }
+
+    #[test]
+    fn completed_warmup_without_document_allows_raw_but_limits_are_shared() {
+        let control = mock_tree(vec![mock_fact(50000, None)]);
+        let raw = mock_tree(vec![mock_fact(
+            50030,
+            Some("https://example.test/committed"),
+        )]);
+        assert_eq!(
+            walk_uia_views(&control, || Some(raw.clone())).as_deref(),
+            Some("https://example.test/committed")
+        );
+
+        let mut nodes = vec![mock_fact(50000, None)];
+        nodes[0].first_child = Some(1);
+        for i in 1..400 {
+            let mut node = mock_fact(50004, Some("https://invalid.test/edit"));
+            if i < 399 {
+                node.next_sibling = Some(i + 1);
+            }
+            nodes.push(node);
+        }
+        let control = mock_tree(nodes);
+        let raw = mock_tree(vec![mock_fact(
+            50030,
+            Some("https://invalid.test/over-budget"),
+        )]);
+        let acquired = std::cell::Cell::new(false);
+        assert_eq!(
+            walk_uia_views(&control, || {
+                acquired.set(true);
+                Some(raw.clone())
+            }),
+            None
+        );
+        assert!(
+            !acquired.get(),
+            "exhausted warmup must not acquire the RAW root"
+        );
+        let control_arena = control.arena.lock().unwrap();
+        assert_eq!(
+            control_arena.node_acquisitions, 399,
+            "plus the control root is exactly400 elements"
+        );
+        assert_eq!(control_arena.value_reads, 0);
+        assert_eq!(raw.arena.lock().unwrap().value_reads, 0);
+    }
+
+    #[test]
+    fn unknown_control_document_fact_stops_before_value_or_later_document() {
+        let mut first = mock_fact(50030, Some("https://invalid.test/unknown"));
+        first.is_control = Err(UiaFactUnavailable);
+        first.next_sibling = Some(2);
+        let mut root = mock_fact(50000, None);
+        root.first_child = Some(1);
+        let raw = mock_tree(vec![
+            root,
+            first,
+            mock_fact(50030, Some("https://invalid.test/later")),
+        ]);
+        assert_eq!(walk_uia_tree(&raw), None);
+        assert_eq!(raw.arena.lock().unwrap().value_reads, 0);
+    }
+
+    #[test]
+    fn navigation_failure_never_skips_an_unread_branch_for_a_later_document() {
+        let mut root = mock_fact(50000, None);
+        root.first_child = Some(1);
+        let mut branch = mock_fact(50000, None);
+        branch.next_sibling = Some(2);
+        let raw = mock_tree(vec![
+            root,
+            branch,
+            mock_fact(50030, Some("https://invalid.test/later")),
+        ]);
+        for failure in [(1, true), (1, false)] {
+            raw.arena.lock().unwrap().navigation_error = Some(failure);
+            assert_eq!(walk_uia_tree(&raw), None);
+            assert_eq!(raw.arena.lock().unwrap().value_reads, 0);
         }
     }
 
@@ -1669,6 +1952,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50000), // Group
             is_password: Ok(false),
+            is_control: Ok(true),
             value: None,
             legacy_value: None,
             first_child: Some(1),
@@ -1681,6 +1965,7 @@ mod tests {
             nodes.push(MockNodeData {
                 control_type: Ok(50004), // Edit box
                 is_password: Ok(false),
+                is_control: Ok(true),
                 value: None,
                 legacy_value: None,
                 first_child: None,
@@ -1693,6 +1978,8 @@ mod tests {
             value_reads: 0,
             next_sibling_calls: 0,
             first_child_calls: 0,
+            navigation_error: None,
+            node_acquisitions: 0,
         }));
 
         let root = MockNode {
@@ -1716,6 +2003,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50000),
             is_password: Ok(false),
+            is_control: Ok(true),
             value: None,
             legacy_value: None,
             first_child: Some(1),
@@ -1726,6 +2014,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50030), // Document
             is_password: Ok(true),   // Password!
+            is_control: Ok(true),
             value: Some("https://password-leak.com".into()),
             legacy_value: None,
             first_child: Some(2),
@@ -1736,6 +2025,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50030),
             is_password: Ok(false),
+            is_control: Ok(true),
             value: Some("https://child-doc.com".into()),
             legacy_value: None,
             first_child: None,
@@ -1747,6 +2037,8 @@ mod tests {
             value_reads: 0,
             next_sibling_calls: 0,
             first_child_calls: 0,
+            navigation_error: None,
+            node_acquisitions: 0,
         }));
 
         let root = MockNode {
@@ -1773,6 +2065,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50000),
             is_password: Ok(false),
+            is_control: Ok(true),
             value: None,
             legacy_value: None,
             first_child: Some(1),
@@ -1783,6 +2076,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50004),
             is_password: Ok(false),
+            is_control: Ok(true),
             value: Some("https://draft-in-address-bar.com/draft".into()),
             legacy_value: Some("https://draft-in-address-bar.com/draft".into()),
             first_child: None,
@@ -1793,6 +2087,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50030),
             is_password: Ok(false),
+            is_control: Ok(true),
             value: Some("https://committed.example.com/page?query#frag".into()),
             legacy_value: Some("https://committed.example.com/page?query#frag".into()),
             first_child: None,
@@ -1804,6 +2099,8 @@ mod tests {
             value_reads: 0,
             next_sibling_calls: 0,
             first_child_calls: 0,
+            navigation_error: None,
+            node_acquisitions: 0,
         }));
 
         let root = MockNode {
@@ -1822,6 +2119,7 @@ mod tests {
             MockNodeData {
                 control_type: Ok(50000),
                 is_password: Ok(false),
+                is_control: Ok(true),
                 value: None,
                 legacy_value: None,
                 first_child: Some(1),
@@ -1830,6 +2128,7 @@ mod tests {
             MockNodeData {
                 control_type: Ok(50030),
                 is_password: Ok(false),
+                is_control: Ok(true),
                 value: Some("https://example.com/foo".into()),
                 legacy_value: None,
                 first_child: None,
@@ -1843,6 +2142,8 @@ mod tests {
                 value_reads: 0,
                 next_sibling_calls: 0,
                 first_child_calls: 0,
+                navigation_error: None,
+                node_acquisitions: 0,
             })),
         };
         assert_eq!(
@@ -1855,6 +2156,7 @@ mod tests {
             MockNodeData {
                 control_type: Ok(50000),
                 is_password: Ok(false),
+                is_control: Ok(true),
                 value: None,
                 legacy_value: None,
                 first_child: Some(1),
@@ -1863,6 +2165,7 @@ mod tests {
             MockNodeData {
                 control_type: Ok(50030),
                 is_password: Ok(false),
+                is_control: Ok(true),
                 value: None,
                 legacy_value: None,
                 first_child: None,
@@ -1876,6 +2179,8 @@ mod tests {
                 value_reads: 0,
                 next_sibling_calls: 0,
                 first_child_calls: 0,
+                navigation_error: None,
+                node_acquisitions: 0,
             })),
         };
         assert_eq!(walk_uia_tree(&root2), None);
@@ -1885,6 +2190,7 @@ mod tests {
             MockNodeData {
                 control_type: Ok(50000),
                 is_password: Ok(false),
+                is_control: Ok(true),
                 value: None,
                 legacy_value: None,
                 first_child: Some(1),
@@ -1893,6 +2199,7 @@ mod tests {
             MockNodeData {
                 control_type: Ok(50030),
                 is_password: Ok(false),
+                is_control: Ok(true),
                 value: Some("https://site-a.com/".into()),
                 legacy_value: Some("https://site-b.com/".into()),
                 first_child: None,
@@ -1906,6 +2213,8 @@ mod tests {
                 value_reads: 0,
                 next_sibling_calls: 0,
                 first_child_calls: 0,
+                navigation_error: None,
+                node_acquisitions: 0,
             })),
         };
         assert_eq!(walk_uia_tree(&root3), None);
@@ -1919,6 +2228,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50000), // Group
             is_password: Ok(false),
+            is_control: Ok(true),
             value: None,
             legacy_value: None,
             first_child: Some(1),
@@ -1929,6 +2239,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50030), // Document
             is_password: Ok(true),   // Secure password node
+            is_control: Ok(true),
             value: Some("https://should-not-read-pass.com".into()),
             legacy_value: None,
             first_child: None,
@@ -1939,6 +2250,7 @@ mod tests {
         nodes.push(MockNodeData {
             control_type: Ok(50030), // Document
             is_password: Ok(false),
+            is_control: Ok(true),
             value: Some("https://example.com/should-not-read".into()),
             legacy_value: Some("https://example.com/should-not-read".into()),
             first_child: None,
@@ -1950,6 +2262,8 @@ mod tests {
             value_reads: 0,
             next_sibling_calls: 0,
             first_child_calls: 0,
+            navigation_error: None,
+            node_acquisitions: 0,
         }));
 
         let root = MockNode {
