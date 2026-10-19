@@ -769,9 +769,7 @@ impl SetupAuthority {
     }
 
     pub fn retry(&mut self) -> RetryOutcome {
-        if self.setup_read_failed
-            && self.failed_sources.is_empty()
-            && self.pending_login.is_none()
+        if self.setup_read_failed && self.failed_sources.is_empty() && self.pending_login.is_none()
         {
             return RetryOutcome {
                 started: Vec::new(),
@@ -1120,13 +1118,19 @@ mod tests {
         fs::create_dir(root.join("setup.json.tmp")).unwrap();
         assert!(!auth.set_start_at_login(true));
         auth.set_login_apply_failed(true);
-        assert_eq!(auth.projection().start_at_login, LoginPreference::explicit(true));
+        assert_eq!(
+            auth.projection().start_at_login,
+            LoginPreference::explicit(true)
+        );
         assert_eq!(auth.pending_login(), Some(true));
         assert!(!auth.retry().saved);
         assert!(auth.projection().login_apply_failed);
         fs::remove_dir(root.join("setup.json.tmp")).unwrap();
         assert!(auth.retry().saved);
-        assert_eq!(read_readonly(&root).start_at_login, LoginPreference::explicit(true));
+        assert_eq!(
+            read_readonly(&root).start_at_login,
+            LoginPreference::explicit(true)
+        );
         // Saving is not registration success. Keep the intent for another retry.
         auth.set_login_apply_failed(true);
         assert_eq!(auth.pending_login(), Some(true));
@@ -1152,7 +1156,10 @@ mod tests {
             auth.set_login_apply_failed(true);
             fs::remove_dir(root.join("setup.json.tmp")).unwrap();
             assert!(auth.set_wizard_step(WizardStep::Mic));
-            assert_eq!(read_readonly(&root).start_at_login, LoginPreference::explicit(false));
+            assert_eq!(
+                read_readonly(&root).start_at_login,
+                LoginPreference::explicit(false)
+            );
             assert_eq!(auth.pending_login(), Some(requested));
             fs::remove_dir_all(root).unwrap();
         }
@@ -1712,7 +1719,10 @@ mod tests {
             assert!(auth.set_start_at_login(false));
             let val_after_login: serde_json::Value =
                 serde_json::from_slice(&fs::read(root.join(SETUP_FILE_NAME)).unwrap()).unwrap();
-            assert_eq!(val_after_login["start_at_login"], serde_json::Value::Bool(false));
+            assert_eq!(
+                val_after_login["start_at_login"],
+                serde_json::Value::Bool(false)
+            );
 
             let startup3 = startup_load(load_for_startup(&root, true));
             let ready3 = match startup3 {

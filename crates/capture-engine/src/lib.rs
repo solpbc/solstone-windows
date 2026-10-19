@@ -3764,7 +3764,10 @@ mod tests {
         let dump = engine.health_dump();
         assert_eq!(dump.setup.wizard, observer_model::setup::WizardStep::Mic);
         assert!(dump.setup.notice_dismissed);
-        assert_eq!(dump.setup.start_at_login, observer_model::setup::LoginPreference::explicit(false));
+        assert_eq!(
+            dump.setup.start_at_login,
+            observer_model::setup::LoginPreference::explicit(false)
+        );
         assert!(dump.setup.login_apply_failed);
 
         let legacy = SetupSnapshot {
@@ -3782,7 +3785,10 @@ mod tests {
         let dump2 = engine.health_dump();
         assert_eq!(dump2.setup.wizard, observer_model::setup::WizardStep::Done);
         assert!(!dump2.setup.notice_dismissed);
-        assert_eq!(dump2.setup.start_at_login, observer_model::setup::LoginPreference::explicit(true));
+        assert_eq!(
+            dump2.setup.start_at_login,
+            observer_model::setup::LoginPreference::explicit(true)
+        );
         assert!(dump2.setup.login_apply_failed);
     }
 
@@ -3819,7 +3825,10 @@ mod tests {
             observer_model::setup::LoadOutcome::Valid(cfg) => {
                 assert!(!cfg.mic);
                 assert!(cfg.screen);
-                assert_eq!(cfg.start_at_login, observer_model::setup::LoginPreference::explicit(false));
+                assert_eq!(
+                    cfg.start_at_login,
+                    observer_model::setup::LoginPreference::explicit(false)
+                );
                 assert_eq!(cfg.wizard, observer_model::setup::WizardStep::SystemAudio);
             }
             other => panic!("expected Valid, got {other:?}"),
