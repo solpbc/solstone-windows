@@ -235,22 +235,15 @@ impl OpenPairProbe {
     }
 }
 
-fn journal_window_title(
-    phase: observer_model::PairingPhase,
-    mark: Option<&observer_model::MarkRenderSpec>,
-) -> String {
-    if phase != observer_model::PairingPhase::Paired {
-        "your journal".to_string()
-    } else {
-        match mark {
-            Some(mark) => format!(
-                "{}{}{}",
-                mark.words[0].to_lowercase(),
-                '\u{00B7}',
-                mark.words[1].to_lowercase()
-            ),
-            None => format!("mark{}unavailable", '\u{00B7}'),
-        }
+fn journal_window_title(mark: Option<&observer_model::MarkRenderSpec>) -> String {
+    match mark {
+        Some(mark) => format!(
+            "{}{}{}",
+            mark.words[0].to_lowercase(),
+            '\u{00B7}',
+            mark.words[1].to_lowercase()
+        ),
+        None => format!("mark{}unavailable", '\u{00B7}'),
     }
 }
 
@@ -260,13 +253,11 @@ pub async fn open_journal<S: JournalSurface>(
     surface: &S,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), OpenJournalError> {
-    let (phase, mark) = state
+    let phase = state
         .sync
         .lock()
-        .map(|s| (s.pairing.phase, s.pairing.mark.clone()))
-        .unwrap_or((observer_model::PairingPhase::NotPaired, None));
-
-    let title = journal_window_title(phase, mark.as_ref());
+        .map(|s| s.pairing.phase)
+        .unwrap_or(observer_model::PairingPhase::NotPaired);
 
     dispatch_open_journal(
         phase,
@@ -301,6 +292,15 @@ pub async fn open_journal<S: JournalSurface>(
                 .await
                 .clone()
                 .ok_or(OpenJournalError::Unpaired)?;
+            // The window is titled by the mark of the pairing the bridge serves. A
+            // cold `--open-journal` gets here before sync has read the pairing
+            // state, so the mark comes from that credential, not from sync.
+            let title = journal_window_title(
+                pl_transport_win::unknown_journals::mark_spec_for_jid(
+                    &access.client_slot().load().credential().instance_id,
+                )
+                .as_ref(),
+            );
 
             let handle = match pl_transport_win::journal_bridge::start_with_facts(access).await {
                 Ok(handle) => handle,

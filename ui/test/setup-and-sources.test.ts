@@ -1322,6 +1322,26 @@ describe("setup recovery and proof lifetimes", () => {
       });
     });
 
+    it("opens the journal pane when a pairing link arrives while home is open", async () => {
+      let link = "";
+      invokeMock.mockImplementation(async (command) =>
+        command === "pairing_prefill" ? (link as never) : (undefined as never),
+      );
+      app.__test__.renderSettings(continuation({}));
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(app.__test__.getRoute()).toBe("home");
+      link = "https://go.solstone.app/p#arrived";
+      app.__test__.refreshPairingPrefillOnFocus();
+      await vi.waitFor(() => {
+        expect(app.__test__.getRoute()).toBe("journal");
+        expect((byId(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe(link);
+      });
+      app.__test__.setRoute("home");
+      app.__test__.refreshPairingPrefillOnFocus();
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(app.__test__.getRoute()).toBe("home");
+    });
+
     it("stays where it is with no waiting link, another pane, a paired journal or setup in progress", async () => {
       let link = "";
       invokeMock.mockImplementation(async (command) =>

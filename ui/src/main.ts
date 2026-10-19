@@ -550,7 +550,8 @@ function nativeContinuationPending(dump: HealthDump): boolean {
 
 // A pairing link that opens the app while it is unpaired and setup is finished
 // waits in the journal pane's field, and home has no field. The window's first
-// render opens the journal pane so the waiting link is in view.
+// render, and each time it comes forward with an untouched field, opens the
+// journal pane so the waiting link is in view.
 let waitingLinkChecked = false;
 
 function openJournalPaneForWaitingLink(dump: HealthDump): void {
@@ -5363,6 +5364,7 @@ function refreshPairingPrefillOnFocus(): void {
   if (label !== "settings" || latestHealth?.setup?.sequence_enabled !== true) return;
   if (latestHealth.sync.pairing.phase !== "not_paired") return;
   if (pairFieldDirty || pairingDraft) return;
+  waitingLinkChecked = false;
   requestRerender();
 }
 
