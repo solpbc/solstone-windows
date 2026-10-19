@@ -139,7 +139,6 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: tokio::net::TcpStr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
