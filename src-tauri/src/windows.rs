@@ -27,6 +27,17 @@ const WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreen
 // dial can be slow. A delayed real success is preferable to a spurious failure.
 const JOURNAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Every window here shares one WebView2 user data folder, and WebView2 refuses to
+/// start a webview whose environment options differ from a webview already running
+/// in that folder. Every window takes its options from here so they always match.
+fn shared_webview_environment(
+    builder: WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle>,
+) -> WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle> {
+    builder
+        .additional_browser_args(WEBVIEW_ARGS)
+        .scroll_bar_style(ScrollBarStyle::FluentOverlay)
+}
+
 fn mica_effects() -> tauri::utils::config::WindowEffectsConfig {
     EffectsBuilder::new().effect(Effect::Mica).build()
 }
@@ -103,14 +114,12 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
         WebviewUrl::App("index.html".into())
     };
 
-    let window = WebviewWindowBuilder::new(app, "settings", url)
+    let window = shared_webview_environment(WebviewWindowBuilder::new(app, "settings", url))
         .title("solstone settings")
         .inner_size(820.0, 580.0)
         .min_inner_size(460.0, 480.0)
         .transparent(true)
         .effects(mica_effects())
-        .scroll_bar_style(ScrollBarStyle::FluentOverlay)
-        .additional_browser_args(WEBVIEW_ARGS)
         .visible(true)
         .build()?;
 
@@ -520,12 +529,15 @@ fn build_journal_window(
     // wry Navigates during build, before with_webview; construct on about:blank,
     // then navigate the bootstrap URL only after comprehensive filtering is installed.
     let placeholder = tauri::Url::parse("about:blank").expect("valid placeholder URL");
-    let builder = WebviewWindowBuilder::new(app, "journal", WebviewUrl::External(placeholder))
-        .title(title)
-        .inner_size(1100.0, 800.0)
-        .min_inner_size(640.0, 480.0)
-        .additional_browser_args(WEBVIEW_ARGS)
-        .visible(false);
+    let builder = shared_webview_environment(WebviewWindowBuilder::new(
+        app,
+        "journal",
+        WebviewUrl::External(placeholder),
+    ))
+    .title(title)
+    .inner_size(1100.0, 800.0)
+    .min_inner_size(640.0, 480.0)
+    .visible(false);
     let builder = match journal_window::bundled_initialization_script() {
         Ok(script) => builder.initialization_script(script),
         Err(error) => {
@@ -803,15 +815,17 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into()))
-        .title("about solstone")
-        .inner_size(360.0, 480.0)
-        .transparent(true)
-        .effects(mica_effects())
-        .scroll_bar_style(ScrollBarStyle::FluentOverlay)
-        .additional_browser_args(WEBVIEW_ARGS)
-        .visible(true)
-        .build()?;
+    shared_webview_environment(WebviewWindowBuilder::new(
+        app,
+        "about",
+        WebviewUrl::App("index.html".into()),
+    ))
+    .title("about solstone")
+    .inner_size(360.0, 480.0)
+    .transparent(true)
+    .effects(mica_effects())
+    .visible(true)
+    .build()?;
     tracing::info!(
         target: "window",
         label = "about",
