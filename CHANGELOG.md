@@ -9,6 +9,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 ### Fixed
 
 - a pairing link you open while the solstone app is already running now fills in the pairing field right away, instead of after you move to another screen.
+- with settings open, "open journal" now opens your journal in its own window, instead of saying "couldn't open your journal." settings also opens now while your journal's window is open.
+- a pairing link that starts the solstone app while it isn't paired now opens the journal pane, where the link is waiting, instead of home.
 
 ## [2.0.30] - 2026-10-19
 
