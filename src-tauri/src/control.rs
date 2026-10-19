@@ -238,6 +238,7 @@ mod tests {
             uploader_slot: tokio::sync::Mutex::new(pl_transport_win::UploaderSlot::new()),
             credential_access: tokio::sync::Mutex::new(None),
             journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
+            journal_window: std::sync::Mutex::new(Default::default()),
             journal_bridge: Arc::new(std::sync::Mutex::new(None)),
             setup_browser: Arc::new(std::sync::Mutex::new(None)),
             pairing_admission: std::sync::atomic::AtomicBool::new(false),

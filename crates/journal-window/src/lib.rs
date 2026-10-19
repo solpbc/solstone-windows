@@ -297,6 +297,32 @@ pub fn page_load_effect(origin: &JournalOrigin, event: PageLoadKind, url: &str) 
     }
 }
 
+/// Window labels for the journal window. When WebView2 refuses a webview, the
+/// runtime never stores the window, so neither `close` nor `destroy` reaches it,
+/// yet Tauri keeps its label registered for the rest of the process. Each attempt
+/// therefore takes a fresh label, and only a window that opened is the one a later
+/// open focuses or an unpair closes.
+#[derive(Debug, Default)]
+pub struct JournalWindowLabels {
+    attempts: u64,
+    opened: Option<String>,
+}
+
+impl JournalWindowLabels {
+    pub fn next_attempt(&mut self) -> String {
+        self.attempts += 1;
+        format!("journal-{}", self.attempts)
+    }
+
+    pub fn opened(&mut self, label: String) {
+        self.opened = Some(label);
+    }
+
+    pub fn current(&self) -> Option<&str> {
+        self.opened.as_deref()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandlerLifetime {
     RetainedForView,
@@ -748,6 +774,23 @@ mod document_policy_tests {
             handler_lifetime(FilterInstall::Comprehensive),
             HandlerLifetime::RetainedForView
         );
+    }
+
+    #[test]
+    fn a_refused_journal_window_never_blocks_the_next_open() {
+        let mut labels = JournalWindowLabels::default();
+        let refused = labels.next_attempt();
+        assert_eq!(labels.current(), None, "a refused window is never focused");
+        let retry = labels.next_attempt();
+        assert_ne!(
+            retry, refused,
+            "the retry must not reuse a label Tauri still holds"
+        );
+        labels.opened(retry.clone());
+        assert_eq!(labels.current(), Some(retry.as_str()));
+        let after_close = labels.next_attempt();
+        assert_ne!(after_close, retry);
+        assert!(after_close.starts_with("journal-"));
     }
 
     #[test]

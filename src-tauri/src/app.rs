@@ -43,9 +43,11 @@ pub struct AppState {
     pub uploader_slot: tokio::sync::Mutex<UploaderSlot>,
     /// The sole paired credential transport authority shared by upload and bridge.
     pub credential_access: tokio::sync::Mutex<Option<CredentialAccess>>,
-    /// Serializes journal opens so parallel user triggers do not race the single
-    /// Tauri window label and surface a spurious duplicate-label failure.
+    /// Serializes journal opens so parallel user triggers open one journal window,
+    /// not two.
     pub journal_open_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The journal window's label per attempt, and the one that opened.
+    pub journal_window: Mutex<journal_window::JournalWindowLabels>,
     /// Per-window loopback bridge backing the external journal window.
     pub journal_bridge: Arc<Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>>,
     pub setup_browser: Arc<Mutex<Option<SetupBrowser>>>,
@@ -779,6 +781,7 @@ pub fn run(
                 uploader_slot: tokio::sync::Mutex::new(slot),
                 credential_access: tokio::sync::Mutex::new(credential_access),
                 journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
+                journal_window: Mutex::new(Default::default()),
                 journal_bridge: Arc::new(Mutex::new(None)),
                 setup_browser: Arc::new(Mutex::new(None)),
                 pairing_admission,

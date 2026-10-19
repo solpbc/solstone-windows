@@ -181,7 +181,7 @@ impl JournalSurface for tauri::AppHandle {
     }
 
     fn focus_journal_if_present(&self) -> bool {
-        if let Some(window) = self.get_webview_window("journal") {
+        if let Some(window) = opened_journal_window(self) {
             window.set_focus().ok();
             true
         } else {
@@ -190,10 +190,19 @@ impl JournalSurface for tauri::AppHandle {
     }
 
     fn close_journal(&self) {
-        if let Some(window) = self.get_webview_window("journal") {
+        if let Some(window) = opened_journal_window(self) {
             window.close().ok();
         }
     }
+}
+
+fn opened_journal_window(app: &tauri::AppHandle) -> Option<WebviewWindow> {
+    let state = app.try_state::<crate::app::AppState>()?;
+    let labels = state
+        .journal_window
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    app.get_webview_window(labels.current()?)
 }
 
 #[cfg(test)]
@@ -349,8 +358,14 @@ pub async fn open_journal<S: JournalSurface>(
 
             let page_loaded = Arc::new(Notify::new());
             let page_load_started = Arc::new(AtomicBool::new(false));
+            let label = state
+                .journal_window
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_attempt();
             let window = match build_journal_window_on_main_thread(
                 app,
+                label.clone(),
                 title.clone(),
                 url.clone(),
                 page_loaded.clone(),
@@ -424,6 +439,11 @@ pub async fn open_journal<S: JournalSurface>(
                     }
                 }
             });
+            state
+                .journal_window
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .opened(label);
 
             tracing::info!(
                 target: "window",
@@ -499,6 +519,7 @@ fn log_journal_window_state(window: &WebviewWindow, stage: &'static str) {
 // also dispatches onto the async runtime before it calls this function.
 async fn build_journal_window_on_main_thread(
     app: &tauri::AppHandle,
+    label: String,
     title: String,
     url: String,
     page_loaded: Arc<Notify>,
@@ -507,7 +528,14 @@ async fn build_journal_window_on_main_thread(
     let (tx, rx) = oneshot::channel();
     let app_for_main = app.clone();
     app.run_on_main_thread(move || {
-        let res = build_journal_window(&app_for_main, &title, &url, page_loaded, page_load_started);
+        let res = build_journal_window(
+            &app_for_main,
+            &label,
+            &title,
+            &url,
+            page_loaded,
+            page_load_started,
+        );
         let _ = tx.send(res);
     })?;
 
@@ -516,6 +544,7 @@ async fn build_journal_window_on_main_thread(
 
 fn build_journal_window(
     app: &tauri::AppHandle,
+    label: &str,
     title: &str,
     url: &str,
     page_loaded: Arc<Notify>,
@@ -531,7 +560,7 @@ fn build_journal_window(
     let placeholder = tauri::Url::parse("about:blank").expect("valid placeholder URL");
     let builder = shared_webview_environment(WebviewWindowBuilder::new(
         app,
-        "journal",
+        label,
         WebviewUrl::External(placeholder),
     ))
     .title(title)
@@ -710,7 +739,7 @@ fn build_journal_window(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        let window_still_present = app.get_webview_window("journal").is_some();
+        let window_still_present = app.get_webview_window(label).is_some();
         tracing::info!(
             target: "window",
             label = "journal",
