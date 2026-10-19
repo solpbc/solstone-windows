@@ -5,7 +5,8 @@
 # scratch shortcut folders: a fake "setup" repoints them into a proof root the
 # way Velopack's Setup.exe does, and the restore must put back exactly what was
 # captured, fail closed while anything still names the proof root, and leave
-# unrelated shortcuts alone. Never touches the real Uninstall or Run keys.
+# unrelated shortcuts alone. Never touches the real Uninstall, Run or URL scheme
+# keys.
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -21,6 +22,7 @@ $Id = [guid]::NewGuid().ToString("N")
 $ScratchKey = "Software\solstone-native-proof-host-state-test-$Id"
 $UninstallRoot = "$ScratchKey\Uninstall"
 $RunKey = "$ScratchKey\Run"
+$SchemeKey = "$ScratchKey\Classes\solstone"
 $Scratch = Join-Path ([IO.Path]::GetTempPath()) "solstone-host-state-test-$Id"
 $Desktop = Join-Path $Scratch "Desktop"
 $Programs = Join-Path $Scratch "Programs"
@@ -46,12 +48,28 @@ function Get-KeyText([string]$subKey) {
         }) -join "`n"
     } finally { $key.Dispose() }
 }
+function Get-TreeText([string]$subKey) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($subKey)
+    if ($null -eq $key) { return "<absent>" }
+    try { $children = @($key.GetSubKeyNames()) } finally { $key.Dispose() }
+    return ((Get-KeyText $subKey) + "`n" + (@($children | ForEach-Object { "[$_]`n" + (Get-TreeText "$subKey\$_") }) -join "`n"))
+}
+function Set-Scheme([string]$app) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($SchemeKey)
+    $key.SetValue("", "URL:solstone", [Microsoft.Win32.RegistryValueKind]::String)
+    $key.SetValue("URL Protocol", "", [Microsoft.Win32.RegistryValueKind]::String)
+    $key.Dispose()
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("$SchemeKey\shell\open\command")
+    $key.SetValue("", "`"$app`" `"%1`"", [Microsoft.Win32.RegistryValueKind]::String)
+    $key.Dispose()
+}
 function Invoke-Guard([string]$mode, [string]$state) {
     $params = @{
         Mode = $mode
         StatePath = $state
         UninstallRootSubKey = $UninstallRoot
         RunSubKey = $RunKey
+        SchemeSubKey = $SchemeKey
         ShortcutFolders = @($Desktop, $Programs)
     }
     if ($mode -eq "Restore") { $params.ProofRoot = $ProofRoot }
@@ -83,9 +101,11 @@ try {
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($RunKey)
     $key.SetValue("Solstone", "`"$RealApp`" --from-autostart", [Microsoft.Win32.RegistryValueKind]::String)
     $key.Dispose()
+    Set-Scheme $RealApp
     New-Shortcut (Join-Path $Desktop "solstone.lnk") $RealApp
     New-Shortcut (Join-Path $Desktop "other.lnk") "C:\Windows\notepad.exe"
     $BaselineUninstall = Get-KeyText "$UninstallRoot\Solstone"
+    $BaselineScheme = Get-TreeText $SchemeKey
     $BaselineRun = Get-KeyText $RunKey
     $BaselineDesktopHash = Get-Hash (Join-Path $Desktop "solstone.lnk")
     $BaselineDesktopTime = (Get-Item (Join-Path $Desktop "solstone.lnk")).LastWriteTimeUtc
@@ -106,6 +126,8 @@ try {
     $key.Dispose()
     New-Shortcut (Join-Path $Desktop "solstone.lnk") $ProofApp
     New-Shortcut (Join-Path $Programs "solstone.lnk") $ProofApp
+    Set-Scheme $ProofApp
+    Assert-True ((Get-TreeText $SchemeKey) -ne $BaselineScheme) "fake launch repointed the url scheme"
     Assert-True ((Get-KeyText "$UninstallRoot\Solstone") -ne $BaselineUninstall) "fake setup changed the uninstall entry"
     Assert-True ((Get-Hash (Join-Path $Desktop "solstone.lnk")) -ne $BaselineDesktopHash) "fake setup changed the desktop shortcut"
 
@@ -114,6 +136,8 @@ try {
     Assert-True ($restore.Text.Contains("uninstall entry: changed during the proof (InstallLocation, UninstallString); restored")) "restore names the changed uninstall values"
     Assert-True ((Get-KeyText "$UninstallRoot\Solstone") -eq $BaselineUninstall) "uninstall entry is back, every kind, in order"
     Assert-True ((Get-KeyText $RunKey) -eq $BaselineRun) "login item is back"
+    Assert-True ($restore.Text.Contains("url scheme: changed during the proof; restored")) "restore reports the url scheme"
+    Assert-True ((Get-TreeText $SchemeKey) -eq $BaselineScheme) "url scheme tree is back"
     Assert-True ((Get-Hash (Join-Path $Desktop "solstone.lnk")) -eq $BaselineDesktopHash) "desktop shortcut bytes are back"
     Assert-True ((Get-Item (Join-Path $Desktop "solstone.lnk")).LastWriteTimeUtc -eq $BaselineDesktopTime) "desktop shortcut time is back"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $Programs "solstone.lnk"))) "a shortcut the proof created is removed"
@@ -122,6 +146,7 @@ try {
     $again = Invoke-Guard "Restore" $State
     Assert-True ($again.Exit -eq 0 -and (Test-Line $again.Text "HOST_STATE_RESTORED") -and
         $again.Text.Contains("uninstall entry: unchanged") -and
+        $again.Text.Contains("url scheme: unchanged") -and
         $again.Text.Contains("shortcuts: none pointed into the proof root")) "a second restore is a no-op"
 
     $refused = $null
@@ -144,8 +169,10 @@ try {
     $key.SetValue("Solstone", "`"$ProofApp`" --from-autostart", [Microsoft.Win32.RegistryValueKind]::String)
     $key.Dispose()
     New-Shortcut (Join-Path $Desktop "solstone.lnk") $ProofApp
+    Set-Scheme $ProofApp
     $restore = Invoke-Guard "Restore" $State
     Assert-True ($restore.Exit -eq 0 -and (Test-Line $restore.Text "HOST_STATE_RESTORED")) "restore from an absent baseline succeeds"
+    Assert-True ((Get-TreeText $SchemeKey) -eq "<absent>") "a url scheme the proof's launch registered is removed"
     Assert-True ((Get-KeyText "$UninstallRoot\Solstone") -eq "<absent>") "an entry the proof created is removed"
     Assert-True (-not ((Get-KeyText $RunKey) -like "*Solstone*")) "a login item the proof created is removed"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $Desktop "solstone.lnk"))) "a desktop shortcut the proof created is removed"

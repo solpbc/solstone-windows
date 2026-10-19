@@ -221,7 +221,7 @@ impl fmt::Display for NativeProofError {
             ),
             Self::HostStateCapture => write!(
                 formatter,
-                "native proof could not record the box's Solstone uninstall entry, login item and shortcuts before setup; nothing was installed, so repair scripts/native-proof-host-state.ps1 and retry"
+                "native proof could not record the box's Solstone uninstall entry, login item, URL scheme and shortcuts before setup; nothing was installed, so repair scripts/native-proof-host-state.ps1 and retry"
             ),
             Self::SetupInvocation => write!(
                 formatter,
@@ -290,7 +290,7 @@ impl fmt::Display for NativeProofError {
             Self::HostStateRestore(proof) => {
                 write!(
                     formatter,
-                    "native proof could not put back the box's Solstone uninstall entry, login item and shortcuts; read the .host-state.json.log beside the proof root under target/release-native-proof and repair the box by hand before another proof"
+                    "native proof could not put back the box's Solstone uninstall entry, login item, URL scheme and shortcuts; read the .host-state.json.log beside the proof root under target/release-native-proof and repair the box by hand before another proof"
                 )?;
                 match proof {
                     Some(proof) => write!(formatter, " (the proof had already failed: {proof})"),

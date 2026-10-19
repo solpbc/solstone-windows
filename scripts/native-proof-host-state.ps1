@@ -5,20 +5,23 @@
 # Setup.exe (--silent --installto <proof root>), and Velopack's setup registers
 # that copy with the signed-in user whatever LOCALAPPDATA says: it rewrites the
 # HKCU Uninstall\Solstone entry and the Desktop and Start Menu shortcuts so they
-# point into the proof root. The proof runs on a shared box, so xtask brackets
-# setup and smoke with this script and puts all of it back, pass or fail.
+# point into the proof root. When the smoke launches that copy, the app also
+# registers the solstone: URL scheme for itself under HKCU\Software\Classes if
+# no handler exists. The proof runs on a shared box, so xtask brackets setup and
+# smoke with this script and puts all of it back, pass or fail.
 #
 #   -Mode Capture -StatePath <file>
-#       Record the Uninstall entry, the HKCU Run login item, and every top-level
-#       shortcut in the Desktop, Start Menu Programs and Startup folders.
+#       Record the Uninstall entry, the HKCU Run login item, the solstone: URL
+#       scheme tree, and every top-level shortcut in the Desktop, Start Menu
+#       Programs and Startup folders.
 #       Prints HOST_STATE_CAPTURED.
 #   -Mode Restore -StatePath <file> -ProofRoot <dir>
-#       Put back the recorded Uninstall entry and Run value, and restore (or
-#       remove, if it did not exist before) every shortcut that now targets the
-#       proof root. Then check the result: the entries must equal what was
-#       recorded, and no shortcut, Uninstall entry or Run value may still name
-#       the proof root. Prints one before/after line per location and
-#       HOST_STATE_RESTORED.
+#       Put back the recorded Uninstall entry, Run value and URL scheme tree,
+#       and restore (or remove, if it did not exist before) every shortcut that
+#       now targets the proof root. Then check the result: the entries must
+#       equal what was recorded, and no shortcut, Uninstall entry, Run value or
+#       URL scheme value may still name the proof root. Prints one before/after
+#       line per location and HOST_STATE_RESTORED.
 #
 # Every line printed is also written to <StatePath>.log, because xtask keeps its
 # children's output private.
@@ -37,6 +40,7 @@ param(
     [string]$UninstallName = "Solstone",
     [string]$RunSubKey = "Software\Microsoft\Windows\CurrentVersion\Run",
     [string]$RunValueName = "Solstone",
+    [string]$SchemeSubKey = "Software\Classes\solstone",
     [string[]]$ShortcutFolders
 )
 
@@ -146,6 +150,50 @@ function Write-RegistryValue([string]$subKey, [string]$name, $value) {
     } finally { $key.Dispose() }
 }
 
+# The URL scheme handler is a key tree (solstone\shell\open\command), so it is
+# recorded as every key and value under it, keyed by path relative to the root.
+# Returns $null when the root is absent.
+function Read-RegistryTree([string]$subKey) {
+    $root = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($subKey)
+    if ($null -eq $root) { return $null }
+    $root.Dispose()
+    $entries = @()
+    $paths = @("")
+    for ($i = 0; $i -lt $paths.Count; $i++) {
+        $relative = $paths[$i]
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($(if ($relative) { "$subKey\$relative" } else { $subKey }))
+        try {
+            $entries += [pscustomobject]@{ Key = $relative; Name = ""; Kind = "Key"; Data = "" }
+            foreach ($name in @($key.GetValueNames())) {
+                $kind = [string]$key.GetValueKind($name)
+                $data = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $entries += [pscustomobject]@{ Key = $relative; Name = $name; Kind = $kind; Data = (ConvertFrom-RegistryData $kind $data) }
+            }
+            foreach ($child in @($key.GetSubKeyNames())) { $paths += $(if ($relative) { "$relative\$child" } else { $child }) }
+        } finally { $key.Dispose() }
+    }
+    return ,$entries
+}
+
+function Write-RegistryTree([string]$subKey, $entries) {
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($subKey, $false)
+    if ($null -eq $entries) { return }
+    foreach ($entry in @($entries)) {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($(if ($entry.Key) { "$subKey\$($entry.Key)" } else { $subKey }))
+        try {
+            if ($entry.Kind -ne "Key") {
+                $key.SetValue([string]$entry.Name, (ConvertTo-RegistryData $entry.Kind $entry.Data), [Microsoft.Win32.RegistryValueKind]$entry.Kind)
+            }
+        } finally { $key.Dispose() }
+    }
+}
+
+function Format-RegistryTree($entries) {
+    if ($null -eq $entries) { return "<absent>" }
+    return (@($entries) | Where-Object { $null -ne $_ } |
+        ForEach-Object { "{0}|{1}|{2}|{3}" -f $_.Key, $_.Name, $_.Kind, $_.Data } | Sort-Object) -join "`n"
+}
+
 # One canonical string per registry state, so before/after compare exactly.
 # Sorted by name: value order carries no meaning, and setup rewrites it.
 function Format-RegistryState($values) {
@@ -211,19 +259,23 @@ if ($Mode -eq "Capture") {
     }
     $uninstall = Read-RegistryKey $UninstallSubKey
     $run = Read-RegistryValue $RunSubKey $RunValueName
+    $scheme = Read-RegistryTree $SchemeSubKey
     $state = [pscustomobject]@{
-        schema = "solstone.native-proof-host-state.v1"
+        schema = "solstone.native-proof-host-state.v2"
         uninstall_present = ($null -ne $uninstall)
         uninstall = @($uninstall)
         run_present = ($null -ne $run)
         run = $run
+        scheme_present = ($null -ne $scheme)
+        scheme = @($scheme)
         shortcut_folders = @($ShortcutFolders)
         shortcuts = @($shortcuts)
     }
     [IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Depth 6), $Utf8)
-    Write-Report ("host-state before: uninstall entry {0} ({1} values); login item {2}; {3} shortcuts in {4} folders" -f
+    Write-Report ("host-state before: uninstall entry {0} ({1} values); login item {2}; url scheme {3}; {4} shortcuts in {5} folders" -f
         $(if ($null -ne $uninstall) { "present" } else { "absent" }), @($uninstall).Count,
-        $(if ($null -ne $run) { "present" } else { "absent" }), $shortcuts.Count, $ShortcutFolders.Count)
+        $(if ($null -ne $run) { "present" } else { "absent" }),
+        $(if ($null -ne $scheme) { "present" } else { "absent" }), $shortcuts.Count, $ShortcutFolders.Count)
     Write-Report "HOST_STATE_CAPTURED"
     exit 0
 }
@@ -232,12 +284,14 @@ if ($Mode -eq "Capture") {
 if ([string]::IsNullOrWhiteSpace($ProofRoot)) { throw "restore requires -ProofRoot" }
 if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { throw "host-state file is missing; nothing was captured to restore" }
 $state = [IO.File]::ReadAllText($StatePath, $Utf8) | ConvertFrom-Json
-if ($state.schema -ne "solstone.native-proof-host-state.v1") { throw "host-state file has an unknown schema" }
+if ($state.schema -ne "solstone.native-proof-host-state.v2") { throw "host-state file has an unknown schema" }
 $Root = ConvertTo-ComparablePath $ProofRoot
 $Errors = @()
 
 $CapturedUninstall = if ($state.uninstall_present) { @($state.uninstall | Where-Object { $null -ne $_ }) } else { $null }
 $CapturedRun = if ($state.run_present) { $state.run } else { $null }
+$CapturedScheme = if ($state.scheme_present) { @($state.scheme | Where-Object { $null -ne $_ }) } else { $null }
+$SchemeWantText = Format-RegistryTree $CapturedScheme
 $Folders = @($state.shortcut_folders)
 $CapturedShortcuts = @{}
 foreach ($shortcut in @($state.shortcuts | Where-Object { $null -ne $_ })) { $CapturedShortcuts[$shortcut.Path.ToLowerInvariant()] = $shortcut }
@@ -268,6 +322,16 @@ if ((Format-RegistryState $BeforeRun) -ne (Format-RegistryState $CapturedRun)) {
     Write-Report "host-state login item: changed during the proof; restored"
 } else {
     Write-Report "host-state login item: unchanged"
+}
+
+# URL scheme: the installed copy registers solstone: for itself at launch when
+# no handler exists, so after a proof on a box without one it names the proof
+# root.
+if ((Format-RegistryTree (Read-RegistryTree $SchemeSubKey)) -ne $SchemeWantText) {
+    Write-RegistryTree $SchemeSubKey $CapturedScheme
+    Write-Report "host-state url scheme: changed during the proof; restored"
+} else {
+    Write-Report "host-state url scheme: unchanged"
 }
 
 # Shortcuts: anything that now targets the proof root is the proof's.
@@ -317,6 +381,9 @@ if ($null -ne $UninstallRoot) {
     } finally { $UninstallRoot.Dispose() }
 }
 if (Test-RegistryNamesRoot @(Read-RegistryValue $RunSubKey $RunValueName) $Root) { $Errors += "the login item still names the proof root" }
+$SchemeAfter = Read-RegistryTree $SchemeSubKey
+if ((Format-RegistryTree $SchemeAfter) -ne $SchemeWantText) { $Errors += "the url scheme does not equal its recorded state" }
+if (Test-RegistryNamesRoot @($SchemeAfter) $Root) { $Errors += "the url scheme still names the proof root" }
 foreach ($file in (Get-Shortcuts $Folders)) {
     $link = Get-ShortcutTarget $file.FullName
     if ((Test-UnderRoot $link.Target $Root) -or (Test-UnderRoot $link.WorkingDirectory $Root)) {
@@ -335,6 +402,6 @@ if ($Errors.Count -gt 0) {
     Write-Report ("host-state after: FAILED - " + ($Errors -join "; "))
     exit 1
 }
-Write-Report "host-state after: uninstall entry, login item and shortcuts match the recorded state; nothing names the proof root"
+Write-Report "host-state after: uninstall entry, login item, url scheme and shortcuts match the recorded state; nothing names the proof root"
 Write-Report "HOST_STATE_RESTORED"
 exit 0

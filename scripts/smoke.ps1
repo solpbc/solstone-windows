@@ -19,8 +19,9 @@
 # launch, then stops the instance it started, relaunches what was running (via a
 # Session-1 task, as the launch itself is), and restores the login item. A fresh
 # install must leave that item unchanged until explicit owner opt-in.
-# The Uninstall entry and shortcuts that Setup.exe repoints are
-# not this script's: xtask brackets setup and smoke with
+# The Uninstall entry and shortcuts that Setup.exe repoints, and the
+# solstone: URL scheme the launched app registers, are not this script's:
+# xtask brackets setup and smoke with
 # scripts\native-proof-host-state.ps1, which puts those back. The app's data root
 # (config, logs, segments) follows LOCALAPPDATA, and xtask runs this script with
 # LOCALAPPDATA set to the proof root. The launch carries that value into the
