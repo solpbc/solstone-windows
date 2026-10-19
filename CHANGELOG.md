@@ -11,6 +11,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - after you pair, the pairing field is empty again instead of keeping the link you just used.
 - the first time you pair, setup's connect step now tells you where to find a pairing link in your journal.
 - setup's source steps no longer show a separate "off" button. the switch beside each source turns it on and off, and "retry" now looks like the other buttons.
+- a pairing link you open while the solstone app isn't paired and settings is on the home pane now opens the journal pane, where the link is waiting, instead of leaving you on home.
+- a journal window opened just as the solstone app starts now shows your journal's mark in its title, instead of "your journal".
 
 ## [2.0.31] - 2026-10-19
 
