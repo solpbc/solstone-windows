@@ -3715,7 +3715,7 @@ function renderSourceControl(
 }
 
 const savedChoicesUnread =
-  "couldn't read your saved source choices. sources are off, and your start at login setting hasn't changed. choose your sources again in settings.";
+  "couldn't read your saved source choices. sources are off. choose your sources again in settings.";
 
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   if (dump.setup?.sequence_enabled !== true) {
