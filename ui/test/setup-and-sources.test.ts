@@ -20,6 +20,23 @@ function present(id: string): HTMLElement {
   return el as HTMLElement;
 }
 
+function wizardPauseButton(): HTMLButtonElement | null {
+  for (const id of [
+    ids["settings.setup.mic.proof"],
+    ids["settings.setup.systemAudio.proof"],
+    ids["settings.setup.screen.proof"],
+  ]) {
+    const sibling = byId(id)?.nextElementSibling;
+    if (sibling instanceof HTMLButtonElement) return sibling;
+  }
+  return null;
+}
+
+function homePauseButton(): HTMLButtonElement | null {
+  const button = document.querySelector(".settings-card-grid .settings-card button");
+  return button instanceof HTMLButtonElement ? button : null;
+}
+
 function resetRoot(): HTMLDivElement {
   document.body.replaceChildren();
   const rootEl = document.createElement("div");
@@ -430,7 +447,8 @@ describe("setup and source transitions", () => {
       const step = present(ids["settings.setup.step"]);
       expect(step.querySelector('[data-automation-id="settings.setup.pauseSource"]')).toBeNull();
       const actions = Array.from(step.querySelectorAll("button")).map((b) => b.dataset.automationId);
-      expect(actions).toEqual([ids["settings.setup.notNow"], ids["settings.setup.next"]]);
+      expect(actions).toContain(ids["settings.setup.notNow"]);
+      expect(actions).toContain(ids["settings.setup.next"]);
 
       const sw = present("settings.setup.mic") as HTMLInputElement;
       expect(sw.checked).toBe(true);
@@ -1082,37 +1100,696 @@ describe("setup recovery and proof lifetimes", () => {
   });
 
   describe("wizard step numbering", () => {
-    it("numbers a handoff dump 5 / 5 / 6 / 7 and gives a standalone dump no step line", () => {
-      const steps = [
+    it("numbers a handoff dump 5 / 6 / 7 / 8 and a standalone dump 1 / 2 / 3 / 4", () => {
+      const handoffSteps = [
         ["mic", "5"],
-        ["system_audio", "5"],
-        ["screen", "6"],
-        ["connection", "7"],
+        ["system_audio", "6"],
+        ["screen", "7"],
+        ["connection", "8"],
       ] as const;
-      for (const extra of [{ handoff_id: "11111111-1111-4111-8111-111111111111", handoff_revision: 1 }, {}]) {
-        const continuing = "handoff_id" in extra;
-        for (const [wizard, number] of steps) {
-          app.__test__.renderSettings({
-            ...observingDump(),
-            setup: {
+      const standaloneSteps = [
+        ["mic", "1"],
+        ["system_audio", "2"],
+        ["screen", "3"],
+        ["connection", "4"],
+      ] as const;
+
+      for (const [wizard, number] of handoffSteps) {
+        resetRoot();
+        app.__test__.renderSettings({
+          ...observingDump(),
+          setup: {
+            sequence_enabled: true,
+            mic: false,
+            system_audio: false,
+            screen: false,
+            start_at_login: false,
+            wizard,
+            notice_dismissed: false,
+            handoff_id: "11111111-1111-4111-8111-111111111111",
+            handoff_revision: 1,
+          },
+        });
+        expect(present(ids["settings.setup.step"]).getAttribute("data-step")).toBe(wizard);
+        const stepNum = present(ids["settings.setup.stepNumber"]);
+        expect(stepNum.getAttribute("data-step-number")).toBe(number);
+      }
+
+      for (const [wizard, number] of standaloneSteps) {
+        resetRoot();
+        app.__test__.renderSettings({
+          ...observingDump(),
+          setup: {
+            sequence_enabled: true,
+            mic: false,
+            system_audio: false,
+            screen: false,
+            start_at_login: false,
+            wizard,
+            notice_dismissed: false,
+          },
+        });
+        expect(present(ids["settings.setup.step"]).getAttribute("data-step")).toBe(wizard);
+        const stepNum = present(ids["settings.setup.stepNumber"]);
+        expect(stepNum).not.toBeNull();
+        expect(stepNum.getAttribute("data-step-number")).toBe(number);
+      }
+    });
+  });
+
+  describe("wizard pause and resume control", () => {
+    it("calls pause with operator reason in observing state", async () => {
+      const pDump = {
+        ...observingDump(),
+        app_state: "observing" as const,
+        setup: {
           sequence_enabled: true,
-              mic: false,
-              system_audio: false,
-              screen: false,
-              start_at_login: false,
-              wizard,
-              notice_dismissed: false,
-              ...extra,
-            },
+          mic: true,
+          system_audio: false,
+          screen: false,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(pDump);
+
+      const step = present(ids["settings.setup.step"]);
+      const buttons = Array.from(step.querySelectorAll("button"));
+      const pauseBtn = buttons.find((b) => !b.dataset.automationId);
+      expect(pauseBtn).toBeDefined();
+
+      pauseBtn!.click();
+      await vi.waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("pause", {
+          reason: "operator",
+          durationSecs: null,
+        });
+      });
+      expect(invokeMock).not.toHaveBeenCalledWith("set_source_enabled", expect.anything());
+    });
+
+    it("calls resume with no second argument in paused state", async () => {
+      const pDump = {
+        ...observingDump(),
+        app_state: "paused" as const,
+        pause: {
+          reason: "operator",
+          until: null,
+          user_agent: null,
+        },
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: false,
+          screen: false,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(pDump);
+
+      const step = present(ids["settings.setup.step"]);
+      const buttons = Array.from(step.querySelectorAll("button"));
+      const resumeBtn = buttons.find((b) => !b.dataset.automationId);
+      expect(resumeBtn).toBeDefined();
+
+      resumeBtn!.click();
+      await vi.waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("resume");
+      });
+      const calls = invokeMock.mock.calls.filter(([cmd]) => cmd === "resume");
+      expect(calls.length).toBe(1);
+      expect(calls[0].length).toBe(1);
+    });
+
+    it("verifies meter presence in observing, disappearance in paused, and repaint on new generation", async () => {
+      let generation = 0;
+      invokeMock.mockImplementation(async (command) => command === "set_proof_consumer" ? ++generation as never : undefined as never);
+
+      const obsDump = {
+        ...observingDump(),
+        app_state: "observing" as const,
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: false,
+          screen: false,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(obsDump);
+      await app.__test__.proofIdle();
+
+      app.__test__.applyPreview({ consumer_generation: generation, mic_level: 0.6 });
+      const meter = document.querySelector("meter");
+      expect(meter).not.toBeNull();
+      expect(meter?.getAttribute("aria-valuenow")).toBe("0.6");
+
+      const pausedDump = {
+        ...obsDump,
+        app_state: "paused" as const,
+        pause: { reason: "operator", until: null, user_agent: null },
+      };
+      app.__test__.renderSettings(pausedDump);
+      expect(document.querySelector("meter")).toBeNull();
+
+      app.__test__.renderSettings(obsDump);
+      await app.__test__.proofIdle();
+      app.__test__.applyPreview({ consumer_generation: generation, mic_level: 0.8 });
+      const repaintedMeter = document.querySelector("meter");
+      expect(repaintedMeter).not.toBeNull();
+      expect(repaintedMeter?.getAttribute("aria-valuenow")).toBe("0.8");
+    });
+
+    it("keeps a rejected pause across a health rerender until a successful retry", async () => {
+      let generation = 0;
+      let rejectPause = true;
+      invokeMock.mockImplementation(async (command) => {
+        if (command === "set_proof_consumer") return ++generation as never;
+        if (command === "pause" && rejectPause) throw new Error("pause failed");
+        return undefined as never;
+      });
+
+      const pDump = {
+        ...observingDump(),
+        app_state: "observing" as const,
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: false,
+          screen: false,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(pDump);
+      await app.__test__.proofIdle();
+
+      app.__test__.applyPreview({ consumer_generation: generation, mic_level: 0.6 });
+      expect(document.querySelector("meter")).not.toBeNull();
+
+      const sw = present("settings.setup.mic") as HTMLInputElement;
+      expect(sw.checked).toBe(true);
+
+      wizardPauseButton()!.click();
+      await vi.waitFor(() => {
+        const failure = present(ids["settings.setup.step"]).querySelector(".save-failure");
+        expect(failure?.textContent?.trim().length).toBeGreaterThan(0);
+      });
+
+      app.__test__.renderSettings(pDump);
+      const step = present(ids["settings.setup.step"]);
+      const failure = step.querySelector(".save-failure");
+      expect(failure?.textContent?.trim().length).toBeGreaterThan(0);
+      expect(document.querySelector("meter")).not.toBeNull();
+      expect((present("settings.setup.mic") as HTMLInputElement).checked).toBe(true);
+      const pauseBtn = wizardPauseButton();
+      expect(pauseBtn).not.toBeNull();
+      expect(pauseBtn!.disabled).toBe(false);
+
+      rejectPause = false;
+      pauseBtn!.click();
+      await vi.waitFor(() => {
+        const pauseCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "pause");
+        expect(pauseCalls.length).toBe(2);
+      });
+      for (const call of invokeMock.mock.calls.filter(([cmd]) => cmd === "pause")) {
+        expect(call[1]).toEqual({ reason: "operator", durationSecs: null });
+      }
+      expect(invokeMock).not.toHaveBeenCalledWith("set_source_enabled", expect.anything());
+      await vi.waitFor(() => {
+        expect(present(ids["settings.setup.step"]).querySelector(".save-failure")).toBeNull();
+      });
+    });
+
+    it("drops a pause failure when a later dump shows pause active, and a resume failure when it clears", async () => {
+      invokeMock.mockImplementation(async (command) => {
+        if (command === "pause" || command === "resume") throw new Error("no");
+        return undefined as never;
+      });
+      const enabled = {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: false,
+        screen: false,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      };
+      const idle = {
+        ...observingDump(),
+        app_state: "idle" as const,
+        pause: null,
+        setup: enabled,
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(idle);
+      wizardPauseButton()!.click();
+      await vi.waitFor(() => {
+        expect(present(ids["settings.setup.step"]).querySelector(".save-failure")).not.toBeNull();
+      });
+
+      const paused = {
+        ...idle,
+        app_state: "idle" as const,
+        pause: { reason: "operator" as const, seconds_remaining: null },
+      };
+      app.__test__.renderSettings(paused);
+      expect(present(ids["settings.setup.step"]).querySelector(".save-failure")).toBeNull();
+      wizardPauseButton()!.click();
+      await vi.waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("resume");
+        expect(present(ids["settings.setup.step"]).querySelector(".save-failure")).not.toBeNull();
+      });
+
+      app.__test__.renderSettings(paused);
+      expect(present(ids["settings.setup.step"]).querySelector(".save-failure")).not.toBeNull();
+      app.__test__.renderSettings(idle);
+      expect(present(ids["settings.setup.step"]).querySelector(".save-failure")).toBeNull();
+    });
+  });
+
+  describe("setup pause phase matrix", () => {
+    const enabledSetup = {
+      sequence_enabled: true,
+      mic: true,
+      system_audio: false,
+      screen: false,
+      start_at_login: false,
+      wizard: "mic" as const,
+      notice_dismissed: false,
+    };
+
+    function renderPhase(
+      appState: "idle" | "starting" | "observing" | "paused" | "error",
+      pause: { reason: "operator"; seconds_remaining: number | null } | null,
+      setup: typeof enabledSetup = enabledSetup,
+      sources?: ReturnType<typeof observingDump>["sources"],
+    ) {
+      const dump = {
+        ...observingDump(),
+        app_state: appState,
+        pause,
+        setup,
+        ...(sources ? { sources } : {}),
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(dump);
+      return dump;
+    }
+
+    it.each(["idle", "starting", "observing", "error"] as const)(
+      "offers indefinite pause from %s while the source is enabled and pause is inactive",
+      async (appState) => {
+        renderPhase(appState, null);
+        const button = wizardPauseButton();
+        expect(button).not.toBeNull();
+        expect(button!.disabled).toBe(false);
+        button!.click();
+        await vi.waitFor(() => {
+          expect(invokeMock).toHaveBeenCalledWith("pause", {
+            reason: "operator",
+            durationSecs: null,
           });
-          expect(present(ids["settings.setup.step"]).getAttribute("data-step")).toBe(wizard);
-          if (continuing) {
-            const stepNum = present(ids["settings.setup.stepNumber"]);
-            expect(stepNum.getAttribute("data-step-number")).toBe(number);
-          } else {
-            expect(byId(ids["settings.setup.stepNumber"])).toBeNull();
-          }
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith("set_source_enabled", expect.anything());
+        expect(invokeMock).not.toHaveBeenCalledWith("resume");
+      },
+    );
+
+    it.each(["no_input_device", "access_denied"] as const)(
+      "offers indefinite pause when the enabled source is %s",
+      async (kind) => {
+        const sources = observingDump().sources.map((source) =>
+          source.kind === "mic"
+            ? kind === "no_input_device"
+              ? { ...source, status: "no_input_device" as const, device: null }
+              : { ...source, status: "faulted" as const, reason: "access_denied", detail: "mic denied" }
+            : source,
+        );
+        renderPhase("idle", null, enabledSetup, sources);
+        const button = wizardPauseButton();
+        expect(button).not.toBeNull();
+        expect(button!.disabled).toBe(false);
+        button!.click();
+        await vi.waitFor(() => {
+          expect(invokeMock).toHaveBeenCalledWith("pause", {
+            reason: "operator",
+            durationSecs: null,
+          });
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith("set_source_enabled", expect.anything());
+      },
+    );
+
+    it("resumes when app_state is paused", async () => {
+      renderPhase("paused", { reason: "operator", seconds_remaining: null });
+      const button = wizardPauseButton();
+      expect(button).not.toBeNull();
+      expect(button!.disabled).toBe(false);
+      button!.click();
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("resume"));
+      expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
+      expect(invokeMock).not.toHaveBeenCalledWith("set_source_enabled", expect.anything());
+    });
+
+    it("resumes when dump.pause is set and app_state is not paused", async () => {
+      renderPhase("starting", { reason: "operator", seconds_remaining: null });
+      const button = wizardPauseButton();
+      expect(button!.disabled).toBe(false);
+      button!.click();
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("resume"));
+      expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
+    });
+
+    it("omits the pause control when that source is off", () => {
+      renderPhase("observing", null, { ...enabledSetup, mic: false });
+      expect(wizardPauseButton()).toBeNull();
+    });
+
+    it("keeps the home card disabled for idle and starting, and resumes from error", async () => {
+      const done = { ...enabledSetup, wizard: "done" as const };
+      for (const appState of ["idle", "starting"] as const) {
+        resetRoot();
+        invokeMock.mockClear();
+        renderPhase(appState, null, done);
+        const button = homePauseButton();
+        expect(button).not.toBeNull();
+        expect(button!.disabled).toBe(true);
+        button!.click();
+        expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
+      }
+      resetRoot();
+      invokeMock.mockClear();
+      renderPhase("error", null, done);
+      const button = homePauseButton();
+      expect(button!.disabled).toBe(false);
+      button!.click();
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("resume"));
+      expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
+    });
+  });
+
+  describe("start at login placement across wizard steps and routes", () => {
+    it("is present on mic step and sources route; absent on system_audio, screen, and connection", () => {
+      const baseSetup = {
+        sequence_enabled: true,
+        mic: false,
+        system_audio: false,
+        screen: false,
+        start_at_login: false,
+        notice_dismissed: false,
+      };
+
+      resetRoot();
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings({ ...observingDump(), setup: { ...baseSetup, wizard: "mic" as const } });
+      expect(byId(ids["settings.setup.startAtLogin"])).not.toBeNull();
+
+      resetRoot();
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings({ ...observingDump(), setup: { ...baseSetup, wizard: "system_audio" as const } });
+      expect(byId(ids["settings.setup.startAtLogin"])).toBeNull();
+
+      resetRoot();
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings({ ...observingDump(), setup: { ...baseSetup, wizard: "screen" as const } });
+      expect(byId(ids["settings.setup.startAtLogin"])).toBeNull();
+
+      resetRoot();
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings({ ...observingDump(), setup: { ...baseSetup, wizard: "connection" as const } });
+      expect(byId(ids["settings.setup.startAtLogin"])).toBeNull();
+
+      resetRoot();
+      app.__test__.setRoute("sources");
+      app.__test__.renderSettings({ ...observingDump(), setup: { ...baseSetup, wizard: "done" as const } });
+      expect(byId(ids["settings.setup.startAtLogin"])).not.toBeNull();
+    });
+  });
+
+  describe("start at login preference rendering (null vs boolean)", () => {
+    it("renders null as indeterminate and disabled with action buttons", async () => {
+      const pDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: false,
+          system_audio: false,
+          screen: false,
+          start_at_login: null,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(pDump);
+
+      const input = byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement;
+      expect(input).not.toBeNull();
+      expect(input.indeterminate).toBe(true);
+      expect(input.disabled).toBe(true);
+
+      const wrap = document.querySelector(".wizard-start-at-login");
+      expect(wrap).not.toBeNull();
+      const buttons = Array.from(wrap!.querySelectorAll("button"));
+      expect(buttons.length).toBe(2);
+
+      buttons[0].click();
+      await vi.waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("set_start_at_login", { enabled: true });
+      });
+
+      buttons[1].click();
+      await vi.waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("set_start_at_login", { enabled: false });
+      });
+    });
+
+    it("keeps a rejected login choice visible across a health rerender and retries that choice", async () => {
+      let rejectLogin = true;
+      const pDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: false,
+          system_audio: false,
+          screen: false,
+          start_at_login: null,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      let health = pDump;
+      invokeMock.mockImplementation(async (command) => {
+        if (command === "get_health") return health as never;
+        if (command === "set_start_at_login") {
+          if (rejectLogin) throw new Error("login failed");
+          health = {
+            ...health,
+            setup: { ...health.setup, start_at_login: true, login_apply_failed: false },
+          };
+          return undefined as never;
         }
+        return undefined as never;
+      });
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(pDump);
+
+      const buttons = Array.from(document.querySelector(".wizard-start-at-login")!.querySelectorAll("button"));
+      buttons[0].click();
+      await vi.waitFor(() => {
+        const failure = document.querySelector(".wizard-start-at-login .save-failure");
+        expect(failure?.textContent?.trim().length).toBeGreaterThan(0);
+      });
+      expect((byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement).indeterminate).toBe(true);
+
+      app.__test__.renderSettings(pDump);
+      expect(document.querySelector(".wizard-start-at-login .save-failure")?.textContent?.trim().length).toBeGreaterThan(0);
+      expect((byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement).disabled).toBe(true);
+
+      rejectLogin = false;
+      const retry = Array.from(document.querySelector(".wizard-start-at-login")!.querySelectorAll("button")).at(-1)!;
+      retry.click();
+      await vi.waitFor(() => {
+        const calls = invokeMock.mock.calls.filter(([cmd]) => cmd === "set_start_at_login");
+        expect(calls.length).toBe(2);
+        expect(calls[1]).toEqual(["set_start_at_login", { enabled: true }]);
+      });
+      expect(invokeMock).not.toHaveBeenCalledWith("retry_save");
+      await vi.waitFor(() => {
+        const box = byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement;
+        expect(box.checked).toBe(true);
+        expect(box.indeterminate).toBe(false);
+        expect(byId(ids["settings.setup.startAtLogin.error"])).toBeNull();
+      });
+    });
+
+    it("shows a failed save, retries it, and then renders the explicit choice", async () => {
+      const base = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: false,
+          system_audio: false,
+          screen: false,
+          start_at_login: null as boolean | null,
+          login_apply_failed: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      let health = base;
+      invokeMock.mockImplementation(async (command, payload) => {
+        if (command === "get_health") return health as never;
+        if (command === "set_start_at_login") {
+          health = {
+            ...health,
+            setup: {
+              ...health.setup,
+              start_at_login: (payload as { enabled: boolean }).enabled,
+              login_apply_failed: true,
+            },
+          };
+          return undefined as never;
+        }
+        if (command === "retry_save") {
+          health = {
+            ...health,
+            setup: { ...health.setup, login_apply_failed: false },
+          };
+          return undefined as never;
+        }
+        return undefined as never;
+      });
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(base);
+
+      const off = Array.from(document.querySelectorAll(".wizard-start-at-login button")).at(1)!;
+      off.click();
+      await vi.waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("set_start_at_login", { enabled: false });
+        expect(byId(ids["settings.setup.startAtLogin.error"])?.textContent?.trim().length).toBeGreaterThan(0);
+      });
+      expect((byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement).checked).toBe(false);
+      expect((byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement).indeterminate).toBe(false);
+
+      const retry = Array.from(document.querySelectorAll(".wizard-start-at-login button")).at(-1)!;
+      retry.click();
+      await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("retry_save"));
+      await vi.waitFor(() => expect(byId(ids["settings.setup.startAtLogin.error"])).toBeNull());
+      const box = byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement;
+      expect(box.checked).toBe(false);
+      expect(box.indeterminate).toBe(false);
+      expect(box.disabled).toBe(false);
+    });
+
+    it("renders false as unchecked and not indeterminate", () => {
+      const pDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: false,
+          system_audio: false,
+          screen: false,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(pDump);
+
+      const input = byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement;
+      expect(input.checked).toBe(false);
+      expect(input.indeterminate).toBe(false);
+      expect(input.disabled).toBe(false);
+    });
+
+    it("renders true as checked and not indeterminate", () => {
+      const pDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: false,
+          system_audio: false,
+          screen: false,
+          start_at_login: true,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(pDump);
+
+      const input = byId(ids["settings.setup.startAtLogin"]) as HTMLInputElement;
+      expect(input.checked).toBe(true);
+      expect(input.indeterminate).toBe(false);
+      expect(input.disabled).toBe(false);
+    });
+  });
+
+  describe("damaged setup recovery rendering (setup_read_failed)", () => {
+    it("renders .save-failure notice on Home and Sources, mounts login control on Home, mounts switches on Sources, and invokes no mutations", () => {
+      const damagedDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: false,
+          system_audio: false,
+          screen: false,
+          start_at_login: null,
+          wizard: "done" as const,
+          notice_dismissed: true,
+          setup_read_failed: true,
+        },
+      };
+
+      resetRoot();
+      invokeMock.mockClear();
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(damagedDump);
+
+      const homeFailure = document.querySelector(".settings-home > .save-failure");
+      expect(homeFailure).not.toBeNull();
+      expect(homeFailure?.textContent?.length).toBeGreaterThan(0);
+
+      const homeLoginControl = document.querySelector(".settings-home .wizard-start-at-login");
+      expect(homeLoginControl).not.toBeNull();
+
+      resetRoot();
+      invokeMock.mockClear();
+      app.__test__.setRoute("sources");
+      app.__test__.renderSettings(damagedDump);
+
+      const sourcesFailure = document.querySelector("section > .save-failure");
+      expect(sourcesFailure).not.toBeNull();
+      expect(sourcesFailure?.textContent?.length).toBeGreaterThan(0);
+
+      expect(byId(ids["settings.sources.screen.enabled"])).not.toBeNull();
+      expect(byId(ids["settings.sources.systemAudio.enabled"])).not.toBeNull();
+      expect(byId(ids["settings.sources.mic.enabled"])).not.toBeNull();
+
+      const mutationCommands = [
+        "set_source_enabled",
+        "set_start_at_login",
+        "set_wizard_step",
+        "dismiss_notice",
+        "retry_save",
+        "pause",
+        "resume",
+      ];
+      for (const call of invokeMock.mock.calls) {
+        expect(mutationCommands).not.toContain(call[0]);
       }
     });
   });

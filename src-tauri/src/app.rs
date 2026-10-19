@@ -652,8 +652,8 @@ pub fn run(
             let load_outcome = observer_model::setup::load_for_startup(
                 &data_root, observer_model::setup::SETUP_SEQUENCE_ENABLED,
             );
-            let config = match load_outcome {
-                observer_model::setup::LoadOutcome::Abort => {
+            let setup = match observer_model::setup::startup_load(load_outcome) {
+                observer_model::setup::StartupLoad::Abort => {
                     tracing::warn!(
                         target: "lifecycle",
                         component = "setup",
@@ -662,14 +662,14 @@ pub fn run(
                     );
                     return Ok(());
                 }
-                observer_model::setup::LoadOutcome::Fresh(cfg)
-                | observer_model::setup::LoadOutcome::Legacy(cfg)
-                | observer_model::setup::LoadOutcome::Valid(cfg)
-                | observer_model::setup::LoadOutcome::FailedClosed(cfg)
-                | observer_model::setup::LoadOutcome::LegacyUnsaved(cfg) => cfg,
+                observer_model::setup::StartupLoad::Ready(setup) => setup,
             };
 
-            let login_apply_failed = apply_login_decision(config.start_at_login);
+            // Unknown login does not change the login registration.
+            let login_apply_failed = match setup.login_choice {
+                Some(choice) => apply_login_decision(choice),
+                None => false,
+            };
             if observer_model::setup::SETUP_SEQUENCE_ENABLED {
                 apply_scheme_decision();
             }
@@ -727,8 +727,9 @@ pub fn run(
             if observer_model::setup::SETUP_SEQUENCE_ENABLED {
                 engine.set_setup_root(data_root.clone());
             }
-            let mut setup_snapshot = config.to_snapshot();
+            let mut setup_snapshot = setup.config.to_snapshot();
             setup_snapshot.login_apply_failed = login_apply_failed;
+            setup_snapshot.setup_read_failed = setup.setup_read_failed;
             engine.set_source_choices(setup_snapshot);
 
             // The owner's pause outlives a restart: restore it before any source
