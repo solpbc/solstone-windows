@@ -3714,11 +3714,14 @@ function renderSourceControl(
   return wrap;
 }
 
+const savedChoicesUnread =
+  "couldn't read your saved source choices. sources are off, and your start at login setting hasn't changed. choose your sources again in settings.";
+
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   if (dump.setup?.sequence_enabled !== true) {
     const sources = section("sources");
     if (dump.setup?.setup_read_failed === true) {
-      const failureNotice = text("div", "could not read these settings. choose again to replace them.");
+      const failureNotice = text("div", savedChoicesUnread);
       failureNotice.classList.add("save-failure");
       sources.prepend(failureNotice);
     }
@@ -3735,7 +3738,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   }
   const sources = section("sources");
   if (dump.setup?.setup_read_failed === true) {
-    const failureNotice = text("div", "could not read these settings. choose again to replace them.");
+    const failureNotice = text("div", savedChoicesUnread);
     failureNotice.classList.add("save-failure");
     sources.prepend(failureNotice);
   }
@@ -4356,10 +4359,10 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
       box.indeterminate = true;
       box.disabled = true;
     }
-    const onBtn = actionButton("on", undefined, true, () => {
+    const onBtn = actionButton("start at login", undefined, true, () => {
       void commitUnknownLogin(true);
     });
-    const offBtn = actionButton("off", undefined, true, () => {
+    const offBtn = actionButton("don't start at login", undefined, true, () => {
       void commitUnknownLogin(false);
     });
     wrap.style.display = "flex";
@@ -4431,7 +4434,7 @@ function mountWizardProof(dump: HealthDump, kind: SourceKind, proof: HTMLElement
   proofRow.style.display = "flex";
   proofRow.style.gap = "8px";
   proofRow.style.marginTop = "12px";
-  proofRow.append(proof, pauseBtn);
+  proofRow.append(proof, pauseBtn, text("span", "pauses all sources."));
   return proofRow;
 }
 
@@ -4719,7 +4722,7 @@ function renderHome(dump: HealthDump): HTMLElement {
     home.append(renderStatusStrip(dump), cards);
   }
   if (dump.setup?.setup_read_failed === true) {
-    const failureNotice = text("div", "could not read these settings. choose again to replace them.");
+    const failureNotice = text("div", savedChoicesUnread);
     failureNotice.classList.add("save-failure");
     home.prepend(failureNotice);
     home.append(renderStartAtLoginControl(dump));

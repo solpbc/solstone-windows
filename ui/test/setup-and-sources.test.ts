@@ -1414,6 +1414,7 @@ describe("setup recovery and proof lifetimes", () => {
         const button = wizardPauseButton();
         expect(button).not.toBeNull();
         expect(button!.disabled).toBe(false);
+        expect(button!.nextElementSibling?.textContent).toBe("pauses all sources.");
         button!.click();
         await vi.waitFor(() => {
           expect(invokeMock).toHaveBeenCalledWith("pause", {
@@ -1456,6 +1457,7 @@ describe("setup recovery and proof lifetimes", () => {
       const button = wizardPauseButton();
       expect(button).not.toBeNull();
       expect(button!.disabled).toBe(false);
+      expect(button!.nextElementSibling?.textContent).toBe("pauses all sources.");
       button!.click();
       await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("resume"));
       expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
@@ -1485,6 +1487,7 @@ describe("setup recovery and proof lifetimes", () => {
         const button = homePauseButton();
         expect(button).not.toBeNull();
         expect(button!.disabled).toBe(true);
+        expect(button!.parentElement?.textContent ?? "").not.toContain("pauses all sources.");
         button!.click();
         expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
       }
@@ -1563,6 +1566,8 @@ describe("setup recovery and proof lifetimes", () => {
       expect(wrap).not.toBeNull();
       const buttons = Array.from(wrap!.querySelectorAll("button"));
       expect(buttons.length).toBe(2);
+      expect(buttons[0].textContent).toBe("start at login");
+      expect(buttons[1].textContent).toBe("don't start at login");
 
       buttons[0].click();
       await vi.waitFor(() => {
@@ -1759,9 +1764,11 @@ describe("setup recovery and proof lifetimes", () => {
       app.__test__.setRoute("home");
       app.__test__.renderSettings(damagedDump);
 
+      const savedChoicesUnread =
+        "couldn't read your saved source choices. sources are off, and your start at login setting hasn't changed. choose your sources again in settings.";
       const homeFailure = document.querySelector(".settings-home > .save-failure");
       expect(homeFailure).not.toBeNull();
-      expect(homeFailure?.textContent?.trim().length).toBeGreaterThan(0);
+      expect(homeFailure?.textContent).toBe(savedChoicesUnread);
 
       const homeLoginControl = document.querySelector(".settings-home .wizard-start-at-login");
       expect(homeLoginControl).not.toBeNull();
@@ -1773,7 +1780,7 @@ describe("setup recovery and proof lifetimes", () => {
 
       const sourcesFailure = document.querySelector("section > .save-failure");
       expect(sourcesFailure).not.toBeNull();
-      expect(sourcesFailure?.textContent?.trim().length).toBeGreaterThan(0);
+      expect(sourcesFailure?.textContent).toBe(savedChoicesUnread);
 
       expect(byId(ids["settings.sources.screen.enabled"])).not.toBeNull();
       expect(byId(ids["settings.sources.systemAudio.enabled"])).not.toBeNull();

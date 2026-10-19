@@ -6,8 +6,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- once you turn a source on during setup, pause and resume are beside its preview. pause applies to every source you've turned on.
+
 ### Fixed
 
+- when setup continues from your journal on this PC, its steps run from 5 through 8. starting in the solstone app gives you four steps.
+- if the app can't read your saved source choices, sources stay off and your start at login setting stays as it was. you can choose them again in settings.
 - after you pair, the pairing field is empty again instead of keeping the link you just used.
 - the first time you pair, setup's connect step now tells you where to find a pairing link in your journal.
 - setup's source steps no longer show a separate "off" button. the switch beside each source turns it on and off, and "retry" now looks like the other buttons.
