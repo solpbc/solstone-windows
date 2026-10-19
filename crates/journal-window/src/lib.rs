@@ -153,6 +153,73 @@ pub enum FilterInstall {
     RegistrationFailed,
 }
 
+impl FilterInstall {
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Comprehensive => "comprehensive",
+            Self::LegacyOnly => "legacy_only",
+            Self::MissingInterface => "missing_interface",
+            Self::RegistrationFailed => "registration_failed",
+        }
+    }
+
+    /// Numeric form for log lines, which keep numbers but only the length of strings.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Comprehensive => 1,
+            Self::LegacyOnly => 2,
+            Self::MissingInterface => 3,
+            Self::RegistrationFailed => 4,
+        }
+    }
+}
+
+/// The step at which building the journal window stopped. Each step has its own
+/// token and code, so one log line names the step that failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildFault {
+    InitiatingWindowSet,
+    WebviewUnavailable,
+    InstallNotRun,
+    WindowGone,
+    FilterRefused,
+    NavigateFailed,
+}
+
+impl BuildFault {
+    pub const ALL: [BuildFault; 6] = [
+        Self::InitiatingWindowSet,
+        Self::WebviewUnavailable,
+        Self::InstallNotRun,
+        Self::WindowGone,
+        Self::FilterRefused,
+        Self::NavigateFailed,
+    ];
+
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::InitiatingWindowSet => "initiating_window_set",
+            Self::WebviewUnavailable => "webview_unavailable",
+            Self::InstallNotRun => "install_not_run",
+            Self::WindowGone => "window_gone",
+            Self::FilterRefused => "filter_refused",
+            Self::NavigateFailed => "navigate_failed",
+        }
+    }
+
+    /// Numeric form for log lines, which keep numbers but only the length of strings.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::InitiatingWindowSet => 1,
+            Self::WebviewUnavailable => 2,
+            Self::InstallNotRun => 3,
+            Self::WindowGone => 4,
+            Self::FilterRefused => 5,
+            Self::NavigateFailed => 6,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StartupEffect {
     pub navigate: bool,
@@ -681,6 +748,30 @@ mod document_policy_tests {
             handler_lifetime(FilterInstall::Comprehensive),
             HandlerLifetime::RetainedForView
         );
+    }
+
+    #[test]
+    fn build_faults_and_filter_installs_are_distinct_in_a_log_line() {
+        let faults = BuildFault::ALL;
+        for (i, a) in faults.iter().enumerate() {
+            for b in &faults[i + 1..] {
+                assert_ne!(a.token(), b.token());
+                assert_ne!(a.code(), b.code());
+            }
+        }
+        let installs = [
+            FilterInstall::Comprehensive,
+            FilterInstall::LegacyOnly,
+            FilterInstall::MissingInterface,
+            FilterInstall::RegistrationFailed,
+        ];
+        for (i, a) in installs.iter().enumerate() {
+            assert_ne!(a.code(), 0, "0 means no install result");
+            for b in &installs[i + 1..] {
+                assert_ne!(a.token(), b.token());
+                assert_ne!(a.code(), b.code());
+            }
+        }
     }
 
     #[test]

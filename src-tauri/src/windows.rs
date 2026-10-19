@@ -663,8 +663,11 @@ fn build_journal_window(
     {
         let window = builder.build()?;
         if initiating_window.set(window.clone()).is_err() {
-            window.close().ok();
-            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+            return Err(journal_build_stopped(
+                &window,
+                journal_window::BuildFault::InitiatingWindowSet,
+                None,
+            ));
         }
         let installed = Arc::new(std::sync::Mutex::new(None));
         let installed_for_callback = Arc::clone(&installed);
@@ -684,8 +687,11 @@ fn build_journal_window(
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(install);
         });
         if with_webview_result.is_err() {
-            window.close().ok();
-            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+            return Err(journal_build_stopped(
+                &window,
+                journal_window::BuildFault::WebviewUnavailable,
+                None,
+            ));
         }
 
         let installed = installed
@@ -693,19 +699,41 @@ fn build_journal_window(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         let window_still_present = app.get_webview_window("journal").is_some();
+        tracing::info!(
+            target: "window",
+            label = "journal",
+            filter = installed.map_or(0, journal_window::FilterInstall::code),
+            window_present = window_still_present,
+            "journal document filter install"
+        );
         let effect = journal_window::deferred_install_effect(window_still_present, installed);
         if !window_still_present {
-            window.close().ok();
-            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+            return Err(journal_build_stopped(
+                &window,
+                journal_window::BuildFault::WindowGone,
+                installed,
+            ));
         }
-        if effect.navigate {
-            if window.navigate(bootstrap_url).is_err() {
-                window.close().ok();
-                return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
-            }
-        } else {
-            window.close().ok();
-            return Err(tauri::Error::InvalidWebviewUrl("journal document filter"));
+        let Some(install) = installed else {
+            return Err(journal_build_stopped(
+                &window,
+                journal_window::BuildFault::InstallNotRun,
+                None,
+            ));
+        };
+        if !effect.navigate {
+            return Err(journal_build_stopped(
+                &window,
+                journal_window::BuildFault::FilterRefused,
+                Some(install),
+            ));
+        }
+        if window.navigate(bootstrap_url).is_err() {
+            return Err(journal_build_stopped(
+                &window,
+                journal_window::BuildFault::NavigateFailed,
+                Some(install),
+            ));
         }
 
         if let Err(error) =
@@ -728,6 +756,26 @@ fn build_journal_window(
         );
         Ok(window)
     }
+}
+
+/// Close a journal window that stopped before the journal was loaded, and name the
+/// step in the log. The window never reaches the journal from here.
+#[cfg(windows)]
+fn journal_build_stopped(
+    window: &WebviewWindow,
+    fault: journal_window::BuildFault,
+    install: Option<journal_window::FilterInstall>,
+) -> tauri::Error {
+    tracing::warn!(
+        target: "window",
+        label = "journal",
+        token = fault.token(),
+        code = fault.code(),
+        filter = install.map_or(0, journal_window::FilterInstall::code),
+        "journal window build stopped"
+    );
+    window.close().ok();
+    tauri::Error::InvalidWebviewUrl("journal document filter")
 }
 
 fn log_journal_handoff(url: &tauri::Url, outcome: &'static str) {
