@@ -1243,6 +1243,47 @@ describe("setup recovery and proof lifetimes", () => {
       expect(prefillCalls()).toBe(pairedCalls);
     });
 
+    it("opens the journal pane when a pairing link waits on a finished setup", async () => {
+      const link = "https://go.solstone.app/p#waiting";
+      invokeMock.mockImplementation(async (command) =>
+        command === "pairing_prefill" ? (link as never) : (undefined as never),
+      );
+      app.__test__.renderSettings(continuation({}));
+      await vi.waitFor(() => {
+        expect(app.__test__.getRoute()).toBe("journal");
+        expect((byId(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe(link);
+      });
+    });
+
+    it("stays where it is with no waiting link, another pane, a paired journal or setup in progress", async () => {
+      let link = "";
+      invokeMock.mockImplementation(async (command) =>
+        command === "pairing_prefill" ? (link as never) : (undefined as never),
+      );
+      const settle = async () => {
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+      };
+      app.__test__.renderSettings(continuation({}));
+      await settle();
+      expect(app.__test__.getRoute()).toBe("home");
+
+      link = "https://go.solstone.app/p#waiting";
+      const cases: Array<() => void> = [
+        () => {
+          app.__test__.setRoute("sources");
+          app.__test__.renderSettings(continuation({}));
+        },
+        () => app.__test__.renderSettings(continuation({}, { phase: "paired", journal_label: "incumbent", binding: "bound" })),
+        () => app.__test__.renderSettings(continuation({ wizard: "connection" as const })),
+      ];
+      for (const [index, render] of cases.entries()) {
+        app.__test__.reset();
+        render();
+        await settle();
+        expect(app.__test__.getRoute()).toBe(index === 0 ? "sources" : "home");
+      }
+    });
+
     it("shows native connect on a finished wizard without changing sources", () => {
       const initial = continuation({
         handoff_id: "11111111-1111-4111-8111-111111111111",

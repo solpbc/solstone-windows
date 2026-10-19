@@ -548,6 +548,26 @@ function nativeContinuationPending(dump: HealthDump): boolean {
   );
 }
 
+// A pairing link that opens the app while it is unpaired and setup is finished
+// waits in the journal pane's field, and home has no field. The window's first
+// render opens the journal pane so the waiting link is in view.
+let waitingLinkChecked = false;
+
+function openJournalPaneForWaitingLink(dump: HealthDump): void {
+  if (waitingLinkChecked) return;
+  waitingLinkChecked = true;
+  if (label !== "settings" || activeRoute !== "home") return;
+  if (dump.setup?.sequence_enabled !== true || dump.setup.wizard !== "done") return;
+  if (dump.sync.pairing.phase !== "not_paired" || homeShowsPairing(dump)) return;
+  void Promise.resolve(invoke<string>("pairing_prefill"))
+    .then((link) => {
+      if (typeof link !== "string" || !link) return;
+      if (activeRoute !== "home" || latestHealth?.sync.pairing.phase !== "not_paired") return;
+      navigateTo("journal");
+    })
+    .catch(() => {});
+}
+
 function homeShowsPairing(dump: HealthDump): boolean {
   if (dump.setup?.sequence_enabled !== true) return false;
   const setup = dump.setup;
@@ -4739,6 +4759,7 @@ function renderSettings(dump: HealthDump): void {
   } else if (dump.sync?.pairing?.phase !== "awaiting_confirmation") {
     markCardFocused = false;
   }
+  openJournalPaneForWaitingLink(dump);
 }
 
 function renderAbout(dump: HealthDump): void {
@@ -5657,6 +5678,9 @@ export const __test__ = {
   setRoute(r: Route) {
     activeRoute = r;
   },
+  getRoute(): Route {
+    return activeRoute;
+  },
   setHealth(dump: HealthDump | null, receivedAt?: number | null) {
     latestHealth = dump;
     healthReceivedAt = receivedAt !== undefined ? receivedAt : (dump ? nowSecs() : null);
@@ -5764,6 +5788,7 @@ export const __test__ = {
     pauseStatusEls = [];
     pairingDraft = "";
     pairFieldDirty = false;
+    waitingLinkChecked = false;
     pairingBusy = false;
     finishInFlight = false;
     browserInFlight = false;
