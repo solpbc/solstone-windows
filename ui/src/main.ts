@@ -267,7 +267,7 @@ interface SetupSnapshot {
   mic: boolean;
   system_audio: boolean;
   screen: boolean;
-  start_at_login: boolean;
+  start_at_login: boolean | null;
   wizard: WizardStep;
   notice_dismissed: boolean;
   failed_sources?: FailedSourceWrite[];
@@ -275,6 +275,7 @@ interface SetupSnapshot {
   pending_wizard?: WizardStep | null;
   notice_save_failed?: boolean;
   login_apply_failed?: boolean;
+  setup_read_failed?: boolean;
   handoff_id?: string | null;
   handoff_revision?: number | null;
   handoff_expired?: boolean;
@@ -3712,6 +3713,11 @@ function renderSourceControl(
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   if (dump.setup?.sequence_enabled !== true) {
     const sources = section("sources");
+    if (dump.setup?.setup_read_failed === true) {
+      const failureNotice = text("div", "could not read these settings. choose again to replace them.");
+      failureNotice.classList.add("save-failure");
+      sources.prepend(failureNotice);
+    }
     for (const [kind, label, id] of [
       ["screen", "screen", ids["settings.sources.screen.state"]],
       ["system_audio", "system audio", ids["settings.sources.systemAudio.state"]],
@@ -3724,6 +3730,11 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
     return sources;
   }
   const sources = section("sources");
+  if (dump.setup?.setup_read_failed === true) {
+    const failureNotice = text("div", "could not read these settings. choose again to replace them.");
+    failureNotice.classList.add("save-failure");
+    sources.prepend(failureNotice);
+  }
   const screen = sourceByKind(dump, "screen");
   const systemAudio = sourceByKind(dump, "system_audio");
   const mic = sourceByKind(dump, "mic");
@@ -3900,25 +3911,42 @@ function storageGlance(): HTMLElement {
   return text("div", "stored on this pc");
 }
 
-function renderPauseCard(dump: HealthDump): HTMLElement {
+function createPauseButton(dump: HealthDump, onRejection?: (msg: string) => void): HTMLButtonElement {
   const phase = latestHealth?.app_state ?? dump.app_state;
-  let action: HTMLButtonElement;
   if (phase === "observing") {
-    action = actionButton("pause", undefined, true, () => {
-      void invoke("pause", { reason: "operator", durationSecs: null }).then(() => retryHealth());
+    return actionButton("pause", undefined, true, async () => {
+      try {
+        await invoke("pause", { reason: "operator", durationSecs: null });
+        retryHealth();
+      } catch {
+        onRejection?.("could not pause. try again.");
+      }
     });
   } else if (phase === "paused") {
-    action = actionButton("resume", undefined, true, () => {
-      void invoke("resume").then(() => retryHealth());
+    return actionButton("resume", undefined, true, async () => {
+      try {
+        await invoke("resume");
+        retryHealth();
+      } catch {
+        onRejection?.("could not resume. try again.");
+      }
     });
   } else if (phase === "error") {
-    action = actionButton("restart intake", undefined, true, () => {
-      void invoke("resume").then(() => retryHealth());
+    return actionButton("restart intake", undefined, true, async () => {
+      try {
+        await invoke("resume");
+        retryHealth();
+      } catch {
+        onRejection?.("could not resume. try again.");
+      }
     });
   } else {
-    action = actionButton("pause", undefined, false, () => {});
+    return actionButton("pause", undefined, false, () => {});
   }
+}
 
+function renderPauseCard(dump: HealthDump): HTMLElement {
+  const action = createPauseButton(dump);
   const statePill = pill(statusStateLabel(dump), statusSeverity(dump.app_state));
   trackPausePill(dump, statePill);
 
@@ -4255,7 +4283,41 @@ function renderWizardSourceControl(
 function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
   const wrap = document.createElement("div");
   wrap.classList.add("wizard-start-at-login");
-  const checked = dump.setup?.start_at_login ?? false;
+
+  if (dump.setup?.start_at_login === null) {
+    const toggle = toggleRow(
+      "start at login",
+      ids["settings.setup.startAtLogin"],
+      false,
+      () => {},
+    );
+    const box = toggle.querySelector("input");
+    if (box) {
+      box.indeterminate = true;
+      box.disabled = true;
+    }
+    const onBtn = actionButton("on", undefined, true, async () => {
+      try {
+        await invoke("set_start_at_login", { enabled: true });
+      } finally {
+        retryHealth();
+      }
+    });
+    const offBtn = actionButton("off", undefined, true, async () => {
+      try {
+        await invoke("set_start_at_login", { enabled: false });
+      } finally {
+        retryHealth();
+      }
+    });
+    wrap.style.display = "flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "8px";
+    wrap.append(toggle, onBtn, offBtn);
+    return wrap;
+  }
+
+  const checked = dump.setup?.start_at_login === true;
   const toggle = toggleRow(
     "start at login",
     ids["settings.setup.startAtLogin"],
@@ -4295,6 +4357,33 @@ async function advanceWizardStep(step: WizardStep): Promise<void> {
   }
 }
 
+function mountWizardProof(
+  dump: HealthDump,
+  kind: SourceKind,
+  proof: HTMLElement,
+  stepContainer: HTMLElement,
+  navRow: HTMLElement,
+): HTMLElement {
+  if (!isSourceEnabled(dump.setup, kind)) {
+    return proof;
+  }
+  let pauseFailureEl: HTMLElement | null = null;
+  const pauseBtn = createPauseButton(dump, (msg) => {
+    if (pauseFailureEl && pauseFailureEl.parentNode === stepContainer) {
+      pauseFailureEl.remove();
+    }
+    pauseFailureEl = text("div", msg);
+    pauseFailureEl.classList.add("save-failure");
+    stepContainer.insertBefore(pauseFailureEl, navRow);
+  });
+  const proofRow = document.createElement("div");
+  proofRow.style.display = "flex";
+  proofRow.style.gap = "8px";
+  proofRow.style.marginTop = "12px";
+  proofRow.append(proof, pauseBtn);
+  return proofRow;
+}
+
 function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   const wizardEl = document.createElement("div");
   wizardEl.classList.add("settings-wizard");
@@ -4306,25 +4395,29 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   automation(stepContainer, ids["settings.setup.step"]);
   stepContainer.dataset.step = step;
 
-  const wizardSteps = {
-    mic: { number: 5, heading: "share your conversations" },
-    system_audio: { number: 5, heading: "share sound from this computer" },
-    screen: { number: 6, heading: "share your screen" },
-    connection: { number: 7, heading: "connect your journal" },
-  } as const;
-  const wizardStep = wizardSteps[step as keyof typeof wizardSteps];
-  // Steps 1-4 happen in the journal window on this PC. Number the steps only when
-  // setup is continuing from there; otherwise the count points at steps never shown.
   const continuingFromJournal = Boolean(dump.setup?.handoff_id);
-  if (wizardStep) {
-    if (continuingFromJournal) {
-      const progress = text("p", `step ${wizardStep.number} of 7`);
-      progress.classList.add("wizard-progress");
-      progress.dataset.stepNumber = String(wizardStep.number);
-      automation(progress, ids["settings.setup.stepNumber"]);
-      stepContainer.append(progress);
-    }
-    const heading = text("h2", wizardStep.heading);
+  const totalSteps = continuingFromJournal ? 8 : 4;
+  const stepNumberMap = continuingFromJournal
+    ? { mic: 5, system_audio: 6, screen: 7, connection: 8 }
+    : { mic: 1, system_audio: 2, screen: 3, connection: 4 };
+
+  const headings = {
+    mic: "share your conversations",
+    system_audio: "share sound from this computer",
+    screen: "share your screen",
+    connection: "connect your journal",
+  } as const;
+
+  const headingText = headings[step as keyof typeof headings];
+  const stepNum = stepNumberMap[step as keyof typeof stepNumberMap];
+  if (headingText && stepNum !== undefined) {
+    const progress = text("p", `step ${stepNum} of ${totalSteps}`);
+    progress.classList.add("wizard-progress");
+    progress.dataset.stepNumber = String(stepNum);
+    automation(progress, ids["settings.setup.stepNumber"]);
+    stepContainer.append(progress);
+
+    const heading = text("h2", headingText);
     heading.classList.add("wizard-step-title");
     heading.tabIndex = -1;
     stepContainer.append(heading);
@@ -4371,7 +4464,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(notNowBtn);
     if (isSourceEnabled(dump.setup, "mic")) navRow.append(nextBtn);
 
-    stepContainer.append(sw, proof);
+    stepContainer.append(sw, mountWizardProof(dump, "mic", proof, stepContainer, navRow));
     stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
   } else if (step === "system_audio") {
     const sw = renderWizardSourceControl("system_audio", "settings.setup.systemAudio", dump);
@@ -4422,8 +4515,8 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(backBtn, notNowBtn);
     if (isSourceEnabled(dump.setup, "system_audio")) navRow.append(nextBtn);
 
-    stepContainer.append(sw, proof);
-    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+    stepContainer.append(sw, mountWizardProof(dump, "system_audio", proof, stepContainer, navRow));
+    stepContainer.append(sentence, navRow);
   } else if (step === "screen") {
     const sw = renderWizardSourceControl("screen", "settings.setup.screen", dump);
     const proof = renderProofNode("screen", preview);
@@ -4473,8 +4566,8 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     navRow.append(backBtn, notNowBtn);
     if (isSourceEnabled(dump.setup, "screen")) navRow.append(nextBtn);
 
-    stepContainer.append(sw, proof);
-    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
+    stepContainer.append(sw, mountWizardProof(dump, "screen", proof, stepContainer, navRow));
+    stepContainer.append(sentence, navRow);
   } else if (step === "connection") {
     const isPaired = dump.sync.pairing.phase === "paired";
 
@@ -4559,6 +4652,12 @@ function renderHome(dump: HealthDump): HTMLElement {
     home.append(renderSourcesNotice(), renderStatusStrip(dump), cards);
   } else {
     home.append(renderStatusStrip(dump), cards);
+  }
+  if (dump.setup?.setup_read_failed === true) {
+    const failureNotice = text("div", "could not read these settings. choose again to replace them.");
+    failureNotice.classList.add("save-failure");
+    home.prepend(failureNotice);
+    home.append(renderStartAtLoginControl(dump));
   }
   return home;
 }

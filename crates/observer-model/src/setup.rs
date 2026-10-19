@@ -41,6 +41,86 @@ pub enum WizardStep {
     Done,
 }
 
+/// Preference for starting the application automatically at user login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginPreference {
+    choice: Option<bool>,
+}
+
+impl LoginPreference {
+    pub fn explicit(choice: bool) -> Self {
+        Self {
+            choice: Some(choice),
+        }
+    }
+
+    pub fn unknown() -> Self {
+        Self { choice: None }
+    }
+
+    pub fn choice(self) -> Option<bool> {
+        self.choice
+    }
+}
+
+impl Serialize for LoginPreference {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.choice.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LoginPreference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct LoginPreferenceVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for LoginPreferenceVisitor {
+            type Value = LoginPreference;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a boolean or null")
+            }
+
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(LoginPreference::explicit(v))
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(LoginPreference::unknown())
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(LoginPreference::unknown())
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                deserializer.deserialize_any(self)
+            }
+        }
+
+        // serde 1.0.228 MissingFieldDeserializer::deserialize_option visits None,
+        // so an omitted start_at_login would look unknown. deserialize_any rejects it.
+        deserializer.deserialize_any(LoginPreferenceVisitor)
+    }
+}
+
 /// Durable schema for `setup.json` (version 1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetupConfig {
@@ -48,7 +128,7 @@ pub struct SetupConfig {
     pub mic: bool,
     pub system_audio: bool,
     pub screen: bool,
-    pub start_at_login: bool,
+    pub start_at_login: LoginPreference,
     pub wizard: WizardStep,
     pub notice_dismissed: bool,
 }
@@ -60,7 +140,7 @@ impl SetupConfig {
             mic: false,
             system_audio: false,
             screen: false,
-            start_at_login: false,
+            start_at_login: LoginPreference::explicit(false),
             wizard: WizardStep::Mic,
             notice_dismissed: true,
         }
@@ -72,7 +152,7 @@ impl SetupConfig {
             mic: true,
             system_audio: true,
             screen: true,
-            start_at_login: true,
+            start_at_login: LoginPreference::explicit(true),
             wizard: WizardStep::Done,
             notice_dismissed: false,
         }
@@ -84,7 +164,7 @@ impl SetupConfig {
             mic: false,
             system_audio: false,
             screen: false,
-            start_at_login: false,
+            start_at_login: LoginPreference::unknown(),
             wizard: WizardStep::Done,
             notice_dismissed: true,
         }
@@ -104,6 +184,7 @@ impl SetupConfig {
             pending_wizard: None,
             notice_save_failed: false,
             login_apply_failed: false,
+            setup_read_failed: false,
             handoff_id: None,
             handoff_revision: None,
             handoff_expired: false,
@@ -133,7 +214,7 @@ pub struct SetupSnapshot {
     pub mic: bool,
     pub system_audio: bool,
     pub screen: bool,
-    pub start_at_login: bool,
+    pub start_at_login: LoginPreference,
     pub wizard: WizardStep,
     pub notice_dismissed: bool,
     #[serde(default)]
@@ -146,6 +227,8 @@ pub struct SetupSnapshot {
     pub notice_save_failed: bool,
     #[serde(default)]
     pub login_apply_failed: bool,
+    #[serde(default)]
+    pub setup_read_failed: bool,
     #[serde(default)]
     pub handoff_id: Option<String>,
     #[serde(default)]
@@ -175,7 +258,7 @@ impl Default for SetupSnapshot {
             mic: false,
             system_audio: false,
             screen: false,
-            start_at_login: false,
+            start_at_login: LoginPreference::explicit(false),
             wizard: WizardStep::Done,
             notice_dismissed: true,
             failed_sources: Vec::new(),
@@ -183,6 +266,7 @@ impl Default for SetupSnapshot {
             pending_wizard: None,
             notice_save_failed: false,
             login_apply_failed: false,
+            setup_read_failed: false,
             handoff_id: None,
             handoff_revision: None,
             handoff_expired: false,
@@ -326,17 +410,31 @@ pub fn atomic_write_setup(data_root: &Path, config: &SetupConfig) -> io::Result<
     res
 }
 
-/// Read `setup.json` read-only without classifying or writing.
-/// Missing or bad -> quiet fail-closed default.
-pub fn read_readonly(data_root: &Path) -> SetupSnapshot {
+fn read_setup_snapshot(data_root: &Path) -> SetupSnapshot {
     let setup_path = data_root.join(SETUP_FILE_NAME);
-    let Ok(bytes) = fs::read(&setup_path) else {
-        return SetupSnapshot::default();
+    let bytes = match fs::read(&setup_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return SetupSnapshot::default(),
+        Err(_) => {
+            let mut snapshot = SetupConfig::fail_closed().to_snapshot();
+            snapshot.setup_read_failed = true;
+            return snapshot;
+        }
     };
     match serde_json::from_slice::<SetupConfig>(&bytes) {
         Ok(config) if config.version == CURRENT_SETUP_VERSION => config.to_snapshot(),
-        _ => SetupSnapshot::default(),
+        _ => {
+            let mut snapshot = SetupConfig::fail_closed().to_snapshot();
+            snapshot.setup_read_failed = true;
+            snapshot
+        }
     }
+}
+
+/// Read `setup.json` read-only without classifying or writing.
+/// A missing file stays the quiet default. Damaged bytes report unknown login.
+pub fn read_readonly(data_root: &Path) -> SetupSnapshot {
+    read_setup_snapshot(data_root)
 }
 
 /// Dark builds preserve existing consent without creating or migrating setup state.
@@ -356,6 +454,45 @@ pub fn load_for_startup(data_root: &Path, sequence_enabled: bool) -> LoadOutcome
             LoadOutcome::LegacyUnsaved(legacy)
         }
         Err(_) => LoadOutcome::FailedClosed(SetupConfig::fail_closed()),
+    }
+}
+
+pub struct StartupSetup {
+    pub config: SetupConfig,
+    pub login_choice: Option<bool>,
+    pub setup_read_failed: bool,
+}
+
+pub enum StartupLoad {
+    Abort,
+    Ready(StartupSetup),
+}
+
+pub fn startup_load(outcome: LoadOutcome) -> StartupLoad {
+    match outcome {
+        LoadOutcome::Abort => StartupLoad::Abort,
+        LoadOutcome::Fresh(cfg) => StartupLoad::Ready(StartupSetup {
+            login_choice: cfg.start_at_login.choice(),
+            setup_read_failed: false,
+            config: cfg,
+        }),
+        LoadOutcome::Legacy(cfg) | LoadOutcome::LegacyUnsaved(cfg) => {
+            StartupLoad::Ready(StartupSetup {
+                login_choice: cfg.start_at_login.choice(),
+                setup_read_failed: false,
+                config: cfg,
+            })
+        }
+        LoadOutcome::Valid(cfg) => StartupLoad::Ready(StartupSetup {
+            login_choice: cfg.start_at_login.choice(),
+            setup_read_failed: false,
+            config: cfg,
+        }),
+        LoadOutcome::FailedClosed(_) => StartupLoad::Ready(StartupSetup {
+            config: SetupConfig::fail_closed(),
+            login_choice: None,
+            setup_read_failed: true,
+        }),
     }
 }
 
@@ -404,14 +541,7 @@ pub fn load_or_classify(data_root: &Path) -> LoadOutcome {
 /// Read-only inspection of `setup.json` for `not_running_snapshot`.
 /// Never classifies and never writes.
 pub fn read_setup_read_only(data_root: &Path) -> SetupSnapshot {
-    let setup_path = data_root.join(SETUP_FILE_NAME);
-    match fs::read(&setup_path) {
-        Ok(bytes) => match serde_json::from_slice::<SetupConfig>(&bytes) {
-            Ok(config) if config.version == CURRENT_SETUP_VERSION => config.to_snapshot(),
-            _ => SetupSnapshot::default(),
-        },
-        Err(_) => SetupSnapshot::default(),
-    }
+    read_setup_snapshot(data_root)
 }
 
 /// Outcome of retrying unpersisted setup changes.
@@ -436,6 +566,7 @@ pub struct SetupAuthority {
     login_apply_failed: bool,
     pending_login: Option<bool>,
     overlay: HandoffOverlay,
+    setup_read_failed: bool,
 }
 
 impl Default for SetupAuthority {
@@ -459,6 +590,7 @@ impl SetupAuthority {
             login_apply_failed: false,
             pending_login: None,
             overlay: HandoffOverlay::default(),
+            setup_read_failed: false,
         }
     }
 
@@ -481,6 +613,7 @@ impl SetupAuthority {
         self.durable.notice_dismissed = snapshot.notice_dismissed;
         self.durable.start_at_login = snapshot.start_at_login;
         self.login_apply_failed = snapshot.login_apply_failed;
+        self.setup_read_failed = snapshot.setup_read_failed;
         self.pending_login = None;
 
         self.failed_sources.clear();
@@ -495,7 +628,10 @@ impl SetupAuthority {
             mic: self.running_mic,
             system_audio: self.running_system_audio,
             screen: self.running_screen,
-            start_at_login: self.pending_login.unwrap_or(self.durable.start_at_login),
+            start_at_login: match self.pending_login {
+                Some(choice) => LoginPreference::explicit(choice),
+                None => self.durable.start_at_login,
+            },
             wizard: self.durable.wizard,
             notice_dismissed: self.durable.notice_dismissed,
             failed_sources: self.failed_sources.clone(),
@@ -503,6 +639,7 @@ impl SetupAuthority {
             pending_wizard: self.pending_wizard,
             notice_save_failed: self.notice_save_failed,
             login_apply_failed: self.login_apply_failed,
+            setup_read_failed: self.setup_read_failed,
             handoff_id: self.overlay.handoff_id.clone(),
             handoff_revision: self.overlay.handoff_revision,
             handoff_expired: self.overlay.handoff_expired,
@@ -521,7 +658,7 @@ impl SetupAuthority {
     fn candidate_with_pending_off(&self) -> SetupConfig {
         let mut candidate = self.durable.clone();
         if self.pending_login == Some(false) {
-            candidate.start_at_login = false;
+            candidate.start_at_login = LoginPreference::explicit(false);
         }
         for failed in self
             .failed_sources
@@ -546,6 +683,7 @@ impl SetupAuthority {
             return false;
         }
         self.durable = candidate;
+        self.setup_read_failed = false;
         self.failed_sources.retain(|failed| failed.attempted);
         true
     }
@@ -586,7 +724,7 @@ impl SetupAuthority {
     pub fn set_start_at_login(&mut self, enabled: bool) -> bool {
         self.pending_login = Some(enabled);
         let mut candidate = self.candidate_with_pending_off();
-        candidate.start_at_login = enabled;
+        candidate.start_at_login = LoginPreference::explicit(enabled);
         self.persist(candidate)
     }
 
@@ -598,13 +736,19 @@ impl SetupAuthority {
     }
 
     pub fn pending_login(&self) -> Option<bool> {
-        self.pending_login.or_else(|| {
-            self.login_apply_failed
-                .then_some(self.durable.start_at_login)
-        })
+        if let Some(choice) = self.pending_login {
+            Some(choice)
+        } else if self.login_apply_failed {
+            self.durable.start_at_login.choice()
+        } else {
+            None
+        }
     }
 
     pub fn set_wizard_step(&mut self, step: WizardStep) -> bool {
+        if self.setup_read_failed {
+            return false;
+        }
         let mut candidate = self.candidate_with_pending_off();
         candidate.wizard = step;
         let saved = self.persist(candidate);
@@ -614,6 +758,9 @@ impl SetupAuthority {
     }
 
     pub fn dismiss_notice(&mut self) -> bool {
+        if self.setup_read_failed {
+            return false;
+        }
         let mut candidate = self.candidate_with_pending_off();
         candidate.notice_dismissed = true;
         let saved = self.persist(candidate);
@@ -622,6 +769,15 @@ impl SetupAuthority {
     }
 
     pub fn retry(&mut self) -> RetryOutcome {
+        if self.setup_read_failed
+            && self.failed_sources.is_empty()
+            && self.pending_login.is_none()
+        {
+            return RetryOutcome {
+                started: Vec::new(),
+                saved: true,
+            };
+        }
         let mut candidate = self.durable.clone();
         for fs in &self.failed_sources {
             match fs.kind {
@@ -637,7 +793,7 @@ impl SetupAuthority {
             candidate.notice_dismissed = true;
         }
         if let Some(choice) = self.pending_login {
-            candidate.start_at_login = choice;
+            candidate.start_at_login = LoginPreference::explicit(choice);
         }
 
         let write_ok = if let Some(root) = &self.root {
@@ -648,6 +804,7 @@ impl SetupAuthority {
 
         if write_ok {
             self.durable = candidate;
+            self.setup_read_failed = false;
             let mut started = Vec::new();
             let failed = std::mem::take(&mut self.failed_sources);
             for fs in failed {
@@ -895,7 +1052,7 @@ mod tests {
             LoadOutcome::Valid(cfg) => {
                 assert!(!cfg.mic);
                 assert!(!cfg.screen);
-                assert!(!cfg.start_at_login);
+                assert_eq!(cfg.start_at_login, LoginPreference::explicit(false));
             }
             other => panic!("expected Valid, got {other:?}"),
         }
@@ -963,13 +1120,13 @@ mod tests {
         fs::create_dir(root.join("setup.json.tmp")).unwrap();
         assert!(!auth.set_start_at_login(true));
         auth.set_login_apply_failed(true);
-        assert!(auth.projection().start_at_login);
+        assert_eq!(auth.projection().start_at_login, LoginPreference::explicit(true));
         assert_eq!(auth.pending_login(), Some(true));
         assert!(!auth.retry().saved);
         assert!(auth.projection().login_apply_failed);
         fs::remove_dir(root.join("setup.json.tmp")).unwrap();
         assert!(auth.retry().saved);
-        assert!(read_readonly(&root).start_at_login);
+        assert_eq!(read_readonly(&root).start_at_login, LoginPreference::explicit(true));
         // Saving is not registration success. Keep the intent for another retry.
         auth.set_login_apply_failed(true);
         assert_eq!(auth.pending_login(), Some(true));
@@ -985,7 +1142,7 @@ mod tests {
         for requested in [false, true] {
             let root = temp_test_dir("login-off-monotonic");
             let mut initial = SetupConfig::fresh();
-            initial.start_at_login = !requested;
+            initial.start_at_login = LoginPreference::explicit(!requested);
             atomic_write_setup(&root, &initial).unwrap();
             let mut auth = SetupAuthority::new();
             auth.set_root(root.clone());
@@ -995,7 +1152,7 @@ mod tests {
             auth.set_login_apply_failed(true);
             fs::remove_dir(root.join("setup.json.tmp")).unwrap();
             assert!(auth.set_wizard_step(WizardStep::Mic));
-            assert!(!read_readonly(&root).start_at_login);
+            assert_eq!(read_readonly(&root).start_at_login, LoginPreference::explicit(false));
             assert_eq!(auth.pending_login(), Some(requested));
             fs::remove_dir_all(root).unwrap();
         }
@@ -1233,6 +1390,347 @@ mod tests {
         assert_eq!(after.mic, before.mic);
         assert_eq!(after.system_audio, before.system_audio);
         assert_eq!(after.screen, before.screen);
+    }
+
+    #[test]
+    fn damaged_setup_and_login_decision_recovery() {
+        let my_cmd = r#""C:\app.exe" --from-autostart"#;
+        let present_registry = RegistryReadState::Present(my_cmd.into());
+
+        // 1. Damaged cases
+        struct DamagedCase {
+            name: &'static str,
+            setup: fn(&Path),
+        }
+
+        let damaged_cases = [
+            DamagedCase {
+                name: "malformed",
+                setup: |root: &Path| {
+                    fs::write(root.join(SETUP_FILE_NAME), b"{not json").unwrap();
+                },
+            },
+            DamagedCase {
+                name: "directory",
+                setup: |root: &Path| {
+                    fs::create_dir(root.join(SETUP_FILE_NAME)).unwrap();
+                },
+            },
+            DamagedCase {
+                name: "version99",
+                setup: |root: &Path| {
+                    fs::write(
+                        root.join(SETUP_FILE_NAME),
+                        br#"{"version":99,"mic":true,"system_audio":true,"screen":true,"start_at_login":true,"wizard":"done","notice_dismissed":true}"#,
+                    )
+                    .unwrap();
+                },
+            },
+            DamagedCase {
+                name: "missing_login",
+                setup: |root: &Path| {
+                    fs::write(
+                        root.join(SETUP_FILE_NAME),
+                        br#"{"version":1,"mic":true,"system_audio":true,"screen":true,"wizard":"done","notice_dismissed":true}"#,
+                    )
+                    .unwrap();
+                },
+            },
+            DamagedCase {
+                name: "missing_wizard",
+                setup: |root: &Path| {
+                    fs::write(
+                        root.join(SETUP_FILE_NAME),
+                        br#"{"version":1,"start_at_login":true,"mic":true,"system_audio":true,"screen":true,"notice_dismissed":true}"#,
+                    )
+                    .unwrap();
+                },
+            },
+        ];
+
+        for case in &damaged_cases {
+            let root = temp_test_dir(&format!("damaged-{}", case.name));
+            (case.setup)(&root);
+            let before_bytes = if root.join(SETUP_FILE_NAME).is_file() {
+                Some(fs::read(root.join(SETUP_FILE_NAME)).unwrap())
+            } else {
+                None
+            };
+
+            let outcome = load_for_startup(&root, true);
+            let startup = startup_load(outcome);
+            let ready = match startup {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready, got Abort for {}", case.name),
+            };
+
+            assert!(!ready.config.mic);
+            assert!(!ready.config.system_audio);
+            assert!(!ready.config.screen);
+            assert_eq!(ready.login_choice, None);
+            assert!(ready.setup_read_failed);
+
+            if let Some(bytes) = before_bytes {
+                assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), bytes);
+            } else {
+                assert!(root.join(SETUP_FILE_NAME).is_dir());
+            }
+
+            let decision = evaluate_login_decision(
+                CopyClass::Installed,
+                ready.login_choice,
+                &present_registry,
+                my_cmd,
+                None,
+            );
+            assert_eq!(decision, LoginDecision::Leave);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // 2. Separate valid document, explicit "start_at_login": null
+        {
+            let root = temp_test_dir("valid-null-login");
+            let json = br#"{"version":1,"mic":true,"system_audio":false,"screen":false,"start_at_login":null,"wizard":"done","notice_dismissed":true}"#;
+            fs::write(root.join(SETUP_FILE_NAME), json).unwrap();
+
+            let outcome = load_for_startup(&root, true);
+            let startup = startup_load(outcome);
+            let ready = match startup {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+
+            assert!(ready.config.mic);
+            assert!(!ready.config.system_audio);
+            assert!(!ready.config.screen);
+            assert_eq!(ready.login_choice, None);
+            assert!(!ready.setup_read_failed);
+            assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), json);
+
+            let decision = evaluate_login_decision(
+                CopyClass::Installed,
+                ready.login_choice,
+                &present_registry,
+                my_cmd,
+                None,
+            );
+            assert_eq!(decision, LoginDecision::Leave);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // 3. Valid explicit false on installed/present fixture -> Remove
+        {
+            let root = temp_test_dir("valid-false-login");
+            let json = br#"{"version":1,"mic":true,"system_audio":false,"screen":false,"start_at_login":false,"wizard":"done","notice_dismissed":true}"#;
+            fs::write(root.join(SETUP_FILE_NAME), json).unwrap();
+
+            let outcome = load_for_startup(&root, true);
+            let startup = startup_load(outcome);
+            let ready = match startup {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+            assert_eq!(ready.login_choice, Some(false));
+            assert!(!ready.setup_read_failed);
+
+            let decision = evaluate_login_decision(
+                CopyClass::Installed,
+                ready.login_choice,
+                &present_registry,
+                my_cmd,
+                None,
+            );
+            assert_eq!(decision, LoginDecision::Remove);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // 4. Valid explicit true
+        {
+            let root = temp_test_dir("valid-true-login");
+            let json = br#"{"version":1,"mic":true,"system_audio":false,"screen":false,"start_at_login":true,"wizard":"done","notice_dismissed":true}"#;
+            fs::write(root.join(SETUP_FILE_NAME), json).unwrap();
+
+            let outcome = load_for_startup(&root, true);
+            let startup = startup_load(outcome);
+            let ready = match startup {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+            assert_eq!(ready.login_choice, Some(true));
+            assert!(!ready.setup_read_failed);
+
+            // Ensure for Installed
+            let dec_inst = evaluate_login_decision(
+                CopyClass::Installed,
+                ready.login_choice,
+                &present_registry,
+                my_cmd,
+                None,
+            );
+            assert_eq!(dec_inst, LoginDecision::Ensure);
+
+            // Leave for Portable when installed_owner_exists Some(true)
+            let dec_port_leave = evaluate_login_decision(
+                CopyClass::Portable,
+                ready.login_choice,
+                &present_registry,
+                my_cmd,
+                Some(true),
+            );
+            assert_eq!(dec_port_leave, LoginDecision::Leave);
+
+            // Ensure for Portable when Some(false)
+            let dec_port_ensure = evaluate_login_decision(
+                CopyClass::Portable,
+                ready.login_choice,
+                &present_registry,
+                my_cmd,
+                Some(false),
+            );
+            assert_eq!(dec_port_ensure, LoginDecision::Ensure);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // 5. Fresh: empty temp dir, load_for_startup true, choice Some(false), setup_read_failed false
+        {
+            let root = temp_test_dir("fresh-startup-load");
+            let outcome = load_for_startup(&root, true);
+            let startup = startup_load(outcome);
+            let ready = match startup {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+            assert_eq!(ready.login_choice, Some(false));
+            assert!(!ready.setup_read_failed);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // 6. Legacy: write mic.json as predecessor evidence, no setup.json, load_for_startup true, choice Some(true), setup_read_failed false
+        {
+            let root = temp_test_dir("legacy-startup-load");
+            fs::write(root.join("mic.json"), b"{}").unwrap();
+            let outcome = load_for_startup(&root, true);
+            let startup = startup_load(outcome);
+            let ready = match startup {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+            assert_eq!(ready.login_choice, Some(true));
+            assert!(!ready.setup_read_failed);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // 7. Authority sequence on a malformed file
+        {
+            let root = temp_test_dir("authority-malformed-recovery");
+            let bad_bytes = b"{bad json";
+            fs::write(root.join(SETUP_FILE_NAME), bad_bytes).unwrap();
+
+            // read_readonly and read_setup_read_only on the original damaged bytes:
+            // they do not change bytes and start_at_login is unknown with setup_read_failed true, not explicit false.
+            let ro1 = read_readonly(&root);
+            assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), bad_bytes);
+            assert_eq!(ro1.start_at_login, LoginPreference::unknown());
+            assert!(ro1.setup_read_failed);
+
+            let ro2 = read_setup_read_only(&root);
+            assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), bad_bytes);
+            assert_eq!(ro2.start_at_login, LoginPreference::unknown());
+            assert!(ro2.setup_read_failed);
+
+            let startup = startup_load(load_for_startup(&root, true));
+            let ready = match startup {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+            let mut snapshot = ready.config.to_snapshot();
+            snapshot.setup_read_failed = ready.setup_read_failed;
+
+            let mut auth = SetupAuthority::new();
+            auth.set_root(root.clone());
+            auth.seed(&snapshot);
+
+            // retry, then set_wizard_step or dismiss_notice: original bytes remain, pending_login() is None, setup_read_failed stays true.
+            let retry_res = auth.retry();
+            assert!(retry_res.saved);
+            assert!(retry_res.started.is_empty());
+            assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), bad_bytes);
+            assert_eq!(auth.pending_login(), None);
+            assert!(auth.projection().setup_read_failed);
+
+            assert!(!auth.set_wizard_step(WizardStep::Screen));
+            assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), bad_bytes);
+            assert_eq!(auth.pending_login(), None);
+            assert!(auth.projection().setup_read_failed);
+
+            assert!(!auth.dismiss_notice());
+            assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), bad_bytes);
+            assert_eq!(auth.pending_login(), None);
+            assert!(auth.projection().setup_read_failed);
+
+            // create setup.json.tmp as a directory, set_source Mic true: bytes unchanged, projection login unknown, setup_read_failed true, mic not running.
+            fs::create_dir(root.join("setup.json.tmp")).unwrap();
+            let mic_running = auth.set_source(SourceKind::Mic, true);
+            assert!(!mic_running);
+            assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), bad_bytes);
+            assert_eq!(auth.projection().start_at_login, LoginPreference::unknown());
+            assert!(auth.projection().setup_read_failed);
+            assert!(!auth.projection().mic);
+
+            // remove that directory, set_source Mic true.
+            fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+            let mic_running_now = auth.set_source(SourceKind::Mic, true);
+            assert!(mic_running_now);
+
+            // Parse file with serde_json::Value. Do not compare pretty text.
+            let saved_val: serde_json::Value =
+                serde_json::from_slice(&fs::read(root.join(SETUP_FILE_NAME)).unwrap()).unwrap();
+            assert_eq!(saved_val["mic"], serde_json::Value::Bool(true));
+            assert_eq!(saved_val["system_audio"], serde_json::Value::Bool(false));
+            assert_eq!(saved_val["screen"], serde_json::Value::Bool(false));
+            assert_eq!(saved_val["start_at_login"], serde_json::Value::Null);
+            assert!(!auth.projection().setup_read_failed);
+
+            // load_for_startup + startup_load again: choice None, Leave on the installed/present fixture.
+            let startup2 = startup_load(load_for_startup(&root, true));
+            let ready2 = match startup2 {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+            assert_eq!(ready2.login_choice, None);
+            assert!(!ready2.setup_read_failed);
+            let dec2 = evaluate_login_decision(
+                CopyClass::Installed,
+                ready2.login_choice,
+                &present_registry,
+                my_cmd,
+                None,
+            );
+            assert_eq!(dec2, LoginDecision::Leave);
+
+            // set_start_at_login(false). Reload. start_at_login is Bool(false). choice Some(false). Remove on that fixture.
+            assert!(auth.set_start_at_login(false));
+            let val_after_login: serde_json::Value =
+                serde_json::from_slice(&fs::read(root.join(SETUP_FILE_NAME)).unwrap()).unwrap();
+            assert_eq!(val_after_login["start_at_login"], serde_json::Value::Bool(false));
+
+            let startup3 = startup_load(load_for_startup(&root, true));
+            let ready3 = match startup3 {
+                StartupLoad::Ready(s) => s,
+                StartupLoad::Abort => panic!("expected Ready"),
+            };
+            assert_eq!(ready3.login_choice, Some(false));
+            let dec3 = evaluate_login_decision(
+                CopyClass::Installed,
+                ready3.login_choice,
+                &present_registry,
+                my_cmd,
+                None,
+            );
+            assert_eq!(dec3, LoginDecision::Remove);
+
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 }
 
