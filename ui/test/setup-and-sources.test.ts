@@ -35,7 +35,11 @@ function present(id: string): HTMLElement {
 
 function wizardPauseButton(): HTMLButtonElement | null {
   const button = document.getElementById("setup-pause");
-  return button instanceof HTMLButtonElement ? button : null;
+  if (!(button instanceof HTMLButtonElement)) return null;
+  // Placement is part of the contract: pause sits with the source's switch, outside the proof node.
+  if (!button.closest(".setup-switch-aside")) throw new Error("setup pause is not beside the source switch");
+  if (button.closest(".wizard-proof")) throw new Error("setup pause is inside the proof node");
+  return button;
 }
 
 function homePauseButton(): HTMLButtonElement | null {

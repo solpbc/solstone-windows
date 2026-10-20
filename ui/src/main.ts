@@ -1532,7 +1532,7 @@ function storageRow(storage: StorageInfo | null): HTMLElement {
     pathWrap,
     actionButton("open folder", undefined, true, () => void invoke("open_storage_folder")),
   );
-  return valueRow("stored on this pc", value);
+  return valueRow("stored on this PC", value);
 }
 
 function syncRow(sync: SyncSnapshot): HTMLElement {
@@ -3930,7 +3930,7 @@ function homeCard(titleText: string, glanceNode: HTMLElement, actionNode: HTMLEl
 }
 
 function storageGlance(): HTMLElement {
-  return text("div", "stored on this pc");
+  return text("div", "stored on this PC");
 }
 
 function globalPauseActive(dump: HealthDump): boolean {
@@ -4457,6 +4457,7 @@ function renderSetupProgress(stepNum: number, totalSteps: number): HTMLElement {
 
   const textSpan = text("span", progressText);
   textSpan.classList.add("setup-progress-text");
+  textSpan.setAttribute("aria-hidden", "true");
 
   const dotsSpan = document.createElement("span");
   dotsSpan.classList.add("setup-progress-dots");
@@ -4474,7 +4475,7 @@ function renderSetupProgress(stepNum: number, totalSteps: number): HTMLElement {
     dotsSpan.append(dot);
   }
 
-  p.append(textSpan, dotsSpan);
+  p.append(dotsSpan, textSpan);
   return p;
 }
 
@@ -4562,6 +4563,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
         heading.textContent = "connected to your journal";
       }
       automation(heading, ids["settings.pairing.state"]);
+      heading.classList.add("selectable");
     }
   }
 
