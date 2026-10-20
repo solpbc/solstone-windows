@@ -3758,7 +3758,7 @@ function renderDesktopActivityControl(
 
   const sentence = text(
     "div",
-    "share app names, window titles and page addresses with your journal. page addresses include the site and path, with nothing after ? or #.",
+    "add app names and whether you're active or idle, or this PC is locked, to your journal. you can also add window titles and page addresses. page addresses include the site and path, with nothing after ? or #.",
   );
   sentence.style.fontSize = "12px";
   sentence.style.color = "var(--fg-subtle)";

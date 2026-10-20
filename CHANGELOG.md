@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- desktop activity has also been adding to your journal whether you're active or idle, or this PC is locked, beside the apps you use. its setting now says so.
+
 ## [2.0.32] - 2026-10-20
 
 ### Added
