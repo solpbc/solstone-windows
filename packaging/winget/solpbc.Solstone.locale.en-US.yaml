@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.31
+PackageVersion: 2.0.32
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,10 +22,21 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
+  Added
+  - you can now turn on desktop activity in settings to share the apps you use with your journal, and choose whether window titles and page addresses go too, with screen and audio off if you prefer.
+  - when the app can verify your journal on this PC, it connects without asking you to compare marks. other pairings keep the comparison.
+  - once you turn a source on during setup, pause and resume sit beside its switch. pause applies to every source you've turned on.
+
+  Changed
+  - the setup steps now share the journal window's look, with progress dots, a step count, a larger level meter and a larger view of your screen.
+
   Fixed
-  - a pairing link you open while the solstone app is already running now fills in the pairing field right away, instead of after you move to another screen.
-  - with settings open, "open journal" now opens your journal in its own window, instead of saying "couldn't open your journal." settings also opens now while your journal's window is open.
-  - a pairing link that starts the solstone app while it isn't paired now opens the journal pane, where the link is waiting, instead of the home pane.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.31
+  - setup no longer numbers two steps "5" when it continues from your journal on this PC.
+  - if the app can't read your saved source choices, sources stay off and your start at login setting stays as it was. you can choose them again in settings.
+  - after you pair, the pairing field is empty again instead of keeping the link you just used.
+  - the first time you pair, setup's connect step now tells you where to find a pairing link in your journal.
+  - a pairing link you open while the solstone app isn't paired and settings is on the home pane now opens the journal pane, where the link is waiting, instead of leaving you on home.
+  - a journal window opened just as the solstone app starts now shows your journal's mark in its title, instead of "your journal".
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.32
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

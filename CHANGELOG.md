@@ -4,25 +4,24 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.32] - 2026-10-20
 
 ### Added
 
-- you can now turn on desktop activity in settings to share app names, window titles and page addresses with your journal, with screen and audio off if you prefer.
+- you can now turn on desktop activity in settings to share the apps you use with your journal, and choose whether window titles and page addresses go too, with screen and audio off if you prefer.
 - when the app can verify your journal on this PC, it connects without asking you to compare marks. other pairings keep the comparison.
 - once you turn a source on during setup, pause and resume sit beside its switch. pause applies to every source you've turned on.
 
 ### Changed
 
-- the setup steps now share the journal window's look, with progress dots, a larger level meter and a larger view of your screen.
+- the setup steps now share the journal window's look, with progress dots, a step count, a larger level meter and a larger view of your screen.
 
 ### Fixed
 
-- when setup continues from your journal on this PC, its steps run from 5 through 8. starting in the solstone app gives you four steps.
+- setup no longer numbers two steps "5" when it continues from your journal on this PC.
 - if the app can't read your saved source choices, sources stay off and your start at login setting stays as it was. you can choose them again in settings.
 - after you pair, the pairing field is empty again instead of keeping the link you just used.
 - the first time you pair, setup's connect step now tells you where to find a pairing link in your journal.
-- setup's source steps no longer show a separate "off" button. the switch beside each source turns it on and off, and "retry" now looks like the other buttons.
 - a pairing link you open while the solstone app isn't paired and settings is on the home pane now opens the journal pane, where the link is waiting, instead of leaving you on home.
 - a journal window opened just as the solstone app starts now shows your journal's mark in its title, instead of "your journal".
 
