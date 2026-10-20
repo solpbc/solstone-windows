@@ -23,14 +23,31 @@ use observer_model::desktop_activity::{
 use observer_model::ErrorReason;
 use observer_model::{SourceError, SourceState};
 
-/// Query Windows session eligibility using WTSQuerySessionInformationW.
-/// Returns true only when connect state is WTSActive and session state is unlocked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum SessionActivity {
+    Unlocked,
+    Locked,
+    Unavailable,
+}
+
+/// Only an active session with a recognized lock flag provides activity evidence.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn classify_session_activity(active: bool, locked: Option<bool>) -> SessionActivity {
+    match (active, locked) {
+        (true, Some(false)) => SessionActivity::Unlocked,
+        (true, Some(true)) => SessionActivity::Locked,
+        _ => SessionActivity::Unavailable,
+    }
+}
+
 #[cfg(windows)]
-pub fn is_session_eligible() -> bool {
+fn session_activity() -> SessionActivity {
     use windows::core::PWSTR;
     use windows::Win32::System::RemoteDesktop::{
         WTSActive, WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx,
-        WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_UNLOCK,
+        WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK,
+        WTS_SESSIONSTATE_UNLOCK,
     };
 
     unsafe {
@@ -46,7 +63,10 @@ pub fn is_session_eligible() -> bool {
         .is_err()
             || buffer.is_null()
         {
-            return false;
+            if !buffer.is_null() {
+                WTSFreeMemory(buffer.as_ptr() as *mut _);
+            }
+            return SessionActivity::Unavailable;
         }
 
         let info = buffer.as_ptr() as *const windows::Win32::System::RemoteDesktop::WTSINFOEXW;
@@ -55,19 +75,30 @@ pub fn is_session_eligible() -> bool {
         {
             if (*info).Level != 1 {
                 WTSFreeMemory(buffer.as_ptr() as *mut _);
-                return false;
+                return SessionActivity::Unavailable;
             }
             let level1 = &(*info).Data.WTSInfoExLevel1;
             (level1.SessionState, level1.SessionFlags)
         } else {
             WTSFreeMemory(buffer.as_ptr() as *mut _);
-            return false;
+            return SessionActivity::Unavailable;
         };
 
         WTSFreeMemory(buffer.as_ptr() as *mut _);
 
-        conn_state == WTSActive && (session_flags as u32) == WTS_SESSIONSTATE_UNLOCK
+        let locked = match session_flags as u32 {
+            WTS_SESSIONSTATE_LOCK => Some(true),
+            WTS_SESSIONSTATE_UNLOCK => Some(false),
+            _ => None,
+        };
+        classify_session_activity(conn_state == WTSActive, locked)
     }
+}
+
+/// Eligibility for foreground work requires a confirmed active, unlocked session.
+#[cfg(windows)]
+pub fn is_session_eligible() -> bool {
+    session_activity() == SessionActivity::Unlocked
 }
 
 #[cfg(not(windows))]
@@ -1188,6 +1219,15 @@ impl Default for DesktopActivityProbe {
 }
 
 impl DesktopActivityProbe {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn take_foreground_refresh(&mut self, include_content: bool) -> bool {
+        if include_content {
+            std::mem::take(&mut self.was_ineligible)
+        } else {
+            false
+        }
+    }
+
     pub fn new() -> Self {
         #[cfg(windows)]
         let state = if !is_session_eligible() || is_pump_degraded() {
@@ -1216,6 +1256,41 @@ impl DesktopActivityProbe {
 }
 
 impl DesktopActivityProbe {
+    // The native poll and its tests share this decision, including span closure
+    // and recovery state. Hook failures never establish that the PC is locked.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn session_gate(
+        &mut self,
+        session: SessionActivity,
+        pump_ready: bool,
+        pump_degraded: bool,
+        include_content: bool,
+    ) -> Option<Vec<DesktopActivityProbeEvent>> {
+        if session == SessionActivity::Unlocked && pump_ready && !pump_degraded {
+            return None;
+        }
+        self.was_ineligible = true;
+        self.url_worker.cancel();
+        self.current_window_id = None;
+        self.last_input_check = None;
+        let mut events = Vec::new();
+        if session == SessionActivity::Locked {
+            if self.current_activity_state != Some(ActivityState::Locked) {
+                self.current_activity_state = Some(ActivityState::Locked);
+                events.push(DesktopActivityProbeEvent::ActivityStateChanged(
+                    ActivityState::Locked,
+                ));
+            }
+        } else {
+            self.current_activity_state = None;
+            events.push(DesktopActivityProbeEvent::IdleUnavailable);
+        }
+        if include_content {
+            events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
+        }
+        Some(events)
+    }
+
     fn poll_native_events(&mut self, include_content: bool) -> Vec<DesktopActivityProbeEvent> {
         #[cfg(not(windows))]
         let _ = include_content;
@@ -1229,23 +1304,16 @@ impl DesktopActivityProbe {
 
             let mut events = Vec::new();
 
-            if !is_session_eligible() || !is_pump_ready() || is_pump_degraded() {
-                self.was_ineligible = true;
-                self.url_worker.cancel();
+            if let Some(events) = self.session_gate(
+                session_activity(),
+                is_pump_ready(),
+                is_pump_degraded(),
+                include_content,
+            ) {
                 DIRTY_FOREGROUND.store(false, std::sync::atomic::Ordering::SeqCst);
                 DIRTY_TITLE.store(false, std::sync::atomic::Ordering::SeqCst);
-                self.current_window_id = None;
-                if self.current_activity_state != Some(ActivityState::Locked) {
-                    self.current_activity_state = Some(ActivityState::Locked);
-                    events.push(DesktopActivityProbeEvent::ActivityStateChanged(
-                        ActivityState::Locked,
-                    ));
-                }
                 return events;
             }
-
-            let was_ineligible = self.was_ineligible;
-            self.was_ineligible = false;
 
             // Idle timer check (5s cadence, 60s idle threshold)
             let now = Instant::now();
@@ -1280,6 +1348,7 @@ impl DesktopActivityProbe {
                 }
             }
 
+            let was_ineligible = self.take_foreground_refresh(include_content);
             if !include_content {
                 return events;
             }
@@ -1677,6 +1746,84 @@ fn get_process_image_path(pid: u32) -> Option<String> {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn session_gate_keeps_locked_distinct_from_unavailable() {
+        for (active, locked, ready, degraded, expected) in [
+            (true, Some(false), true, false, None),
+            (true, Some(true), true, false, Some(true)),
+            (false, Some(true), true, false, Some(false)),
+            (false, Some(false), true, false, Some(false)),
+            (true, None, true, false, Some(false)),
+            (false, None, true, false, Some(false)),
+            (true, Some(false), false, false, Some(false)),
+            (true, Some(false), true, true, Some(false)),
+        ] {
+            let mut probe = DesktopActivityProbe::new();
+            probe.current_activity_state = Some(ActivityState::Active);
+            probe.current_window_id = Some(42);
+            probe.last_input_check = Some(Instant::now());
+            let events = probe.session_gate(
+                classify_session_activity(active, locked),
+                ready,
+                degraded,
+                true,
+            );
+            let Some(confirmed_lock) = expected else {
+                assert!(events.is_none());
+                assert_eq!(probe.current_window_id, Some(42));
+                continue;
+            };
+            let events = events.expect("ineligible sessions must end the observation");
+            assert_eq!(events.len(), 2);
+            if confirmed_lock {
+                assert!(matches!(
+                    events[0],
+                    DesktopActivityProbeEvent::ActivityStateChanged(ActivityState::Locked)
+                ));
+            } else {
+                assert!(matches!(
+                    events[0],
+                    DesktopActivityProbeEvent::IdleUnavailable
+                ));
+            }
+            assert!(matches!(
+                events[1],
+                DesktopActivityProbeEvent::ForegroundUnavailable
+            ));
+            assert_eq!(probe.current_window_id, None);
+            assert!(probe.last_input_check.is_none());
+            assert!(probe.was_ineligible);
+
+            // A coarse recovery sample must leave the content refresh pending,
+            // even if no new WinEvent arrives for the unchanged foreground.
+            assert!(probe
+                .session_gate(SessionActivity::Unlocked, true, false, false)
+                .is_none());
+            assert!(!probe.take_foreground_refresh(false));
+            assert!(probe.was_ineligible);
+            assert!(probe.last_input_check.is_none());
+            assert!(probe
+                .session_gate(SessionActivity::Unlocked, true, false, true)
+                .is_none());
+            assert!(probe.take_foreground_refresh(true));
+            assert!(!probe.was_ineligible);
+        }
+    }
+
+    #[test]
+    fn an_unavailable_sample_ends_a_prior_lock_instead_of_repeating_it() {
+        let mut probe = DesktopActivityProbe::new();
+        probe.current_activity_state = Some(ActivityState::Locked);
+        let events = probe
+            .session_gate(SessionActivity::Unavailable, true, false, false)
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [DesktopActivityProbeEvent::IdleUnavailable]
+        ));
+        assert_eq!(probe.current_activity_state, None);
+    }
 
     struct MockArena {
         nodes: Vec<MockNodeData>,
