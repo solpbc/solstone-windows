@@ -125,6 +125,12 @@ mod imp {
 
     struct MfRuntime;
 
+    impl Default for MfScreenEncoder {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl MfScreenEncoder {
         pub fn new() -> Self {
             let accounting = Arc::new(Accounting::default());
