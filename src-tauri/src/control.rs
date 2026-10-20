@@ -371,19 +371,35 @@ mod tests {
         (cert, key)
     }
 
-    fn server_config(cert: rcgen::Certificate, key: rcgen::KeyPair) -> rustls::ServerConfig {
+    fn server_config(
+        cert: &rcgen::Certificate,
+        key: &rcgen::KeyPair,
+        client_ca: Option<&rcgen::Certificate>,
+    ) -> rustls::ServerConfig {
         let cert_der = rustls::pki_types::CertificateDer::from(cert.der().to_vec());
         let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
             rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()),
         );
-        rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key_der)
-        .unwrap()
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap();
+        let builder = if let Some(ca) = client_ca {
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(rustls::pki_types::CertificateDer::from(ca.der().to_vec()))
+                .unwrap();
+            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                Arc::new(roots),
+                provider,
+            )
+            .build()
+            .unwrap();
+            builder.with_client_cert_verifier(verifier)
+        } else {
+            builder.with_no_client_auth()
+        };
+        builder.with_single_cert(vec![cert_der], key_der).unwrap()
     }
 
     fn direct_pair_link(port: u16, ca_fp_prefix: &[u8]) -> String {
@@ -430,17 +446,14 @@ mod tests {
         serde_json::from_str(body).unwrap()
     }
 
-    async fn serve_one_pair_response(
+    async fn serve_pair_and_unavailable_identity(
         listener: TcpListener,
-        acceptor: TlsAcceptor,
+        acceptors: (TlsAcceptor, TlsAcceptor),
         signing_cert: rcgen::Certificate,
         signing_key: KeyPair,
     ) {
+        let (acceptor, identity_acceptor) = acceptors;
         let (tcp, _) = listener.accept().await.unwrap();
-        // This fixture serves only the pairing handshake, not link identity.
-        // Close admission before responding so the subsequent same-PC proof
-        // gets a refusal instead of connecting to an unserved TCP backlog.
-        drop(listener);
         let mut tls = acceptor.accept(tcp).await.unwrap();
         let (stream_id, request) = read_framed_request(&mut tls).await;
         let body_json = request_body(&request);
@@ -471,6 +484,27 @@ mod tests {
         tls.write_all(&frame.encode().unwrap()).await.unwrap();
         tls.flush().await.unwrap();
         let _ = tls.shutdown().await;
+        drop(tls);
+
+        // These lifecycle tests retain the real all-loopback session::pair path.
+        // Serve an authenticated identity miss instead of depending on the OS's
+        // connect-refusal/retry budget to finish inside their five-second bound.
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = identity_acceptor.accept(tcp).await.unwrap();
+        let presented = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .expect("client certificate required");
+        assert_eq!(presented[0].as_ref(), client_cert.der().as_ref());
+        let (stream_id, request) = read_framed_request(&mut tls).await;
+        assert!(String::from_utf8_lossy(&request)
+            .starts_with(&format!("GET {} ", observer_contract::IDENTITY_PATH,)));
+        let response = b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
+        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.to_vec());
+        tls.write_all(&frame.encode().unwrap()).await.unwrap();
+        tls.flush().await.unwrap();
+        let _ = tls.shutdown().await;
     }
 
     #[tokio::test]
@@ -483,12 +517,17 @@ mod tests {
         let (signing_cert, signing_key) = signing_ca();
         let (server_cert, server_key) = journal_tls_leaf();
         let server_pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
-        let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(&server_cert, &server_key, None)));
+        let identity_acceptor = TlsAcceptor::from(Arc::new(server_config(
+            &server_cert,
+            &server_key,
+            Some(&signing_cert),
+        )));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let pair_server = tokio::spawn(serve_one_pair_response(
+        let pair_server = tokio::spawn(serve_pair_and_unavailable_identity(
             listener,
-            acceptor,
+            (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
         ));
@@ -539,12 +578,17 @@ mod tests {
         let (signing_cert, signing_key) = signing_ca();
         let (server_cert, server_key) = journal_tls_leaf();
         let server_pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
-        let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(&server_cert, &server_key, None)));
+        let identity_acceptor = TlsAcceptor::from(Arc::new(server_config(
+            &server_cert,
+            &server_key,
+            Some(&signing_cert),
+        )));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let pair_server = tokio::spawn(serve_one_pair_response(
+        let pair_server = tokio::spawn(serve_pair_and_unavailable_identity(
             listener,
-            acceptor,
+            (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
         ));
@@ -576,12 +620,17 @@ mod tests {
         let (signing_cert, signing_key) = signing_ca();
         let (server_cert, server_key) = journal_tls_leaf();
         let server_pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
-        let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(&server_cert, &server_key, None)));
+        let identity_acceptor = TlsAcceptor::from(Arc::new(server_config(
+            &server_cert,
+            &server_key,
+            Some(&signing_cert),
+        )));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let pair_server = tokio::spawn(serve_one_pair_response(
+        let pair_server = tokio::spawn(serve_pair_and_unavailable_identity(
             listener,
-            acceptor,
+            (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
         ));
@@ -990,12 +1039,17 @@ mod tests {
         let (signing_cert, signing_key) = signing_ca();
         let (server_cert, server_key) = journal_tls_leaf();
         let pin = spl_core::ca::sha256(server_cert.der())[..16].to_vec();
-        let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(&server_cert, &server_key, None)));
+        let identity_acceptor = TlsAcceptor::from(Arc::new(server_config(
+            &server_cert,
+            &server_key,
+            Some(&signing_cert),
+        )));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let link = direct_pair_link(listener.local_addr().unwrap().port(), &pin);
-        let server = tokio::spawn(serve_one_pair_response(
+        let server = tokio::spawn(serve_pair_and_unavailable_identity(
             listener,
-            acceptor,
+            (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
         ));
