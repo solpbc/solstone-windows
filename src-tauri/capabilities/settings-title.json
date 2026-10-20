@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-title",
+  "description": "Window title permission for the settings webview.",
+  "windows": ["settings"],
+  "permissions": [
+    "core:window:allow-set-title"
+  ]
+}
