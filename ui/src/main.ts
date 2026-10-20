@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import lockupSvg from "./brand/lockup-solstone-horizontal.svg?raw";
+import "./brand/sunarc.js";
 import { automationContract } from "./lib/contract";
 import { createLogHelp } from "./logs";
 import setupFrameCss from "./setup-frame.css?inline";
@@ -5114,6 +5115,35 @@ function settingsShowsSetupFrame(dump: HealthDump): boolean {
   return activeRoute === "home" && dump.setup?.sequence_enabled === true && dump.setup.wizard !== "done";
 }
 
+// The sun arc behind the setup frame, drawn by the journal's own engine (./brand/sunarc.js).
+// It lives outside #app, which every health update rebuilds, and is torn down (its clock and
+// listeners stopped) whenever the frame is not showing.
+interface SunArcInstance {
+  teardown(): void;
+}
+let setupSun: SunArcInstance | null = null;
+
+function syncSetupSun(framed: boolean): void {
+  let ground = document.getElementById("setup-sun");
+  if (setupSun && (!framed || !ground?.isConnected)) {
+    setupSun.teardown();
+    setupSun = null;
+    if (ground) ground.hidden = true;
+  }
+  if (!framed || setupSun) return;
+  const engine = (window as unknown as { SunArc?: { mount(el: HTMLElement): SunArcInstance | null } }).SunArc;
+  if (!engine || !root.parentNode) return;
+  if (!ground) {
+    ground = document.createElement("div");
+    ground.id = "setup-sun";
+    ground.setAttribute("aria-hidden", "true");
+    root.before(ground);
+  }
+  ground.hidden = false;
+  setupSun = engine.mount(ground);
+  if (!setupSun) ground.hidden = true;
+}
+
 function renderSettings(dump: HealthDump): void {
   setLatestHealth(dump);
   const logText = logHelp?.querySelector("textarea");
@@ -5125,6 +5155,7 @@ function renderSettings(dump: HealthDump): void {
   const showFrame = settingsShowsSetupFrame(dump);
   syncSettingsWindowTitle(showFrame);
   root.append(showFrame ? renderSetupFrame(dump) : renderSettingsShell(dump));
+  syncSetupSun(showFrame);
   if (logText && logPosition) {
     logText.setSelectionRange(logPosition[0], logPosition[1]);
     logText.scrollTop = logPosition[2];
@@ -5151,6 +5182,7 @@ function renderSettings(dump: HealthDump): void {
 
 function renderAbout(dump: HealthDump): void {
   resetRoot(ids["about.window.root"]);
+  syncSetupSun(false);
   root.style.padding = "22px";
   root.style.boxSizing = "border-box";
 
@@ -5779,6 +5811,7 @@ function requestRerender(): void {
 function renderUnavailable(): void {
   const rootId = label === "about" ? ids["about.window.root"] : ids["settings.window.root"];
   resetRoot(rootId);
+  syncSetupSun(false);
 
   const title = text("h1", "solstone");
   title.style.margin = "0";
@@ -6131,6 +6164,7 @@ export const __test__ = {
   renderWizard,
   rerender,
   reset() {
+    syncSetupSun(false);
     try {
       localStorage.clear();
     } catch {

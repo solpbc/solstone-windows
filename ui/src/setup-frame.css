@@ -431,3 +431,70 @@
   grid-template-columns: 1fr !important;
   gap: 6px !important;
 }
+
+/* The sun arc ground behind the setup frame (./brand/sunarc.js). It sits before #app, which
+   every health update rebuilds, and shows only while the frame does; the frame's own ground
+   colour shows whenever it is hidden. The --sunarc-* values are the journal's tokens.css
+   sunarc block, verbatim: re-vendor them with the engine. */
+#setup-sun {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  contain: strict;
+
+  --sunarc-angle: 36deg;
+  --sunarc-bow-ratio: 0.07919;
+  --sunarc-diameter-ratio: 1.6180339887;
+  --sunarc-corner-overshoot: 1;
+  --sunarc-envelope-edge: 0.22;
+  --sunarc-peak-opacity: 0.55;
+  --sunarc-peak-opacity-dark: 0.20;
+  --sunarc-twilight-minutes: 30;
+  --sunarc-glow-radius-ratio: 1.6180339887;
+  --sunarc-glow-day-alpha: 0.22;
+  --sunarc-glow-mid-stop: 38%;
+  --sunarc-glow-mid-ratio: 0.45;
+  --sunarc-glow-color: #FFCC33;
+  --sunarc-ground-light-day: #FEFCF8;
+  --sunarc-ground-light-night: #E9DECC;
+  --sunarc-ground-light-deep: #D7C9B0;
+  --sunarc-ground-dark-day: #392E26;
+  --sunarc-ground-dark-night: #2E241C;
+  --sunarc-ground-dark-deep: #281E17;
+  --sunarc-twilight-radius-ratio: 2.6180339887;
+  --sunarc-twilight-alpha-dark: 0.62;
+  --sunarc-twilight-alpha-light: 0.95;
+  --sunarc-twilight-dark-to: #E8913A;
+  --sunarc-twilight-light-from: #FFF3CF;
+  --sunarc-twilight-sink: 0.10;
+  --sunarc-true-dark-minutes: 180;
+  --sunarc-mix-ink: 0.90;
+  --sunarc-mix-warm: 0.45;
+  --sunarc-warm-dark: #2E1906;
+  --sunarc-night-ground: #2E241C;
+}
+
+#setup-sun .sunarc-twilight,
+#setup-sun .sunarc-glow,
+#setup-sun .sunarc-sun {
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+}
+
+#setup-sun .sunarc-twilight,
+#setup-sun .sunarc-glow {
+  border-radius: 50%;
+}
+
+#setup-sun:not([hidden]) ~ #app {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+#setup-sun:not([hidden]) ~ #app .setup-frame {
+  background: transparent;
+}

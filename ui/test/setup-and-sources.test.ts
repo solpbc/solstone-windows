@@ -2521,6 +2521,67 @@ describe("setup frame design and lifecycle", () => {
     expect(document.querySelector(".setup-frame")).toBeNull();
   });
 
+  it("draws the sun arc outside #app while the setup frame shows and tears it down when it goes", () => {
+    const engine = (window as unknown as { SunArc: { mount(el: HTMLElement): unknown } }).SunArc;
+    expect(engine).toBeDefined();
+    let live = 0;
+    let mounts = 0;
+    let overlap = false;
+    const mountSpy = vi.spyOn(engine, "mount").mockImplementation(() => {
+      if (live > 0) overlap = true;
+      live += 1;
+      mounts += 1;
+      return { teardown: () => { live -= 1; } };
+    });
+    const dump = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dump);
+    const ground = document.getElementById("setup-sun") as HTMLElement;
+    const appRoot = document.getElementById("app") as HTMLElement;
+    expect(ground).not.toBeNull();
+    expect(appRoot.contains(ground)).toBe(false);
+    expect(ground.nextElementSibling).toBe(appRoot);
+    expect(ground.hidden).toBe(false);
+    expect(mountSpy).toHaveBeenCalledWith(ground);
+
+    for (let i = 0; i < 3; i += 1) app.__test__.renderSettings(dump);
+    expect(mounts).toBe(1);
+    expect(document.getElementById("setup-sun")).toBe(ground);
+
+    app.__test__.renderSettings({ ...dump, setup: { ...dump.setup, wizard: "done" as const } });
+    expect(live).toBe(0);
+    expect(ground.hidden).toBe(true);
+
+    app.__test__.renderSettings(dump);
+    expect(live).toBe(1);
+    expect(ground.hidden).toBe(false);
+    app.__test__.navigateTo("sources");
+    expect(live).toBe(0);
+    expect(ground.hidden).toBe(true);
+    expect(overlap).toBe(false);
+  });
+
+  it("serves the sun mark where the engine asks for it", () => {
+    const resolve = (rel: string): string =>
+      [path.resolve("ui", rel), path.resolve(rel)].find((p) => fs.existsSync(p)) ?? rel;
+    const engine = fs.readFileSync(resolve("src/brand/sunarc.js"), "utf8");
+    const asked = engine.match(/sunEl\.src = '([^']+)'/)?.[1];
+    expect(asked).toBe("/static/sol-status/mark.svg");
+    expect(fs.existsSync(resolve(`public${asked}`))).toBe(true);
+    expect(getSetupFrameCss()).toContain("--sunarc-ground-light-day");
+  });
+
   it("renders progress dots and labels for handoff (8 dots with gap) and standalone (4 dots)", () => {
     const steps = ["mic", "system_audio", "screen", "connection"] as const;
     const handoffId = "00000000-0000-0000-0000-000000000001";

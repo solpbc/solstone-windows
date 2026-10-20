@@ -13,6 +13,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 ### Changed
 
 - the screen step in setup now says where what you share stays, and which apps are left out.
+- setup now has the sun behind it, moving with the time of day, as it does on mac.
 
 ### Fixed
 
