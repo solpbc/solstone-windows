@@ -1258,10 +1258,7 @@ impl SegmentFs for LocalSegmentFs {
         if current_len > committed_len {
             #[cfg(test)]
             if self.fail_set_len {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "simulated set_len failure",
-                ));
+                return Err(io::Error::other("simulated set_len failure"));
             }
             file.set_len(committed_len)?;
             file.sync_data()?;

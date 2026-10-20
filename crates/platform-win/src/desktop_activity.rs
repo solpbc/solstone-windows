@@ -1091,10 +1091,11 @@ unsafe extern "system" fn win_event_proc(
 ) {
     if event == windows::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND {
         DIRTY_FOREGROUND.store(true, std::sync::atomic::Ordering::SeqCst);
-    } else if event == windows::Win32::UI::WindowsAndMessaging::EVENT_OBJECT_NAMECHANGE {
-        if id_object == OBJID_WINDOW && id_child == CHILDID_SELF {
-            DIRTY_TITLE.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
+    } else if event == windows::Win32::UI::WindowsAndMessaging::EVENT_OBJECT_NAMECHANGE
+        && id_object == OBJID_WINDOW
+        && id_child == CHILDID_SELF
+    {
+        DIRTY_TITLE.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1289,7 +1290,7 @@ impl DesktopActivityProbe {
             if dirty_fg || dirty_title || was_ineligible {
                 let fg_hwnd =
                     unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
-                if fg_hwnd.0 == 0 as *mut _ {
+                if fg_hwnd.0.is_null() {
                     if self.current_window_id.is_some() {
                         self.current_window_id = None;
                         events.push(DesktopActivityProbeEvent::ForegroundUnavailable);
@@ -1606,7 +1607,7 @@ impl DesktopActivitySource for DesktopActivityProbe {
                 return None;
             }
             let fg_hwnd = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
-            if fg_hwnd.0 == 0 as *mut _ {
+            if fg_hwnd.0.is_null() {
                 return None;
             }
             let window_id = fg_hwnd.0 as u64;
@@ -1997,40 +1998,38 @@ mod tests {
 
     #[test]
     fn test_password_node_does_not_get_value_read_and_children_not_walked() {
-        let mut nodes = Vec::new();
-
-        // Node 0: root
-        nodes.push(MockNodeData {
-            control_type: Ok(50000),
-            is_password: Ok(false),
-            is_control: Ok(true),
-            value: None,
-            legacy_value: None,
-            first_child: Some(1),
-            next_sibling: None,
-        });
-
-        // Node 1: Password field with Document child
-        nodes.push(MockNodeData {
-            control_type: Ok(50030), // Document
-            is_password: Ok(true),   // Password!
-            is_control: Ok(true),
-            value: Some("https://password-leak.com".into()),
-            legacy_value: None,
-            first_child: Some(2),
-            next_sibling: None,
-        });
-
-        // Node 2: Child of password node
-        nodes.push(MockNodeData {
-            control_type: Ok(50030),
-            is_password: Ok(false),
-            is_control: Ok(true),
-            value: Some("https://child-doc.com".into()),
-            legacy_value: None,
-            first_child: None,
-            next_sibling: None,
-        });
+        let nodes = vec![
+            // Node 0: root
+            MockNodeData {
+                control_type: Ok(50000),
+                is_password: Ok(false),
+                is_control: Ok(true),
+                value: None,
+                legacy_value: None,
+                first_child: Some(1),
+                next_sibling: None,
+            },
+            // Node 1: Password field with Document child
+            MockNodeData {
+                control_type: Ok(50030), // Document
+                is_password: Ok(true),   // Password!
+                is_control: Ok(true),
+                value: Some("https://password-leak.com".into()),
+                legacy_value: None,
+                first_child: Some(2),
+                next_sibling: None,
+            },
+            // Node 2: Child of password node
+            MockNodeData {
+                control_type: Ok(50030),
+                is_password: Ok(false),
+                is_control: Ok(true),
+                value: Some("https://child-doc.com".into()),
+                legacy_value: None,
+                first_child: None,
+                next_sibling: None,
+            },
+        ];
 
         let arena = Arc::new(Mutex::new(MockArena {
             nodes,
@@ -2059,40 +2058,38 @@ mod tests {
 
     #[test]
     fn test_focused_and_blurred_address_edit_box_drafts_are_not_the_result() {
-        let mut nodes = Vec::new();
-
-        // Node 0: root
-        nodes.push(MockNodeData {
-            control_type: Ok(50000),
-            is_password: Ok(false),
-            is_control: Ok(true),
-            value: None,
-            legacy_value: None,
-            first_child: Some(1),
-            next_sibling: None,
-        });
-
-        // Node 1: addressEditBox (Edit ControlType 50004) with draft URL
-        nodes.push(MockNodeData {
-            control_type: Ok(50004),
-            is_password: Ok(false),
-            is_control: Ok(true),
-            value: Some("https://draft-in-address-bar.com/draft".into()),
-            legacy_value: Some("https://draft-in-address-bar.com/draft".into()),
-            first_child: None,
-            next_sibling: Some(2),
-        });
-
-        // Node 2: Document (ControlType 50030) with committed URL
-        nodes.push(MockNodeData {
-            control_type: Ok(50030),
-            is_password: Ok(false),
-            is_control: Ok(true),
-            value: Some("https://committed.example.com/page?query#frag".into()),
-            legacy_value: Some("https://committed.example.com/page?query#frag".into()),
-            first_child: None,
-            next_sibling: None,
-        });
+        let nodes = vec![
+            // Node 0: root
+            MockNodeData {
+                control_type: Ok(50000),
+                is_password: Ok(false),
+                is_control: Ok(true),
+                value: None,
+                legacy_value: None,
+                first_child: Some(1),
+                next_sibling: None,
+            },
+            // Node 1: addressEditBox (Edit ControlType 50004) with draft URL
+            MockNodeData {
+                control_type: Ok(50004),
+                is_password: Ok(false),
+                is_control: Ok(true),
+                value: Some("https://draft-in-address-bar.com/draft".into()),
+                legacy_value: Some("https://draft-in-address-bar.com/draft".into()),
+                first_child: None,
+                next_sibling: Some(2),
+            },
+            // Node 2: Document (ControlType 50030) with committed URL
+            MockNodeData {
+                control_type: Ok(50030),
+                is_password: Ok(false),
+                is_control: Ok(true),
+                value: Some("https://committed.example.com/page?query#frag".into()),
+                legacy_value: Some("https://committed.example.com/page?query#frag".into()),
+                first_child: None,
+                next_sibling: None,
+            },
+        ];
 
         let arena = Arc::new(Mutex::new(MockArena {
             nodes,
@@ -2222,40 +2219,38 @@ mod tests {
 
     #[test]
     fn test_two_document_siblings_first_password_stops_walk_second_not_read() {
-        let mut nodes = Vec::new();
-
-        // Node 0: root
-        nodes.push(MockNodeData {
-            control_type: Ok(50000), // Group
-            is_password: Ok(false),
-            is_control: Ok(true),
-            value: None,
-            legacy_value: None,
-            first_child: Some(1),
-            next_sibling: None,
-        });
-
-        // Node 1: First Document (ControlType 50030), is_password Ok(true)
-        nodes.push(MockNodeData {
-            control_type: Ok(50030), // Document
-            is_password: Ok(true),   // Secure password node
-            is_control: Ok(true),
-            value: Some("https://should-not-read-pass.com".into()),
-            legacy_value: None,
-            first_child: None,
-            next_sibling: Some(2),
-        });
-
-        // Node 2: Second Document (ControlType 50030), is_password Ok(false), has valid URL
-        nodes.push(MockNodeData {
-            control_type: Ok(50030), // Document
-            is_password: Ok(false),
-            is_control: Ok(true),
-            value: Some("https://example.com/should-not-read".into()),
-            legacy_value: Some("https://example.com/should-not-read".into()),
-            first_child: None,
-            next_sibling: None,
-        });
+        let nodes = vec![
+            // Node 0: root
+            MockNodeData {
+                control_type: Ok(50000), // Group
+                is_password: Ok(false),
+                is_control: Ok(true),
+                value: None,
+                legacy_value: None,
+                first_child: Some(1),
+                next_sibling: None,
+            },
+            // Node 1: First Document (ControlType 50030), is_password Ok(true)
+            MockNodeData {
+                control_type: Ok(50030), // Document
+                is_password: Ok(true),   // Secure password node
+                is_control: Ok(true),
+                value: Some("https://should-not-read-pass.com".into()),
+                legacy_value: None,
+                first_child: None,
+                next_sibling: Some(2),
+            },
+            // Node 2: Second Document (ControlType 50030), is_password Ok(false), has valid URL
+            MockNodeData {
+                control_type: Ok(50030), // Document
+                is_password: Ok(false),
+                is_control: Ok(true),
+                value: Some("https://example.com/should-not-read".into()),
+                legacy_value: Some("https://example.com/should-not-read".into()),
+                first_child: None,
+                next_sibling: None,
+            },
+        ];
 
         let arena = Arc::new(Mutex::new(MockArena {
             nodes,
@@ -2429,9 +2424,7 @@ mod tests {
     #[test]
     fn test_evaluate_window_title_read_truncation_and_success() {
         let mut buf = [0u16; 512];
-        for i in 0..510 {
-            buf[i] = 'a' as u16;
-        }
+        buf[..510].fill('a' as u16);
 
         // Fits comfortably in buffer (copied < capacity - 1)
         assert_eq!(
