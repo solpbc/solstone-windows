@@ -10,6 +10,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 - when the app can verify your journal on this PC, it connects without asking you to compare marks. other pairings keep the comparison.
 - once you turn a source on during setup, pause and resume are beside its preview. pause applies to every source you've turned on.
+- the setup steps now share the journal window's look, with clearer progress, a larger level meter and the screen at card width.
 
 ### Fixed
 

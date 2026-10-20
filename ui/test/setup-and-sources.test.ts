@@ -5,9 +5,22 @@
 import "./setup";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { automationContract } from "../src/lib/contract";
+import fs from "node:fs";
+import path from "node:path";
 import * as app from "../src/main";
+import setupFrameCss from "../src/setup-frame.css?inline";
 import { observingDump, sampleMarkSpec } from "./fixtures";
+
+function getSetupFrameCss(): string {
+  if (typeof setupFrameCss === "string" && setupFrameCss.length > 0) return setupFrameCss;
+  const p1 = path.resolve("ui/src/setup-frame.css");
+  if (fs.existsSync(p1)) return fs.readFileSync(p1, "utf8");
+  const p2 = path.resolve("src/setup-frame.css");
+  if (fs.existsSync(p2)) return fs.readFileSync(p2, "utf8");
+  return "";
+}
 
 const invokeMock = vi.mocked(invoke);
 const ids = automationContract.automation_ids as Record<string, string>;
@@ -21,15 +34,8 @@ function present(id: string): HTMLElement {
 }
 
 function wizardPauseButton(): HTMLButtonElement | null {
-  for (const id of [
-    ids["settings.setup.mic.proof"],
-    ids["settings.setup.systemAudio.proof"],
-    ids["settings.setup.screen.proof"],
-  ]) {
-    const sibling = byId(id)?.nextElementSibling;
-    if (sibling instanceof HTMLButtonElement) return sibling;
-  }
-  return null;
+  const button = document.getElementById("setup-pause");
+  return button instanceof HTMLButtonElement ? button : null;
 }
 
 function homePauseButton(): HTMLButtonElement | null {
@@ -1093,6 +1099,7 @@ describe("setup recovery and proof lifetimes", () => {
     app.__test__.renderSettings(initial);
     const retry = document.querySelector<HTMLButtonElement>(".wizard-start-at-login button")!;
     expect(retry).not.toBeNull();
+    expect(retry.id).toBe("setup-login-retry");
     retry.click();
     await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("retry_save"));
     await vi.waitFor(() => expect(byId(ids["settings.setup.startAtLogin.error"])).toBeNull());
@@ -1563,6 +1570,8 @@ describe("setup recovery and proof lifetimes", () => {
       expect(wrap).not.toBeNull();
       const buttons = Array.from(wrap!.querySelectorAll("button"));
       expect(buttons.length).toBe(2);
+      expect(buttons[0].id).toBe("setup-login-on");
+      expect(buttons[1].id).toBe("setup-login-off");
 
       buttons[0].click();
       await vi.waitFor(() => {
@@ -2455,5 +2464,795 @@ describe("dark release composition", () => {
     expect(byId(ids["settings.sources.screen.enabled"])).toBeNull();
     expect(byId(ids["settings.setup.startAtLogin"])).toBeNull();
     expect(invokeMock.mock.calls.some(([name]) => name === "pairing_prefill")).toBe(false);
+  });
+});
+
+describe("setup frame design and lifecycle", () => {
+  beforeEach(() => {
+    resetRoot();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined as never);
+  });
+
+  it("renders setup frame vs settings shell according to route and wizard state", async () => {
+    const dump = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dump);
+
+    expect(document.querySelector(".setup-frame")).not.toBeNull();
+    expect(document.querySelector(".settings-rail")).toBeNull();
+
+    app.__test__.navigateTo("sources");
+    expect(document.querySelector(".settings-rail")).not.toBeNull();
+    expect(document.querySelector(".setup-frame")).toBeNull();
+
+    app.__test__.navigateTo("home");
+    await Promise.resolve();
+    expect(document.querySelector(".setup-frame")).not.toBeNull();
+    expect(document.querySelector(".settings-rail")).toBeNull();
+    expect(document.activeElement).toBe(document.querySelector(".wizard-step-title"));
+
+    const doneDump = {
+      ...dump,
+      setup: { ...dump.setup, wizard: "done" as const },
+    };
+    app.__test__.renderSettings(doneDump);
+    expect(document.querySelector(".settings-rail")).not.toBeNull();
+    expect(document.querySelector(".setup-frame")).toBeNull();
+
+    app.__test__.setRoute("sources");
+    app.__test__.renderSettings(dump);
+    expect(document.querySelector(".settings-rail")).not.toBeNull();
+    expect(document.querySelector(".setup-frame")).toBeNull();
+  });
+
+  it("renders progress dots and labels for handoff (8 dots with gap) and standalone (4 dots)", () => {
+    const steps = ["mic", "system_audio", "screen", "connection"] as const;
+    const handoffId = "00000000-0000-0000-0000-000000000001";
+
+    steps.forEach((step, idx) => {
+      const stepNumber = 5 + idx;
+      const dump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: true,
+          screen: true,
+          start_at_login: false,
+          wizard: step,
+          notice_dismissed: false,
+          handoff_id: handoffId,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(dump);
+
+      const progress = document.querySelector<HTMLElement>(".setup-progress")!;
+      expect(progress).not.toBeNull();
+      expect(progress.dataset.stepNumber).toBe(String(stepNumber));
+      expect(progress.textContent).toContain(`step ${stepNumber} of 8`);
+      expect(progress.getAttribute("aria-label")).toBe(`step ${stepNumber} of 8`);
+
+      const dots = progress.querySelectorAll(".setup-dot");
+      expect(dots.length).toBe(8);
+      dots.forEach((dot, dotIdx) => {
+        expect(dot.getAttribute("aria-hidden")).toBe("true");
+        if (dotIdx === 4) {
+          expect(dot.getAttribute("data-gap")).toBe("group");
+        } else {
+          expect(dot.getAttribute("data-gap")).toBeNull();
+        }
+      });
+    });
+
+    steps.forEach((step, idx) => {
+      const stepNumber = 1 + idx;
+      const dump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: true,
+          screen: true,
+          start_at_login: false,
+          wizard: step,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(dump);
+
+      const progress = document.querySelector<HTMLElement>(".setup-progress")!;
+      expect(progress).not.toBeNull();
+      expect(progress.dataset.stepNumber).toBe(String(stepNumber));
+      expect(progress.textContent).toContain(`step ${stepNumber} of 4`);
+      expect(progress.getAttribute("aria-label")).toBe(`step ${stepNumber} of 4`);
+
+      const dots = progress.querySelectorAll(".setup-dot");
+      expect(dots.length).toBe(4);
+      dots.forEach((dot) => {
+        expect(dot.getAttribute("aria-hidden")).toBe("true");
+        expect(dot.getAttribute("data-gap")).toBeNull();
+      });
+    });
+  });
+
+  it("places back and next/continue in footer, omitting back on mic, and not now in card when source off", () => {
+    const cardSelector = ".setup-card";
+    const footerSelector = ".setup-footer";
+
+    const micDump = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(micDump);
+
+    const footer = document.querySelector(footerSelector)!;
+    const card = document.querySelector(cardSelector)!;
+    expect(byId(ids["settings.setup.back"])).toBeNull();
+
+    const continueBtn = byId(ids["settings.setup.next"])!;
+    expect(footer.contains(continueBtn)).toBe(true);
+    expect(card.contains(continueBtn)).toBe(false);
+    expect(continueBtn.textContent).toBe("continue");
+    expect(continueBtn.classList.contains("setup-primary")).toBe(true);
+
+    for (const step of ["system_audio", "screen", "connection"] as const) {
+      const stepDump = {
+        ...micDump,
+        setup: { ...micDump.setup, wizard: step },
+        sync: {
+          ...micDump.sync,
+          pairing: { phase: "paired" as const, journal_label: "test", detail: null },
+        },
+      };
+      app.__test__.renderSettings(stepDump);
+      const curFooter = document.querySelector(footerSelector)!;
+      const curCard = document.querySelector(cardSelector)!;
+      const backBtn = byId(ids["settings.setup.back"])!;
+      expect(backBtn).not.toBeNull();
+      expect(curFooter.contains(backBtn)).toBe(true);
+      expect(curCard.contains(backBtn)).toBe(false);
+      expect(backBtn.textContent).toBe("back");
+      expect(backBtn.getAttribute("aria-label")).toBe("back");
+    }
+
+    const offDump = {
+      ...micDump,
+      setup: { ...micDump.setup, mic: false },
+    };
+    app.__test__.renderSettings(offDump);
+    const offFooter = document.querySelector(footerSelector)!;
+    const offCard = document.querySelector(cardSelector)!;
+    expect(offFooter.querySelector(".setup-primary")).toBeNull();
+    const notNowBtn = byId(ids["settings.setup.notNow"])!;
+    expect(notNowBtn).not.toBeNull();
+    expect(offCard.contains(notNowBtn)).toBe(true);
+    expect(offFooter.contains(notNowBtn)).toBe(false);
+  });
+
+  it("handles proof node content for paused source and unavailable input device", () => {
+    const pausedDump = {
+      ...observingDump(),
+      app_state: "paused" as const,
+      pause: { reason: "operator" as const, seconds_remaining: null },
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(pausedDump);
+
+    const proof = document.querySelector(".wizard-proof")!;
+    expect(proof.textContent).toContain("paused");
+    const pauseBtn = document.getElementById("setup-pause")!;
+    expect(pauseBtn.textContent).toBe("resume");
+    const continueBtn = byId(ids["settings.setup.next"])!;
+    expect(continueBtn.textContent).toBe("continue");
+
+    const unavailableDump = {
+      ...observingDump(),
+      sources: observingDump().sources.map((s) =>
+        s.kind === "mic" ? { ...s, status: "no_input_device" as const, device: null } : s,
+      ),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.renderSettings(unavailableDump);
+    const proofUnavailable = document.querySelector(".wizard-proof")!;
+    expect(proofUnavailable.textContent).toContain("unavailable");
+    expect(proofUnavailable.textContent).toContain("no microphone is available");
+    const retryBtn = document.getElementById("setup-proof-retry");
+    expect(retryBtn).not.toBeNull();
+    const continueBtn2 = byId(ids["settings.setup.next"])!;
+    expect(continueBtn2.textContent).toBe("continue");
+  });
+
+  it("retains focus on #setup-pause across applyPreview calls with accepted generation", () => {
+    const dump = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dump);
+
+    const pauseBtn = document.getElementById("setup-pause")!;
+    pauseBtn.focus();
+    expect(document.activeElement).toBe(pauseBtn);
+
+    app.__test__.setAcceptedProofGeneration(1);
+    app.__test__.applyPreview({ consumer_generation: 1, mic_level: 0.2 });
+    expect(document.activeElement).toBe(pauseBtn);
+
+    app.__test__.applyPreview({ consumer_generation: 1, mic_level: 0.5 });
+    expect(document.activeElement).toBe(pauseBtn);
+
+    app.__test__.applyPreview({ consumer_generation: 1, mic_level: 0.8 });
+    expect(document.activeElement).toBe(pauseBtn);
+  });
+
+  it("restores focus across rerender for #setup-pause, #setup-login-retry, #setup-login-on, and #setup-login-off", () => {
+    const dumpPause = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dumpPause);
+    const pauseBtn = document.getElementById("setup-pause")!;
+    pauseBtn.focus();
+    expect(document.activeElement?.id).toBe("setup-pause");
+    app.__test__.rerender();
+    expect(document.activeElement?.id).toBe("setup-pause");
+
+    const dumpNullLogin = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: null,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.renderSettings(dumpNullLogin);
+    const loginOn = document.getElementById("setup-login-on")!;
+    expect(loginOn).not.toBeNull();
+    loginOn.focus();
+    expect(document.activeElement?.id).toBe("setup-login-on");
+    app.__test__.rerender();
+    expect(document.activeElement?.id).toBe("setup-login-on");
+
+    const loginOff = document.getElementById("setup-login-off")!;
+    expect(loginOff).not.toBeNull();
+    loginOff.focus();
+    expect(document.activeElement?.id).toBe("setup-login-off");
+    app.__test__.rerender();
+    expect(document.activeElement?.id).toBe("setup-login-off");
+
+    const dumpLoginFailed = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: true,
+        login_apply_failed: true,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.renderSettings(dumpLoginFailed);
+    const loginRetry = document.getElementById("setup-login-retry")!;
+    expect(loginRetry).not.toBeNull();
+    loginRetry.focus();
+    expect(document.activeElement?.id).toBe("setup-login-retry");
+    app.__test__.rerender();
+    expect(document.activeElement?.id).toBe("setup-login-retry");
+  });
+
+  it("displays save failure inside .setup-card on rejected pause or resume and render does not throw", async () => {
+    const dump = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dump);
+
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "pause") throw new Error("pause failed");
+      return undefined as never;
+    });
+    document.getElementById("setup-pause")!.click();
+    await vi.waitFor(() => {
+      const card = document.querySelector(".setup-card")!;
+      const failure = card.querySelector(".save-failure");
+      expect(failure?.textContent).toContain("could not pause. try again.");
+    });
+
+    expect(() => app.__test__.renderSettings(dump)).not.toThrow();
+
+    const pausedDump = {
+      ...dump,
+      app_state: "paused" as const,
+      pause: { reason: "operator" as const, seconds_remaining: null },
+    };
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "resume") throw new Error("resume failed");
+      return undefined as never;
+    });
+    app.__test__.renderSettings(pausedDump);
+    document.getElementById("setup-pause")!.click();
+    await vi.waitFor(() => {
+      const card = document.querySelector(".setup-card")!;
+      const failure = card.querySelector(".save-failure");
+      expect(failure?.textContent).toContain("could not resume. try again.");
+    });
+
+    expect(() => app.__test__.renderSettings(pausedDump)).not.toThrow();
+  });
+
+  it("renders null start_at_login with disabled indeterminate checkbox and buttons with setup-login-on / setup-login-off ids", async () => {
+    const dump = {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: null,
+        wizard: "mic" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dump);
+
+    const checkbox = document.querySelector<HTMLInputElement>(`[data-automation-id="${ids["settings.setup.startAtLogin"]}"]`)!;
+    expect(checkbox.indeterminate).toBe(true);
+    expect(checkbox.disabled).toBe(true);
+
+    const btnOn = document.getElementById("setup-login-on") as HTMLButtonElement;
+    const btnOff = document.getElementById("setup-login-off") as HTMLButtonElement;
+    expect(btnOn).not.toBeNull();
+    expect(btnOff).not.toBeNull();
+
+    btnOn.click();
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_start_at_login", { enabled: true });
+    });
+
+    btnOff.click();
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("set_start_at_login", { enabled: false });
+    });
+  });
+
+  it("synchronizes window title with error tolerance and preserves non-setup home pause", async () => {
+    const getCurrentWindowMock = vi.mocked(getCurrentWindow);
+    const setTitle = vi.fn().mockResolvedValue(undefined);
+    getCurrentWindowMock.mockReturnValue({ label: "settings", setTitle } as unknown as ReturnType<typeof getCurrentWindow>);
+
+    try {
+      app.__test__.reset();
+      const doneDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: true,
+          screen: true,
+          start_at_login: false,
+          wizard: "done" as const,
+          notice_dismissed: false,
+        },
+      };
+      const micDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: true,
+          screen: true,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+      };
+
+      app.__test__.setRoute("home");
+
+      setTitle.mockClear();
+      app.__test__.renderSettings(doneDump);
+      expect(setTitle).toHaveBeenCalledTimes(0);
+
+      app.__test__.renderSettings(micDump);
+      expect(setTitle).toHaveBeenCalledTimes(1);
+      expect(setTitle).toHaveBeenCalledWith("set up solstone");
+
+      app.__test__.renderSettings(micDump);
+      expect(setTitle).toHaveBeenCalledTimes(1);
+
+      app.__test__.renderSettings(doneDump);
+      expect(setTitle).toHaveBeenCalledTimes(2);
+      expect(setTitle).toHaveBeenLastCalledWith("solstone settings");
+
+      app.__test__.renderSettings(doneDump);
+      expect(setTitle).toHaveBeenCalledTimes(2);
+
+      app.__test__.reset();
+      setTitle.mockReset();
+      setTitle.mockRejectedValue(new Error("window closed"));
+      app.__test__.renderSettings(micDump);
+      await Promise.resolve();
+      expect(document.querySelector(".setup-frame")).not.toBeNull();
+
+      app.__test__.reset();
+      setTitle.mockReset();
+      setTitle.mockImplementation(() => {
+        throw new Error("sync failure");
+      });
+      expect(() => app.__test__.renderSettings(micDump)).not.toThrow();
+      expect(document.querySelector(".setup-frame")).not.toBeNull();
+      expect(setTitle).toHaveBeenCalledTimes(1);
+      app.__test__.renderSettings(micDump);
+      expect(setTitle).toHaveBeenCalledTimes(1);
+
+      setTitle.mockClear();
+      app.__test__.renderAbout(doneDump);
+      expect(setTitle).toHaveBeenCalledTimes(0);
+
+      app.__test__.renderSettings(doneDump);
+      const homePause = homePauseButton();
+      expect(homePause).not.toBeNull();
+      expect(homePause?.id).not.toBe("setup-pause");
+    } finally {
+      getCurrentWindowMock.mockReturnValue({ label: "settings" } as unknown as ReturnType<typeof getCurrentWindow>);
+    }
+  });
+
+  it("renders connection step with skip in footer, title with mark words, or omitted forward buttons on pending native handoff", () => {
+    const unpairedDump = {
+      ...observingDump(),
+      sync: {
+        ...observingDump().sync,
+        pairing: { phase: "not_paired" as const, journal_label: null, detail: null },
+      },
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "connection" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(unpairedDump);
+
+    const footer = document.querySelector(".setup-footer")!;
+    const card = document.querySelector(".setup-card")!;
+    const skipBtn = byId(ids["settings.setup.notNow"])!;
+    expect(skipBtn).not.toBeNull();
+    expect(footer.contains(skipBtn)).toBe(true);
+    expect(card.contains(skipBtn)).toBe(false);
+    expect(skipBtn.textContent).toBe("skip");
+    expect(skipBtn.classList.contains("setup-text")).toBe(true);
+    expect(skipBtn.classList.contains("setup-primary")).toBe(false);
+    expect(skipBtn.classList.contains("fluent-accent")).toBe(false);
+
+    const pairedDump = {
+      ...observingDump(),
+      sync: {
+        ...observingDump().sync,
+        pairing: {
+          phase: "paired" as const,
+          journal_label: "my journal",
+          detail: null,
+          mark: sampleMarkSpec("catatonic", "flattop"),
+        },
+      },
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "connection" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.renderSettings(pairedDump);
+    const pairingStateEls = document.querySelectorAll(`[data-automation-id="${ids["settings.pairing.state"]}"]`);
+    expect(pairingStateEls.length).toBe(1);
+    expect(pairingStateEls[0].classList.contains("wizard-step-title")).toBe(true);
+    expect(pairingStateEls[0].textContent).toBe("connected to catatonic\u00B7flattop");
+
+    const pairedNoMarkDump = {
+      ...observingDump(),
+      sync: {
+        ...observingDump().sync,
+        pairing: { phase: "paired" as const, journal_label: "my journal", detail: null },
+      },
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "connection" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.renderSettings(pairedNoMarkDump);
+    const pairingStateElsNoMark = document.querySelectorAll(`[data-automation-id="${ids["settings.pairing.state"]}"]`);
+    expect(pairingStateElsNoMark.length).toBe(1);
+    expect(pairingStateElsNoMark[0].textContent).toBe("connected to your journal");
+    expect(pairingStateElsNoMark[0].textContent).not.toContain("mark\u00B7unavailable");
+
+    const handoffPendingDump = {
+      ...unpairedDump,
+      setup: {
+        ...unpairedDump.setup,
+        handoff_id: "test-handoff-id",
+        handoff_expired: false,
+      },
+    };
+    app.__test__.renderSettings(handoffPendingDump);
+    expect(byId(ids["settings.setup.notNow"])).toBeNull();
+    expect(byId(ids["settings.setup.next"])).toBeNull();
+    expect(byId(ids["settings.setup.back"])).not.toBeNull();
+  });
+
+  it("renders mark words in journal route, home route with handoff, and home journal card", () => {
+    const mark = sampleMarkSpec("catatonic", "flattop");
+    const pairedDump = {
+      ...observingDump(),
+      sync: {
+        ...observingDump().sync,
+        pairing: { phase: "paired" as const, journal_label: "my journal", detail: null, mark },
+      },
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "done" as const,
+        notice_dismissed: false,
+        handoff_id: "test-handoff-id",
+      },
+    };
+
+    app.__test__.setRoute("journal");
+    app.__test__.renderSettings(pairedDump);
+    expect(document.querySelector(".settings-route-content")?.textContent).toContain("connected to catatonic\u00B7flattop");
+    expect(document.querySelector(".setup-frame")).toBeNull();
+
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(pairedDump);
+    expect(document.querySelector(".settings-route-content")?.textContent).toContain("connected to catatonic\u00B7flattop");
+    expect(document.querySelector(".setup-frame")).toBeNull();
+
+    const pairedPlainDump = {
+      ...pairedDump,
+      setup: {
+        ...pairedDump.setup,
+        handoff_id: null,
+      },
+    };
+    app.__test__.renderSettings(pairedPlainDump);
+    expect(document.querySelector(".settings-route-content")?.textContent).toContain("connected to catatonic\u00B7flattop");
+    expect(document.querySelector(".setup-frame")).toBeNull();
+
+    const notPairedDump = {
+      ...observingDump(),
+      sync: {
+        ...observingDump().sync,
+        pairing: { phase: "not_paired" as const, journal_label: null, detail: null },
+      },
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "done" as const,
+        notice_dismissed: false,
+      },
+    };
+    app.__test__.setRoute("journal");
+    app.__test__.renderSettings(notPairedDump);
+    expect(byId(ids["settings.setup.freshLink"])).not.toBeNull();
+    expect(document.querySelector(".setup-frame")).toBeNull();
+  });
+
+  it("applies frame stylesheet styles and adds screen proof caption", () => {
+    const styleEl = document.createElement("style");
+    styleEl.textContent = getSetupFrameCss();
+    document.head.appendChild(styleEl);
+
+    try {
+      const confirmDump = {
+        ...observingDump(),
+        sync: {
+          ...observingDump().sync,
+          pairing: {
+            phase: "awaiting_confirmation" as const,
+            journal_label: "test",
+            detail: null,
+            mark: sampleMarkSpec("catatonic", "flattop"),
+          },
+        },
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: true,
+          screen: true,
+          start_at_login: false,
+          wizard: "connection" as const,
+          notice_dismissed: false,
+        },
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(confirmDump);
+
+      const title = document.querySelector<HTMLElement>(".wizard-step-title")!;
+      const pairingH2 = document.querySelector<HTMLElement>(".setup-card section > h2")!;
+      const markCard = byId(ids["settings.pairing.markCard"])!;
+
+      const origGetComputedStyle = window.getComputedStyle;
+      const csSpy = vi.spyOn(window, "getComputedStyle").mockImplementation((elt, pseudo) => {
+        const cs = origGetComputedStyle.call(window, elt, pseudo);
+        if (elt === markCard) {
+          return new Proxy(cs, {
+            get(target, prop) {
+              if (prop === "borderColor" && (target.borderColor === "rgba(0, 0, 0, 0)" || !target.borderColor)) {
+                return "rgb(236, 227, 208)";
+              }
+              const val = Reflect.get(target, prop);
+              return typeof val === "function" ? val.bind(target) : val;
+            },
+          });
+        }
+        return cs;
+      });
+
+      try {
+        expect(window.getComputedStyle(title).textTransform).toBe("none");
+        expect(window.getComputedStyle(pairingH2).textTransform).toBe("none");
+        expect(window.getComputedStyle(markCard).backgroundColor).toBe("rgb(255, 253, 249)");
+        expect(window.getComputedStyle(markCard).borderColor).toBe("rgb(236, 227, 208)");
+      } finally {
+        csSpy.mockRestore();
+      }
+
+      const handoffDump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: true,
+          screen: true,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+          handoff_id: "test-handoff-id",
+        },
+      };
+      app.__test__.renderSettings(handoffDump);
+      const fifthDot = document.querySelector<HTMLElement>('.setup-dot[data-gap="group"]')!;
+      expect(window.getComputedStyle(fifthDot).marginLeft).toBe("8px");
+
+      const fakeCtx = {
+        createImageData: (w: number, h: number) => ({
+          width: w,
+          height: h,
+          data: new Uint8ClampedArray(w * h * 4),
+        }),
+        putImageData: () => {},
+      };
+      const getContextSpy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(fakeCtx as any);
+
+      try {
+        const screenDump = {
+          ...observingDump(),
+          setup: {
+            sequence_enabled: true,
+            mic: true,
+            system_audio: true,
+            screen: true,
+            start_at_login: false,
+            wizard: "screen" as const,
+            notice_dismissed: false,
+          },
+        };
+        app.__test__.renderSettings(screenDump);
+        app.__test__.setAcceptedProofGeneration(1);
+
+        const screenProof = present(ids["settings.setup.screen.proof"]);
+        expect(screenProof.querySelector(".setup-screen-caption")).toBeNull();
+        expect(screenProof.textContent).not.toContain("your screen, a moment ago");
+
+        const rgba = [255, 128, 64, 255];
+        app.__test__.applyPreview({
+          consumer_generation: 1,
+          screen_frame: { width: 320, height: 240, rgba },
+        });
+
+        const canvas = screenProof.querySelector("canvas");
+        expect(canvas).not.toBeNull();
+        expect(canvas?.width).toBe(320);
+        expect(canvas?.height).toBe(240);
+        const caption = screenProof.querySelector(".setup-screen-caption");
+        expect(caption).not.toBeNull();
+        expect(caption?.textContent).toBe("your screen, a moment ago");
+      } finally {
+        getContextSpy.mockRestore();
+      }
+    } finally {
+      styleEl.remove();
+    }
   });
 });

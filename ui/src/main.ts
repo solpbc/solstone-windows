@@ -9,8 +9,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import lockupSvg from "./brand/lockup-solstone-horizontal.svg?raw";
 import { automationContract } from "./lib/contract";
 import { createLogHelp } from "./logs";
+import setupFrameCss from "./setup-frame.css?inline";
 
 type FrontendOrigin = "settings" | "about" | "none";
 type FrontendErrorKind = "error" | "unhandled_rejection";
@@ -1954,12 +1956,14 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   // left there; pasting another link stays available from the journal page.
   const connectedInSetup = options.setupStep === true && pairing.phase === "paired";
   const pane = section("pairing");
-  pane.append(
-    valueRow(
-      "status",
-      selectable(automation(text("div", pairingPhaseLabel(presented)), ids["settings.pairing.state"])),
-    ),
-  );
+  if (!connectedInSetup) {
+    pane.append(
+      valueRow(
+        "status",
+        selectable(automation(text("div", pairingPhaseLabel(presented)), ids["settings.pairing.state"])),
+      ),
+    );
+  }
 
   if (presented.phase === "awaiting_confirmation") {
     if (dump.setup?.sequence_enabled === true && pairing.finish_connecting) {
@@ -4192,6 +4196,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
     const retryBtn = actionButton("retry", undefined, true, () => {
       void invoke("set_source_enabled", { kind, enabled: true }).then(() => retryHealth());
     }, false, "standard");
+    retryBtn.id = "setup-proof-retry";
     retryBtn.style.marginLeft = "12px";
     node.replaceChildren(textEl, retryBtn);
     return;
@@ -4239,7 +4244,9 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
           // ignore canvas paint errors
         }
       }
-      node.replaceChildren(canvas);
+      const caption = text("p", "your screen, a moment ago");
+      caption.classList.add("setup-screen-caption");
+      node.replaceChildren(canvas, caption);
     } else {
       const waitingEl = text("span", "waiting");
       waitingEl.classList.add("proof-status");
@@ -4373,9 +4380,11 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
     const onBtn = actionButton("start at login", undefined, true, () => {
       void commitUnknownLogin(true);
     });
+    onBtn.id = "setup-login-on";
     const offBtn = actionButton("don't start at login", undefined, true, () => {
       void commitUnknownLogin(false);
     });
+    offBtn.id = "setup-login-off";
     wrap.style.display = "flex";
     wrap.style.alignItems = "center";
     wrap.style.gap = "8px";
@@ -4391,6 +4400,7 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
         }
         void invoke("retry_save").then(() => retryHealth());
       });
+      retry.id = "setup-login-retry";
       wrap.append(err, retry);
     }
     return wrap;
@@ -4417,6 +4427,7 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
     const retry = actionButton("retry", undefined, true, () => {
       void invoke("retry_save").then(() => retryHealth());
     });
+    retry.id = "setup-login-retry";
     wrap.append(err, retry);
   }
   return wrap;
@@ -4436,38 +4447,84 @@ async function advanceWizardStep(step: WizardStep): Promise<void> {
   }
 }
 
-function mountWizardProof(dump: HealthDump, kind: SourceKind, proof: HTMLElement): HTMLElement {
-  if (!isSourceEnabled(dump.setup, kind)) {
-    return proof;
+function renderSetupProgress(stepNum: number, totalSteps: number): HTMLElement {
+  const progressText = `step ${stepNum} of ${totalSteps}`;
+  const p = document.createElement("p");
+  p.classList.add("setup-progress", "wizard-progress");
+  p.dataset.stepNumber = String(stepNum);
+  automation(p, ids["settings.setup.stepNumber"]);
+  p.setAttribute("aria-label", progressText);
+
+  const textSpan = text("span", progressText);
+  textSpan.classList.add("setup-progress-text");
+
+  const dotsSpan = document.createElement("span");
+  dotsSpan.classList.add("setup-progress-dots");
+  dotsSpan.setAttribute("aria-hidden", "true");
+
+  for (let i = 1; i <= totalSteps; i++) {
+    const dot = document.createElement("span");
+    dot.classList.add("setup-dot");
+    dot.setAttribute("aria-hidden", "true");
+    const state = i < stepNum ? "done" : i === stepNum ? "current" : "future";
+    dot.dataset.state = state;
+    if (totalSteps === 8 && i === 5) {
+      dot.dataset.gap = "group";
+    }
+    dotsSpan.append(dot);
   }
-  const pauseBtn = createSetupPauseButton(dump);
-  const proofRow = document.createElement("div");
-  proofRow.style.display = "flex";
-  proofRow.style.gap = "8px";
-  proofRow.style.marginTop = "12px";
-  proofRow.append(proof, pauseBtn, text("span", "pauses all sources."));
-  return proofRow;
+
+  p.append(textSpan, dotsSpan);
+  return p;
 }
 
-function placeWizardPauseFailure(stepContainer: HTMLElement, navRow: HTMLElement): void {
-  if (!wizardPauseFailure) return;
-  const pauseFailureEl = text(
-    "div",
-    wizardPauseFailure === "pause" ? "could not pause. try again." : "could not resume. try again.",
-  );
-  pauseFailureEl.classList.add("save-failure");
-  stepContainer.insertBefore(pauseFailureEl, navRow);
+function renderSetupBand(): HTMLElement {
+  const header = document.createElement("header");
+  header.classList.add("setup-band");
+
+  try {
+    const doc = new DOMParser().parseFromString(lockupSvg, "image/svg+xml");
+    const docEl = doc.documentElement;
+    if (docEl && docEl.tagName.toLowerCase() === "svg") {
+      const imported = document.importNode(docEl, true);
+      header.append(imported);
+    }
+  } catch {
+    // ignore parsing errors
+  }
+
+  const rule = document.createElement("span");
+  rule.classList.add("setup-band-rule");
+  rule.setAttribute("aria-hidden", "true");
+
+  const labelNode = text("span", "the solstone app");
+  labelNode.classList.add("setup-band-label");
+
+  header.append(rule, labelNode);
+  return header;
+}
+
+function renderSetupFrame(dump: HealthDump): HTMLElement {
+  const frame = document.createElement("div");
+  frame.classList.add("setup-frame", "settings-wizard");
+  frame.append(renderSetupBand());
+
+  const sheet = document.createElement("div");
+  sheet.classList.add("setup-sheet");
+  sheet.append(renderWizard(dump, latestPreview));
+
+  frame.append(sheet);
+  return frame;
 }
 
 function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   reconcileWizardPauseFailure(dump);
-  const wizardEl = document.createElement("div");
-  wizardEl.classList.add("settings-wizard");
 
   const step = dump.setup?.wizard ?? "mic";
   ensureProofConsumer(step);
 
   const stepContainer = document.createElement("div");
+  stepContainer.classList.add("setup-step");
   automation(stepContainer, ids["settings.setup.step"]);
   stepContainer.dataset.step = step;
 
@@ -4484,171 +4541,208 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     connection: "connect your journal",
   } as const;
 
-  const headingText = headings[step as keyof typeof headings];
-  const stepNum = stepNumberMap[step as keyof typeof stepNumberMap];
-  if (headingText && stepNum !== undefined) {
-    const progress = text("p", `step ${stepNum} of ${totalSteps}`);
-    progress.classList.add("wizard-progress");
-    progress.dataset.stepNumber = String(stepNum);
-    automation(progress, ids["settings.setup.stepNumber"]);
-    stepContainer.append(progress);
+  const stepNum = stepNumberMap[step as keyof typeof stepNumberMap] ?? 1;
 
-    const heading = text("h2", headingText);
-    heading.classList.add("wizard-step-title");
-    heading.tabIndex = -1;
-    stepContainer.append(heading);
-  }
+  const columns = document.createElement("div");
+  columns.classList.add("setup-columns");
 
-  const sentence = text("p", "what you turn on goes into your journal.");
-  sentence.classList.add("wizard-sentence");
+  const copy = document.createElement("div");
+  copy.classList.add("setup-copy");
 
-  if (step === "mic") {
-    const sw = renderWizardSourceControl("mic", "settings.setup.mic", dump);
-    const proof = renderProofNode("mic", preview);
+  const heading = text("h2", headings[step as keyof typeof headings] ?? "");
+  heading.classList.add("wizard-step-title");
+  heading.tabIndex = -1;
 
-    const notNowBtn = actionButton(
-      "not now",
-      ids["settings.setup.notNow"],
-      true,
-      async () => {
-        try {
-          await invoke("set_source_enabled", { kind: "mic", enabled: false });
-          await advanceWizardStep("system_audio");
-        } finally {
-          retryHealth();
-        }
-      },
-      false,
-      "standard",
-    );
-
-    const nextBtn = actionButton(
-      "continue with this choice",
-      ids["settings.setup.next"],
-      true,
-      async () => {
-        await advanceWizardStep("system_audio");
-      },
-      false,
-      "standard",
-    );
-
-    const navRow = document.createElement("div");
-    navRow.style.display = "flex";
-    navRow.style.gap = "8px";
-    navRow.style.marginTop = "12px";
-    navRow.append(notNowBtn);
-    if (isSourceEnabled(dump.setup, "mic")) navRow.append(nextBtn);
-
-    stepContainer.append(sw, mountWizardProof(dump, "mic", proof));
-    stepContainer.append(sentence, renderStartAtLoginControl(dump), navRow);
-    if (isSourceEnabled(dump.setup, "mic")) placeWizardPauseFailure(stepContainer, navRow);
-  } else if (step === "system_audio") {
-    const sw = renderWizardSourceControl("system_audio", "settings.setup.systemAudio", dump);
-    const proof = renderProofNode("system_audio", preview);
-
-    const backBtn = actionButton(
-      "back",
-      ids["settings.setup.back"],
-      true,
-      async () => {
-        await advanceWizardStep("mic");
-      },
-      false,
-      "standard",
-    );
-
-    const notNowBtn = actionButton(
-      "not now",
-      ids["settings.setup.notNow"],
-      true,
-      async () => {
-        try {
-          await invoke("set_source_enabled", { kind: "system_audio", enabled: false });
-          await advanceWizardStep("screen");
-        } finally {
-          retryHealth();
-        }
-      },
-      false,
-      "standard",
-    );
-
-    const nextBtn = actionButton(
-      "continue with this choice",
-      ids["settings.setup.next"],
-      true,
-      async () => {
-        await advanceWizardStep("screen");
-      },
-      false,
-      "standard",
-    );
-
-    const navRow = document.createElement("div");
-    navRow.style.display = "flex";
-    navRow.style.gap = "8px";
-    navRow.style.marginTop = "12px";
-    navRow.append(backBtn, notNowBtn);
-    if (isSourceEnabled(dump.setup, "system_audio")) navRow.append(nextBtn);
-
-    stepContainer.append(sw, mountWizardProof(dump, "system_audio", proof));
-    stepContainer.append(sentence, navRow);
-    if (isSourceEnabled(dump.setup, "system_audio")) placeWizardPauseFailure(stepContainer, navRow);
-  } else if (step === "screen") {
-    const sw = renderWizardSourceControl("screen", "settings.setup.screen", dump);
-    const proof = renderProofNode("screen", preview);
-
-    const backBtn = actionButton(
-      "back",
-      ids["settings.setup.back"],
-      true,
-      async () => {
-        await advanceWizardStep("system_audio");
-      },
-      false,
-      "standard",
-    );
-
-    const notNowBtn = actionButton(
-      "not now",
-      ids["settings.setup.notNow"],
-      true,
-      async () => {
-        try {
-          await invoke("set_source_enabled", { kind: "screen", enabled: false });
-          await advanceWizardStep("connection");
-        } finally {
-          retryHealth();
-        }
-      },
-      false,
-      "standard",
-    );
-
-    const nextBtn = actionButton(
-      "continue with this choice",
-      ids["settings.setup.next"],
-      true,
-      async () => {
-        await advanceWizardStep("connection");
-      },
-      false,
-      "standard",
-    );
-
-    const navRow = document.createElement("div");
-    navRow.style.display = "flex";
-    navRow.style.gap = "8px";
-    navRow.style.marginTop = "12px";
-    navRow.append(backBtn, notNowBtn);
-    if (isSourceEnabled(dump.setup, "screen")) navRow.append(nextBtn);
-
-    stepContainer.append(sw, mountWizardProof(dump, "screen", proof));
-    stepContainer.append(sentence, navRow);
-    if (isSourceEnabled(dump.setup, "screen")) placeWizardPauseFailure(stepContainer, navRow);
-  } else if (step === "connection") {
+  if (step === "connection") {
     const isPaired = dump.sync.pairing.phase === "paired";
+    if (isPaired) {
+      if (dump.sync.pairing.mark != null) {
+        heading.textContent = pairingPhaseLabel(presentedPairing(dump.sync.pairing));
+      } else {
+        heading.textContent = "connected to your journal";
+      }
+      automation(heading, ids["settings.pairing.state"]);
+    }
+  }
+
+  copy.append(heading);
+
+  if (step !== "connection") {
+    const sentence = text("p", "what you turn on goes into your journal.");
+    sentence.classList.add("wizard-sentence");
+    copy.append(sentence);
+  }
+
+  const card = document.createElement("div");
+  card.classList.add("setup-card");
+
+  const footer = document.createElement("div");
+  footer.classList.add("setup-footer");
+
+  if (step === "mic" || step === "system_audio" || step === "screen") {
+    const kind: SourceKind = step;
+    const autoId =
+      kind === "mic"
+        ? "settings.setup.mic"
+        : kind === "system_audio"
+          ? "settings.setup.systemAudio"
+          : "settings.setup.screen";
+    const nextStep: WizardStep =
+      kind === "mic" ? "system_audio" : kind === "system_audio" ? "screen" : "connection";
+    const prevStep: WizardStep =
+      kind === "system_audio" ? "mic" : "system_audio";
+
+    const sw = renderWizardSourceControl(kind, autoId, dump);
+    const switchRow = document.createElement("div");
+    switchRow.classList.add("setup-switch-row");
+    const labelEl = sw.querySelector("label");
+    if (labelEl) {
+      switchRow.append(labelEl);
+    }
+    if (isSourceEnabled(dump.setup, kind)) {
+      const aside = document.createElement("div");
+      aside.classList.add("setup-switch-aside");
+      const pauseBtn = createSetupPauseButton(dump);
+      pauseBtn.id = "setup-pause";
+      const hint = text("span", "pauses all sources.");
+      hint.classList.add("setup-pause-hint");
+      aside.append(pauseBtn, hint);
+      switchRow.append(aside);
+    }
+    card.append(switchRow);
+
+    while (sw.firstChild) {
+      card.append(sw.firstChild);
+    }
+
+    const proof = renderProofNode(kind, preview);
+    card.append(proof);
+
+    if (step === "mic") {
+      card.append(renderStartAtLoginControl(dump));
+    }
+
+    if (isSourceEnabled(dump.setup, kind) && wizardPauseFailure) {
+      const pauseFailureEl = text(
+        "div",
+        wizardPauseFailure === "pause" ? "could not pause. try again." : "could not resume. try again.",
+      );
+      pauseFailureEl.classList.add("save-failure");
+      card.append(pauseFailureEl);
+    }
+
+    if (dump.setup?.wizard_save_failed) {
+      const failEl = text("div", "could not save your setup progress. try again.");
+      failEl.classList.add("save-failure");
+      card.append(failEl);
+    }
+
+    const anyWizardSaveFailed = Boolean(
+      (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
+      dump.setup?.wizard_save_failed ||
+      dump.setup?.notice_save_failed
+    );
+    const currentSourceFailure = dump.setup?.failed_sources?.some((failure) => failure.kind === step);
+    if (anyWizardSaveFailed && !currentSourceFailure) {
+      const retryFailEl = document.createElement("div");
+      retryFailEl.classList.add("save-failure");
+      const retryBtn = actionButton(
+        "retry",
+        ids["settings.sources.saveRetry"],
+        true,
+        () => {
+          void invoke("retry_save").then(() => retryHealth());
+        },
+      );
+      retryFailEl.append(retryBtn);
+      card.append(retryFailEl);
+    }
+
+    const notNowBtn = actionButton(
+      "not now",
+      ids["settings.setup.notNow"],
+      true,
+      async () => {
+        try {
+          await invoke("set_source_enabled", { kind, enabled: false });
+          await advanceWizardStep(nextStep);
+        } finally {
+          retryHealth();
+        }
+      },
+      false,
+      "standard",
+    );
+    notNowBtn.classList.add("setup-text");
+    card.append(notNowBtn);
+
+    if (step !== "mic") {
+      const backBtn = actionButton(
+        "back",
+        ids["settings.setup.back"],
+        true,
+        async () => {
+          await advanceWizardStep(prevStep);
+        },
+        false,
+        "standard",
+      );
+      backBtn.classList.add("setup-back");
+      backBtn.setAttribute("aria-label", "back");
+      footer.append(backBtn);
+    }
+
+    footer.append(renderSetupProgress(stepNum, totalSteps));
+
+    const spacer = document.createElement("span");
+    spacer.classList.add("setup-footer-spacer");
+    const downloads = document.createElement("span");
+    downloads.classList.add("setup-downloads");
+    downloads.setAttribute("aria-hidden", "true");
+    footer.append(spacer, downloads);
+
+    if (isSourceEnabled(dump.setup, kind)) {
+      const continueBtn = actionButton(
+        "continue",
+        ids["settings.setup.next"],
+        true,
+        async () => {
+          await advanceWizardStep(nextStep);
+        },
+        false,
+        "accent",
+      );
+      continueBtn.classList.add("setup-primary");
+      footer.append(continueBtn);
+    }
+  } else if (step === "connection") {
+    card.append(renderPairingSection(dump, { setupStep: true }));
+
+    if (dump.setup?.wizard_save_failed) {
+      const failEl = text("div", "could not save your setup progress. try again.");
+      failEl.classList.add("save-failure");
+      card.append(failEl);
+    }
+
+    const anyWizardSaveFailed = Boolean(
+      (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
+      dump.setup?.wizard_save_failed ||
+      dump.setup?.notice_save_failed
+    );
+    if (anyWizardSaveFailed) {
+      const retryFailEl = document.createElement("div");
+      retryFailEl.classList.add("save-failure");
+      const retryBtn = actionButton(
+        "retry",
+        ids["settings.sources.saveRetry"],
+        true,
+        () => {
+          void invoke("retry_save").then(() => retryHealth());
+        },
+      );
+      retryFailEl.append(retryBtn);
+      card.append(retryFailEl);
+    }
 
     const backBtn = actionButton(
       "back",
@@ -4660,58 +4754,60 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
       false,
       "standard",
     );
+    backBtn.classList.add("setup-back");
+    backBtn.setAttribute("aria-label", "back");
+    footer.append(backBtn);
 
+    footer.append(renderSetupProgress(stepNum, totalSteps));
+
+    const spacer = document.createElement("span");
+    spacer.classList.add("setup-footer-spacer");
+    const downloads = document.createElement("span");
+    downloads.classList.add("setup-downloads");
+    downloads.setAttribute("aria-hidden", "true");
+    footer.append(spacer, downloads);
+
+    const isPaired = dump.sync.pairing.phase === "paired";
     const forwardBtn = isPaired
-      ? actionButton("next", ids["settings.setup.next"], true, async () => {
-          if (!nativeContinuationPending(dump)) {
-            await advanceWizardStep("done");
-          }
-        })
-      : actionButton("skip", ids["settings.setup.notNow"], true, async () => {
-          if (!nativeContinuationPending(dump)) {
-            await advanceWizardStep("done");
-          }
-        });
+      ? actionButton(
+          "next",
+          ids["settings.setup.next"],
+          true,
+          async () => {
+            if (!nativeContinuationPending(dump)) {
+              await advanceWizardStep("done");
+            }
+          },
+          false,
+          "accent",
+        )
+      : actionButton(
+          "skip",
+          ids["settings.setup.notNow"],
+          true,
+          async () => {
+            if (!nativeContinuationPending(dump)) {
+              await advanceWizardStep("done");
+            }
+          },
+          false,
+          "standard",
+        );
 
-    const navRow = document.createElement("div");
-    navRow.style.display = "flex";
-    navRow.style.gap = "8px";
-    navRow.style.marginTop = "12px";
-    navRow.append(backBtn);
-    if (!nativeContinuationPending(dump)) navRow.append(forwardBtn);
+    if (isPaired) {
+      forwardBtn.classList.add("setup-primary");
+    } else {
+      forwardBtn.classList.add("setup-text");
+    }
 
-    stepContainer.append(renderPairingSection(dump, { setupStep: true }), navRow);
+    if (!nativeContinuationPending(dump)) {
+      footer.append(forwardBtn);
+    }
   }
 
-  if (dump.setup?.wizard_save_failed) {
-    const failEl = text("div", "could not save your setup progress. try again.");
-    failEl.classList.add("save-failure");
-    stepContainer.append(failEl);
-  }
-
-  const anyWizardSaveFailed = Boolean(
-    (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
-    dump.setup?.wizard_save_failed ||
-    dump.setup?.notice_save_failed
-  );
-  const currentSourceFailure = dump.setup?.failed_sources?.some((failure) => failure.kind === step);
-  if (anyWizardSaveFailed && !currentSourceFailure) {
-    const retryFailEl = document.createElement("div");
-    retryFailEl.classList.add("save-failure");
-    const retryBtn = actionButton(
-      "retry",
-      ids["settings.sources.saveRetry"],
-      true,
-      () => {
-        void invoke("retry_save").then(() => retryHealth());
-      },
-    );
-    retryFailEl.append(retryBtn);
-    stepContainer.append(retryFailEl);
-  }
-
-  wizardEl.append(stepContainer);
-  return wizardEl;
+  columns.append(copy, card);
+  stepContainer.append(columns, footer);
+  return stepContainer;
 }
 
 function renderHome(dump: HealthDump): HTMLElement {
@@ -4747,8 +4843,8 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
 
   switch (route) {
     case "home":
-      if (dump.setup?.sequence_enabled === true && dump.setup.wizard !== "done") {
-        content.append(renderWizard(dump, latestPreview));
+      if (settingsShowsSetupFrame(dump)) {
+        // The shell must not also mount a wizard.
       } else {
         const home = renderHome(dump);
         if (homeShowsPairing(dump)) {
@@ -4874,7 +4970,7 @@ function renderPane(dump: HealthDump): HTMLElement {
   hamburgerGlyph.setAttribute("aria-hidden", "true");
   hamburger.append(hamburgerGlyph);
 
-  const inSetup = activeRoute === "home" && dump.setup?.sequence_enabled === true && dump.setup.wizard !== "done";
+  const inSetup = settingsShowsSetupFrame(dump);
   const title = text("h1", inSetup ? "set up solstone" : routeLabel(activeRoute));
   title.classList.add("settings-pane-title");
   title.tabIndex = -1;
@@ -4897,6 +4993,27 @@ function renderSettingsShell(dump: HealthDump): HTMLElement {
   return shell;
 }
 
+let settingsWindowTitledForSetup = false;
+
+function syncSettingsWindowTitle(showFrame: boolean): void {
+  if (label !== "settings") return;
+  if (settingsWindowTitledForSetup === showFrame) return;
+  settingsWindowTitledForSetup = showFrame;
+  const targetTitle = showFrame ? "set up solstone" : "solstone settings";
+  try {
+    const pending = getCurrentWindow().setTitle(targetTitle);
+    if (pending) {
+      void Promise.resolve(pending).catch(() => {});
+    }
+  } catch {
+    // Missing setTitle throws (e.g. in test mocks without setTitle).
+  }
+}
+
+function settingsShowsSetupFrame(dump: HealthDump): boolean {
+  return activeRoute === "home" && dump.setup?.sequence_enabled === true && dump.setup.wizard !== "done";
+}
+
 function renderSettings(dump: HealthDump): void {
   setLatestHealth(dump);
   const logText = logHelp?.querySelector("textarea");
@@ -4905,7 +5022,9 @@ function renderSettings(dump: HealthDump): void {
   root.style.padding = "0";
   root.style.overflow = "hidden";
   root.style.boxSizing = "border-box";
-  root.append(renderSettingsShell(dump));
+  const showFrame = settingsShowsSetupFrame(dump);
+  syncSettingsWindowTitle(showFrame);
+  root.append(showFrame ? renderSetupFrame(dump) : renderSettingsShell(dump));
   if (logText && logPosition) {
     logText.setSelectionRange(logPosition[0], logPosition[1]);
     logText.scrollTop = logPosition[2];
@@ -4917,7 +5036,10 @@ function renderSettings(dump: HealthDump): void {
     root.querySelector<HTMLElement>(".wizard-step-title")?.focus();
   } else if (focusPaneTitleOnRender) {
     focusPaneTitleOnRender = false;
-    root.querySelector<HTMLElement>(".settings-pane-title")?.focus();
+    const target = showFrame
+      ? root.querySelector<HTMLElement>(".wizard-step-title")
+      : root.querySelector<HTMLElement>(".settings-pane-title");
+    target?.focus();
   } else if (!markCardFocused && dump.sync?.pairing?.phase === "awaiting_confirmation") {
     markCardFocused = true;
     root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`)?.focus();
@@ -5695,6 +5817,10 @@ export function start(): void {
   styleEl.textContent = NATIVE_FEEL_CSS;
   document.head.append(styleEl);
 
+  const setupStyleEl = document.createElement("style");
+  setupStyleEl.textContent = setupFrameCss;
+  document.head.append(setupStyleEl);
+
   document.addEventListener("contextmenu", (event) => {
     if (isTextEntryTarget(event.target)) {
       return;
@@ -5970,6 +6096,7 @@ export const __test__ = {
     unknownLoginAttempt = null;
     hotkeyCapturing = false;
     titleDraft = "";
+    settingsWindowTitledForSetup = false;
   },
 };
 
