@@ -39,10 +39,10 @@ fn default_true() -> bool {
 }
 
 /// Owner-configured capture-exclusion policy. Persisted to `exclusions.json` and
-/// surfaced/edited via the IPC command surface. The default excludes nothing by
-/// app/title but auto-excludes private-browsing (matching the macOS observer's
-/// default), the trust-forward choice: a fresh install errs toward *not*
-/// capturing private windows.
+/// surfaced/edited via the IPC command surface. The default excludes the
+/// password manager apps in [`PASSWORD_MANAGER_EXES`] and auto-excludes
+/// private-browsing (matching the macOS observer's defaults), the trust-forward
+/// choice: a fresh install errs toward *not* capturing them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExclusionRules {
     /// Executable file names (e.g. `"slack.exe"`), matched **case-insensitively
@@ -66,10 +66,27 @@ pub struct ExclusionRules {
     pub exclude_private_browsing: bool,
 }
 
+/// Password manager apps excluded by default, by the image name of the process
+/// that draws each one's windows, read from each app's own installer. A password
+/// manager used inside a browser is drawn by the browser's process, so it is not
+/// matched by these.
+pub const PASSWORD_MANAGER_EXES: &[&str] = &[
+    "1password.exe",
+    "bitwarden.exe",
+    "keepass.exe",
+    "keepassxc.exe",
+    "keeperpasswordmanager.exe",
+    "lastpass for desktop.exe",
+    "protonpass.exe",
+];
+
 impl Default for ExclusionRules {
     fn default() -> Self {
         Self {
-            excluded_exes: Vec::new(),
+            excluded_exes: PASSWORD_MANAGER_EXES
+                .iter()
+                .map(|exe| exe.to_string())
+                .collect(),
             title_patterns: Vec::new(),
             exclude_private_browsing: true,
         }
@@ -83,6 +100,16 @@ impl ExclusionRules {
         !self.excluded_exes.is_empty()
             || !self.title_patterns.is_empty()
             || self.exclude_private_browsing
+    }
+
+    /// These rules with every [`PASSWORD_MANAGER_EXES`] entry they lack added
+    /// after the owner's own, for an install set up before the defaults had them.
+    pub fn with_password_managers(&self) -> Self {
+        let mut rules = self.clone();
+        rules
+            .excluded_exes
+            .extend(PASSWORD_MANAGER_EXES.iter().map(|exe| exe.to_string()));
+        rules.normalized()
     }
 
     /// Canonical form for storage and matching: trimmed, exe names lowercased,
@@ -352,12 +379,30 @@ mod tests {
     // ── rules ────────────────────────────────────────────────────────────────
 
     #[test]
-    fn default_excludes_private_browsing_only() {
+    fn default_excludes_password_managers_and_private_browsing() {
         let r = ExclusionRules::default();
-        assert!(r.excluded_exes.is_empty());
+        assert_eq!(r.excluded_exes, PASSWORD_MANAGER_EXES);
         assert!(r.title_patterns.is_empty());
         assert!(r.exclude_private_browsing);
-        assert!(r.is_active(), "private-browsing default makes it active");
+        assert!(r.is_active());
+    }
+
+    #[test]
+    fn with_password_managers_keeps_the_owners_rules_and_adds_once() {
+        let owner = ExclusionRules {
+            excluded_exes: vec!["Slack.exe".into(), PASSWORD_MANAGER_EXES[0].into()],
+            title_patterns: vec!["bank".into()],
+            exclude_private_browsing: false,
+        };
+        let merged = owner.with_password_managers();
+        assert_eq!(
+            merged.excluded_exes[..2],
+            ["slack.exe", PASSWORD_MANAGER_EXES[0]]
+        );
+        assert_eq!(merged.excluded_exes.len(), 1 + PASSWORD_MANAGER_EXES.len());
+        assert_eq!(merged.title_patterns, ["bank"]);
+        assert!(!merged.exclude_private_browsing);
+        assert_eq!(merged.with_password_managers(), merged);
     }
 
     #[test]

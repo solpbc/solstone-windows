@@ -69,10 +69,15 @@ pub struct SetExclusionsOutcome {
 impl ExclusionController {
     /// Load rules from `path` (defaulting when absent, but flagging unavailable
     /// when corrupt or unreadable), normalize them, hold them behind a shared lock,
-    /// and seed the file on disk only on a fresh install.
+    /// and seed the file on disk only on a fresh install. Saved rules from before
+    /// the password manager defaults get them once (see [`password_managers_added`]).
     pub fn new(path: PathBuf) -> Self {
+        let marker = password_managers_marker(&path);
         let (loaded, is_avail, should_seed) = match load_rules(&path) {
             RulesLoadOutcome::Fresh(defaults) => (defaults, true, true),
+            RulesLoadOutcome::Available(rules) if !marker.exists() => {
+                (rules.with_password_managers(), true, true)
+            }
             RulesLoadOutcome::Available(rules) => (rules, true, false),
             RulesLoadOutcome::Unavailable => (ExclusionRules::default().normalized(), false, false),
         };
@@ -84,8 +89,8 @@ impl ExclusionController {
             available,
             writes: Arc::new(Mutex::new(())),
         };
-        if should_seed {
-            let _ = ctrl.persist(&ctrl.get());
+        if should_seed && ctrl.persist(&ctrl.get()) {
+            password_managers_added(&marker);
         }
         ctrl
     }
@@ -130,6 +135,11 @@ impl ExclusionController {
         if persisted {
             self.available
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            // Rules the owner saved are theirs, so the one-time merge never runs on them.
+            let marker = password_managers_marker(&self.path);
+            if !marker.exists() {
+                password_managers_added(&marker);
+            }
         }
         SetExclusionsOutcome { persisted }
     }
@@ -176,6 +186,26 @@ fn load_rules(path: &std::path::Path) -> RulesLoadOutcome {
             RulesLoadOutcome::Fresh(ExclusionRules::default().normalized())
         }
         Err(_) => RulesLoadOutcome::Unavailable,
+    }
+}
+
+/// Saved beside `exclusions.json` once the rules on disk hold the password manager
+/// defaults, so the one-time merge never adds back an app the owner removed later.
+fn password_managers_marker(path: &std::path::Path) -> PathBuf {
+    path.with_file_name("exclusions-password-managers-added")
+}
+
+/// Record that the password manager defaults are on disk. A failed write leaves
+/// the merge to run again next launch, which adds nothing the rules already hold.
+fn password_managers_added(marker: &std::path::Path) {
+    if let Err(e) = std::fs::write(marker, b"") {
+        tracing::warn!(
+            target: "config",
+            area = "exclusions",
+            path = %marker.display(),
+            error = %e,
+            "password manager marker write failed"
+        );
     }
 }
 
@@ -252,6 +282,58 @@ mod tests {
 
         assert!(outcome.persisted);
         assert!(path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saved_rules_get_the_password_managers_once_and_a_removal_stays() {
+        let root = unique_root("password-managers");
+        let path = root.join("exclusions.json");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"excluded_exes":["slack.exe"],"title_patterns":[],"exclude_private_browsing":true}"#,
+        )
+        .unwrap();
+
+        let ctrl = ExclusionController::new(path.clone());
+        let merged = ctrl.get();
+        assert_eq!(merged.excluded_exes[0], "slack.exe");
+        for exe in observer_exclusion::PASSWORD_MANAGER_EXES {
+            assert!(merged.excluded_exes.iter().any(|x| x == exe), "{exe}");
+        }
+        assert!(matches!(load_rules(&path), RulesLoadOutcome::Available(r) if r == merged));
+
+        let mut removed = merged.clone();
+        removed
+            .excluded_exes
+            .retain(|x| x != observer_exclusion::PASSWORD_MANAGER_EXES[0]);
+        assert!(ctrl.set(removed.clone()).persisted);
+        assert_eq!(ExclusionController::new(path.clone()).get(), removed);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_fresh_install_seeds_the_password_managers_and_never_merges_again() {
+        let root = unique_root("password-managers-fresh");
+        let path = root.join("exclusions.json");
+        let ctrl = ExclusionController::new(path.clone());
+        assert_eq!(ctrl.get(), ExclusionRules::default().normalized());
+
+        assert!(
+            ctrl.set(ExclusionRules {
+                excluded_exes: vec![],
+                title_patterns: vec![],
+                exclude_private_browsing: true,
+            })
+            .persisted
+        );
+        assert!(ExclusionController::new(path.clone())
+            .get()
+            .excluded_exes
+            .is_empty());
+
         let _ = std::fs::remove_dir_all(root);
     }
 

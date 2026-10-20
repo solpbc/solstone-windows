@@ -4601,6 +4601,13 @@ function renderSetupFrame(dump: HealthDump): HTMLElement {
   return frame;
 }
 
+// Where what the screen step turns on is kept, and what it leaves out. The password
+// manager defaults match each app's own process, so the line names apps.
+const SETUP_SCREEN_TRUST_LINES = [
+  "what you share stays on this PC until it goes into your journal on your own devices. your journal is always private, only yours.",
+  "1Password, Bitwarden and the other password manager apps listed in settings are left out, but a password manager inside your browser isn't. you can pause any time.",
+] as const;
+
 function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   reconcileWizardPauseFailure(dump);
 
@@ -4656,6 +4663,14 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     const sentence = text("p", "what you turn on goes into your journal.");
     sentence.classList.add("wizard-sentence");
     copy.append(sentence);
+  }
+
+  if (step === "screen") {
+    for (const line of SETUP_SCREEN_TRUST_LINES) {
+      const sentence = text("p", line);
+      sentence.classList.add("wizard-sentence");
+      copy.append(sentence);
+    }
   }
 
   const card = document.createElement("div");
