@@ -4578,14 +4578,10 @@ function renderSetupBand(): HTMLElement {
     // ignore parsing errors
   }
 
-  const rule = document.createElement("span");
-  rule.classList.add("setup-band-rule");
-  rule.setAttribute("aria-hidden", "true");
-
   const labelNode = text("span", "the solstone app");
   labelNode.classList.add("setup-band-label");
 
-  header.append(rule, labelNode);
+  header.append(labelNode);
   return header;
 }
 

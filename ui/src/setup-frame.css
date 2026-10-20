@@ -72,16 +72,17 @@
   display: block;
 }
 
-.setup-frame .setup-band-rule {
-  width: 1px;
-  margin: 0 12px;
-  background: var(--border);
-  align-self: stretch;
-}
-
+/* The label is text, so it gets its own container: the sun can pass behind the band
+   (sun-arc spec § 8; founder, 2026-10-20). Only the lockup sits on the ground. */
 .setup-frame .setup-band-label {
   font-size: 12px;
+  line-height: 16px;
   color: var(--muted);
+  background: var(--setup-sheet);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 3px 10px;
+  margin-left: 12px;
 }
 
 .setup-frame .setup-sheet {
