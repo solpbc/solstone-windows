@@ -2491,6 +2491,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
 
 function renderMarkWords(w1: string, w2: string): HTMLElement {
   const container = document.createElement("span");
+  container.classList.add("mark-words");
   container.style.fontSize = "13px";
   container.style.fontWeight = "600";
   container.style.display = "inline-flex";

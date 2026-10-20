@@ -404,3 +404,30 @@
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
+
+/* the mark's two words never break mid-word */
+.setup-frame .mark-words {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* one primary per screen: inside the card, accent buttons read as secondary,
+   except the pairing field's own button */
+.setup-frame .setup-card button.fluent-accent:not(input + button) {
+  background: var(--fill) !important;
+  color: var(--fg) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* the chips beside the words keep their size too */
+.setup-frame .setup-card :has(> .mark-words) > * {
+  flex-shrink: 0;
+}
+
+/* in the setup card, the row holding the mark stacks its label above the mark,
+   so the mark has the card's full width */
+.setup-frame .setup-card div:has(> :nth-child(2) .mark-words),
+.setup-frame .setup-card div:has(> .mark-words:nth-child(2)) {
+  grid-template-columns: 1fr !important;
+  gap: 6px !important;
+}

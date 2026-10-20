@@ -190,8 +190,6 @@ fn finish_pair_rejection(
     state_path: &Path,
     intent: &RetirementIntent,
 ) -> Result<ReconcileOutcome, TransportError> {
-    let binding =
-        crate::ack::JournalIdentity::from_credential(&intent.credential).client_cert_sha256;
     let completed = PairedState::finish_pair_rejection(
         state_path,
         &intent.operation_id,
@@ -199,12 +197,12 @@ fn finish_pair_rejection(
         intent.access_mutation_generation,
         || {
             let answer_path = answer::answer_path(state_path);
-            let current = answer::read_answer(&answer_path)?.unwrap_or_default();
-            if (!current.confirmed.is_empty() && current.confirmed != binding)
-                || (!current.rejected.is_empty() && current.rejected != binding)
-            {
-                return Err(StorageError::CasMismatch);
-            }
+            // The caller holds the owner lock and has matched this intent's
+            // operation, credential and access generations. A previous journal's
+            // answer can remain after re-pairing; it is stale for this owned
+            // rejection. Newer pairings fail the outer CAS before this callback.
+            // Still refuse malformed answer bytes rather than overwriting them.
+            answer::read_answer(&answer_path)?;
             answer::write_answer_with_owner_lock(&answer_path, &answer::AnswerState::default())
         },
     )?;
@@ -367,6 +365,177 @@ mod tests {
 
     async fn success(_: Credential, _: String) -> Result<(), TransportError> {
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejection_after_repair_clears_the_previous_journals_confirmation() {
+        let dir = TestDir::new("reject-after-confirmed-repair");
+        let previous = credential("previous-confirmed-journal");
+        let previous_binding =
+            crate::ack::JournalIdentity::from_credential(&previous).client_cert_sha256;
+        let current = credential("current-unconfirmed-journal");
+        let binding = crate::ack::JournalIdentity::from_credential(&current).client_cert_sha256;
+        assert_ne!(previous_binding, binding);
+        save_incumbent(&dir.state_path(), current, 31);
+        let answer_path = answer::answer_path(&dir.state_path());
+        answer::write_answer(
+            &answer_path,
+            &answer::AnswerState {
+                confirmed: previous_binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+        let held = dir.0.join("held-segment.jsonl");
+        std::fs::write(&held, b"immutable held queue bytes\n").unwrap();
+        let remote_calls = AtomicUsize::new(0);
+        let result = reject_pair_with(
+            &dir.state_path(),
+            &binding,
+            || async {
+                answer::write_answer(
+                    &answer_path,
+                    &answer::AnswerState {
+                        confirmed: previous_binding,
+                        rejected: binding.clone(),
+                    },
+                )?;
+                Ok(())
+            },
+            |_, _| {
+                remote_calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, ReconcileOutcome::Completed);
+        assert_eq!(remote_calls.load(Ordering::SeqCst), 1);
+        let settled = PairedState::load(&dir.state_path()).unwrap();
+        assert!(settled.credential.is_none());
+        assert!(settled.retirement_intent.is_none());
+        assert_eq!(
+            answer::read_answer(&answer_path).unwrap(),
+            Some(answer::AnswerState::default())
+        );
+        crate::service::ensure_pairable(&dir.state_path()).unwrap();
+        assert_eq!(
+            std::fs::read(held).unwrap(),
+            b"immutable held queue bytes\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_reconciles_rejection_with_an_earlier_confirmation_at_each_phase() {
+        for phase in [
+            RetirementPhase::Prepared,
+            RetirementPhase::Unknown,
+            RetirementPhase::Succeeded,
+        ] {
+            for rejected_written in [false, true] {
+                let dir = TestDir::new("reject-launch-stale-confirmation");
+                let previous = credential("previous-confirmed-journal");
+                let previous_binding =
+                    crate::ack::JournalIdentity::from_credential(&previous).client_cert_sha256;
+                let current = credential("current-unconfirmed-journal");
+                let binding =
+                    crate::ack::JournalIdentity::from_credential(&current).client_cert_sha256;
+                assert_ne!(previous_binding, binding);
+                save_incumbent(&dir.state_path(), current.clone(), 37);
+                let paired = PairedState::load(&dir.state_path()).unwrap();
+                let mut intent = new_pair_rejection_intent(&paired, current).unwrap();
+                intent.phase = phase;
+                PairedState {
+                    retirement_intent: Some(intent),
+                    ..paired
+                }
+                .save(&dir.state_path())
+                .unwrap();
+                let answer_path = answer::answer_path(&dir.state_path());
+                answer::write_answer(
+                    &answer_path,
+                    &answer::AnswerState {
+                        confirmed: previous_binding,
+                        rejected: if rejected_written {
+                            binding
+                        } else {
+                            String::new()
+                        },
+                    },
+                )
+                .unwrap();
+                let held = dir.0.join("held-segment.jsonl");
+                std::fs::write(&held, b"immutable held queue bytes\n").unwrap();
+                let remote_calls = AtomicUsize::new(0);
+                assert_eq!(
+                    reconcile_on_launch_with(&dir.state_path(), |_, _| {
+                        remote_calls.fetch_add(1, Ordering::SeqCst);
+                        async { Ok(()) }
+                    })
+                    .await
+                    .unwrap(),
+                    ReconcileOutcome::Completed
+                );
+                assert_eq!(
+                    remote_calls.load(Ordering::SeqCst),
+                    usize::from(phase != RetirementPhase::Succeeded)
+                );
+                let settled = PairedState::load(&dir.state_path()).unwrap();
+                assert!(settled.credential.is_none());
+                assert!(settled.retirement_intent.is_none());
+                assert_eq!(
+                    answer::read_answer(&answer_path).unwrap(),
+                    Some(answer::AnswerState::default())
+                );
+                crate::service::ensure_pairable(&dir.state_path()).unwrap();
+                assert_eq!(
+                    std::fs::read(held).unwrap(),
+                    b"immutable held queue bytes\n"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rejection_cleanup_refuses_malformed_answer_without_erasing_owned_state() {
+        let dir = TestDir::new("reject-malformed-answer");
+        let current = credential("rejected-journal");
+        save_incumbent(&dir.state_path(), current.clone(), 41);
+        let paired = PairedState::load(&dir.state_path()).unwrap();
+        let mut intent = new_pair_rejection_intent(&paired, current.clone()).unwrap();
+        intent.phase = RetirementPhase::Succeeded;
+        let operation_id = intent.operation_id.clone();
+        PairedState {
+            retirement_intent: Some(intent),
+            ..paired
+        }
+        .save(&dir.state_path())
+        .unwrap();
+        let answer_path = answer::answer_path(&dir.state_path());
+        std::fs::write(&answer_path, b"{malformed answer").unwrap();
+        let held = dir.0.join("held-segment.jsonl");
+        std::fs::write(&held, b"immutable held queue bytes\n").unwrap();
+
+        assert!(reconcile_with(&dir.state_path(), |_, _| async {
+            panic!("a succeeded rejection must not send DELETE again")
+        })
+        .await
+        .is_err());
+        let preserved = PairedState::load(&dir.state_path()).unwrap();
+        assert_eq!(
+            preserved.credential.unwrap().client_cert_pem,
+            current.client_cert_pem
+        );
+        let intent = preserved.retirement_intent.unwrap();
+        assert_eq!(intent.operation_id, operation_id);
+        assert_eq!(intent.phase, RetirementPhase::Succeeded);
+        assert_eq!(preserved.access_mutation_generation, 41);
+        assert_eq!(std::fs::read(answer_path).unwrap(), b"{malformed answer");
+        assert_eq!(
+            std::fs::read(held).unwrap(),
+            b"immutable held queue bytes\n"
+        );
+        assert!(crate::service::ensure_pairable(&dir.state_path()).is_err());
     }
 
     #[tokio::test]
