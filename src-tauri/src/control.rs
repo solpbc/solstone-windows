@@ -43,6 +43,7 @@ fn signal(verb: &[u8]) -> bool {
     .is_ok()
 }
 
+#[cfg(test)]
 pub(crate) fn control_requests_open_journal(buf: &[u8]) -> bool {
     buf.starts_with(OPEN_JOURNAL_VERB)
 }
@@ -806,10 +807,11 @@ mod tests {
         assert_eq!(next.handoff_id.as_deref(), Some(h2));
         assert!(next.handoff_new_connection);
         assert!(!next.handoff_expired);
-        let sync = state.sync.lock().unwrap();
-        assert_eq!(sync.pairing.phase, observer_model::PairingPhase::Paired);
-        assert_eq!(sync.pairing.binding, binding);
-        drop(sync);
+        {
+            let sync = state.sync.lock().unwrap();
+            assert_eq!(sync.pairing.phase, observer_model::PairingPhase::Paired);
+            assert_eq!(sync.pairing.binding, binding);
+        }
         let saved = pl_transport_win::PairedState::load(&state.sync_config.state_path).unwrap();
         assert_eq!(saved.setup_activation.unwrap().handoff_id, h1);
         assert!(saved.setup_browser_opened);

@@ -100,6 +100,7 @@ impl ExclusionController {
         Arc::clone(&self.available)
     }
 
+    #[cfg(test)]
     pub fn is_available(&self) -> bool {
         self.available.load(std::sync::atomic::Ordering::SeqCst)
     }

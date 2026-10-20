@@ -66,18 +66,20 @@ fn browsers_menu_text(status: Option<&browser_host::hub::BrowserStatus>) -> Stri
     }
 }
 
-/// Install the tray icon + menu. Returns the handles `apply_state` re-renders:
-/// the Pause submenu (enabled/disabled as a whole), Resume, Restart intake, and Browsers.
-pub fn init(
-    app: &mut App,
-    cmd_tx: mpsc::UnboundedSender<EngineCommand>,
-) -> tauri::Result<(
+type TrayHandles = (
     TrayIcon,
     Submenu<Wry>,
     MenuItem<Wry>,
     MenuItem<Wry>,
     Option<MenuItem<Wry>>,
-)> {
+);
+
+/// Install the tray icon + menu. Returns the handles `apply_state` re-renders:
+/// the Pause submenu (enabled/disabled as a whole), Resume, Restart intake, and Browsers.
+pub fn init(
+    app: &mut App,
+    cmd_tx: mpsc::UnboundedSender<EngineCommand>,
+) -> tauri::Result<TrayHandles> {
     let mi_pause_15 =
         MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_15M, "For 15 minutes")
             .build(app)?;

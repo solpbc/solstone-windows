@@ -193,8 +193,8 @@ fn main() -> ExitCode {
     let state_path = data_root.join("pairing.json");
     let answer_path = pl_transport_win::answer::answer_path(&state_path);
     let paired_load = pl_transport_win::credential::PairedState::load(&state_path).ok();
-    let is_paired = paired_load.as_ref().map_or(false, |p| p.is_paired());
-    let ceremony_active = paired_load.as_ref().map_or(false, |p| {
+    let is_paired = paired_load.as_ref().is_some_and(|p| p.is_paired());
+    let ceremony_active = paired_load.as_ref().is_some_and(|p| {
         if p.is_paired() {
             let cred = p.credential.as_ref().unwrap();
             let binding =
@@ -202,7 +202,7 @@ fn main() -> ExitCode {
             let confirmed = pl_transport_win::answer::read_answer(&answer_path)
                 .ok()
                 .flatten()
-                .map_or(false, |a| a.confirmed == binding);
+                .is_some_and(|a| a.confirmed == binding);
             !confirmed
         } else {
             false

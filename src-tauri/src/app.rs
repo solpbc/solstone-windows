@@ -88,6 +88,7 @@ fn current_raw_facts() -> pl_transport_win::RawDeviceFacts {
 /// this is:
 ///
 /// - **installed** (Setup / winget): always owns the entry;
+///
 /// Evaluate and apply the pure start-at-login decision for this copy.
 /// Returns true if applying the decision failed (so the health snapshot
 /// honestly reports `login_apply_failed = true`).
@@ -938,7 +939,7 @@ pub fn run(
                         log_health_transitions(previous.as_ref(), &dump);
                         let changed = previous
                             .as_ref()
-                            .map_or(true, |prev| should_emit(prev, &dump));
+                            .is_none_or(|prev| should_emit(prev, &dump));
                         previous = Some(dump.clone());
                         crate::tray::apply_state(
                             &tray,
