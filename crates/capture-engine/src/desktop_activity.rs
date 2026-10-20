@@ -977,13 +977,18 @@ impl DesktopActivityScheduler {
             source.cancel_url();
             Vec::new()
         };
-        if let Some(row) = self.transition_availability(
-            now_ms,
-            "winevent",
+        for capability in [
             AvailabilityCapability::Foreground,
-            AvailabilityStatus::Unavailable,
-        ) {
-            rows.push(row);
+            AvailabilityCapability::Idle,
+        ] {
+            if let Some(row) = self.transition_availability(
+                now_ms,
+                "winevent",
+                capability,
+                AvailabilityStatus::Unavailable,
+            ) {
+                rows.push(row);
+            }
         }
         rows
     }
@@ -1183,6 +1188,41 @@ mod tests {
                 true
             }
         }));
+    }
+
+    #[test]
+    fn source_fault_ends_active_and_foreground_spans_with_idle_unavailable() {
+        use observer_model::desktop_activity::DesktopActivityPayload;
+        let mut scheduler =
+            DesktopActivityScheduler::new(true, true, test_rules(), "testart".into());
+        let mut probe = FakeDesktopActivityProbe {
+            events: vec![
+                DesktopActivityProbeEvent::ActivityStateChanged(ActivityState::Active),
+                DesktopActivityProbeEvent::Foreground {
+                    window_id: 10,
+                    app: "Browser".into(),
+                    exe_name: "msedge.exe".into(),
+                    title: "Page".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        scheduler.poll_and_step(&mut probe, 1000);
+        assert!(scheduler.url_state.in_flight);
+        let generation = scheduler.url_state.generation;
+        let rows = scheduler.source_unavailable(&mut probe, 2000);
+        assert!(rows.iter().any(
+            |row| matches!(&row.payload, DesktopActivityPayload::Activity(p) if p.state == "active")
+        ));
+        assert!(!scheduler.url_state.in_flight);
+        assert!(scheduler.open_foreground.is_none());
+        assert!(scheduler.open_activity.is_none());
+        assert!(scheduler.url_state.generation > generation);
+        let availability = scheduler.close_all(&mut probe, 3000);
+        for capability in ["foreground", "idle"] {
+            assert!(availability.iter().any(|row| matches!(&row.payload, DesktopActivityPayload::Availability(p) if p.capability == capability && p.status == "unavailable")));
+        }
+        assert!(availability.iter().all(|row| row.kind != "activity"));
     }
 
     #[test]

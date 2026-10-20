@@ -16,6 +16,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- desktop activity now distinguishes a confirmed screen lock from unavailable activity information in your journal.
 - desktop activity has also been adding to your journal whether you're active or idle, or this PC is locked, beside the apps you use. its setting now says so.
 
 ## [2.0.32] - 2026-10-20
