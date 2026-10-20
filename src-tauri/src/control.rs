@@ -152,6 +152,12 @@ mod tests {
     };
     use spl_core::frame::{Frame, FrameDecoder, FLAG_CLOSE, FLAG_DATA};
 
+    // Hang bound for the real-TLS loopback pairing tests. They detect a deadlock,
+    // not a speed: in a debug build each runs about 4.1 s isolated on the Windows
+    // build box, and CI's Azure workers run the suite two to three times slower,
+    // so a 5 s bound failed there.
+    const PAIRING_TEST_BOUND: Duration = Duration::from_secs(20);
+
     struct FakeJournalSurface {
         settings_opened: AtomicUsize,
         journal_focused: AtomicUsize,
@@ -509,7 +515,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pairing_and_open_journal_interleaving_bounded_5s() {
+    async fn pairing_and_open_journal_interleaving_is_bounded() {
         let probe = Arc::new(crate::windows::OpenPairProbe::new());
         let state = Arc::new(test_app_state(Some(probe.clone())));
         state.sync.lock().unwrap().pairing.phase = observer_model::PairingPhase::Paired;
@@ -556,13 +562,16 @@ mod tests {
         }
         probe.release_open.notify_one();
 
-        let joined = tokio::time::timeout(Duration::from_secs(5), async {
+        let joined = tokio::time::timeout(PAIRING_TEST_BOUND, async {
             let (pair_res, open_res, server_res) = tokio::join!(pair_task, open_task, pair_server);
             (pair_res.unwrap(), open_res.unwrap(), server_res.unwrap())
         })
         .await;
 
-        assert!(joined.is_ok(), "interleaving timed out after 5s");
+        assert!(
+            joined.is_ok(),
+            "interleaving did not finish within the pairing test bound"
+        );
         let (pair_res, open_res, _) = joined.unwrap();
         assert!(pair_res.is_ok());
         match open_res {
@@ -601,13 +610,16 @@ mod tests {
             crate::ipc::pair_session(&*surface_pair, &state_pair, link).await
         });
 
-        let joined = tokio::time::timeout(Duration::from_secs(5), async {
+        let joined = tokio::time::timeout(PAIRING_TEST_BOUND, async {
             let (pair_res, server_res) = tokio::join!(pair_task, pair_server);
             (pair_res.unwrap(), server_res.unwrap())
         })
         .await;
 
-        assert!(joined.is_ok(), "pairing timed out after 5s");
+        assert!(
+            joined.is_ok(),
+            "pairing did not finish within the pairing test bound"
+        );
         let (pair_res, _) = joined.unwrap();
         assert!(pair_res.is_ok());
         assert_eq!(surface.journal_closed.load(Ordering::SeqCst), 1);
@@ -646,13 +658,16 @@ mod tests {
             crate::ipc::pair_session(&*surface_pair, &state_pair, link_pair).await
         });
 
-        let joined = tokio::time::timeout(Duration::from_secs(5), async {
+        let joined = tokio::time::timeout(PAIRING_TEST_BOUND, async {
             let (pair_res, server_res) = tokio::join!(pair_task, pair_server);
             (pair_res.unwrap(), server_res.unwrap())
         })
         .await;
 
-        assert!(joined.is_ok(), "pairing timed out after 5s");
+        assert!(
+            joined.is_ok(),
+            "pairing did not finish within the pairing test bound"
+        );
         let (pair_res, _) = joined.unwrap();
         assert!(pair_res.is_ok());
         assert_eq!(pl_transport_win::draft::read_draft(&data_root), None);
@@ -1077,7 +1092,7 @@ mod tests {
             probe.release_answer_cleanup.notify_one();
             pair.await
         };
-        let (answer, pair, server) = tokio::time::timeout(Duration::from_secs(5), async {
+        let (answer, pair, server) = tokio::time::timeout(PAIRING_TEST_BOUND, async {
             tokio::join!(answer, contender, server)
         })
         .await
