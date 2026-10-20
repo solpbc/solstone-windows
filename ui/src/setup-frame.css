@@ -476,6 +476,10 @@
   --sunarc-night-ground: #2E241C;
 }
 
+#setup-sun[hidden] {
+  display: none;
+}
+
 #setup-sun .sunarc-twilight,
 #setup-sun .sunarc-glow,
 #setup-sun .sunarc-sun {

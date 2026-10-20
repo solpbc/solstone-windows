@@ -2570,6 +2570,7 @@ describe("setup frame design and lifecycle", () => {
     expect(live).toBe(0);
     expect(ground.hidden).toBe(true);
     expect(overlap).toBe(false);
+    mountSpy.mockRestore();
   });
 
   it("serves the sun mark where the engine asks for it", () => {
