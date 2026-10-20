@@ -16,8 +16,8 @@
 
 use capture_engine::EngineCommand;
 use observer_model::{
-    classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, AppPhase,
-    HealthDump, PauseReason, SyncSnapshot, TrayVisual,
+    classify_tray, owner_fault_detail, pause_enabled, permission_blocked, restart_enabled,
+    resume_enabled, AppPhase, HealthDump, PauseReason, SourceKind, SyncSnapshot, TrayVisual,
 };
 use tauri::image::Image;
 use tauri::menu::{
@@ -164,6 +164,7 @@ pub fn init(
         &SyncSnapshot::default(),
         None,
         None,
+        None,
         false,
     );
 
@@ -240,6 +241,7 @@ pub fn init(
     Ok((tray, pause_submenu, mi_resume, mi_restart, mi_browsers))
 }
 
+/// Re-render the tray from `dump`; returns what it shows, for the notifier.
 pub fn apply_state(
     tray: &TrayIcon,
     pause_submenu: &Submenu<Wry>,
@@ -247,16 +249,18 @@ pub fn apply_state(
     mi_restart: &MenuItem<Wry>,
     browsers: Option<&MenuItem<Wry>>,
     dump: &HealthDump,
-) {
+) -> (TrayVisual, Option<SourceKind>) {
     let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), |kind| {
         dump.setup.is_enabled(kind)
     });
+    let blocked = permission_blocked(&dump.sources, |kind| dump.setup.is_enabled(kind));
     let deliberate_off = dump.setup.deliberate_off();
     let (visual, tooltip) = classify_tray(
         dump.app_state,
         &dump.sync,
         dump.pause.as_ref(),
         fault_detail.as_deref(),
+        blocked,
         deliberate_off,
     );
     let _ = tray.set_icon(Some(icon_for(visual)));
@@ -272,6 +276,7 @@ pub fn apply_state(
     {
         let _ = browsers;
     }
+    (visual, blocked)
 }
 
 fn icon_for(visual: TrayVisual) -> Image<'static> {
@@ -282,7 +287,9 @@ fn icon_for(visual: TrayVisual) -> Image<'static> {
             include_bytes!("../icons/tray/paused.ico").as_slice()
         }
         TrayVisual::Offline => include_bytes!("../icons/tray/offline.ico").as_slice(),
-        TrayVisual::Error => include_bytes!("../icons/tray/error.ico").as_slice(),
+        TrayVisual::Error | TrayVisual::NeedsPermission => {
+            include_bytes!("../icons/tray/error.ico").as_slice()
+        }
     };
     Image::from_bytes(bytes).expect("bundled tray icon is a valid ICO")
 }

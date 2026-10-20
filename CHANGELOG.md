@@ -8,6 +8,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Added
 
+- settings now counts down to the next save on this PC, and shows when your journal was last reached.
+- a notification now tells you when your journal has been out of reach for half an hour, when intake runs into a problem, or when windows is blocking the microphone, and again once it's fixed. a short drop that fixes itself doesn't notify you.
 - 1Password, Bitwarden, KeePass, KeePassXC, Keeper, LastPass and Proton Pass are now among the apps whose windows are kept out of your journal by default. if you set up before this version, they're added to your excluded apps once, and you can remove any of them in settings. a password manager you use inside your browser is part of the browser, so it isn't kept out.
 
 ### Changed
@@ -17,6 +19,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- when windows privacy settings block the microphone, the tray and settings now say it needs permission, with a button to the windows setting, instead of showing an error. everything else keeps going into your journal, and the microphone goes in again as soon as you allow it.
 - desktop activity now distinguishes a confirmed screen lock from unavailable activity information in your journal.
 - desktop activity has also been adding to your journal whether you're active or idle, or this PC is locked, beside the apps you use. its setting now says so.
 

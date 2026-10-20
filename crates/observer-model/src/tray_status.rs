@@ -2,8 +2,8 @@
 // Copyright (c) 2026 sol pbc
 
 use crate::{
-    AppPhase, PairingPhase, PauseSnapshot, SourceReport, SourceState, StorageHealth, SyncSnapshot,
-    BREAKER_OPEN_MARKER,
+    AppPhase, ErrorReason, PairingPhase, PauseSnapshot, SourceKind, SourceReport, SourceState,
+    StorageHealth, SyncSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +12,7 @@ pub enum TrayVisual {
     Connecting,
     Paused,
     Offline,
+    NeedsPermission,
     Error,
     Off,
 }
@@ -28,30 +29,61 @@ pub fn restart_enabled(phase: AppPhase) -> bool {
     matches!(phase, AppPhase::Error)
 }
 
+const STORAGE_FAULT_FOR_OWNER: &str = "can't save on this PC";
+
+/// What the tray says stopped, in owner words. A fault's detail is a diagnostic
+/// for the logs and the health dump, never shown here.
 pub fn owner_fault_detail(
     sources: &[SourceReport],
     storage: Option<&StorageHealth>,
     is_enabled: impl Fn(crate::SourceKind) -> bool,
 ) -> Option<String> {
-    fn detail_for_owner(detail: &str) -> Option<String> {
-        let detail = detail
-            .strip_prefix(BREAKER_OPEN_MARKER)
-            .unwrap_or(detail)
-            .trim();
-        (!detail.is_empty()).then(|| detail.to_string())
-    }
-
-    if let Some(detail) = storage.and_then(|storage| detail_for_owner(&storage.detail)) {
-        return Some(detail);
+    if storage.is_some() {
+        return Some(STORAGE_FAULT_FOR_OWNER.to_string());
     }
 
     sources
         .iter()
         .filter(|source| is_enabled(source.kind))
         .find_map(|source| match &source.state {
-            SourceState::Faulted { detail, .. } => detail_for_owner(detail),
+            SourceState::Faulted { reason, .. } if *reason != ErrorReason::AccessDenied => {
+                Some(format!(
+                    "the {} stopped going into your journal",
+                    source_owner_name(source.kind)
+                ))
+            }
             _ => None,
         })
+}
+
+/// The first enabled source that Windows is refusing access to, if any.
+pub fn permission_blocked(
+    sources: &[SourceReport],
+    is_enabled: impl Fn(SourceKind) -> bool,
+) -> Option<SourceKind> {
+    sources
+        .iter()
+        .filter(|source| is_enabled(source.kind))
+        .find(|source| {
+            matches!(
+                source.state,
+                SourceState::Faulted {
+                    reason: ErrorReason::AccessDenied,
+                    ..
+                }
+            )
+        })
+        .map(|source| source.kind)
+}
+
+/// How a source is named in owner-visible copy.
+pub fn source_owner_name(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Screen => "screen",
+        SourceKind::SystemAudio => "system audio",
+        SourceKind::Mic => "microphone",
+        SourceKind::DesktopActivity => "desktop activity",
+    }
 }
 
 pub fn classify_tray(
@@ -59,9 +91,54 @@ pub fn classify_tray(
     sync: &SyncSnapshot,
     pause: Option<&PauseSnapshot>,
     fault_detail: Option<&str>,
+    blocked: Option<SourceKind>,
     deliberate_off: bool,
 ) -> (TrayVisual, String) {
-    let (visual, tooltip) = match app {
+    let (visual, tooltip) = match (app, blocked) {
+        // A pause or a fault outranks a refused permission; otherwise the owner
+        // has something to turn on in Windows, whatever else is running.
+        (AppPhase::Idle | AppPhase::Starting | AppPhase::Observing, Some(kind))
+            if !deliberate_off =>
+        {
+            let needs = format!(
+                "the {} needs permission in windows settings",
+                source_owner_name(kind)
+            );
+            let tooltip = if app == AppPhase::Observing {
+                format!("on, but {needs}")
+            } else {
+                needs
+            };
+            (TrayVisual::NeedsPermission, tooltip)
+        }
+        _ => classify_phase(app, sync, pause, fault_detail, deliberate_off),
+    };
+
+    // Additive: an unknown-journal sighting never changes the tray's visual or
+    // otherwise-computed tooltip, it only appends a notice line — same wording
+    // as the Settings detail card, earned independently of app phase or pairing
+    // state (a sighting can happen while paired-and-healthy just as easily as
+    // while reconnecting).
+    match sync.unknown_journals.first() {
+        Some(sighting) => {
+            let notice = match &sighting.address {
+                Some(address) => format!("unknown journal seen at {address}"),
+                None => "unknown journal seen through the relay".to_string(),
+            };
+            (visual, format!("{tooltip}\n{notice}"))
+        }
+        None => (visual, tooltip),
+    }
+}
+
+fn classify_phase(
+    app: AppPhase,
+    sync: &SyncSnapshot,
+    pause: Option<&PauseSnapshot>,
+    fault_detail: Option<&str>,
+    deliberate_off: bool,
+) -> (TrayVisual, String) {
+    match app {
         AppPhase::Idle => {
             if deliberate_off {
                 (TrayVisual::Off, "off".to_string())
@@ -108,22 +185,6 @@ pub fn classify_tray(
                 }
             }
         },
-    };
-
-    // Additive: an unknown-journal sighting never changes the tray's visual or
-    // otherwise-computed tooltip, it only appends a notice line — same wording
-    // as the Settings detail card, earned independently of app phase or pairing
-    // state (a sighting can happen while paired-and-healthy just as easily as
-    // while reconnecting).
-    match sync.unknown_journals.first() {
-        Some(sighting) => {
-            let notice = match &sighting.address {
-                Some(address) => format!("unknown journal seen at {address}"),
-                None => "unknown journal seen through the relay".to_string(),
-            };
-            (visual, format!("{tooltip}\n{notice}"))
-        }
-        None => (visual, tooltip),
     }
 }
 
@@ -169,7 +230,7 @@ mod tests {
         pause: Option<&PauseSnapshot>,
         fault_detail: Option<&str>,
     ) -> TrayVisual {
-        classify_tray(app, sync, pause, fault_detail, false).0
+        classify_tray(app, sync, pause, fault_detail, None, false).0
     }
 
     fn faulted_source(kind: SourceKind, detail: impl Into<String>) -> SourceReport {
@@ -316,34 +377,36 @@ mod tests {
     }
 
     #[test]
-    fn owner_fault_detail_prefers_storage_detail() {
+    fn storage_fault_outranks_and_never_shows_its_diagnostic() {
         let sources = vec![faulted_source(SourceKind::Screen, "screen gone")];
         let storage = StorageHealth {
-            detail: "disk full".into(),
+            detail: "Os { code: 112, kind: StorageFull }".into(),
         };
 
-        assert_eq!(
-            owner_fault_detail(&sources, Some(&storage), |_| true).as_deref(),
-            Some("disk full")
-        );
+        let detail = owner_fault_detail(&sources, Some(&storage), |_| true).unwrap();
+        assert!(!detail.contains("Os {"));
+        assert!(!detail.contains("screen gone"));
     }
 
     #[test]
-    fn marker_stripped_detail_reaches_error_tooltip() {
-        let storage = StorageHealth {
-            detail: "[breaker-open] disk full".into(),
-        };
-        let detail = owner_fault_detail(&[], Some(&storage), |_| true);
+    fn source_fault_names_the_source_not_its_diagnostic() {
+        let sources = vec![faulted_source(
+            SourceKind::Screen,
+            "[breaker-open] graphics capture item closed",
+        )];
+        let detail = owner_fault_detail(&sources, None, |_| true);
 
         let (visual, tooltip) = classify_tray(
             AppPhase::Error,
             &SyncSnapshot::default(),
             None,
             detail.as_deref(),
+            None,
             false,
         );
         assert_eq!(visual, TrayVisual::Error);
-        assert_eq!(tooltip, "disk full");
+        assert!(tooltip.contains(source_owner_name(SourceKind::Screen)));
+        assert!(!tooltip.contains("graphics capture"));
     }
 
     #[test]
@@ -422,7 +485,7 @@ mod tests {
         clean.upload.last_successful_sync = Some(1);
         clean.unknown_journals = vec![sighting(Some("192.168.1.50:7657"))];
 
-        let (visual, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, false);
+        let (visual, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, None, false);
         assert_eq!(visual, TrayVisual::Healthy);
         assert_eq!(
             tooltip,
@@ -437,7 +500,7 @@ mod tests {
         clean.upload.last_successful_sync = Some(1);
         clean.unknown_journals = vec![sighting(None)];
 
-        let (_, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, false);
+        let (_, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, None, false);
         assert_eq!(
             tooltip,
             "on, connected to your journal\nunknown journal seen through the relay"
@@ -460,6 +523,7 @@ mod tests {
             &paused_sync,
             Some(&indefinite),
             None,
+            None,
             false,
         );
         assert_eq!(visual, TrayVisual::Paused);
@@ -469,7 +533,7 @@ mod tests {
     #[test]
     fn no_unknown_journal_sighting_leaves_tooltip_untouched() {
         let idle = SyncSnapshot::default();
-        let (_, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None, false);
+        let (_, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None, None, false);
         assert_eq!(tooltip, "connecting");
         assert!(!tooltip.contains('\n'));
     }
@@ -478,7 +542,7 @@ mod tests {
     fn mark_confirmation_classify_tray_awaiting_confirmation_tooltip() {
         let awaiting_sync = sync(PairingPhase::AwaitingConfirmation);
         let (visual, tooltip) =
-            classify_tray(AppPhase::Observing, &awaiting_sync, None, None, false);
+            classify_tray(AppPhase::Observing, &awaiting_sync, None, None, None, false);
         assert_eq!(visual, TrayVisual::Paused);
         assert_eq!(
             tooltip,
@@ -488,7 +552,7 @@ mod tests {
         let mut with_sighting = awaiting_sync;
         with_sighting.unknown_journals = vec![sighting(Some("10.0.0.1:443"))];
         let (visual, tooltip) =
-            classify_tray(AppPhase::Observing, &with_sighting, None, None, false);
+            classify_tray(AppPhase::Observing, &with_sighting, None, None, None, false);
         assert_eq!(visual, TrayVisual::Paused);
         assert_eq!(
             tooltip,
@@ -499,14 +563,65 @@ mod tests {
     #[test]
     fn classify_deliberate_off_visual() {
         let idle = SyncSnapshot::default();
-        let (visual, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None, true);
+        let (visual, tooltip) = classify_tray(AppPhase::Idle, &idle, None, None, None, true);
         assert_eq!(visual, TrayVisual::Off);
         assert_eq!(tooltip, "off");
 
         // Without deliberate_off, Idle stays connecting
-        let (visual2, tooltip2) = classify_tray(AppPhase::Idle, &idle, None, None, false);
+        let (visual2, tooltip2) = classify_tray(AppPhase::Idle, &idle, None, None, None, false);
         assert_eq!(visual2, TrayVisual::Connecting);
         assert_eq!(tooltip2, "connecting");
+    }
+
+    #[test]
+    fn refused_permission_is_never_shown_as_healthy() {
+        let mut clean = sync(PairingPhase::Paired);
+        clean.upload.uploaded_segments = 1;
+        clean.upload.last_successful_sync = Some(1);
+        let blocked = Some(SourceKind::Mic);
+
+        let (visual, _) = classify_tray(AppPhase::Observing, &clean, None, None, blocked, false);
+        assert_eq!(visual, TrayVisual::NeedsPermission);
+        // With nothing else enabled the reducer reports idle; still not "connecting".
+        let (visual, _) = classify_tray(AppPhase::Idle, &clean, None, None, blocked, false);
+        assert_eq!(visual, TrayVisual::NeedsPermission);
+    }
+
+    #[test]
+    fn pause_and_fault_outrank_a_refused_permission() {
+        let idle = SyncSnapshot::default();
+        let blocked = Some(SourceKind::Mic);
+        let pause = PauseSnapshot {
+            reason: PauseReason::Operator,
+            seconds_remaining: None,
+        };
+        let (visual, _) =
+            classify_tray(AppPhase::Paused, &idle, Some(&pause), None, blocked, false);
+        assert_eq!(visual, TrayVisual::Paused);
+        let (visual, _) = classify_tray(AppPhase::Error, &idle, None, None, blocked, false);
+        assert_eq!(visual, TrayVisual::Error);
+    }
+
+    #[test]
+    fn permission_blocked_reads_only_enabled_access_denied_sources() {
+        let denied = SourceReport {
+            kind: SourceKind::Mic,
+            state: SourceState::Faulted {
+                reason: ErrorReason::AccessDenied,
+                detail: String::new(),
+            },
+            device: None,
+        };
+        let other_fault = faulted_source(SourceKind::Screen, "screen gone");
+        let sources = [other_fault, denied];
+        assert_eq!(
+            permission_blocked(&sources, |_| true),
+            Some(SourceKind::Mic)
+        );
+        assert_eq!(
+            permission_blocked(&sources, |kind| kind != SourceKind::Mic),
+            None
+        );
     }
 
     #[test]
@@ -515,9 +630,9 @@ mod tests {
             faulted_source(SourceKind::Screen, "screen broken"),
             faulted_source(SourceKind::Mic, "mic broken"),
         ];
-        // Screen is disabled, mic is enabled -> returns mic detail
-        let detail = owner_fault_detail(&sources, None, |k| k == SourceKind::Mic);
-        assert_eq!(detail.as_deref(), Some("mic broken"));
+        // Screen is disabled, mic is enabled -> names the mic
+        let detail = owner_fault_detail(&sources, None, |k| k == SourceKind::Mic).unwrap();
+        assert!(detail.contains(source_owner_name(SourceKind::Mic)));
 
         // All disabled -> returns None
         let detail_none = owner_fault_detail(&sources, None, |_| false);

@@ -184,7 +184,7 @@ describe("settings renderer characterization", () => {
     app.__test__.renderSettings(dump);
 
     expect(present(ids["settings.sources.screen.state"]).textContent).toContain(
-      "unavailable: screen denied",
+      "needs permission: screen denied",
     );
     present(ids["settings.sources.systemAudio.state"]);
     present(ids["settings.sources.mic.state"]);

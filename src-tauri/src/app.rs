@@ -585,6 +585,7 @@ pub fn run(
             crate::ipc::open_release_notes,
             crate::ipc::storage_info,
             crate::ipc::open_storage_folder,
+            crate::ipc::open_microphone_privacy_settings,
             crate::ipc::answer_pairing,
             crate::ipc::pairing_migration_state,
             crate::ipc::pairing_migration_decide,
@@ -934,6 +935,12 @@ pub fn run(
                 let mut rx = watch_rx;
                 async move {
                     let mut previous: Option<HealthDump> = None;
+                    let notify_id = tauri::async_runtime::spawn_blocking(crate::notify::identity)
+                        .await
+                        .ok()
+                        .flatten();
+                    let mut notifier = observer_model::TransitionNotifier::default();
+                    let started = std::time::Instant::now();
                     loop {
                         let dump = rx.borrow_and_update().clone();
                         log_health_transitions(previous.as_ref(), &dump);
@@ -941,7 +948,7 @@ pub fn run(
                             .as_ref()
                             .is_none_or(|prev| should_emit(prev, &dump));
                         previous = Some(dump.clone());
-                        crate::tray::apply_state(
+                        let (visual, blocked) = crate::tray::apply_state(
                             &tray,
                             &pause_submenu,
                             &mi_resume,
@@ -949,6 +956,13 @@ pub fn run(
                             mi_browsers.as_ref(),
                             &dump,
                         );
+                        if let Some(notice) =
+                            notifier.observe(visual, blocked, started.elapsed().as_secs())
+                        {
+                            if let Some(id) = notify_id.as_deref() {
+                                crate::notify::post(id, notice);
+                            }
+                        }
                         if changed {
                             let _ = app.emit("health://changed", &dump);
                         }

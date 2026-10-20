@@ -23,6 +23,7 @@ use strum::{EnumIter, IntoStaticStr};
 pub mod about;
 pub mod desktop_activity;
 pub mod launch;
+pub mod notice;
 pub mod scheme;
 pub mod setup;
 pub mod tray_status;
@@ -33,6 +34,7 @@ pub use desktop_activity::{
     DesktopActivityUrlRequest, DesktopActivityUrlResult,
 };
 pub use launch::{is_native_messaging_launch, launch_should_surface, FROM_AUTOSTART_ARG};
+pub use notice::{Notice, Problem, TransitionNotifier};
 pub use scheme::{
     extract_first_quoted_token, scheme_launch_decision, scheme_open_command,
     scheme_uninstall_should_remove, SchemeLaunchDecision,
@@ -44,7 +46,8 @@ pub use setup::{
     CURRENT_SETUP_VERSION, SETUP_FILE_NAME,
 };
 pub use tray_status::{
-    classify_tray, owner_fault_detail, pause_enabled, restart_enabled, resume_enabled, TrayVisual,
+    classify_tray, owner_fault_detail, pause_enabled, permission_blocked, restart_enabled,
+    resume_enabled, source_owner_name, TrayVisual,
 };
 
 /// Process-monotonic microsecond clock for timestamping capture chunks.

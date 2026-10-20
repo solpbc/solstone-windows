@@ -2003,6 +2003,7 @@ async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
         &snapshot,
         None,
         None,
+        None,
         false,
     );
     assert_eq!(

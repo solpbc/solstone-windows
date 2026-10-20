@@ -496,6 +496,10 @@ let pauseStatusEls: HTMLElement[] = [];
 // Wall-clock (epoch secs) when the current `latestHealth` was received; the
 // anchor for the display-only pause countdown.
 let healthReceivedAt: number | null = null;
+// The status strip's next-save countdown and last-synced age, refreshed each
+// render and advanced by the same 1 s timer without a rerender.
+let nextSaveEl: HTMLElement | null = null;
+let lastSyncedEl: HTMLElement | null = null;
 
 // The pair-link the owner typed/pasted. Held in a module var (never read back
 // from the DOM) so a health re-render never loses it.
@@ -1399,9 +1403,14 @@ function phaseLabel(phase: AppPhase): string {
   }
 }
 
+function isAccessDenied(report: SourceReport | undefined): boolean {
+  return report?.status === "faulted" && (report.reason === "access_denied" || report.reason === "AccessDenied");
+}
+
 function sourcePill(
   status: "off" | "paused" | "on" | "unavailable" | "error" | null,
   detail?: string | null,
+  needsPermission = false,
 ): HTMLElement {
   if (status === null) {
     const el = document.createElement("span");
@@ -1410,7 +1419,8 @@ function sourcePill(
   }
   const severity: Severity =
     status === "on" ? "ok" : status === "error" || status === "unavailable" ? "attention" : "neutral";
-  const label = detail ? `${status}: ${detail}` : status;
+  const word = status === "unavailable" && needsPermission ? "needs permission" : status;
+  const label = detail ? `${word}: ${detail}` : word;
   const el = pill(label, severity);
   el.style.flexShrink = "0";
   el.style.whiteSpace = detail ? "normal" : "nowrap";
@@ -2964,6 +2974,8 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump): HTMLE
 function resetRoot(rootId: string): void {
   root.replaceChildren();
   pauseStatusEls = [];
+  nextSaveEl = null;
+  lastSyncedEl = null;
   root.dataset.automationId = rootId;
   root.style.minHeight = "100vh";
   root.style.padding = "";
@@ -3731,8 +3743,16 @@ function renderSourceControl(
     toggle.dataset.status = status;
   }
 
-  const pillEl = selectable(automation(sourcePill(status, report?.detail), stateId));
+  const needsPermission = isAccessDenied(report);
+  const pillEl = selectable(automation(sourcePill(status, report?.detail, needsPermission), stateId));
   wrap.append(toggle, pillEl);
+  if (status === "unavailable" && needsPermission && kind === "mic") {
+    wrap.append(
+      actionButton("open windows settings", ids["settings.sources.mic.permission"], true, () =>
+        void invoke("open_microphone_privacy_settings"),
+      ),
+    );
+  }
   if (failed) {
     const failEl = text("div", sourceSaveFailureMessage(failed));
     failEl.classList.add("save-failure");
@@ -3821,7 +3841,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
       ["desktop_activity", "desktop activity", ids["settings.sources.desktopActivity.state"]],
     ] as const) {
       const report = sourceByKind(dump, kind);
-      sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused", report), report?.detail), id))));
+      sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused", report), report?.detail, isAccessDenied(report)), id))));
     }
     if (latestBrowser) sources.append(...renderBrowserRows(latestBrowser));
     return sources;
@@ -3921,6 +3941,9 @@ function sourceGlanceToken(source: SourceReport | undefined, isMic: boolean): st
   if (!source) {
     return "not reported";
   }
+  if (isAccessDenied(source)) {
+    return "needs permission";
+  }
 
   switch (source.status) {
     case "active":
@@ -3978,6 +4001,51 @@ function statusButton(labelText: string, value: string, route: Route): HTMLButto
   return row;
 }
 
+// Segments end on 5-minute clock boundaries, so the countdown runs 5:00 down to
+// 0:01. A rotation always sends a fresh reading; wrapping only bridges the gap.
+const SEGMENT_SECS = 300;
+
+function nextSaveRemaining(secs: number, elapsed: number): number {
+  return ((((secs - elapsed - 1) % SEGMENT_SECS) + SEGMENT_SECS) % SEGMENT_SECS) + 1;
+}
+
+function nextSaveLabel(remaining: number): string {
+  const secs = Math.max(0, Math.floor(remaining));
+  return `in ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+}
+
+function lastSyncedLabel(syncedAtMs: number | null | undefined, secsNow: number): string {
+  if (syncedAtMs == null) {
+    return "not yet";
+  }
+  const secs = Math.max(0, secsNow - Math.floor(syncedAtMs / 1000));
+  if (secs < 60) {
+    return "just now";
+  }
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60);
+    return `${m} minute${m === 1 ? "" : "s"} ago`;
+  }
+  if (secs < 86400) {
+    const h = Math.floor(secs / 3600);
+    return `${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  const d = Math.floor(secs / 86400);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+function updateStatusClocks(): void {
+  const now = nowSecs();
+  const elapsed = healthReceivedAt == null ? 0 : now - healthReceivedAt;
+  const secs = latestHealth?.segment_seconds_remaining;
+  if (nextSaveEl && secs != null) {
+    nextSaveEl.textContent = nextSaveLabel(nextSaveRemaining(secs, elapsed));
+  }
+  if (lastSyncedEl && latestHealth) {
+    lastSyncedEl.textContent = lastSyncedLabel(latestHealth.sync.upload.last_successful_sync, now);
+  }
+}
+
 function renderStatusStrip(dump: HealthDump): HTMLElement {
   const strip = document.createElement("div");
   strip.classList.add("settings-status-strip");
@@ -3988,9 +4056,20 @@ function renderStatusStrip(dump: HealthDump): HTMLElement {
       "state",
       automation(statePill, ids["settings.status.appState.state"]),
     ),
-    statusButton("journal", syncSummary(dump.sync), "journal"),
-    statusButton("sources", sourcesGlance(dump), "sources"),
   );
+  if (dump.app_state === "observing" && dump.segment_seconds_remaining != null) {
+    nextSaveEl = automation(text("span", nextSaveLabel(dump.segment_seconds_remaining)), ids["settings.status.nextSave"]);
+    strip.append(statusLine("next save", nextSaveEl));
+  }
+  strip.append(statusButton("journal", syncSummary(dump.sync), "journal"));
+  if (dump.sync.pairing.phase === "paired") {
+    lastSyncedEl = automation(
+      text("span", lastSyncedLabel(dump.sync.upload.last_successful_sync, nowSecs())),
+      ids["settings.status.lastSynced"],
+    );
+    strip.append(statusLine("journal last reached", lastSyncedEl));
+  }
+  strip.append(statusButton("sources", sourcesGlance(dump), "sources"));
   return strip;
 }
 
@@ -4416,7 +4495,7 @@ function renderWizardSourceControl(
   }
   if (status !== null) {
     toggle.dataset.status = status;
-    toggle.append(sourcePill(status, report?.detail));
+    toggle.append(sourcePill(status, report?.detail, isAccessDenied(report)));
   }
   const control = document.createElement("div");
   control.append(toggle);
@@ -6085,11 +6164,13 @@ export function start(): void {
       lastCheckedEl.textContent = lastCheckedRelative(latestUpdate.last_checked_at, nowSecs());
     }
     updatePauseLabels();
+    updateStatusClocks();
   }, 1000);
 }
 
 export const __test__ = {
   refreshPairingPrefillOnFocus,
+  updateStatusClocks,
   setRoot(el: HTMLDivElement) {
     root = el;
   },
@@ -6208,6 +6289,8 @@ export const __test__ = {
     pendingRerender = false;
     lastCheckedEl = null;
     pauseStatusEls = [];
+    nextSaveEl = null;
+    lastSyncedEl = null;
     pairingDraft = "";
     pairFieldDirty = false;
     waitingLinkChecked = false;

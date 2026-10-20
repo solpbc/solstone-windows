@@ -32,6 +32,17 @@ mod reselect {
         code == AUDCLNT_E_DEVICE_INVALIDATED_CODE
     }
 
+    /// Pure copy of the Windows `E_ACCESSDENIED` HRESULT, drift-guarded by a
+    /// cfg(windows) test.
+    pub(crate) const E_ACCESSDENIED_CODE: i32 = 0x8007_0005u32 as i32;
+
+    /// Windows privacy settings refusing the microphone surface as
+    /// `E_ACCESSDENIED` while the stream is set up. Only the owner can lift
+    /// that, so the source waits it out instead of faulting.
+    pub(crate) fn is_access_denied(code: i32) -> bool {
+        code == E_ACCESSDENIED_CODE
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -42,6 +53,13 @@ mod reselect {
             assert!(render_reopen_needed(Some("a"), Some("b")));
             assert!(render_reopen_needed(Some("a"), None));
             assert!(!render_reopen_needed(None, None));
+        }
+
+        #[test]
+        fn access_denied_only_matches_e_accessdenied() {
+            assert!(is_access_denied(E_ACCESSDENIED_CODE));
+            assert!(!is_access_denied(AUDCLNT_E_DEVICE_INVALIDATED_CODE));
+            assert!(!is_access_denied(0));
         }
 
         #[test]
@@ -60,6 +78,14 @@ mod reselect {
                     windows::Win32::Media::Audio::AUDCLNT_E_DEVICE_INVALIDATED.0
                 );
             }
+
+            #[test]
+            fn access_denied_code_matches_windows_constant() {
+                assert_eq!(
+                    super::super::E_ACCESSDENIED_CODE,
+                    windows::Win32::Foundation::E_ACCESSDENIED.0
+                );
+            }
         }
     }
 }
@@ -73,7 +99,7 @@ mod imp {
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
-    use crate::reselect::{is_render_reselect_error, render_reopen_needed};
+    use crate::reselect::{is_access_denied, is_render_reselect_error, render_reopen_needed};
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
         monotonic_us, AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError,
@@ -314,6 +340,36 @@ mod imp {
     /// change takes effect without an app restart. Honest state throughout:
     /// `NoInputDevice` when no hardware exists, `Inactive` when every device is
     /// disabled by the owner, `Active` only while truly streaming.
+    /// Activate, initialize and start a shared-mode capture stream on `device`.
+    /// `Ok(None)` when the endpoint reports an unusable mix format.
+    fn open_mic_stream(
+        device: &IMMDevice,
+    ) -> WindowsResult<Option<(IAudioClient, IAudioCaptureClient, AudioFormat, usize)>> {
+        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
+        let format = unsafe { client.GetMixFormat()? };
+        let audio_format = audio_format_from(format);
+        let bpf = bytes_per_frame(format);
+        if bpf == 0 {
+            unsafe { CoTaskMemFree(Some(format.cast())) };
+            return Ok(None);
+        }
+        let init = unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                0,
+                WASAPI_BUFFER_DURATION_100NS,
+                0,
+                format,
+                None,
+            )
+        };
+        unsafe { CoTaskMemFree(Some(format.cast())) };
+        init?;
+        let capture: IAudioCaptureClient = unsafe { client.GetService()? };
+        unsafe { client.Start()? };
+        Ok(Some((client, capture, audio_format, bpf)))
+    }
+
     fn run_mic_loop(
         sink: Arc<dyn CaptureSink>,
         state: Arc<Mutex<SourceState>>,
@@ -352,30 +408,27 @@ mod imp {
                     continue;
                 }
             };
-            let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
-            let format = unsafe { client.GetMixFormat()? };
-            let audio_format = audio_format_from(format);
-            let bpf = bytes_per_frame(format);
-            let bits = audio_format.bits_per_sample;
-            if bpf == 0 {
-                unsafe { CoTaskMemFree(Some(format.cast())) };
-                thread::sleep(MIC_RESELECT_INTERVAL);
-                continue;
-            }
-            let init = unsafe {
-                client.Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    0,
-                    WASAPI_BUFFER_DURATION_100NS,
-                    0,
-                    format,
-                    None,
-                )
+            let (client, capture, audio_format, bpf) = match open_mic_stream(&device) {
+                Ok(Some(opened)) => opened,
+                Ok(None) => {
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
+                }
+                Err(err) if is_access_denied(err.code().0) => {
+                    set_state(
+                        &state,
+                        SourceState::Faulted {
+                            reason: ErrorReason::AccessDenied,
+                            detail: String::new(),
+                        },
+                    );
+                    set_active(&active, None);
+                    thread::sleep(MIC_RESELECT_INTERVAL);
+                    continue;
+                }
+                Err(err) => return Err(err),
             };
-            unsafe { CoTaskMemFree(Some(format.cast())) };
-            init?;
-            let capture: IAudioCaptureClient = unsafe { client.GetService()? };
-            unsafe { client.Start()? };
+            let bits = audio_format.bits_per_sample;
             set_state(&state, SourceState::Active);
             set_active(&active, Some(selected.id.clone()));
 

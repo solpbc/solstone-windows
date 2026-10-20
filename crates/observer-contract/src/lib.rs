@@ -77,6 +77,12 @@ pub mod settings {
     pub const STATUS_APP_STATE: &str = "settings.status.appState.state";
     pub const STATUS_SEGMENT_DIR: &str = "settings.status.segmentDir";
     pub const STATUS_UPLOAD_STATE: &str = "settings.status.upload.state";
+    /// Home status strip: seconds until the current segment is saved.
+    pub const STATUS_NEXT_SAVE: &str = "settings.status.nextSave";
+    /// Home status strip: how long ago the journal last synced.
+    pub const STATUS_LAST_SYNCED: &str = "settings.status.lastSynced";
+    /// Sources: opens the Windows microphone privacy page.
+    pub const SOURCES_MIC_PERMISSION: &str = "settings.sources.mic.permission";
     pub const SOURCES_SCREEN_STATE: &str = "settings.sources.screen.state";
     pub const SOURCES_SCREEN_ENABLED: &str = "settings.sources.screen.enabled";
     pub const SOURCES_SYSTEM_AUDIO_STATE: &str = "settings.sources.systemAudio.state";
@@ -209,6 +215,12 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.logs.save", settings::LOGS_SAVE),
         ("settings.status.appState.state", settings::STATUS_APP_STATE),
         ("settings.status.segmentDir", settings::STATUS_SEGMENT_DIR),
+        ("settings.status.nextSave", settings::STATUS_NEXT_SAVE),
+        ("settings.status.lastSynced", settings::STATUS_LAST_SYNCED),
+        (
+            "settings.sources.mic.permission",
+            settings::SOURCES_MIC_PERMISSION,
+        ),
         (
             "settings.status.upload.state",
             settings::STATUS_UPLOAD_STATE,

@@ -23,6 +23,7 @@ mod ipc;
 mod lifecycle;
 mod logs;
 mod mic;
+mod notify;
 mod support;
 mod tray;
 mod update;
@@ -87,6 +88,7 @@ fn main() -> ExitCode {
                         let _ = platform_win::scheme::remove_scheme_handler();
                     }
                 }
+                notify::remove_identity(&exe);
                 #[cfg(feature = "browser-host")]
                 browser::remove_registration(&exe);
             }

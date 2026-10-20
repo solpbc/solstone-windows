@@ -1580,9 +1580,14 @@ where
         current: &mut SourceState,
         force_failure: bool,
     ) {
-        let SourceState::Faulted { detail, .. } = current else {
+        let SourceState::Faulted { reason, detail } = current else {
             return;
         };
+        // A refused permission is lifted by the owner, not by a restart; the
+        // source keeps checking on its own, so it never feeds the breaker.
+        if *reason == ErrorReason::AccessDenied {
+            return;
+        }
 
         let entering_fault = !matches!(previous, Some(SourceState::Faulted { .. }));
         let should_record_failure = force_failure || entering_fault;
@@ -3462,6 +3467,44 @@ mod tests {
             }
             other => panic!("expected faulted state, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn refused_permission_is_not_retried_or_breaker_marked() {
+        let config = EngineConfig {
+            lifecycle: BackoffConfig {
+                breaker_threshold: 1,
+                ..BackoffConfig::default()
+            },
+            ..EngineConfig::default()
+        };
+        let (sources, _) = fake_sources(
+            SourceState::Active,
+            SourceState::Active,
+            SourceState::Faulted {
+                reason: ErrorReason::AccessDenied,
+                detail: String::new(),
+            },
+        );
+        let mut engine = engine_with(FakeClock::new(0), FakeSegmentFs::default(), config, sources);
+        engine.start();
+        engine.pump();
+
+        assert!(!engine.retry_at_epoch_secs.contains_key(&SourceKind::Mic));
+        let dump = engine.health_dump();
+        let mic = dump
+            .sources
+            .iter()
+            .find(|source| source.kind == SourceKind::Mic)
+            .unwrap();
+        assert_eq!(
+            mic.state,
+            SourceState::Faulted {
+                reason: ErrorReason::AccessDenied,
+                detail: String::new(),
+            }
+        );
+        assert_eq!(dump.app_state, AppPhase::Observing);
     }
 
     #[test]
