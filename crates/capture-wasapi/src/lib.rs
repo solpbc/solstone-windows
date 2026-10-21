@@ -43,6 +43,19 @@ mod reselect {
         code == E_ACCESSDENIED_CODE
     }
 
+    /// Where Windows keeps its microphone privacy choices: the device-wide and
+    /// per-user "Microphone access" switches, and "Let desktop apps access your
+    /// microphone" (`NonPackaged`).
+    pub(crate) const MIC_CONSENT_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+    pub(crate) const MIC_CONSENT_DESKTOP_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged";
+
+    /// A desktop app's stream keeps opening while Windows refuses the
+    /// microphone; it just carries silence. So the refusal is read from the
+    /// switches themselves: any one set to `Deny` refuses.
+    pub(crate) fn consent_refuses(values: &[Option<String>]) -> bool {
+        values.iter().any(|value| value.as_deref() == Some("Deny"))
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -53,6 +66,26 @@ mod reselect {
             assert!(render_reopen_needed(Some("a"), Some("b")));
             assert!(render_reopen_needed(Some("a"), None));
             assert!(!render_reopen_needed(None, None));
+        }
+
+        #[test]
+        fn any_deny_switch_refuses_the_microphone() {
+            assert!(!consent_refuses(&[None, None, None]));
+            assert!(!consent_refuses(&[
+                Some("Allow".into()),
+                None,
+                Some("Allow".into())
+            ]));
+            assert!(consent_refuses(&[
+                Some("Allow".into()),
+                None,
+                Some("Deny".into())
+            ]));
+            assert!(consent_refuses(&[
+                Some("Deny".into()),
+                Some("Allow".into()),
+                None
+            ]));
         }
 
         #[test]
@@ -99,7 +132,10 @@ mod imp {
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
 
-    use crate::reselect::{is_access_denied, is_render_reselect_error, render_reopen_needed};
+    use crate::reselect::{
+        consent_refuses, is_access_denied, is_render_reselect_error, render_reopen_needed,
+        MIC_CONSENT_DESKTOP_KEY, MIC_CONSENT_KEY,
+    };
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
         monotonic_us, AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError,
@@ -107,7 +143,7 @@ mod imp {
     };
     use windows::core::{Error as WindowsError, Result as WindowsResult, PCWSTR};
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
-    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::Foundation::{ERROR_SUCCESS, RPC_E_CHANGED_MODE};
     use windows::Win32::Media::Audio::{
         eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
         IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
@@ -124,6 +160,9 @@ mod imp {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
         COINIT_MULTITHREADED, STGM_READ,
+    };
+    use windows::Win32::System::Registry::{
+        RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
     };
 
     /// How often the mic loop re-enumerates devices + re-applies the owner's
@@ -340,6 +379,50 @@ mod imp {
     /// change takes effect without an app restart. Honest state throughout:
     /// `NoInputDevice` when no hardware exists, `Inactive` when every device is
     /// disabled by the owner, `Active` only while truly streaming.
+    fn consent_value(root: HKEY, subkey: &str) -> Option<String> {
+        let key: Vec<u16> = subkey.encode_utf16().chain(Some(0)).collect();
+        let name: Vec<u16> = "Value".encode_utf16().chain(Some(0)).collect();
+        let mut buf = [0u16; 32];
+        let mut bytes = std::mem::size_of_val(&buf) as u32;
+        let status = unsafe {
+            RegGetValueW(
+                root,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut bytes),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return None;
+        }
+        let chars = (bytes as usize / 2).min(buf.len());
+        let value = String::from_utf16_lossy(&buf[..chars]);
+        Some(value.trim_end_matches('\0').to_string())
+    }
+
+    /// Whether Windows privacy settings currently refuse this app the microphone.
+    fn microphone_refused() -> bool {
+        consent_refuses(&[
+            consent_value(HKEY_LOCAL_MACHINE, MIC_CONSENT_KEY),
+            consent_value(HKEY_CURRENT_USER, MIC_CONSENT_KEY),
+            consent_value(HKEY_CURRENT_USER, MIC_CONSENT_DESKTOP_KEY),
+        ])
+    }
+
+    fn report_refused(state: &Arc<Mutex<SourceState>>, active: &Arc<Mutex<Option<String>>>) {
+        set_state(
+            state,
+            SourceState::Faulted {
+                reason: ErrorReason::AccessDenied,
+                detail: String::new(),
+            },
+        );
+        set_active(active, None);
+    }
+
     /// Activate, initialize and start a shared-mode capture stream on `device`.
     /// `Ok(None)` when the endpoint reports an unusable mix format.
     fn open_mic_stream(
@@ -400,6 +483,12 @@ mod imp {
                 continue;
             };
 
+            if microphone_refused() {
+                report_refused(&state, &active);
+                thread::sleep(MIC_RESELECT_INTERVAL);
+                continue;
+            }
+
             let wide_id: Vec<u16> = selected.id.encode_utf16().chain(Some(0)).collect();
             let device = match unsafe { enumerator.GetDevice(PCWSTR(wide_id.as_ptr())) } {
                 Ok(d) => d,
@@ -415,14 +504,7 @@ mod imp {
                     continue;
                 }
                 Err(err) if is_access_denied(err.code().0) => {
-                    set_state(
-                        &state,
-                        SourceState::Faulted {
-                            reason: ErrorReason::AccessDenied,
-                            detail: String::new(),
-                        },
-                    );
-                    set_active(&active, None);
+                    report_refused(&state, &active);
                     thread::sleep(MIC_RESELECT_INTERVAL);
                     continue;
                 }
@@ -473,8 +555,8 @@ mod imp {
                     let devices = enumerate_mic_devices(&enumerator).unwrap_or_default();
                     let cfg = config.read().map(|c| c.clone()).unwrap_or_default();
                     let now = cfg.select(&devices).map(|d| d.id.clone());
-                    if now.as_deref() != Some(selected.id.as_str()) {
-                        break 'inner; // selection changed -> reopen
+                    if now.as_deref() != Some(selected.id.as_str()) || microphone_refused() {
+                        break 'inner; // selection changed or access refused -> reopen
                     }
                 }
             }

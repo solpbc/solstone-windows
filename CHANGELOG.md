@@ -19,7 +19,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
-- when windows privacy settings block the microphone, the tray and settings now say it needs permission, with a button to the windows setting, instead of showing an error. everything else keeps going into your journal, and the microphone goes in again as soon as you allow it.
+- when windows privacy settings block the microphone, the tray and settings now say it needs permission, with a button to the windows setting. before, the microphone could show as on while windows was blocking it. everything else keeps going into your journal, and the microphone comes back on as soon as you allow it.
 - desktop activity now distinguishes a confirmed screen lock from unavailable activity information in your journal.
 - desktop activity has also been adding to your journal whether you're active or idle, or this PC is locked, beside the apps you use. its setting now says so.
 
