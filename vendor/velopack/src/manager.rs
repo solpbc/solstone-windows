@@ -245,6 +245,11 @@ impl UpdateManager {
         self.inner.locator.get_manifest_id()
     }
 
+    /// Returns the package cache selected for this installed or portable application.
+    pub fn get_packages_dir(&self) -> PathBuf {
+        self.inner.locator.get_packages_dir()
+    }
+
     /// Check if the app is in portable mode. This can be true or false on Windows.
     /// On Linux and MacOS, this will always return true.
     pub fn get_is_portable(&self) -> bool {

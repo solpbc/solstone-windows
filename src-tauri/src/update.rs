@@ -23,8 +23,8 @@
 //! id. Package downloads still request package files by filename from the same
 //! first-party feed host, with same-origin enforcement in the source. This client
 //! always downloads the full asset and admits the detached signature before staging.
-//! Velopack's manager remains in charge of checksum, staging, pending-restart,
-//! and relaunch.
+//! Velopack compares versions, checks the feed checksum, promotes the package,
+//! and starts the installer. This module admits the cache before offering apply.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -109,18 +109,10 @@ fn non_empty(s: &str) -> Option<String> {
     }
 }
 
-/// Neutralize velopack's per-install staging identifier so no device/user
-/// identifier is minted or persisted (Article 8). velopack's manager reads a
-/// per-install staging UUID from `.betaId`, minting a random `Uuid::new_v4()`
-/// when absent, and threads it to the source as `staged_user_id`. Our
-/// `R2FeedSource` ignores that value so it never reaches the wire, but we still
-/// pre-seed `.betaId` **empty** at boot (overwriting any prior UUID) so no stable
-/// per-install identifier is minted/persisted on disk and the staged-rollout id
-/// stays unused. Pinned to the `velopack = "=1.2.0"` per-user layout:
-/// `%LocalAppData%\Solstone\packages`, which is `data_root/packages` (our
-/// `local_data_root()` is that same root).
-fn neutralize_staging_id(data_root: &Path) {
-    let beta_id = data_root.join("packages").join(".betaId");
+/// Keep the manager-selected cache's staging id empty before any update check.
+/// This includes portable and fallback caches. The source ignores the id on the wire.
+fn neutralize_staging_id(packages_dir: &Path) -> std::io::Result<()> {
+    let beta_id = packages_dir.join(".betaId");
     if let Some(dir) = beta_id.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
             tracing::warn!(
@@ -129,17 +121,34 @@ fn neutralize_staging_id(data_root: &Path) {
                 error = %e,
                 "updater staging id neutralization failed"
             );
-            return;
+            return Err(e);
         }
     }
-    if let Err(e) = std::fs::write(&beta_id, "") {
+    let reset = (|| -> std::io::Result<()> {
+        match std::fs::remove_file(&beta_id) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        // Replace the directory entry without truncating a preexisting link target.
+        std::fs::File::create_new(&beta_id)?;
+        Ok(())
+    })();
+    if let Err(e) = reset {
         tracing::warn!(
             target: "update",
             step = "neutralize_staging_id_write",
             error = %e,
             "updater staging id neutralization failed"
         );
+        return Err(e);
     }
+    Ok(())
+}
+
+fn prepare_manager(manager: UpdateManager) -> Result<UpdateManager, velopack::Error> {
+    neutralize_staging_id(&manager.get_packages_dir())?;
+    Ok(manager)
 }
 
 /// Construct the Velopack `UpdateManager` over the given feed URL. `None` when the app is
@@ -152,7 +161,9 @@ fn build_manager_with_feed(feed_url: &str) -> Option<UpdateManager> {
         MaximumDeltasBeforeFallback: -1,
         ..Default::default()
     };
-    match UpdateManager::new(R2FeedSource::new(feed_url), Some(opts), None) {
+    match UpdateManager::new(R2FeedSource::new(feed_url), Some(opts), None)
+        .and_then(prepare_manager)
+    {
         Ok(m) => Some(m),
         Err(e) => {
             tracing::warn!(
@@ -173,10 +184,6 @@ fn build_manager() -> Option<UpdateManager> {
 fn force_full_package(info: &mut UpdateInfo) {
     info.BaseRelease = None;
     info.DeltasToTarget.clear();
-}
-
-fn packages_dir() -> PathBuf {
-    platform_win::local_data_root().join("packages")
 }
 
 fn admit_named_package(
@@ -200,22 +207,17 @@ fn stage_full_package(
     info: &UpdateInfo,
     progress: Option<mpsc::Sender<i16>>,
 ) -> Result<VelopackAsset, String> {
-    stage_full_package_in(
-        manager,
-        &packages_dir(),
-        info,
-        progress,
-        &ProductionReleaseVerifier,
-    )
+    stage_full_package_with_verifier(manager, info, progress, &ProductionReleaseVerifier)
 }
 
-fn stage_full_package_in(
+fn stage_full_package_with_verifier(
     manager: &UpdateManager,
-    dir: &Path,
     info: &UpdateInfo,
     progress: Option<mpsc::Sender<i16>>,
     verifier: &impl observer_update::admission::PackageVerifier,
 ) -> Result<VelopackAsset, String> {
+    let packages = manager.get_packages_dir();
+    let dir = packages.as_path();
     let mut forced = info.clone();
     force_full_package(&mut forced);
 
@@ -280,9 +282,13 @@ fn into_admitted(package: AuthenticatedPackage) -> Option<AdmittedPackage> {
 
 pub fn select_admitted(manager: &UpdateManager) -> Option<AdmittedPackage> {
     let installed = manager_installed_version(manager)?;
-    scan_authenticated_packages(&packages_dir(), &installed, &ProductionReleaseVerifier)
-        .selected
-        .and_then(into_admitted)
+    scan_authenticated_packages(
+        &manager.get_packages_dir(),
+        &installed,
+        &ProductionReleaseVerifier,
+    )
+    .selected
+    .and_then(into_admitted)
 }
 
 #[derive(Debug)]
@@ -316,6 +322,9 @@ fn spawn_admitted(
     quiesce: impl FnOnce(),
     resume: impl FnOnce(),
 ) -> Result<(), String> {
+    if admitted.package.path != manager.get_packages_dir().join(&admitted.asset.FileName) {
+        return Err("admitted package differs from the installer's package path".to_string());
+    }
     if !package_still_held(&admitted) {
         return Err("staged package changed before apply".to_string());
     }
@@ -337,7 +346,6 @@ fn spawn_admitted(
 
 fn apply_from_cache(
     manager: &UpdateManager,
-    dir: &Path,
     verifier: &impl observer_update::admission::PackageVerifier,
     quiesce: impl FnOnce(),
     resume: impl FnOnce(),
@@ -345,7 +353,7 @@ fn apply_from_cache(
     let Some(installed) = manager_installed_version(manager) else {
         return ApplyOutcome::Failed("installed version is invalid".to_string());
     };
-    let scan = scan_authenticated_packages(dir, &installed, verifier);
+    let scan = scan_authenticated_packages(&manager.get_packages_dir(), &installed, verifier);
     let Some(admitted) = scan.selected.and_then(into_admitted) else {
         return if scan.rejected {
             ApplyOutcome::Failed("cached update could not be authenticated".to_string())
@@ -367,7 +375,6 @@ pub fn apply_verified_pending(feed_url: &str) -> ApplyOutcome {
     };
     apply_from_cache(
         &manager,
-        &packages_dir(),
         &ProductionReleaseVerifier,
         || {
             #[cfg(feature = "browser-host")]
@@ -425,8 +432,6 @@ pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
         }
     };
     let feed_url = feed_override.unwrap_or(FEED_URL);
-    // Article 8: strip velopack's per-install staging UUID before the check.
-    neutralize_staging_id(&platform_win::local_data_root());
     let Some(manager) = build_manager_with_feed(feed_url) else {
         eprintln!("--check-update: updater unavailable (not installed via Velopack?)");
         return ExitCode::FAILURE;
@@ -508,13 +513,8 @@ pub fn apply_pending_cli(args: &[String]) -> std::process::ExitCode {
 impl UpdateController {
     /// Build the controller: construct the `UpdateManager` (`None` if the app is
     /// not Velopack-installed), load persisted prefs+status, and rehydrate any
-    /// staged-pending-restart asset from Velopack (earned, not persisted).
+    /// staged asset only from the authenticated manager-selected cache.
     pub fn new(app: AppHandle, state_path: PathBuf) -> Self {
-        // Article 8: strip velopack's per-install staging UUID before any check.
-        if let Some(root) = state_path.parent() {
-            neutralize_staging_id(root);
-        }
-
         let manager = build_manager();
 
         let mut state = UpdateState::new();
@@ -529,7 +529,11 @@ impl UpdateController {
         let mut staged_asset = None;
         if let Some(m) = &manager {
             let scan = manager_installed_version(m).map(|installed| {
-                scan_authenticated_packages(&packages_dir(), &installed, &ProductionReleaseVerifier)
+                scan_authenticated_packages(
+                    &m.get_packages_dir(),
+                    &installed,
+                    &ProductionReleaseVerifier,
+                )
             });
             let rejected = scan.as_ref().is_some_and(|scan| scan.rejected);
             if let Some(admitted) = scan.and_then(|scan| scan.selected).and_then(into_admitted) {
@@ -1214,7 +1218,7 @@ mod boundary_tests {
         std::fs::create_dir(&blocked).unwrap();
         let helper = std::fs::read(root.path().join("Update.exe")).unwrap();
         let key = KeyedTestReleaseVerifier(PUBLIC);
-        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_err());
+        assert!(stage_full_package_with_verifier(&manager, &update_info(), None, &key).is_err());
         assert!(admit_cached_package(&packages.join(prior), &key).is_ok());
         assert_eq!(
             std::fs::read(root.path().join("Update.exe")).unwrap(),
@@ -1222,7 +1226,7 @@ mod boundary_tests {
         );
         assert!(!packages.join(NAME).exists());
         std::fs::remove_dir(blocked).unwrap();
-        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_ok());
+        assert!(stage_full_package_with_verifier(&manager, &update_info(), None, &key).is_ok());
         assert!(admit_cached_package(&packages.join(NAME), &key).is_ok());
         worker.join().unwrap();
     }
@@ -1238,14 +1242,14 @@ mod boundary_tests {
         for name in ["../pairing.json", r"..\pairing.json"] {
             let mut info = update_info();
             info.TargetFullRelease.FileName = name.to_string();
-            assert!(stage_full_package_in(&manager, &packages, &info, None, &key).is_err());
+            assert!(stage_full_package_with_verifier(&manager, &info, None, &key).is_err());
             assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep pairing");
         }
         std::fs::write(packages.join(NAME), PACKAGE).unwrap();
-        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_err());
+        assert!(stage_full_package_with_verifier(&manager, &update_info(), None, &key).is_err());
         assert!(!packages.join(NAME).exists());
         pair(&packages, NAME);
-        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_ok());
+        assert!(stage_full_package_with_verifier(&manager, &update_info(), None, &key).is_ok());
     }
 
     #[test]
@@ -1274,7 +1278,6 @@ mod boundary_tests {
             assert!(matches!(
                 apply_from_cache(
                     &manager,
-                    &packages,
                     &key,
                     || quiesced.set(quiesced.get() + 1),
                     || resumed.set(resumed.get() + 1)
@@ -1289,7 +1292,6 @@ mod boundary_tests {
         assert!(matches!(
             apply_from_cache(
                 &manager,
-                &packages,
                 &key,
                 || quiesced.set(quiesced.get() + 1),
                 || resumed.set(resumed.get() + 1)
@@ -1316,6 +1318,64 @@ mod boundary_tests {
     }
 
     #[test]
+    fn admission_from_another_cache_refuses_before_quiesce_or_helper() {
+        let root = tempfile::tempdir().unwrap();
+        let other_cache = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://127.0.0.1:9", true);
+        assert_eq!(manager.get_packages_dir(), root.path().join("packages"));
+        let helper = std::fs::read(root.path().join("Update.exe")).unwrap();
+        std::fs::hard_link(
+            root.path().join("Update.exe"),
+            manager.get_packages_dir().join(".betaId"),
+        )
+        .unwrap();
+        neutralize_staging_id(&manager.get_packages_dir()).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("Update.exe")).unwrap(),
+            helper
+        );
+        assert_eq!(
+            std::fs::read(manager.get_packages_dir().join(".betaId")).unwrap(),
+            b""
+        );
+        pair(other_cache.path(), NAME);
+        std::fs::write(
+            manager.get_packages_dir().join(NAME),
+            b"unsigned package at the helper's actual path",
+        )
+        .unwrap();
+        let key = KeyedTestReleaseVerifier(PUBLIC);
+        let admitted =
+            into_admitted(admit_cached_package(&other_cache.path().join(NAME), &key).unwrap())
+                .unwrap();
+        let quiesced = std::cell::Cell::new(false);
+        assert!(spawn_admitted(&manager, admitted, || quiesced.set(true), || {}).is_err());
+        assert!(!quiesced.get());
+        assert!(!root.path().join("Update.argv").exists());
+        assert!(matches!(
+            apply_from_cache(&manager, &key, || quiesced.set(true), || {}),
+            ApplyOutcome::Failed(_)
+        ));
+        assert!(!quiesced.get());
+    }
+
+    #[test]
+    fn occupied_staging_id_refuses_manager_preparation() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://127.0.0.1:9", false);
+        let occupied = manager.get_packages_dir().join(".betaId");
+        std::fs::create_dir(&occupied).unwrap();
+        assert!(prepare_manager(manager.clone()).is_err());
+        assert!(occupied.is_dir());
+        assert_eq!(
+            std::fs::read(root.path().join("Update.exe")).unwrap(),
+            b"incumbent helper"
+        );
+        std::fs::remove_dir(occupied).unwrap();
+        assert!(prepare_manager(manager).is_ok());
+    }
+
+    #[test]
     fn helper_spawn_failure_resumes_and_retains_the_authenticated_pair() {
         let root = tempfile::tempdir().unwrap();
         let manager = manager(root.path(), "http://127.0.0.1:9", false);
@@ -1325,13 +1385,7 @@ mod boundary_tests {
         let quiesced = std::cell::Cell::new(false);
         let resumed = std::cell::Cell::new(false);
         assert!(matches!(
-            apply_from_cache(
-                &manager,
-                &packages,
-                &key,
-                || quiesced.set(true),
-                || resumed.set(true)
-            ),
+            apply_from_cache(&manager, &key, || quiesced.set(true), || resumed.set(true)),
             ApplyOutcome::Failed(_)
         ));
         assert!(quiesced.get() && resumed.get());
