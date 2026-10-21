@@ -919,12 +919,11 @@ mod tests {
         let held = open_regular_package(&real_file).unwrap();
         assert!(held.identity_still_at(&real_file));
 
-        // After replacing the directory entry with new content/inode
-        std::fs::remove_file(&real_file).unwrap();
-        std::fs::write(&real_file, b"different content").unwrap();
-
         #[cfg(unix)]
         {
+            // After replacing the directory entry with new content/inode
+            std::fs::remove_file(&real_file).unwrap();
+            std::fs::write(&real_file, b"different content").unwrap();
             // On Unix, a newly created file gets a different inode
             assert!(!held.identity_still_at(&real_file));
         }
