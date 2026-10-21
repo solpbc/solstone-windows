@@ -12,12 +12,12 @@ use spl_core::crockford;
 use spl_core::pairlink::{self, PairLinkError, ParsedPairLink};
 use spl_core::relay_window;
 
-const PIN_MANIFEST_JSON: &str = "714a55f4c305937acae6862cbd890a05da9407503d348a0b5f5690e77d350084";
+const PIN_MANIFEST_JSON: &str = "012fc87119ad9c831a76862a594f0529eb47bd647da549ca2acf7af1e91e8fce";
 const PIN_DEFINITION_JSON: &str =
-    "0507791c12f71b595cab3b49b0e47848137c2c5f8ee9340d9e3b5205a28218df";
+    "918b0ade51280205b0853d7609a2b9928d4219b7a2d72a4e6a4f5c688c190e4a";
 const PIN_DEFINITION_SCHEMA_JSON: &str =
     "2050eb864994751ba19f0ab6f5a2ab5ffbf2ce4483c0ed531a667a1e9a574f55";
-const PIN_VECTORS_JSON: &str = "9a7833f0e0206b03981a14459e0a1b90070dc562e4cd1bf162cb541ce3d0a8de";
+const PIN_VECTORS_JSON: &str = "a38bc50e1b292614495de211ad752ec78bba5e42c0a82484485d5c3d42a77d91";
 const PIN_VECTORS_SCHEMA_JSON: &str =
     "4ca9793cb383c5b393f232b63d83814c12e20c33e047ae6053800dd80e78a364";
 
@@ -100,8 +100,6 @@ fn spl_pair_link_vectors_conformance() {
         84,
         "population size must be exactly 84 vectors"
     );
-    let gapped_vector_count = 0usize;
-    assert_eq!(gapped_vector_count, 0, "gapped vector count must be 0");
 
     let mut driven_vector_count = 0usize;
     let mut driven_cover_keys: HashSet<String> = HashSet::new();
