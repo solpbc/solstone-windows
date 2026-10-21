@@ -39,6 +39,7 @@ mod ordinary_request;
 pub mod pairing;
 pub mod post_connect;
 pub mod relay_pairing;
+pub mod release_signature;
 pub mod retirement;
 pub mod sealed;
 pub mod service;

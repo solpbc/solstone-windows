@@ -30,9 +30,13 @@ tokio-tungstenite.workspace = true
 rustls-webpki.workspace = true
 webpki-roots.workspace = true
 futures-util.workspace = true
+observer-update.workspace = true
+minisign = "=0.9.1"
+ureq = "=3.3.0"
 tracing.workspace = true
 
 [features]
+update-test-fixtures = []
 awaiting-hold = []
 transport-tests = []
 
@@ -40,6 +44,8 @@ transport-tests = []
 windows = { version = "0.58", features = ["Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+tempfile = "3"
+zip = { version = "=9.0.3", default-features = false, features = ["deflate"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "test-util"] }
 rcgen = { workspace = true, features = ["x509-parser"] }
 observer-segment.workspace = true

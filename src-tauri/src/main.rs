@@ -47,16 +47,26 @@ fn main() -> ExitCode {
         return code;
     }
 
-    // Startup or the CLI handler applies a downloaded update before GUI startup
-    // (killing every process under `current\`): ask the running app to send its
-    // browser hosts away first. Velopack's own hook invocations skip this.
-    #[cfg(feature = "browser-host")]
-    if !early_args
+    let is_veloapp = early_args
         .first()
-        .is_some_and(|a| a.starts_with("--veloapp-"))
-        && update::startup_apply_pending()
-    {
-        browser::quiesce_before_apply();
+        .is_some_and(|a| a.starts_with("--veloapp-"));
+
+    if !is_veloapp && std::env::var_os("VELOPACK_RESTART").is_none() {
+        if early_args.iter().any(|a| a == "--apply-update") {
+            return update::apply_pending_cli(&early_args);
+        }
+        match update::startup_apply_verified() {
+            update::ApplyOutcome::Started => return ExitCode::SUCCESS,
+            update::ApplyOutcome::NothingPending => {}
+            update::ApplyOutcome::Failed(e) => {
+                tracing::warn!(
+                    target: "update",
+                    step = "startup_apply",
+                    error = %e,
+                    "startup apply skipped"
+                );
+            }
+        }
     }
 
     // Velopack-aware entry — MUST run first after host mode. For the installer lifecycle args
@@ -69,10 +79,10 @@ fn main() -> ExitCode {
     // launch (no veloapp arg) `run()` is a no-op and falls through to the CLI
     // surface / GUI below.
     VelopackApp::build()
-        // The explicit apply handler restarts with empty arguments. Startup's
-        // automatic apply forwards argv, which would run --apply-update again
-        // in the new process and exit because the package is already installed.
-        .set_auto_apply_on_startup(!early_args.iter().any(|a| a == "--apply-update"))
+        // Unchecked autoapply would install the highest local full package with no signature check;
+        // --apply-update is applied once above and apply_updates_and_restart restarts with empty argv;
+        // VELOPACK_RESTART skips a second apply.
+        .set_auto_apply_on_startup(false)
         .on_before_uninstall_fast_callback(|_version| {
             if let Ok(exe) = std::env::current_exe() {
                 let _ = platform_win::autostart::remove_login_item_if_matches(
@@ -120,11 +130,6 @@ fn main() -> ExitCode {
     // Headless check + stage of an update (readies it for --apply-update).
     if args.iter().any(|a| a == "--check-update") {
         return update::check_update_cli(&args);
-    }
-
-    // Headless apply of a staged update (the CLI analog of relaunch-to-install).
-    if args.iter().any(|a| a == "--apply-update") {
-        return update::apply_pending_cli(&args);
     }
 
     // Agent-native exclusion diagnostic: the windows the enumerator sees on the

@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 observer-contract.workspace = true
 
 [dependencies]
+semver = "=1.0.28"
 # Engine + platform sources injected at the seam.
 capture-engine.workspace = true
 capture-screen-encode.workspace = true
@@ -60,6 +61,9 @@ velopack = { version = "=1.2.0", path = "../vendor/velopack", features = ["publi
 url = "2"
 
 [dev-dependencies]
+sha2.workspace = true
+pl-transport-win = { workspace = true, features = ["update-test-fixtures"] }
+tempfile = "3"
 rcgen = { workspace = true, features = ["x509-parser"] }
 tokio-rustls.workspace = true
 rustls.workspace = true

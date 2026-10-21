@@ -228,7 +228,7 @@ authoritative update feed. The GitHub Releases mirror is required for release
 completion; package-manager manifests use its download URLs. Direct publication
 scripts remain disabled. The
 aggregate boundary is `make publish-origin`: it accepts only one exact finalized
-signed candidate, its finalization receipt, a clean checkout at the candidate's
+signed candidate, a detached signature over its complete full package, its finalization receipt, a clean checkout at the candidate's
 source commit, and a recorded clearance document for that exact release/channel.
 It acquires a fail-closed R2 publication mutex before reading channel state,
 writes an immutable versioned archive and flat version-named update artifacts,
@@ -239,6 +239,27 @@ and byte-compares every public archive and live update-feed object before emitti
 a publication receipt. It does not publish to GitHub. After R2 publication,
 publish the exact signed candidate assets to the matching GitHub release and
 verify its download URLs before refreshing package-manager channels.
+
+The updater verifies the complete full package with the release public key in
+`packaging/keys/solstone-release.pub` before Velopack can extract its update
+helper. It verifies cached packages again before applying them. These clients
+download full packages; a delta cannot substitute for a signed full package.
+Missing signatures and signatures from another key refuse the update.
+
+After finalization, sign the exact full package on the release host with the
+release secret key. Keep the detached output outside the finalized candidate:
+
+```bash
+minisign -S -s "$RELEASE_SECRET_KEY" \
+  -m /absolute/path/to/candidate/Solstone-<VERSION>-full.nupkg \
+  -x /absolute/path/to/signatures/Solstone-<VERSION>-full.nupkg.minisig \
+  -t "package Solstone-<VERSION>-full.nupkg"
+```
+
+The publisher verifies this prehashed signature against that same public pin,
+then publishes it immutably beside the full package and in the version archive
+before advancing the feed. Its publication receipt carries the signature digest.
+The candidate and finalization receipt retain their existing file populations.
 
 **Flow** (keeps publication credentials out of package construction):
 
@@ -285,6 +306,7 @@ verify its download URLs before refreshing package-manager channels.
    export AWS_SECRET_ACCESS_KEY=<R2-S3-secret-access-key>
    make publish-origin \
      CANDIDATE_DIR=/absolute/path/to/target/release-candidate/<VERSION> \
+     PACKAGE_SIGNATURE=/absolute/path/to/signatures/Solstone-<VERSION>-full.nupkg.minisig \
      FINALIZATION_RECEIPT=/absolute/path/to/rust-release-finalization.json \
      SOURCE_CHECKOUT=/absolute/path/to/clean/candidate-source \
      CLEARANCE=/absolute/path/to/windows-origin-clearance.json \
@@ -589,27 +611,24 @@ publication.
 - Invoke `.cmd` shims via `cmd.exe /c`.
 - The FlaUI smoke runs via a low-privilege scheduled task
   (`LogonType=Interactive`) into Session 1 against the installed app.
-- Delta-update validation:
-  - Velopack 1.2.0 contract: delta updates require a local full package on disk at `%LocalAppData%\Solstone\packages\*-full.nupkg` whose nuspec version < remote, a remote feed asset with `Type=Delta` whose `Version` matches the latest remote `Full`, and a successful binary patch via `Update.exe patch`. The staged pending file on disk is always the reconstructed full nupkg (`packages\Solstone-<V>-full.nupkg`), so staged basename alone does not indicate whether a delta was downloaded.
-  - Observable stdout tokens on `solstone-windows-app.exe --check-update`:
-    - `plan=delta-chain`: strategy offered deltas from local base.
-    - `plan=full-only`: strategy selected full package only (e.g. no local base nupkg present).
-    - `downloading asset: Solstone-<V>-delta.nupkg`: delta package asset was requested from the feed. If followed by a subsequent `downloading asset: Solstone-<V>-full.nupkg`, `Update.exe patch` or network download failed and triggered fallback to full.
-  - Disposable proof workflow (unsigned, off-origin):
-    - Build/package baseline N with `solstone-setup-<N>.exe`.
-    - Install N using the setup installer (not portable zip extract, so `%LocalAppData%\Solstone\packages\Solstone-<N>-full.nupkg` is populated).
-    - Package N+1 unsigned via `scripts\package.ps1 -DeltaBaseFull Solstone-<N>-full.nupkg`, or via the box wrapper with `SOLSTONE_DELTA_BASE_FULL=Solstone-<N>-full.nupkg scripts\win-package.cmd` (both wrappers, and `make package SOLSTONE_DELTA_BASE_FULL=...`, forward exactly one delta-base basename).
-    - Serve candidate N+1's releases directory on a disposable local static server (off `updates.solstone.app`).
-    - Execute `solstone-windows-app.exe --check-update --update-feed <url>`: assert stdout contains `plan=delta-chain` and `downloading asset: Solstone-<N+1>-delta.nupkg`.
-    - Apply with `solstone-windows-app.exe --apply-update --update-feed <url>` and assert the updated binary reports version N+1 via `--dump-state`.
-  - A released baseline built before these diagnostics cannot emit
-    `plan=delta-chain` or accept `--update-feed`; do not require N to speak
-    N+1's CLI contract. Against the production feed, distinguish the path by
-    artifact identity: successful delta application reconstructs a staged full
-    nupkg whose bytes differ from the published full download. Verify its
-    embedded app equals the accepted N+1 executable, then apply and verify the
-    signed relaunched version. A byte-identical staged full is full download or
-    fallback, not delta proof.
+- Authenticated update validation:
+  - Current clients always select the full package and emit `plan=full-only`.
+    A reconstructed delta archive does not have the published full archive's
+    signature and cannot qualify as an authenticated update.
+  - Use a finalized full package and its matching release-key `.minisig` from
+    the normal signing rail. Keep the release secret on the signing host.
+  - On a disposable installed baseline, serve the next signed full package,
+    sidecar and feed from a disposable static origin. Run
+    `solstone-windows-app.exe --check-update --update-feed <url>` and confirm
+    `plan=full-only`, the full-package download, and byte-identical cached
+    package and sidecar files.
+  - Apply with `solstone-windows-app.exe --apply-update --update-feed <url>` and
+    confirm the relaunched binary reports the new version through `--dump-state`.
+  - Repeat with a missing sidecar, an altered package and a wrong-key signature.
+    Each must refuse staging or installation, leave the incumbent running, and
+    never claim the update is ready. Repeat from the cached-package path too.
+  - Earlier clients may select deltas. A delta proof qualifies only the older
+    client under test; it does not qualify the current authenticated path.
 
 ## Remote build host (optional)
 

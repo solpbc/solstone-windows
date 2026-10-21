@@ -68,6 +68,12 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         owner: None,
     },
     ApprovedNode {
+        path: "crates/pl-transport-win/src/release_signature.rs",
+        kind: ApprovedKind::Fn,
+        name: "windows_file_id",
+        owner: None,
+    },
+    ApprovedNode {
         path: "crates/capture-screen-encode/src/lib.rs",
         kind: ApprovedKind::Mod,
         name: "imp",

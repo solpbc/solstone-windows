@@ -21,20 +21,26 @@
 //! Privacy (Article 8): our custom [`R2FeedSource`] performs a bare, query-free
 //! first-party manifest GET to the R2 feed: no app version, no app id, no staging
 //! id. Package downloads still request package files by filename from the same
-//! first-party feed host, with same-origin enforcement in the source. Velopack's
-//! manager remains in charge of version comparison, delta selection, checksum,
-//! staging, pending-restart, and relaunch.
+//! first-party feed host, with same-origin enforcement in the source. This client
+//! always downloads the full asset and admits the detached signature before staging.
+//! Velopack's manager remains in charge of checksum, staging, pending-restart,
+//! and relaunch.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use observer_update::admission::{
+    admit_cached_package, check_plain_filename, retire_asset, scan_authenticated_packages,
+    Admission, AuthenticatedPackage,
+};
 use observer_update::{
     classify_update_plan, format_update_plan, reduce, CheckInterval, CheckOutcome,
-    ReconciledUpdateStatus, UpdateActivity, UpdateAssetDescriptor, UpdateEvent, UpdatePrefs,
-    UpdateState, UpdateView,
+    ReconciledUpdateStatus, UpdateActivity, UpdateAssetDescriptor, UpdateEvent, UpdateOutcome,
+    UpdatePrefs, UpdateState, UpdateView,
 };
+use pl_transport_win::release_signature::ProductionReleaseVerifier;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use velopack::{UpdateCheck, UpdateInfo, UpdateManager, UpdateOptions, VelopackAsset};
@@ -143,6 +149,7 @@ fn build_manager_with_feed(feed_url: &str) -> Option<UpdateManager> {
         // Explicit so feed resolution is deterministic (`releases.win.json`),
         // even though the build's default channel is already `win`.
         ExplicitChannel: Some(CHANNEL.to_string()),
+        MaximumDeltasBeforeFallback: -1,
         ..Default::default()
     };
     match UpdateManager::new(R2FeedSource::new(feed_url), Some(opts), None) {
@@ -163,15 +170,218 @@ fn build_manager() -> Option<UpdateManager> {
     build_manager_with_feed(FEED_URL)
 }
 
-/// Whether `VelopackApp::run` is about to apply a downloaded update: a local
-/// full package newer than this install (Velopack's own test), in a process
-/// Velopack did not just restart (it never auto-applies there).
-#[cfg(feature = "browser-host")]
-pub fn startup_apply_pending() -> bool {
-    if std::env::var_os("VELOPACK_RESTART").is_some() {
+fn force_full_package(info: &mut UpdateInfo) {
+    info.BaseRelease = None;
+    info.DeltasToTarget.clear();
+}
+
+fn packages_dir() -> PathBuf {
+    platform_win::local_data_root().join("packages")
+}
+
+fn admit_named_package(
+    dir: &Path,
+    file_name: &str,
+    expected_version: &str,
+    verifier: &impl observer_update::admission::PackageVerifier,
+) -> Admission {
+    if check_plain_filename(file_name).is_err() {
+        return Admission::Refuse;
+    }
+    match admit_cached_package(&dir.join(file_name), verifier) {
+        Ok(package) if package.identity.version.to_string() == expected_version => Admission::Ready,
+        Ok(_) => Admission::Refuse,
+        Err(reason) => reason,
+    }
+}
+
+fn stage_full_package(
+    manager: &UpdateManager,
+    info: &UpdateInfo,
+    progress: Option<mpsc::Sender<i16>>,
+) -> Result<VelopackAsset, String> {
+    stage_full_package_in(
+        manager,
+        &packages_dir(),
+        info,
+        progress,
+        &ProductionReleaseVerifier,
+    )
+}
+
+fn stage_full_package_in(
+    manager: &UpdateManager,
+    dir: &Path,
+    info: &UpdateInfo,
+    progress: Option<mpsc::Sender<i16>>,
+    verifier: &impl observer_update::admission::PackageVerifier,
+) -> Result<VelopackAsset, String> {
+    let mut forced = info.clone();
+    force_full_package(&mut forced);
+
+    let target = forced.TargetFullRelease.clone();
+    let file_name = &target.FileName;
+    check_plain_filename(file_name).map_err(str::to_owned)?;
+    if !observer_update::admission::is_full_asset_type(&target.Type) {
+        return Err("the update feed did not name a full package".to_string());
+    }
+    let version = &target.Version;
+    let nupkg_path = dir.join(file_name);
+
+    if nupkg_path.exists() {
+        match admit_named_package(dir, file_name, version, verifier) {
+            Admission::Ready => return Ok(target),
+            Admission::Refuse | Admission::NotReady => {
+                retire_asset(dir, file_name);
+                return Err(format!(
+                    "cached package for {file_name} was not admitted and was retired"
+                ));
+            }
+        }
+    }
+
+    if let Err(e) = manager.download_updates(&forced, progress) {
+        retire_asset(dir, file_name);
+        return Err(format!("download_updates failed: {e}"));
+    }
+
+    match admit_named_package(dir, file_name, version, verifier) {
+        Admission::Ready => Ok(target),
+        Admission::Refuse => {
+            retire_asset(dir, file_name);
+            Err("package refused on re-admission".to_string())
+        }
+        Admission::NotReady => {
+            Err("package not ready after sidecar write (sidecar missing or unreadable)".to_string())
+        }
+    }
+}
+
+pub struct AdmittedPackage {
+    pub asset: VelopackAsset,
+    pub package: AuthenticatedPackage,
+}
+
+fn manager_installed_version(manager: &UpdateManager) -> Option<semver::Version> {
+    semver::Version::parse(&manager.get_current_version_as_string()).ok()
+}
+
+fn into_admitted(package: AuthenticatedPackage) -> Option<AdmittedPackage> {
+    let name = package.path.file_name()?.to_str()?.to_string();
+    let asset = VelopackAsset {
+        PackageId: package.identity.id.clone(),
+        Version: package.identity.version.to_string(),
+        Type: "Full".to_string(),
+        FileName: name,
+        ..Default::default()
+    };
+    Some(AdmittedPackage { asset, package })
+}
+
+pub fn select_admitted(manager: &UpdateManager) -> Option<AdmittedPackage> {
+    let installed = manager_installed_version(manager)?;
+    scan_authenticated_packages(&packages_dir(), &installed, &ProductionReleaseVerifier)
+        .selected
+        .and_then(into_admitted)
+}
+
+#[derive(Debug)]
+pub enum ApplyOutcome {
+    NothingPending,
+    Failed(String),
+    Started,
+}
+
+fn package_still_held(admitted: &AdmittedPackage) -> bool {
+    if !admitted
+        .package
+        .held
+        .identity_still_at(&admitted.package.path)
+    {
         return false;
     }
-    build_manager().is_some_and(|m| m.get_update_pending_restart().is_some())
+    #[cfg(windows)]
+    if !pl_transport_win::release_signature::windows_path_matches_held(
+        &admitted.package.path,
+        &admitted.package.held.file,
+    ) {
+        return false;
+    }
+    true
+}
+
+fn spawn_admitted(
+    manager: &UpdateManager,
+    admitted: AdmittedPackage,
+    quiesce: impl FnOnce(),
+    resume: impl FnOnce(),
+) -> Result<(), String> {
+    if !package_still_held(&admitted) {
+        return Err("staged package changed before apply".to_string());
+    }
+    quiesce();
+    let result = if package_still_held(&admitted) {
+        manager
+            .wait_exit_then_apply_updates(&admitted.asset, false, true, Vec::<String>::new())
+            .map_err(|e| format!("apply failed: {e}"))
+    } else {
+        Err("staged package changed during quiesce".to_string())
+    };
+    // The read handle lives through helper spawn, not the helper's later reopen after exit.
+    drop(admitted);
+    if result.is_err() {
+        resume();
+    }
+    result
+}
+
+fn apply_from_cache(
+    manager: &UpdateManager,
+    dir: &Path,
+    verifier: &impl observer_update::admission::PackageVerifier,
+    quiesce: impl FnOnce(),
+    resume: impl FnOnce(),
+) -> ApplyOutcome {
+    let Some(installed) = manager_installed_version(manager) else {
+        return ApplyOutcome::Failed("installed version is invalid".to_string());
+    };
+    let scan = scan_authenticated_packages(dir, &installed, verifier);
+    let Some(admitted) = scan.selected.and_then(into_admitted) else {
+        return if scan.rejected {
+            ApplyOutcome::Failed("cached update could not be authenticated".to_string())
+        } else {
+            ApplyOutcome::NothingPending
+        };
+    };
+    match spawn_admitted(manager, admitted, quiesce, resume) {
+        Ok(()) => ApplyOutcome::Started,
+        Err(error) => ApplyOutcome::Failed(error),
+    }
+}
+
+pub fn apply_verified_pending(feed_url: &str) -> ApplyOutcome {
+    let Some(manager) = build_manager_with_feed(feed_url) else {
+        return ApplyOutcome::Failed(
+            "updater unavailable (not installed via Velopack?)".to_string(),
+        );
+    };
+    apply_from_cache(
+        &manager,
+        &packages_dir(),
+        &ProductionReleaseVerifier,
+        || {
+            #[cfg(feature = "browser-host")]
+            crate::browser::quiesce_before_apply();
+        },
+        || {
+            #[cfg(feature = "browser-host")]
+            crate::browser::resume_after_update();
+        },
+    )
+}
+
+pub fn startup_apply_verified() -> ApplyOutcome {
+    apply_verified_pending(FEED_URL)
 }
 
 /// Extract `--update-feed <url>` from CLI args for `--check-update` and `--apply-update`.
@@ -202,9 +412,9 @@ fn parse_update_feed_arg(args: &[String]) -> Result<Option<&str>, &'static str> 
 
 /// Headless check + stage of an update (`--check-update`) — readies an update
 /// without the GUI: checks the feed, and if a newer version is available downloads
-/// it (full or delta) and stages it for the next launch. Apply it with
-/// `--apply-update`. Neutralizes the staging id first (Article 8), same as the GUI
-/// boot. Enables unattended update + the build-box end-to-end delta validation.
+/// the full package only and admits the detached signature before staging it for
+/// the next launch. Apply it with `--apply-update`. Neutralizes the staging id first
+/// (Article 8), same as the GUI boot.
 pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
     let feed_override = match parse_update_feed_arg(args) {
@@ -222,7 +432,8 @@ pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
         return ExitCode::FAILURE;
     };
     match manager.check_for_updates() {
-        Ok(UpdateCheck::UpdateAvailable(info)) => {
+        Ok(UpdateCheck::UpdateAvailable(mut info)) => {
+            force_full_package(&mut info);
             let base = info
                 .BaseRelease
                 .as_ref()
@@ -242,12 +453,16 @@ pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
 
             let v = info.TargetFullRelease.Version.clone();
             println!("--check-update: update available: {v}; downloading...");
-            if let Err(e) = manager.download_updates(&info, None) {
-                eprintln!("--check-update: download failed: {e}");
-                return ExitCode::FAILURE;
+            match stage_full_package(&manager, &info, None) {
+                Ok(_staged) => {
+                    println!("--check-update: downloaded + staged {v} (apply with --apply-update)");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("--check-update: download failed: {e}");
+                    ExitCode::FAILURE
+                }
             }
-            println!("--check-update: downloaded + staged {v} (apply with --apply-update)");
-            ExitCode::SUCCESS
         }
         Ok(UpdateCheck::NoUpdateAvailable) => {
             println!("--check-update: up to date");
@@ -264,10 +479,9 @@ pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
     }
 }
 
-/// Headless apply of a staged update — the CLI analog of the in-app
-/// relaunch-to-install (`--apply-update`). Applies the pending-restart package via
+/// Headless apply of an admitted staged update — the CLI analog of the in-app
+/// relaunch-to-install (`--apply-update`). Applies the verified pending package via
 /// Velopack (which relaunches the app), or exits nonzero when nothing is staged.
-/// Enables unattended apply and the build-box end-to-end delta validation.
 pub fn apply_pending_cli(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
     let feed_override = match parse_update_feed_arg(args) {
@@ -278,24 +492,14 @@ pub fn apply_pending_cli(args: &[String]) -> std::process::ExitCode {
         }
     };
     let feed_url = feed_override.unwrap_or(FEED_URL);
-    let Some(manager) = build_manager_with_feed(feed_url) else {
-        eprintln!("--apply-update: updater unavailable (not installed via Velopack?)");
-        return ExitCode::FAILURE;
-    };
-    match manager.get_update_pending_restart() {
-        Some(asset) => {
-            eprintln!(
-                "--apply-update: applying staged {} and relaunching…",
-                asset.Version
-            );
-            if let Err(e) = manager.apply_updates_and_restart(&asset) {
-                eprintln!("--apply-update: apply failed: {e}");
-                return ExitCode::FAILURE;
-            }
-            ExitCode::SUCCESS // typically unreached: the process is replaced.
-        }
-        None => {
+    match apply_verified_pending(feed_url) {
+        ApplyOutcome::Started => ExitCode::SUCCESS,
+        ApplyOutcome::NothingPending => {
             eprintln!("--apply-update: no staged update pending");
+            ExitCode::FAILURE
+        }
+        ApplyOutcome::Failed(msg) => {
+            eprintln!("--apply-update: {msg}");
             ExitCode::FAILURE
         }
     }
@@ -324,14 +528,26 @@ impl UpdateController {
 
         let mut staged_asset = None;
         if let Some(m) = &manager {
-            if let Some(asset) = m.get_update_pending_restart() {
+            let scan = manager_installed_version(m).map(|installed| {
+                scan_authenticated_packages(&packages_dir(), &installed, &ProductionReleaseVerifier)
+            });
+            let rejected = scan.as_ref().is_some_and(|scan| scan.rejected);
+            if let Some(admitted) = scan.and_then(|scan| scan.selected).and_then(into_admitted) {
                 reduce(
                     &mut state,
                     UpdateEvent::Downloaded {
-                        version: asset.Version.clone(),
+                        version: admitted.asset.Version.clone(),
                     },
                 );
-                staged_asset = Some(asset);
+                staged_asset = Some(admitted.asset);
+            } else {
+                let outcome_staged_or_found = matches!(
+                    state.status.last_check_outcome,
+                    Some(UpdateOutcome::Staged) | Some(UpdateOutcome::Found)
+                );
+                if rejected || outcome_staged_or_found {
+                    reduce(&mut state, UpdateEvent::CheckFailed { now: now_secs() });
+                }
             }
         }
 
@@ -447,7 +663,8 @@ impl UpdateController {
 
         let ctrl = self.clone();
         std::thread::spawn(move || match manager.check_for_updates() {
-            Ok(UpdateCheck::UpdateAvailable(info)) => {
+            Ok(UpdateCheck::UpdateAvailable(mut info)) => {
+                force_full_package(&mut info);
                 let base = info.BaseRelease.as_ref().map(|a| {
                     UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
                 });
@@ -533,7 +750,8 @@ impl UpdateController {
         });
     }
 
-    /// Download the currently-available update (full or delta — Velopack chooses).
+    /// Download the currently-available update (always downloads the full asset
+    /// and admits the detached signature before staging).
     pub fn download(&self) {
         let manager = match &self.inner.manager {
             Some(m) => m.clone(),
@@ -564,11 +782,8 @@ impl UpdateController {
         // Downloader.
         let ctrl = self.clone();
         std::thread::spawn(move || {
-            match manager.download_updates(&info, Some(tx)) {
-                Ok(()) => {
-                    let staged = manager
-                        .get_update_pending_restart()
-                        .unwrap_or_else(|| info.TargetFullRelease.clone());
+            match stage_full_package(&manager, &info, Some(tx)) {
+                Ok(staged) => {
                     let version = staged.Version.clone();
                     ctrl.inner.rt.lock().expect("update rt").staged_asset = Some(staged);
                     tracing::info!(
@@ -587,6 +802,7 @@ impl UpdateController {
                         error = %e,
                         "update download failed"
                     );
+                    ctrl.inner.rt.lock().expect("update rt").staged_asset = None;
                     ctrl.apply(UpdateEvent::CheckFailed { now: now_secs() });
                 }
             }
@@ -596,44 +812,58 @@ impl UpdateController {
 
     /// Apply the staged update and relaunch into it. Does not return on success.
     pub fn install(&self) {
+        if !self.try_begin() {
+            return;
+        }
         let manager = match &self.inner.manager {
             Some(m) => m.clone(),
-            None => return,
-        };
-        let asset = {
-            let rt = self.inner.rt.lock().expect("update rt");
-            match &rt.staged_asset {
-                Some(a) => a.clone(),
-                None => return,
+            None => {
+                self.end();
+                return;
             }
         };
+
+        let admitted = match select_admitted(&manager) {
+            Some(a) => a,
+            None => {
+                self.inner.rt.lock().expect("update rt").staged_asset = None;
+                self.apply(UpdateEvent::CheckFailed { now: now_secs() });
+                self.end();
+                return;
+            }
+        };
+
         self.signal(UpdateEvent::InstallStarted);
         tracing::info!(
             target: "update",
             operation = "apply_restart",
             result = "install_started",
-            version = %asset.Version,
+            version = %admitted.asset.Version,
             "update apply result"
         );
+
         let ctrl = self.clone();
         std::thread::spawn(move || {
-            // Connected browser hosts run this same executable: tell them to
-            // go and wait for them before Velopack replaces `current\`.
-            #[cfg(feature = "browser-host")]
-            crate::browser::quiesce_for_update();
-            if let Err(e) = manager.apply_updates_and_restart(&asset) {
-                #[cfg(feature = "browser-host")]
-                crate::browser::resume_after_update();
-                tracing::warn!(
-                    target: "update",
-                    operation = "apply_restart",
-                    error = %e,
-                    "update apply failed"
-                );
-                // Relaunch did not happen — fall back to the honest staged state.
-                ctrl.apply(UpdateEvent::Downloaded {
-                    version: asset.Version.clone(),
-                });
+            let version = admitted.asset.Version.clone();
+            let result = spawn_admitted(
+                &manager,
+                admitted,
+                || {
+                    #[cfg(feature = "browser-host")]
+                    crate::browser::quiesce_for_update();
+                },
+                || {
+                    #[cfg(feature = "browser-host")]
+                    crate::browser::resume_after_update();
+                },
+            );
+            match result {
+                Ok(()) => std::process::exit(0),
+                Err(error) => {
+                    tracing::warn!(target: "update", operation = "apply_restart", error = %error, "update apply failed");
+                    ctrl.apply(UpdateEvent::Downloaded { version });
+                    ctrl.end();
+                }
             }
         });
     }
@@ -717,5 +947,426 @@ impl UpdateController {
                 ctrl.scheduled_check_if_due();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use pl_transport_win::release_signature::KeyedTestReleaseVerifier;
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    use velopack::sources::UpdateSource;
+
+    const PACKAGE: &[u8] = include_bytes!(
+        "../../crates/pl-transport-win/tests/fixtures/update/fixture-2.0.34-full.nupkg"
+    );
+    const SIGNATURE: &str = include_str!(
+        "../../crates/pl-transport-win/tests/fixtures/update/fixture-2.0.34-full.nupkg.minisig"
+    );
+    const PUBLIC: &str =
+        include_str!("../../crates/pl-transport-win/tests/fixtures/update/fixture-pub.pub");
+    const NAME: &str = "Solstone-2.0.34-full.nupkg";
+
+    fn server(
+        requests: usize,
+        reply: impl Fn(&str) -> Vec<u8> + Send + 'static,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            for _ in 0..requests {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "expected HTTP request did not arrive"
+                            );
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("HTTP fixture failed: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0u8; 4096];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                stream.write_all(&reply(&request)).unwrap();
+            }
+        });
+        (base, worker)
+    }
+
+    fn signed_server(requests: usize) -> (String, std::thread::JoinHandle<()>) {
+        server(requests, |request| {
+            let body = if request.lines().next().unwrap().contains(".minisig ") {
+                SIGNATURE.as_bytes()
+            } else {
+                PACKAGE
+            };
+            let mut reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            reply.extend_from_slice(body);
+            reply
+        })
+    }
+
+    fn recorder() -> &'static Path {
+        static RECORDER: OnceLock<PathBuf> = OnceLock::new();
+        RECORDER.get_or_init(|| {
+            let root = tempfile::tempdir().unwrap().keep();
+            let source = root.join("recorder.rs");
+            std::fs::write(&source, r#"fn main() {
+                let destination = std::env::current_exe().unwrap().with_extension("argv");
+                std::fs::write(destination, std::env::args().skip(1).collect::<Vec<_>>().join("\n")).unwrap();
+            }"#).unwrap();
+            let executable = root.join("recorder.exe");
+            assert!(std::process::Command::new("rustc").args(["--edition=2024"]).arg(source).arg("-o").arg(&executable).status().unwrap().success());
+            executable
+        })
+    }
+
+    fn manager(root: &Path, base: &str, executable: bool) -> UpdateManager {
+        manager_with_source(
+            root,
+            R2FeedSource::fixture(base.to_string(), PUBLIC),
+            executable,
+        )
+    }
+
+    fn manager_with_source(
+        root: &Path,
+        source: impl UpdateSource + 'static,
+        executable: bool,
+    ) -> UpdateManager {
+        let packages = root.join("packages");
+        let current = root.join("current");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::create_dir_all(&current).unwrap();
+        let helper = root.join("Update.exe");
+        if executable {
+            std::fs::copy(recorder(), &helper).unwrap();
+        } else {
+            std::fs::write(&helper, b"incumbent helper").unwrap();
+        }
+        let manifest = current.join("sq.version");
+        std::fs::write(&manifest, "<package><metadata><id>Solstone</id><version>2.0.33</version><channel>win</channel><mainExe>solstone-windows-app.exe</mainExe></metadata></package>").unwrap();
+        UpdateManager::new(
+            source,
+            Some(UpdateOptions {
+                ExplicitChannel: Some("win".to_string()),
+                MaximumDeltasBeforeFallback: -1,
+                ..Default::default()
+            }),
+            Some(velopack::locator::VelopackLocatorConfig {
+                RootAppDir: root.to_path_buf(),
+                UpdateExePath: helper,
+                PackagesDir: packages,
+                ManifestPath: manifest,
+                CurrentBinaryDir: current,
+                IsPortable: true,
+            }),
+        )
+        .unwrap()
+    }
+
+    fn update_info() -> UpdateInfo {
+        UpdateInfo {
+            TargetFullRelease: VelopackAsset {
+                PackageId: "Solstone".to_string(),
+                Version: "2.0.34".to_string(),
+                Type: "Full".to_string(),
+                FileName: NAME.to_string(),
+                Size: PACKAGE.len() as u64,
+                SHA256: format!("{:X}", Sha256::digest(PACKAGE)),
+                ..Default::default()
+            },
+            BaseRelease: None,
+            DeltasToTarget: Vec::new(),
+            IsDowngrade: false,
+        }
+    }
+
+    fn pair(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), PACKAGE).unwrap();
+        std::fs::write(dir.join(format!("{name}.minisig")), SIGNATURE).unwrap();
+    }
+
+    struct AfterDownload {
+        source: R2FeedSource,
+        corrupt: bool,
+    }
+
+    impl UpdateSource for AfterDownload {
+        fn get_release_feed(
+            &self,
+            channel: &str,
+            app: &velopack::bundle::Manifest,
+            staged: &str,
+        ) -> Result<velopack::VelopackAssetFeed, velopack::Error> {
+            self.source.get_release_feed(channel, app, staged)
+        }
+        fn download_release_entry(
+            &self,
+            asset: &VelopackAsset,
+            path: &Path,
+            progress: Option<mpsc::Sender<i16>>,
+        ) -> Result<(), velopack::Error> {
+            self.source.download_release_entry(asset, path, progress)?;
+            if self.corrupt {
+                let mut bytes = std::fs::read(path)?;
+                bytes[10] ^= 1;
+                std::fs::write(path, bytes)?;
+            }
+            Ok(())
+        }
+        fn open_admitted_release_entry(
+            &self,
+            asset: &VelopackAsset,
+            path: &Path,
+        ) -> Result<Option<std::fs::File>, velopack::Error> {
+            let guard = self.source.open_admitted_release_entry(asset, path)?;
+            #[cfg(windows)]
+            assert!(
+                std::fs::OpenOptions::new().write(true).open(path).is_err(),
+                "admitted file must deny concurrent writes through extraction"
+            );
+            Ok(guard)
+        }
+    }
+
+    #[test]
+    fn manager_reauthenticates_after_download_before_helper_extraction() {
+        for corrupt in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let (base, worker) = signed_server(2);
+            let source = AfterDownload {
+                source: R2FeedSource::fixture(base, PUBLIC),
+                corrupt,
+            };
+            let manager = manager_with_source(root.path(), source, false);
+            let helper = std::fs::read(root.path().join("Update.exe")).unwrap();
+            let mut info = update_info();
+            if corrupt {
+                let mut bytes = PACKAGE.to_vec();
+                bytes[10] ^= 1;
+                info.TargetFullRelease.SHA256 = format!("{:X}", Sha256::digest(bytes));
+            }
+            assert_eq!(manager.download_updates(&info, None).is_err(), corrupt);
+            assert_eq!(
+                std::fs::read(root.path().join("Update.exe")).unwrap(),
+                helper
+            );
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn manager_check_ignores_unsigned_cached_delta_base() {
+        let root = tempfile::tempdir().unwrap();
+        let mut asset = update_info().TargetFullRelease;
+        asset.Version = "2.0.35".to_string();
+        asset.FileName = "Solstone-2.0.35-full.nupkg".to_string();
+        let mut delta = asset.clone();
+        delta.Type = "Delta".to_string();
+        delta.FileName = "Solstone-2.0.35-delta.nupkg".to_string();
+        let body = serde_json::to_vec(&serde_json::json!({"Assets": [asset, delta]})).unwrap();
+        let (base, worker) = server(1, move |_| {
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            response.extend_from_slice(&body);
+            response
+        });
+        let manager = manager(root.path(), &base, false);
+        std::fs::write(root.path().join("packages").join(NAME), PACKAGE).unwrap();
+        let UpdateCheck::UpdateAvailable(info) = manager.check_for_updates().unwrap() else {
+            panic!("new full release expected")
+        };
+        assert!(info.BaseRelease.is_none());
+        assert!(info.DeltasToTarget.is_empty());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn sidecar_persistence_failure_keeps_prior_pending_and_retry_readies_a_pair() {
+        let root = tempfile::tempdir().unwrap();
+        let (base, worker) = signed_server(4);
+        let manager = manager(root.path(), &base, false);
+        let packages = root.path().join("packages");
+        let prior = "Solstone-prior-full.nupkg";
+        pair(&packages, prior);
+        let blocked = packages.join(format!("{NAME}.minisig"));
+        std::fs::create_dir(&blocked).unwrap();
+        let helper = std::fs::read(root.path().join("Update.exe")).unwrap();
+        let key = KeyedTestReleaseVerifier(PUBLIC);
+        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_err());
+        assert!(admit_cached_package(&packages.join(prior), &key).is_ok());
+        assert_eq!(
+            std::fs::read(root.path().join("Update.exe")).unwrap(),
+            helper
+        );
+        assert!(!packages.join(NAME).exists());
+        std::fs::remove_dir(blocked).unwrap();
+        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_ok());
+        assert!(admit_cached_package(&packages.join(NAME), &key).is_ok());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn staging_rejects_traversal_before_cleanup_and_authenticates_the_cache_shortcut() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://127.0.0.1:9", false);
+        let packages = root.path().join("packages");
+        let sentinel = root.path().join("pairing.json");
+        std::fs::write(&sentinel, b"keep pairing").unwrap();
+        let key = KeyedTestReleaseVerifier(PUBLIC);
+        for name in ["../pairing.json", r"..\pairing.json"] {
+            let mut info = update_info();
+            info.TargetFullRelease.FileName = name.to_string();
+            assert!(stage_full_package_in(&manager, &packages, &info, None, &key).is_err());
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep pairing");
+        }
+        std::fs::write(packages.join(NAME), PACKAGE).unwrap();
+        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_err());
+        assert!(!packages.join(NAME).exists());
+        pair(&packages, NAME);
+        assert!(stage_full_package_in(&manager, &packages, &update_info(), None, &key).is_ok());
+    }
+
+    #[test]
+    fn startup_and_cli_apply_refuse_before_quiesce_and_select_the_verified_package() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://127.0.0.1:9", true);
+        let packages = root.path().join("packages");
+        let higher = "Solstone-2.0.99-full.nupkg";
+        std::fs::write(packages.join(higher), PACKAGE).unwrap();
+        let key = KeyedTestReleaseVerifier(PUBLIC);
+        let quiesced = std::cell::Cell::new(0);
+        let resumed = std::cell::Cell::new(0);
+        let mut short: Vec<_> = SIGNATURE.lines().collect();
+        short[3] = "AA==";
+        for sidecar in [
+            None,
+            Some("invalid signature".to_string()),
+            Some(short.join("\n") + "\n"),
+        ] {
+            let signature = packages.join(format!("{higher}.minisig"));
+            if let Some(text) = sidecar {
+                std::fs::write(&signature, text).unwrap();
+            } else if signature.exists() {
+                std::fs::remove_file(signature).unwrap();
+            }
+            assert!(matches!(
+                apply_from_cache(
+                    &manager,
+                    &packages,
+                    &key,
+                    || quiesced.set(quiesced.get() + 1),
+                    || resumed.set(resumed.get() + 1)
+                ),
+                ApplyOutcome::Failed(_)
+            ));
+            assert_eq!(quiesced.get(), 0);
+            assert_eq!(resumed.get(), 0);
+            assert!(!root.path().join("Update.argv").exists());
+        }
+        pair(&packages, NAME);
+        assert!(matches!(
+            apply_from_cache(
+                &manager,
+                &packages,
+                &key,
+                || quiesced.set(quiesced.get() + 1),
+                || resumed.set(resumed.get() + 1)
+            ),
+            ApplyOutcome::Started
+        ));
+        assert_eq!(quiesced.get(), 1);
+        assert_eq!(resumed.get(), 0);
+        let argv = root.path().join("Update.argv");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !argv.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let args = std::fs::read_to_string(argv).unwrap();
+        let args: Vec<_> = args.lines().collect();
+        assert!(args
+            .windows(2)
+            .any(|args| args[0] == "--package" && Path::new(args[1]) == packages.join(NAME)));
+        assert!(
+            packages.join(higher).exists(),
+            "the unsigned higher sibling still exists at helper handoff"
+        );
+    }
+
+    #[test]
+    fn helper_spawn_failure_resumes_and_retains_the_authenticated_pair() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://127.0.0.1:9", false);
+        let packages = root.path().join("packages");
+        pair(&packages, NAME);
+        let key = KeyedTestReleaseVerifier(PUBLIC);
+        let quiesced = std::cell::Cell::new(false);
+        let resumed = std::cell::Cell::new(false);
+        assert!(matches!(
+            apply_from_cache(
+                &manager,
+                &packages,
+                &key,
+                || quiesced.set(true),
+                || resumed.set(true)
+            ),
+            ApplyOutcome::Failed(_)
+        ));
+        assert!(quiesced.get() && resumed.get());
+        assert!(admit_cached_package(&packages.join(NAME), &key).is_ok());
+    }
+
+    #[test]
+    fn feed_redirect_never_contacts_the_destination() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/trap", destination.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                match destination.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{\"Assets\":[]}");
+                        return true;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("redirect trap failed: {error}"),
+                }
+            }
+            false
+        });
+        let (base, origin) = server(1, move |request| {
+            assert!(request.starts_with("GET /releases.win.json "));
+            format!("HTTP/1.1 302 Found\r\nLocation: {url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes()
+        });
+        assert!(R2FeedSource::new(base)
+            .get_release_feed("win", &Default::default(), "")
+            .is_err());
+        origin.join().unwrap();
+        assert!(!worker.join().unwrap());
     }
 }

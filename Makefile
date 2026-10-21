@@ -430,7 +430,7 @@ publish-origin:
 	@test -n "$(strip $(SOURCE_CHECKOUT))" || { echo "ERROR: SOURCE_CHECKOUT is required" >&2; exit 2; }
 	@test -n "$(strip $(CLEARANCE))" || { echo "ERROR: CLEARANCE is required" >&2; exit 2; }
 	@test -n "$(strip $(PUBLICATION_RECEIPT))" || { echo "ERROR: PUBLICATION_RECEIPT is required" >&2; exit 2; }
-	bash scripts/publish-origin.sh --candidate-dir "$(CANDIDATE_DIR)" --finalization-receipt "$(FINALIZATION_RECEIPT)" --source-checkout "$(SOURCE_CHECKOUT)" --clearance "$(CLEARANCE)" --receipt "$(PUBLICATION_RECEIPT)"
+	bash scripts/publish-origin.sh --candidate-dir "$(CANDIDATE_DIR)" --package-signature "$(PACKAGE_SIGNATURE)" --finalization-receipt "$(FINALIZATION_RECEIPT)" --source-checkout "$(SOURCE_CHECKOUT)" --clearance "$(CLEARANCE)" --receipt "$(PUBLICATION_RECEIPT)"
 
 # Direct publication is fail-closed. These entry points remain visible while
 # publication ownership stays at the aggregate provenance boundary above.

@@ -20,6 +20,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admission;
+
 use serde::{Deserialize, Serialize};
 
 /// Cadence for the owned background-check timer. Seconds match macOS exactly.
@@ -437,9 +439,8 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
         }
         UpdateEvent::CheckFailed { now } => {
             state.activity = UpdateActivity::Idle;
-            // A failed check did not reconfirm the transient "available" block, so
-            // it can no longer drive a download. The durable available_version
-            // persists so the pane can still say "version X was found earlier".
+            // A refusal is not installable, and a persisted Staged outcome must not paint up to date.
+            state.staged = None;
             state.available = None;
             state.download_pct = None;
             state.status.last_checked_at = Some(now);
@@ -903,5 +904,18 @@ mod tests {
         let download_line = format_downloading_asset(&delta.file_name, &delta.asset_type);
         assert!(download_line.contains("downloading asset: Solstone-2.0.3-delta.nupkg"));
         assert!(download_line.contains("type=Delta"));
+    }
+
+    #[test]
+    fn check_failed_after_persisted_staged_displays_failed_not_uptodate() {
+        let mut s = UpdateState::new();
+        s.status.last_check_outcome = Some(UpdateOutcome::Staged);
+        s.status.available_version = Some("0.3.0".into());
+        s.staged = None;
+
+        reduce(&mut s, UpdateEvent::CheckFailed { now: 20 });
+        assert_eq!(s.display(), UpdateDisplay::FailedWithAvailable);
+        assert!(!s.view().actions.can_install);
+        assert!(s.view().actions.can_retry);
     }
 }

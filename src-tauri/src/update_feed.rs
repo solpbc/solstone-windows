@@ -4,25 +4,36 @@
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
-use url::Url;
 use velopack::bundle::Manifest;
-use velopack::download;
 use velopack::sources::UpdateSource;
 use velopack::{Error, VelopackAsset, VelopackAssetFeed};
 
 /// A custom Velopack update source for the static R2 feed. Unlike Velopack's
 /// `HttpSource`, the manifest GET carries NO query string — no app version, no app
-/// id, no staging id (Article 8). The manager still owns version comparison, delta
-/// selection, checksum, staging, and relaunch; this source only fetches the feed
-/// and downloads assets (after a first-party same-origin check).
+/// id, no staging id (Article 8). Only full packages are admitted. The source
+/// verifies and persists their signatures before Velopack can extract a helper
+/// or retire a previously staged package. Feed and asset GETs refuse redirects.
 #[derive(Clone)]
 pub struct R2FeedSource {
     base: String,
+    #[cfg(test)]
+    test_key: Option<&'static str>,
 }
 
 impl R2FeedSource {
     pub fn new(base: impl Into<String>) -> Self {
-        Self { base: base.into() }
+        Self {
+            base: base.into(),
+            #[cfg(test)]
+            test_key: None,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture(base: String, key: &'static str) -> Self {
+        Self {
+            base,
+            test_key: Some(key),
+        }
     }
 }
 
@@ -34,26 +45,47 @@ fn parse_feed(json: &str) -> Result<VelopackAssetFeed, Error> {
     serde_json::from_str(json).map_err(Error::from)
 }
 
+#[cfg(test)]
 fn resolve_asset_url(base: &str, file_name: &str) -> Result<String, Error> {
-    let base_url = Url::parse(&format!("{}/", base.trim_end_matches('/')))?;
-    let resolved = base_url.join(file_name)?;
-
-    let same_origin = resolved.scheme() == base_url.scheme()
-        && resolved.host_str().is_some()
-        && resolved.host_str() == base_url.host_str()
-        && resolved.port_or_known_default() == base_url.port_or_known_default()
-        && resolved.path().starts_with(base_url.path());
-
-    if !same_origin {
-        return Err(Error::Other(format!(
-            "asset URL is outside update feed origin: {resolved}"
-        )));
-    }
-
-    Ok(resolved.to_string())
+    observer_update::admission::check_plain_filename(file_name)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    observer_update::admission::sibling_url(base, file_name).map_err(Error::Other)
 }
 
 impl UpdateSource for R2FeedSource {
+    fn open_admitted_release_entry(
+        &self,
+        asset: &VelopackAsset,
+        local_file: &Path,
+    ) -> Result<Option<std::fs::File>, Error> {
+        use observer_update::admission::{admit_cached_package, PackageVerifier};
+        use pl_transport_win::release_signature::ProductionReleaseVerifier;
+        fn admit(
+            asset: &VelopackAsset,
+            path: &Path,
+            verifier: &impl PackageVerifier,
+        ) -> Result<Option<std::fs::File>, Error> {
+            let package = admit_cached_package(path, verifier)
+                .map_err(|_| Error::Other("final package authentication failed".into()))?;
+            if !asset.Type.eq_ignore_ascii_case("Full")
+                || package.identity.version.to_string() != asset.Version
+                || package.held.file.metadata()?.len() != asset.Size
+            {
+                return Err(Error::Other("final package identity mismatch".into()));
+            }
+            Ok(Some(package.held.file))
+        }
+        #[cfg(test)]
+        if let Some(key) = self.test_key {
+            return admit(
+                asset,
+                local_file,
+                &pl_transport_win::release_signature::KeyedTestReleaseVerifier(key),
+            );
+        }
+        admit(asset, local_file, &ProductionReleaseVerifier)
+    }
+
     fn get_release_feed(
         &self,
         channel: &str,
@@ -61,7 +93,24 @@ impl UpdateSource for R2FeedSource {
         _staged_user_id: &str,
     ) -> Result<VelopackAssetFeed, Error> {
         let url = manifest_url(&self.base, channel);
-        let json = download::download_url_as_string(&url)?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .max_redirects(0)
+            .build()
+            .into();
+        let response = agent
+            .get(&url)
+            .call()
+            .map_err(|e| Error::Other(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(Error::Other(format!(
+                "feed GET returned HTTP status {}",
+                response.status()
+            )));
+        }
+        let json = response
+            .into_body()
+            .read_to_string()
+            .map_err(|e| Error::Other(e.to_string()))?;
         parse_feed(&json)
     }
 
@@ -75,12 +124,22 @@ impl UpdateSource for R2FeedSource {
             "{}",
             observer_update::format_downloading_asset(&asset.FileName, &asset.Type)
         );
-        let url = resolve_asset_url(&self.base, &asset.FileName)?;
-        download::download_url_to_file(&url, local_file, move |p| {
-            if let Some(s) = &progress_sender {
-                let _ = s.send(p);
-            }
-        })?;
+        #[cfg(test)]
+        if let Some(key) = self.test_key {
+            return pl_transport_win::release_signature::download_and_verify_release_entry_with_key(
+                key, &self.base, &asset.Type, &asset.FileName, &asset.Version, local_file, progress_sender)
+                .map(|_| ()).map_err(Error::Other);
+        }
+        pl_transport_win::release_signature::download_and_verify_release_entry(
+            &self.base,
+            &asset.Type,
+            &asset.FileName,
+            &asset.Version,
+            local_file,
+            progress_sender,
+        )
+        .map_err(Error::Other)?;
+
         Ok(())
     }
 }
@@ -171,14 +230,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_asset_url_accepts_percent_encoded_filename() {
-        let raw = resolve_asset_url(BASE, "Solstone%20App-1.2.3-full.nupkg").unwrap();
-        let parsed = Url::parse(&raw).unwrap();
-
-        assert_eq!(
-            parsed.path(),
-            "/solstone-windows/Solstone%20App-1.2.3-full.nupkg"
-        );
+    fn resolve_asset_url_rejects_percent_encoded_filename() {
+        assert!(resolve_asset_url(BASE, "Solstone%20App-1.2.3-full.nupkg").is_err());
     }
 
     #[test]
