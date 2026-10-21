@@ -3,13 +3,13 @@
 
 # SPL Pair-Link Coverage Gaps
 
-Engineering-internal coverage report for vendored bundle `8.0.6` conformance against `spl-core`.
+Engineering-internal coverage report for vendored bundle `9.0.0` conformance against `spl-core`.
 
 ## 1. Uncovered Predicates
 
-Every one of the 50 named predicates in `vectors.json` `"covers"` is exercised by at least one driven vector in `crates/observer-pl/tests/spl_pair_link_conformance.rs`.
+Every one of the 48 named predicates in `vectors.json` `"covers"` is exercised by at least one driven vector in `crates/observer-pl/tests/spl_pair_link_conformance.rs`.
 
-- **Uncovered count**: 0 of 50
+- **Uncovered count**: 0 of 48
 
 ## 2. Semantic Gap Vectors
 
