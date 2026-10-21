@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.32
+PackageVersion: 2.0.33
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,20 +23,21 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Added
-  - you can now turn on desktop activity in settings to share the apps you use with your journal, and choose whether window titles and page addresses go too, with screen and audio off if you prefer.
-  - when the app can verify your journal on this PC, it connects without asking you to compare marks. other pairings keep the comparison.
-  - once you turn a source on during setup, pause and resume sit beside its switch. pause applies to every source you've turned on.
+  - 1Password, Bitwarden, KeePass, KeePassXC, Keeper, LastPass and Proton Pass are now among the apps whose windows are kept out of your journal by default. if you set up before this version, they're added to your excluded apps once, and you can remove any of them in settings. a password manager you use inside your browser is part of the browser, so it isn't kept out.
+  - settings now counts down to the next save on this PC, and shows when your journal was last reached.
+  - a notification now tells you when your journal has been out of reach for half an hour, when intake runs into a problem, or when windows is blocking the microphone, and again once it's fixed. a short drop that fixes itself doesn't notify you.
 
   Changed
-  - the setup steps now share the journal window's look, with progress dots, a step count, a larger level meter and a larger view of your screen.
+  - the screen step in setup now says where what you share stays, and which apps are left out.
+  - setup now has the sun behind it, moving with the time of day, as it does on mac.
 
   Fixed
-  - setup no longer numbers two steps "5" when it continues from your journal on this PC.
-  - if the app can't read your saved source choices, sources stay off and your start at login setting stays as it was. you can choose them again in settings.
-  - after you pair, the pairing field is empty again instead of keeping the link you just used.
-  - the first time you pair, setup's connect step now tells you where to find a pairing link in your journal.
-  - a pairing link you open while the solstone app isn't paired and settings is on the home pane now opens the journal pane, where the link is waiting, instead of leaving you on home.
-  - a journal window opened just as the solstone app starts now shows your journal's mark in its title, instead of "your journal".
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.32
+  - security fix: when it checks for updates or connects through the relay, the solstone app no longer accepts certificates issued through emSign certificate authorities whose private keys are now public. before, someone between your computer and the update server or the relay could have posed as either one: as the update server, they could have offered an update that didn't come from sol pbc. as the relay, they could have seen the credential your computer uses with the relay, but not what goes to your journal, which travels inside a second encrypted connection that ends at your journal.
+  - desktop activity has been adding to your journal whether you're active or idle, or this PC is locked, beside the apps you use. its setting now says so.
+  - when windows privacy settings block the microphone, the tray and settings now say it needs permission, with a button to the windows setting. before, the microphone could show as on while windows was blocking it. everything else keeps going into your journal, and the microphone comes back on as soon as you allow it.
+  - when the app couldn't tell whether this PC was locked, that time no longer goes into your journal as locked.
+  - notifications now show the solstone icon beside the name, instead of a generic windows one.
+  - when a source runs into a problem, settings and setup now show its state without the technical message behind it.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.33
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "browser-host"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "base64 0.22.1",
  "native-browser-frame",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "capture-engine"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "claxon",
  "observer-audio",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "capture-screen-encode"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
  "observer-nv12",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "capture-wasapi"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-mic",
  "observer-model",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "capture-wgc"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-exclusion",
  "observer-model",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "journal-window"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",
@@ -3133,7 +3133,7 @@ dependencies = [
 
 [[package]]
 name = "observer-audio"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "claxon",
  "flacenc",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "observer-contract"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
  "serde",
@@ -3154,7 +3154,7 @@ dependencies = [
 
 [[package]]
 name = "observer-exclusion"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
  "serde",
@@ -3163,7 +3163,7 @@ dependencies = [
 
 [[package]]
 name = "observer-health"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
  "serde_json",
@@ -3171,7 +3171,7 @@ dependencies = [
 
 [[package]]
 name = "observer-hotkey"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "serde",
  "serde_json",
@@ -3179,14 +3179,14 @@ dependencies = [
 
 [[package]]
 name = "observer-lifecycle"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-log"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "serde",
  "serde_json",
@@ -3197,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "observer-mic"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "serde",
  "serde_json",
@@ -3205,7 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "observer-model"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "serde",
  "serde_json",
@@ -3216,7 +3216,7 @@ dependencies = [
 
 [[package]]
 name = "observer-nv12"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
  "thiserror 2.0.18",
@@ -3224,7 +3224,7 @@ dependencies = [
 
 [[package]]
 name = "observer-pl"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "base64 0.22.1",
  "observer-model",
@@ -3238,32 +3238,32 @@ dependencies = [
 
 [[package]]
 name = "observer-recovery"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-sample-timing"
-version = "2.0.32"
+version = "2.0.33"
 
 [[package]]
 name = "observer-segment"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-state"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "observer-model",
 ]
 
 [[package]]
 name = "observer-update"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "serde",
  "serde_json",
@@ -3504,7 +3504,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "pl-transport-win"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -3533,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "platform-win"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "journal-window",
  "observer-audio",
@@ -4104,9 +4104,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4529,7 +4529,7 @@ dependencies = [
 
 [[package]]
 name = "solstone-windows-app"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "anyhow",
  "browser-host",
@@ -6066,9 +6066,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.7"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -6831,7 +6831,7 @@ checksum = "636f85e5ca6488e96401b61eb7de54f4e44755c988af0f52cf90230c312a1a89"
 
 [[package]]
 name = "xtask"
-version = "2.0.32"
+version = "2.0.33"
 dependencies = [
  "base64 0.22.1",
  "jsonschema 0.48.2",

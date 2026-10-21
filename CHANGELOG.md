@@ -4,13 +4,13 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.33] - 2026-10-21
 
 ### Added
 
+- 1Password, Bitwarden, KeePass, KeePassXC, Keeper, LastPass and Proton Pass are now among the apps whose windows are kept out of your journal by default. if you set up before this version, they're added to your excluded apps once, and you can remove any of them in settings. a password manager you use inside your browser is part of the browser, so it isn't kept out.
 - settings now counts down to the next save on this PC, and shows when your journal was last reached.
 - a notification now tells you when your journal has been out of reach for half an hour, when intake runs into a problem, or when windows is blocking the microphone, and again once it's fixed. a short drop that fixes itself doesn't notify you.
-- 1Password, Bitwarden, KeePass, KeePassXC, Keeper, LastPass and Proton Pass are now among the apps whose windows are kept out of your journal by default. if you set up before this version, they're added to your excluded apps once, and you can remove any of them in settings. a password manager you use inside your browser is part of the browser, so it isn't kept out.
 
 ### Changed
 
@@ -19,9 +19,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- security fix: when it checks for updates or connects through the relay, the solstone app no longer accepts certificates issued through emSign certificate authorities whose private keys are now public. before, someone between your computer and the update server or the relay could have posed as either one: as the update server, they could have offered an update that didn't come from sol pbc. as the relay, they could have seen the credential your computer uses with the relay, but not what goes to your journal, which travels inside a second encrypted connection that ends at your journal.
+- desktop activity has been adding to your journal whether you're active or idle, or this PC is locked, beside the apps you use. its setting now says so.
 - when windows privacy settings block the microphone, the tray and settings now say it needs permission, with a button to the windows setting. before, the microphone could show as on while windows was blocking it. everything else keeps going into your journal, and the microphone comes back on as soon as you allow it.
-- desktop activity now distinguishes a confirmed screen lock from unavailable activity information in your journal.
-- desktop activity has also been adding to your journal whether you're active or idle, or this PC is locked, beside the apps you use. its setting now says so.
+- when the app couldn't tell whether this PC was locked, that time no longer goes into your journal as locked.
 - notifications now show the solstone icon beside the name, instead of a generic windows one.
 - when a source runs into a problem, settings and setup now show its state without the technical message behind it.
 
