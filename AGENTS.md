@@ -332,12 +332,14 @@ bytes. The exact-byte GitHub release mirror is required for delivery completion
 and uses the separate documented operator step; R2 remains the authoritative
 app-update feed.
 
-Release transparency publication is not active for this product, and a release
-has no transparency step. The v2 release record (see
-`solpbc/solstone-transparency`) covers the journal only, and this product has no
-transparency adapter yet, so both transparency targets exit 2 unless
+Each changed release gets a v2 transparency record after origin publication,
+followed by an independent audit. Records are published at
+[trust.solstone.app](https://trust.solstone.app/). The v2 record is produced
+outside this repository; a late or failed record never holds app delivery.
+
+The in-repo v1 publisher is retired, so both transparency targets exit 2 unless
 `TRANSPARENCY_ACTIVATED=1`; that flag does not by itself authorize a publish.
-The rest of this paragraph describes the dormant publisher. It archives the
+Do not override that guard during a release. The dormant v1 publisher archives the
 full retained candidate plus evidence before exposing only manifests, proofs,
 the signed hash-chained entry, the derived ledger, and the signed latest
 pointer at `transparency.solstone.app`; artifact bytes must never reach that

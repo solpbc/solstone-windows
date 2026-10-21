@@ -15,7 +15,7 @@ is no GitHub Actions release path: `.github/workflows/` does not exist by policy
 | Verify Rust release-manifest evidence offline | `make check-rust-release-manifest` |
 | Source-bound build and atomic finalization | Set the release commit, advisory digest, and the three mirror-packet variables below, then run `make package` |
 | Prove one exact signed candidate by isolated install and explicit smoke | `make prove-rust-release-native RELEASE_DIR=target/release-candidate/<VERSION>` |
-| Publish retained release evidence after delivery | Not active for this product; do not override `TRANSPARENCY_ACTIVATED=0` |
+| Run the retired in-repo v1 publisher | Dormant; do not override `TRANSPARENCY_ACTIVATED=0`; see [Release transparency](#release-transparency) for v2 records |
 | Pull the box's `Releases/` for a controlled aggregate workflow | `make pull-releases` |
 | R2 direct-publication guard (**primary channel remains R2**) | `make publish-r2` (always fails closed) |
 | GitHub direct-publication guard (required release mirror) | `make publish` (always fails closed) |
@@ -458,11 +458,18 @@ certificate, and Session-1 evidence is earned only by running it on the box.
 
 ## Release transparency
 
-Windows release transparency is not active for this product: the v2 release
-record covers the journal only, and this product has no transparency adapter
-yet. The Makefile defaults `TRANSPARENCY_ACTIVATED=0` and both transparency targets
-refuse; do not override that guard during a release. The remainder of this
-section is the dormant transaction contract, not a current release step. When
+Each changed release gets a v2 transparency record after origin publication,
+followed by an independent audit. Records are published at
+[trust.solstone.app](https://trust.solstone.app/). The v2 record is produced
+outside this repository; a late or failed record never holds app delivery.
+
+### Dormant v1 publisher
+
+The in-repo v1 publisher is retired. The Makefile defaults
+`TRANSPARENCY_ACTIVATED=0` and both transparency targets exit 2 unless it is set
+to `1`; that flag does not by itself authorize a publish. Do not override that
+guard during a release. The remainder of this section describes the dormant
+v1 transaction contract. When
 active, run `make publish-transparency
 RELEASE_DIR=target/release-candidate/<VERSION>` only after authoritative
 delivery; transparency publication never gates or rolls back that delivery.
