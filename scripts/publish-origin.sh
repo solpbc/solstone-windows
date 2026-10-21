@@ -26,7 +26,7 @@ die() {
 }
 
 usage() {
-    echo "usage: publish-origin.sh --candidate-dir <directory> --finalization-receipt <json> --source-checkout <directory> --clearance <json> --receipt <json> [--dry-run]" >&2
+    echo "usage: publish-origin.sh --candidate-dir <directory> --package-signature <minisig> --finalization-receipt <json> --source-checkout <directory> --clearance <json> --receipt <json> [--dry-run]" >&2
     exit 2
 }
 
@@ -35,12 +35,18 @@ finalization_receipt=""
 source_checkout=""
 clearance=""
 publication_receipt=""
+package_signature=""
 dry_run=false
 while (($# > 0)); do
     case "$1" in
         --candidate-dir)
             (($# >= 2)) || usage
             candidate_directory="$2"
+            shift 2
+            ;;
+        --package-signature)
+            (($# >= 2)) || usage
+            package_signature="$2"
             shift 2
             ;;
         --finalization-receipt)
@@ -70,9 +76,9 @@ while (($# > 0)); do
         *) usage ;;
     esac
 done
-[[ -n "$candidate_directory" && -n "$finalization_receipt" && -n "$source_checkout" && -n "$clearance" && -n "$publication_receipt" ]] || usage
+[[ -n "$candidate_directory" && -n "$package_signature" && -n "$finalization_receipt" && -n "$source_checkout" && -n "$clearance" && -n "$publication_receipt" ]] || usage
 
-required_tools=(awk cargo cat cmp curl date dirname find git grep jq mkdir mktemp mv realpath rm sha1sum sha256sum sort tr unzip wc)
+required_tools=(awk cargo cat cmp cp curl date dirname find git grep jq minisign mkdir mktemp mv realpath rm sha1sum sha256sum sort tr unzip wc)
 $dry_run || required_tools+=(aws)
 for tool in "${required_tools[@]}"; do
     command -v "$tool" >/dev/null 2>&1 || die "required release tool is unavailable: $tool"
@@ -226,6 +232,28 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+signature_name="$full.minisig"
+signature_snapshot="$stage_root/$signature_name"
+release_public_key="$tooling_root/packaging/keys/solstone-release.pub"
+[[ -f "$package_signature" && ! -L "$package_signature" &&
+   -f "$release_public_key" && ! -L "$release_public_key" ]] ||
+    die "package-signature-invalid: a regular detached signature and compiled release pin are required"
+[[ "$(wc -c < "$package_signature")" -le 4096 ]] ||
+    die "package-signature-invalid: detached signature exceeds the size limit"
+cp -- "$package_signature" "$signature_snapshot" || die "package-signature-invalid: could not snapshot signature"
+minisign -V -H -m "$candidate_directory/$full" -x "$signature_snapshot" -p "$release_public_key" \
+    > "$stage_root/package-signature.log" 2>&1 ||
+    die "package-signature-invalid: full package did not verify against the compiled release pin"
+signature_sha256="$(sha256sum "$signature_snapshot" | awk '{print $1}')"
+
+publication_file() {
+    case "$1" in
+        "$signature_name") printf '%s\n' "$signature_snapshot" ;;
+        rust-release-finalization.json) printf '%s\n' "$finalization_receipt" ;;
+        *) printf '%s/%s\n' "$candidate_directory" "$1" ;;
+    esac
+}
 
 expected_executable_sha="$(jq -er '.packaged_executable.sha256' "$finalization_receipt")" ||
     die "candidate-set-invalid: packaged executable digest is unavailable"
@@ -477,8 +505,8 @@ put_mutable() {
     rm -f "$remote"
 }
 
-archive_names=("${expected_names[@]}" "rust-release-finalization.json")
-flat_immutable=("$full" "$setup")
+archive_names=("$signature_name" "${expected_names[@]}" "rust-release-finalization.json")
+flat_immutable=("$signature_name" "$full" "$setup")
 $has_delta && flat_immutable+=("$delta")
 flat_mutable=("$portable" "$manifest_name" "$assets" "$release_index")
 
@@ -536,16 +564,14 @@ if [[ "${MUTABLE_PRESENT["$PREFIX/$FEED"]}" == 1 ]]; then
 fi
 
 for name in "${archive_names[@]}"; do
-    file="$candidate_directory/$name"
-    [[ "$name" == "rust-release-finalization.json" ]] && file="$finalization_receipt"
+    file="$(publication_file "$name")"
     put_immutable "$PREFIX/v/$version/$name" "$file"
     checkpoint "archive:$name"
 done
 checkpoint "archive"
 
 for name in "${archive_names[@]}"; do
-    file="$candidate_directory/$name"
-    [[ "$name" == "rust-release-finalization.json" ]] && file="$finalization_receipt"
+    file="$(publication_file "$name")"
     public_copy="$stage_root/public-archive-$name"
     curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 -fsS \
         "$ORIGIN_URL/$PREFIX/v/$version/$name" -o "$public_copy" ||
@@ -556,7 +582,7 @@ done
 checkpoint "archive-public"
 
 for name in "${flat_immutable[@]}"; do
-    put_immutable "$PREFIX/$name" "$candidate_directory/$name"
+    put_immutable "$PREFIX/$name" "$(publication_file "$name")"
     checkpoint "immutable:$name"
 done
 checkpoint "immutable"
@@ -566,7 +592,7 @@ for name in "${flat_immutable[@]}"; do
     curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 -fsS \
         "$ORIGIN_URL/$PREFIX/$name" -o "$public_copy" ||
         die "origin-unreachable: public GET failed for $name"
-    cmp -s "$public_copy" "$candidate_directory/$name" ||
+    cmp -s "$public_copy" "$(publication_file "$name")" ||
         die "digest-mismatch: public GET differs for $name"
 done
 checkpoint "immutable-public"
@@ -600,7 +626,7 @@ for name in "${flat_immutable[@]}" "${flat_mutable[@]}" "$FEED"; do
     curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 -fsS \
         "$ORIGIN_URL/$PREFIX/$name" -o "$public_copy" ||
         die "origin-unreachable: public GET failed for $name"
-    cmp -s "$public_copy" "$candidate_directory/$name" ||
+    cmp -s "$public_copy" "$(publication_file "$name")" ||
         die "digest-mismatch: public GET differs for $name"
 done
 
@@ -611,11 +637,13 @@ published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 jq -n --arg product "$PRODUCT" --arg version "$version" --arg source "$source_commit" \
     --arg tooling "$tooling_commit" --arg manifest "$manifest_sha256" --arg origin "$ORIGIN_URL/$PREFIX" \
     --arg published "$published_at" --arg clearance_sha "$(sha256sum "$clearance" | awk '{print $1}')" \
+    --arg signature_name "$signature_name" --arg signature_sha "$signature_sha256" \
     '{schema:"solstone.windows.origin-publication.v1", product:$product, version:$version,
       source_commit:$source, tooling_commit:$tooling, companion_manifest_sha256:$manifest,
       origin:$origin, ordering:"immutable archive, flat versioned artifacts, mutable metadata, releases.win.json last",
       mutable_promotion:"snapshot ETag compare-and-swap; stale writers abort",
-      clearance_sha256:$clearance_sha, public_byte_verification:true, published_at:$published}' > "$receipt_temp" ||
+      clearance_sha256:$clearance_sha, package_signature:{filename:$signature_name,sha256:$signature_sha},
+      public_byte_verification:true, published_at:$published}' > "$receipt_temp" ||
     die "receipt-write-failed: could not render publication receipt"
 mv "$receipt_temp" "$publication_receipt" || die "receipt-write-failed: could not promote publication receipt"
 release_publication_lock

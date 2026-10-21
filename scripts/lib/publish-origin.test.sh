@@ -28,12 +28,13 @@ FAKE_BIN="$TMP_ROOT/bin"
 FAKE_R2="$TMP_ROOT/r2"
 WITNESS="$TMP_ROOT/witness"
 TEST_ACCOUNT_ID=00000000000000000000000000000000
-mkdir -p "$SOURCE" "$CANDIDATE" "$TOOL_REPO/scripts" "$FAKE_BIN" "$FAKE_R2"
+mkdir -p "$SOURCE" "$CANDIDATE" "$TOOL_REPO/scripts" "$TOOL_REPO/packaging/keys" "$FAKE_BIN" "$FAKE_R2"
 : > "$WITNESS"
 
 cp "$REPO_ROOT/scripts/publish-origin.sh" "$TOOL_REPO/scripts/publish-origin.sh"
+minisign -G -W -p "$TOOL_REPO/packaging/keys/solstone-release.pub" -s "$TMP_ROOT/test.key" > "$TMP_ROOT/keygen.log" 2>&1
 git -C "$TOOL_REPO" init -q
-git -C "$TOOL_REPO" add scripts/publish-origin.sh
+git -C "$TOOL_REPO" add scripts/publish-origin.sh packaging/keys/solstone-release.pub
 git -C "$TOOL_REPO" -c user.name=test -c user.email=test@example.invalid commit -qm publisher
 PUBLISHER="$TOOL_REPO/scripts/publish-origin.sh"
 
@@ -50,6 +51,8 @@ DELTA="Solstone-$VERSION-delta.nupkg"
 SETUP="solstone-setup-$VERSION.exe"
 PORTABLE=Solstone-win-Portable.zip
 printf full > "$CANDIDATE/$FULL"
+SIGNATURE="$TMP_ROOT/$FULL.minisig"
+minisign -S -s "$TMP_ROOT/test.key" -m "$CANDIDATE/$FULL" -x "$SIGNATURE" -t "package $FULL" > "$TMP_ROOT/sign.log" 2>&1
 printf delta > "$CANDIDATE/$DELTA"
 printf setup > "$CANDIDATE/$SETUP"
 printf portable > "$CANDIDATE/$PORTABLE"
@@ -163,13 +166,13 @@ chmod +x "$FAKE_BIN"/*
 run_publish() {
     PATH="$FAKE_BIN:$PATH" PUBLICATION_WITNESS="$WITNESS" FAKE_R2="$FAKE_R2" \
         SOLSTONE_R2_ACCOUNT_ID="$TEST_ACCOUNT_ID" AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-        "$PUBLISHER" --candidate-dir "$CANDIDATE" --finalization-receipt "$TMP_ROOT/finalization.json" \
+        "$PUBLISHER" --candidate-dir "$CANDIDATE" --package-signature "$SIGNATURE" --finalization-receipt "$TMP_ROOT/finalization.json" \
         --source-checkout "$SOURCE" --clearance "$TMP_ROOT/clearance.json" --receipt "$TMP_ROOT/publication.json"
 }
 
 if PATH="$FAKE_BIN:$PATH" PUBLICATION_WITNESS="$WITNESS" FAKE_R2="$FAKE_R2" \
     SOLSTONE_R2_ACCOUNT_ID="$TEST_ACCOUNT_ID" AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-    "$PUBLISHER" --candidate-dir "$CANDIDATE" --finalization-receipt "$TMP_ROOT/finalization.json" \
+    "$PUBLISHER" --candidate-dir "$CANDIDATE" --package-signature "$SIGNATURE" --finalization-receipt "$TMP_ROOT/finalization.json" \
     --source-checkout "$SOURCE" --clearance "$TMP_ROOT/missing.json" --receipt "$TMP_ROOT/publication.json" >/dev/null 2>&1; then
     fail "missing clearance must fail"
 fi
@@ -182,6 +185,28 @@ ASSERTIONS=$((ASSERTIONS + 1))
 assert grep -Fq 'tooling-unbound' "$TMP_ROOT/tooling-dirty.out"
 assert test ! -s "$WITNESS"
 rm "$TOOL_REPO/uncommitted"
+
+# Real signature verification must precede every origin request, even when
+# candidate checksums and finalization receipts are internally consistent.
+cp "$SIGNATURE" "$TMP_ROOT/signature.original"
+minisign -G -W -p "$TMP_ROOT/wrong.pub" -s "$TMP_ROOT/wrong.key" > "$TMP_ROOT/wrong-keygen.log" 2>&1
+minisign -S -s "$TMP_ROOT/wrong.key" -m "$CANDIDATE/$FULL" -x "$TMP_ROOT/wrong.minisig" > "$TMP_ROOT/wrong-sign.log" 2>&1
+printf altered-package > "$TMP_ROOT/altered-package"
+minisign -S -s "$TMP_ROOT/test.key" -m "$TMP_ROOT/altered-package" -x "$TMP_ROOT/altered.minisig" > "$TMP_ROOT/altered-sign.log" 2>&1
+minisign -S -l -s "$TMP_ROOT/test.key" -m "$CANDIDATE/$FULL" -x "$TMP_ROOT/legacy.minisig" > "$TMP_ROOT/legacy-sign.log" 2>&1
+for invalid_signature in missing malformed wrong altered legacy; do
+    case "$invalid_signature" in
+        missing) rm -f "$SIGNATURE" ;;
+        malformed) printf malformed > "$SIGNATURE" ;;
+        *) cp "$TMP_ROOT/$invalid_signature.minisig" "$SIGNATURE" ;;
+    esac
+    : > "$WITNESS"
+    if run_publish > "$TMP_ROOT/signature-$invalid_signature.out" 2>&1; then fail "invalid package signature must fail: $invalid_signature"; fi
+    ASSERTIONS=$((ASSERTIONS + 1))
+    assert grep -Fq 'package-signature-invalid' "$TMP_ROOT/signature-$invalid_signature.out"
+    assert test ! -s "$WITNESS"
+done
+cp "$TMP_ROOT/signature.original" "$SIGNATURE"
 
 # Rebind fixture digests so malformed metadata reaches semantic validation.
 cp "$CANDIDATE/assets.win.json" "$TMP_ROOT/assets.original"
@@ -210,7 +235,7 @@ jq --arg sha "$no_delta_manifest_sha" '.candidate.file_count=7 | .companion_mani
     "$TMP_ROOT/finalization.original" > "$TMP_ROOT/finalization.json"
 jq --arg sha "$no_delta_manifest_sha" '.companion_manifest_sha256=$sha' \
     "$TMP_ROOT/clearance.original" > "$TMP_ROOT/clearance.json"
-PATH="$FAKE_BIN:$PATH" "$PUBLISHER" --candidate-dir "$CANDIDATE" \
+PATH="$FAKE_BIN:$PATH" "$PUBLISHER" --candidate-dir "$CANDIDATE" --package-signature "$SIGNATURE" \
     --finalization-receipt "$TMP_ROOT/finalization.json" --source-checkout "$SOURCE" \
     --clearance "$TMP_ROOT/clearance.json" --receipt "$TMP_ROOT/no-delta-publication.json" \
     --dry-run > "$TMP_ROOT/no-delta.out"
@@ -244,12 +269,26 @@ cp "$TMP_ROOT/manifest.original" "$CANDIDATE/$MANIFEST_NAME"
 cp "$TMP_ROOT/finalization.original" "$TMP_ROOT/finalization.json"
 cp "$TMP_ROOT/clearance.original" "$TMP_ROOT/clearance.json"
 
+# An immutable sidecar readback failure holds every mutable object. Its
+# successfully-created equal bytes are reusable by the ordinary retry below.
+: > "$WITNESS"
+if CORRUPT_PUBLIC_KEY="solstone-windows/$FULL.minisig" run_publish > "$TMP_ROOT/signature-readback.out" 2>&1; then
+    fail "signature readback mismatch must hold feed promotion"
+fi
+ASSERTIONS=$((ASSERTIONS + 1))
+assert test -z "$(awk '$1 == "put" && ($2 == "solstone-windows/releases.win.json" || $2 == "solstone-windows/RELEASES") {print}' "$WITNESS")"
+assert test ! -f "$TMP_ROOT/publication.json"
+
 run_publish >/dev/null
 assert jq -e '.schema == "solstone.windows.origin-publication.v1" and .public_byte_verification == true' "$TMP_ROOT/publication.json" >/dev/null
 last_put="$(awk '$1 == "put" && $2 != "solstone-windows/.publication-lock.json" {value=$2} END {print value}' "$WITNESS")"
 assert test "$last_put" = "solstone-windows/releases.win.json"
 assert test -f "$FAKE_R2/solstone-windows/v/$VERSION/rust-release-finalization.json"
 assert cmp -s "$FAKE_R2/solstone-windows/$FULL" "$CANDIDATE/$FULL"
+assert cmp -s "$FAKE_R2/solstone-windows/$FULL.minisig" "$SIGNATURE"
+assert cmp -s "$FAKE_R2/solstone-windows/v/$VERSION/$FULL.minisig" "$SIGNATURE"
+assert jq -e --arg signature "$FULL.minisig" --arg sha "$(sha256sum "$SIGNATURE" | awk '{print $1}')" \
+    '.package_signature.filename == $signature and .package_signature.sha256 == $sha' "$TMP_ROOT/publication.json" >/dev/null
 assert cmp -s "$FAKE_R2/solstone-windows/CHANGELOG.md" "$SOURCE/CHANGELOG.md"
 assert test "$(grep -Fxc "put solstone-windows/CHANGELOG.md" "$WITNESS")" = 1
 
