@@ -1407,9 +1407,10 @@ function isAccessDenied(report: SourceReport | undefined): boolean {
   return report?.status === "faulted" && (report.reason === "access_denied" || report.reason === "AccessDenied");
 }
 
+// A source's raw fault detail is a diagnostic for logs and the health dump;
+// the pill carries only the status word.
 function sourcePill(
   status: "off" | "paused" | "on" | "unavailable" | "error" | null,
-  detail?: string | null,
   needsPermission = false,
 ): HTMLElement {
   if (status === null) {
@@ -1420,10 +1421,9 @@ function sourcePill(
   const severity: Severity =
     status === "on" ? "ok" : status === "error" || status === "unavailable" ? "attention" : "neutral";
   const word = status === "unavailable" && needsPermission ? "needs permission" : status;
-  const label = detail ? `${word}: ${detail}` : word;
-  const el = pill(label, severity);
+  const el = pill(word, severity);
   el.style.flexShrink = "0";
-  el.style.whiteSpace = detail ? "normal" : "nowrap";
+  el.style.whiteSpace = "nowrap";
   el.style.maxWidth = "100%";
   el.dataset.status = status;
   return el;
@@ -3744,7 +3744,7 @@ function renderSourceControl(
   }
 
   const needsPermission = isAccessDenied(report);
-  const pillEl = selectable(automation(sourcePill(status, report?.detail, needsPermission), stateId));
+  const pillEl = selectable(automation(sourcePill(status, needsPermission), stateId));
   wrap.append(toggle, pillEl);
   if (status === "unavailable" && needsPermission && kind === "mic") {
     wrap.append(
@@ -3841,7 +3841,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
       ["desktop_activity", "desktop activity", ids["settings.sources.desktopActivity.state"]],
     ] as const) {
       const report = sourceByKind(dump, kind);
-      sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused", report), report?.detail, isAccessDenied(report)), id))));
+      sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused", report), isAccessDenied(report)), id))));
     }
     if (latestBrowser) sources.append(...renderBrowserRows(latestBrowser));
     return sources;
@@ -4352,7 +4352,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
           : "no sound output is available. connect or enable an output device in windows sound settings, then retry.")
       : report?.reason === "access_denied" || report?.reason === "AccessDenied"
         ? "access was denied. check windows permissions for this source, then retry."
-        : report?.detail;
+        : undefined;
     const label = reason ? `${status}: ${reason}` : status;
     const textEl = text("span", label);
     textEl.classList.add("proof-status");
@@ -4495,7 +4495,7 @@ function renderWizardSourceControl(
   }
   if (status !== null) {
     toggle.dataset.status = status;
-    toggle.append(sourcePill(status, report?.detail, isAccessDenied(report)));
+    toggle.append(sourcePill(status, isAccessDenied(report)));
   }
   const control = document.createElement("div");
   control.append(toggle);

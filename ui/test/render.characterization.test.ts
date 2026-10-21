@@ -176,16 +176,16 @@ describe("settings renderer characterization", () => {
     );
   });
 
-  it("renders a faulted required source with its detail", () => {
+  it("renders a faulted required source without its raw detail", () => {
     const dump = faultedSourceDump();
     app.__test__.setRoute("sources");
     app.__test__.setHealth(dump);
 
     app.__test__.renderSettings(dump);
 
-    expect(present(ids["settings.sources.screen.state"]).textContent).toContain(
-      "needs permission: screen denied",
-    );
+    const screenState = present(ids["settings.sources.screen.state"]).textContent;
+    expect(screenState).toContain("needs permission");
+    expect(screenState).not.toContain("screen denied");
     present(ids["settings.sources.systemAudio.state"]);
     present(ids["settings.sources.mic.state"]);
     present(ids["settings.sources.desktopActivity.state"]);
