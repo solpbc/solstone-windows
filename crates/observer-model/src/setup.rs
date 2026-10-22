@@ -374,12 +374,13 @@ const PREDECESSOR_FILES: &[&str] = &[
 ///
 /// Predecessor evidence closed set:
 /// - files: pairing.json, mic.json, exclusions.json, hotkey.json, update.json, pause.txt
-/// - file: packages/.betaId
+/// - a non-empty packages/.betaId (an id the update library writes only when the file is absent)
 /// - any direct child inside segments/
 ///
 /// Not evidence: the data root itself, anything under logs/, setup.json,
-/// empty segments/, packages/ without .betaId. Unreadable stat on a candidate
-/// counts as evidence (not fresh). NotFound does not.
+/// empty segments/, packages/ without .betaId, an empty packages/.betaId (the
+/// app's own updater creates it empty at startup, before classification).
+/// Unreadable stat on a candidate counts as evidence (not fresh). NotFound does not.
 pub fn has_predecessor_evidence(data_root: &Path) -> Result<bool, io::Error> {
     // If the data root cannot be listed (and is not NotFound), we cannot prove it is clean.
     match fs::read_dir(data_root) {
@@ -398,9 +399,11 @@ pub fn has_predecessor_evidence(data_root: &Path) -> Result<bool, io::Error> {
         }
     }
 
-    // Check packages/.betaId
+    // Check packages/.betaId. Only a non-empty one is evidence: the updater
+    // creates it empty on every launch, before the first classification.
     let beta_id = data_root.join("packages").join(".betaId");
     match fs::symlink_metadata(&beta_id) {
+        Ok(meta) if meta.is_file() && meta.len() == 0 => {}
         Ok(_) => return Ok(true),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Ok(true),
@@ -1091,6 +1094,73 @@ mod tests {
         let third = load_or_classify(&root);
         assert_eq!(third, LoadOutcome::Valid(SetupConfig::fresh()));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_updater_staging_id_alone_is_a_fresh_install() {
+        // The app's own updater creates an empty packages/.betaId on every launch,
+        // before setup classification runs. A first launch must still ask for
+        // consent: the wizard opens and nothing is captured or started at login.
+        let root = temp_test_dir("empty-beta-id");
+        fs::create_dir_all(root.join("packages")).unwrap();
+        fs::write(root.join("packages").join(".betaId"), b"").unwrap();
+        fs::create_dir_all(root.join("logs")).unwrap();
+        fs::write(root.join("logs").join("observer.log"), b"started").unwrap();
+
+        assert!(!has_predecessor_evidence(&root).unwrap());
+        let LoadOutcome::Fresh(config) = load_or_classify(&root) else {
+            panic!("an empty staging id must not classify as a prior install");
+        };
+        assert_eq!(config.wizard, WizardStep::Mic);
+        assert!(!(config.mic || config.system_audio || config.screen || config.desktop_activity));
+        assert_eq!(config.start_at_login, LoginPreference::explicit(false));
+        assert_eq!(
+            load_or_classify(&root),
+            LoadOutcome::Valid(SetupConfig::fresh())
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn written_staging_id_is_a_prior_install() {
+        let root = temp_test_dir("written-beta-id");
+        fs::create_dir_all(root.join("packages")).unwrap();
+        fs::write(
+            root.join("packages").join(".betaId"),
+            b"0b6f3c1e-8f2a-4c55-9d0e-2a7b1f4c9e31",
+        )
+        .unwrap();
+
+        assert!(has_predecessor_evidence(&root).unwrap());
+        assert_eq!(
+            load_or_classify(&root),
+            LoadOutcome::Legacy(SetupConfig::legacy())
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_staging_id_counts_as_a_prior_install() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_test_dir("unreadable-beta-id");
+        let packages = root.join("packages");
+        fs::create_dir_all(&packages).unwrap();
+        fs::write(packages.join(".betaId"), b"").unwrap();
+        fs::set_permissions(&packages, fs::Permissions::from_mode(0o000)).unwrap();
+        let stat_refused = fs::symlink_metadata(packages.join(".betaId")).is_err();
+        let evidence = has_predecessor_evidence(&root);
+        fs::set_permissions(&packages, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&root);
+
+        // A privileged runner can stat through 0o000; the case only exists when it cannot.
+        if stat_refused {
+            assert!(
+                evidence.unwrap(),
+                "an unreadable staging id is not proof of a fresh install"
+            );
+        }
     }
 
     #[test]

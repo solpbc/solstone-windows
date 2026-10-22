@@ -1361,6 +1361,30 @@ mod boundary_tests {
     }
 
     #[test]
+    fn first_launch_updater_preparation_still_opens_setup_with_nothing_on() {
+        // The real first-launch order: startup prepares the updater over the install
+        // root, finds nothing pending, then the window classifies setup on the same root.
+        let root = tempfile::tempdir().unwrap();
+        let manager = prepare_manager(manager(root.path(), "http://127.0.0.1:9", false)).unwrap();
+        let staging_id = root.path().join("packages").join(".betaId");
+        assert_eq!(manager.get_packages_dir().join(".betaId"), staging_id);
+        assert_eq!(std::fs::read(&staging_id).unwrap(), b"");
+        assert!(matches!(
+            apply_from_cache(&manager, &ProductionReleaseVerifier, || {}, || {}),
+            ApplyOutcome::NothingPending
+        ));
+
+        let observer_model::LoadOutcome::Fresh(setup) =
+            observer_model::load_or_classify(root.path())
+        else {
+            panic!("a first launch must ask for consent, not resume as a prior install");
+        };
+        assert_eq!(setup.wizard, observer_model::WizardStep::Mic);
+        assert!(!(setup.mic || setup.system_audio || setup.screen || setup.desktop_activity));
+        assert_eq!(setup, observer_model::SetupConfig::fresh());
+    }
+
+    #[test]
     fn occupied_staging_id_refuses_manager_preparation() {
         let root = tempfile::tempdir().unwrap();
         let manager = manager(root.path(), "http://127.0.0.1:9", false);
