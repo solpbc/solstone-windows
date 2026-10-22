@@ -4,11 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.34] - 2026-10-22
+## [2.0.35] - 2026-10-22
 
 ### Fixed
 
-- security fix: someone impersonating the update server could have supplied altered software as an update. updates now require a valid sol pbc signature on the complete package.
+- security fix: someone impersonating the update server could have supplied altered software as an update. updates now install only if they carry a valid sol pbc signature.
 
 ## [2.0.33] - 2026-10-21
 
