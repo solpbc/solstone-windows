@@ -103,10 +103,20 @@ unmaintained = "workspace"
 # and a `[patch]` can't cross plist's semver requirement. Remove BOTH ids and verify
 # the real bump (`cargo update -p plist` then `cargo update -p quick-xml`) once plist
 # ships a release accepting quick-xml >=0.41. Not silenced globally — the whole graph
-# is still gated; only these two known-transitive ids are waived.
+# is still gated; only these two known-transitive quick-xml ids are waived.
+#
+# TEMPORARY, tracked for removal. The crypto-bigint advisory below (2026-10-23)
+# marks every crypto-bigint below 0.7.6 for secret-dependent branches. This graph
+# carries 0.5.5 only through spl-core -> p256 0.13 -> elliptic-curve 0.13, and
+# spl-core uses p256 only in relay_window.rs to decode an SPKI public key (a
+# peer's or the home's CA) and re-encode it into an id: public data, no secret
+# scalar arithmetic. 0.7.6 needs p256 0.14, which crosses spl-rust's semver pin,
+# so there is no lock-only fix. Remove the id once spl-rust adopts p256 0.14 and
+# this lock carries crypto-bigint >=0.7.6.
 ignore = [
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE." },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE." },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 constant-time timing variability; transitive via elliptic-curve 0.13 <- p256 0.13 <- spl-core (spl-rust v0.11.1), which uses p256 only to parse and re-encode public keys into an id, with no secret-integer arithmetic; the fix (>=0.7.6) is reachable only through p256 0.14. Remove once spl-rust adopts p256 0.14 and this lock carries crypto-bigint >=0.7.6. Owner: VPE." },
 ]
 
 [sources]

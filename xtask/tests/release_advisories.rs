@@ -375,6 +375,7 @@ fn deterministic_advisory_config_is_byte_exact() {
         "ignore = [\n",
         "  { id = \"RUSTSEC-2026-0194\", reason = \"quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE.\" },\n",
         "  { id = \"RUSTSEC-2026-0195\", reason = \"quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE.\" },\n",
+        "  { id = \"RUSTSEC-2026-0387\", reason = \"crypto-bigint 0.5.5 constant-time timing variability; transitive via elliptic-curve 0.13 <- p256 0.13 <- spl-core (spl-rust v0.11.1), which uses p256 only to parse and re-encode public keys into an id, with no secret-integer arithmetic; the fix (>=0.7.6) is reachable only through p256 0.14. Remove once spl-rust adopts p256 0.14 and this lock carries crypto-bigint >=0.7.6. Owner: VPE.\" },\n",
         "]\n"
     )
     .replace(

@@ -135,7 +135,7 @@ impl Fixture {
         .expect("write synthetic lockfile");
         fs::write(
             checkout.join("deny.toml"),
-            b"[advisories]\nyanked = \"warn\"\nunmaintained = \"workspace\"\nignore = [\n  { id = \"RUSTSEC-2026-0194\", reason = \"Synthetic policy fixture.\" },\n  { id = \"RUSTSEC-2026-0195\", reason = \"Synthetic policy fixture.\" },\n]\n",
+            b"[advisories]\nyanked = \"warn\"\nunmaintained = \"workspace\"\nignore = [\n  { id = \"RUSTSEC-2026-0194\", reason = \"Synthetic policy fixture.\" },\n  { id = \"RUSTSEC-2026-0195\", reason = \"Synthetic policy fixture.\" },\n  { id = \"RUSTSEC-2026-0387\", reason = \"Synthetic policy fixture.\" },\n]\n",
         )
         .expect("write synthetic policy");
         for relative in [
@@ -1497,7 +1497,7 @@ fn write_consumer(root: &Path) {
     .expect("write consumer lockfile");
     fs::write(
         root.join("deny.toml"),
-        b"[advisories]\nyanked = \"warn\"\nunmaintained = \"workspace\"\nignore = [\n  { id = \"RUSTSEC-2026-0194\", reason = \"Synthetic policy fixture.\" },\n  { id = \"RUSTSEC-2026-0195\", reason = \"Synthetic policy fixture.\" },\n]\n",
+        b"[advisories]\nyanked = \"warn\"\nunmaintained = \"workspace\"\nignore = [\n  { id = \"RUSTSEC-2026-0194\", reason = \"Synthetic policy fixture.\" },\n  { id = \"RUSTSEC-2026-0195\", reason = \"Synthetic policy fixture.\" },\n  { id = \"RUSTSEC-2026-0387\", reason = \"Synthetic policy fixture.\" },\n]\n",
     )
     .expect("write consumer policy");
 }

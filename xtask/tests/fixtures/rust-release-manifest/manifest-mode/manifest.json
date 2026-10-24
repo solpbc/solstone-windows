@@ -34,7 +34,8 @@
   },
   "active_exceptions": [
     "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195"
+    "RUSTSEC-2026-0195",
+    "RUSTSEC-2026-0387"
   ],
   "artifacts": [
     {

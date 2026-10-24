@@ -8,7 +8,7 @@
   "ui_package_lock_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "companion_manifest": {
     "filename": "solstone-windows-x86_64-pc-windows-msvc.rust-release-manifest.json",
-    "sha256": "3f4ceb1217b62973bdea1e7d82da2c842d0b01277921a6a202fc333872cfbd0d"
+    "sha256": "e1c8092b4bc66aa67b22475c4c6302ca43cc855e6119d268919ccb7efbd8eb86"
   },
   "candidate": {
     "relative_path": "target/release-candidate/0.2.11",
