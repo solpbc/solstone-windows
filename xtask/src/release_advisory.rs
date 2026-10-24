@@ -32,11 +32,7 @@ pub const ADVISORY_DB_RELATIVE: &str = "target/release-advisory-db";
 const MAX_SNAPSHOT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_RECEIPT_FUTURE: Duration = Duration::from_secs(5 * 60);
 const REQUIRED_RECEIPT_MAX_AGE: u64 = 24 * 60 * 60;
-const EXPECTED_IGNORE_IDS: [&str; 3] = [
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
-    "RUSTSEC-2026-0387",
-];
+const EXPECTED_IGNORE_IDS: [&str; 2] = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"];
 
 pub struct MirrorPacketInputs<'a> {
     pub locator: &'a str,

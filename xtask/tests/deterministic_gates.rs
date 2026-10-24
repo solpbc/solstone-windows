@@ -140,11 +140,7 @@ fn cargo_deny_and_transfer_preflights_are_mandatory() {
     assert!(deny_preflight.contains("required=0.20.2"));
     assert!(deny_preflight.contains("Run 'make provision-cargo-deny'."));
     assert!(deny_preflight.contains("exit 1"));
-    for advisory in [
-        "RUSTSEC-2026-0194",
-        "RUSTSEC-2026-0195",
-        "RUSTSEC-2026-0387",
-    ] {
+    for advisory in ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"] {
         let line = deny_toml
             .lines()
             .find(|line| line.contains(advisory))
