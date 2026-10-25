@@ -24,21 +24,19 @@ pub struct MicController {
 }
 
 impl MicController {
-    /// Load the persisted config (default when absent/corrupt), normalize it,
-    /// share it behind the config handle, and seed the file on disk.
+    /// Load the persisted config (default when absent/corrupt), normalize it, and
+    /// share it behind the config handle. Nothing is written until the owner sets it.
     pub fn new(path: PathBuf) -> Self {
         let loaded = std::fs::read_to_string(&path)
             .ok()
             .and_then(|text| serde_json::from_str::<MicConfig>(&text).ok())
             .unwrap_or_default()
             .normalized();
-        let ctrl = Self {
-            config: Arc::new(RwLock::new(loaded.clone())),
+        Self {
+            config: Arc::new(RwLock::new(loaded)),
             active: Arc::new(Mutex::new(None)),
             path: Arc::new(path),
-        };
-        ctrl.persist(&loaded);
-        ctrl
+        }
     }
 
     /// The shared config handle the mic source reconciles selection + gain from.

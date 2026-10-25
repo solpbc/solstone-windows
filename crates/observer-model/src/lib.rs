@@ -40,10 +40,9 @@ pub use scheme::{
     scheme_uninstall_should_remove, SchemeLaunchDecision,
 };
 pub use setup::{
-    atomic_write_setup, evaluate_login_decision, has_predecessor_evidence, load_or_classify,
-    read_setup_read_only, CopyClass, FailedSourceWrite, HandoffOverlay, LoadOutcome, LoginDecision,
-    RegistryReadState, RetryOutcome, SetupAuthority, SetupConfig, SetupSnapshot, WizardStep,
-    CURRENT_SETUP_VERSION, SETUP_FILE_NAME,
+    atomic_write_setup, evaluate_login_decision, load_or_classify, read_setup_read_only, CopyClass,
+    FailedSourceWrite, HandoffOverlay, LoadOutcome, LoginDecision, RegistryReadState, RetryOutcome,
+    SetupAuthority, SetupConfig, SetupSnapshot, WizardStep, CURRENT_SETUP_VERSION, SETUP_FILE_NAME,
 };
 pub use tray_status::{
     classify_tray, owner_fault_detail, pause_enabled, permission_blocked, restart_enabled,

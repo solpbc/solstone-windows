@@ -3,8 +3,8 @@
 
 //! Durable setup and source preferences (`setup.json`).
 //!
-//! Owns the classification of fresh vs legacy installs, the pure login
-//! decision evaluation, and atomic load/store of `%LocalAppData%\Solstone\setup.json`.
+//! Owns first-run classification, the pure login decision evaluation, and
+//! atomic load/store of `%LocalAppData%\Solstone\setup.json`.
 
 #![forbid(unsafe_code)]
 
@@ -471,74 +471,10 @@ impl SetupSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadOutcome {
     Fresh(SetupConfig),
-    Legacy(SetupConfig),
     Valid(SetupConfig),
     FailedClosed(SetupConfig),
     Abort,
     LegacyUnsaved(SetupConfig),
-}
-
-const PREDECESSOR_FILES: &[&str] = &[
-    "pairing.json",
-    "mic.json",
-    "exclusions.json",
-    "hotkey.json",
-    "update.json",
-    "pause.txt",
-];
-
-/// Scan the data root for predecessor evidence of a prior run.
-///
-/// Predecessor evidence closed set:
-/// - files: pairing.json, mic.json, exclusions.json, hotkey.json, update.json, pause.txt
-/// - a non-empty packages/.betaId (an id the update library writes only when the file is absent)
-/// - any direct child inside segments/
-///
-/// Not evidence: the data root itself, anything under logs/, setup.json,
-/// empty segments/, packages/ without .betaId, an empty packages/.betaId (the
-/// app's own updater creates it empty at startup, before classification).
-/// Unreadable stat on a candidate counts as evidence (not fresh). NotFound does not.
-pub fn has_predecessor_evidence(data_root: &Path) -> Result<bool, io::Error> {
-    // If the data root cannot be listed (and is not NotFound), we cannot prove it is clean.
-    match fs::read_dir(data_root) {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e),
-    }
-
-    // Check direct candidate files
-    for filename in PREDECESSOR_FILES {
-        let p = data_root.join(filename);
-        match fs::symlink_metadata(&p) {
-            Ok(_) => return Ok(true),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => return Ok(true), // Unreadable stat on candidate counts as evidence
-        }
-    }
-
-    // Check packages/.betaId. Only a non-empty one is evidence: the updater
-    // creates it empty on every launch, before the first classification.
-    let beta_id = data_root.join("packages").join(".betaId");
-    match fs::symlink_metadata(&beta_id) {
-        Ok(meta) if meta.is_file() && meta.len() == 0 => {}
-        Ok(_) => return Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => return Ok(true),
-    }
-
-    // Check segments/ children
-    let segments_dir = data_root.join("segments");
-    match fs::read_dir(&segments_dir) {
-        Ok(mut entries) => {
-            if entries.next().is_some() {
-                return Ok(true);
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => return Ok(true), // Unreadable stat on candidate counts as evidence
-    }
-
-    Ok(false)
 }
 
 /// Saved setup bytes read as the current version.
@@ -662,13 +598,11 @@ pub fn startup_load(outcome: LoadOutcome) -> StartupLoad {
             setup_read_failed: false,
             config: cfg,
         }),
-        LoadOutcome::Legacy(cfg) | LoadOutcome::LegacyUnsaved(cfg) => {
-            StartupLoad::Ready(StartupSetup {
-                login_choice: cfg.start_at_login.choice(),
-                setup_read_failed: false,
-                config: cfg,
-            })
-        }
+        LoadOutcome::LegacyUnsaved(cfg) => StartupLoad::Ready(StartupSetup {
+            login_choice: cfg.start_at_login.choice(),
+            setup_read_failed: false,
+            config: cfg,
+        }),
         LoadOutcome::Valid(cfg) => StartupLoad::Ready(StartupSetup {
             login_choice: cfg.start_at_login.choice(),
             setup_read_failed: false,
@@ -707,25 +641,12 @@ pub fn load_or_classify(data_root: &Path) -> LoadOutcome {
             LoadOutcome::FailedClosed(SetupConfig::fail_closed())
         }
         Err(_) => {
-            // Missing file. Check predecessor evidence.
-            match has_predecessor_evidence(data_root) {
+            // Missing file: setup runs with every source off, whatever else is
+            // on disk. Other files never stand in for the owner's choices.
+            let fresh = SetupConfig::fresh();
+            match atomic_write_setup(data_root, &fresh) {
+                Ok(()) => LoadOutcome::Fresh(fresh),
                 Err(_) => LoadOutcome::Abort,
-                Ok(true) => {
-                    // Legacy migration
-                    let legacy = SetupConfig::legacy();
-                    match atomic_write_setup(data_root, &legacy) {
-                        Ok(()) => LoadOutcome::Legacy(legacy),
-                        Err(_) => LoadOutcome::LegacyUnsaved(legacy),
-                    }
-                }
-                Ok(false) => {
-                    // Fresh install
-                    let fresh = SetupConfig::fresh();
-                    match atomic_write_setup(data_root, &fresh) {
-                        Ok(()) => LoadOutcome::Fresh(fresh),
-                        Err(_) => LoadOutcome::Abort,
-                    }
-                }
             }
         }
     }
@@ -1297,74 +1218,69 @@ mod tests {
     }
 
     #[test]
-    fn empty_updater_staging_id_alone_is_a_fresh_install() {
-        // The app's own updater creates an empty packages/.betaId on every launch,
-        // before setup classification runs. A first launch must still ask for
-        // consent: the wizard opens and nothing is captured or started at login.
-        let root = temp_test_dir("empty-beta-id");
-        fs::create_dir_all(root.join("packages")).unwrap();
-        fs::write(root.join("packages").join(".betaId"), b"").unwrap();
-        fs::create_dir_all(root.join("logs")).unwrap();
-        fs::write(root.join("logs").join("observer.log"), b"started").unwrap();
+    fn a_missing_setup_file_asks_with_every_source_off_whatever_else_is_on_disk() {
+        // Files a launch leaves behind are never consent. A first launch (the
+        // updater's empty staging id, logs) and an install that lost setup.json
+        // both open the wizard with nothing captured or started at login, and
+        // the other files are left as they were.
+        type Seed = fn(&Path);
+        let cases: &[(&str, Seed)] = &[
+            ("empty-beta-id", |root| {
+                fs::create_dir_all(root.join("packages")).unwrap();
+                fs::write(root.join("packages").join(".betaId"), b"").unwrap();
+                fs::create_dir_all(root.join("logs")).unwrap();
+                fs::write(root.join("logs").join("observer.log"), b"started").unwrap();
+            }),
+            ("written-beta-id", |root| {
+                fs::create_dir_all(root.join("packages")).unwrap();
+                fs::write(
+                    root.join("packages").join(".betaId"),
+                    b"0b6f3c1e-8f2a-4c55-9d0e-2a7b1f4c9e31",
+                )
+                .unwrap();
+            }),
+            ("lost-setup", |root| {
+                for name in [
+                    "pairing.json",
+                    "mic.json",
+                    "exclusions.json",
+                    "hotkey.json",
+                    "update.json",
+                    "pause.txt",
+                ] {
+                    fs::write(root.join(name), b"{}").unwrap();
+                }
+                fs::create_dir_all(root.join("segments").join("20261025")).unwrap();
+            }),
+        ];
+        for (name, seed) in cases {
+            let root = temp_test_dir(name);
+            seed(&root);
+            let mic_before = fs::read(root.join("mic.json")).ok();
 
-        assert!(!has_predecessor_evidence(&root).unwrap());
-        let LoadOutcome::Fresh(config) = load_or_classify(&root) else {
-            panic!("an empty staging id must not classify as a prior install");
-        };
-        assert_eq!(config.wizard, WizardStep::Mic);
-        assert!(
-            !(config.mic
-                || config.system_audio
-                || config.screen
-                || config.desktop_activity_enabled())
-        );
-        assert_eq!(config.start_at_login, LoginPreference::explicit(false));
-        assert_eq!(
-            load_or_classify(&root),
-            LoadOutcome::Valid(SetupConfig::fresh())
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn written_staging_id_is_a_prior_install() {
-        let root = temp_test_dir("written-beta-id");
-        fs::create_dir_all(root.join("packages")).unwrap();
-        fs::write(
-            root.join("packages").join(".betaId"),
-            b"0b6f3c1e-8f2a-4c55-9d0e-2a7b1f4c9e31",
-        )
-        .unwrap();
-
-        assert!(has_predecessor_evidence(&root).unwrap());
-        assert_eq!(
-            load_or_classify(&root),
-            LoadOutcome::Legacy(SetupConfig::legacy())
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unreadable_staging_id_counts_as_a_prior_install() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = temp_test_dir("unreadable-beta-id");
-        let packages = root.join("packages");
-        fs::create_dir_all(&packages).unwrap();
-        fs::write(packages.join(".betaId"), b"").unwrap();
-        fs::set_permissions(&packages, fs::Permissions::from_mode(0o000)).unwrap();
-        let stat_refused = fs::symlink_metadata(packages.join(".betaId")).is_err();
-        let evidence = has_predecessor_evidence(&root);
-        fs::set_permissions(&packages, fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = fs::remove_dir_all(&root);
-
-        // A privileged runner can stat through 0o000; the case only exists when it cannot.
-        if stat_refused {
+            let LoadOutcome::Fresh(config) = load_or_classify(&root) else {
+                panic!("{name}: a missing setup.json must open the wizard");
+            };
+            assert_eq!(config.wizard, WizardStep::Mic, "{name}");
             assert!(
-                evidence.unwrap(),
-                "an unreadable staging id is not proof of a fresh install"
+                !(config.mic
+                    || config.system_audio
+                    || config.screen
+                    || config.desktop_activity_enabled()),
+                "{name}"
             );
+            assert_eq!(
+                config.start_at_login,
+                LoginPreference::explicit(false),
+                "{name}"
+            );
+            assert_eq!(fs::read(root.join("mic.json")).ok(), mic_before, "{name}");
+            assert_eq!(
+                load_or_classify(&root),
+                LoadOutcome::Valid(SetupConfig::fresh()),
+                "{name}"
+            );
+            let _ = fs::remove_dir_all(&root);
         }
     }
 
@@ -2258,9 +2174,9 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
         }
 
-        // 6. Legacy: write mic.json as predecessor evidence, no setup.json, load_for_startup true, choice Some(true), setup_read_failed false
+        // 6. Lost setup.json: mic.json left behind, load_for_startup true, choice Some(false), setup_read_failed false
         {
-            let root = temp_test_dir("legacy-startup-load");
+            let root = temp_test_dir("lost-setup-startup-load");
             fs::write(root.join("mic.json"), b"{}").unwrap();
             let outcome = load_for_startup(&root, true);
             let startup = startup_load(outcome);
@@ -2268,7 +2184,7 @@ mod tests {
                 StartupLoad::Ready(s) => s,
                 StartupLoad::Abort => panic!("expected Ready"),
             };
-            assert_eq!(ready.login_choice, Some(true));
+            assert_eq!(ready.login_choice, Some(false));
             assert!(!ready.setup_read_failed);
             let _ = fs::remove_dir_all(&root);
         }
@@ -2487,13 +2403,6 @@ mod desktop_activity_settings {
             config.desktop_activity_choices(),
             DesktopActivityChoices::default()
         );
-        assert!(saved_activity_keys(&root).is_empty());
-
-        fs::write(root.join("mic.json"), b"{}").unwrap();
-        fs::remove_file(root.join(SETUP_FILE_NAME)).unwrap();
-        let LoadOutcome::Legacy(_) = load_or_classify(&root) else {
-            panic!("prior install");
-        };
         assert!(saved_activity_keys(&root).is_empty());
         let _ = fs::remove_dir_all(&root);
     }

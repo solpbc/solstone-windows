@@ -24,21 +24,20 @@ pub struct HotkeyController {
 }
 
 impl HotkeyController {
-    /// Load the persisted config (default when absent or corrupt), share it behind
-    /// the desired handle, and seed the file on disk. The registration outcome
-    /// starts `Inactive` and is updated by the pump once it reconciles.
+    /// Load the persisted config (default when absent or corrupt) and share it
+    /// behind the desired handle. Nothing is written until the owner sets it. The
+    /// registration outcome starts `Inactive` and is updated by the pump once it
+    /// reconciles.
     pub fn new(path: PathBuf) -> Self {
         let loaded = std::fs::read_to_string(&path)
             .ok()
             .and_then(|text| serde_json::from_str::<HotkeyConfig>(&text).ok())
             .unwrap_or_default();
-        let ctrl = Self {
+        Self {
             desired: Arc::new(Mutex::new(loaded)),
             outcome: Arc::new(Mutex::new(HotkeyRegistration::Inactive)),
             path: Arc::new(path),
-        };
-        ctrl.persist(&loaded);
-        ctrl
+        }
     }
 
     /// The desired-config handle the pump reads each poll.
