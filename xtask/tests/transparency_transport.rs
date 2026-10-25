@@ -110,7 +110,8 @@ impl CommandRunner for CurlLeavesNoResponseRunner {
 
 #[test]
 fn transparency_curl_credentials_reach_only_the_stdin_config() {
-    let root = temporary_root("curl-shape");
+    let root_dir = temporary_root("curl-shape");
+    let root = root_dir.path().to_path_buf();
     let runner = CurlShapeRunner::new();
     let transport = CurlTransparencyTransport::new(
         &runner,
@@ -181,7 +182,8 @@ fn transparency_curl_credentials_reach_only_the_stdin_config() {
 
 #[test]
 fn transparency_curl_list_builds_a_url_for_a_trailing_slash_prefix() {
-    let root = temporary_root("curl-list-prefix");
+    let root_dir = temporary_root("curl-list-prefix");
+    let root = root_dir.path().to_path_buf();
     let runner = CurlShapeRunner::new();
     let transport = CurlTransparencyTransport::new(
         &runner,
@@ -232,7 +234,8 @@ fn transparency_curl_list_builds_a_url_for_a_trailing_slash_prefix() {
 
 #[test]
 fn transparency_curl_get_builds_the_exact_url_and_argument_shape() {
-    let root = temporary_root("curl-get-shape");
+    let root_dir = temporary_root("curl-get-shape");
+    let root = root_dir.path().to_path_buf();
     let runner = CurlShapeRunner::new();
     let transport = curl_transport(&runner, &root);
 
@@ -273,7 +276,8 @@ fn transparency_curl_get_builds_the_exact_url_and_argument_shape() {
 
 #[test]
 fn transparency_curl_mutable_put_builds_the_exact_url_and_argument_shape() {
-    let root = temporary_root("curl-mutable-shape");
+    let root_dir = temporary_root("curl-mutable-shape");
+    let root = root_dir.path().to_path_buf();
     let runner = CurlShapeRunner::new();
     let transport = curl_transport(&runner, &root);
 
@@ -320,7 +324,8 @@ fn transparency_curl_mutable_put_builds_the_exact_url_and_argument_shape() {
 
 #[test]
 fn transparency_curl_list_prefix_validation_table_fails_closed() {
-    let root = temporary_root("curl-list-validation");
+    let root_dir = temporary_root("curl-list-validation");
+    let root = root_dir.path().to_path_buf();
     let runner = CurlShapeRunner::new();
     let transport = curl_transport(&runner, &root);
 
@@ -355,7 +360,8 @@ fn transparency_curl_list_prefix_validation_table_fails_closed() {
 
 #[test]
 fn transparency_curl_observes_http_denial_on_process_success() {
-    let root = temporary_root("curl-denied");
+    let root_dir = temporary_root("curl-denied");
+    let root = root_dir.path().to_path_buf();
     let transport = CurlTransparencyTransport::new(
         &CurlDeniedRunner,
         absolute_program("curl"),
@@ -381,7 +387,8 @@ fn transparency_curl_observes_http_denial_on_process_success() {
 
 #[test]
 fn transparency_curl_never_reuses_preexisting_response_files() {
-    let root = temporary_root("curl-stale");
+    let root_dir = temporary_root("curl-stale");
+    let root = root_dir.path().to_path_buf();
     let scratch = root.join("scratch");
     fs::create_dir_all(&scratch).expect("create scratch");
     fs::write(scratch.join("headers-0"), b"HTTP/1.1 200 OK\r\n\r\n").expect("seed stale headers");
@@ -410,7 +417,8 @@ fn transparency_curl_never_reuses_preexisting_response_files() {
 
 #[test]
 fn transparency_directory_transport_enforces_conditional_writes_and_records_statuses() {
-    let transport = DirectoryTransparencyTransport::new(temporary_root("directory-fake"));
+    let root_dir = temporary_root("directory-fake");
+    let transport = DirectoryTransparencyTransport::new(root_dir.path().to_path_buf());
     let destination = TransparencyObjectDestination {
         plane: TransparencyPlane::S3,
         key: "releases/solstone-windows/latest.json".to_owned(),
@@ -518,14 +526,11 @@ fn normalized_curl_args(args: &[String]) -> Vec<&str> {
     normalized
 }
 
-fn temporary_root(label: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "solstone-transparency-{label}-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create temporary root");
-    root
+fn temporary_root(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("solstone-transparency-{label}-"))
+        .tempdir()
+        .expect("create temporary root")
 }
 
 #[cfg(not(windows))]

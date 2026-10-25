@@ -111,6 +111,12 @@ assert_file_count() {
 
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/deterministic-gates.XXXXXX")
 
+# Test the preflight against a frozen synthetic pin, independent of release bumps.
+mkdir -p "$TMP_ROOT/toolchain/scripts"
+cp "$REPO_ROOT/scripts/preflight-toolchain.sh" "$TMP_ROOT/toolchain/scripts/"
+printf '[toolchain]\nchannel = "1.96.0"\n' > "$TMP_ROOT/toolchain/rust-toolchain.toml"
+TOOLCHAIN_PREFLIGHT="$TMP_ROOT/toolchain/scripts/preflight-toolchain.sh"
+
 FAKE_RUSTC="$TMP_ROOT/fake-rustc"
 cat > "$FAKE_RUSTC" <<'EOF'
 #!/usr/bin/env sh
@@ -121,7 +127,7 @@ echo "release: ${FAKE_RELEASE}"
 EOF
 chmod +x "$FAKE_RUSTC"
 
-if toolchain_output=$(RUSTC="$FAKE_RUSTC" FAKE_RELEASE=9.9.9 sh "$REPO_ROOT/scripts/preflight-toolchain.sh" 2>&1); then
+if toolchain_output=$(RUSTC="$FAKE_RUSTC" FAKE_RELEASE=9.9.9 sh "$TOOLCHAIN_PREFLIGHT" 2>&1); then
   fail "toolchain skew must fail"
 fi
 ASSERTIONS=$((ASSERTIONS + 1))
@@ -130,7 +136,7 @@ assert_eq \
   "ERROR: Rust toolchain mismatch: expected 1.96.0, actual 9.9.9. Run 'make rust-toolchain'." \
   "$toolchain_output"
 
-toolchain_output=$(RUSTC="$FAKE_RUSTC" FAKE_RELEASE=1.96.0 sh "$REPO_ROOT/scripts/preflight-toolchain.sh" 2>&1)
+toolchain_output=$(RUSTC="$FAKE_RUSTC" FAKE_RELEASE=1.96.0 sh "$TOOLCHAIN_PREFLIGHT" 2>&1)
 assert_eq "matching toolchain is silent" "" "$toolchain_output"
 
 SPACED_RUSTC_DIR="$TMP_ROOT/compiler path with spaces"
@@ -138,9 +144,9 @@ SPACED_RUSTC="$SPACED_RUSTC_DIR/fake rustc"
 mkdir -p "$SPACED_RUSTC_DIR"
 cp "$FAKE_RUSTC" "$SPACED_RUSTC"
 chmod +x "$SPACED_RUSTC"
-toolchain_output=$(RUSTC="$SPACED_RUSTC" FAKE_RELEASE=1.96.0 sh "$REPO_ROOT/scripts/preflight-toolchain.sh" 2>&1)
+toolchain_output=$(RUSTC="$SPACED_RUSTC" FAKE_RELEASE=1.96.0 sh "$TOOLCHAIN_PREFLIGHT" 2>&1)
 assert_eq "matching toolchain path with spaces is silent" "" "$toolchain_output"
-if toolchain_output=$(RUSTC="$SPACED_RUSTC" FAKE_RELEASE=9.9.9 sh "$REPO_ROOT/scripts/preflight-toolchain.sh" 2>&1); then
+if toolchain_output=$(RUSTC="$SPACED_RUSTC" FAKE_RELEASE=9.9.9 sh "$TOOLCHAIN_PREFLIGHT" 2>&1); then
   fail "skewed toolchain path with spaces must fail"
 fi
 ASSERTIONS=$((ASSERTIONS + 1))

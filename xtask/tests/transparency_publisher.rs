@@ -262,7 +262,8 @@ impl CommandRunner for OneVerificationWaitFailure<'_> {
 
 #[test]
 fn transparency_publisher_archives_artifacts_but_never_addresses_them_publicly() {
-    let checkout = temporary_root("publisher");
+    let checkout_dir = temporary_root("publisher");
+    let checkout = checkout_dir.path().to_path_buf();
     fs::write(checkout.join("transparency-head-log.jsonl"), b"").expect("create empty head log");
     let release_dir = fixture_release_dir();
     let manifest: Manifest = serde_json::from_slice(
@@ -2074,7 +2075,8 @@ fn transparency_diagnostics_classify_observed_expected_and_one_remediation() {
 }
 
 fn assert_archive_fault_fails_before_publication(label: &str, archive_behavior: ArchiveBehavior) {
-    let checkout = temporary_root(label);
+    let checkout_dir = temporary_root(label);
+    let checkout = checkout_dir.path().to_path_buf();
     fs::write(checkout.join("transparency-head-log.jsonl"), b"").expect("create empty head log");
     let release_dir = fixture_release_dir();
     let manifest: Manifest = serde_json::from_slice(
@@ -2157,7 +2159,8 @@ fn run_crash_case(
     expect_committed_body: bool,
     remove_target_before_retry: bool,
 ) {
-    let checkout = temporary_root(label);
+    let checkout_dir = temporary_root(label);
+    let checkout = checkout_dir.path().to_path_buf();
     fs::write(checkout.join("transparency-head-log.jsonl"), b"").expect("create empty head log");
     let release_dir = fixture_release_dir();
     let manifest: Manifest = serde_json::from_slice(
@@ -2280,7 +2283,8 @@ fn run_crash_case(
 }
 
 fn run_race_case(label: &str, mode: RaceMode) {
-    let checkout = temporary_root(label);
+    let checkout_dir = temporary_root(label);
+    let checkout = checkout_dir.path().to_path_buf();
     fs::write(checkout.join("transparency-head-log.jsonl"), b"").expect("create empty head log");
     let release_dir = fixture_release_dir();
     let manifest: Manifest = serde_json::from_slice(
@@ -2397,11 +2401,13 @@ struct OwnedPublisherFixture {
     transport: DirectoryTransparencyTransport,
     minisign_program: PathBuf,
     curl_program: PathBuf,
+    _checkout_dir: tempfile::TempDir,
 }
 
 impl OwnedPublisherFixture {
     fn new(label: &str) -> Self {
-        let checkout = temporary_root(label);
+        let checkout_dir = temporary_root(label);
+        let checkout = checkout_dir.path().to_path_buf();
         fs::write(checkout.join("transparency-head-log.jsonl"), b"")
             .expect("create empty head log");
         let release_dir = fixture_release_dir();
@@ -2413,6 +2419,7 @@ impl OwnedPublisherFixture {
         let facts = facts_for(&manifest);
         let archive_program = absolute_program("archive");
         Self {
+            _checkout_dir: checkout_dir,
             evidence_dir: checkout.join("evidence"),
             environment: environment(&archive_program),
             runner: FakePublisherRunner {
@@ -2583,7 +2590,11 @@ fn versioned_release_fixture(checkout: &Path, version: &str) -> (PathBuf, Checko
 
 fn facts_for(manifest: &Manifest) -> CheckoutFacts {
     let root = repo_root();
-    let projection = rust_release_manifest::project_release_toolchain(&root).unwrap();
+    // The sample release keeps its captured compiler policy across toolchain bumps.
+    let projection = rust_release_manifest::project_release_toolchain(
+        &root.join("xtask/tests/fixtures/rust-release-manifest"),
+    )
+    .unwrap();
     CheckoutFacts {
         product: PRODUCT.to_owned(),
         version: manifest.version.clone(),
@@ -2780,14 +2791,11 @@ fn fixture_release_dir() -> PathBuf {
         .join("tests/fixtures/rust-release-manifest/release-candidate/0.2.11")
 }
 
-fn temporary_root(label: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "solstone-transparency-publisher-{label}-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create temporary root");
-    root
+fn temporary_root(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("solstone-transparency-publisher-{label}-"))
+        .tempdir()
+        .expect("create temporary root")
 }
 
 #[cfg(not(windows))]

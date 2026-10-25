@@ -1993,7 +1993,8 @@ pub fn run_self_check(root: &Path) -> Result<ClassifierReport, ManifestError> {
 }
 
 fn fixture_facts(root: &Path, manifest: &Manifest) -> Result<CheckoutFacts, ManifestError> {
-    let projection = project_release_toolchain(root)?;
+    // Historical test evidence keeps its own captured compiler policy.
+    let projection = project_release_toolchain(&root.join(FIXTURE_ROOT))?;
     let active_exceptions = read_active_exceptions(root)?;
     Ok(CheckoutFacts {
         product: PRODUCT.to_owned(),

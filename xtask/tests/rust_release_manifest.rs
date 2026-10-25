@@ -171,7 +171,8 @@ fn read_manifest(path: &Path) -> Manifest {
 }
 
 fn facts_for(manifest: &Manifest) -> CheckoutFacts {
-    let projection = rust_release_manifest::project_release_toolchain(&repo_root()).unwrap();
+    // Frozen evidence is checked against its own captured tool policy.
+    let projection = rust_release_manifest::project_release_toolchain(&fixture_root()).unwrap();
     CheckoutFacts {
         product: PRODUCT.to_owned(),
         version: manifest.version.clone(),

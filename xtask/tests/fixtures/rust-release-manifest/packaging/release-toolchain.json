@@ -1,0 +1,154 @@
+{
+  "schema": "solstone.release-toolchain.v1",
+  "groups": {
+    "unsigned": [
+      "rustc",
+      "cargo",
+      "cargo-deny",
+      "dotnet",
+      "vpk",
+      "node",
+      "npm",
+      "msvc-cl",
+      "windows-sdk",
+      "powershell"
+    ],
+    "signedAdditional": [
+      "smctl",
+      "signtool"
+    ]
+  },
+  "selection": {
+    "actions": {
+      "npm_ci": {
+        "tool": "npm",
+        "argv": ["--prefix", "ui", "ci", "--offline"]
+      },
+      "npm_build": {
+        "tool": "npm",
+        "argv": ["--prefix", "ui", "run", "build"]
+      },
+      "cargo_release_build": {
+        "tool": "cargo",
+        "argv": ["build", "--locked", "-p", "solstone-windows-app", "--release", "--features", "custom-protocol"]
+      },
+      "signing_auth_preflight": {
+        "tool": "powershell",
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "packaging/signing/preflight-auth.ps1", "-SmctlPath", "{smctl_path}"]
+      },
+      "vpk_pack": {
+        "tool": "vpk",
+        "argv": ["pack", "--packId", "Solstone", "--packVersion", "{version}", "--packDir", "{stage_dir}", "--mainExe", "solstone-windows-app.exe", "--outputDir", "{output_dir}", "--packTitle", "solstone", "--packAuthors", "sol pbc", "--icon", "src-tauri/icons/icon.ico", "--channel", "win", "--framework", "webview2", "--releaseNotes", "{release_notes}"]
+      },
+      "smctl_sign": {
+        "tool": "smctl",
+        "argv": ["sign", "--keypair-alias", "{keypair_alias}", "--input", "{file}"]
+      },
+      "signtool_verify": {
+        "tool": "signtool",
+        "argv": ["verify", "/pa", "/all", "/v", "{file}"]
+      },
+      "cargo_deny_advisories": {
+        "tool": "cargo",
+        "argv": ["deny", "--locked", "--offline", "--config", "{advisory_config}", "check", "advisories"]
+      },
+      "native_smoke": {
+        "tool": "powershell",
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/smoke.ps1", "-AppExe", "{installed_exe}", "-ExpectedVersion", "{expected_version}", "-ExpectedSha256", "{expected_sha256}", "-DisableInstalledFallback", "-DotnetPath", "{dotnet_path}"]
+      }
+    },
+    "msvcEnvironment": [
+      "PATH",
+      "INCLUDE",
+      "LIB",
+      "LIBPATH",
+      "VCINSTALLDIR",
+      "VCToolsInstallDir",
+      "VCToolsVersion",
+      "UniversalCRTSdkDir",
+      "UCRTVersion",
+      "WindowsSdkDir",
+      "WindowsSdkBinPath",
+      "WindowsLibPath",
+      "WindowsSDKVersion"
+    ]
+  },
+  "tools": {
+    "rustc": {
+      "expected": {
+        "release": "1.96.0",
+        "host": "x86_64-pc-windows-msvc"
+      },
+      "observation": "rustc -Vv release: and host:",
+      "repair": "Run 'make rust-toolchain' on the Windows build box."
+    },
+    "cargo": {
+      "expected": { "version": "1.96.0" },
+      "observation": "cargo --version",
+      "repair": "Run 'make rust-toolchain' on the Windows build box."
+    },
+    "cargo-deny": {
+      "expected": { "version": "0.20.2" },
+      "observation": "cargo-deny --version",
+      "repair": "Run 'make provision-cargo-deny'."
+    },
+    "dotnet": {
+      "expected": { "version": "8.0.422" },
+      "observation": "dotnet --version",
+      "repair": "Install the pinned .NET SDK on the Windows build box."
+    },
+    "vpk": {
+      "expected": {
+        "packageId": "vpk",
+        "version": "1.2.0",
+        "command": "vpk"
+      },
+      "observation": "dotnet tool list -g Package Id/Version/Commands plus %USERPROFILE%\\.dotnet\\tools\\vpk.exe",
+      "repair": "Install the pinned Velopack global tool on the Windows build box."
+    },
+    "node": {
+      "expected": { "version": "24.16.0" },
+      "observation": "node --version with one leading v removed",
+      "repair": "Install Node.js 24.16.0 on the Windows build box."
+    },
+    "npm": {
+      "expected": { "version": "11.13.0" },
+      "observation": "one reachable callable npm.cmd co-located with the selected pinned node executable, then npm.cmd --version",
+      "repair": "Install npm 11.13.0 with the pinned Node.js toolchain."
+    },
+    "msvc-cl": {
+      "expected": {
+        "compilerVersion": "19.44.35228",
+        "toolsetVersion": "14.44.35207",
+        "host": "x64",
+        "target": "x64"
+      },
+      "observation": "exact vcvarsall.bat x64 -vcvars_ver=<toolsetVersion> activation plus exact VC\\Tools\\MSVC\\<toolsetVersion>\\bin\\Hostx64\\x64\\cl.exe /Bv in one isolated cmd.exe child, with separately attributed activation exit/host/target/toolset and compiler banner/D8003/exit evidence",
+      "repair": "Install the pinned Visual Studio Build Tools MSVC x64 toolset."
+    },
+    "windows-sdk": {
+      "expected": { "version": "10.0.26100.0" },
+      "observation": "%ProgramFiles(x86)%\\Windows Kits\\10\\Lib directory version",
+      "repair": "Install Windows SDK 10.0.26100.0."
+    },
+    "powershell": {
+      "expected": { "majorMinor": "5.1" },
+      "observation": "$PSVersionTable.PSVersion normalized to Major.Minor",
+      "repair": "Run the release rail under Windows PowerShell 5.1."
+    },
+    "smctl": {
+      "expected": { "version": "1.64.2" },
+      "observation": "smctl --version",
+      "repair": "Install DigiCert smctl 1.64.2 on the Windows build box."
+    },
+    "signtool": {
+      "expected": {
+        "path": "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\signtool.exe",
+        "productVersion": "10.0.26100.7705",
+        "originalFilename": "SIGNTOOL.EXE"
+      },
+      "observation": "exact-path FileVersionInfo ProductVersion and OriginalFilename",
+      "repair": "Install the pinned x64 Windows SDK SignTool; ambient PATH copies are not accepted."
+    }
+  }
+}

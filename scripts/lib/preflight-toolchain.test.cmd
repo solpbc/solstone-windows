@@ -4,7 +4,7 @@
 
 setlocal enableextensions
 set "REPO_ROOT=%~dp0..\.."
-set "PREFLIGHT=%REPO_ROOT%\scripts\preflight-toolchain.cmd"
+set "SOURCE_PREFLIGHT=%REPO_ROOT%\scripts\preflight-toolchain.cmd"
 set "FIXTURES=%~dp0fixtures"
 set "ORIGINAL_PATH=%PATH%"
 set "TEST_ROOT=%TEMP%\solstone-preflight-%RANDOM%-%RANDOM%"
@@ -15,6 +15,11 @@ set "TEST_ROOT_OWNED="
 if exist "%TEST_ROOT%" goto setup_failed
 mkdir "%TEST_ROOT%" >nul 2>&1 || goto setup_failed
 set "TEST_ROOT_OWNED=1"
+mkdir "%TEST_ROOT%\scripts" >nul 2>&1 || goto setup_failed
+copy /y "%SOURCE_PREFLIGHT%" "%TEST_ROOT%\scripts\preflight-toolchain.cmd" >nul || goto setup_failed
+>"%TEST_ROOT%\rust-toolchain.toml" echo [toolchain]
+>>"%TEST_ROOT%\rust-toolchain.toml" echo channel = "1.96.0"
+set "PREFLIGHT=%TEST_ROOT%\scripts\preflight-toolchain.cmd"
 mkdir "%TEST_ROOT%\compiler path with spaces" >nul 2>&1 || goto setup_failed
 copy /y "%FIXTURES%\rustc-valid\rustc.cmd" "%TEST_ROOT%\compiler path with spaces\rustc.cmd" >nul || goto setup_failed
 

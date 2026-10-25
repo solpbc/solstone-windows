@@ -214,7 +214,7 @@ mod tests {
 
         let mut decoder = ChunkedDecoder::new();
         let mut body = Vec::new();
-        for byte in [b'a', b'b', b'c'] {
+        for byte in *b"abc" {
             let mut chunk = format!("{CHUNK_SIZE:x}\r\n").into_bytes();
             let data_start = chunk.len();
             chunk.resize(data_start + CHUNK_SIZE, byte);

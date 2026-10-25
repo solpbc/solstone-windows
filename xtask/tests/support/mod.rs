@@ -1580,9 +1580,12 @@ fn action(program: &str, argv: &[&str]) -> Value {
 }
 
 fn selection_value(mode: SelectionMode) -> Value {
+    let rust_version = xtask::rust_release_manifest::project_release_toolchain(workspace_root())
+        .expect("release toolchain")
+        .cargo_version;
     let mut tools = json!({
-        "rustc": {"path": format!("{FAKE_TOOLS_ROOT}/rustc"), "version": "1.96.0", "host": "x86_64-pc-windows-msvc"},
-        "cargo": {"path": CARGO, "version": "1.96.0"},
+        "rustc": {"path": format!("{FAKE_TOOLS_ROOT}/rustc"), "version": rust_version, "host": "x86_64-pc-windows-msvc"},
+        "cargo": {"path": CARGO, "version": rust_version},
         "cargo-deny": {"path": format!("{FAKE_TOOLS_ROOT}/cargo-deny"), "version": "0.20.2"},
         "dotnet": {"path": DOTNET, "version": "8.0.422"},
         "vpk": {"path": VPK, "version": "1.2.0", "packageId": "vpk"},

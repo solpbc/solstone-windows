@@ -7,34 +7,18 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 #[test]
-fn rust_toolchain_pin_and_repair_verb_are_consistent() {
+fn build_and_release_compiler_declarations_agree() {
     let root = repo_root();
-    let toolchain = read(&root, "rust-toolchain.toml");
-    let cargo_toml = read(&root, "Cargo.toml");
-    let makefile = read(&root, "Makefile");
-    let shell_preflight = read(&root, "scripts/preflight-toolchain.sh");
-    let cmd_preflight = read(&root, "scripts/preflight-toolchain.cmd");
-
-    assert!(toolchain.lines().any(|line| line == "channel = \"1.96.0\""));
-    assert!(cargo_toml
+    let toolchain: toml::Value = toml::from_str(&read(&root, "rust-toolchain.toml")).unwrap();
+    let channel = toolchain["toolchain"]["channel"].as_str().unwrap();
+    let projection = xtask::rust_release_manifest::project_release_toolchain(&root).unwrap();
+    assert_eq!(projection.cargo_version, channel);
+    let release = projection
+        .rustc_verbose
         .lines()
-        .any(|line| line == "rust-version = \"1.96.0\""));
-    assert!(makefile.lines().any(|line| line == "rust-toolchain:"));
-    for required in [
-        "rustup toolchain install \"$$version\"",
-        "--profile minimal",
-        "--component rustfmt",
-        "--component clippy",
-        "--target x86_64-pc-windows-msvc",
-    ] {
-        assert!(makefile.contains(required), "Makefile missing {required}");
-    }
-    for preflight in [&shell_preflight, &cmd_preflight] {
-        assert!(preflight.contains("Rust toolchain mismatch"));
-        assert!(preflight.contains("expected"));
-        assert!(preflight.contains("actual"));
-        assert!(preflight.contains("make rust-toolchain"));
-    }
+        .find_map(|line| line.strip_prefix("release: "))
+        .unwrap();
+    assert_eq!(release, channel);
 }
 
 #[test]

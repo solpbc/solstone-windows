@@ -2,7 +2,7 @@
 # target is installed alongside the host target so the platform tier and packaged
 # binary build with the same compiler used by the host-testable crates.
 [toolchain]
-channel = "1.96.0"
+channel = "1.97.1"
 targets = ["x86_64-pc-windows-msvc"]
 components = ["clippy", "rustfmt"]
 profile = "minimal"

@@ -82,8 +82,10 @@ fn rust_release_manifest_mode_accepts_a_bare_filename_candidate() {
         &fs::read(temp.0.join("manifest.json")).expect("read fixture manifest"),
     )
     .expect("parse fixture manifest");
-    let projection =
-        rust_release_manifest::project_release_toolchain(&root).expect("project release toolchain");
+    let projection = rust_release_manifest::project_release_toolchain(
+        &root.join("xtask/tests/fixtures/rust-release-manifest"),
+    )
+    .expect("project fixture toolchain");
     let facts = CheckoutFacts {
         product: PRODUCT.to_owned(),
         version: manifest.version.clone(),

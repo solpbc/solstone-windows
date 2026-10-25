@@ -56,6 +56,9 @@ function Save-Contract($Contract) {
 
 function Fresh-Contract {
     $contract = Get-Content -LiteralPath $SourceContract -Raw -Encoding UTF8 | ConvertFrom-Json
+    # Frozen synthetic compiler inputs stay independent of production pin bumps.
+    $contract.tools.rustc.expected.release = "1.96.0"
+    $contract.tools.cargo.expected.version = "1.96.0"
     $signtoolPath = Join-Path $FakeKits "bin\10.0.26100.0\x64\signtool.exe"
     $cmdMetadata = [Diagnostics.FileVersionInfo]::GetVersionInfo($signtoolPath)
     $contract.tools.signtool.expected.path = $signtoolPath

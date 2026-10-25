@@ -76,14 +76,14 @@
   "tools": {
     "rustc": {
       "expected": {
-        "release": "1.96.0",
+        "release": "1.97.1",
         "host": "x86_64-pc-windows-msvc"
       },
       "observation": "rustc -Vv release: and host:",
       "repair": "Run 'make rust-toolchain' on the Windows build box."
     },
     "cargo": {
-      "expected": { "version": "1.96.0" },
+      "expected": { "version": "1.97.1" },
       "observation": "cargo --version",
       "repair": "Run 'make rust-toolchain' on the Windows build box."
     },

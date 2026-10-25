@@ -29,6 +29,9 @@ fn action(program: &str, argv: &[&str]) -> Value {
 }
 
 fn valid_selection(mode: SelectionMode) -> Value {
+    let rust_version = xtask::rust_release_manifest::project_release_toolchain(workspace_root())
+        .expect("release toolchain")
+        .cargo_version;
     let cargo = format!("{PRIVATE_ROOT}/cargo.exe");
     let npm = format!("{PRIVATE_ROOT}/npm.cmd");
     let powershell = format!("{PRIVATE_ROOT}/powershell.exe");
@@ -38,10 +41,10 @@ fn valid_selection(mode: SelectionMode) -> Value {
     let mut tools = json!({
         "rustc": {
             "path": format!("{PRIVATE_ROOT}/rustc.exe"),
-            "version": "1.96.0",
+            "version": rust_version,
             "host": "x86_64-pc-windows-msvc"
         },
-        "cargo": { "path": cargo, "version": "1.96.0" },
+        "cargo": { "path": cargo, "version": rust_version },
         "cargo-deny": {
             "path": format!("{PRIVATE_ROOT}/cargo-deny.exe"),
             "version": "0.20.2"
@@ -407,7 +410,10 @@ fn valid_signed_and_unsigned_records_parse_and_project_authority() {
         let projection = selection
             .sanitized_projection(workspace_root())
             .expect("project manifest-safe selected tools");
-        assert_eq!(projection.cargo_version, "1.96.0");
+        assert_eq!(
+            projection.cargo_version,
+            valid_selection(mode)["tools"]["cargo"]["version"]
+        );
         assert_eq!(
             projection
                 .native_tools
