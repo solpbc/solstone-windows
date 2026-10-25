@@ -4,15 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.37] - 2026-10-25
 
 ### Changed
 
 - desktop activity now starts and pauses with screen, and adds window titles and page addresses to your journal unless you turn them off. in settings you can turn it off, or keep it on while paused or with screen off. if you set up before this version, desktop activity, window titles and page addresses are now on whenever screen is on, even if you'd turned them off. you can turn any of them off in settings.
-
-### Fixed
-
-- security fix: updated a cryptography dependency used by private connections.
 
 ## [2.0.36] - 2026-10-24
 
