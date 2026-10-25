@@ -877,6 +877,33 @@ pub fn set_source_enabled(
     Ok(())
 }
 
+/// Keep desktop activity on through the main pause and with screen off.
+#[tauri::command]
+pub fn set_desktop_activity_through_pause(
+    state: tauri::State<'_, crate::app::AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    require_setup_sequence()?;
+    let persisted = {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let persisted = auth.set_desktop_activity_through_pause(enabled);
+        if !enabled || persisted {
+            let _ = state
+                .commands
+                .send(EngineCommand::SetDesktopActivityThroughPause { enabled });
+        }
+        persisted
+    };
+    publish_setup(&state);
+    if !persisted {
+        return Err("failed to save setup preference".to_string());
+    }
+    Ok(())
+}
+
 /// Set the desktop activity window titles preference.
 #[tauri::command]
 pub fn set_desktop_activity_window_titles(
@@ -1032,6 +1059,11 @@ pub fn retry_save(state: tauri::State<'_, crate::app::AppState>) -> Result<(), S
                 .send(EngineCommand::SetDesktopActivityPreferences {
                     window_titles: projection.desktop_activity_window_titles,
                     page_addresses: projection.desktop_activity_page_addresses,
+                });
+            let _ = state
+                .commands
+                .send(EngineCommand::SetDesktopActivityThroughPause {
+                    enabled: projection.desktop_activity_through_pause,
                 });
         }
         for kind in outcome.started {

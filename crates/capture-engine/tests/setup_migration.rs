@@ -181,15 +181,19 @@ fn dark_startup_creates_nothing_and_retains_existing_off_and_corrupt_choices() {
 }
 
 #[test]
-fn legacy_activity_false() {
+fn legacy_activity_follows_screen_without_saving_a_choice() {
     let legacy = SetupConfig::legacy();
-    assert!(!legacy.desktop_activity);
-    assert!(!legacy.desktop_activity_window_titles);
-    assert!(!legacy.desktop_activity_page_addresses);
+    assert_eq!(legacy.desktop_activity, None);
+    assert_eq!(legacy.desktop_activity_window_titles, None);
+    assert_eq!(legacy.desktop_activity_page_addresses, None);
+    let snapshot = legacy.to_snapshot();
+    assert!(snapshot.desktop_activity);
+    assert!(snapshot.desktop_activity_window_titles);
+    assert!(snapshot.desktop_activity_page_addresses);
 }
 
 #[test]
-fn version_1_file_missing_new_fields_leaves_activity_and_preferences_false() {
+fn version_1_file_missing_activity_fields_upgrades_to_activity_following_screen() {
     let root = temp_root("v1-missing");
     let v1_json = r#"{
       "version": 1,
@@ -209,9 +213,10 @@ fn version_1_file_missing_new_fields_leaves_activity_and_preferences_false() {
             assert!(cfg.mic);
             assert_eq!(cfg.start_at_login.choice(), Some(true));
             assert!(cfg.notice_dismissed);
-            assert!(!cfg.desktop_activity);
-            assert!(!cfg.desktop_activity_window_titles);
-            assert!(!cfg.desktop_activity_page_addresses);
+            assert!(cfg.desktop_activity_enabled());
+            assert!(cfg.desktop_activity_window_titles());
+            assert!(cfg.desktop_activity_page_addresses());
+            assert_eq!(cfg.version, observer_model::CURRENT_SETUP_VERSION);
         }
         other => panic!("expected Valid, got {other:?}"),
     }
@@ -229,9 +234,11 @@ fn corrupt_setup_fails_closed_with_activity_off() {
             assert!(!cfg.system_audio);
             assert!(!cfg.mic);
             assert_eq!(cfg.start_at_login.choice(), None);
-            assert!(!cfg.desktop_activity);
-            assert!(!cfg.desktop_activity_window_titles);
-            assert!(!cfg.desktop_activity_page_addresses);
+            assert!(!cfg.desktop_activity_enabled());
+            assert_eq!(
+                cfg.desktop_activity_choices(),
+                observer_model::setup::DesktopActivityChoices::default()
+            );
         }
         other => panic!("expected FailedClosed, got {other:?}"),
     }
@@ -250,7 +257,11 @@ fn failed_on_does_not_run() {
 
     let mut auth = SetupAuthority::new();
     auth.set_root(bad_root.clone());
-    auth.seed(&SetupSnapshot::default());
+    auth.seed(&SetupSnapshot {
+        screen: true,
+        desktop_activity_allowed: false,
+        ..Default::default()
+    });
 
     let res = auth.set_source(SourceKind::DesktopActivity, true);
     assert!(!res, "failed persist must return false");
@@ -270,6 +281,7 @@ fn failed_off_is_replayed() {
     let mut auth = SetupAuthority::new();
     auth.set_root(root.clone());
     auth.seed(&SetupSnapshot {
+        screen: true,
         desktop_activity: true,
         ..Default::default()
     });
@@ -296,7 +308,7 @@ fn failed_off_is_replayed() {
     // File on disk now reflects OFF
     match load_or_classify(&root) {
         LoadOutcome::Valid(cfg) => {
-            assert!(!cfg.desktop_activity);
+            assert_eq!(cfg.desktop_activity, Some(false));
         }
         other => panic!("expected Valid, got {other:?}"),
     }
@@ -359,8 +371,8 @@ fn the_two_preferences_fail_independently() {
 
     match load_or_classify(&root) {
         LoadOutcome::Valid(cfg) => {
-            assert!(!cfg.desktop_activity_window_titles);
-            assert!(!cfg.desktop_activity_page_addresses);
+            assert_eq!(cfg.desktop_activity_window_titles, Some(false));
+            assert_eq!(cfg.desktop_activity_page_addresses, Some(false));
         }
         other => panic!("expected Valid, got {other:?}"),
     }

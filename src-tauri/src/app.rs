@@ -595,6 +595,7 @@ pub fn run(
             crate::ipc::open_browser_store,
             crate::ipc::browser_discard_waiting,
             crate::ipc::set_source_enabled,
+            crate::ipc::set_desktop_activity_through_pause,
             crate::ipc::set_desktop_activity_window_titles,
             crate::ipc::set_desktop_activity_page_addresses,
             crate::ipc::set_start_at_login,

@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- desktop activity now starts and pauses with screen, and adds window titles and page addresses unless you turn them off. in settings you can turn it off, or keep it on while paused or with screen off. if you set up before this version, your desktop activity settings move to these once.
+
 ### Fixed
 
 - security fix: updated a cryptography dependency used by private connections.

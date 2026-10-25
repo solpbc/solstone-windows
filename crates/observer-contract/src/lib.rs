@@ -95,6 +95,8 @@ pub mod settings {
         "settings.sources.desktopActivity.windowTitles";
     pub const SOURCES_DESKTOP_ACTIVITY_PAGE_ADDRESSES: &str =
         "settings.sources.desktopActivity.pageAddresses";
+    pub const SOURCES_DESKTOP_ACTIVITY_THROUGH_PAUSE: &str =
+        "settings.sources.desktopActivity.throughPause";
     pub const SOURCES_SAVE_RETRY: &str = "settings.sources.saveRetry";
     pub const SOURCES_BROWSER_OFFER: &str = "settings.sources.browser.offer";
     pub const SOURCES_BROWSER_STORES: &str = "settings.sources.browser.stores";
@@ -261,6 +263,10 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         (
             "settings.sources.desktopActivity.pageAddresses",
             settings::SOURCES_DESKTOP_ACTIVITY_PAGE_ADDRESSES,
+        ),
+        (
+            "settings.sources.desktopActivity.throughPause",
+            settings::SOURCES_DESKTOP_ACTIVITY_THROUGH_PAUSE,
         ),
         ("settings.sources.saveRetry", settings::SOURCES_SAVE_RETRY),
         ("settings.setup.step", settings::SETUP_STEP),

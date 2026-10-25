@@ -27,8 +27,38 @@ pub fn is_setup_ingress(arg: &str) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("solstone://"))
 }
 
-pub const CURRENT_SETUP_VERSION: u32 = 1;
+/// Version 2: desktop activity follows screen, and its settings are saved only
+/// once the owner sets them.
+pub const CURRENT_SETUP_VERSION: u32 = 2;
+/// Version 1 wrote the desktop activity settings as first-run defaults, so a
+/// saved value there is not an owner choice. Loading it discards those values
+/// once and saves version 2.
+const PRE_ACTIVITY_FOLLOWS_SCREEN_VERSION: u32 = 1;
 pub const SETUP_FILE_NAME: &str = "setup.json";
+
+/// Code defaults for the desktop activity settings. An unset setting is never
+/// saved and reads as its default here, so a later default change reaches
+/// every owner who has not chosen.
+pub const DESKTOP_ACTIVITY_DEFAULT: bool = true;
+pub const DESKTOP_ACTIVITY_THROUGH_PAUSE_DEFAULT: bool = false;
+pub const DESKTOP_ACTIVITY_WINDOW_TITLES_DEFAULT: bool = true;
+pub const DESKTOP_ACTIVITY_PAGE_ADDRESSES_DEFAULT: bool = true;
+
+/// Whether desktop activity runs as a source: the owner has not turned it off,
+/// and screen is on or the owner keeps activity on through a pause. The main
+/// pause itself is applied by the engine.
+pub fn desktop_activity_runs(allowed: bool, screen: bool, through_pause: bool) -> bool {
+    allowed && (screen || through_pause)
+}
+
+/// The owner's saved desktop activity choices. `None` means not chosen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopActivityChoices {
+    pub allowed: Option<bool>,
+    pub through_pause: Option<bool>,
+    pub window_titles: Option<bool>,
+    pub page_addresses: Option<bool>,
+}
 
 /// Wizard progress step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +151,10 @@ impl<'de> Deserialize<'de> for LoginPreference {
     }
 }
 
-/// Durable schema for `setup.json` (version 1).
+/// Durable schema for `setup.json` (version 2).
+///
+/// The desktop activity settings hold only what the owner set: an unset one is
+/// left out of the file and reads as its `DESKTOP_ACTIVITY_*_DEFAULT`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetupConfig {
     pub version: u32,
@@ -131,12 +164,16 @@ pub struct SetupConfig {
     pub start_at_login: LoginPreference,
     pub wizard: WizardStep,
     pub notice_dismissed: bool,
-    #[serde(default)]
-    pub desktop_activity: bool,
-    #[serde(default)]
-    pub desktop_activity_window_titles: bool,
-    #[serde(default)]
-    pub desktop_activity_page_addresses: bool,
+    /// The owner's desktop activity switch. Off means activity never runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_activity: Option<bool>,
+    /// Keep desktop activity on through the main pause and with screen off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_activity_through_pause: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_activity_window_titles: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_activity_page_addresses: Option<bool>,
 }
 
 impl SetupConfig {
@@ -149,9 +186,10 @@ impl SetupConfig {
             start_at_login: LoginPreference::explicit(false),
             wizard: WizardStep::Mic,
             notice_dismissed: true,
-            desktop_activity: false,
-            desktop_activity_window_titles: false,
-            desktop_activity_page_addresses: false,
+            desktop_activity: None,
+            desktop_activity_through_pause: None,
+            desktop_activity_window_titles: None,
+            desktop_activity_page_addresses: None,
         }
     }
 
@@ -164,9 +202,10 @@ impl SetupConfig {
             start_at_login: LoginPreference::explicit(true),
             wizard: WizardStep::Done,
             notice_dismissed: false,
-            desktop_activity: false,
-            desktop_activity_window_titles: false,
-            desktop_activity_page_addresses: false,
+            desktop_activity: None,
+            desktop_activity_through_pause: None,
+            desktop_activity_window_titles: None,
+            desktop_activity_page_addresses: None,
         }
     }
 
@@ -179,10 +218,55 @@ impl SetupConfig {
             start_at_login: LoginPreference::unknown(),
             wizard: WizardStep::Done,
             notice_dismissed: true,
-            desktop_activity: false,
-            desktop_activity_window_titles: false,
-            desktop_activity_page_addresses: false,
+            desktop_activity: None,
+            desktop_activity_through_pause: None,
+            desktop_activity_window_titles: None,
+            desktop_activity_page_addresses: None,
         }
+    }
+
+    pub fn desktop_activity_choices(&self) -> DesktopActivityChoices {
+        DesktopActivityChoices {
+            allowed: self.desktop_activity,
+            through_pause: self.desktop_activity_through_pause,
+            window_titles: self.desktop_activity_window_titles,
+            page_addresses: self.desktop_activity_page_addresses,
+        }
+    }
+
+    fn set_desktop_activity_choices(&mut self, choices: DesktopActivityChoices) {
+        self.desktop_activity = choices.allowed;
+        self.desktop_activity_through_pause = choices.through_pause;
+        self.desktop_activity_window_titles = choices.window_titles;
+        self.desktop_activity_page_addresses = choices.page_addresses;
+    }
+
+    pub fn desktop_activity_allowed(&self) -> bool {
+        self.desktop_activity.unwrap_or(DESKTOP_ACTIVITY_DEFAULT)
+    }
+
+    pub fn desktop_activity_through_pause(&self) -> bool {
+        self.desktop_activity_through_pause
+            .unwrap_or(DESKTOP_ACTIVITY_THROUGH_PAUSE_DEFAULT)
+    }
+
+    pub fn desktop_activity_window_titles(&self) -> bool {
+        self.desktop_activity_window_titles
+            .unwrap_or(DESKTOP_ACTIVITY_WINDOW_TITLES_DEFAULT)
+    }
+
+    pub fn desktop_activity_page_addresses(&self) -> bool {
+        self.desktop_activity_page_addresses
+            .unwrap_or(DESKTOP_ACTIVITY_PAGE_ADDRESSES_DEFAULT)
+    }
+
+    /// Whether desktop activity runs as a source under these choices.
+    pub fn desktop_activity_enabled(&self) -> bool {
+        desktop_activity_runs(
+            self.desktop_activity_allowed(),
+            self.screen,
+            self.desktop_activity_through_pause(),
+        )
     }
 
     pub fn to_snapshot(&self) -> SetupSnapshot {
@@ -194,11 +278,15 @@ impl SetupConfig {
             start_at_login: self.start_at_login,
             wizard: self.wizard,
             notice_dismissed: self.notice_dismissed,
-            desktop_activity: self.desktop_activity,
-            desktop_activity_window_titles: self.desktop_activity_window_titles,
-            desktop_activity_page_addresses: self.desktop_activity_page_addresses,
+            desktop_activity: self.desktop_activity_enabled(),
+            desktop_activity_allowed: self.desktop_activity_allowed(),
+            desktop_activity_through_pause: self.desktop_activity_through_pause(),
+            desktop_activity_window_titles: self.desktop_activity_window_titles(),
+            desktop_activity_page_addresses: self.desktop_activity_page_addresses(),
+            desktop_activity_through_pause_save_failed: false,
             desktop_activity_window_titles_save_failed: false,
             desktop_activity_page_addresses_save_failed: false,
+            desktop_activity_choices: self.desktop_activity_choices(),
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
@@ -237,12 +325,20 @@ pub struct SetupSnapshot {
     pub start_at_login: LoginPreference,
     pub wizard: WizardStep,
     pub notice_dismissed: bool,
+    /// Whether desktop activity runs as a source (see [`desktop_activity_runs`]).
     #[serde(default)]
     pub desktop_activity: bool,
+    /// The owner's desktop activity switch, default on.
+    #[serde(default = "default_desktop_activity_allowed")]
+    pub desktop_activity_allowed: bool,
     #[serde(default)]
+    pub desktop_activity_through_pause: bool,
+    #[serde(default = "default_desktop_activity_window_titles")]
     pub desktop_activity_window_titles: bool,
-    #[serde(default)]
+    #[serde(default = "default_desktop_activity_page_addresses")]
     pub desktop_activity_page_addresses: bool,
+    #[serde(default)]
+    pub desktop_activity_through_pause_save_failed: bool,
     #[serde(default)]
     pub desktop_activity_window_titles_save_failed: bool,
     #[serde(default)]
@@ -279,6 +375,23 @@ pub struct SetupSnapshot {
     pub handoff_persist_failed: bool,
     #[serde(default)]
     pub has_deferred_link: bool,
+    /// The saved choices behind the desktop activity values above. Seeding
+    /// from this keeps an unset choice unset, so a later save never writes a
+    /// default.
+    #[serde(skip)]
+    pub desktop_activity_choices: DesktopActivityChoices,
+}
+
+fn default_desktop_activity_allowed() -> bool {
+    DESKTOP_ACTIVITY_DEFAULT
+}
+
+fn default_desktop_activity_window_titles() -> bool {
+    DESKTOP_ACTIVITY_WINDOW_TITLES_DEFAULT
+}
+
+fn default_desktop_activity_page_addresses() -> bool {
+    DESKTOP_ACTIVITY_PAGE_ADDRESSES_DEFAULT
 }
 
 impl Default for SetupSnapshot {
@@ -292,8 +405,11 @@ impl Default for SetupSnapshot {
             wizard: WizardStep::Done,
             notice_dismissed: true,
             desktop_activity: false,
-            desktop_activity_window_titles: false,
-            desktop_activity_page_addresses: false,
+            desktop_activity_allowed: DESKTOP_ACTIVITY_DEFAULT,
+            desktop_activity_through_pause: DESKTOP_ACTIVITY_THROUGH_PAUSE_DEFAULT,
+            desktop_activity_window_titles: DESKTOP_ACTIVITY_WINDOW_TITLES_DEFAULT,
+            desktop_activity_page_addresses: DESKTOP_ACTIVITY_PAGE_ADDRESSES_DEFAULT,
+            desktop_activity_through_pause_save_failed: false,
             desktop_activity_window_titles_save_failed: false,
             desktop_activity_page_addresses_save_failed: false,
             failed_sources: Vec::new(),
@@ -312,6 +428,7 @@ impl Default for SetupSnapshot {
             native_handoff_rejected: false,
             handoff_persist_failed: false,
             has_deferred_link: false,
+            desktop_activity_choices: DesktopActivityChoices::default(),
         }
     }
 }
@@ -424,6 +541,36 @@ pub fn has_predecessor_evidence(data_root: &Path) -> Result<bool, io::Error> {
     Ok(false)
 }
 
+/// Saved setup bytes read as the current version.
+struct ParsedSetup {
+    config: SetupConfig,
+    /// The bytes were an older version; `config` is already upgraded.
+    upgraded: bool,
+}
+
+/// Parse saved setup bytes. A version 1 file is upgraded in memory: its saved
+/// desktop activity values were first-run defaults, not owner choices, so they
+/// are discarded and read as the current defaults. Nothing else changes. Any
+/// other version is unreadable.
+fn parse_setup(bytes: &[u8]) -> Option<ParsedSetup> {
+    let mut config = serde_json::from_slice::<SetupConfig>(bytes).ok()?;
+    match config.version {
+        CURRENT_SETUP_VERSION => Some(ParsedSetup {
+            config,
+            upgraded: false,
+        }),
+        PRE_ACTIVITY_FOLLOWS_SCREEN_VERSION => {
+            config.version = CURRENT_SETUP_VERSION;
+            config.set_desktop_activity_choices(DesktopActivityChoices::default());
+            Some(ParsedSetup {
+                config,
+                upgraded: true,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Atomically write `SetupConfig` to `setup.json`.
 pub fn atomic_write_setup(data_root: &Path, config: &SetupConfig) -> io::Result<()> {
     if !data_root.exists() {
@@ -460,9 +607,9 @@ fn read_setup_snapshot(data_root: &Path) -> SetupSnapshot {
             return snapshot;
         }
     };
-    match serde_json::from_slice::<SetupConfig>(&bytes) {
-        Ok(config) if config.version == CURRENT_SETUP_VERSION => config.to_snapshot(),
-        _ => {
+    match parse_setup(&bytes) {
+        Some(saved) => saved.config.to_snapshot(),
+        None => {
             let mut snapshot = SetupConfig::fail_closed().to_snapshot();
             snapshot.setup_read_failed = true;
             snapshot
@@ -483,9 +630,9 @@ pub fn load_for_startup(data_root: &Path, sequence_enabled: bool) -> LoadOutcome
         return load_or_classify(data_root);
     }
     match fs::read(data_root.join(SETUP_FILE_NAME)) {
-        Ok(bytes) => match serde_json::from_slice::<SetupConfig>(&bytes) {
-            Ok(config) if config.version == CURRENT_SETUP_VERSION => LoadOutcome::Valid(config),
-            _ => LoadOutcome::FailedClosed(SetupConfig::fail_closed()),
+        Ok(bytes) => match parse_setup(&bytes) {
+            Some(saved) => LoadOutcome::Valid(saved.config),
+            None => LoadOutcome::FailedClosed(SetupConfig::fail_closed()),
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let mut legacy = SetupConfig::legacy();
@@ -540,9 +687,16 @@ pub fn load_or_classify(data_root: &Path) -> LoadOutcome {
     let setup_path = data_root.join(SETUP_FILE_NAME);
     match fs::read(&setup_path) {
         Ok(bytes) => {
-            match serde_json::from_slice::<SetupConfig>(&bytes) {
-                Ok(config) if config.version == CURRENT_SETUP_VERSION => LoadOutcome::Valid(config),
-                _ => {
+            match parse_setup(&bytes) {
+                Some(saved) => {
+                    if saved.upgraded {
+                        // Save the upgrade once. If it cannot be saved, the
+                        // next launch upgrades the same older bytes again.
+                        let _ = atomic_write_setup(data_root, &saved.config);
+                    }
+                    LoadOutcome::Valid(saved.config)
+                }
+                None => {
                     // Malformed, unknown version, or corrupt: leave byte-for-byte, fail closed in-memory.
                     LoadOutcome::FailedClosed(SetupConfig::fail_closed())
                 }
@@ -598,7 +752,9 @@ pub struct SetupAuthority {
     running_mic: bool,
     running_system_audio: bool,
     running_screen: bool,
+    /// The owner's desktop activity switch as applied, not whether it runs.
     running_desktop_activity: bool,
+    running_through_pause: bool,
     running_window_titles: bool,
     running_page_addresses: bool,
     failed_sources: Vec<FailedSourceWrite>,
@@ -607,8 +763,10 @@ pub struct SetupAuthority {
     notice_save_failed: bool,
     login_apply_failed: bool,
     pending_login: Option<bool>,
+    pending_through_pause: Option<bool>,
     pending_window_titles: Option<bool>,
     pending_page_addresses: Option<bool>,
+    through_pause_save_failed: bool,
     window_titles_save_failed: bool,
     page_addresses_save_failed: bool,
     overlay: HandoffOverlay,
@@ -629,17 +787,20 @@ impl SetupAuthority {
             running_mic: false,
             running_system_audio: false,
             running_screen: false,
-            running_desktop_activity: false,
-            running_window_titles: false,
-            running_page_addresses: false,
+            running_desktop_activity: DESKTOP_ACTIVITY_DEFAULT,
+            running_through_pause: DESKTOP_ACTIVITY_THROUGH_PAUSE_DEFAULT,
+            running_window_titles: DESKTOP_ACTIVITY_WINDOW_TITLES_DEFAULT,
+            running_page_addresses: DESKTOP_ACTIVITY_PAGE_ADDRESSES_DEFAULT,
             failed_sources: Vec::new(),
             wizard_save_failed: false,
             pending_wizard: None,
             notice_save_failed: false,
             login_apply_failed: false,
             pending_login: None,
+            pending_through_pause: None,
             pending_window_titles: None,
             pending_page_addresses: None,
+            through_pause_save_failed: false,
             window_titles_save_failed: false,
             page_addresses_save_failed: false,
             overlay: HandoffOverlay::default(),
@@ -659,13 +820,13 @@ impl SetupAuthority {
         self.durable.mic = snapshot.mic;
         self.durable.system_audio = snapshot.system_audio;
         self.durable.screen = snapshot.screen;
-        self.durable.desktop_activity = snapshot.desktop_activity;
-        self.durable.desktop_activity_window_titles = snapshot.desktop_activity_window_titles;
-        self.durable.desktop_activity_page_addresses = snapshot.desktop_activity_page_addresses;
+        self.durable
+            .set_desktop_activity_choices(snapshot.desktop_activity_choices);
         self.running_mic = snapshot.mic;
         self.running_system_audio = snapshot.system_audio;
         self.running_screen = snapshot.screen;
-        self.running_desktop_activity = snapshot.desktop_activity;
+        self.running_desktop_activity = snapshot.desktop_activity_allowed;
+        self.running_through_pause = snapshot.desktop_activity_through_pause;
         self.running_window_titles = snapshot.desktop_activity_window_titles;
         self.running_page_addresses = snapshot.desktop_activity_page_addresses;
         self.durable.wizard = snapshot.wizard;
@@ -674,8 +835,10 @@ impl SetupAuthority {
         self.login_apply_failed = snapshot.login_apply_failed;
         self.setup_read_failed = snapshot.setup_read_failed;
         self.pending_login = None;
+        self.pending_through_pause = None;
         self.pending_window_titles = None;
         self.pending_page_addresses = None;
+        self.through_pause_save_failed = false;
         self.window_titles_save_failed = false;
         self.page_addresses_save_failed = false;
 
@@ -691,9 +854,16 @@ impl SetupAuthority {
             mic: self.running_mic,
             system_audio: self.running_system_audio,
             screen: self.running_screen,
-            desktop_activity: self.running_desktop_activity,
+            desktop_activity: desktop_activity_runs(
+                self.running_desktop_activity,
+                self.running_screen,
+                self.running_through_pause,
+            ),
+            desktop_activity_allowed: self.running_desktop_activity,
+            desktop_activity_through_pause: self.running_through_pause,
             desktop_activity_window_titles: self.running_window_titles,
             desktop_activity_page_addresses: self.running_page_addresses,
+            desktop_activity_through_pause_save_failed: self.through_pause_save_failed,
             desktop_activity_window_titles_save_failed: self.window_titles_save_failed,
             desktop_activity_page_addresses_save_failed: self.page_addresses_save_failed,
             start_at_login: match self.pending_login {
@@ -718,6 +888,7 @@ impl SetupAuthority {
             native_handoff_rejected: self.overlay.native_handoff_rejected,
             handoff_persist_failed: self.overlay.handoff_persist_failed,
             has_deferred_link: self.overlay.has_deferred_link,
+            desktop_activity_choices: self.durable.desktop_activity_choices(),
         }
     }
 
@@ -728,11 +899,14 @@ impl SetupAuthority {
         if self.pending_login == Some(false) {
             candidate.start_at_login = LoginPreference::explicit(false);
         }
+        if self.pending_through_pause.is_some() {
+            candidate.desktop_activity_through_pause = Some(self.running_through_pause);
+        }
         if self.pending_window_titles.is_some() {
-            candidate.desktop_activity_window_titles = self.running_window_titles;
+            candidate.desktop_activity_window_titles = Some(self.running_window_titles);
         }
         if self.pending_page_addresses.is_some() {
-            candidate.desktop_activity_page_addresses = self.running_page_addresses;
+            candidate.desktop_activity_page_addresses = Some(self.running_page_addresses);
         }
         for failed in self
             .failed_sources
@@ -743,7 +917,7 @@ impl SetupAuthority {
                 SourceKind::Screen => candidate.screen = false,
                 SourceKind::SystemAudio => candidate.system_audio = false,
                 SourceKind::Mic => candidate.mic = false,
-                SourceKind::DesktopActivity => candidate.desktop_activity = false,
+                SourceKind::DesktopActivity => candidate.desktop_activity = Some(false),
             }
         }
         candidate
@@ -772,7 +946,7 @@ impl SetupAuthority {
             SourceKind::Screen => candidate.screen = enabled,
             SourceKind::SystemAudio => candidate.system_audio = enabled,
             SourceKind::Mic => candidate.mic = enabled,
-            SourceKind::DesktopActivity => candidate.desktop_activity = enabled,
+            SourceKind::DesktopActivity => candidate.desktop_activity = Some(enabled),
         }
         if self.persist(candidate) {
             self.set_running(kind, enabled);
@@ -792,7 +966,7 @@ impl SetupAuthority {
                 SourceKind::Screen => self.durable.screen = enabled,
                 SourceKind::SystemAudio => self.durable.system_audio = enabled,
                 SourceKind::Mic => self.durable.mic = enabled,
-                SourceKind::DesktopActivity => self.durable.desktop_activity = enabled,
+                SourceKind::DesktopActivity => self.durable.desktop_activity = Some(enabled),
             }
             self.remove_failed_source(kind);
         }
@@ -845,12 +1019,31 @@ impl SetupAuthority {
         saved
     }
 
+    /// Keep desktop activity on through the main pause and with screen off.
+    pub fn set_desktop_activity_through_pause(&mut self, enabled: bool) -> bool {
+        if !enabled {
+            self.running_through_pause = false;
+        }
+        let mut candidate = self.candidate_with_pending_off();
+        candidate.desktop_activity_through_pause = Some(enabled);
+        if self.persist(candidate) {
+            self.running_through_pause = enabled;
+            self.pending_through_pause = None;
+            self.through_pause_save_failed = false;
+            true
+        } else {
+            self.pending_through_pause = Some(enabled);
+            self.through_pause_save_failed = true;
+            false
+        }
+    }
+
     pub fn set_desktop_activity_window_titles(&mut self, enabled: bool) -> bool {
         if !enabled {
             self.running_window_titles = false;
         }
         let mut candidate = self.candidate_with_pending_off();
-        candidate.desktop_activity_window_titles = enabled;
+        candidate.desktop_activity_window_titles = Some(enabled);
         if self.persist(candidate) {
             self.running_window_titles = enabled;
             self.pending_window_titles = None;
@@ -868,7 +1061,7 @@ impl SetupAuthority {
             self.running_page_addresses = false;
         }
         let mut candidate = self.candidate_with_pending_off();
-        candidate.desktop_activity_page_addresses = enabled;
+        candidate.desktop_activity_page_addresses = Some(enabled);
         if self.persist(candidate) {
             self.running_page_addresses = enabled;
             self.pending_page_addresses = None;
@@ -899,6 +1092,7 @@ impl SetupAuthority {
         if self.setup_read_failed
             && self.failed_sources.is_empty()
             && self.pending_login.is_none()
+            && self.pending_through_pause.is_none()
             && self.pending_window_titles.is_none()
             && self.pending_page_addresses.is_none()
         {
@@ -913,7 +1107,7 @@ impl SetupAuthority {
                 SourceKind::Screen => candidate.screen = fs.attempted,
                 SourceKind::SystemAudio => candidate.system_audio = fs.attempted,
                 SourceKind::Mic => candidate.mic = fs.attempted,
-                SourceKind::DesktopActivity => candidate.desktop_activity = fs.attempted,
+                SourceKind::DesktopActivity => candidate.desktop_activity = Some(fs.attempted),
             }
         }
         if let Some(step) = self.pending_wizard {
@@ -925,11 +1119,14 @@ impl SetupAuthority {
         if let Some(choice) = self.pending_login {
             candidate.start_at_login = LoginPreference::explicit(choice);
         }
+        if let Some(choice) = self.pending_through_pause {
+            candidate.desktop_activity_through_pause = Some(choice);
+        }
         if let Some(choice) = self.pending_window_titles {
-            candidate.desktop_activity_window_titles = choice;
+            candidate.desktop_activity_window_titles = Some(choice);
         }
         if let Some(choice) = self.pending_page_addresses {
-            candidate.desktop_activity_page_addresses = choice;
+            candidate.desktop_activity_page_addresses = Some(choice);
         }
 
         let write_ok = if let Some(root) = &self.root {
@@ -939,11 +1136,14 @@ impl SetupAuthority {
         };
 
         if write_ok {
-            self.running_window_titles = candidate.desktop_activity_window_titles;
-            self.running_page_addresses = candidate.desktop_activity_page_addresses;
+            self.running_through_pause = candidate.desktop_activity_through_pause();
+            self.running_window_titles = candidate.desktop_activity_window_titles();
+            self.running_page_addresses = candidate.desktop_activity_page_addresses();
             self.durable = candidate;
+            self.pending_through_pause = None;
             self.pending_window_titles = None;
             self.pending_page_addresses = None;
+            self.through_pause_save_failed = false;
             self.window_titles_save_failed = false;
             self.page_addresses_save_failed = false;
             self.setup_read_failed = false;
@@ -1112,7 +1312,12 @@ mod tests {
             panic!("an empty staging id must not classify as a prior install");
         };
         assert_eq!(config.wizard, WizardStep::Mic);
-        assert!(!(config.mic || config.system_audio || config.screen || config.desktop_activity));
+        assert!(
+            !(config.mic
+                || config.system_audio
+                || config.screen
+                || config.desktop_activity_enabled())
+        );
         assert_eq!(config.start_at_login, LoginPreference::explicit(false));
         assert_eq!(
             load_or_classify(&root),
@@ -1620,8 +1825,8 @@ mod tests {
                 "off-address-first"
             });
             let mut config = SetupConfig::fresh();
-            config.desktop_activity_window_titles = true;
-            config.desktop_activity_page_addresses = true;
+            config.desktop_activity_window_titles = Some(true);
+            config.desktop_activity_page_addresses = Some(true);
             atomic_write_setup(&root, &config).unwrap();
             let mut auth = SetupAuthority::new();
             auth.set_root(root.clone());
@@ -1643,8 +1848,8 @@ mod tests {
             let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
                 panic!("saved config");
             };
-            assert_eq!(saved.desktop_activity_window_titles, titles_first);
-            assert_eq!(saved.desktop_activity_page_addresses, !titles_first);
+            assert_eq!(saved.desktop_activity_window_titles, Some(titles_first));
+            assert_eq!(saved.desktop_activity_page_addresses, Some(!titles_first));
             fs::remove_dir_all(root).unwrap();
         }
     }
@@ -1658,8 +1863,8 @@ mod tests {
                 "pending-urls-off-on"
             });
             let mut config = SetupConfig::fresh();
-            config.desktop_activity_window_titles = true;
-            config.desktop_activity_page_addresses = true;
+            config.desktop_activity_window_titles = Some(true);
+            config.desktop_activity_page_addresses = Some(true);
             atomic_write_setup(&root, &config).unwrap();
             let mut auth = SetupAuthority::new();
             auth.set_root(root.clone());
@@ -1677,8 +1882,8 @@ mod tests {
             let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
                 panic!("saved config");
             };
-            assert_eq!(saved.desktop_activity_window_titles, !titles);
-            assert_eq!(saved.desktop_activity_page_addresses, titles);
+            assert_eq!(saved.desktop_activity_window_titles, Some(!titles));
+            assert_eq!(saved.desktop_activity_page_addresses, Some(titles));
             assert_eq!(auth.projection().desktop_activity_window_titles, !titles);
             assert_eq!(auth.projection().desktop_activity_page_addresses, titles);
             assert!(auth.retry().saved);
@@ -1693,7 +1898,9 @@ mod tests {
     #[test]
     fn failed_optional_ons_stay_off_until_retry_saves_the_requested_choices() {
         let root = temp_test_dir("optional-on-retry");
-        let config = SetupConfig::fresh();
+        let mut config = SetupConfig::fresh();
+        config.desktop_activity_window_titles = Some(false);
+        config.desktop_activity_page_addresses = Some(false);
         atomic_write_setup(&root, &config).unwrap();
         let mut auth = SetupAuthority::new();
         auth.set_root(root.clone());
@@ -1713,7 +1920,7 @@ mod tests {
         let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
             panic!("saved config");
         };
-        assert!(saved.desktop_activity_window_titles && saved.desktop_activity_page_addresses);
+        assert!(saved.desktop_activity_window_titles() && saved.desktop_activity_page_addresses());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1721,9 +1928,9 @@ mod tests {
     fn failed_desktop_activity_offs_stay_off_and_retry_persists_both() {
         let root = temp_test_dir("failed-da-prefs");
         let mut initial = SetupConfig::fresh();
-        initial.desktop_activity = true;
-        initial.desktop_activity_window_titles = true;
-        initial.desktop_activity_page_addresses = true;
+        initial.desktop_activity = Some(true);
+        initial.desktop_activity_window_titles = Some(true);
+        initial.desktop_activity_page_addresses = Some(true);
         atomic_write_setup(&root, &initial).unwrap();
 
         let mut auth = SetupAuthority::new();
@@ -1759,8 +1966,8 @@ mod tests {
 
         match load_or_classify(&root) {
             LoadOutcome::Valid(cfg) => {
-                assert!(!cfg.desktop_activity_window_titles);
-                assert!(!cfg.desktop_activity_page_addresses);
+                assert!(!cfg.desktop_activity_window_titles());
+                assert!(!cfg.desktop_activity_page_addresses());
             }
             other => panic!("expected Valid, got {other:?}"),
         }
@@ -1786,9 +1993,9 @@ mod tests {
             auth.setup_read_failed = ready.setup_read_failed;
             fs::create_dir(root.join("setup.json.tmp")).unwrap();
             let saved = if titles {
-                auth.set_desktop_activity_window_titles(true)
+                auth.set_desktop_activity_window_titles(false)
             } else {
-                auth.set_desktop_activity_page_addresses(true)
+                auth.set_desktop_activity_page_addresses(false)
             };
             assert!(!saved);
             assert!(!auth.retry().saved);
@@ -1797,8 +2004,8 @@ mod tests {
             assert!(outcome.saved);
             assert!(outcome.started.is_empty());
             let projection = auth.projection();
-            assert_eq!(projection.desktop_activity_window_titles, titles);
-            assert_eq!(projection.desktop_activity_page_addresses, !titles);
+            assert_eq!(projection.desktop_activity_window_titles, !titles);
+            assert_eq!(projection.desktop_activity_page_addresses, titles);
             assert!(
                 !projection.desktop_activity_window_titles_save_failed
                     && !projection.desktop_activity_page_addresses_save_failed
@@ -1813,19 +2020,26 @@ mod tests {
             let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
                 panic!("explicit preference persisted");
             };
-            assert_eq!(saved.desktop_activity_window_titles, titles);
-            assert_eq!(saved.desktop_activity_page_addresses, !titles);
+            // Only the choice the owner made is saved.
+            assert_eq!(
+                saved.desktop_activity_window_titles,
+                (titles).then_some(false)
+            );
+            assert_eq!(
+                saved.desktop_activity_page_addresses,
+                (!titles).then_some(false)
+            );
             assert_eq!(saved.start_at_login.choice(), None);
             let mut restarted = SetupAuthority::new();
             restarted.seed(&saved.to_snapshot());
             assert_eq!(restarted.projection().start_at_login.choice(), None);
             assert_eq!(
                 restarted.projection().desktop_activity_window_titles,
-                titles
+                !titles
             );
             assert_eq!(
                 restarted.projection().desktop_activity_page_addresses,
-                !titles
+                titles
             );
             fs::remove_dir_all(root).unwrap();
         }
@@ -1870,7 +2084,7 @@ mod tests {
                 setup: |root: &Path| {
                     fs::write(
                         root.join(SETUP_FILE_NAME),
-                        br#"{"version":1,"mic":true,"system_audio":true,"screen":true,"wizard":"done","notice_dismissed":true}"#,
+                        br#"{"version":2,"mic":true,"system_audio":true,"screen":true,"wizard":"done","notice_dismissed":true}"#,
                     )
                     .unwrap();
                 },
@@ -1880,7 +2094,7 @@ mod tests {
                 setup: |root: &Path| {
                     fs::write(
                         root.join(SETUP_FILE_NAME),
-                        br#"{"version":1,"start_at_login":true,"mic":true,"system_audio":true,"screen":true,"notice_dismissed":true}"#,
+                        br#"{"version":2,"start_at_login":true,"mic":true,"system_audio":true,"screen":true,"notice_dismissed":true}"#,
                     )
                     .unwrap();
                 },
@@ -1929,7 +2143,7 @@ mod tests {
         // 2. Separate valid document, explicit "start_at_login": null
         {
             let root = temp_test_dir("valid-null-login");
-            let json = br#"{"version":1,"mic":true,"system_audio":false,"screen":false,"start_at_login":null,"wizard":"done","notice_dismissed":true}"#;
+            let json = br#"{"version":2,"mic":true,"system_audio":false,"screen":false,"start_at_login":null,"wizard":"done","notice_dismissed":true}"#;
             fs::write(root.join(SETUP_FILE_NAME), json).unwrap();
 
             let outcome = load_for_startup(&root, true);
@@ -1960,7 +2174,7 @@ mod tests {
         // 3. Valid explicit false on installed/present fixture -> Remove
         {
             let root = temp_test_dir("valid-false-login");
-            let json = br#"{"version":1,"mic":true,"system_audio":false,"screen":false,"start_at_login":false,"wizard":"done","notice_dismissed":true}"#;
+            let json = br#"{"version":2,"mic":true,"system_audio":false,"screen":false,"start_at_login":false,"wizard":"done","notice_dismissed":true}"#;
             fs::write(root.join(SETUP_FILE_NAME), json).unwrap();
 
             let outcome = load_for_startup(&root, true);
@@ -1986,7 +2200,7 @@ mod tests {
         // 4. Valid explicit true
         {
             let root = temp_test_dir("valid-true-login");
-            let json = br#"{"version":1,"mic":true,"system_audio":false,"screen":false,"start_at_login":true,"wizard":"done","notice_dismissed":true}"#;
+            let json = br#"{"version":2,"mic":true,"system_audio":false,"screen":false,"start_at_login":true,"wizard":"done","notice_dismissed":true}"#;
             fs::write(root.join(SETUP_FILE_NAME), json).unwrap();
 
             let outcome = load_for_startup(&root, true);
@@ -2195,5 +2409,287 @@ mod activation_controls {
         ] {
             assert!(!super::is_setup_ingress(arg));
         }
+    }
+}
+
+#[cfg(test)]
+mod desktop_activity_settings {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join("solstone-setup-activity-tests")
+            .join(format!("{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn saved_json(root: &Path) -> serde_json::Value {
+        serde_json::from_slice(&fs::read(root.join(SETUP_FILE_NAME)).unwrap()).unwrap()
+    }
+
+    const ACTIVITY_KEYS: [&str; 4] = [
+        "desktop_activity",
+        "desktop_activity_through_pause",
+        "desktop_activity_window_titles",
+        "desktop_activity_page_addresses",
+    ];
+
+    fn saved_activity_keys(root: &Path) -> Vec<String> {
+        let json = saved_json(root);
+        ACTIVITY_KEYS
+            .iter()
+            .filter(|key| json.get(**key).is_some())
+            .map(|key| key.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn activity_follows_screen_and_its_fields_start_on() {
+        let mut config = SetupConfig::fresh();
+        let snapshot = config.to_snapshot();
+        assert!(!snapshot.desktop_activity, "screen off: activity off");
+        assert!(snapshot.desktop_activity_allowed);
+        assert!(!snapshot.desktop_activity_through_pause);
+        assert!(snapshot.desktop_activity_window_titles);
+        assert!(snapshot.desktop_activity_page_addresses);
+
+        config.screen = true;
+        assert!(
+            config.to_snapshot().desktop_activity,
+            "screen on: activity on"
+        );
+
+        config.desktop_activity = Some(false);
+        assert!(
+            !config.to_snapshot().desktop_activity,
+            "off entirely never runs"
+        );
+        config.desktop_activity_through_pause = Some(true);
+        assert!(!config.to_snapshot().desktop_activity, "off entirely wins");
+
+        config.desktop_activity = None;
+        config.screen = false;
+        assert!(
+            config.to_snapshot().desktop_activity,
+            "kept on through pause runs with screen off"
+        );
+    }
+
+    #[test]
+    fn first_run_saves_no_activity_setting() {
+        let root = temp_root("first-run");
+        let LoadOutcome::Fresh(config) = load_or_classify(&root) else {
+            panic!("fresh install");
+        };
+        assert_eq!(
+            config.desktop_activity_choices(),
+            DesktopActivityChoices::default()
+        );
+        assert!(saved_activity_keys(&root).is_empty());
+
+        fs::write(root.join("mic.json"), b"{}").unwrap();
+        fs::remove_file(root.join(SETUP_FILE_NAME)).unwrap();
+        let LoadOutcome::Legacy(_) = load_or_classify(&root) else {
+            panic!("prior install");
+        };
+        assert!(saved_activity_keys(&root).is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_key_reads_as_the_code_default() {
+        let root = temp_root("missing-key");
+        fs::write(
+            root.join(SETUP_FILE_NAME),
+            br#"{"version":2,"mic":false,"system_audio":false,"screen":true,"start_at_login":false,"wizard":"done","notice_dismissed":true}"#,
+        )
+        .unwrap();
+        let snapshot = read_readonly(&root);
+        assert!(!snapshot.setup_read_failed);
+        assert!(snapshot.desktop_activity);
+        assert!(snapshot.desktop_activity_window_titles);
+        assert!(snapshot.desktop_activity_page_addresses);
+        assert!(!snapshot.desktop_activity_through_pause);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn saving_writes_only_what_the_owner_set() {
+        let root = temp_root("owner-deltas");
+        let LoadOutcome::Fresh(config) = load_or_classify(&root) else {
+            panic!("fresh install");
+        };
+        let mut auth = SetupAuthority::new();
+        auth.set_root(root.clone());
+        auth.seed(&config.to_snapshot());
+
+        assert!(auth.set_source(SourceKind::Screen, true));
+        assert!(auth.set_wizard_step(WizardStep::Done));
+        assert!(saved_activity_keys(&root).is_empty());
+
+        assert!(auth.set_desktop_activity_page_addresses(false));
+        assert_eq!(
+            saved_activity_keys(&root),
+            ["desktop_activity_page_addresses"]
+        );
+        assert!(auth.set_desktop_activity_through_pause(true));
+        assert_eq!(
+            saved_activity_keys(&root),
+            [
+                "desktop_activity_through_pause",
+                "desktop_activity_page_addresses"
+            ]
+        );
+        // A choice equal to today's default is still the owner's, and is kept.
+        assert!(auth.set_desktop_activity_window_titles(true));
+        assert_eq!(saved_json(&root)["desktop_activity_window_titles"], true);
+
+        let projection = auth.projection();
+        assert!(projection.desktop_activity);
+        assert!(projection.desktop_activity_through_pause);
+        assert!(!projection.desktop_activity_page_addresses);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn turning_activity_off_entirely_is_saved_and_never_runs() {
+        let root = temp_root("off-entirely");
+        let mut config = SetupConfig::fresh();
+        config.screen = true;
+        atomic_write_setup(&root, &config).unwrap();
+        let mut auth = SetupAuthority::new();
+        auth.set_root(root.clone());
+        auth.seed(&config.to_snapshot());
+        assert!(auth.projection().desktop_activity);
+
+        assert!(!auth.set_source(SourceKind::DesktopActivity, false));
+        assert!(!auth.projection().desktop_activity);
+        assert!(!auth.projection().desktop_activity_allowed);
+        assert_eq!(saved_json(&root)["desktop_activity"], false);
+
+        let LoadOutcome::Valid(saved) = load_or_classify(&root) else {
+            panic!("saved config");
+        };
+        assert!(!saved.to_snapshot().desktop_activity);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A version 1 file as the previous release wrote it at first run.
+    const VERSION_1: &[u8] = br#"{
+  "version": 1,
+  "mic": true,
+  "system_audio": false,
+  "screen": true,
+  "start_at_login": true,
+  "wizard": "done",
+  "notice_dismissed": true,
+  "desktop_activity": false,
+  "desktop_activity_window_titles": false,
+  "desktop_activity_page_addresses": false
+}"#;
+
+    #[test]
+    fn existing_installs_move_to_the_new_defaults_once() {
+        let root = temp_root("upgrade-once");
+        fs::write(root.join(SETUP_FILE_NAME), VERSION_1).unwrap();
+
+        let LoadOutcome::Valid(upgraded) = load_or_classify(&root) else {
+            panic!("an older version is upgraded, not failed closed");
+        };
+        assert_eq!(upgraded.version, CURRENT_SETUP_VERSION);
+        assert!(upgraded.to_snapshot().desktop_activity, "follows screen");
+        assert!(upgraded.desktop_activity_window_titles());
+        assert!(upgraded.desktop_activity_page_addresses());
+        // Nothing else moves.
+        assert!(upgraded.mic && !upgraded.system_audio && upgraded.screen);
+        assert_eq!(upgraded.start_at_login, LoginPreference::explicit(true));
+        assert_eq!(upgraded.wizard, WizardStep::Done);
+        assert!(upgraded.notice_dismissed);
+        // The upgrade is saved, without the discarded values.
+        assert_eq!(saved_json(&root)["version"], CURRENT_SETUP_VERSION);
+        assert!(saved_activity_keys(&root).is_empty());
+
+        // The owner turns titles and activity off after the upgrade.
+        let mut auth = SetupAuthority::new();
+        auth.set_root(root.clone());
+        auth.seed(&upgraded.to_snapshot());
+        assert!(auth.set_desktop_activity_window_titles(false));
+        assert!(!auth.set_source(SourceKind::DesktopActivity, false));
+
+        // Later launches keep those choices: the upgrade does not run again.
+        for _ in 0..2 {
+            let LoadOutcome::Valid(again) = load_or_classify(&root) else {
+                panic!("saved config");
+            };
+            assert_eq!(again.desktop_activity, Some(false));
+            assert_eq!(again.desktop_activity_window_titles, Some(false));
+            assert!(!again.to_snapshot().desktop_activity);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_only_paths_upgrade_in_memory_without_writing() {
+        let root = temp_root("upgrade-read-only");
+        fs::write(root.join(SETUP_FILE_NAME), VERSION_1).unwrap();
+
+        let snapshot = read_readonly(&root);
+        assert!(!snapshot.setup_read_failed);
+        assert!(snapshot.desktop_activity);
+        assert!(snapshot.desktop_activity_window_titles);
+        assert!(snapshot.desktop_activity_page_addresses);
+        let LoadOutcome::Valid(dark) = load_for_startup(&root, false) else {
+            panic!("dark builds read the older version");
+        };
+        assert_eq!(
+            dark.desktop_activity_choices(),
+            DesktopActivityChoices::default()
+        );
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), VERSION_1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_upgrade_that_cannot_be_saved_runs_again_next_launch() {
+        let root = temp_root("upgrade-unsaved");
+        fs::write(root.join(SETUP_FILE_NAME), VERSION_1).unwrap();
+        fs::create_dir(root.join("setup.json.tmp")).unwrap();
+        let LoadOutcome::Valid(upgraded) = load_or_classify(&root) else {
+            panic!("upgraded in memory");
+        };
+        assert!(upgraded.to_snapshot().desktop_activity);
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), VERSION_1);
+        fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+        let LoadOutcome::Valid(_) = load_or_classify(&root) else {
+            panic!("upgraded");
+        };
+        assert_eq!(saved_json(&root)["version"], CURRENT_SETUP_VERSION);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_through_pause_on_stays_off_until_retry_saves_it() {
+        let root = temp_root("through-pause-retry");
+        let config = SetupConfig::fresh();
+        atomic_write_setup(&root, &config).unwrap();
+        let mut auth = SetupAuthority::new();
+        auth.set_root(root.clone());
+        auth.seed(&config.to_snapshot());
+        fs::create_dir(root.join("setup.json.tmp")).unwrap();
+        assert!(!auth.set_desktop_activity_through_pause(true));
+        let projection = auth.projection();
+        assert!(!projection.desktop_activity_through_pause);
+        assert!(!projection.desktop_activity);
+        assert!(projection.desktop_activity_through_pause_save_failed);
+        fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+        assert!(auth.retry().saved);
+        let projection = auth.projection();
+        assert!(projection.desktop_activity_through_pause);
+        assert!(projection.desktop_activity);
+        assert!(!projection.desktop_activity_through_pause_save_failed);
+        assert_eq!(saved_json(&root)["desktop_activity_through_pause"], true);
+        let _ = fs::remove_dir_all(&root);
     }
 }

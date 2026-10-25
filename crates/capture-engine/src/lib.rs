@@ -106,6 +106,10 @@ pub enum EngineCommand {
         window_titles: bool,
         page_addresses: bool,
     },
+    /// Keep desktop activity on through the main pause and with screen off.
+    SetDesktopActivityThroughPause {
+        enabled: bool,
+    },
     ClearPreviews,
 }
 
@@ -300,6 +304,11 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     pending_activity_rows: std::collections::VecDeque<PendingActivityRow>,
     committed_activity_lens: std::collections::HashMap<(observer_model::SegmentKey, String), u64>,
     activity_batch_written: bool,
+    /// The owner's desktop activity switch. Whether activity runs also
+    /// depends on screen and the pause (see `follow_desktop_activity`).
+    activity_allowed: bool,
+    /// Desktop activity keeps running through the main pause and with screen off.
+    activity_through_pause: bool,
 }
 
 impl<SFS> CaptureEngine<SFS>
@@ -392,6 +401,8 @@ where
             pending_activity_rows: std::collections::VecDeque::new(),
             committed_activity_lens: std::collections::HashMap::new(),
             activity_batch_written: false,
+            activity_allowed: observer_model::setup::DESKTOP_ACTIVITY_DEFAULT,
+            activity_through_pause: observer_model::setup::DESKTOP_ACTIVITY_THROUGH_PAUSE_DEFAULT,
         };
         for outcome in &outcomes {
             if let RecoveryOutcome::Deferred(key) = outcome {
@@ -568,6 +579,8 @@ where
             kind: SourceKind::Mic,
             enabled: setup.mic,
         });
+        self.activity_allowed = setup.desktop_activity_allowed;
+        self.activity_through_pause = setup.desktop_activity_through_pause;
         self.reduce(AppEvent::SourceEnabled {
             kind: SourceKind::DesktopActivity,
             enabled: setup.desktop_activity,
@@ -585,11 +598,73 @@ where
         self.refresh_health();
     }
 
-    /// Enable or disable a single source.
+    /// Enable or disable a single source. For desktop activity, `enabled` is
+    /// the owner's switch; activity then follows screen and the pause.
     pub fn set_source_enabled(&mut self, kind: SourceKind, enabled: bool) {
         if let Ok(mut auth) = self.setup_authority.lock() {
             auth.note_running(kind, enabled);
         }
+        match kind {
+            SourceKind::DesktopActivity => {
+                self.activity_allowed = enabled;
+                self.follow_desktop_activity();
+            }
+            SourceKind::Screen => {
+                self.apply_source_enabled(kind, enabled);
+                self.follow_desktop_activity();
+            }
+            SourceKind::SystemAudio | SourceKind::Mic => self.apply_source_enabled(kind, enabled),
+        }
+        self.fold_source_states();
+        self.refresh_health();
+    }
+
+    /// Keep desktop activity on through the main pause and with screen off.
+    pub fn set_desktop_activity_through_pause(&mut self, enabled: bool) {
+        self.activity_through_pause = enabled;
+        self.follow_desktop_activity();
+        self.fold_source_states();
+        self.refresh_health();
+    }
+
+    /// Desktop activity runs when the owner has not turned it off and screen
+    /// is on, starting and pausing with it the way audio does; or, when the
+    /// owner keeps it on through a pause, whenever the app runs.
+    fn follow_desktop_activity(&mut self) {
+        let kind = SourceKind::DesktopActivity;
+        let wanted = observer_model::setup::desktop_activity_runs(
+            self.activity_allowed,
+            self.state.is_source_enabled(SourceKind::Screen),
+            self.activity_through_pause,
+        );
+        if wanted != self.state.is_source_enabled(kind) {
+            self.apply_source_enabled(kind, wanted);
+            return;
+        }
+        if !wanted || !self.state.run_requested() || self.state.phase() != AppPhase::Paused {
+            return;
+        }
+        let active = self.sources.desktop_activity.state() == SourceState::Active;
+        if self.activity_through_pause && !active {
+            self.ensure_segment_for_now();
+            self.start_source(kind);
+        } else if !self.activity_through_pause && active {
+            self.stop_source(kind);
+        }
+    }
+
+    /// Desktop activity is on and keeps running through the main pause.
+    fn activity_runs_through_pause(&self) -> bool {
+        self.activity_through_pause && self.state.is_source_enabled(SourceKind::DesktopActivity)
+    }
+
+    fn source_may_start(&self, kind: SourceKind) -> bool {
+        self.state.run_requested()
+            && (self.state.phase() != AppPhase::Paused
+                || (kind == SourceKind::DesktopActivity && self.activity_through_pause))
+    }
+
+    fn apply_source_enabled(&mut self, kind: SourceKind, enabled: bool) {
         if !enabled {
             self.increment_generation(kind);
             self.stop_source(kind);
@@ -609,15 +684,11 @@ where
                 kind,
                 enabled: true,
             });
-            if self.state.phase() == AppPhase::Paused || !self.state.run_requested() {
-                self.refresh_health();
-                return;
+            if self.source_may_start(kind) {
+                self.ensure_segment_for_now();
+                self.start_source(kind);
             }
-            self.ensure_segment_for_now();
-            self.start_source(kind);
         }
-        self.fold_source_states();
-        self.refresh_health();
     }
 
     /// Clear all ephemeral preview levels and screen frames.
@@ -696,6 +767,10 @@ where
         self.reduce(AppEvent::RequestedStart);
         self.adopt_current_segment();
         if self.state.phase() == AppPhase::Paused {
+            if self.activity_runs_through_pause() {
+                self.ensure_segment_for_now();
+                self.start_source(SourceKind::DesktopActivity);
+            }
             self.fold_source_states();
             self.refresh_health();
             return;
@@ -867,6 +942,10 @@ where
                 self.refresh_health();
                 return;
             }
+            EngineCommand::SetDesktopActivityThroughPause { enabled } => {
+                self.set_desktop_activity_through_pause(enabled);
+                return;
+            }
             EngineCommand::ClearPreviews => {
                 self.clear_previews();
                 return;
@@ -920,14 +999,16 @@ where
         self.sources.system_audio.stop();
         self.sources.mic.stop();
         self.rotate_segments(true);
-        let now_ms = self.clock.now_epoch_us() / 1000;
-        let closed = self
-            .desktop_activity_scheduler
-            .close_all(self.sources.desktop_activity.as_mut(), now_ms);
-        for row in closed {
-            self.append_activity_row(&row);
+        if !self.activity_runs_through_pause() {
+            let now_ms = self.clock.now_epoch_us() / 1000;
+            let closed = self
+                .desktop_activity_scheduler
+                .close_all(self.sources.desktop_activity.as_mut(), now_ms);
+            for row in closed {
+                self.append_activity_row(&row);
+            }
+            self.sources.desktop_activity.stop();
         }
-        self.sources.desktop_activity.stop();
         self.drain_events();
         self.write_stalled = false;
         self.attempt_clear_storage();
@@ -949,6 +1030,12 @@ where
             SourceKind::Mic,
             SourceKind::DesktopActivity,
         ] {
+            // Activity kept on through the pause is already running.
+            if kind == SourceKind::DesktopActivity
+                && self.sources.desktop_activity.state() == SourceState::Active
+            {
+                continue;
+            }
             if self.state.is_source_enabled(kind) {
                 self.start_source(kind);
             }
@@ -1170,7 +1257,7 @@ where
                 self.sources.desktop_activity.stop();
                 let old = self.current_segment.take().expect("current checked above");
                 self.seal_segment(old);
-                if closing || (self.should_be_capturing() && self.state.any_source_enabled()) {
+                if closing || self.segment_wanted() {
                     self.open_segment_key(segment_for(now, self.config.segment_secs));
                 }
                 break;
@@ -1186,7 +1273,7 @@ where
             let old_segment = self.current_segment.take().expect("current checked above");
             self.seal_segment(old_segment);
 
-            if closing || (self.should_be_capturing() && self.state.any_source_enabled()) {
+            if closing || self.segment_wanted() {
                 let next_key = segment_for(next_boundary_secs, self.config.segment_secs);
                 self.open_segment_key(next_key);
             } else {
@@ -1214,6 +1301,24 @@ where
 
     fn should_be_capturing(&self) -> bool {
         !matches!(self.state.phase(), AppPhase::Idle | AppPhase::Paused)
+    }
+
+    /// A segment stays open while any source runs, including desktop activity
+    /// kept on through a pause.
+    fn segment_wanted(&self) -> bool {
+        (self.should_be_capturing() && self.state.any_source_enabled())
+            || (self.state.run_requested() && self.activity_runs_through_pause())
+    }
+
+    fn desktop_activity_may_run(&self) -> bool {
+        if !self.state.is_source_enabled(SourceKind::DesktopActivity) {
+            return false;
+        }
+        if self.state.phase() == AppPhase::Paused {
+            self.state.run_requested() && self.activity_through_pause
+        } else {
+            self.should_be_capturing()
+        }
     }
 
     fn storage_healthy(&self) -> bool {
@@ -1497,8 +1602,7 @@ where
     }
 
     fn pump_desktop_activity(&mut self) {
-        if !self.should_be_capturing() || !self.state.is_source_enabled(SourceKind::DesktopActivity)
-        {
+        if !self.desktop_activity_may_run() {
             return;
         }
         if self.sources.desktop_activity.state() != SourceState::Active {
@@ -2476,6 +2580,8 @@ mod tests {
 
     struct FakeDesktopActivityState {
         state: SourceState,
+        /// Start reports Active and stop reports Inactive, like the real probe.
+        live: bool,
         starts: usize,
         stops: usize,
         cancels: usize,
@@ -2490,6 +2596,7 @@ mod tests {
             Self {
                 inner: Arc::new(Mutex::new(FakeDesktopActivityState {
                     state,
+                    live: false,
                     starts: 0,
                     stops: 0,
                     cancels: 0,
@@ -2508,6 +2615,18 @@ mod tests {
         fn starts(&self) -> usize {
             self.inner.lock().unwrap().starts
         }
+
+        fn stops(&self) -> usize {
+            self.inner.lock().unwrap().stops
+        }
+
+        fn make_live(&self) {
+            self.inner.lock().unwrap().live = true;
+        }
+
+        fn running(&self) -> bool {
+            self.state() == SourceState::Active
+        }
     }
 
     struct FakeDesktopActivity {
@@ -2516,12 +2635,20 @@ mod tests {
 
     impl DesktopActivitySource for FakeDesktopActivity {
         fn start(&mut self) -> Result<(), SourceError> {
-            self.handle.inner.lock().unwrap().starts += 1;
+            let mut inner = self.handle.inner.lock().unwrap();
+            inner.starts += 1;
+            if inner.live {
+                inner.state = SourceState::Active;
+            }
             Ok(())
         }
 
         fn stop(&mut self) {
-            self.handle.inner.lock().unwrap().stops += 1;
+            let mut inner = self.handle.inner.lock().unwrap();
+            inner.stops += 1;
+            if inner.live {
+                inner.state = SourceState::Inactive;
+            }
         }
 
         fn state(&self) -> SourceState {
@@ -4815,6 +4942,7 @@ mod tests {
             system_audio: false,
             screen: false,
             desktop_activity: true,
+            desktop_activity_through_pause: true,
             ..SetupSnapshot::default()
         });
         engine.start();
@@ -4863,5 +4991,160 @@ mod tests {
         assert_eq!(handles.mic.starts(), 0);
         assert_eq!(handles.desktop_activity.starts(), 0);
         assert_eq!(segment_fs.events(), Vec::new());
+    }
+
+    mod activity_follows_screen {
+        use super::*;
+
+        fn pause() -> EngineCommand {
+            EngineCommand::Pause {
+                reason: PauseReason::Operator,
+                duration_secs: None,
+            }
+        }
+
+        /// Screen on, other sources off, desktop activity at its defaults.
+        fn screen_engine(
+            clock: FakeClock,
+            segment_fs: FakeSegmentFs,
+            through_pause: bool,
+        ) -> (CaptureEngine<FakeSegmentFs>, Handles) {
+            let (sources, handles) = fake_sources(
+                SourceState::Active,
+                SourceState::Inactive,
+                SourceState::Inactive,
+            );
+            handles.desktop_activity.make_live();
+            let mut recovery = FakeRecoveryFs::default();
+            let (mut engine, _) = CaptureEngine::new(
+                sources,
+                EngineConfig::default(),
+                &mut recovery,
+                segment_fs,
+                Box::new(clock),
+            )
+            .unwrap();
+            let mut config = observer_model::setup::SetupConfig::fresh();
+            config.screen = true;
+            config.desktop_activity_through_pause = through_pause.then_some(true);
+            engine.set_source_choices(config.to_snapshot());
+            (engine, handles)
+        }
+
+        #[test]
+        fn start_starts_both_and_pause_pauses_both() {
+            let (mut engine, handles) =
+                screen_engine(FakeClock::new(0), FakeSegmentFs::default(), false);
+            engine.start();
+            assert!(handles.desktop_activity.running());
+            assert_eq!(handles.screen.starts(), 1);
+
+            engine.apply_command(pause());
+            assert!(!handles.desktop_activity.running());
+            assert_eq!(handles.screen.stops(), 1);
+            engine.pump();
+            assert!(!handles.desktop_activity.running());
+
+            engine.apply_command(EngineCommand::Resume);
+            assert!(handles.desktop_activity.running());
+            assert_eq!(handles.screen.starts(), 2);
+        }
+
+        #[test]
+        fn activity_turns_off_and_on_with_screen() {
+            let (mut engine, handles) =
+                screen_engine(FakeClock::new(0), FakeSegmentFs::default(), false);
+            engine.start();
+            assert!(handles.desktop_activity.running());
+
+            engine.set_source_enabled(SourceKind::Screen, false);
+            assert!(!handles.desktop_activity.running());
+            assert!(!engine.health_dump().setup.desktop_activity);
+            engine.pump();
+            assert!(!handles.desktop_activity.running());
+
+            engine.set_source_enabled(SourceKind::Screen, true);
+            assert!(handles.desktop_activity.running());
+            assert!(engine.health_dump().setup.desktop_activity);
+        }
+
+        #[test]
+        fn activity_turned_off_entirely_never_runs() {
+            let (mut engine, handles) =
+                screen_engine(FakeClock::new(0), FakeSegmentFs::default(), false);
+            engine.start();
+            engine.set_source_enabled(SourceKind::DesktopActivity, false);
+            assert!(!handles.desktop_activity.running());
+            let starts = handles.desktop_activity.starts();
+
+            engine.set_source_enabled(SourceKind::Screen, false);
+            engine.set_source_enabled(SourceKind::Screen, true);
+            engine.set_desktop_activity_through_pause(true);
+            engine.apply_command(pause());
+            engine.apply_command(EngineCommand::Resume);
+            engine.pump();
+            assert!(!handles.desktop_activity.running());
+            assert_eq!(handles.desktop_activity.starts(), starts);
+        }
+
+        #[test]
+        fn activity_kept_on_runs_through_pause_and_with_screen_off() {
+            let clock = FakeClock::new(0);
+            let segment_fs = FakeSegmentFs::default();
+            let (mut engine, handles) = screen_engine(clock.clone(), segment_fs.clone(), true);
+            engine.start();
+            assert!(handles.desktop_activity.running());
+
+            engine.apply_command(pause());
+            assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+            assert_eq!(handles.screen.stops(), 1);
+            assert!(handles.desktop_activity.running());
+            assert_eq!(handles.desktop_activity.stops(), 0);
+
+            // The next segment opens for activity while paused.
+            clock.advance(DEFAULT_SEGMENT_SECS);
+            engine.pump();
+            let next = observer_segment::segment_for(DEFAULT_SEGMENT_SECS, DEFAULT_SEGMENT_SECS);
+            assert!(segment_fs.events().contains(&FsEvent::Open(next)));
+            assert!(handles.desktop_activity.running());
+
+            let starts = handles.desktop_activity.starts();
+            engine.apply_command(EngineCommand::Resume);
+            assert_eq!(handles.desktop_activity.starts(), starts, "not restarted");
+
+            engine.set_source_enabled(SourceKind::Screen, false);
+            assert!(handles.desktop_activity.running());
+            engine.apply_command(pause());
+            engine.pump();
+            assert!(handles.desktop_activity.running());
+        }
+
+        #[test]
+        fn keeping_activity_on_while_paused_starts_it_and_letting_go_stops_it() {
+            let (mut engine, handles) =
+                screen_engine(FakeClock::new(0), FakeSegmentFs::default(), false);
+            engine.start();
+            engine.apply_command(pause());
+            assert!(!handles.desktop_activity.running());
+
+            engine.set_desktop_activity_through_pause(true);
+            assert!(handles.desktop_activity.running());
+            engine.set_desktop_activity_through_pause(false);
+            assert!(!handles.desktop_activity.running());
+            engine.pump();
+            assert!(!handles.desktop_activity.running());
+        }
+
+        #[test]
+        fn a_held_pause_at_launch_starts_only_activity_kept_on() {
+            let store = MemoryPauseStore::holding(HeldPause::UntilResumed);
+            let (mut engine, handles) =
+                screen_engine(FakeClock::new(0), FakeSegmentFs::default(), true);
+            engine.hold_owner_pause_in(Box::new(store));
+            engine.start();
+            assert_eq!(engine.health_dump().app_state, AppPhase::Paused);
+            assert_eq!(handles.screen.starts(), 0);
+            assert!(handles.desktop_activity.running());
+        }
     }
 }

@@ -65,6 +65,7 @@ export const automationContract = {
     "settings.sources.desktopActivity.enabled": "settings.sources.desktopActivity.enabled",
     "settings.sources.desktopActivity.pageAddresses": "settings.sources.desktopActivity.pageAddresses",
     "settings.sources.desktopActivity.state": "settings.sources.desktopActivity.state",
+    "settings.sources.desktopActivity.throughPause": "settings.sources.desktopActivity.throughPause",
     "settings.sources.desktopActivity.windowTitles": "settings.sources.desktopActivity.windowTitles",
     "settings.sources.mic.enabled": "settings.sources.mic.enabled",
     "settings.sources.mic.permission": "settings.sources.mic.permission",

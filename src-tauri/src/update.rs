@@ -1380,7 +1380,9 @@ mod boundary_tests {
             panic!("a first launch must ask for consent, not resume as a prior install");
         };
         assert_eq!(setup.wizard, observer_model::WizardStep::Mic);
-        assert!(!(setup.mic || setup.system_audio || setup.screen || setup.desktop_activity));
+        assert!(
+            !(setup.mic || setup.system_audio || setup.screen || setup.desktop_activity_enabled())
+        );
         assert_eq!(setup, observer_model::SetupConfig::fresh());
     }
 

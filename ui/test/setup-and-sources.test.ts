@@ -65,6 +65,87 @@ describe("setup and source transitions", () => {
     invokeMock.mockResolvedValue(undefined as never);
   });
 
+  describe("desktop activity follows screen", () => {
+    function activityDump(
+      setup: { screen: boolean; desktop_activity: boolean; desktop_activity_allowed: boolean; desktop_activity_through_pause: boolean },
+      paused: boolean,
+    ) {
+      return {
+        ...observingDump(),
+        app_state: paused ? ("paused" as const) : ("observing" as const),
+        setup: {
+          sequence_enabled: true,
+          mic: false,
+          system_audio: false,
+          start_at_login: false,
+          wizard: "done" as const,
+          notice_dismissed: true,
+          desktop_activity_window_titles: true,
+          desktop_activity_page_addresses: true,
+          ...setup,
+        },
+        pause: paused ? { reason: "operator", seconds_remaining: null } : null,
+        sources: [
+          { kind: "desktop_activity" as const, status: setup.desktop_activity ? ("active" as const) : ("inactive" as const), device: null },
+        ],
+      };
+    }
+
+    function activitySwitch(): HTMLInputElement {
+      return present(ids["settings.sources.desktopActivity.enabled"]) as HTMLInputElement;
+    }
+
+    function activityStatus(): string | null {
+      return present(ids["settings.sources.desktopActivity.state"]).getAttribute("data-status");
+    }
+
+    it("keeps the owner's switch on while screen is off, and shows activity off", () => {
+      app.__test__.setRoute("sources");
+      app.__test__.renderSettings(
+        activityDump({ screen: false, desktop_activity: false, desktop_activity_allowed: true, desktop_activity_through_pause: false }, false),
+      );
+      expect(activitySwitch().checked).toBe(true);
+      expect(activityStatus()).toBe("off");
+    });
+
+    it("pauses with the main pause unless kept on", () => {
+      app.__test__.setRoute("sources");
+      app.__test__.renderSettings(
+        activityDump({ screen: true, desktop_activity: true, desktop_activity_allowed: true, desktop_activity_through_pause: false }, true),
+      );
+      expect(activityStatus()).toBe("paused");
+
+      resetRoot();
+      app.__test__.setRoute("sources");
+      app.__test__.renderSettings(
+        activityDump({ screen: false, desktop_activity: true, desktop_activity_allowed: true, desktop_activity_through_pause: true }, true),
+      );
+      expect(activityStatus()).toBe("on");
+      expect((present(ids["settings.sources.desktopActivity.throughPause"]) as HTMLInputElement).checked).toBe(true);
+    });
+
+    it("shows the owner's off switch as off", () => {
+      app.__test__.setRoute("sources");
+      app.__test__.renderSettings(
+        activityDump({ screen: true, desktop_activity: false, desktop_activity_allowed: false, desktop_activity_through_pause: false }, false),
+      );
+      expect(activitySwitch().checked).toBe(false);
+      expect(activityStatus()).toBe("off");
+    });
+
+    it("sends keep-on-while-paused to the app", () => {
+      app.__test__.setRoute("sources");
+      app.__test__.renderSettings(
+        activityDump({ screen: true, desktop_activity: true, desktop_activity_allowed: true, desktop_activity_through_pause: false }, false),
+      );
+      const toggle = present(ids["settings.sources.desktopActivity.throughPause"]) as HTMLInputElement;
+      expect(toggle.checked).toBe(false);
+      toggle.checked = true;
+      toggle.dispatchEvent(new Event("change"));
+      expect(invokeMock).toHaveBeenCalledWith("set_desktop_activity_through_pause", { enabled: true });
+    });
+  });
+
   describe("source switch data-status attribute transitions", () => {
     it("reflects active as on", () => {
       const dump = {

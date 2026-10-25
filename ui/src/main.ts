@@ -274,8 +274,11 @@ interface SetupSnapshot {
   wizard: WizardStep;
   notice_dismissed: boolean;
   desktop_activity?: boolean;
+  desktop_activity_allowed?: boolean;
+  desktop_activity_through_pause?: boolean;
   desktop_activity_window_titles?: boolean;
   desktop_activity_page_addresses?: boolean;
+  desktop_activity_through_pause_save_failed?: boolean;
   desktop_activity_window_titles_save_failed?: boolean;
   desktop_activity_page_addresses_save_failed?: boolean;
   failed_sources?: FailedSourceWrite[];
@@ -323,6 +326,12 @@ function isSourceEnabled(setup: SetupSnapshot | undefined, kind: SourceKind): bo
     case "desktop_activity":
       return Boolean(setup.desktop_activity);
   }
+}
+
+// Desktop activity can be kept on through the main pause; every other source pauses.
+function isSourcePaused(dump: HealthDump, kind: SourceKind): boolean {
+  const paused = dump.pause !== null || dump.app_state === "paused";
+  return paused && !(kind === "desktop_activity" && dump.setup?.desktop_activity_through_pause === true);
 }
 
 function deriveSourceStatus(
@@ -3716,8 +3725,9 @@ function renderSourceControl(
   wrap.style.gap = "10px";
 
   const enabled = isSourceEnabled(dump.setup, kind);
-  const isPaused = dump.pause !== null || dump.app_state === "paused";
-  const status = deriveSourceStatus(enabled, isPaused, report);
+  // Desktop activity's switch is the owner's choice; whether it runs also follows screen.
+  const switchOn = kind === "desktop_activity" ? dump.setup?.desktop_activity_allowed === true : enabled;
+  const status = deriveSourceStatus(enabled, isSourcePaused(dump, kind), report);
   const failed = dump.setup?.failed_sources?.find((f) => f.kind === kind);
 
   const accessibleName =
@@ -3729,7 +3739,7 @@ function renderSourceControl(
           ? "desktop activity"
           : "screen";
 
-  const toggle = toggleRow("", switchId, enabled, (on) => {
+  const toggle = toggleRow("", switchId, switchOn, (on) => {
     void invoke("set_source_enabled", { kind, enabled: on }).then(() => retryHealth());
   });
   const input = toggle.querySelector("input");
@@ -3779,7 +3789,7 @@ function renderDesktopActivityControl(
 
   const sentence = text(
     "div",
-    "add app names and whether you're active or idle, or this PC is locked, to your journal. you can also add window titles and page addresses. page addresses include the site and path, with nothing after ? or #.",
+    "add app names, window titles and page addresses, and whether you're active or idle, or this PC is locked, to your journal. it's on while screen is on, and pauses with it. page addresses include the site and path, with nothing after ? or #.",
   );
   sentence.style.fontSize = "12px";
   sentence.style.color = "var(--fg-subtle)";
@@ -3810,9 +3820,20 @@ function renderDesktopActivityControl(
   );
   addressesToggle.style.padding = "2px 0";
 
+  const throughPauseToggle = toggleRow(
+    "keep on while paused or screen is off",
+    ids["settings.sources.desktopActivity.throughPause"],
+    dump.setup?.desktop_activity_through_pause ?? false,
+    (on) => {
+      void invoke("set_desktop_activity_through_pause", { enabled: on }).catch(() => undefined).then(() => retryHealth());
+    },
+  );
+  throughPauseToggle.style.padding = "2px 0";
+
   for (const [toggle, failed] of [
     [titlesToggle, dump.setup?.desktop_activity_window_titles_save_failed],
     [addressesToggle, dump.setup?.desktop_activity_page_addresses_save_failed],
+    [throughPauseToggle, dump.setup?.desktop_activity_through_pause_save_failed],
   ] as const) {
     container.append(toggle);
     if (failed) {
@@ -3841,7 +3862,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
       ["desktop_activity", "desktop activity", ids["settings.sources.desktopActivity.state"]],
     ] as const) {
       const report = sourceByKind(dump, kind);
-      sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), dump.pause !== null || dump.app_state === "paused", report), isAccessDenied(report)), id))));
+      sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), isSourcePaused(dump, kind), report), isAccessDenied(report)), id))));
     }
     if (latestBrowser) sources.append(...renderBrowserRows(latestBrowser));
     return sources;
@@ -3879,7 +3900,8 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   const hasSourceSaveFailure = Boolean(
     (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
     dump.setup?.desktop_activity_window_titles_save_failed ||
-    dump.setup?.desktop_activity_page_addresses_save_failed,
+    dump.setup?.desktop_activity_page_addresses_save_failed ||
+    dump.setup?.desktop_activity_through_pause_save_failed,
   );
   if (hasSourceSaveFailure) {
     const failureEl = document.createElement("div");
@@ -4677,9 +4699,10 @@ function renderSetupFrame(dump: HealthDump): HTMLElement {
   return frame;
 }
 
-// Where what the screen step turns on is kept, and what it leaves out. The password
+// What the screen step turns on, where it is kept, and what it leaves out. The password
 // manager defaults match each app's own process, so the line names apps.
 const SETUP_SCREEN_TRUST_LINES = [
+  "screen also adds the apps you use, with window titles and page addresses, to your journal. you can turn that off in settings.",
   "what you share stays on this PC until it goes into your journal on your own devices. your journal is always private, only yours.",
   "1Password, Bitwarden and the other password manager apps listed in settings are left out, but a password manager inside your browser isn't. you can pause any time.",
 ] as const;
