@@ -8,7 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Changed
 
-- desktop activity now starts and pauses with screen, and adds window titles and page addresses unless you turn them off. in settings you can turn it off, or keep it on while paused or with screen off. if you set up before this version, your desktop activity settings move to these once.
+- desktop activity now starts and pauses with screen, and adds window titles and page addresses to your journal unless you turn them off. in settings you can turn it off, or keep it on while paused or with screen off. if you set up before this version, desktop activity, window titles and page addresses are now on whenever screen is on, even if you'd turned them off. you can turn any of them off in settings.
 
 ### Fixed
 
