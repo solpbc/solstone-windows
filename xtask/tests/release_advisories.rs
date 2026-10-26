@@ -370,7 +370,7 @@ fn deterministic_advisory_config_is_byte_exact() {
         "[advisories]\n",
         "db-path = \"__ISOLATED_ADVISORY_DB__\"\n",
         "db-urls = [\"https://private-token@mirror.example.invalid/advisory-db\"]\n",
-        "yanked = \"warn\"\n",
+        "yanked = \"deny\"\n",
         "unmaintained = \"workspace\"\n",
         "ignore = [\n",
         "  { id = \"RUSTSEC-2026-0194\", reason = \"quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE.\" },\n",

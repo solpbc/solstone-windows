@@ -88,7 +88,7 @@ deny = [
 # off Windows). Wired into both `make ci` and scripts/win-ci.cmd.
 
 [advisories]
-yanked = "warn"
+yanked = "deny"
 # Unmaintained-crate advisories: only for crates we directly depend on. Tauri's
 # Linux GUI backend (GTK3 bindings, unic-*) drags in many transitive crates the
 # upstream has flagged unmaintained — we don't control them, there is no available

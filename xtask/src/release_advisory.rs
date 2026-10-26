@@ -342,7 +342,7 @@ pub fn render_advisory_config(
         .ok_or(AdvisoryError::PolicyMalformed)?;
     let keys: BTreeSet<&str> = advisories.keys().map(String::as_str).collect();
     if keys != BTreeSet::from(["ignore", "unmaintained", "yanked"])
-        || advisories.get("yanked").and_then(Value::as_str) != Some("warn")
+        || advisories.get("yanked").and_then(Value::as_str) != Some("deny")
         || advisories.get("unmaintained").and_then(Value::as_str) != Some("workspace")
     {
         return Err(AdvisoryError::PolicyMismatch);
@@ -385,7 +385,7 @@ pub fn render_advisory_config(
     rendered.push_str("db-urls = [");
     rendered.push_str(&toml_string(locator));
     rendered.push_str("]\n");
-    rendered.push_str("yanked = \"warn\"\n");
+    rendered.push_str("yanked = \"deny\"\n");
     rendered.push_str("unmaintained = \"workspace\"\n");
     rendered.push_str("ignore = [\n");
     for (id, reason) in parsed_ignores {

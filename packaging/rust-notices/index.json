@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "0c8ff0a3acd085675e03b8610015fc96613d12caee92e4ffe78396086c6bbbbf",
+  "cargo_lock_sha256": "1853f6d62595d2f7f30501a7af6ca9e5273cce81a7fcff2fa39c5fe5ae152525",
   "notice_texts": [
     {
       "byte_end_exclusive": 1418,
@@ -2699,7 +2699,7 @@
       "version": "1.0.4"
     },
     {
-      "identity": "chacha20@0.10.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "chacha20@0.10.2 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "MIT OR Apache-2.0",
       "name": "chacha20",
       "notice_references": [
@@ -2717,7 +2717,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.10.0"
+      "version": "0.10.2"
     },
     {
       "identity": "chrono@0.4.45 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -3035,7 +3035,7 @@
       "version": "0.8.21"
     },
     {
-      "identity": "crypto-bigint@0.7.6 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "crypto-bigint@0.7.10 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "Apache-2.0 OR MIT",
       "name": "crypto-bigint",
       "notice_references": [
@@ -3053,7 +3053,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.7.6"
+      "version": "0.7.10"
     },
     {
       "identity": "crypto-common@0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -3185,7 +3185,7 @@
       "version": "0.8.0"
     },
     {
-      "identity": "ctutils@0.4.5 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "ctutils@0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "Apache-2.0 OR MIT",
       "name": "ctutils",
       "notice_references": [
@@ -3203,7 +3203,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.4.5"
+      "version": "0.4.6"
     },
     {
       "identity": "darling@0.23.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -10321,7 +10321,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 290,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-10-26T03:49:27.574515+00:00",
+    "query_utc": "2026-10-26T15:33:54.161235+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 26
