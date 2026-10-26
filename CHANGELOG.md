@@ -4,11 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.38] - 2026-10-26
 
 ### Fixed
 
-- the app could turn screen, system audio, the microphone and start at login on without asking, if it lost your setup choices. it now opens setup with all four off and keeps your journal connection. if you're updating from a version before 2.0.30, setup opens this way once.
+- if your setup choices went missing, the app could turn on screen, system audio, the microphone and start at login without asking. it now opens setup with all four off and keeps your journal connection. if you're updating from a version before 2.0.30, setup opens this way once.
 
 ## [2.0.37] - 2026-10-25
 
