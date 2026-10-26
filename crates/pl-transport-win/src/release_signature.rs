@@ -120,9 +120,12 @@ fn download_and_verify_entry_impl(
     let sig_name = format!("{file_name}.minisig");
     let sig_url = observer_update::admission::sibling_url(feed_base, &sig_name)?;
 
-    // 3. GET sidecar with no-redirect ureq agent
+    // 3. GET sidecar with no-redirect ureq agent. No pooling: each GET opens a
+    // fresh connection, so a kept-alive socket the server or a middlebox closed
+    // between the two GETs can never fail the package GET.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .max_redirects(0)
+        .max_idle_connections(0)
         .build()
         .into();
 
@@ -888,6 +891,49 @@ mod tests {
             None,
         );
         assert!(res.is_err());
+        server.join().unwrap();
+    }
+
+    /// A server that keeps the signature connection alive, then drops it without
+    /// a response byte when a second request arrives on it: the stale-connection
+    /// race. The package GET must open its own connection.
+    #[cfg(feature = "transport-tests")]
+    #[test]
+    fn package_get_does_not_reuse_the_signature_connection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let partial = temp_dir.path().join("test.partial");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut req_buf = [0u8; 4096];
+                let n = stream.read(&mut req_buf).unwrap();
+                let req = String::from_utf8_lossy(&req_buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = if path.ends_with(".minisig") {
+                    FIXTURE_SIG.as_bytes().to_vec()
+                } else {
+                    FIXTURE_NUPKG.to_vec()
+                };
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&body).unwrap();
+                // A second request on this kept-alive socket is dropped unanswered.
+                let _ = stream.read(&mut req_buf);
+            }
+        });
+
+        let res = download_and_verify_release_entry_with_key(
+            FIXTURE_PUB,
+            &base_url,
+            "Full",
+            "Solstone-2.0.34-full.nupkg",
+            "2.0.34",
+            &partial,
+            None,
+        );
+        assert_eq!(res.unwrap(), FIXTURE_SIG);
         server.join().unwrap();
     }
 
