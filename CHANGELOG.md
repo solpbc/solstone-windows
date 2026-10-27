@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.39] - 2026-10-27
+
+### Fixed
+
+- an update could be found but then fail to download if the connection to the update server dropped just before the update began downloading. updates said "couldn't check for updates", and the app didn't try again on its own until its next scheduled check. this release fixes that.
+
 ## [2.0.38] - 2026-10-26
 
 ### Fixed

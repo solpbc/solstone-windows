@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.38
+PackageVersion: 2.0.39
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,7 +23,7 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Fixed
-  - if your setup choices went missing, the app could turn on screen, system audio, the microphone and start at login without asking. it now opens setup with all four off and keeps your journal connection. if you're updating from a version before 2.0.30, setup opens this way once.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.38
+  - an update could be found but then fail to download if the connection to the update server dropped just before the update began downloading. updates said "couldn't check for updates", and the app didn't try again on its own until its next scheduled check. this release fixes that.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.39
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
