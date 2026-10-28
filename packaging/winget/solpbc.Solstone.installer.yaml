@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.39
+PackageVersion: 2.0.40
 MinimumOSVersion: 10.0.18362.0
 Scope: user
 InstallerType: exe
@@ -36,7 +36,7 @@ Installers:
   # app's applicability, not the stub -- tools that sniff the stub guess x86. Do not
   # let one "correct" this to x86.
   - Architecture: x64
-    InstallerUrl: https://github.com/solpbc/solstone-windows/releases/download/v2.0.39/solstone-setup-2.0.39.exe
+    InstallerUrl: https://github.com/solpbc/solstone-windows/releases/download/v2.0.40/solstone-setup-2.0.40.exe
     InstallerSha256: AD98D6FF62EE55A77B8213D698E97FDD31C757DC0F3AFE3D681472A971CCDFB6
 ManifestType: installer
 ManifestVersion: 1.12.0

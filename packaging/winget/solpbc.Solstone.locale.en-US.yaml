@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.39
+PackageVersion: 2.0.40
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,8 +22,8 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Fixed
-  - an update could be found but then fail to download if the connection to the update server dropped just before the update began downloading. updates said "couldn't check for updates", and the app didn't try again on its own until its next scheduled check. this release fixes that.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.39
+  Changed
+  - nothing you'll notice changes in this release.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.40
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
