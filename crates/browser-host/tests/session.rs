@@ -72,6 +72,7 @@ fn paired(identity: &str) -> Gates {
             identity: Some(identity.into()),
         },
         paused: false,
+        away: false,
     }
 }
 
@@ -339,13 +340,29 @@ async fn unpaired_and_paused_close_the_gate_and_resume_reopens_it() {
 
     rig.hub.update_gates(paired(JOURNAL_A));
     assert_eq!(c.recv().await.unwrap()["capture"], "permitted");
+    assert_eq!(ack["away"], false);
     rig.hub.update_gates(Gates {
         paused: true,
         ..paired(JOURNAL_A)
     });
-    assert_eq!(c.recv().await.unwrap()["capture"], "paused");
+    let owner = c.recv().await.unwrap();
+    assert_eq!(owner["capture"], "paused");
+    assert_eq!(
+        owner["away"], false,
+        "the owner's pause leaves someone here"
+    );
+    rig.hub.update_gates(Gates {
+        paused: true,
+        away: true,
+        ..paired(JOURNAL_A)
+    });
+    let locked = c.recv().await.unwrap();
+    assert_eq!(locked["capture"], "paused");
+    assert_eq!(locked["away"], true, "a lock or suspend pause is away");
     rig.hub.update_gates(paired(JOURNAL_A));
-    assert_eq!(c.recv().await.unwrap()["capture"], "permitted");
+    let back = c.recv().await.unwrap();
+    assert_eq!(back["capture"], "permitted");
+    assert_eq!(back["away"], false);
 }
 
 #[tokio::test]

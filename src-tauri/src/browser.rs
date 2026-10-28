@@ -47,7 +47,7 @@ mod imp {
     use browser_host::hub::{BrowserStatus, Gates, Hub, HubConfig, Pairing};
     use browser_host::relay::{self, RelayEnd};
     use browser_host::upload::{deliver_pending, Journal, UploadOutcome};
-    use observer_model::{AppPhase, LocalOffset, PairingPhase};
+    use observer_model::{AppPhase, LocalOffset, PairingPhase, PauseReason};
     use pl_transport_win::source_upload::{upload_source_file, SourceFile, SourceUploadOutcome};
     use pl_transport_win::ObserverClient;
     use tauri::Manager;
@@ -303,11 +303,17 @@ mod imp {
 
     async fn read_gates(app: &tauri::AppHandle) -> Gates {
         let state = app.state::<crate::app::AppState>();
-        let paused = state
+        // Only the owner's own pause leaves someone at the computer; a lock or
+        // suspend pause, or one whose reason isn't known, is away.
+        let (paused, away) = state
             .health
             .lock()
-            .map(|h| h.app_state == AppPhase::Paused)
-            .unwrap_or(false);
+            .map(|h| {
+                let paused = h.app_state == AppPhase::Paused;
+                let owner = matches!(h.pause, Some(p) if p.reason == PauseReason::Operator);
+                (paused, paused && !owner)
+            })
+            .unwrap_or((false, false));
         let phase = state
             .sync
             .lock()
@@ -328,7 +334,11 @@ mod imp {
                 Pairing::NotPaired
             }
         };
-        Gates { pairing, paused }
+        Gates {
+            pairing,
+            paused,
+            away,
+        }
     }
 
     /// One view of the client that will carry an upload.

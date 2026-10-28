@@ -60,6 +60,10 @@ pub enum Pairing {
 pub struct Gates {
     pub pairing: Pairing,
     pub paused: bool,
+    /// The pause means nobody is at the computer (a lock or a suspend), not
+    /// the owner's own pause. Sent to the extension as `away`, so one set to
+    /// read through the owner's pause still stops here.
+    pub away: bool,
 }
 
 impl Default for Gates {
@@ -67,6 +71,7 @@ impl Default for Gates {
         Self {
             pairing: Pairing::NotPaired,
             paused: false,
+            away: false,
         }
     }
 }
@@ -366,7 +371,7 @@ impl Hub {
     }
 
     pub fn status(&self) -> BrowserStatus {
-        let (capture, delivery, failure, _, _, custody) = self.compute();
+        let (capture, delivery, failure, _, _, custody, _) = self.compute();
         let mut connected: Vec<ConnectedBrowser> = self
             .sessions
             .lock()
@@ -405,6 +410,7 @@ impl Hub {
         Option<String>,
         Option<String>,
         CustodyStatus,
+        bool,
     ) {
         let now = self.now();
         let custody = self.store().status(now);
@@ -455,12 +461,15 @@ impl Hub {
                 custody.period_id.clone(),
             )
         };
-        (capture, delivery, failure, generation, period, custody)
+        let away = gates.away;
+        (
+            capture, delivery, failure, generation, period, custody, away,
+        )
     }
 
     /// The `hello_ack`/`state` message for the current gate.
     fn state_message(&self, kind: &str, about: &NativeAboutSnapshot) -> Value {
-        let (capture, delivery, failure, generation, period, custody) = self.compute();
+        let (capture, delivery, failure, generation, period, custody, away) = self.compute();
         let mut m = Map::new();
         m.insert("type".into(), json!(kind));
         m.insert("capture".into(), json!(capture));
@@ -475,6 +484,7 @@ impl Hub {
             "custody".into(),
             json!({"full": custody.full, "stale": custody.stale}),
         );
+        m.insert("away".into(), json!(away));
         m.insert("version".into(), json!(self.cfg.app_version));
         m.insert("about".into(), json!(about));
         Value::Object(m)
