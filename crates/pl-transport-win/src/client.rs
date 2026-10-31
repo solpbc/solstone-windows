@@ -1156,7 +1156,21 @@ impl ObserverClient {
         files: Vec<FilePart>,
         zone: Option<&LocalZone>,
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
-        self.ingest_source(segment, day, files, zone, None).await
+        self.ingest_capture(segment, day, files, zone, &[]).await
+    }
+
+    /// [`Self::ingest`] that also says where the segment's audio came from
+    /// (`microphone`, `computer`), as its seal recorded it.
+    pub async fn ingest_capture(
+        &self,
+        segment: &str,
+        day: &str,
+        files: Vec<FilePart>,
+        zone: Option<&LocalZone>,
+        audio_sources: &[String],
+    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
+        self.send_ingest(segment, day, files, zone, None, audio_sources)
+            .await
     }
 
     /// [`Self::ingest`] into a device sub-stream (`source`, e.g. `browser`);
@@ -1169,9 +1183,23 @@ impl ObserverClient {
         zone: Option<&LocalZone>,
         source: Option<&str>,
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
+        self.send_ingest(segment, day, files, zone, source, &[])
+            .await
+    }
+
+    async fn send_ingest(
+        &self,
+        segment: &str,
+        day: &str,
+        files: Vec<FilePart>,
+        zone: Option<&LocalZone>,
+        source: Option<&str>,
+        audio_sources: &[String],
+    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
         let boundary = self.next_boundary();
         let mut request = IngestMultipart::new(boundary, day, segment, files)
-            .map_err(|error| TransportError::Ingest(error.to_string()))?;
+            .map_err(|error| TransportError::Ingest(error.to_string()))?
+            .with_audio_sources(audio_sources);
         if let Some(zone) = zone {
             request = request.with_zone(zone);
         }

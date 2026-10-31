@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use observer_model::{
-    AudioFormat, CaptureChunk, SegmentKey, SourceKind, AUDIO_FILE_NAME, LEN_FILE_NAME,
-    SCREEN_FILE_NAME,
+    AudioFormat, CaptureChunk, SegmentKey, SourceKind, AUDIO_FILE_NAME, AUDIO_SOURCES_FILE_NAME,
+    LEN_FILE_NAME, SCREEN_FILE_NAME,
 };
 use observer_recovery::{RecoveryFs, StaleSegment};
 use observer_segment::{is_live_segment, SegmentFs, DEFAULT_SEGMENT_SECS};
@@ -235,6 +235,18 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
     let path = dir.join(AUDIO_FILE_NAME);
     let mut file = File::create(&path)?;
     file.write_all(&bytes)?;
+    file.sync_all()?;
+
+    // Which sources the FLAC holds is known only here, before their files go.
+    let heard: Vec<&str> = [(&mic, "microphone"), (&sys, "computer")]
+        .into_iter()
+        .filter(|(source, _)| matches!(source, SealAudioSource::Present(_)))
+        .map(|(_, kind)| kind)
+        .collect();
+    let heard = serde_json::to_vec(&heard)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let mut file = File::create(dir.join(AUDIO_SOURCES_FILE_NAME))?;
+    file.write_all(&heard)?;
     file.sync_all()?;
 
     for source in [&mic, &sys] {
@@ -2091,6 +2103,46 @@ mod tests {
         );
         assert!(!root.join("7.incomplete").exists());
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seal_records_which_sources_the_audio_holds() {
+        let cases: [(&[SourceKind], &str); 3] = [
+            (&[SourceKind::SystemAudio], r#"["computer"]"#),
+            (&[SourceKind::Mic], r#"["microphone"]"#),
+            (
+                &[SourceKind::Mic, SourceKind::SystemAudio],
+                r#"["microphone","computer"]"#,
+            ),
+        ];
+        for (index, (sources, expected)) in cases.into_iter().enumerate() {
+            let root = temp_root(&format!("audio-sources-{index}"));
+            let _ = fs::remove_dir_all(&root);
+            let mut fs_impl = LocalSegmentFs::new(root.clone());
+            let key = key(20);
+            fs_impl.open_incomplete(key).unwrap();
+            for source in sources {
+                fs_impl
+                    .write_chunk(key, &audio_chunk(*source, &[1000; 16]))
+                    .unwrap();
+            }
+            fs_impl.finalize(key, None).unwrap();
+
+            assert_eq!(
+                fs::read_to_string(root.join(format!("20/{AUDIO_SOURCES_FILE_NAME}"))).unwrap(),
+                expected
+            );
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // No audio, no claim about it.
+        let root = temp_root("audio-sources-none");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        fs_impl.open_incomplete(key(21)).unwrap();
+        fs_impl.finalize(key(21), None).unwrap();
+        assert!(!root.join(format!("21/{AUDIO_SOURCES_FILE_NAME}")).exists());
         let _ = fs::remove_dir_all(&root);
     }
 

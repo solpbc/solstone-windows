@@ -73,6 +73,13 @@ pub const BREAKER_OPEN_MARKER: &str = "[breaker-open] ";
 /// Excluded from upload, mirroring the .uploaded marker.
 pub const LEN_FILE_NAME: &str = ".len";
 
+/// Sealed-dir sidecar naming the sound `audio.flac` holds, as a JSON array of
+/// `"microphone"` and `"computer"` (the system's own sound), written when the
+/// seal combines the per-source audio and those sources are about to go.
+///
+/// Excluded from upload; the uploader sends it as the envelope's `audio_sources`.
+pub const AUDIO_SOURCES_FILE_NAME: &str = ".audio_sources";
+
 /// The observer's top-level phase. **Computed** from real source state by the
 /// reducer in `observer-state` — never set directly by the UI or any command.
 ///

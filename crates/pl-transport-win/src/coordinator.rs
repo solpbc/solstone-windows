@@ -143,6 +143,15 @@ type IngestFuture<'a> =
 type ListSegmentsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), RouteError>> + Send + 'a>>;
 
+/// A segment-dir entry that is captured media rather than one of the
+/// uploader's or the seal's own sidecars.
+fn is_media(name: &str) -> bool {
+    name != UPLOADED_MARKER
+        && name != UPLOADED_TMP_MARKER
+        && name != observer_model::LEN_FILE_NAME
+        && name != observer_model::AUDIO_SOURCES_FILE_NAME
+}
+
 trait UploadClient: Send + Sync {
     fn ingest<'a>(
         &'a self,
@@ -150,6 +159,7 @@ trait UploadClient: Send + Sync {
         day: &'a str,
         files: Vec<FilePart>,
         zone: Option<&'a LocalZone>,
+        audio_sources: &'a [String],
     ) -> IngestFuture<'a>;
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a>;
@@ -173,8 +183,16 @@ impl UploadClient for ObserverClient {
         day: &'a str,
         files: Vec<FilePart>,
         zone: Option<&'a LocalZone>,
+        audio_sources: &'a [String],
     ) -> IngestFuture<'a> {
-        Box::pin(ObserverClient::ingest(self, segment, day, files, zone))
+        Box::pin(ObserverClient::ingest_capture(
+            self,
+            segment,
+            day,
+            files,
+            zone,
+            audio_sources,
+        ))
     }
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
@@ -197,9 +215,14 @@ impl UploadClient for ClientSlot {
         day: &'a str,
         files: Vec<FilePart>,
         zone: Option<&'a LocalZone>,
+        audio_sources: &'a [String],
     ) -> IngestFuture<'a> {
         let client = self.load();
-        Box::pin(async move { client.ingest(segment, day, files, zone).await })
+        Box::pin(async move {
+            client
+                .ingest_capture(segment, day, files, zone, audio_sources)
+                .await
+        })
     }
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a> {
@@ -648,14 +671,7 @@ impl UploadCoordinator {
         }
 
         // 2. Filter out sidecars / tmp files
-        let media_entries: Vec<_> = entries
-            .iter()
-            .filter(|e| {
-                e.name != UPLOADED_MARKER
-                    && e.name != observer_model::LEN_FILE_NAME
-                    && e.name != UPLOADED_TMP_MARKER
-            })
-            .collect();
+        let media_entries: Vec<_> = entries.iter().filter(|e| is_media(&e.name)).collect();
 
         // 3. Check matching against expected_files
         let mut matched_media_names = Vec::new();
@@ -699,11 +715,7 @@ impl UploadCoordinator {
         }
         let recheck_media: Vec<_> = recheck_entries
             .iter()
-            .filter(|e| {
-                e.name != UPLOADED_MARKER
-                    && e.name != observer_model::LEN_FILE_NAME
-                    && e.name != UPLOADED_TMP_MARKER
-            })
+            .filter(|e| is_media(&e.name))
             .collect();
         if recheck_media.len() != media_entries.len() {
             return Ok(DeleteGate::Stopped);
@@ -737,7 +749,10 @@ impl UploadCoordinator {
             }
         };
 
-        if !has_uncovered_media && remove_sidecar(observer_model::LEN_FILE_NAME).is_err() {
+        if !has_uncovered_media
+            && (remove_sidecar(observer_model::LEN_FILE_NAME).is_err()
+                || remove_sidecar(observer_model::AUDIO_SOURCES_FILE_NAME).is_err())
+        {
             return Ok(DeleteGate::Blocked);
         }
         if remove_sidecar(UPLOADED_MARKER).is_err() {
@@ -787,11 +802,7 @@ impl UploadCoordinator {
                             Ok(e) => e,
                             Err(_) => continue,
                         };
-                        let has_media = entries.iter().any(|e| {
-                            e.name != UPLOADED_MARKER
-                                && e.name != observer_model::LEN_FILE_NAME
-                                && e.name != UPLOADED_TMP_MARKER
-                        });
+                        let has_media = entries.iter().any(|e| is_media(&e.name));
                         if !has_media {
                             // Remove sidecars and remove_dir
                             let remove_sidecar = |name: &str| -> Result<(), ()> {
@@ -803,7 +814,9 @@ impl UploadCoordinator {
                                     Err(_) => Err(()),
                                 }
                             };
-                            if remove_sidecar(observer_model::LEN_FILE_NAME).is_err() {
+                            if remove_sidecar(observer_model::LEN_FILE_NAME).is_err()
+                                || remove_sidecar(observer_model::AUDIO_SOURCES_FILE_NAME).is_err()
+                            {
                                 self.set_hold(index, now.saturating_add(3600));
                                 continue;
                             }
@@ -937,14 +950,8 @@ impl UploadCoordinator {
                         Ok(e) => e,
                         Err(_) => continue,
                     };
-                    let media_entries: Vec<_> = entries
-                        .iter()
-                        .filter(|e| {
-                            e.name != UPLOADED_MARKER
-                                && e.name != observer_model::LEN_FILE_NAME
-                                && e.name != UPLOADED_TMP_MARKER
-                        })
-                        .collect();
+                    let media_entries: Vec<_> =
+                        entries.iter().filter(|e| is_media(&e.name)).collect();
 
                     let mut media_mtimes = Vec::new();
                     let mut mtime_failed = false;
@@ -987,7 +994,9 @@ impl UploadCoordinator {
                         }
                     };
 
-                    if remove_sidecar(observer_model::LEN_FILE_NAME).is_err() {
+                    if remove_sidecar(observer_model::LEN_FILE_NAME).is_err()
+                        || remove_sidecar(observer_model::AUDIO_SOURCES_FILE_NAME).is_err()
+                    {
                         self.set_hold(index, now.saturating_add(3600));
                         continue;
                     }
@@ -1043,11 +1052,7 @@ impl UploadCoordinator {
         let entries = self.store.list_entries(index)?;
         let media: Vec<_> = entries
             .iter()
-            .filter(|entry| {
-                entry.name != UPLOADED_MARKER
-                    && entry.name != observer_model::LEN_FILE_NAME
-                    && entry.name != UPLOADED_TMP_MARKER
-            })
+            .filter(|entry| is_media(&entry.name))
             .collect();
         let mut acknowledged = std::collections::HashSet::with_capacity(ack.files.len());
         Ok(ack.files.iter().all(|file| {
@@ -1363,7 +1368,13 @@ impl UploadCoordinator {
             let bytes = parts.iter().map(|part| part.bytes.len() as u64).sum();
 
             let started = Instant::now();
-            let ingest = self.client.ingest(&segment_key, &day, parts, Some(&zone));
+            let ingest = self.client.ingest(
+                &segment_key,
+                &day,
+                parts,
+                Some(&zone),
+                &segment.audio_sources,
+            );
             match ingest.await {
                 Ok((response, metadata)) if response.status.is_accepted() => {
                     let duration_ms = elapsed_ms(started);
@@ -2178,6 +2189,7 @@ mod tests {
                     index: 1,
                     boundary_epoch_secs,
                     len_secs: None,
+                    audio_sources: Vec::new(),
                     files: vec![file_name.to_string()],
                 },
                 file_name: file_name.to_string(),
@@ -2328,6 +2340,7 @@ mod tests {
                     index,
                     boundary_epoch_secs,
                     len_secs: None,
+                    audio_sources: Vec::new(),
                     files: vec![file_name.to_string()],
                 });
                 let mut map = HashMap::new();
@@ -2394,6 +2407,7 @@ mod tests {
                 index,
                 boundary_epoch_secs,
                 len_secs: None,
+                audio_sources: Vec::new(),
                 files: vec![file_name.to_string()],
             });
             state.segments.sort_by_key(|s| s.index);
@@ -2615,6 +2629,7 @@ mod tests {
         day: String,
         tz: Option<String>,
         utc_offset_seconds: i64,
+        audio_sources: Vec<String>,
     }
 
     impl FakeClient {
@@ -2657,6 +2672,7 @@ mod tests {
             day: &'a str,
             files: Vec<FilePart>,
             zone: Option<&'a observer_model::LocalZone>,
+            audio_sources: &'a [String],
         ) -> IngestFuture<'a> {
             let zone = zone.expect("coordinator passes the attempt zone");
             *self.submitted_day.lock().unwrap() = Some(day.to_owned());
@@ -2666,6 +2682,7 @@ mod tests {
                 day: day.to_owned(),
                 tz: zone.tz.clone(),
                 utc_offset_seconds: zone.utc_offset_seconds,
+                audio_sources: audio_sources.to_vec(),
             });
             let result = self
                 .ingests
@@ -2725,6 +2742,7 @@ mod tests {
             _day: &'a str,
             _files: Vec<FilePart>,
             _zone: Option<&'a observer_model::LocalZone>,
+            _audio_sources: &'a [String],
         ) -> IngestFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
@@ -2958,6 +2976,7 @@ mod tests {
             day: &'a str,
             _files: Vec<FilePart>,
             _zone: Option<&'a observer_model::LocalZone>,
+            _audio_sources: &'a [String],
         ) -> IngestFuture<'a> {
             *self.submitted_day.lock().unwrap() = Some(day.to_owned());
             let result = self
@@ -3400,6 +3419,47 @@ mod tests {
             body: r#"{"error":"Ingest request refused","reason_code":"legacy_observer_field"}"#
                 .into(),
         })
+    }
+
+    #[tokio::test]
+    async fn upload_says_where_the_sealed_audio_came_from() {
+        let root = TestRoot::new("audio-sources");
+        let index = 5_666_668;
+        let bytes = b"flac".to_vec();
+        let dir = root.path().join(index.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(observer_model::AUDIO_FILE_NAME), &bytes).unwrap();
+        std::fs::write(
+            dir.join(observer_model::AUDIO_SOURCES_FILE_NAME),
+            br#"["computer"]"#,
+        )
+        .unwrap();
+        let key = civil::segment_key_string_local(index * 300, 0, 300);
+        let client = FakeClient::new(
+            vec![accepted_ingest(
+                &key,
+                observer_model::AUDIO_FILE_NAME,
+                &bytes,
+                1,
+            )],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(
+            client.clone(),
+            Box::new(crate::sealed::LocalSealedStore::new(root.path(), 300)),
+            Arc::new(Mutex::new(SyncSnapshot::default())),
+        );
+
+        assert_eq!(coordinator.tick().await.unwrap(), 1);
+        let posts = client.posts.lock().unwrap().clone();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(
+            posts[0].files,
+            vec![observer_model::AUDIO_FILE_NAME.to_string()]
+        );
+        assert_eq!(posts[0].audio_sources, vec!["computer".to_string()]);
+        // Once delivered, nothing of the segment is left behind.
+        assert!(!dir.exists());
     }
 
     #[tokio::test(start_paused = true)]
@@ -5850,6 +5910,7 @@ mod tests {
                 day: civil::day_string_local(boundary, 0),
                 tz: None,
                 utc_offset_seconds: 0,
+                audio_sources: Vec::new(),
             }]
         );
         assert!(!dir.exists());
@@ -6028,6 +6089,7 @@ mod tests {
                 day: civil::day_string_local(boundary, 0),
                 tz: None,
                 utc_offset_seconds: 0,
+                audio_sources: Vec::new(),
             }]
         );
         assert!(!dir.exists());

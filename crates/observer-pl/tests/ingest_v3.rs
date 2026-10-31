@@ -167,6 +167,31 @@ fn envelope_meta_reports_the_injected_zone_and_offset() {
     }
 }
 
+#[test]
+fn envelope_meta_says_where_the_audio_came_from() {
+    let zone = LocalZone {
+        utc_offset_seconds: -21_600,
+        tz: Some("America/Denver".to_owned()),
+    };
+    let meta = |sources: &[&str]| {
+        let sources = sources.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let multipart =
+            IngestMultipart::new("v3-boundary", "20261031", "120000_300", sample_files())
+                .unwrap()
+                .with_audio_sources(&sources)
+                .with_zone(&zone);
+        envelope_json(&multipart.serialize().unwrap())["meta"].clone()
+    };
+    assert_eq!(
+        meta(&["computer"]),
+        serde_json::json!({"tz": "America/Denver", "utc_offset_seconds": -21_600, "audio_sources": ["computer"]})
+    );
+    assert_eq!(
+        meta(&[]),
+        serde_json::json!({"tz": "America/Denver", "utc_offset_seconds": -21_600})
+    );
+}
+
 fn sample_files() -> Vec<FilePart> {
     vec![
         FilePart {

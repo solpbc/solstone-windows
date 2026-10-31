@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use observer_model::{AUDIO_FILE_NAME, LEN_FILE_NAME};
+use observer_model::{AUDIO_FILE_NAME, AUDIO_SOURCES_FILE_NAME, LEN_FILE_NAME};
 
 use crate::ack::UploadAck;
 
@@ -27,6 +27,10 @@ pub struct SealedSegment {
     /// `None` for dirs sealed before this existed; the uploader falls back to
     /// the nominal period.
     pub len_secs: Option<u64>,
+    /// Where `audio.flac`'s sound came from (`microphone`, `computer`), as the
+    /// seal recorded it. Empty when the segment has no audio or was sealed
+    /// before this was recorded.
+    pub audio_sources: Vec<String>,
     /// File names inside the segment dir.
     pub files: Vec<String>,
 }
@@ -188,15 +192,21 @@ impl LocalSealedStore {
             let len_secs = std::fs::read_to_string(entry.path().join(LEN_FILE_NAME))
                 .ok()
                 .and_then(|s| s.trim().parse::<u64>().ok());
+            let audio_sources = std::fs::read(entry.path().join(AUDIO_SOURCES_FILE_NAME))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+                .unwrap_or_default();
             out.push(SealedSegment {
                 index,
                 boundary_epoch_secs: index.saturating_mul(self.period_secs),
                 len_secs,
+                audio_sources,
                 files: files
                     .into_iter()
                     .filter(|f| {
                         f != UPLOADED_MARKER
                             && f != LEN_FILE_NAME
+                            && f != AUDIO_SOURCES_FILE_NAME
                             && f != LEN_TMP_MARKER
                             && f != UPLOADED_TMP_MARKER
                             && f != REFUSED_BY_MARKER
@@ -366,6 +376,7 @@ impl SealedStore for LocalSealedStore {
                     continue;
                 };
                 if name != LEN_FILE_NAME
+                    && name != AUDIO_SOURCES_FILE_NAME
                     && name != UPLOADED_MARKER
                     && name != UPLOADED_TMP_MARKER
                     && name != REFUSED_BY_MARKER

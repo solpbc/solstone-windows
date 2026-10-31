@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- when the microphone is off and a call reaches your journal only through system audio, the app now tells your journal so.
+
 ## [2.0.40] - 2026-10-28
 
 ### Changed
