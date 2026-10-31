@@ -13,7 +13,7 @@ package-manager download URLs.
 |---------|----------|------------------|
 | Direct download (`solstone.app/download/windows`) | `solstone-setup-{version}.exe` | the app itself (in-app updater) |
 | **winget** (`winget install solstone`) | `solstone-setup-{version}.exe` | the app itself; `winget upgrade` is a redundant catch-up |
-| **scoop** (`scoop install solstone`) | `Solstone-win-Portable.zip` | scoop (the portable build's in-app updater is inert) |
+| **scoop** (`scoop install solstone`) | `Solstone-win-Portable.zip` | `scoop update solstone` or the app's in-app updater; these paths are not coordinated |
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to
 `%LocalAppData%\Solstone` with no elevation, and registers an Add/Remove-Programs
@@ -150,7 +150,10 @@ shortcut keeps the `solstone` name. Scoop removes the old shim at the first
 
 ## Coexistence
 
-Each install method has a single update owner (above) — never two. A user who
-installs via winget is updated in place by the app; a user who installs via scoop
-is updated by `scoop update`. Journal data lives in `%LocalAppData%\Solstone` and
-is preserved across updates regardless of channel.
+the app's updater is available in both the installed and portable builds.
+for a winget install, the app can update itself and `winget upgrade` can also
+update it. for a Scoop install, both `scoop update solstone` and the in-app
+updater are reachable. there is no coordination guarantee between these two
+paths, and an in-app update does not guarantee that Scoop's recorded version
+changes with it. locally held segments live in `%LocalAppData%\Solstone` and
+are preserved across updates regardless of channel.
