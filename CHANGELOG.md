@@ -6,6 +6,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.41] - 2026-10-31
+
 ### Changed
 
 - when the microphone is off and a call reaches your journal only through system audio, the app now tells your journal so.

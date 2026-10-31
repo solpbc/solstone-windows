@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.40
+PackageVersion: 2.0.41
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,7 +23,7 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Changed
-  - nothing you'll notice changes in this release.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.40
+  - when the microphone is off and a call reaches your journal only through system audio, the app now tells your journal so.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.41
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
