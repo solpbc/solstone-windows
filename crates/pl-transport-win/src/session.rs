@@ -170,6 +170,7 @@ fn confirm_current(
         crate::answer::read_answer_or_reset_with_owner_lock(&answer_path(&cfg.state_path))?
             .unwrap_or_default();
     answer_state.confirmed = binding.to_string();
+    crate::answer::note_unverified_pairing(&cfg.state_path, credential, binding)?;
     crate::answer::write_answer_with_owner_lock(&answer_path(&cfg.state_path), &answer_state)?;
     *cfg.confirmation.lock().unwrap() = binding.to_string();
     client.open_gate();
@@ -181,7 +182,7 @@ fn confirm_current(
         PairingWrite::Bound {
             binding: binding.to_string(),
             label: client.home_label().to_string(),
-            mark: mark_spec_for_jid(&credential.instance_id),
+            mark: mark_spec_for_jid(&crate::answer::mark_jid(credential)),
             kind: BoundKind::Paired {
                 finish_connecting: false,
                 setup_browser_ready: current.setup_activation.as_ref().is_some_and(|activation| {
@@ -235,7 +236,7 @@ fn publish_ordinary_miss(
         PairingWrite::Bound {
             binding: binding.to_string(),
             label: credential.home_label.clone(),
-            mark: mark_spec_for_jid(&credential.instance_id),
+            mark: mark_spec_for_jid(&crate::answer::mark_jid(credential)),
             kind: BoundKind::Paired {
                 finish_connecting: false,
                 setup_browser_ready: false,
@@ -606,7 +607,7 @@ fn publish_saved_binding(paired: &PairedState, cfg: &SyncConfig, sync: &Arc<Mute
         PairingWrite::Bound {
             binding,
             label: credential.home_label.clone(),
-            mark: mark_spec_for_jid(&credential.instance_id),
+            mark: mark_spec_for_jid(&crate::answer::mark_jid(credential)),
             kind: BoundKind::Paired {
                 finish_connecting: native && !confirmed,
                 setup_browser_ready: native && confirmed && !paired.setup_browser_opened,
@@ -1693,7 +1694,7 @@ mod pure_session_tests {
             client_key_pem: generated.key_pair.serialize_pem(),
             client_cert_pem: generated.cert.pem(),
             ca_chain_pem: vec![generated.cert.pem()],
-            ca_fp_prefix: vec![1, 2, 3, 4],
+            ca_fp_prefix: spl_core::ca::sha256(generated.cert.der())[..16].to_vec(),
             instance_id: instance_id.to_owned(),
             home_label: "Test Journal".to_owned(),
             endpoints: vec![crate::credential::EndpointAddr {
@@ -2525,7 +2526,7 @@ mod pure_session_tests {
         );
         assert_eq!(
             harness.sync.lock().unwrap().pairing.mark,
-            mark_spec_for_jid(REAL_JID)
+            mark_spec_for_jid(&crate::answer::mark_jid(&harness.cred))
         );
         assert_eq!(*harness.cfg.confirmation.lock().unwrap(), harness.binding);
 

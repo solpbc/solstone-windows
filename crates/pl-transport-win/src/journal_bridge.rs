@@ -262,7 +262,7 @@ impl BridgeLifecycle {
             let client = self.client_slot.load();
             let binding = client.journal_identity().client_cert_sha256;
             let label = client.home_label().to_string();
-            let mark = crate::service::journal_mark(&client.credential().instance_id);
+            let mark = crate::service::journal_mark(&crate::answer::mark_jid(client.credential()));
             crate::service::publish_pairing(
                 &self.sync,
                 &self.confirmation,
@@ -282,7 +282,7 @@ impl BridgeLifecycle {
             crate::unknown_journals::publish_unknown_journals(
                 &mut snapshot,
                 client.transport_client(),
-                &client.credential().instance_id,
+                &crate::answer::mark_jid(client.credential()),
             );
         }
         let was_live = self

@@ -73,9 +73,29 @@ fn run(argv: &[&str], root: &Path) -> (serde_json::Value, u8) {
     (value, outcome.exit_code)
 }
 
+/// A stored pairing that pins the door's certificate and can show it, so it isn't
+/// held for having no readable CA.
+fn readable_direct_credential(
+    cert: &rustls::pki_types::CertificateDer<'static>,
+    port: u16,
+) -> Credential {
+    use base64::Engine as _;
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let mut credential = direct_credential(pin, port);
+    credential.ca_chain_pem = vec![format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        base64::engine::general_purpose::STANDARD.encode(cert.as_ref())
+    )];
+    credential.instance_id = spl_core::relay_window::jid_from_spki(
+        &spl_core::ca::extract_spki_der(cert.as_ref()).unwrap(),
+    )
+    .unwrap();
+    credential
+}
+
 fn start_direct_upload_journal(payload: &[u8]) -> (Credential, std::thread::JoinHandle<()>) {
     let (cert, key) = self_signed();
-    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let stored_cert = cert.clone();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -92,12 +112,12 @@ fn start_direct_upload_journal(payload: &[u8]) -> (Credential, std::thread::Join
             serve_direct_upload_journal(listener, acceptor, size, &sha256).await;
         });
     });
-    (direct_credential(pin, port), server)
+    (readable_direct_credential(&stored_cert, port), server)
 }
 
 fn start_direct_unconfirmed_upload_journal() -> (Credential, std::thread::JoinHandle<()>) {
     let (cert, key) = self_signed();
-    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let stored_cert = cert.clone();
     let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -112,7 +132,7 @@ fn start_direct_unconfirmed_upload_journal() -> (Credential, std::thread::JoinHa
             serve_direct_unconfirmed_upload_journal(listener, acceptor).await;
         });
     });
-    (direct_credential(pin, port), server)
+    (readable_direct_credential(&stored_cert, port), server)
 }
 
 async fn serve_direct_upload_journal(

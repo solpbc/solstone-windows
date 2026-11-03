@@ -2078,7 +2078,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     if (pairing.detail === "mark_rejected") {
       const msg = text(
         "div",
-        "you said this mark doesn't match the one your journal shows, so this PC isn't paired, and nothing it has kept went to that journal through this link. you may have pasted the wrong link, or something isn't right. paste a fresh link from your journal, or email support@solstone.app and we'll help.",
+        "you said this mark doesn't match the one your journal shows, so this PC isn't paired. you may have pasted the wrong link, or something isn't right. paste a fresh link from your journal, or email support@solstone.app and we'll help.",
       );
       msg.style.fontSize = "12px";
       msg.style.color = "var(--fg-subtle)";
@@ -2087,7 +2087,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     } else if (pairing.detail === "pairing_cancelled") {
       const msg = text(
         "div",
-        "pairing cancelled. nothing this PC has kept went to that journal through this link. paste a fresh link from your journal when you're ready.",
+        "pairing cancelled. paste a fresh link from your journal when you're ready.",
       );
       msg.style.fontSize = "12px";
       msg.style.color = "var(--fg-subtle)";

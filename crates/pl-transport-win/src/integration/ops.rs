@@ -1254,11 +1254,17 @@ mod tests {
                 }
             });
         });
-        PairedState {
+        let paired = PairedState {
             credential: Some(roundtrip_credential(pin, port)),
             ..Default::default()
-        }
-        .save(&environment.state_path)
+        };
+        paired.save(&environment.state_path).unwrap();
+        let credential = paired.credential.as_ref().unwrap();
+        crate::answer::note_unverified_pairing(
+            &environment.state_path,
+            credential,
+            &crate::ack::JournalIdentity::from_credential(credential).client_cert_sha256,
+        )
         .unwrap();
         let cache = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         crate::answer::settle_grandfather(&environment.state_path, &cache).unwrap();
@@ -1458,6 +1464,13 @@ mod tests {
             ..Default::default()
         };
         paired.save(&environment.state_path).unwrap();
+        let credential = paired.credential.as_ref().unwrap();
+        crate::answer::note_unverified_pairing(
+            &environment.state_path,
+            credential,
+            &crate::ack::JournalIdentity::from_credential(credential).client_cert_sha256,
+        )
+        .unwrap();
         let cache = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         crate::answer::settle_grandfather(&environment.state_path, &cache).unwrap();
         let fixture_faulted = Arc::new(AtomicBool::new(false));

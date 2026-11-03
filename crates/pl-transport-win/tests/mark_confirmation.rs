@@ -1197,6 +1197,7 @@ async fn mark_confirmation_pair_publishes_awaiting_before_bind() {
 /// Launch finish precedes grandfather.
 #[tokio::test]
 async fn mark_confirmation_launch_finish_precedes_grandfather() {
+    use base64::Engine as _;
     let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
     let dir = TempDir::new("launch-finish");
@@ -1204,7 +1205,16 @@ async fn mark_confirmation_launch_finish_precedes_grandfather() {
     let ans_path = answer_path(&state_path);
     let confirmation = Arc::new(Mutex::new(String::new()));
 
-    let cred = direct_credential(pin, 1);
+    let mut cred = direct_credential(pin, 1);
+    // Its CA is readable and its id is that CA's, so only the grandfathering is at stake.
+    cred.ca_chain_pem = vec![format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        base64::engine::general_purpose::STANDARD.encode(cert.as_ref())
+    )];
+    cred.instance_id = spl_core::relay_window::jid_from_spki(
+        &spl_core::ca::extract_spki_der(cert.as_ref()).unwrap(),
+    )
+    .unwrap();
     let digest = JournalIdentity::from_credential(&cred).client_cert_sha256;
     let paired = PairedState {
         credential: Some(cred),
@@ -2151,44 +2161,77 @@ async fn stored_id_that_is_not_its_cas_is_held_on_launch_and_asked_with_the_cas_
     server_task.abort();
 }
 
-/// A stored pairing whose CA can't be read carries on as it did.
+/// Stored chains that can't show what a dial pins are held on launch and show no
+/// mark from their id: nothing kept, a chain leading with the owner's real public
+/// CA while the pin names the forger's, and a copy of the owner's key under someone
+/// else's signature. Going on from there is remembered.
 #[tokio::test]
-async fn stored_id_with_no_readable_ca_keeps_its_answer() {
+async fn stored_pairing_with_no_readable_ca_is_held_on_launch_with_no_mark() {
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+    let owner_jid = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
+    let owner_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let owner_ca = CertificateParams::new(Vec::<String>::new())
+        .unwrap()
+        .self_signed(&owner_key)
+        .unwrap();
+    let signer_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let signer = CertificateParams::new(Vec::<String>::new())
+        .unwrap()
+        .self_signed(&signer_key)
+        .unwrap();
+    let copied = CertificateParams::new(Vec::<String>::new())
+        .unwrap()
+        .signed_by(&owner_key, &signer, &signer_key)
+        .unwrap();
+
     let (cert, _key) = self_signed();
     let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
-    let dir = TempDir::new("stored-id-no-ca");
-    let state_path = dir.path().join("pairing.json");
-    let mut cred = direct_credential(pin, 9);
-    cred.ca_chain_pem = Vec::new();
-    let stored_id = cred.instance_id.clone();
-    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
-    PairedState {
-        credential: Some(cred),
-        ..Default::default()
+    let forger = direct_credential(pin, 9);
+    let mut empty_chain = forger.clone();
+    empty_chain.ca_chain_pem = Vec::new();
+    let mut owner_at_head = forger.clone();
+    owner_at_head.ca_chain_pem.insert(0, owner_ca.pem());
+    let mut copied_key = forger.clone();
+    copied_key.ca_chain_pem = vec![copied.pem()];
+    copied_key.ca_fp_prefix = spl_core::ca::sha256(copied.der())[..16].to_vec();
+
+    for (name, mut stored) in [
+        ("empty", empty_chain),
+        ("owner-at-head", owner_at_head),
+        ("copied-key", copied_key),
+    ] {
+        stored.instance_id = owner_jid.into();
+        let dir = TempDir::new(&format!("stored-no-ca-{name}"));
+        let state_path = dir.path().join("pairing.json");
+        let binding = JournalIdentity::from_credential(&stored).client_cert_sha256;
+        PairedState {
+            credential: Some(stored),
+            ..Default::default()
+        }
+        .save(&state_path)
+        .unwrap();
+        write_answer(
+            &answer_path(&state_path),
+            &AnswerState {
+                confirmed: binding.clone(),
+                rejected: String::new(),
+            },
+        )
+        .unwrap();
+        let cache = Arc::new(Mutex::new(String::new()));
+
+        settle_grandfather(&state_path, &cache).unwrap();
+
+        assert_eq!(*cache.lock().unwrap(), "", "{name}");
+        assert_eq!(
+            read_answer(&answer_path(&state_path))
+                .unwrap()
+                .unwrap()
+                .confirmed,
+            "",
+            "{name}"
+        );
     }
-    .save(&state_path)
-    .unwrap();
-    write_answer(
-        &answer_path(&state_path),
-        &AnswerState {
-            confirmed: binding.clone(),
-            rejected: String::new(),
-        },
-    )
-    .unwrap();
-    let cache = Arc::new(Mutex::new(String::new()));
-
-    settle_grandfather(&state_path, &cache).unwrap();
-
-    assert_eq!(*cache.lock().unwrap(), binding);
-    assert_eq!(
-        PairedState::load(&state_path)
-            .unwrap()
-            .credential
-            .unwrap()
-            .instance_id,
-        stored_id
-    );
 }
 
 /// 1. Absent answer, invalid pairing.json, ceremony fails -> empty answer on disk, replace with pre-gate cred A -> launch_resume leaves AwaitingConfirmation (not grandfathered).

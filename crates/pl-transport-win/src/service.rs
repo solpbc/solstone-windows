@@ -304,7 +304,7 @@ async fn pair_inner(
 ) -> Result<(PairedState, String, Option<MarkRenderSpec>, String), TransportError> {
     let credential = pairing::pair_from_link(link, &cfg.device_label).await?;
     let journal_label = credential.home_label.clone();
-    let mark = journal_mark(&credential.instance_id);
+    let mark = journal_mark(&crate::answer::mark_jid(&credential));
     let binding = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
     if fresh_pair {
         crate::migration::record_fresh_pair_offer(&cfg.state_path, &credential)?;
@@ -355,7 +355,7 @@ async fn setup_uploader(
     let post_connect = access.post_connect();
     let client = client_slot.load();
     let journal_label = client.home_label().to_string();
-    let mark = journal_mark(&client.credential().instance_id);
+    let mark = journal_mark(&crate::answer::mark_jid(client.credential()));
     let binding = client.journal_identity().client_cert_sha256;
 
     let (finish_connecting, setup_browser_ready) = match PairedState::load(&cfg.state_path) {

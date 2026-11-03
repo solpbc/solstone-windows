@@ -203,28 +203,47 @@ pub fn settle_grandfather(
     cache: &Arc<Mutex<String>>,
 ) -> Result<(), StorageError> {
     settle_answer_file(state_path, cache)?;
-    hold_mismatched_stored_id(state_path, cache)
+    hold_stored_pairing_that_cant_stand(state_path, cache)
 }
 
-/// The journal id of the CA this pairing pinned, when its stored chain holds
-/// that CA in a form an id can be worked out from.
+/// The journal id of the CA this pairing pins on every dial, when the stored
+/// chain can show it.
 pub(crate) fn pinned_ca_jid(credential: &crate::credential::Credential) -> Option<String> {
-    credential.ca_chain_pem.iter().find_map(|pem| {
-        let certs = spl_transport::tls::parse_certs(pem).ok()?;
-        let pinned = certs.iter().find(|cert| {
-            spl_core::ca::cert_matches_prefix(cert.as_ref(), &credential.ca_fp_prefix)
-        })?;
-        let spki = spl_core::ca::extract_spki_der(pinned.as_ref()).ok()?;
-        spl_core::relay_window::jid_from_spki(&spki).ok()
-    })
+    spl_transport::tls::pinned_ca_jid(&credential.ca_chain_pem, &credential.ca_fp_prefix)
 }
 
-/// A stored pairing whose id isn't its own CA's goes back to waiting for the
-/// owner, whatever was answered before, and its mark comes from that CA from
-/// here on. One with no readable CA can't be judged and carries on. The answer
-/// goes first, so a stop between the two writes leaves it held, and the next
-/// launch finishes the job.
-fn hold_mismatched_stored_id(
+/// The id a stored pairing's mark comes from: the CA it pins, never a claim beside
+/// it. Empty when no such CA can be read, which no mark derives from.
+pub(crate) fn mark_jid(credential: &crate::credential::Credential) -> String {
+    pinned_ca_jid(credential).unwrap_or_default()
+}
+
+fn unverified_path(state_path: &Path) -> std::path::PathBuf {
+    state_path.with_file_name("pairing-unverified")
+}
+
+/// The owner went on with a pairing that has no readable CA. Without this note the
+/// next launch would ask again.
+pub(crate) fn note_unverified_pairing(
+    state_path: &Path,
+    credential: &crate::credential::Credential,
+    binding: &str,
+) -> Result<(), StorageError> {
+    if pinned_ca_jid(credential).is_some() {
+        return Ok(());
+    }
+    let path = unverified_path(state_path);
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, binding).map_err(StorageError::WriteFailed)?;
+    publish_staged_file(&tmp, &path)
+}
+
+/// A stored pairing goes back to waiting for the owner, whatever was answered
+/// before, if its id isn't its pinned CA's, and its mark comes from that CA from
+/// here on, or if no such CA can be read and the owner hasn't said to go on without
+/// one. The answer goes first, so a stop between the two writes leaves it held, and
+/// the next launch finishes the job.
+fn hold_stored_pairing_that_cant_stand(
     state_path: &Path,
     cache: &Arc<Mutex<String>>,
 ) -> Result<(), StorageError> {
@@ -234,10 +253,14 @@ fn hold_mismatched_stored_id(
     let Some(credential) = paired.credential.as_mut() else {
         return Ok(());
     };
-    let Some(jid) = pinned_ca_jid(credential) else {
+    let jid = pinned_ca_jid(credential);
+    if jid.as_deref() == Some(credential.instance_id.as_str()) {
         return Ok(());
-    };
-    if jid == credential.instance_id {
+    }
+    let binding = crate::ack::JournalIdentity::from_credential(credential).client_cert_sha256;
+    if jid.is_none()
+        && std::fs::read_to_string(unverified_path(state_path)).is_ok_and(|text| text == binding)
+    {
         return Ok(());
     }
     let apath = answer_path(state_path);
@@ -247,8 +270,11 @@ fn hold_mismatched_stored_id(
     if let Ok(mut c) = cache.lock() {
         c.clear();
     }
-    credential.instance_id = jid;
-    paired.save(state_path).map_err(StorageError::Transport)
+    if let Some(jid) = jid {
+        credential.instance_id = jid;
+        paired.save(state_path).map_err(StorageError::Transport)?;
+    }
+    Ok(())
 }
 
 fn settle_answer_file(state_path: &Path, cache: &Arc<Mutex<String>>) -> Result<(), StorageError> {

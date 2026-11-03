@@ -1165,7 +1165,7 @@ impl UploadCoordinator {
                         crate::unknown_journals::publish_unknown_journals(
                             &mut snapshot,
                             client.transport_client(),
-                            &client.credential().instance_id,
+                            &crate::answer::mark_jid(client.credential()),
                         );
                     }
                 }
@@ -1192,7 +1192,7 @@ impl UploadCoordinator {
                         crate::unknown_journals::publish_unknown_journals(
                             &mut snapshot,
                             client.transport_client(),
-                            &client.credential().instance_id,
+                            &crate::answer::mark_jid(client.credential()),
                         );
                     }
                 }
@@ -1875,7 +1875,7 @@ impl UploadCoordinator {
                 crate::unknown_journals::publish_unknown_journals(
                     &mut snapshot,
                     client.transport_client(),
-                    &client.credential().instance_id,
+                    &crate::answer::mark_jid(client.credential()),
                 );
             }
             was_failing
@@ -1900,7 +1900,7 @@ impl UploadCoordinator {
                 (
                     client.journal_identity().client_cert_sha256,
                     client.home_label().to_string(),
-                    crate::service::journal_mark(&client.credential().instance_id),
+                    crate::service::journal_mark(&crate::answer::mark_jid(client.credential())),
                 )
             } else {
                 (
@@ -1929,7 +1929,7 @@ impl UploadCoordinator {
                 crate::unknown_journals::publish_unknown_journals(
                     &mut snapshot,
                     client.transport_client(),
-                    &client.credential().instance_id,
+                    &crate::answer::mark_jid(client.credential()),
                 );
             }
         }
