@@ -2731,6 +2731,11 @@ mod tests {
         format!("https://go.solstone.app/p#{fragment}")
     }
 
+    fn jid_of(cert: &rcgen::Certificate) -> String {
+        let spki = spl_core::ca::extract_spki_der(cert.der()).unwrap();
+        spl_core::relay_window::jid_from_spki(&spki).unwrap()
+    }
+
     async fn serve_one_pair_response(
         listener: TcpListener,
         acceptor: TlsAcceptor,
@@ -2774,7 +2779,7 @@ mod tests {
         let response_body = serde_json::json!({
             "client_cert": client_cert.pem(),
             "ca_chain": [signing_cert.pem()],
-            "instance_id": "fixture-journal",
+            "instance_id": jid_of(&signing_cert),
             "home_label": "Fixture Journal",
             "fingerprint": format!("sha256:{}", spl_core::ca::sha256_hex(client_cert.der())),
         });
@@ -2846,9 +2851,9 @@ mod tests {
             let tls_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
             let tls_cert = CertificateParams::new(vec!["spl.local".into()])
                 .unwrap()
-                .self_signed(&tls_key)
+                .signed_by(&tls_key, &signing_cert, &signing_key)
                 .unwrap();
-            let pin: [u8; 16] = spl_core::ca::sha256(tls_cert.der())[..16]
+            let pin: [u8; 16] = spl_core::ca::sha256(signing_cert.der())[..16]
                 .try_into()
                 .unwrap();
             let server_cfg = ServerConfig::builder_with_provider(Arc::new(
@@ -2858,7 +2863,10 @@ mod tests {
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
-                vec![CertificateDer::from(tls_cert.der().to_vec())],
+                vec![
+                    CertificateDer::from(tls_cert.der().to_vec()),
+                    CertificateDer::from(signing_cert.der().to_vec()),
+                ],
                 PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(tls_key.serialize_der())),
             )
             .unwrap();
@@ -3064,7 +3072,7 @@ mod tests {
         acceptors: (TlsAcceptor, TlsAcceptor),
         signer: (rcgen::Certificate, KeyPair),
         case: &'static str,
-        instance_id: &str,
+        instance_id: String,
         state_path: std::path::PathBuf,
         sync: Arc<Mutex<SyncSnapshot>>,
     ) {
@@ -3175,7 +3183,7 @@ mod tests {
         );
         assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
 
-        let mark = mark_spec_for_jid(instance_id).expect("valid mark for instance");
+        let mark = mark_spec_for_jid(&instance_id).expect("valid mark for instance");
         let mut id_body = serde_json::json!({
             "committed": true,
             "instance_id": instance_id,
@@ -3293,13 +3301,13 @@ mod tests {
         fixture: &OrdinaryPairFixture,
         case: &'static str,
     ) -> PairedState {
-        let instance_id = "f30ed159-ef46-8e9c-913f-e49f0fe7d201";
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages.push(KeyUsagePurpose::DigitalSignature);
         params.key_usages.push(KeyUsagePurpose::KeyCertSign);
         let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let signing_cert = params.self_signed(&signing_key).unwrap();
+        let instance_id = jid_of(&signing_cert);
 
         let ca_der = signing_cert.der();
         let mut link_pin = [0u8; 16];
@@ -3420,7 +3428,7 @@ mod tests {
         fixture.assert_confirmation(&paired, true).await;
         assert_eq!(
             fixture.sync.lock().unwrap().pairing.mark,
-            mark_spec_for_jid("f30ed159-ef46-8e9c-913f-e49f0fe7d201")
+            mark_spec_for_jid(&paired.credential.as_ref().unwrap().instance_id)
         );
         fixture.finish().await;
     }

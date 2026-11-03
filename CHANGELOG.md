@@ -8,6 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- this is a security fix. someone who got you to use a pairing link they had swapped could pair this PC with something that isn't your journal, while showing you your own journal's mark, so the check would have looked right. what you shared with the solstone app, like your screen and audio, would then have gone to them. the solstone app now refuses a link when what answers claims to be a different journal from the one the link points to, before it asks you anything or saves anything.
 - your journal's mark now has the same colors and layout in this app as in your journal's network app, and its words stay readable in dark mode.
 - when something other than your journal answers, the app now explains what that can mean.
 

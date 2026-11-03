@@ -230,6 +230,58 @@ async fn serve_one_pair_response(
     mode: PairCertificateMode,
     expected_platform: Option<&'static str>,
 ) -> Vec<u8> {
+    serve_pair_response_claiming(
+        listener,
+        acceptor,
+        signing_cert,
+        signing_key,
+        mode,
+        expected_platform,
+        None,
+    )
+    .await
+}
+
+fn jid_of(cert: &rcgen::Certificate) -> String {
+    let spki = spl_core::ca::extract_spki_der(cert.der()).unwrap();
+    spl_core::relay_window::jid_from_spki(&spki).unwrap()
+}
+
+/// A door holding `ca` that presents a leaf it signed, and the link pin naming it.
+fn journal_door(ca: &rcgen::Certificate, ca_key: &KeyPair) -> (TlsAcceptor, Vec<u8>) {
+    let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let leaf = CertificateParams::new(vec!["spl.local".to_string()])
+        .unwrap()
+        .signed_by(&leaf_key, ca, ca_key)
+        .unwrap();
+    let config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![
+                    CertificateDer::from(leaf.der().to_vec()),
+                    CertificateDer::from(ca.der().to_vec()),
+                ],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der())),
+            )
+            .unwrap();
+    (
+        TlsAcceptor::from(Arc::new(config)),
+        spl_core::ca::sha256(ca.der())[..16].to_vec(),
+    )
+}
+
+async fn serve_pair_response_claiming(
+    listener: Arc<TcpListener>,
+    acceptor: TlsAcceptor,
+    signing_cert: rcgen::Certificate,
+    signing_key: KeyPair,
+    mode: PairCertificateMode,
+    expected_platform: Option<&'static str>,
+    claimed_id: Option<String>,
+) -> Vec<u8> {
     let (tcp, _) = listener.accept().await.unwrap();
     let mut tls = acceptor.accept(tcp).await.unwrap();
     let (stream_id, request) = read_framed_request(&mut tls).await;
@@ -265,7 +317,7 @@ async fn serve_one_pair_response(
     let response_body = serde_json::to_vec(&serde_json::json!({
         "client_cert": client_cert.pem(),
         "ca_chain": [signing_cert.pem()],
-        "instance_id": payload["instance_id"],
+        "instance_id": claimed_id.unwrap_or_else(|| jid_of(&signing_cert)),
         "home_label": payload["home_label"],
         "fingerprint": format!("sha256:{}", spl_core::ca::sha256_hex(client_cert.der())),
         "home_attestation": payload["home_attestation"],
@@ -1009,10 +1061,9 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
     let request_fixture = authority_fixture("pair_request");
     let response_fixture = authority_fixture("pair_response");
     let (signing_cert, signing_key) = signing_ca();
+    let expected_jid = jid_of(&signing_cert);
 
-    let (server_cert, server_key) = self_signed();
-    let server_pin = spl_core::ca::sha256(server_cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+    let (acceptor, server_pin) = journal_door(&signing_cert, &signing_key);
     let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_pair_response(
@@ -1035,10 +1086,7 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
         spl_transport::pairing::pair(&endpoints, nonce, &server_pin, label, &empty_map)
             .await
             .unwrap();
-    assert_eq!(
-        credential.instance_id,
-        response_fixture["payload"]["instance_id"]
-    );
+    assert_eq!(credential.instance_id, expected_jid);
     assert_eq!(
         credential.home_label,
         response_fixture["payload"]["home_label"]
@@ -1066,9 +1114,7 @@ async fn observer_contract_authority_direct_pairing_uses_real_crypto_and_request
 async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
     let (signing_cert, signing_key) = signing_ca();
 
-    let (server_cert, server_key) = self_signed();
-    let server_pin = spl_core::ca::sha256(server_cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+    let (acceptor, server_pin) = journal_door(&signing_cert, &signing_key);
     let first_listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let first_port = first_listener.local_addr().unwrap().port();
     let first_server = tokio::spawn(serve_one_pair_response(
@@ -1131,12 +1177,75 @@ async fn direct_pairing_key_mismatch_is_terminal_after_first_written_request() {
     assert_eq!(later_accepts.load(Ordering::SeqCst), 0);
 }
 
+/// Runs the app's own pairing service, so the phase and detail the settings
+/// window turns into its refusal line come from the real path. No window needed.
+#[tokio::test]
+async fn service_pair_refuses_a_peer_claiming_another_journals_id_and_pairs_a_genuine_one() {
+    let (genuine_cert, genuine_key) = signing_ca();
+    let genuine_jid = jid_of(&genuine_cert);
+
+    // The forger's door holds its own CA and its link pins that CA, so the
+    // handshake succeeds and the one request is written.
+    let (forger_cert, forger_key) = signing_ca();
+    let (acceptor, forger_pin) = journal_door(&forger_cert, &forger_key);
+    let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+    let port = listener.local_addr().unwrap().port();
+    let forger = tokio::spawn(serve_pair_response_claiming(
+        listener,
+        acceptor,
+        forger_cert,
+        forger_key,
+        PairCertificateMode::SubmittedCsr,
+        Some("windows"),
+        Some(genuine_jid.clone()),
+    ));
+    let state_path = temp_state_path("service-pair-forged-id");
+    let cfg = service_config(state_path.clone());
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+
+    let error = service::pair(&direct_pair_link(port, &forger_pin), &cfg, sync.clone())
+        .await
+        .err()
+        .expect("a forged id must not pair");
+
+    assert!(matches!(error, TransportError::Pairing(_)), "{error:?}");
+    forger.await.unwrap();
+    {
+        let snapshot = sync.lock().unwrap();
+        assert_eq!(snapshot.pairing.phase, observer_model::PairingPhase::Failed);
+        assert_eq!(snapshot.pairing.detail.as_deref(), Some("pairing"));
+    }
+    assert!(PairedState::load(&state_path)
+        .map(|state| state.credential.is_none())
+        .unwrap_or(true));
+
+    let (acceptor, genuine_pin) = journal_door(&genuine_cert, &genuine_key);
+    let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+    let port = listener.local_addr().unwrap().port();
+    let genuine = tokio::spawn(serve_one_pair_response(
+        listener,
+        acceptor,
+        genuine_cert,
+        genuine_key,
+        PairCertificateMode::SubmittedCsr,
+        Some("windows"),
+    ));
+
+    let paired = service::pair(&direct_pair_link(port, &genuine_pin), &cfg, sync.clone())
+        .await
+        .expect("the journal it named pairs");
+
+    assert_eq!(
+        paired.credential.expect("credential").instance_id,
+        genuine_jid
+    );
+    genuine.await.unwrap();
+}
+
 #[tokio::test]
 async fn service_pair_persists_credential_without_register_request() {
     let (signing_cert, signing_key) = signing_ca();
-    let (server_cert, server_key) = self_signed();
-    let server_pin = spl_core::ca::sha256(server_cert.as_ref())[..16].to_vec();
-    let acceptor = TlsAcceptor::from(Arc::new(server_config(server_cert, server_key)));
+    let (acceptor, server_pin) = journal_door(&signing_cert, &signing_key);
     let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(serve_one_pair_response(

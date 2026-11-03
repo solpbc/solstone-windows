@@ -453,11 +453,22 @@ mod tests {
         serde_json::from_str(body).unwrap()
     }
 
+    /// The chain entry and journal id a pair response owes the certificate the
+    /// link pinned.
+    fn pinned_identity(pinned: &rcgen::Certificate) -> (String, String) {
+        let spki = spl_core::ca::extract_spki_der(pinned.der()).unwrap();
+        (
+            pinned.pem(),
+            spl_core::relay_window::jid_from_spki(&spki).unwrap(),
+        )
+    }
+
     async fn serve_pair_and_unavailable_identity(
         listener: TcpListener,
         acceptors: (TlsAcceptor, TlsAcceptor),
         signing_cert: rcgen::Certificate,
         signing_key: KeyPair,
+        pinned: (String, String),
     ) {
         let (acceptor, identity_acceptor) = acceptors;
         let (tcp, _) = listener.accept().await.unwrap();
@@ -473,8 +484,8 @@ mod tests {
 
         let response_body = serde_json::to_vec(&serde_json::json!({
             "client_cert": client_cert.pem(),
-            "ca_chain": [signing_cert.pem()],
-            "instance_id": "4d1f3d57-4f39-4930-b8f8-5e6f2a84d51a",
+            "ca_chain": [pinned.0, signing_cert.pem()],
+            "instance_id": pinned.1,
             "home_label": "fixture home",
             "fingerprint": format!("sha256:{}", spl_core::ca::sha256_hex(client_cert.der())),
             "home_attestation": "fixture-attestation",
@@ -537,6 +548,7 @@ mod tests {
             (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
+            pinned_identity(&server_cert),
         ));
         let link = direct_pair_link(port, &server_pin);
 
@@ -601,6 +613,7 @@ mod tests {
             (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
+            pinned_identity(&server_cert),
         ));
         let link = direct_pair_link(port, &server_pin);
 
@@ -646,6 +659,7 @@ mod tests {
             (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
+            pinned_identity(&server_cert),
         ));
         let link = direct_pair_link(port, &server_pin);
         let data_root = state.sync_config.state_path.parent().unwrap().to_path_buf();
@@ -1069,6 +1083,7 @@ mod tests {
             (acceptor, identity_acceptor),
             signing_cert,
             signing_key,
+            pinned_identity(&server_cert),
         ));
         let answer = crate::ipc::answer_pairing_surface(&surface, &state, binding, "reject".into());
         let contender = async {
