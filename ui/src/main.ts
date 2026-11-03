@@ -13,6 +13,7 @@ import lockupSvg from "./brand/lockup-solstone-horizontal.svg?raw";
 import "./brand/sunarc.js";
 import { automationContract } from "./lib/contract";
 import { createLogHelp } from "./logs";
+import { displayableMark, MARK_CSS, renderMarkCard, type MarkRenderSpec } from "./mark";
 import setupFrameCss from "./setup-frame.css?inline";
 
 type FrontendOrigin = "settings" | "about" | "none";
@@ -151,23 +152,23 @@ const MIGRATION_COPY = {
   "migration.picker.cancel": "cancel",
   "migration.replace_confirm.title": 'replace "{selected_device_label}"?',
   "migration.replace_confirm.body":
-    "this device continues its name and history. the selected device will lose access to your journal.",
+    "this PC continues its name and history. the selected device will lose access to your journal.",
   "migration.replace_confirm.replace": "replace device",
   "migration.replace_confirm.cancel": "cancel",
   "migration.pending.row": "device choice",
   "migration.pending.value": "not answered",
-  "migration.preparing.title": "getting this device ready",
+  "migration.preparing.title": "getting this PC ready",
   "migration.offline.title": "can't reach your journal",
   "migration.offline.body":
-    "anything waiting to send stays on this device. try again when your journal is reachable.",
+    "anything waiting to send stays on this PC. try again when your journal is reachable.",
   "migration.offline.action": "try again",
   "migration.unsupported.title": "journal update needed",
   "migration.unsupported.body":
-    "your journal doesn't support this move yet. anything waiting to send stays on this device. update your journal, then try again.",
+    "your journal doesn't support this move yet. anything waiting to send stays on this PC. update your journal, then try again.",
   "migration.unsupported.action": "try again",
   "migration.storage_unavailable.title": "saved connection unavailable",
   "migration.storage_unavailable.body":
-    "this device couldn't read its saved connection. anything waiting to send hasn't been removed.",
+    "this PC couldn't read its saved connection. anything waiting to send hasn't been removed.",
   "migration.storage_unavailable.action": "technical details",
   "migration.deciding.title": "saving your choice",
   "migration.decision_unknown.title": "checking your choice",
@@ -187,7 +188,7 @@ const MIGRATION_COPY = {
   "migration.decision_refused.action": "technical details",
   "migration.key_refused.title": "pair again",
   "migration.key_refused.body":
-    "this device couldn't open its saved connection to your journal. anything waiting to send is still here. pair again to reconnect.",
+    "this PC couldn't open its saved connection to your journal. anything waiting to send is still here. pair again to reconnect.",
   "migration.key_refused.action": "pair again",
   "migration.replace_confirm.title_fallback": "replace the selected device?",
 } as const;
@@ -202,24 +203,6 @@ interface UploadStatus {
   last_successful_sync?: number;
   recent_error_count?: number;
   last_error_reason?: string | null;
-}
-
-interface MarkColor {
-  name: string;
-  hex: string;
-}
-
-interface MarkIconSpec {
-  name: string;
-  svg: string;
-  color: MarkColor;
-  rot: number;
-}
-
-interface MarkRenderSpec {
-  icon1: MarkIconSpec;
-  icon2: MarkIconSpec;
-  words: [string, string];
 }
 
 interface UnknownJournalSighting {
@@ -586,6 +569,15 @@ function openJournalPaneForWaitingLink(dump: HealthDump): void {
   if (waitingLinkChecked) return;
   waitingLinkChecked = true;
   if (label !== "settings" || activeRoute !== "home") return;
+  // Coming back to a held pairing lands on the panel that answers it.
+  if (
+    dump.sync.pairing.phase === "awaiting_confirmation" &&
+    !settingsShowsSetupFrame(dump) &&
+    !homeShowsPairing(dump)
+  ) {
+    navigateTo("journal");
+    return;
+  }
   if (dump.setup?.sequence_enabled !== true || dump.setup.wizard !== "done") return;
   if (dump.sync.pairing.phase !== "not_paired" || homeShowsPairing(dump)) return;
   void Promise.resolve(invoke<string>("pairing_prefill"))
@@ -1455,7 +1447,7 @@ function failedPairingLabel(detail: string | null | undefined): string {
     case "relay_pair_window_closed":
       return "the pairing window closed. get a new pairing link from your journal, then try again.";
     case "io":
-      return "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
+      return "this PC isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this PC and syncs once you reconnect.";
     case "relay_unpaid":
       return "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing link from your journal.";
     case "journal_refused":
@@ -1486,7 +1478,7 @@ function pairingPhaseLabel(pairing: PairingState): string {
         ? "finish connecting to your journal"
         : "waiting for you to confirm your journal's mark";
     case "paired":
-      return `connected to ${markTextForm(pairing.mark)}`;
+      return `paired with ${markTextForm(pairing.mark)}`;
     case "failed":
       return failedPairingLabel(pairing.detail);
   }
@@ -1592,7 +1584,7 @@ function renderJournalOpenSection(dump: HealthDump): HTMLElement {
   if (pairing.phase === "awaiting_confirmation") {
     pane.append(
       automation(
-        text("div", "confirm your journal's mark to open it"),
+        text("div", pairing.finish_connecting ? pairingPhaseLabel(pairing) : "confirm your journal's mark to open it"),
         ids["settings.journal.unavailable"],
       ),
     );
@@ -1636,94 +1628,6 @@ function renderJournalOpenSection(dump: HealthDump): HTMLElement {
   row.append(button, error);
   pane.append(row);
   return pane;
-}
-
-function render48pxMarkTile(icon: MarkIconSpec): HTMLElement {
-  const tile = document.createElement("div");
-  tile.setAttribute("aria-hidden", "true");
-  tile.style.display = "inline-flex";
-  tile.style.alignItems = "center";
-  tile.style.justifyContent = "center";
-  tile.style.width = "48px";
-  tile.style.height = "48px";
-  tile.style.borderRadius = "10px";
-  tile.style.border = `2px solid ${icon.color.hex}`;
-  tile.style.background = `${icon.color.hex}1f`;
-  tile.style.boxSizing = "border-box";
-  if (icon.rot === 45) {
-    tile.style.transform = "rotate(45deg)";
-  }
-
-  const parser = new DOMParser();
-  const svgDoc = parser.parseFromString(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`,
-    "image/svg+xml",
-  );
-  const svgEl = svgDoc.documentElement;
-  tile.append(document.importNode(svgEl, true));
-  return tile;
-}
-
-function renderGenericMark(size: 32 | 48): HTMLElement {
-  const chipContainer = document.createElement("div");
-  chipContainer.classList.add("unknown-journal-chip");
-  chipContainer.style.display = "inline-flex";
-  chipContainer.style.alignItems = "center";
-  chipContainer.style.gap = size === 48 ? "10px" : "7px";
-  chipContainer.setAttribute("role", "img");
-  chipContainer.setAttribute("aria-label", "your journal, not set up yet");
-
-  const renderEmptyTile = (): HTMLElement => {
-    const tile = document.createElement("div");
-    tile.classList.add("unknown-journal-mark-tile");
-    tile.setAttribute("aria-hidden", "true");
-    tile.style.width = `${size}px`;
-    tile.style.height = `${size}px`;
-    tile.style.borderRadius = size === 48 ? "10px" : "8px";
-    tile.style.border = "2px dashed #6E6453";
-    tile.style.background = "none";
-    tile.style.boxSizing = "border-box";
-    return tile;
-  };
-
-  const words = renderMarkWords("your", "journal");
-  words.setAttribute("aria-hidden", "true");
-  chipContainer.append(renderEmptyTile(), renderEmptyTile(), words);
-  return chipContainer;
-}
-
-function renderUnavailableMark(size: 32 | 48): HTMLElement {
-  const chipContainer = document.createElement("div");
-  chipContainer.classList.add("unknown-journal-chip");
-  chipContainer.style.display = "inline-flex";
-  chipContainer.style.alignItems = "center";
-  chipContainer.style.gap = size === 48 ? "10px" : "7px";
-  chipContainer.setAttribute("role", "img");
-  chipContainer.setAttribute("aria-label", "your journal's mark, unavailable right now");
-
-  const renderTile = (): HTMLElement => {
-    const tile = document.createElement("div");
-    tile.classList.add("unknown-journal-mark-tile");
-    tile.setAttribute("aria-hidden", "true");
-    tile.style.display = "inline-flex";
-    tile.style.alignItems = "center";
-    tile.style.justifyContent = "center";
-    tile.style.width = `${size}px`;
-    tile.style.height = `${size}px`;
-    tile.style.borderRadius = size === 48 ? "10px" : "8px";
-    tile.style.border = "2px solid #6E6453";
-    tile.style.background = "#6E6453";
-    tile.style.boxSizing = "border-box";
-    tile.style.fontSize = size === 48 ? "20px" : "16px";
-    tile.style.color = "#FFFFFF";
-    tile.textContent = "?";
-    return tile;
-  };
-
-  const words = renderMarkWords("mark", "unavailable");
-  words.setAttribute("aria-hidden", "true");
-  chipContainer.append(renderTile(), renderTile(), words);
-  return chipContainer;
 }
 
 function migrationCard(): HTMLDivElement {
@@ -2025,28 +1929,14 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     const card = document.createElement("div");
     card.style.marginTop = "12px";
 
-    if (pairing.mark) {
-      const markRow = document.createElement("div");
-      markRow.classList.add("fluent-card");
-      markRow.style.display = "inline-flex";
-      markRow.style.alignItems = "center";
-      markRow.style.gap = "10px";
-      markRow.style.padding = "16px";
-      markRow.style.border = "1px solid var(--border)";
-      markRow.style.borderRadius = "var(--radius-control)";
-      markRow.style.background = "var(--fill)";
-      markRow.style.marginBottom = "14px";
-      automation(markRow, ids["settings.pairing.markCard"]);
-      markRow.setAttribute("role", "img");
-      markRow.setAttribute("tabindex", "-1");
-
-      const spec = pairing.mark;
-      markRow.setAttribute("aria-label", markAriaLabel(spec));
+    if (displayableMark(pairing.mark)) {
+      const markRow = renderConfirmCard(pairing.mark);
 
       const emphasis = text("div", "does this match your journal?");
       emphasis.style.fontWeight = "600";
       emphasis.style.fontSize = "14px";
       emphasis.style.marginBottom = "4px";
+      emphasis.style.textAlign = "center";
 
       const subtle = text(
         "div",
@@ -2055,11 +1945,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       subtle.style.fontSize = "12px";
       subtle.style.color = "var(--fg-subtle)";
       subtle.style.marginBottom = "14px";
-
-      const words = renderMarkWords(spec.words[0], spec.words[1]);
-      words.setAttribute("aria-hidden", "true");
-
-      markRow.append(render48pxMarkTile(spec.icon1), render48pxMarkTile(spec.icon2), words);
+      subtle.style.textAlign = "center";
 
       const btnRow = document.createElement("div");
       btnRow.style.display = "flex";
@@ -2106,22 +1992,15 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       );
 
       btnRow.append(rejectBtn, confirmBtn);
-      card.append(emphasis, subtle, markRow, btnRow);
+      card.append(markRow, emphasis, subtle, btnRow);
     } else {
-      const markRow = renderUnavailableMark(48);
-      markRow.classList.add("fluent-card");
-      markRow.style.padding = "16px";
-      markRow.style.border = "1px solid var(--border)";
-      markRow.style.borderRadius = "var(--radius-control)";
-      markRow.style.background = "var(--fill)";
-      markRow.style.marginBottom = "14px";
-      markRow.setAttribute("tabindex", "-1");
-      automation(markRow, ids["settings.pairing.markCard"]);
+      const markRow = renderConfirmCard(null);
 
       const emphasis = text("div", "couldn't verify");
       emphasis.style.fontWeight = "600";
       emphasis.style.fontSize = "14px";
       emphasis.style.marginBottom = "4px";
+      emphasis.style.textAlign = "center";
 
       const subtle = text(
         "div",
@@ -2130,6 +2009,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       subtle.style.fontSize = "12px";
       subtle.style.color = "var(--fg-subtle)";
       subtle.style.marginBottom = "14px";
+      subtle.style.textAlign = "center";
 
       const btnRow = document.createElement("div");
       btnRow.style.display = "flex";
@@ -2183,30 +2063,16 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     return pane;
   }
 
-  if (pairing.phase === "paired") {
-    if (pairing.mark) {
-      pane.append(
-        valueRow(
-          "mark",
-          automation(renderMarkChip(pairing.mark), ids["settings.pairing.mark"]),
-        ),
-      );
-    } else {
-      pane.append(
-        valueRow(
-          "mark",
-          automation(renderUnavailableMark(32), ids["settings.pairing.mark"]),
-        ),
-      );
-    }
-  } else {
-    pane.append(
-      valueRow(
-        "mark",
-        automation(renderGenericMark(32), ids["settings.pairing.mark"]),
+  const paired = pairing.phase === "paired";
+  pane.append(
+    valueRow(
+      "mark",
+      automation(
+        renderMarkCard(paired ? pairing.mark : null, paired ? "unavailable" : "generic"),
+        ids["settings.pairing.mark"],
       ),
-    );
-  }
+    ),
+  );
 
   if (pairing.phase === "not_paired") {
     if (pairing.detail === "mark_rejected") {
@@ -2509,80 +2375,13 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   return pane;
 }
 
-function renderMarkWords(w1: string, w2: string): HTMLElement {
-  const container = document.createElement("span");
-  container.classList.add("mark-words");
-  container.style.fontSize = "13px";
-  container.style.fontWeight = "600";
-  container.style.display = "inline-flex";
-  container.style.alignItems = "center";
-  container.style.gap = "4px";
-
-  const first = text("span", w1.toLowerCase());
-  first.style.color = "#1A1A1A";
-
-  const dot = text("span", " · ");
-  dot.style.color = "#6E6453";
-
-  const second = text("span", w2.toLowerCase());
-  second.style.color = "#1A1A1A";
-
-  container.append(first, dot, second);
-  return container;
-}
-
-/** The one spoken announcement for a mark: both chip colors, then both words. */
-function markAriaLabel(spec: MarkRenderSpec): string {
-  return `${spec.icon1.color.name}, ${spec.icon2.color.name}, ${spec.words[0].toLowerCase()}, ${spec.words[1].toLowerCase()}`;
-}
-
-function renderMarkChip(spec: MarkRenderSpec | null): HTMLElement {
-  if (!spec) {
-    return renderUnavailableMark(32);
-  }
-
-  const chipContainer = document.createElement("div");
-  chipContainer.classList.add("unknown-journal-chip");
-  chipContainer.style.display = "inline-flex";
-  chipContainer.style.alignItems = "center";
-  chipContainer.style.gap = "7px";
-  // One announcement for the whole chip, not four fragments (two tiles + the
-  // words span) read separately.
-  chipContainer.setAttribute("role", "img");
-  chipContainer.setAttribute("aria-label", markAriaLabel(spec));
-
-  const renderTile = (icon: MarkIconSpec): HTMLElement => {
-    const tile = document.createElement("div");
-    tile.classList.add("unknown-journal-mark-tile");
-    tile.setAttribute("aria-hidden", "true");
-    tile.style.display = "inline-flex";
-    tile.style.alignItems = "center";
-    tile.style.justifyContent = "center";
-    tile.style.width = "32px";
-    tile.style.height = "32px";
-    tile.style.borderRadius = "8px";
-    tile.style.border = `2px solid ${icon.color.hex}`;
-    tile.style.background = `${icon.color.hex}1f`;
-    tile.style.boxSizing = "border-box";
-    if (icon.rot === 45) {
-      tile.style.transform = "rotate(45deg)";
-    }
-
-    const parser = new DOMParser();
-    const svgDoc = parser.parseFromString(
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="${icon.color.hex}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`,
-      "image/svg+xml",
-    );
-    const svgEl = svgDoc.documentElement;
-    tile.append(document.importNode(svgEl, true));
-    return tile;
-  };
-
-  const words = renderMarkWords(spec.words[0], spec.words[1]);
-  words.setAttribute("aria-hidden", "true");
-
-  chipContainer.append(renderTile(spec.icon1), renderTile(spec.icon2), words);
-  return chipContainer;
+function renderConfirmCard(mark: MarkRenderSpec | null): HTMLElement {
+  const card = automation(renderMarkCard(mark, "unavailable"), ids["settings.pairing.markCard"]);
+  card.setAttribute("tabindex", "-1");
+  card.style.display = "flex";
+  card.style.width = "fit-content";
+  card.style.margin = "0 auto 14px";
+  return card;
 }
 
 function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | undefined): HTMLElement | null {
@@ -2607,9 +2406,19 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     summary.style.color = "var(--fg)";
     summary.style.padding = "4px 0";
 
-    summary.textContent = sighting.address
-      ? `unknown journal seen at ${sighting.address} — view details`
-      : "unknown journal seen through the relay — view details";
+    const viewDetails = text("span", "view details");
+    viewDetails.style.marginLeft = "8px";
+    viewDetails.style.fontWeight = "400";
+    viewDetails.style.color = "var(--fg-subtle)";
+    summary.append(
+      text(
+        "span",
+        sighting.address
+          ? `unknown journal seen at ${sighting.address}`
+          : "unknown journal seen through the relay",
+      ),
+      viewDetails,
+    );
     details.append(summary);
 
     const detailContent = document.createElement("div");
@@ -2620,18 +2429,26 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     detailContent.style.flexDirection = "column";
     detailContent.style.gap = "12px";
 
-    const intro = text(
+    const heading = text("div", "something answered instead of your journal");
+    heading.classList.add("unknown-journal-heading");
+    heading.style.fontSize = "13px";
+    heading.style.fontWeight = "600";
+
+    const body = text(
       "p",
-      "something other than your journal answered. compare its mark with your journal's own.",
+      sighting.address
+        ? `something answered this PC at ${sighting.address}, and it isn't the journal it's paired with. this could be another device now using that address, or your journal, if its identity was reset. if the mark under "what answered" matches the one your journal shows now, pair this PC again.`
+        : "something answered this PC through the relay, and it isn't the journal it's paired with. this came through the relay, so it's less certain than a direct connection.",
     );
-    intro.style.margin = "0";
-    intro.style.fontSize = "12px";
-    intro.style.color = "var(--fg-subtle)";
-    detailContent.append(intro);
+    body.classList.add("unknown-journal-body");
+    body.style.margin = "-8px 0 0";
+    body.style.fontSize = "12px";
+    body.style.color = "var(--fg-subtle)";
+    detailContent.append(heading, body);
 
     const comparisonRow = document.createElement("div");
     comparisonRow.style.display = "grid";
-    comparisonRow.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+    comparisonRow.style.gridTemplateColumns = "repeat(auto-fit, minmax(min(250px, 100%), 1fr))";
     comparisonRow.style.gap = "12px";
 
     // Responding / what answered
@@ -2644,7 +2461,7 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
 
     const respondingCaption = text(
       "div",
-      sighting.responding_mark ? "claimed, not verified" : "no identity presented",
+      displayableMark(sighting.responding_mark) ? "claimed, not verified" : "no identity presented",
     );
     automation(respondingCaption, ids["settings.unknown-journal.responding-caption"]);
     respondingCaption.style.fontSize = "11px";
@@ -2653,7 +2470,7 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
 
     respondingBlock.append(
       respondingLabel,
-      renderMarkChip(sighting.responding_mark),
+      renderMarkCard(sighting.responding_mark, "not-presented"),
       respondingCaption,
     );
 
@@ -2664,7 +2481,7 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     pairedLabel.style.fontSize = "11px";
     pairedLabel.style.color = "var(--fg-subtle)";
     pairedLabel.style.marginBottom = "6px";
-    pairedBlock.append(pairedLabel, renderMarkChip(sighting.expected_mark));
+    pairedBlock.append(pairedLabel, renderMarkCard(sighting.expected_mark, "unavailable"));
 
     comparisonRow.append(respondingBlock, pairedBlock);
     detailContent.append(comparisonRow);
@@ -3567,7 +3384,7 @@ const BROWSER_COPY = {
   notPaired: "pair with your journal first",
   failed: "kept on this PC, not reaching your journal right now",
   discard: "discard waiting browser pages",
-  discardConfirm: "browser pages still waiting to be sent will be removed from this device.",
+  discardConfirm: "browser pages still waiting to be sent will be removed from this PC.",
   discardConfirmButton: "discard pages",
   cancel: "cancel",
   discarded: "discarded",
@@ -4726,7 +4543,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
 
   const headings = {
     mic: "share your conversations",
-    system_audio: "share sound from this computer",
+    system_audio: "share sound from this PC",
     screen: "share your screen",
     connection: "connect your journal",
   } as const;
@@ -4747,7 +4564,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     const isPaired = dump.sync.pairing.phase === "paired";
     if (isPaired) {
       if (dump.sync.pairing.mark != null) {
-        heading.textContent = pairingPhaseLabel(presentedPairing(dump.sync.pairing));
+        heading.textContent = `connected to ${markTextForm(dump.sync.pairing.mark)}`;
       } else {
         heading.textContent = "connected to your journal";
       }
@@ -5259,19 +5076,24 @@ function renderSettings(dump: HealthDump): void {
     logText.scrollTop = logPosition[2];
     logText.scrollLeft = logPosition[3];
   }
+  // The mark is spoken before the question, the first time its card is on screen.
+  const unfocusedMarkCard = markCardFocused
+    ? null
+    : root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`);
   if (focusWizardPrimary) {
     focusWizardPrimary = false;
     focusPaneTitleOnRender = false;
     root.querySelector<HTMLElement>(".wizard-step-title")?.focus();
+  } else if (unfocusedMarkCard) {
+    focusPaneTitleOnRender = false;
+    markCardFocused = true;
+    unfocusedMarkCard.focus();
   } else if (focusPaneTitleOnRender) {
     focusPaneTitleOnRender = false;
     const target = showFrame
       ? root.querySelector<HTMLElement>(".wizard-step-title")
       : root.querySelector<HTMLElement>(".settings-pane-title");
     target?.focus();
-  } else if (!markCardFocused && dump.sync?.pairing?.phase === "awaiting_confirmation") {
-    markCardFocused = true;
-    root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`)?.focus();
   } else if (dump.sync?.pairing?.phase !== "awaiting_confirmation") {
     markCardFocused = false;
   }
@@ -6045,7 +5867,7 @@ export function start(): void {
   }
 
   const styleEl = document.createElement("style");
-  styleEl.textContent = NATIVE_FEEL_CSS;
+  styleEl.textContent = NATIVE_FEEL_CSS + MARK_CSS;
   document.head.append(styleEl);
 
   const setupStyleEl = document.createElement("style");

@@ -273,12 +273,6 @@
   text-transform: none !important;
 }
 
-.setup-frame [data-automation-id="settings.pairing.mark"],
-.setup-frame [data-automation-id="settings.pairing.markCard"] {
-  background: #FFFDF9 !important;
-  border: 1px solid #ECE3D0 !important;
-}
-
 .setup-frame .setup-card span[data-status] {
   background: transparent !important;
   border: none !important;
@@ -406,12 +400,6 @@
   padding-top: 12px;
 }
 
-/* the mark's two words never break mid-word */
-.setup-frame .mark-words {
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
 /* one primary per screen: inside the card, accent buttons read as secondary,
    except the pairing field's own button */
 .setup-frame .setup-card button.fluent-accent:not(input + button) {
@@ -420,15 +408,9 @@
   border: 1px solid var(--border) !important;
 }
 
-/* the chips beside the words keep their size too */
-.setup-frame .setup-card :has(> .mark-words) > * {
-  flex-shrink: 0;
-}
-
 /* in the setup card, the row holding the mark stacks its label above the mark,
    so the mark has the card's full width */
-.setup-frame .setup-card div:has(> :nth-child(2) .mark-words),
-.setup-frame .setup-card div:has(> .mark-words:nth-child(2)) {
+.setup-frame .setup-card div:has(> :nth-child(2) .mark-words) {
   grid-template-columns: 1fr !important;
   gap: 6px !important;
 }

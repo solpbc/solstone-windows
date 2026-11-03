@@ -6,6 +6,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- your journal's mark now has the same colors and layout in this app as in your journal's network app, and its words stay readable in dark mode.
+- when something other than your journal answers, the app now explains what that can mean.
+
 ## [2.0.41] - 2026-10-31
 
 ### Changed

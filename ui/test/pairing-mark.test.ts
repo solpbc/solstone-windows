@@ -43,10 +43,10 @@ describe("paired journal mark in the ordinary pairing pane", () => {
     app.__test__.renderSettings(dump);
 
     const markEl = present(ids["settings.pairing.mark"]);
-    expect(markEl.textContent).toContain("liquefy · smock");
+    expect(markEl.textContent).toContain("liquefy");
+    expect(markEl.textContent).toContain("smock");
 
-    const tiles = markEl.querySelectorAll(".unknown-journal-mark-tile");
-    expect(tiles.length).toBe(2);
+    expect(markEl.querySelectorAll(".mark-chip svg").length).toBe(2);
   });
 
   it("renders an unavailable mark row when paired but no mark is known yet", () => {
@@ -58,11 +58,11 @@ describe("paired journal mark in the ordinary pairing pane", () => {
     const markEl = present(ids["settings.pairing.mark"]);
     expect(markEl.textContent).toContain("?");
 
-    const tiles = markEl.querySelectorAll<HTMLElement>(".unknown-journal-mark-tile");
-    expect(tiles.length).toBe(2);
-    for (const tile of Array.from(tiles)) {
-      expect(tile.style.border).not.toContain("dashed");
-      expect(tile.style.background).toMatch(/(#6e6453|rgb\(110, 100, 83\))/i);
+    const chips = markEl.querySelectorAll<HTMLElement>(".mark-chip");
+    expect(chips.length).toBe(2);
+    for (const chip of Array.from(chips)) {
+      expect(chip.classList.contains("dashed")).toBe(false);
+      expect(chip.classList.contains("rotated")).toBe(false);
     }
   });
 
@@ -75,11 +75,12 @@ describe("paired journal mark in the ordinary pairing pane", () => {
     const markEl = present(ids["settings.pairing.mark"]);
     expect(markEl.textContent).not.toContain("?");
 
-    const tiles = markEl.querySelectorAll<HTMLElement>(".unknown-journal-mark-tile");
-    expect(tiles.length).toBe(2);
-    for (const tile of Array.from(tiles)) {
-      expect(tile.style.border).toContain("2px dashed");
+    const chips = markEl.querySelectorAll<HTMLElement>(".mark-chip");
+    expect(chips.length).toBe(2);
+    for (const chip of Array.from(chips)) {
+      expect(chip.classList.contains("dashed")).toBe(true);
     }
+    expect(chips[1].classList.contains("rotated")).toBe(true);
   });
 
   it("carries one role=img aria-label announcement, with every inner node hidden from the tree", () => {
@@ -88,21 +89,34 @@ describe("paired journal mark in the ordinary pairing pane", () => {
     app.__test__.setHealth(dump);
     app.__test__.renderSettings(dump);
 
-    // The mark row's automation id is stamped directly on the chip container
-    // (renderMarkChip's return value), so `markEl` here IS the role="img" node.
+    // The mark row's automation id is stamped directly on the card, so `markEl`
+    // here IS the role="img" node.
     const markEl = present(ids["settings.pairing.mark"]);
-    expect(markEl.classList.contains("unknown-journal-chip")).toBe(true);
+    expect(markEl.classList.contains("mark-card")).toBe(true);
     expect(markEl.getAttribute("role")).toBe("img");
-    expect(markEl.getAttribute("aria-label")).toBe("blue, purple, liquefy, smock");
 
-    const tiles = markEl.querySelectorAll(".unknown-journal-mark-tile");
-    expect(tiles.length).toBe(2);
-    for (const tile of Array.from(tiles)) {
-      expect(tile.getAttribute("aria-hidden")).toBe("true");
-    }
+    // The same four tokens, in the same order, every time.
+    const name = markEl.getAttribute("aria-label") ?? "";
+    const positions = ["blue", "purple", "liquefy", "smock"].map((token) => name.indexOf(token));
+    expect(Math.min(...positions)).toBeGreaterThanOrEqual(0);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
 
-    const words = markEl.querySelector("span");
-    expect(words?.getAttribute("aria-hidden")).toBe("true");
+    expect(markEl.querySelector(".mark-chips")?.getAttribute("aria-hidden")).toBe("true");
+    expect(markEl.querySelector(".mark-words")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("draws a mark it can't draw whole as unavailable, never half a mark", () => {
+    const broken = sampleMarkSpec("liquefy", "smock", "#3b82f6");
+    broken.icon2.svg = "<script></script>";
+    const dump = pairedWithMarkDump(broken);
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    const markEl = present(ids["settings.pairing.mark"]);
+    expect(markEl.querySelectorAll(".mark-chip svg").length).toBe(0);
+    expect(markEl.textContent).not.toContain("liquefy");
+    expect(markEl.textContent).toContain("?");
   });
 });
 

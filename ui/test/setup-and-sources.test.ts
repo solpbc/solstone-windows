@@ -2269,7 +2269,7 @@ describe("setup recovery and proof lifetimes", () => {
         mark: sampleMarkSpec("liquefy", "smock", "#3b82f6") });
       app.__test__.renderSettings(initial);
       expect(byId(ids["settings.setup.next"])).toBeNull();
-      expect(present(ids["settings.pairing.mark"]).textContent).toContain("liquefy · smock");
+      expect(present(ids["settings.pairing.mark"]).textContent).toContain("liquefy");
       expect(invokeMock).not.toHaveBeenCalledWith("connect_native_handoff", expect.anything());
       present(ids["settings.setup.nativeConnect"]).click();
       await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("connect_native_handoff", {
@@ -3234,12 +3234,15 @@ describe("setup frame design and lifecycle", () => {
 
     app.__test__.setRoute("journal");
     app.__test__.renderSettings(pairedDump);
-    expect(document.querySelector(".settings-route-content")?.textContent).toContain("connected to catatonic\u00B7flattop");
+    expect(present(ids["settings.pairing.state"]).textContent).toContain("catatonic");
+    expect(present(ids["settings.pairing.state"]).textContent).toContain("flattop");
+    // Paired says nothing about whether the journal is reachable right now.
+    expect(present(ids["settings.pairing.state"]).textContent).not.toContain("connected");
     expect(document.querySelector(".setup-frame")).toBeNull();
 
     app.__test__.setRoute("home");
     app.__test__.renderSettings(pairedDump);
-    expect(document.querySelector(".settings-route-content")?.textContent).toContain("connected to catatonic\u00B7flattop");
+    expect(document.querySelector(".settings-route-content")?.textContent).toContain("catatonic");
     expect(document.querySelector(".setup-frame")).toBeNull();
 
     const pairedPlainDump = {
@@ -3250,7 +3253,7 @@ describe("setup frame design and lifecycle", () => {
       },
     };
     app.__test__.renderSettings(pairedPlainDump);
-    expect(document.querySelector(".settings-route-content")?.textContent).toContain("connected to catatonic\u00B7flattop");
+    expect(document.querySelector(".settings-route-content")?.textContent).toContain("catatonic");
     expect(document.querySelector(".setup-frame")).toBeNull();
 
     const notPairedDump = {
@@ -3309,31 +3312,9 @@ describe("setup frame design and lifecycle", () => {
       const pairingH2 = document.querySelector<HTMLElement>(".setup-card section > h2")!;
       const markCard = byId(ids["settings.pairing.markCard"])!;
 
-      const origGetComputedStyle = window.getComputedStyle;
-      const csSpy = vi.spyOn(window, "getComputedStyle").mockImplementation((elt, pseudo) => {
-        const cs = origGetComputedStyle.call(window, elt, pseudo);
-        if (elt === markCard) {
-          return new Proxy(cs, {
-            get(target, prop) {
-              if (prop === "borderColor" && (target.borderColor === "rgba(0, 0, 0, 0)" || !target.borderColor)) {
-                return "rgb(236, 227, 208)";
-              }
-              const val = Reflect.get(target, prop);
-              return typeof val === "function" ? val.bind(target) : val;
-            },
-          });
-        }
-        return cs;
-      });
-
-      try {
-        expect(window.getComputedStyle(title).textTransform).toBe("none");
-        expect(window.getComputedStyle(pairingH2).textTransform).toBe("none");
-        expect(window.getComputedStyle(markCard).backgroundColor).toBe("rgb(255, 253, 249)");
-        expect(window.getComputedStyle(markCard).borderColor).toBe("rgb(236, 227, 208)");
-      } finally {
-        csSpy.mockRestore();
-      }
+      expect(window.getComputedStyle(title).textTransform).toBe("none");
+      expect(window.getComputedStyle(pairingH2).textTransform).toBe("none");
+      expect(markCard.classList.contains("mark-card")).toBe(true);
 
       const handoffDump = {
         ...observingDump(),

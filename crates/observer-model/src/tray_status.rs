@@ -160,6 +160,10 @@ fn classify_phase(
         },
         AppPhase::Observing => match sync.pairing.phase {
             PairingPhase::Pairing => (TrayVisual::Connecting, "connecting".to_string()),
+            PairingPhase::AwaitingConfirmation if sync.pairing.finish_connecting => (
+                TrayVisual::Paused,
+                "finish connecting to your journal".to_string(),
+            ),
             PairingPhase::AwaitingConfirmation => (
                 TrayVisual::Paused,
                 "solstone · waiting for you to confirm your journal's mark".to_string(),
@@ -558,6 +562,16 @@ mod tests {
             tooltip,
             "solstone · waiting for you to confirm your journal's mark\nunknown journal seen at 10.0.0.1:443"
         );
+    }
+
+    #[test]
+    fn finish_connecting_tooltip_asks_for_no_mark() {
+        let mut finishing = sync(PairingPhase::AwaitingConfirmation);
+        finishing.pairing.finish_connecting = true;
+        let (visual, tooltip) =
+            classify_tray(AppPhase::Observing, &finishing, None, None, None, false);
+        assert_eq!(visual, TrayVisual::Paused);
+        assert!(!tooltip.contains("mark"));
     }
 
     #[test]

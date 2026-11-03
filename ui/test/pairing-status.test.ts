@@ -16,7 +16,7 @@ const PAIR_LINK =
 const WINDOW_CLOSED =
   "the pairing window closed. get a new pairing link from your journal, then try again.";
 const NO_NETWORK =
-  "this device isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this device and syncs once you reconnect.";
+  "this PC isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this PC and syncs once you reconnect.";
 const GENERIC =
   "pairing didn't go through. get a new pairing link from your journal and try again.";
 const JOURNAL_REFUSED =
@@ -342,10 +342,12 @@ describe("awaiting mark confirmation", () => {
   it("paints waiting for you to confirm your journal's mark on all four pairing-status sites", () => {
     const dump = awaitingConfirmationDump(null);
 
-    // Home route
+    // Home route. The first render lands on the panel, so come back to home.
     resetRoot();
     app.__test__.setRoute("home");
     app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+    app.__test__.setRoute("home");
     app.__test__.renderSettings(dump);
 
     const homeGlance = homeJournalCardGlance();
@@ -388,9 +390,14 @@ describe("awaiting mark confirmation", () => {
     const card = present(ids["settings.pairing.markCard"]);
     expect(card.getAttribute("role")).toBe("img");
     expect(card.getAttribute("tabindex")).toBe("-1");
-    expect(card.getAttribute("aria-label")).toBe("Blue, Amber, liquefy, smock");
+    const name = card.getAttribute("aria-label") ?? "";
+    const positions = ["Blue", "Amber", "liquefy", "smock"].map((token) => name.indexOf(token));
+    expect(Math.min(...positions)).toBeGreaterThanOrEqual(0);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(document.activeElement).toBe(card);
 
+    // The mark comes first, so it is spoken before the question.
+    expect(card.parentElement?.firstElementChild).toBe(card);
     expect(card.parentElement?.textContent).toContain("does this match your journal?");
     expect(card.parentElement?.textContent).toContain(
       "your journal shows this same mark beside the pairing link. it should match, exactly.",
@@ -415,6 +422,50 @@ describe("awaiting mark confirmation", () => {
 
     expect(byId(ids["settings.pairing.confirmContinue"])).toBeNull();
     expect(byId(ids["settings.pairing.confirmCancel"])).toBeNull();
+  });
+
+  it("lands on the mark when Settings opens on a held pairing", () => {
+    const dump = awaitingConfirmationDump(sampleMarkSpec("liquefy", "smock", "#3b82f6"));
+    app.__test__.setRoute("home");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    expect(app.__test__.getRoute()).toBe("journal");
+    expect(document.activeElement).toBe(present(ids["settings.pairing.markCard"]));
+
+    // Only the first render moves the owner. Going back to home stays there.
+    app.__test__.setRoute("home");
+    app.__test__.renderSettings(dump);
+    expect(app.__test__.getRoute()).toBe("home");
+  });
+
+  it("stays on home when home already shows the finish-connecting action", () => {
+    const base = awaitingConfirmationDump(sampleMarkSpec("liquefy", "smock", "#3b82f6"));
+    const dump = {
+      ...base,
+      sync: { ...base.sync, pairing: { ...base.sync.pairing, finish_connecting: true } },
+      setup: { ...base.setup, sequence_enabled: true, wizard: "done" as const },
+    };
+    app.__test__.setRoute("home");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    expect(app.__test__.getRoute()).toBe("home");
+    expect(present(ids["settings.pairing.finishConnecting"])).not.toBeNull();
+  });
+
+  it("asks for no mark on the open row while finishing a connection", () => {
+    const base = awaitingConfirmationDump(sampleMarkSpec("liquefy", "smock", "#3b82f6"));
+    const dump = {
+      ...base,
+      sync: { ...base.sync, pairing: { ...base.sync.pairing, finish_connecting: true } },
+      setup: { ...base.setup, sequence_enabled: true, wizard: "done" as const },
+    };
+    app.__test__.setRoute("journal");
+    app.__test__.setHealth(dump);
+    app.__test__.renderSettings(dump);
+
+    expect(present(ids["settings.journal.unavailable"]).textContent).not.toContain("mark");
   });
 
   it("renders unreadable mark card when mark is absent with accessible name and non-default buttons", () => {

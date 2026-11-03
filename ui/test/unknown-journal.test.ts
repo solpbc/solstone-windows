@@ -44,7 +44,7 @@ describe("unknown journal settings UI", () => {
     expect(byId(ids["settings.unknown-journal.list"])).toBeNull();
   });
 
-  it("renders two sightings with exact copy, locked geometry, rotation, and mark differences", () => {
+  it("renders two sightings, each with its own body, marks and captions", () => {
     const dump = unknownJournalsDump([
       {
         address: "192.168.1.120:443",
@@ -64,13 +64,21 @@ describe("unknown journal settings UI", () => {
 
     const summaries = document.querySelectorAll(`[data-automation-id="${ids["settings.unknown-journal.summary"]}"]`);
     expect(summaries.length).toBe(2);
-    expect(summaries[0].textContent).toBe("unknown journal seen at 192.168.1.120:443 — view details");
-    expect(summaries[1].textContent).toBe("unknown journal seen through the relay — view details");
+    expect(summaries[0].textContent).toContain("192.168.1.120:443");
+    expect(summaries[1].textContent).not.toContain("192.168.1.120:443");
 
     const details = document.querySelectorAll(`[data-automation-id="${ids["settings.unknown-journal.detail"]}"]`);
     expect(details.length).toBe(2);
-    expect(details[0].textContent).toContain("something other than your journal answered. compare its mark with your journal's own.");
-    expect(details[1].textContent).toContain("something other than your journal answered. compare its mark with your journal's own.");
+    expect(details[0].querySelector(".unknown-journal-heading")).not.toBeNull();
+    expect(details[1].querySelector(".unknown-journal-heading")).not.toBeNull();
+
+    // A direct sighting names its address. The relay has none, so its body is its own.
+    const directBody = details[0].querySelector(".unknown-journal-body")?.textContent ?? "";
+    const relayBody = details[1].querySelector(".unknown-journal-body")?.textContent ?? "";
+    expect(directBody).toContain("192.168.1.120:443");
+    expect(relayBody).not.toContain("192.168.1.120:443");
+    expect(relayBody).not.toBe("");
+    expect(relayBody).not.toBe(directBody);
 
     const whatAnswereds = document.querySelectorAll(`[data-automation-id="${ids["settings.unknown-journal.what-answered"]}"]`);
     const yourJournals = document.querySelectorAll(`[data-automation-id="${ids["settings.unknown-journal.your-journal"]}"]`);
@@ -83,43 +91,33 @@ describe("unknown journal settings UI", () => {
     expect(captions.length).toBe(2);
     expect(captions[0].textContent).toBe("claimed, not verified");
     expect(captions[1].textContent).toBe("no identity presented");
-    expect(whatAnswereds[1].textContent).toContain("mark");
-    expect(whatAnswereds[1].textContent).toContain("unavailable");
 
-    // Marks different (hex/words)
-    expect(whatAnswereds[0].textContent).toContain("distrust · chokehold");
-    expect(yourJournals[0].textContent).toContain("liquefy · smock");
+    // Marks different (words)
+    expect(whatAnswereds[0].textContent).toContain("distrust");
+    expect(whatAnswereds[0].textContent).toContain("chokehold");
+    expect(yourJournals[0].textContent).toContain("liquefy");
+    expect(yourJournals[0].textContent).toContain("smock");
 
-    // Tile geometry on first sighting
-    const tiles = whatAnswereds[0].querySelectorAll(".unknown-journal-mark-tile");
-    expect(tiles.length).toBe(2);
-    const tile0 = tiles[0] as HTMLElement;
-    expect(tile0.style.width).toBe("32px");
-    expect(tile0.style.height).toBe("32px");
-    expect(tile0.style.borderRadius).toBe("8px");
-    expect(tile0.style.border).toContain("2px");
-    expect(tile0.style.background).toMatch(/(1f|0\.12)/);
-    expect(tile0.style.transform).toBe("rotate(45deg)");
+    // A claimed mark draws both chips whole, the rotated one rotated as one piece.
+    const claimedChips = whatAnswereds[0].querySelectorAll(".mark-chip");
+    expect(claimedChips.length).toBe(2);
+    expect(claimedChips[0].classList.contains("rotated")).toBe(true);
+    expect(claimedChips[0].querySelector("svg")?.getAttribute("viewBox")).toBe("0 0 24 24");
 
-    const svg = tile0.querySelector("svg");
-    expect(svg).not.toBeNull();
-    expect(svg?.getAttribute("viewBox")).toBe("0 0 24 24");
-
-    // Unavailable tile geometry on second sighting
-    const emptyTiles = whatAnswereds[1].querySelectorAll(".unknown-journal-mark-tile");
-    expect(emptyTiles.length).toBe(2);
-    const emptyTile0 = emptyTiles[0] as HTMLElement;
-    expect(emptyTile0.style.width).toBe("32px");
-    expect(emptyTile0.style.height).toBe("32px");
-    expect(emptyTile0.style.borderRadius).toBe("8px");
-    expect(emptyTile0.style.border).not.toContain("dashed");
-    expect(emptyTile0.style.background).toMatch(/(#6e6453|rgb\(110, 100, 83\))/i);
-    expect(whatAnswereds[1].textContent).toContain("?");
-
-    // Middots present
-    expect(whatAnswereds[0].textContent).toContain("·");
-    expect(yourJournals[0].textContent).toContain("·");
-    expect(whatAnswereds[1].textContent).toContain("·");
+    // A stranger that presented nothing is never announced as the owner's journal.
+    const noIdentity = whatAnswereds[1].querySelector(".mark-card");
+    expect(noIdentity?.getAttribute("role")).toBe("img");
+    expect(noIdentity?.getAttribute("aria-label")).toBe(captions[1].textContent);
+    expect(whatAnswereds[1].textContent).not.toContain("?");
+    const noIdentityChips = whatAnswereds[1].querySelectorAll(".mark-chip");
+    expect(noIdentityChips.length).toBe(2);
+    for (const chip of Array.from(noIdentityChips)) {
+      expect(chip.classList.contains("dashed")).toBe(true);
+      expect(chip.classList.contains("rotated")).toBe(false);
+      expect(chip.querySelector("svg")).toBeNull();
+    }
+    // Its own form, not the owner's "no identity yet" one.
+    expect(noIdentity?.getAttribute("aria-label")).not.toContain("your journal");
   });
 
   it("leaves pairing labels untouched on journal route", () => {
@@ -137,7 +135,7 @@ describe("unknown journal settings UI", () => {
     app.__test__.renderSettings(dump);
 
     const pairedEl = present(ids["settings.pairing.state"]);
-    expect(pairedEl.textContent).toContain("connected to");
+    expect(pairedEl.textContent).not.toContain("connected");
 
     const syncSummaryEl = present(ids["settings.status.upload.state"]);
     expect(syncSummaryEl.textContent).toContain("delivered");
