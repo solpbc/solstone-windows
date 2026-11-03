@@ -196,10 +196,62 @@ pub(crate) fn write_answer_with_owner_lock(
 /// - If `pairing.json` is unreadable: writes nothing.
 ///
 /// If `pairing-answer.json` is already present: writes nothing.
+///
+/// Either way, a stored pairing whose id isn't its own CA's is then held.
 pub fn settle_grandfather(
     state_path: &Path,
     cache: &Arc<Mutex<String>>,
 ) -> Result<(), StorageError> {
+    settle_answer_file(state_path, cache)?;
+    hold_mismatched_stored_id(state_path, cache)
+}
+
+/// The journal id of the CA this pairing pinned, when its stored chain holds
+/// that CA in a form an id can be worked out from.
+pub(crate) fn pinned_ca_jid(credential: &crate::credential::Credential) -> Option<String> {
+    credential.ca_chain_pem.iter().find_map(|pem| {
+        let certs = spl_transport::tls::parse_certs(pem).ok()?;
+        let pinned = certs.iter().find(|cert| {
+            spl_core::ca::cert_matches_prefix(cert.as_ref(), &credential.ca_fp_prefix)
+        })?;
+        let spki = spl_core::ca::extract_spki_der(pinned.as_ref()).ok()?;
+        spl_core::relay_window::jid_from_spki(&spki).ok()
+    })
+}
+
+/// A stored pairing whose id isn't its own CA's goes back to waiting for the
+/// owner, whatever was answered before, and its mark comes from that CA from
+/// here on. One with no readable CA can't be judged and carries on. The answer
+/// goes first, so a stop between the two writes leaves it held, and the next
+/// launch finishes the job.
+fn hold_mismatched_stored_id(
+    state_path: &Path,
+    cache: &Arc<Mutex<String>>,
+) -> Result<(), StorageError> {
+    let Ok(mut paired) = crate::credential::PairedState::load(state_path) else {
+        return Ok(());
+    };
+    let Some(credential) = paired.credential.as_mut() else {
+        return Ok(());
+    };
+    let Some(jid) = pinned_ca_jid(credential) else {
+        return Ok(());
+    };
+    if jid == credential.instance_id {
+        return Ok(());
+    }
+    let apath = answer_path(state_path);
+    let mut answer = read_answer_or_reset(&apath)?.unwrap_or_default();
+    answer.confirmed.clear();
+    write_answer(&apath, &answer)?;
+    if let Ok(mut c) = cache.lock() {
+        c.clear();
+    }
+    credential.instance_id = jid;
+    paired.save(state_path).map_err(StorageError::Transport)
+}
+
+fn settle_answer_file(state_path: &Path, cache: &Arc<Mutex<String>>) -> Result<(), StorageError> {
     let apath = answer_path(state_path);
     match read_answer(&apath) {
         Ok(Some(answer)) => {

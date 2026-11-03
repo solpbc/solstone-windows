@@ -2029,6 +2029,168 @@ async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
     server_task.abort();
 }
 
+/// A stored pairing naming an id its own CA doesn't derive is held on launch,
+/// with an answer on file that would otherwise let it send, and the mark it asks
+/// about is the CA's. Yes then sends. Runs the app's service, with no window.
+#[tokio::test]
+async fn stored_id_that_is_not_its_cas_is_held_on_launch_and_asked_with_the_cas_mark() {
+    use base64::Engine as _;
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let ca_jid = spl_core::relay_window::jid_from_spki(
+        &spl_core::ca::extract_spki_der(cert.as_ref()).unwrap(),
+    )
+    .unwrap();
+    let ca_pem = format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        base64::engine::general_purpose::STANDARD.encode(cert.as_ref())
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+    let upload_received = Arc::new(AtomicBool::new(false));
+    let upload_flag = upload_received.clone();
+    let server_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let upload_flag = upload_flag.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(stream).await {
+                    let (stream_id, req) = read_framed_request(&mut tls).await;
+                    if String::from_utf8_lossy(&req).contains("/app/devices/ingest") {
+                        upload_flag.store(true, Ordering::SeqCst);
+                    }
+                    let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+                        .to_vec();
+                    write_response(&mut tls, stream_id, resp).await;
+                }
+            });
+        }
+    });
+
+    let dir = TempDir::new("stored-id-held");
+    let segments_dir = dir.path().join("segments");
+    let day_dir = segments_dir.join("20260930");
+    std::fs::create_dir_all(&day_dir).unwrap();
+    std::fs::write(day_dir.join("000000_300.tar.gz"), b"dummy-data").unwrap();
+    let state_path = dir.path().join("pairing.json");
+    let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+    let cfg = SyncConfig {
+        device_label: "test".into(),
+        period_secs: 300,
+        segments_root: segments_dir,
+        state_path: state_path.clone(),
+        local_offset: Arc::new(UtcOffset),
+        journal_version: Arc::new(JournalVersionController::new(dir.path().join("jv.json"))),
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(String::new())),
+        tombstone: Arc::new(Mutex::new(None)),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+
+    let mut cred = direct_credential(pin, port);
+    cred.ca_chain_pem = vec![ca_pem];
+    cred.instance_id = "f30ed159-ef46-8e9c-913f-e49f0fe7d201".into();
+    assert_ne!(cred.instance_id, ca_jid);
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    }
+    .save(&state_path)
+    .unwrap();
+    write_answer(
+        &answer_path(&state_path),
+        &AnswerState {
+            confirmed: binding.clone(),
+            rejected: String::new(),
+        },
+    )
+    .unwrap();
+
+    let mut slot = UploaderSlot::new();
+    let access = pl_transport_win::service::launch_resume(&cfg, &sync, &mut slot).await;
+    assert!(access.is_some());
+    let access_mutex = Arc::new(tokio::sync::Mutex::new(access));
+    let slot_mutex = Arc::new(tokio::sync::Mutex::new(slot));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(!upload_received.load(Ordering::SeqCst));
+    {
+        let snapshot = sync.lock().unwrap();
+        assert_eq!(snapshot.pairing.phase, PairingPhase::AwaitingConfirmation);
+        assert_eq!(snapshot.pairing.mark, mark_spec_for_jid(&ca_jid));
+    }
+    assert!(read_answer(&answer_path(&state_path))
+        .unwrap()
+        .unwrap()
+        .confirmed
+        .is_empty());
+
+    answer(
+        PairingAction::Confirm,
+        &binding,
+        &cfg,
+        &sync,
+        &access_mutex,
+        &slot_mutex,
+    )
+    .await
+    .expect("answer confirm");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(upload_received.load(Ordering::SeqCst));
+    assert_eq!(
+        PairedState::load(&state_path)
+            .unwrap()
+            .credential
+            .unwrap()
+            .instance_id,
+        ca_jid
+    );
+    server_task.abort();
+}
+
+/// A stored pairing whose CA can't be read carries on as it did.
+#[tokio::test]
+async fn stored_id_with_no_readable_ca_keeps_its_answer() {
+    let (cert, _key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let dir = TempDir::new("stored-id-no-ca");
+    let state_path = dir.path().join("pairing.json");
+    let mut cred = direct_credential(pin, 9);
+    cred.ca_chain_pem = Vec::new();
+    let stored_id = cred.instance_id.clone();
+    let binding = JournalIdentity::from_credential(&cred).client_cert_sha256;
+    PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    }
+    .save(&state_path)
+    .unwrap();
+    write_answer(
+        &answer_path(&state_path),
+        &AnswerState {
+            confirmed: binding.clone(),
+            rejected: String::new(),
+        },
+    )
+    .unwrap();
+    let cache = Arc::new(Mutex::new(String::new()));
+
+    settle_grandfather(&state_path, &cache).unwrap();
+
+    assert_eq!(*cache.lock().unwrap(), binding);
+    assert_eq!(
+        PairedState::load(&state_path)
+            .unwrap()
+            .credential
+            .unwrap()
+            .instance_id,
+        stored_id
+    );
+}
+
 /// 1. Absent answer, invalid pairing.json, ceremony fails -> empty answer on disk, replace with pre-gate cred A -> launch_resume leaves AwaitingConfirmation (not grandfathered).
 #[tokio::test]
 async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_unconfirmed_on_resume(
