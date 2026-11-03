@@ -2437,8 +2437,8 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     const body = text(
       "p",
       sighting.address
-        ? `something answered this PC at ${sighting.address}, and it isn't the journal it's paired with. this could be another device now using that address, or your journal, if its identity was reset. if the mark under "what answered" matches the one your journal shows now, pair this PC again.`
-        : "something answered this PC through the relay, and it isn't the journal it's paired with. this came through the relay, so it's less certain than a direct connection.",
+        ? `something answered this PC at ${sighting.address}, and it isn't the journal this PC is paired with. this could be another device now using that address, or your journal, if its identity was reset. if the mark under "what answered" matches the one your journal shows now, pair this PC again.`
+        : "something answered this PC through the relay, and it isn't the journal this PC is paired with. this is less certain than a direct connection.",
     );
     body.classList.add("unknown-journal-body");
     body.style.margin = "-8px 0 0";
