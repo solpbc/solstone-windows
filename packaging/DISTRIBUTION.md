@@ -182,4 +182,16 @@ install or a Scoop owner's state still deletes the state**. This depends on the 
 of those steps in Velopack's `Setup`, so after a Velopack upgrade, run the new
 installer over a paired older install and confirm the state came back.
 
+The installer also stops the app before it replaces the folder, and a silent run
+(`--silent`, which `winget upgrade` uses) doesn't start it again. So while the app
+runs it keeps a `running` file in the folder naming the Windows sign-in, and Quit
+removes it. When the hook finds that file from the current sign-in, it starts
+Windows PowerShell, which waits for the installer to exit and then starts the app
+the way sign-in does (`crates/platform-win/src/setup_restart.rs`). The hook can't
+start the app itself: when the hook exits, the installer stops everything still
+running from the folder. A file from an earlier sign-in, or an installer run in a
+different one (an elevated one included), starts nothing. The app writes the file
+from 2.0.43, so the first silent update from an older version still leaves it
+stopped until the owner opens it, or signs in again with start at sign-in on.
+
 Uninstalling the installed app removes the folder and any kept folder, state included.

@@ -60,6 +60,24 @@ fn log_restore(restored: &platform_win::setup_over::Restored) {
     }
 }
 
+/// Setup stopped the app to replace it, and a silent run never starts it again.
+/// If it was running in this sign-in, start it once Setup has exited. Runs after
+/// the state restore, which brings the running mark back with everything else.
+fn start_again_after_setup() {
+    let root = platform_win::local_data_root();
+    if !platform_win::setup_restart::was_running_in_this_sign_in(&root) {
+        return;
+    }
+    observer_log::init(&platform_win::logs_dir(), None);
+    let started = std::env::current_exe().and_then(|exe| {
+        platform_win::setup_restart::start_after_setup(&exe, &[observer_model::FROM_AUTOSTART_ARG])
+    });
+    match started {
+        Ok(()) => tracing::info!(target: "setup", "app starts again once setup exits"),
+        Err(error) => tracing::error!(target: "setup", %error, "app not started again after setup"),
+    }
+}
+
 fn main() -> ExitCode {
     // A browser's native-messaging launch is decided before anything else —
     // before Velopack's hooks, logging, the single-instance gate or a window:
@@ -109,7 +127,10 @@ fn main() -> ExitCode {
         // --apply-update is applied once above and apply_updates_and_restart restarts with empty argv;
         // VELOPACK_RESTART skips a second apply.
         .set_auto_apply_on_startup(false)
-        .on_after_install_fast_callback(|_version| keep_state_through_setup())
+        .on_after_install_fast_callback(|_version| {
+            keep_state_through_setup();
+            start_again_after_setup();
+        })
         .on_before_uninstall_fast_callback(|_version| {
             if let Ok(exe) = std::env::current_exe() {
                 let _ = platform_win::autostart::remove_login_item_if_matches(

@@ -40,6 +40,7 @@ pub mod local_offset;
 pub mod log_save;
 pub mod scheme;
 pub mod setup_over;
+pub mod setup_restart;
 pub mod toast;
 pub mod window_focus;
 

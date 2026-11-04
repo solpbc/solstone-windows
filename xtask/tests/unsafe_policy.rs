@@ -111,6 +111,14 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "log_save",
         owner: None,
     },
+    // The logon-session read, parent-process lookup and handle-inheritance clear
+    // behind restarting the app after a silent Setup.
+    ApprovedNode {
+        path: "crates/platform-win/src/setup_restart.rs",
+        kind: ApprovedKind::Mod,
+        name: "imp",
+        owner: None,
+    },
     ApprovedNode {
         path: "crates/platform-win/src/about_observation.rs",
         kind: ApprovedKind::Fn,

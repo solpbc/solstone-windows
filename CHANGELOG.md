@@ -9,6 +9,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 ### Fixed
 
 - running the installer over an existing install, which is also what `winget upgrade` does, no longer resets the app or deletes anything not yet sent to your journal. your pairing and your setup stay in place. this applies when the installer you run is this version or newer.
+- after `winget upgrade`, or the installer run with `--silent`, the app now starts again in the tray if it was running before the update. if you had quit it, it doesn't start. the update to this version still leaves it stopped; this works from the next update on.
 
 ## [2.0.42] - 2026-11-03
 

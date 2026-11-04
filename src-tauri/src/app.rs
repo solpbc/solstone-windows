@@ -654,6 +654,14 @@ pub fn run(
                 }
             }
 
+            // Setup stops the app without letting it clear this, so a silent
+            // Setup knows to start it again; the owner's Quit clears it.
+            if let Err(error) =
+                platform_win::setup_restart::mark_running(&platform_win::local_data_root())
+            {
+                tracing::warn!(target: "lifecycle", %error, "running mark not written");
+            }
+
             // Only the owning instance may classify setup or change login registration.
             let data_root = platform_win::local_data_root();
             let load_outcome = observer_model::setup::load_for_startup(

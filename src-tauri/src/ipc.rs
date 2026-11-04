@@ -49,7 +49,7 @@ pub fn resume(state: tauri::State<'_, crate::app::AppState>) -> Result<(), Strin
 /// Request the same draining process exit as the tray's Quit action.
 #[tauri::command]
 pub fn quit(app: tauri::AppHandle) {
-    app.exit(0);
+    crate::lifecycle::quit(&app);
 }
 
 /// Return the current honest health snapshot (same payload as `--dump-state`

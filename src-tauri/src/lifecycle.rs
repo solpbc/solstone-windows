@@ -21,3 +21,13 @@
 pub fn acquire_single_instance() -> platform_win::InstanceLock {
     platform_win::acquire_single_instance("Solstone")
 }
+
+/// The owner's Quit. The running mark goes first, so a later Setup leaves the
+/// app stopped.
+pub fn quit(app: &tauri::AppHandle) {
+    if let Err(error) = platform_win::setup_restart::clear_running(&platform_win::local_data_root())
+    {
+        tracing::warn!(target: "lifecycle", %error, "running mark not cleared");
+    }
+    app.exit(0);
+}

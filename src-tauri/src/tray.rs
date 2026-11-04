@@ -233,7 +233,7 @@ pub fn init(
                     let _ = crate::windows::open_about(&app);
                 });
             }
-            observer_contract::tray::MENU_QUIT => app.exit(0),
+            observer_contract::tray::MENU_QUIT => crate::lifecycle::quit(app),
             _ => {}
         })
         .build(app)?;
