@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.41
+PackageVersion: 2.0.42
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,8 +22,10 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Changed
-  - when the microphone is off and a call reaches your journal only through system audio, the app now tells your journal so.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.41
+  Fixed
+  - this is a security fix. someone who got you to use a pairing link they had swapped could pair this PC with something that isn't your journal, while showing you your own journal's mark, so the check would have looked right. what you shared with the solstone app, like your screen and audio, would then have gone to them instead of your journal. the solstone app now refuses a link when what answers claims to be a different journal from the one the link points to, before it asks you anything or saves anything. a swapped link that doesn't make that claim still reaches the mark question, showing its own mark. if it doesn't match your journal's, choose "that doesn't match". once you've installed this update, if you paired before it, compare the mark on the app's journal page with the one in your journal's network app. if they don't match, this PC isn't paired with your journal, and what you share keeps going to whatever this PC is paired with until you paste a new pairing link from your journal into that page, which replaces the old pairing. if the app asks you about your journal's mark again, compare it the same way, then answer there. if it says it couldn't verify, choose "cancel pairing", then pair again with a new pairing link from your journal.
+  - your journal's mark now has the same colors and layout in this app as in your journal's network app, and its words stay readable in dark mode.
+  - when something other than your journal answers, the app now explains what that can mean.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.42
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
