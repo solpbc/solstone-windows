@@ -267,6 +267,10 @@ See `docs/observer-contract-adoption.md`.
 - **Velopack hooks** the app must handle: `--veloapp-install`, `--veloapp-updated`,
   `--veloapp-obsolete`, `--veloapp-uninstall` (the uninstall fast-callback removes
   the autostart login item it owns). The app must be Velopack-aware so the hooks exit 0.
+  The install hook keeps the owner's state when Setup runs over an existing install:
+  `%LocalAppData%\Solstone` is both the data root and Velopack's folder, and Setup
+  replaces it (`crates/platform-win/src/setup_over.rs`,
+  `packaging/DISTRIBUTION.md` § Owner state across updates).
 
 See `docs/lifecycle-matrix.md` for the full table.
 

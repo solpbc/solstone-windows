@@ -9,7 +9,8 @@
 # Velopack-aware (a non-aware exe was the spike's non-zero-hook gotcha).
 #
 # The real velopack 1.2.0 installer hooks `run()` acts on and then exits:
-#   --veloapp-install      first install on this machine
+#   --veloapp-install      an install, first or over an existing one; moves the
+#                          owner's state back from the folder Setup is replacing
 #   --veloapp-updated      an update was applied
 #   --veloapp-obsolete     this version is being superseded
 #   --veloapp-uninstall    the app is being removed

@@ -34,6 +34,26 @@ use std::process::ExitCode;
 
 use velopack::VelopackApp;
 
+/// Setup replaced the data root and has not yet deleted the old one: bring the
+/// owner's state back. The hook can't stop Setup, so a failure is only logged.
+fn keep_state_through_setup() {
+    let root = platform_win::local_data_root();
+    let installed_here = std::env::current_exe()
+        .is_ok_and(|exe| platform_win::setup_over::is_installed_in(&exe, &root));
+    if !installed_here {
+        return;
+    }
+    let restored = platform_win::setup_over::restore_state_from_rollback(&root);
+    if restored.moved == 0 && restored.failed.is_empty() {
+        return;
+    }
+    observer_log::init(&platform_win::logs_dir(), None);
+    tracing::info!(target: "setup", moved = restored.moved, "kept state through setup");
+    for (entry, error) in restored.failed {
+        tracing::error!(target: "setup", %entry, %error, "state not kept through setup");
+    }
+}
+
 fn main() -> ExitCode {
     // A browser's native-messaging launch is decided before anything else —
     // before Velopack's hooks, logging, the single-instance gate or a window:
@@ -83,6 +103,7 @@ fn main() -> ExitCode {
         // --apply-update is applied once above and apply_updates_and_restart restarts with empty argv;
         // VELOPACK_RESTART skips a second apply.
         .set_auto_apply_on_startup(false)
+        .on_after_install_fast_callback(|_version| keep_state_through_setup())
         .on_before_uninstall_fast_callback(|_version| {
             if let Ok(exe) = std::env::current_exe() {
                 let _ = platform_win::autostart::remove_login_item_if_matches(

@@ -12,7 +12,7 @@ package-manager download URLs.
 | Channel | Artifact | Who owns updates |
 |---------|----------|------------------|
 | Direct download (`solstone.app/download/windows`) | `solstone-setup-{version}.exe` | the app itself (in-app updater) |
-| **winget** (`winget install solstone`) | `solstone-setup-{version}.exe` | the app itself; `winget upgrade` is a redundant catch-up |
+| **winget** (`winget install solstone`) | `solstone-setup-{version}.exe` | the app itself; `winget upgrade` can also update it, by running the installer over the install |
 | **scoop** (`scoop install solstone`) | `Solstone-win-Portable.zip` | `scoop update solstone` or the app's in-app updater; these paths are not coordinated |
 
 The installer supports silent install (`Setup.exe --silent`), installs per-user to
@@ -155,5 +155,28 @@ for a winget install, the app can update itself and `winget upgrade` can also
 update it. for a Scoop install, both `scoop update solstone` and the in-app
 updater are reachable. there is no coordination guarantee between these two
 paths, and an in-app update does not guarantee that Scoop's recorded version
-changes with it. locally held segments live in `%LocalAppData%\Solstone` and
-are preserved across updates regardless of channel.
+changes with it.
+
+## Owner state across updates
+
+The app's state and locally held segments live in `%LocalAppData%\Solstone`,
+which is also the folder the installer installs into. Each way of updating
+treats that folder differently:
+
+| Path | What happens to the folder |
+|------|----------------------------|
+| In-app updater | Replaces only `current\`. |
+| `scoop update solstone` | Leaves it alone. Scoop unpacks the portable zip under its own `apps` folder. |
+| Installer over an existing install, including `winget upgrade` | Replaces all of it, then the new version's install hook moves the state back. |
+
+The installer renames the existing folder to `Solstone.<16 alphanumerics>`, installs
+fresh, runs the new version's install hook, and only then deletes the renamed
+folder. The hook (`crates/platform-win/src/setup_over.rs`) renames every entry that
+isn't Velopack's back into place. An entry it still can't move after its retries is
+logged and goes with the renamed folder. The hook can't stop the installer, and it
+runs only if the installer is 2.0.43 or newer, so **an older installer run over an
+install or a Scoop owner's state still deletes the state**. This depends on the order
+of those steps in Velopack's `Setup`, so after a Velopack upgrade, run the new
+installer over a paired older install and confirm the state came back.
+
+Uninstalling the installed app removes the folder, state included.

@@ -39,6 +39,7 @@ pub mod local_offset;
 #[allow(unsafe_code)]
 pub mod log_save;
 pub mod scheme;
+pub mod setup_over;
 pub mod toast;
 pub mod window_focus;
 
