@@ -47,7 +47,7 @@ fi
 rm "$TEST_ROOT/crates/pl-transport-win/src/client.rs"
 sh "$POLICY" --root "$TEST_ROOT" >/dev/null
 
-sed 's/rev = "d8cbad9917364f2649808053b69e96b7fa625fd1"/branch = "main"/' "$ROOT/Cargo.toml" > "$TEST_ROOT/Cargo.toml"
+sed 's/rev = "f1f080fa4138f8e1ac703e643b6f3f7c36ec2834"/branch = "main"/' "$ROOT/Cargo.toml" > "$TEST_ROOT/Cargo.toml"
 if sh "$POLICY" --root "$TEST_ROOT" >/dev/null 2>&1; then
   echo "non-exact dependency fixture unexpectedly passed" >&2
   exit 1
