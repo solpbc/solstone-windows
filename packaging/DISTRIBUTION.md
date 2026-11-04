@@ -171,12 +171,15 @@ treats that folder differently:
 
 The installer renames the existing folder to `Solstone.<16 alphanumerics>`, installs
 fresh, runs the new version's install hook, and only then deletes the renamed
-folder. The hook (`crates/platform-win/src/setup_over.rs`) renames every entry that
-isn't Velopack's back into place. An entry it still can't move after its retries is
-logged and goes with the renamed folder. The hook can't stop the installer, and it
+folder. The hook (`crates/platform-win/src/setup_over.rs`) first renames that folder
+to `Solstone.kept.<same suffix>`, out of the installer's reach, then renames every
+entry that isn't Velopack's back into place. Anything it can't move stays in the kept
+folder, and the next launch moves it. If that first rename keeps failing, the hook
+moves entries from the renamed folder, and the installer deletes whatever it can't
+move. The hook can't stop the installer, and it
 runs only if the installer is 2.0.43 or newer, so **an older installer run over an
 install or a Scoop owner's state still deletes the state**. This depends on the order
 of those steps in Velopack's `Setup`, so after a Velopack upgrade, run the new
 installer over a paired older install and confirm the state came back.
 
-Uninstalling the installed app removes the folder, state included.
+Uninstalling the installed app removes the folder and any kept folder, state included.

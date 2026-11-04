@@ -7,9 +7,15 @@
 //! Velopack installs into. Setup, unlike the in-app updater, replaces that whole
 //! folder: it renames it to `Solstone.<16 alphanumerics>`, installs fresh, runs the
 //! new version's install hook, and only then deletes the renamed folder. The hook
-//! can't cancel anything, but it runs inside that window, so it carries the state
-//! back by renaming each entry. A rename costs the same however large the segments
-//! are, which keeps it inside the hook's 30-second limit.
+//! can't cancel anything, but it runs inside that window.
+//!
+//! So the hook first renames that folder to `Solstone.kept.<same suffix>`, where
+//! Setup's delete can't reach it, and only then carries the state back entry by
+//! entry. A rename costs the same however large the segments are, which keeps it
+//! inside the hook's 30-second limit. Anything it can't carry, or anything left when
+//! the hook dies, stays in the kept folder and the next launch finishes the job.
+//! State is lost only if that first rename keeps failing and an entry can't be moved
+//! either, or if Setup itself fails after the hook and rolls back.
 //!
 //! This runs from the new version's hook, so it protects an upgrade from any older
 //! version. A state-only folder (a portable install keeps its state here too) is
@@ -22,26 +28,109 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
-/// Stays well inside the 30 seconds Setup allows the hook before killing it.
+/// Together these stay well inside the 30 seconds Setup allows the hook.
+const KEEP_RETRY_FOR: Duration = Duration::from_secs(5);
 const RETRY_FOR: Duration = Duration::from_secs(20);
 const RETRY_EVERY: Duration = Duration::from_millis(250);
+const KEPT: &str = "kept";
 
 /// What one restore did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Restored {
     /// Entries now back in the data root.
     pub moved: usize,
-    /// Entries that could not be moved and go when Setup deletes the folder.
+    /// Entries that could not be moved, left in the kept folder for the next launch.
     pub failed: Vec<(String, String)>,
 }
 
 /// Carry the owner's state from Setup's rollback folder into `root`. With no
 /// rollback folder this was a fresh install and there is nothing to do.
 pub fn restore_state_from_rollback(root: &Path) -> Restored {
+    restore_within(root, RETRY_FOR)
+}
+
+fn restore_within(root: &Path, retry_for: Duration) -> Restored {
     match newest_rollback_with_state(root) {
-        Some(rollback) => move_state(&rollback, root, RETRY_FOR),
+        Some(rollback) => {
+            let from = keep_out_of_setups_reach(&rollback, retry_for.min(KEEP_RETRY_FOR));
+            finish(&from, root, retry_for)
+        }
         None => Restored::default(),
     }
+}
+
+/// Finish a restore that a hook couldn't: move what's still in a kept folder back
+/// into `root`. Runs on every launch, before anything reads the state.
+pub fn finish_interrupted_restore(root: &Path) -> Restored {
+    let mut restored = Restored::default();
+    for kept in kept_folders(root) {
+        let this = finish(&kept, root, Duration::ZERO);
+        restored.moved += this.moved;
+        restored.failed.extend(this.failed);
+    }
+    restored
+}
+
+/// Uninstall removes the owner's state, and that includes a kept folder.
+pub fn remove_kept_state(root: &Path) {
+    for kept in kept_folders(root) {
+        let _ = fs::remove_dir_all(kept);
+    }
+}
+
+/// Rename the rollback folder away from the path Setup will delete, leaving an empty
+/// folder there for Setup to remove. If the rename fails, the state is no worse off
+/// than before: it is moved from where it is, and Setup deletes what remains.
+fn keep_out_of_setups_reach(rollback: &Path, retry_for: Duration) -> PathBuf {
+    let kept = rollback
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(stem, suffix)| rollback.with_file_name(format!("{stem}.{KEPT}.{suffix}")));
+    let Some(kept) = kept else {
+        return rollback.to_path_buf();
+    };
+    // A scanner can briefly hold a file open in the folder Setup just renamed.
+    let deadline = Instant::now() + retry_for;
+    while fs::rename(rollback, &kept).is_err() {
+        if Instant::now() >= deadline {
+            return rollback.to_path_buf();
+        }
+        sleep(RETRY_EVERY);
+    }
+    let _ = fs::create_dir(rollback);
+    kept
+}
+
+/// Move the state back. The folder goes only once none of it is left.
+fn finish(from: &Path, root: &Path, retry_for: Duration) -> Restored {
+    let restored = move_state(from, root, retry_for);
+    if restored.failed.is_empty() {
+        let _ = fs::remove_dir_all(from);
+    }
+    restored
+}
+
+fn kept_folders(root: &Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(name)) = (root.parent(), root.file_name().and_then(OsStr::to_str))
+    else {
+        return Vec::new();
+    };
+    let prefix = format!("{name}.{KEPT}.").to_ascii_lowercase();
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.to_ascii_lowercase().starts_with(&prefix))
+        })
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect()
 }
 
 /// Whether `exe` is the installed app in `root`, so that Setup replaced the data
@@ -127,7 +216,6 @@ fn move_state(rollback: &Path, root: &Path, retry_for: Duration) -> Restored {
             return restored;
         }
     };
-    // A scanner can briefly hold a file open in the folder Setup just renamed.
     let deadline = Instant::now() + retry_for;
     loop {
         let mut errors = Vec::new();
@@ -171,6 +259,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     const ROLLBACK: &str = "Solstone.aB3dE6gH9jK2mN5p";
+    const KEPT_FOLDER: &str = "Solstone.kept.aB3dE6gH9jK2mN5p";
+    const KEPT_FOLDER_SETUP: &str = "Solstone.kept.aB3dE6gH9jK2mN5p/setup.json";
     static NEXT: AtomicU32 = AtomicU32::new(0);
 
     struct Scratch(PathBuf);
@@ -249,6 +339,7 @@ mod tests {
         assert_eq!(scratch.read("Solstone/Update.exe").unwrap(), "new updater");
         assert!(scratch.read("Solstone/packages/old.nupkg").is_none());
         assert!(scratch.read("Solstone/sol.exe").is_none());
+        assert!(!scratch.0.join(KEPT_FOLDER).exists());
     }
 
     #[test]
@@ -311,20 +402,64 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_that_cannot_move_is_reported_and_left_in_place() {
+    fn a_failed_restore_keeps_the_state_out_of_setups_reach_and_the_next_launch_finishes_it() {
         let scratch = Scratch::new();
-        fresh_install(&scratch);
         scratch.write(&format!("{ROLLBACK}/setup.json"), "setup");
-        // The destination's parent is gone, so every rename fails.
-        let missing = scratch.0.join("gone/Solstone");
+        scratch.write(
+            &format!("{ROLLBACK}/segments/015000_300/screen.mp4"),
+            "held",
+        );
+        // With the root missing, every move fails.
+        fs::remove_dir_all(scratch.root()).unwrap();
 
-        let restored = move_state(&scratch.0.join(ROLLBACK), &missing, Duration::ZERO);
+        let restored = restore_within(&scratch.root(), Duration::ZERO);
 
         assert_eq!(restored.moved, 0);
-        assert_eq!(restored.failed.len(), 1);
+        assert_eq!(restored.failed.len(), 2);
+        // What Setup does next: delete the folder it renamed.
+        fs::remove_dir_all(scratch.0.join(ROLLBACK)).unwrap();
+        assert_eq!(scratch.read(KEPT_FOLDER_SETUP).unwrap(), "setup");
+
+        fresh_install(&scratch);
+        let finished = finish_interrupted_restore(&scratch.root());
+
+        assert_eq!(finished.moved, 2);
+        assert!(finished.failed.is_empty());
+        assert_eq!(scratch.read("Solstone/setup.json").unwrap(), "setup");
         assert_eq!(
-            scratch.read(&format!("{ROLLBACK}/setup.json")).unwrap(),
-            "setup"
+            scratch
+                .read("Solstone/segments/015000_300/screen.mp4")
+                .unwrap(),
+            "held"
+        );
+        assert!(!scratch.0.join(KEPT_FOLDER).exists());
+    }
+
+    #[test]
+    fn a_launch_with_nothing_interrupted_does_nothing() {
+        let scratch = Scratch::new();
+        fresh_install(&scratch);
+        scratch.write("Solstone/setup.json", "setup");
+
+        assert_eq!(
+            finish_interrupted_restore(&scratch.root()),
+            Restored::default()
+        );
+        assert_eq!(scratch.read("Solstone/setup.json").unwrap(), "setup");
+    }
+
+    #[test]
+    fn uninstall_removes_a_kept_folder_and_nothing_else() {
+        let scratch = Scratch::new();
+        scratch.write(KEPT_FOLDER_SETUP, "setup");
+        scratch.write("SolstoneJournal/config.toml", "another app");
+
+        remove_kept_state(&scratch.root());
+
+        assert!(!scratch.0.join(KEPT_FOLDER).exists());
+        assert_eq!(
+            scratch.read("SolstoneJournal/config.toml").unwrap(),
+            "another app"
         );
     }
 

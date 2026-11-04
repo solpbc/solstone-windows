@@ -35,7 +35,7 @@ use std::process::ExitCode;
 use velopack::VelopackApp;
 
 /// Setup replaced the data root and has not yet deleted the old one: bring the
-/// owner's state back. The hook can't stop Setup, so a failure is only logged.
+/// owner's state back. Whatever can't be moved now waits for the next launch.
 fn keep_state_through_setup() {
     let root = platform_win::local_data_root();
     let installed_here = std::env::current_exe()
@@ -48,9 +48,15 @@ fn keep_state_through_setup() {
         return;
     }
     observer_log::init(&platform_win::logs_dir(), None);
-    tracing::info!(target: "setup", moved = restored.moved, "kept state through setup");
-    for (entry, error) in restored.failed {
-        tracing::error!(target: "setup", %entry, %error, "state not kept through setup");
+    log_restore(&restored);
+}
+
+fn log_restore(restored: &platform_win::setup_over::Restored) {
+    if restored.moved > 0 {
+        tracing::info!(target: "setup", moved = restored.moved, "owner state restored after setup");
+    }
+    for (entry, error) in &restored.failed {
+        tracing::warn!(target: "setup", %entry, %error, "owner state still to restore, retrying on next launch");
     }
 }
 
@@ -122,9 +128,17 @@ fn main() -> ExitCode {
                 notify::remove_identity(&exe);
                 #[cfg(feature = "browser-host")]
                 browser::remove_registration(&exe);
+                let root = platform_win::local_data_root();
+                if platform_win::setup_over::is_installed_in(&exe, &root) {
+                    platform_win::setup_over::remove_kept_state(&root);
+                }
             }
         })
         .run();
+
+    // Before anything reads the state: finish a restore a Setup hook couldn't.
+    let interrupted =
+        platform_win::setup_over::finish_interrupted_restore(&platform_win::local_data_root());
 
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -263,6 +277,7 @@ fn main() -> ExitCode {
         &platform_win::logs_dir(),
         std::env::var("RUST_LOG").ok().as_deref(),
     );
+    log_restore(&interrupted);
     app::run(open_view, surface_on_launch, open_journal, reload_setup);
     ExitCode::SUCCESS
 }
