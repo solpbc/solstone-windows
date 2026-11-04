@@ -9,6 +9,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 ### Fixed
 
 - running the installer over an existing install, which is also what `winget upgrade` does, no longer resets the app or deletes anything not yet sent to your journal. your pairing and your setup stay in place. this applies when the installer you run is this version or newer.
+- the tray icon now says connected only when this PC has recently reached your journal. when there's nothing to send, the app checks in with your journal, less often on battery. one failed try, or your journal turning down an upload, no longer switches the icon to offline. after a restart, or when your PC wakes up, it shows connected as soon as it reaches your journal. in settings, "journal last reached" now shows when this PC last reached your journal, and "waiting to sync" shows only while your journal is out of reach.
 - after `winget upgrade`, or the installer run with `--silent`, the app now starts again in the tray if it was running before the update. if you had quit it, it doesn't start. the update to this version still leaves it stopped; this works from the next update on.
 
 ## [2.0.42] - 2026-11-03

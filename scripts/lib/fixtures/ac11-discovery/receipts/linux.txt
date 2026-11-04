@@ -176,7 +176,6 @@ coordinator::tests::list_reject_does_not_feed_quarantine_counter: test
 coordinator::tests::list_transport_error_aborts_after_accepted_ingest: test
 coordinator::tests::local_offset_failure_aborts_without_submitting_key_and_retries: test
 coordinator::tests::missing_status_does_not_confirm_or_delete_until_held: test
-coordinator::tests::no_work_successful_tick_resets_reason_and_stamps_sync_time: test
 coordinator::tests::only_attributable_local_request_rejections_count: test
 coordinator::tests::quarantines_segment_after_five_consecutive_rejects: test
 coordinator::tests::read_error_skips_segment_without_quarantine: test

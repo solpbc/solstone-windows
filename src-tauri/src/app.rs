@@ -456,9 +456,45 @@ fn build_sync_config() -> SyncConfig {
         facts_fn: Arc::new(current_raw_facts),
         confirmation: Arc::new(Mutex::new(String::new())),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     }
+}
+
+/// Feed one health reading to the link presenter, and set when the uploader
+/// checks the journal: often on mains power, rarely on battery, never while
+/// intake is paused or not paired. Back from a pause, a lock or sleep, a fresh
+/// check goes out at once.
+fn present_journal_link(
+    presenter: &mut observer_model::LinkPresenter,
+    was_up: &mut bool,
+    liveness: &pl_transport_win::Liveness,
+    dump: &HealthDump,
+    now_ms: u64,
+) -> Option<observer_model::JournalLink> {
+    use observer_model::journal_link::{lease_ms, BACKGROUND_CHECK_SECS, FOREGROUND_CHECK_SECS};
+
+    let up = dump.app_state == AppPhase::Observing
+        && dump.sync.pairing.phase == observer_model::PairingPhase::Paired;
+    let check_secs = if platform_win::on_mains_power() {
+        FOREGROUND_CHECK_SECS
+    } else {
+        BACKGROUND_CHECK_SECS
+    };
+    liveness.set_cadence(if up { check_secs } else { 0 });
+    if up && !*was_up {
+        liveness.resumed();
+    }
+    *was_up = up;
+    presenter.present(
+        observer_model::LinkInput {
+            up,
+            answered: dump.sync.upload.last_successful_sync,
+            lease_ms: lease_ms(check_secs),
+        },
+        now_ms,
+    )
 }
 
 fn app_phase_label(phase: AppPhase) -> &'static str {
@@ -782,6 +818,7 @@ pub fn run(
             // upload loop now. A fresh pairing is started by the
             // `pair` IPC command instead.
             let sync_config = build_sync_config();
+            let liveness = sync_config.liveness.clone();
             let mut slot = UploaderSlot::new();
             let credential_access = tauri::async_runtime::block_on(
                 pl_transport_win::service::launch_resume(&sync_config, &sync, &mut slot),
@@ -941,6 +978,8 @@ pub fn run(
                 let mi_resume = mi_resume.clone();
                 let mi_restart = mi_restart.clone();
                 let mi_browsers = mi_browsers.clone();
+                let shared_sync = sync.clone();
+                let liveness = liveness.clone();
                 let mut rx = watch_rx;
                 async move {
                     let mut previous: Option<HealthDump> = None;
@@ -949,9 +988,23 @@ pub fn run(
                         .ok()
                         .flatten();
                     let mut notifier = observer_model::TransitionNotifier::default();
-                    let started = std::time::Instant::now();
+                    let mut presenter = observer_model::LinkPresenter::default();
+                    let mut was_up = false;
+                    let started = tokio::time::Instant::now();
                     loop {
-                        let dump = rx.borrow_and_update().clone();
+                        let mut dump = rx.borrow_and_update().clone();
+                        // One presented link for the tray, its notices and Settings.
+                        let link = present_journal_link(
+                            &mut presenter,
+                            &mut was_up,
+                            &liveness,
+                            &dump,
+                            started.elapsed().as_millis() as u64,
+                        );
+                        dump.sync.journal_link = link;
+                        if let Ok(mut sync) = shared_sync.lock() {
+                            sync.journal_link = link;
+                        }
                         log_health_transitions(previous.as_ref(), &dump);
                         let changed = previous
                             .as_ref()
@@ -975,8 +1028,23 @@ pub fn run(
                         if changed {
                             let _ = app.emit("health://changed", &dump);
                         }
-                        if rx.changed().await.is_err() {
-                            break;
+                        // The next reading, or the moment the link would change on
+                        // its own, whichever comes first.
+                        let next_change = presenter
+                            .next_change_ms(started.elapsed().as_millis() as u64)
+                            .map(|at| started + Duration::from_millis(at));
+                        tokio::select! {
+                            changed = rx.changed() => {
+                                if changed.is_err() {
+                                    break;
+                                }
+                            }
+                            _ = async {
+                                match next_change {
+                                    Some(at) => tokio::time::sleep_until(at).await,
+                                    None => std::future::pending().await,
+                                }
+                            } => {}
                         }
                     }
 

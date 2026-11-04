@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 
 pub use observer_model::setup::SETUP_SEQUENCE_ENABLED;
 use observer_model::{
-    AppPhase, ErrorReason, PairingPhase, PauseReason, SourceKind, ViewRenderState,
+    AppPhase, ErrorReason, JournalLink, PairingPhase, PauseReason, SourceKind, ViewRenderState,
     RELOAD_SETUP_VERB, SETUP_HANDOFF_ARG,
 };
 
@@ -441,6 +441,7 @@ fn state_tokens() -> BTreeMap<&'static str, Vec<String>> {
         ("pause_reason", enum_tokens::<PauseReason>()),
         ("error_reason", enum_tokens::<ErrorReason>()),
         ("pairing_phase", enum_tokens::<PairingPhase>()),
+        ("journal_link", enum_tokens::<JournalLink>()),
         ("view_render_state", enum_tokens::<ViewRenderState>()),
     ])
 }

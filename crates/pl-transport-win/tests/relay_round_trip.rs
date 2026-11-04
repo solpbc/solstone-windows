@@ -209,6 +209,7 @@ async fn start_test_bridge(
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(binding)),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };

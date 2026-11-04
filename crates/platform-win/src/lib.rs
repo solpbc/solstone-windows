@@ -471,6 +471,28 @@ pub fn acquire_single_instance(name: &str) -> InstanceLock {
     }
 }
 
+/// Whether this PC runs on mains power. Only a reading of "on battery" says
+/// no: a desktop with no battery, or a status Windows cannot report, is mains.
+#[cfg(not(windows))]
+pub fn on_mains_power() -> bool {
+    true
+}
+
+/// Whether this PC runs on mains power. Only a reading of "on battery" says
+/// no: a desktop with no battery, or a status Windows cannot report, is mains.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn on_mains_power() -> bool {
+    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+
+    let mut status = SYSTEM_POWER_STATUS::default();
+    // SAFETY: `status` is a valid, writable SYSTEM_POWER_STATUS for the call.
+    match unsafe { GetSystemPowerStatus(&mut status) } {
+        Ok(()) => status.ACLineStatus != 0,
+        Err(_) => true,
+    }
+}
+
 /// Read-only probe for application process presence via session mutex and process snapshot.
 #[cfg(not(windows))]
 pub fn probe_app_presence(

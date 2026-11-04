@@ -53,6 +53,8 @@ pub struct SyncConfig {
     pub confirmation: Arc<Mutex<String>>,
     /// Tombstone digest of the most recently rejected/cancelled pairing.
     pub tombstone: Arc<Mutex<Option<String>>>,
+    /// Status-check cadence and wake signals, shared with the app.
+    pub liveness: Arc<crate::Liveness>,
     #[cfg(feature = "awaiting-hold")]
     pub awaiting_hold: Option<crate::coordinator::AwaitingHold>,
 }
@@ -405,7 +407,8 @@ async fn setup_uploader(
         Some(access.post_connect_token()),
         cfg.confirmation.clone(),
         cfg.tombstone.clone(),
-    );
+    )
+    .with_liveness(cfg.liveness.clone());
     #[cfg(feature = "awaiting-hold")]
     let coordinator = coordinator.with_awaiting_hold(cfg.awaiting_hold);
     Ok(coordinator)
@@ -809,6 +812,7 @@ mod tests {
             }),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         }
@@ -917,6 +921,7 @@ mod tests {
             }),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -951,6 +956,7 @@ mod tests {
             }),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };

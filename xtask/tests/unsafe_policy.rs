@@ -125,6 +125,14 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "native_machine_code",
         owner: None,
     },
+    // One read-only power-status call into a stack struct; it sets how often
+    // the journal connection is checked.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::Fn,
+        name: "on_mains_power",
+        owner: None,
+    },
     ApprovedNode {
         path: "crates/platform-win/src/window_focus.rs",
         kind: ApprovedKind::Fn,

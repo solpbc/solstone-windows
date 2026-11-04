@@ -992,6 +992,7 @@ mod pure_session_tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         }
@@ -1240,6 +1241,7 @@ mod pure_session_tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -1316,6 +1318,7 @@ mod pure_session_tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -1401,6 +1404,7 @@ mod pure_session_tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -1487,6 +1491,7 @@ mod pure_session_tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -1577,6 +1582,7 @@ mod pure_session_tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -2664,6 +2670,7 @@ mod tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: tombstone.clone(),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -3032,6 +3039,7 @@ mod tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -3254,6 +3262,7 @@ mod tests {
                 facts_fn: Arc::new(RawDeviceFacts::default),
                 confirmation: Arc::new(Mutex::new(String::new())),
                 tombstone: Arc::new(Mutex::new(None)),
+                liveness: Default::default(),
                 #[cfg(feature = "awaiting-hold")]
                 awaiting_hold: None,
             };
@@ -3625,6 +3634,7 @@ mod tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -3762,6 +3772,7 @@ mod tests {
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };

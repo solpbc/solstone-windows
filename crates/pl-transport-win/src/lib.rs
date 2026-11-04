@@ -33,6 +33,7 @@ pub mod handoff;
 pub mod integration;
 pub mod journal_bridge;
 pub mod journal_version;
+pub mod liveness;
 mod local_endpoints;
 pub mod migration;
 mod ordinary_request;
@@ -84,6 +85,7 @@ pub use client::{ClientSlot, ObserverClient, RouteError};
 pub use credential::{CasKey, Credential, PairedState, StorageError};
 pub use device_metadata::{RawDeviceFacts, ReportedMetadata};
 pub use journal_version::{JournalVersionController, JournalVersionSessionToken};
+pub use liveness::Liveness;
 /// Civil day and segment keys, shared with sub-stream uploaders.
 pub use observer_pl::civil;
 pub use post_connect::{PostConnectController, PostConnectSessionToken};

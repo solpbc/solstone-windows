@@ -90,6 +90,7 @@ async fn start_windows_bridge(
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(binding)),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -260,6 +261,7 @@ async fn bridge_returns_awaiting_confirmation_when_unconfirmed() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(String::new())),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };

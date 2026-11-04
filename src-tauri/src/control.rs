@@ -224,6 +224,7 @@ mod tests {
             }),
             confirmation: Arc::new(std::sync::Mutex::new(String::new())),
             tombstone: Arc::new(std::sync::Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };

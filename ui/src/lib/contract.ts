@@ -140,6 +140,11 @@ export const automationContract = {
       "unknown",
       "write_failed"
     ],
+    "journal_link": [
+      "connected",
+      "connecting",
+      "offline"
+    ],
     "pairing_phase": [
       "awaiting_confirmation",
       "failed",

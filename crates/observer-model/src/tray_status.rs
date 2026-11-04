@@ -2,8 +2,8 @@
 // Copyright (c) 2026 sol pbc
 
 use crate::{
-    AppPhase, ErrorReason, PairingPhase, PauseSnapshot, SourceKind, SourceReport, SourceState,
-    StorageHealth, SyncSnapshot,
+    AppPhase, ErrorReason, JournalLink, PairingPhase, PauseSnapshot, SourceKind, SourceReport,
+    SourceState, StorageHealth, SyncSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,22 +172,19 @@ fn classify_phase(
                 TrayVisual::Paused,
                 "on, not connected to a journal".to_string(),
             ),
-            PairingPhase::Paired => {
-                let upload = &sync.upload;
-                if upload.recent_error_count > 0
-                    || upload.last_error_reason.is_some()
-                    || upload.last_error.is_some()
-                {
+            // The presented link, never the upload counters: see `journal_link`.
+            PairingPhase::Paired => match sync.journal_link {
+                Some(JournalLink::Connected) => (
+                    TrayVisual::Healthy,
+                    "on, connected to your journal".to_string(),
+                ),
+                Some(JournalLink::Offline) => {
                     (TrayVisual::Offline, "on, saved on this PC".to_string())
-                } else if upload.uploaded_segments > 0 && upload.last_successful_sync.is_some() {
-                    (
-                        TrayVisual::Healthy,
-                        "on, connected to your journal".to_string(),
-                    )
-                } else {
+                }
+                Some(JournalLink::Connecting) | None => {
                     (TrayVisual::Connecting, "connecting".to_string())
                 }
-            }
+            },
         },
     }
 }
@@ -307,58 +304,50 @@ mod tests {
     }
 
     #[test]
-    fn classify_observing_paired_visuals() {
-        let mut clean_upload = sync(PairingPhase::Paired);
-        clean_upload.upload.uploaded_segments = 1;
-        clean_upload.upload.last_successful_sync = Some(1);
+    fn observing_paired_shows_the_presented_link() {
+        let mut paired = sync(PairingPhase::Paired);
+        for (link, visual) in [
+            (Some(JournalLink::Connected), TrayVisual::Healthy),
+            (Some(JournalLink::Connecting), TrayVisual::Connecting),
+            (Some(JournalLink::Offline), TrayVisual::Offline),
+            (None, TrayVisual::Connecting),
+        ] {
+            paired.journal_link = link;
+            assert_eq!(
+                tray_visual(AppPhase::Observing, &paired, None, None),
+                visual
+            );
+        }
+    }
+
+    #[test]
+    fn upload_counters_do_not_decide_the_link() {
+        // A rejected segment, a failed tick or uploads this session are not
+        // the link: the journal answered, or it did not.
+        let mut paired = sync(PairingPhase::Paired);
+        paired.journal_link = Some(JournalLink::Connected);
+        paired.upload = UploadStatus {
+            recent_error_count: 1,
+            last_error_reason: Some("http_503".into()),
+            last_error: Some("http_413".into()),
+            failed_segments: 4,
+            ..UploadStatus::default()
+        };
         assert_eq!(
-            tray_visual(AppPhase::Observing, &clean_upload, None, None),
+            tray_visual(AppPhase::Observing, &paired, None, None),
             TrayVisual::Healthy
         );
 
-        let empty_success = SyncSnapshot {
-            pairing: PairingState {
-                phase: PairingPhase::Paired,
-                ..Default::default()
-            },
-            upload: UploadStatus {
-                last_successful_sync: Some(1),
-                ..Default::default()
-            },
-            ..Default::default()
+        paired.journal_link = Some(JournalLink::Connecting);
+        paired.upload = UploadStatus {
+            uploaded_segments: 3,
+            last_successful_sync: Some(1),
+            ..UploadStatus::default()
         };
         assert_eq!(
-            tray_visual(AppPhase::Observing, &empty_success, None, None),
+            tray_visual(AppPhase::Observing, &paired, None, None),
             TrayVisual::Connecting
         );
-
-        for upload in [
-            UploadStatus {
-                recent_error_count: 1,
-                ..UploadStatus::default()
-            },
-            UploadStatus {
-                last_error_reason: Some("http_503".into()),
-                ..UploadStatus::default()
-            },
-            UploadStatus {
-                last_error: Some("uploader_stopped".into()),
-                ..UploadStatus::default()
-            },
-        ] {
-            let offline = SyncSnapshot {
-                pairing: PairingState {
-                    phase: PairingPhase::Paired,
-                    ..Default::default()
-                },
-                upload,
-                ..Default::default()
-            };
-            assert_eq!(
-                tray_visual(AppPhase::Observing, &offline, None, None),
-                TrayVisual::Offline
-            );
-        }
     }
 
     #[test]
@@ -485,8 +474,7 @@ mod tests {
     #[test]
     fn unknown_journal_sighting_appends_notice_with_address() {
         let mut clean = sync(PairingPhase::Paired);
-        clean.upload.uploaded_segments = 1;
-        clean.upload.last_successful_sync = Some(1);
+        clean.journal_link = Some(JournalLink::Connected);
         clean.unknown_journals = vec![sighting(Some("192.168.1.50:7657"))];
 
         let (visual, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, None, false);
@@ -500,8 +488,7 @@ mod tests {
     #[test]
     fn unknown_journal_sighting_appends_notice_through_relay() {
         let mut clean = sync(PairingPhase::Paired);
-        clean.upload.uploaded_segments = 1;
-        clean.upload.last_successful_sync = Some(1);
+        clean.journal_link = Some(JournalLink::Connected);
         clean.unknown_journals = vec![sighting(None)];
 
         let (_, tooltip) = classify_tray(AppPhase::Observing, &clean, None, None, None, false);
@@ -590,8 +577,7 @@ mod tests {
     #[test]
     fn refused_permission_is_never_shown_as_healthy() {
         let mut clean = sync(PairingPhase::Paired);
-        clean.upload.uploaded_segments = 1;
-        clean.upload.last_successful_sync = Some(1);
+        clean.journal_link = Some(JournalLink::Connected);
         let blocked = Some(SourceKind::Mic);
 
         let (visual, _) = classify_tray(AppPhase::Observing, &clean, None, None, blocked, false);

@@ -693,6 +693,7 @@ pub async fn fetch(
         facts_fn: Arc::new(RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(confirmed)),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };

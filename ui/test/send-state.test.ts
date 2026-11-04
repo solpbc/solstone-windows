@@ -42,18 +42,22 @@ function homeStatusStripJournalValue(): string {
   return value?.textContent ?? "";
 }
 
-function pairedDump(upload: {
-  uploaded_segments?: number;
-  pending_segments?: number;
-  failed_segments?: number;
-  quarantined_segments?: number;
-  last_error?: string | null;
-}) {
+function pairedDump(
+  upload: {
+    uploaded_segments?: number;
+    pending_segments?: number;
+    failed_segments?: number;
+    quarantined_segments?: number;
+    last_error?: string | null;
+  },
+  journalLink: "connected" | "connecting" | "offline" = "connected",
+) {
   const base = observingDump();
   return {
     ...base,
     sync: {
       ...base.sync,
+      journal_link: journalLink,
       upload: {
         ...base.sync.upload,
         uploaded_segments: 3,
@@ -85,12 +89,16 @@ describe("paired send-state", () => {
     expect(glance).not.toContain("relay_unpaid");
   });
 
-  it("presents a retrying backlog as waiting to sync, not needs attention", () => {
-    const dump = pairedDump({ failed_segments: 2, last_error: "io" });
+  it("says waiting to sync only while the journal is offline, as the tray does", () => {
+    const retried = pairedDump({ failed_segments: 2, last_error: "http_413" });
     app.__test__.setRoute("home");
-    app.__test__.setHealth(dump);
-    app.__test__.renderSettings(dump);
+    app.__test__.setHealth(retried);
+    app.__test__.renderSettings(retried);
+    expect(homeStatusStripJournalValue()).toBe("3 delivered · 1 pending");
 
+    const offline = pairedDump({ failed_segments: 0 }, "offline");
+    app.__test__.setHealth(offline);
+    app.__test__.renderSettings(offline);
     expect(homeStatusStripJournalValue()).toBe("waiting to sync");
   });
 

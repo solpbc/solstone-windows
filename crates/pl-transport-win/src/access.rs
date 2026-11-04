@@ -213,6 +213,7 @@ mod tests {
             }),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };

@@ -172,7 +172,7 @@ mod tests {
     fn brief_upload_error_that_clears_on_its_own_produces_no_notice() {
         let mut notifier = TransitionNotifier::default();
         let mut steps = vec![(TrayVisual::Healthy, 0)];
-        // One failed sync tick flips the tray to offline for a few seconds.
+        // A short outage shows offline for a while, then clears on its own.
         steps.extend((1..=20).map(|t| (TrayVisual::Offline, t)));
         steps.extend((21..=40).map(|t| (TrayVisual::Healthy, t)));
         assert!(run(&mut notifier, &steps).is_empty());

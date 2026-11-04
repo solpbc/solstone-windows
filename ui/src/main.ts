@@ -222,6 +222,8 @@ interface SyncSnapshot {
   about_app_line?: string;
   about_block?: string;
   unknown_journals?: UnknownJournalSighting[];
+  // The app's one presented journal connection, shared with the tray.
+  journal_link?: "connected" | "connecting" | "offline" | null;
 }
 
 interface EncoderHealth {
@@ -3768,7 +3770,7 @@ function syncSummary(sync: SyncSnapshot): string {
       if (quarantined > 0) {
         return needsAttentionLabel(quarantined);
       }
-      if (upload.failed_segments > 0) {
+      if (sync.journal_link === "offline") {
         return "waiting to sync";
       }
       return `${upload.uploaded_segments} delivered · ${upload.pending_segments} pending`;

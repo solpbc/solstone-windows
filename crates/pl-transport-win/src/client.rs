@@ -1310,6 +1310,34 @@ impl ObserverClient {
         }
     }
 
+    /// One liveness check: ask the journal for its status, bounded by the
+    /// check timeout. Any answer proves the journal is reachable over this
+    /// pairing; what it says does not matter here. Each check is one fresh dial.
+    pub async fn check_journal(&self) -> Result<(), TransportError> {
+        let mut headers = self.v3_headers();
+        headers.push(("Cache-Control".into(), "no-cache".into()));
+        let request = self.ordinary_request(OrdinaryRequest::SystemStatusGet, None, &headers, b"");
+        match tokio::time::timeout(
+            Duration::from_secs(observer_model::journal_link::CHECK_TIMEOUT_SECS),
+            request,
+        )
+        .await
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(RouteError::Transport(error))) => Err(error),
+            Ok(Err(RouteError::AwaitingConfirmation)) => {
+                Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "awaiting mark confirmation",
+                )))
+            }
+            Err(_) => Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "status check timed out",
+            ))),
+        }
+    }
+
     fn v3_headers(&self) -> Vec<(String, String)> {
         vec![(
             PROTOCOL_VERSION_HEADER.to_string(),

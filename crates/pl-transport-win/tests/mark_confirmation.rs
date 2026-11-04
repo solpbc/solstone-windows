@@ -197,6 +197,7 @@ async fn mark_confirmation_gated_routes_do_not_dial() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -237,6 +238,7 @@ async fn mark_confirmation_rebuild_keeps_the_closed_gate() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -298,6 +300,7 @@ async fn mark_confirmation_awaiting_tick_is_not_a_failure() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -400,6 +403,7 @@ async fn mark_confirmation_kick_wakes_a_300s_backoff() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -504,6 +508,7 @@ async fn mark_confirmation_kick_under_a_paused_clock() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         awaiting_hold,
     };
 
@@ -627,6 +632,7 @@ async fn mark_confirmation_reject_deletes_the_der_id() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -765,6 +771,7 @@ async fn mark_confirmation_cancel_cleans_up_state() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -837,6 +844,7 @@ async fn mark_confirmation_reject_unreachable_journal_completes_local_retire() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -932,6 +940,7 @@ async fn mark_confirmation_reject_non_success_status_completes_local_retire() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -1032,6 +1041,7 @@ async fn mark_confirmation_reject_failed_answer_write_sends_no_delete_and_keeps_
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -1094,6 +1104,7 @@ async fn mark_confirmation_stale_answer_changes_nothing() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -1979,6 +1990,7 @@ async fn mark_confirmation_launch_resume_awaits_until_confirmed_then_uploads() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -2095,6 +2107,7 @@ async fn stored_id_that_is_not_its_cas_is_held_on_launch_and_asked_with_the_cas_
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(String::new())),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -2257,6 +2270,7 @@ async fn session_pair_invalid_pairing_json_creates_empty_answer_file_and_leaves_
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -2332,6 +2346,7 @@ async fn session_pair_answer_tmp_is_dir_returns_error_and_leaves_pairing_json_un
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -2386,6 +2401,7 @@ async fn session_pair_success_creates_empty_answer_before_saving_credential_and_
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -2481,6 +2497,7 @@ async fn assert_failed_repair_preserves_incumbent(confirmed: bool) {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -2590,6 +2607,7 @@ async fn session_pair_unreadable_answer_file_is_set_aside_and_held_for_the_mark(
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: tombstone.clone(),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };
@@ -2725,6 +2743,7 @@ async fn native_finish_restores_missing_access_and_refuses_a_changed_saved_gener
             facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         };
@@ -2831,6 +2850,7 @@ async fn native_saved_activation_without_answer_resumes_held_for_finish() {
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(String::new())),
         tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
         #[cfg(feature = "awaiting-hold")]
         awaiting_hold: None,
     };

@@ -34,6 +34,7 @@ use tokio::sync::watch;
 use crate::ack::{AckFile, JournalIdentity, UploadAck};
 use crate::client::{ClientSlot, ObserverClient, RouteError, SendMetadata};
 use crate::journal_version::{JournalVersionController, JournalVersionSessionToken};
+use crate::liveness::{Liveness, MIN_CHECK_SPACING};
 use crate::post_connect::PostConnectController;
 use crate::sealed::{
     content_type_for, SealedSegment, SealedStore, UPLOADED_MARKER, UPLOADED_TMP_MARKER,
@@ -42,6 +43,8 @@ use crate::slot::SlotExit;
 use crate::{cancelled, transport_error_code, TransportError, DEFAULT_UPLOAD_INTERVAL_SECS};
 
 const MAX_BACKOFF_SECS: u64 = 300;
+/// How often the check loop looks at whether a status check is due.
+const CHECK_POLL: Duration = Duration::from_secs(1);
 const QUARANTINE_AFTER_REJECTS: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +145,16 @@ type IngestFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(IngestResponse, SendMetadata), RouteError>> + Send + 'a>>;
 type ListSegmentsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(SegmentsEnvelope, SendMetadata), RouteError>> + Send + 'a>>;
+type CheckFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+
+/// Whether a request's result is an answer from the journal. An HTTP refusal
+/// is an answer; a dial, TLS or relay failure is not.
+fn journal_answered<T>(result: &Result<T, RouteError>) -> bool {
+    matches!(
+        result,
+        Ok(_) | Err(RouteError::Transport(TransportError::Rejected { .. }))
+    )
+}
 
 /// A segment-dir entry that is captured media rather than one of the
 /// uploader's or the seal's own sidecars.
@@ -163,6 +176,11 @@ trait UploadClient: Send + Sync {
     ) -> IngestFuture<'a>;
 
     fn list_segments<'a>(&'a self, day: &'a str) -> ListSegmentsFuture<'a>;
+
+    /// One status check: true when the journal answered.
+    fn check(&self) -> CheckFuture<'_> {
+        Box::pin(async { false })
+    }
 
     /// Why this pairing stopped reaching the journal, if it has.
     fn refusal_stop(&self) -> Option<HandshakeStop> {
@@ -199,6 +217,10 @@ impl UploadClient for ObserverClient {
         Box::pin(ObserverClient::list_segments(self, day))
     }
 
+    fn check(&self) -> CheckFuture<'_> {
+        Box::pin(async { self.check_journal().await.is_ok() })
+    }
+
     fn refusal_stop(&self) -> Option<HandshakeStop> {
         ObserverClient::refusal_stop(self)
     }
@@ -229,6 +251,11 @@ impl UploadClient for ClientSlot {
         let client = self.load();
         let day = day.to_string();
         Box::pin(async move { client.list_segments(&day).await })
+    }
+
+    fn check(&self) -> CheckFuture<'_> {
+        let client = self.load();
+        Box::pin(async move { client.check_journal().await.is_ok() })
     }
 
     fn refusal_stop(&self) -> Option<HandshakeStop> {
@@ -385,6 +412,9 @@ pub struct UploadCoordinator {
     day_bounds: Mutex<HashMap<String, DayListingBound>>,
     confirmation: Arc<Mutex<String>>,
     tombstone: Arc<Mutex<Option<String>>>,
+    liveness: Arc<Liveness>,
+    /// When the journal last answered any request from this coordinator.
+    heard: Mutex<Option<tokio::time::Instant>>,
     #[cfg(feature = "awaiting-hold")]
     awaiting_hold: Option<AwaitingHold>,
 }
@@ -425,6 +455,8 @@ impl UploadCoordinator {
             day_bounds: Mutex::new(HashMap::new()),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
+            heard: Mutex::new(None),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         }
@@ -463,6 +495,8 @@ impl UploadCoordinator {
             day_bounds: Mutex::new(HashMap::new()),
             confirmation,
             tombstone,
+            liveness: Default::default(),
+            heard: Mutex::new(None),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         }
@@ -495,9 +529,17 @@ impl UploadCoordinator {
             day_bounds: Mutex::new(HashMap::new()),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
+            heard: Mutex::new(None),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         }
+    }
+
+    /// Share the app's status-check cadence and wake signals.
+    pub fn with_liveness(mut self, liveness: Arc<Liveness>) -> Self {
+        self.liveness = liveness;
+        self
     }
 
     #[cfg(feature = "awaiting-hold")]
@@ -1108,34 +1150,102 @@ impl UploadCoordinator {
             .remove(&index);
     }
 
-    pub async fn run(&self, mut cancel: watch::Receiver<SlotExit>, wake: Arc<tokio::sync::Notify>) {
-        let tick_cancel = cancel.clone();
-        let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
-        let exit_reason = loop {
-            tokio::select! {
-                biased;
-                exit = cancelled(&mut cancel) => break exit,
-                _ = wake.notified() => {
-                    match self.tick_with_cancel(&tick_cancel).await {
-                        Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
-                        Err(RouteError::AwaitingConfirmation) => {}
-                        Err(RouteError::Transport(_)) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
-                    }
-                }
-                _ = tokio::time::sleep(Duration::from_secs(backoff)) => {
-                    match self.tick_with_cancel(&tick_cancel).await {
-                        Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
-                        Err(RouteError::AwaitingConfirmation) => {}
-                        Err(RouteError::Transport(_)) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
-                    }
-                }
-            }
-        };
+    pub async fn run(&self, cancel: watch::Receiver<SlotExit>, wake: Arc<tokio::sync::Notify>) {
+        let (exit_reason, ()) = tokio::join!(
+            self.upload_loop(cancel.clone(), wake),
+            self.check_loop(cancel)
+        );
         if let (Some(pc), Some(token)) = (&self.post_connect, self.post_connect_generation) {
             match exit_reason {
                 SlotExit::Quiesce => pc.quiesce().await,
                 _ => pc.shutdown(token),
             }
+        }
+    }
+
+    async fn upload_loop(
+        &self,
+        mut cancel: watch::Receiver<SlotExit>,
+        wake: Arc<tokio::sync::Notify>,
+    ) -> SlotExit {
+        let tick_cancel = cancel.clone();
+        let mut backoff = DEFAULT_UPLOAD_INTERVAL_SECS;
+        loop {
+            tokio::select! {
+                biased;
+                exit = cancelled(&mut cancel) => return exit,
+                _ = wake.notified() => {}
+                // Back from sleep, or the journal answered again after a
+                // failure: an outage's backoff no longer applies.
+                _ = self.liveness.recovered.notified() => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
+                _ = tokio::time::sleep(Duration::from_secs(backoff)) => {}
+            }
+            match self.tick_with_cancel(&tick_cancel).await {
+                Ok(_) => backoff = DEFAULT_UPLOAD_INTERVAL_SECS,
+                Err(RouteError::AwaitingConfirmation) => {}
+                Err(RouteError::Transport(_)) => backoff = (backoff * 2).min(MAX_BACKOFF_SECS),
+            }
+        }
+    }
+
+    /// Ask the journal for its status once nothing has been heard for the
+    /// cadence the app set, never more than once per [`MIN_CHECK_SPACING`].
+    /// Runs beside uploads so a long upload never starves the evidence.
+    async fn check_loop(&self, mut cancel: watch::Receiver<SlotExit>) {
+        let mut last_check: Option<tokio::time::Instant> = None;
+        let mut resume_pending = false;
+        let mut failing = false;
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancelled(&mut cancel) => return,
+                _ = self.liveness.resumed.notified() => resume_pending = true,
+                _ = tokio::time::sleep(CHECK_POLL) => {}
+            }
+            let now = tokio::time::Instant::now();
+            let Some(cadence) = self.liveness.cadence() else {
+                resume_pending = false;
+                continue;
+            };
+            let spaced = last_check.is_none_or(|at| now.duration_since(at) >= MIN_CHECK_SPACING);
+            let quiet = self
+                .last_heard()
+                .is_none_or(|at| now.duration_since(at) >= cadence);
+            let gate_open = self
+                .client_slot
+                .as_ref()
+                .is_none_or(|slot| slot.load().gate_open());
+            if !spaced || !gate_open || !(quiet || resume_pending) {
+                continue;
+            }
+            last_check = Some(now);
+            resume_pending = false;
+            let answered = tokio::select! {
+                biased;
+                _ = cancelled(&mut cancel) => return,
+                answered = self.client.check() => answered,
+            };
+            if answered {
+                self.note_heard();
+                if failing {
+                    self.liveness.recovered.notify_one();
+                }
+            }
+            failing = !answered;
+        }
+    }
+
+    fn last_heard(&self) -> Option<tokio::time::Instant> {
+        *self.heard.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// The journal answered: the evidence behind "connected" and "journal
+    /// last reached".
+    fn note_heard(&self) {
+        *self.heard.lock().unwrap_or_else(|error| error.into_inner()) =
+            Some(tokio::time::Instant::now());
+        if let Ok(mut snapshot) = self.sync.lock() {
+            snapshot.upload.record_answer(now_epoch_millis());
         }
     }
 
@@ -1375,7 +1485,11 @@ impl UploadCoordinator {
                 Some(&zone),
                 &segment.audio_sources,
             );
-            match ingest.await {
+            let ingest = ingest.await;
+            if journal_answered(&ingest) {
+                self.note_heard();
+            }
+            match ingest {
                 Ok((response, metadata)) if response.status.is_accepted() => {
                     let duration_ms = elapsed_ms(started);
                     let local = local_files
@@ -1642,7 +1756,11 @@ impl UploadCoordinator {
         });
 
         if let Some(day) = eligible_day {
-            match self.client.list_segments(&day).await {
+            let listing = self.client.list_segments(&day).await;
+            if journal_answered(&listing) {
+                self.note_heard();
+            }
+            match listing {
                 Ok((envelope, _metadata)) => {
                     self.day_bounds.lock().unwrap().insert(
                         day.clone(),
@@ -1869,7 +1987,7 @@ impl UploadCoordinator {
     fn note_tick_success(&self) {
         let is_recovery = if let Ok(mut snapshot) = self.sync.lock() {
             let was_failing = snapshot.upload.recent_error_count > 0;
-            snapshot.upload.record_success(now_epoch_millis());
+            snapshot.upload.record_success();
             if let Some(slot) = &self.client_slot {
                 let client = slot.load();
                 crate::unknown_journals::publish_unknown_journals(
@@ -3119,6 +3237,8 @@ mod tests {
             day_bounds: Mutex::new(HashMap::new()),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
+            liveness: Default::default(),
+            heard: Mutex::new(None),
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         }
@@ -4107,7 +4227,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_work_successful_tick_resets_reason_and_stamps_sync_time() {
+    async fn a_tick_with_nothing_to_send_never_claims_the_journal_was_reached() {
         let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
         {
             let mut snapshot = sync.lock().unwrap();
@@ -4121,7 +4241,216 @@ mod tests {
         assert_eq!(confirmed, 0);
         assert_eq!(snapshot.upload.recent_error_count, 0);
         assert_eq!(snapshot.upload.last_error_reason, None);
-        assert!(snapshot.upload.last_successful_sync.is_some());
+        assert_eq!(snapshot.upload.last_successful_sync, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_segment_is_an_answer_and_a_failed_dial_is_not() {
+        let boundary = 1_700_000_100;
+        let file_name = "display_1_screen.mp4";
+        let refused = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let client = FakeClient::new(vec![legacy_field_refusal()], vec![]);
+        let coordinator = coordinator_with_client(
+            client,
+            Box::new(OneSegmentStore::new(boundary, file_name, b"bytes".to_vec())),
+            refused.clone(),
+        );
+        let _ = coordinator.tick().await;
+        assert!(refused
+            .lock()
+            .unwrap()
+            .upload
+            .last_successful_sync
+            .is_some());
+
+        let unreached = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let client = FakeClient::new(
+            vec![Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "refused",
+            )))],
+            vec![],
+        );
+        let coordinator = coordinator_with_client(
+            client,
+            Box::new(OneSegmentStore::new(boundary, file_name, b"bytes".to_vec())),
+            unreached.clone(),
+        );
+        let _ = coordinator.tick().await;
+        assert_eq!(unreached.lock().unwrap().upload.last_successful_sync, None);
+    }
+
+    /// Uploads never reach the journal; status checks answer as scripted.
+    struct CheckingClient {
+        answers: bool,
+        checks: AtomicUsize,
+        ingests: AtomicUsize,
+    }
+
+    impl CheckingClient {
+        fn new(answers: bool) -> Arc<Self> {
+            Arc::new(Self {
+                answers,
+                checks: AtomicUsize::new(0),
+                ingests: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    fn unreachable() -> RouteError {
+        RouteError::Transport(TransportError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        )))
+    }
+
+    impl UploadClient for CheckingClient {
+        fn journal_identity(&self) -> JournalIdentity {
+            JournalIdentity {
+                instance_id: "test".to_string(),
+                ca_fp_prefix: "0000000000000000".to_string(),
+                client_cert_sha256:
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            }
+        }
+
+        fn ingest<'a>(
+            &'a self,
+            _segment: &'a str,
+            _day: &'a str,
+            _files: Vec<FilePart>,
+            _zone: Option<&'a observer_model::LocalZone>,
+            _audio_sources: &'a [String],
+        ) -> IngestFuture<'a> {
+            self.ingests.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(unreachable()) })
+        }
+
+        fn list_segments<'a>(&'a self, _day: &'a str) -> ListSegmentsFuture<'a> {
+            Box::pin(async { Err(unreachable()) })
+        }
+
+        fn check(&self) -> CheckFuture<'_> {
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            let answers = self.answers;
+            Box::pin(async move { answers })
+        }
+    }
+
+    /// Run the coordinator for `secs` seconds of paused time, one second at a
+    /// time, calling `at_second` before each step.
+    async fn run_for(
+        coordinator: Arc<UploadCoordinator>,
+        secs: u64,
+        mut at_second: impl FnMut(u64),
+    ) {
+        let (cancel_tx, cancel_rx) = watch::channel(SlotExit::Run);
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let task = tokio::spawn(async move { coordinator.run(cancel_rx, wake).await });
+        for second in 0..secs {
+            at_second(second);
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::advance(Duration::from_secs(1)).await;
+        }
+        let _ = cancel_tx.send(SlotExit::Shutdown);
+        task.await.unwrap();
+    }
+
+    fn checking_coordinator(
+        client: Arc<CheckingClient>,
+        store: Box<dyn SealedStore>,
+        cadence_secs: u64,
+    ) -> (
+        Arc<UploadCoordinator>,
+        Arc<Mutex<SyncSnapshot>>,
+        Arc<Liveness>,
+    ) {
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let liveness = Arc::new(Liveness::default());
+        liveness.set_cadence(cadence_secs);
+        let coordinator =
+            coordinator_with_client(client, store, sync.clone()).with_liveness(liveness.clone());
+        (Arc::new(coordinator), sync, liveness)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_uploader_checks_the_journal_at_its_cadence_and_never_faster() {
+        for answers in [true, false] {
+            let client = CheckingClient::new(answers);
+            let (coordinator, sync, _liveness) =
+                checking_coordinator(client.clone(), Box::new(EmptyStore), 15);
+            run_for(coordinator, 61, |_| {}).await;
+            // Polled from the first second, then one check per 15 s at most:
+            // at 1, 16, 31 and 46 s.
+            assert_eq!(client.checks.load(Ordering::SeqCst), 4);
+            assert_eq!(
+                sync.lock().unwrap().upload.last_successful_sync.is_some(),
+                answers
+            );
+        }
+
+        // On battery the cadence is a whole segment period.
+        let client = CheckingClient::new(true);
+        let (coordinator, _sync, _liveness) =
+            checking_coordinator(client.clone(), Box::new(EmptyStore), 300);
+        run_for(coordinator, 61, |_| {}).await;
+        assert_eq!(client.checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_check_goes_out_without_a_cadence() {
+        let client = CheckingClient::new(true);
+        let (coordinator, _sync, liveness) =
+            checking_coordinator(client.clone(), Box::new(EmptyStore), 0);
+        let resumes = liveness.clone();
+        run_for(coordinator, 61, move |second| {
+            if second == 30 {
+                resumes.resumed();
+            }
+        })
+        .await;
+        assert_eq!(client.checks.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waking_checks_at_once_and_ends_the_upload_backoff() {
+        let client = CheckingClient::new(false);
+        let (coordinator, _sync, liveness) = checking_coordinator(
+            client.clone(),
+            Box::new(OneSegmentStore::new(
+                1_700_000_100,
+                "display_1_screen.mp4",
+                b"bytes".to_vec(),
+            )),
+            15,
+        );
+        let wake_at = 200;
+        let counts = client.clone();
+        let mut before = (0, 0);
+        let resumes = liveness.clone();
+        run_for(coordinator, wake_at + 2, move |second| {
+            // Asleep: the app stops idle checks while intake is paused.
+            if second == wake_at / 2 {
+                resumes.set_cadence(0);
+            }
+            if second == wake_at {
+                resumes.set_cadence(15);
+                before = (
+                    counts.ingests.load(Ordering::SeqCst),
+                    counts.checks.load(Ordering::SeqCst),
+                );
+                resumes.resumed();
+            }
+            if second == wake_at + 1 {
+                // Backed off to minutes by now, the upload retries at once,
+                // and the check goes out without waiting for its cadence.
+                assert_eq!(counts.ingests.load(Ordering::SeqCst), before.0 + 1);
+                assert_eq!(counts.checks.load(Ordering::SeqCst), before.1 + 1);
+            }
+        })
+        .await;
     }
 
     // Previous-model disclaimer: Retained under the 12.2.0 receipt model; tests fallback when file_descriptors is Absent.

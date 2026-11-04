@@ -22,6 +22,7 @@ use strum::{EnumIter, IntoStaticStr};
 
 pub mod about;
 pub mod desktop_activity;
+pub mod journal_link;
 pub mod launch;
 pub mod notice;
 pub mod scheme;
@@ -33,6 +34,7 @@ pub use desktop_activity::{
     DesktopActivityProbeEvent, DesktopActivityRow, DesktopActivitySource,
     DesktopActivityUrlRequest, DesktopActivityUrlResult,
 };
+pub use journal_link::{JournalLink, LinkInput, LinkPresenter};
 pub use launch::{is_native_messaging_launch, launch_should_surface, FROM_AUTOSTART_ARG};
 pub use notice::{Notice, Problem, TransitionNotifier};
 pub use scheme::{
@@ -594,7 +596,9 @@ pub struct UploadStatus {
     pub last_uploaded_server_segment: Option<String>,
     /// The last upload error detail, when one occurred.
     pub last_error: Option<String>,
-    /// Epoch milliseconds of the last successful sync tick.
+    /// Epoch milliseconds of the journal's last answer to this device: an
+    /// upload, a listing or a status check it responded to. A tick with
+    /// nothing to send leaves it alone.
     pub last_successful_sync: Option<u64>,
     /// Consecutive failed sync ticks, bounded for journal diagnostics.
     pub recent_error_count: u8,
@@ -619,9 +623,13 @@ impl UploadStatus {
         self.last_error_reason = Some(bounded_single_line(reason_code, LAST_ERROR_REASON_MAX_LEN));
     }
 
-    pub fn record_success(&mut self, now_ms: u64) {
+    pub fn record_success(&mut self) {
         self.recent_error_count = 0;
         self.last_error_reason = None;
+    }
+
+    /// The journal answered this device at `now_ms`.
+    pub fn record_answer(&mut self, now_ms: u64) {
         self.last_successful_sync = Some(now_ms);
     }
 }
@@ -696,6 +704,10 @@ pub struct SyncSnapshot {
     pub about_block: String,
     #[serde(default)]
     pub unknown_journals: Vec<UnknownJournalSighting>,
+    /// The journal connection as the app presents it, written by the app from
+    /// [`LinkPresenter`]. `None` unless taking things in while paired.
+    #[serde(default)]
+    pub journal_link: Option<JournalLink>,
 }
 
 impl Default for SyncSnapshot {
@@ -712,6 +724,7 @@ impl Default for SyncSnapshot {
             about_app_line: String::new(),
             about_block: unknown,
             unknown_journals: Vec::new(),
+            journal_link: None,
         }
     }
 }
@@ -1525,11 +1538,11 @@ mod tests {
         let mut upload = UploadStatus::default();
         upload.record_failure("tls");
 
-        upload.record_success(1_700_000_000_000);
+        upload.record_success();
 
         assert_eq!(upload.recent_error_count, 0);
         assert_eq!(upload.last_error_reason, None);
-        assert_eq!(upload.last_successful_sync, Some(1_700_000_000_000));
+        assert_eq!(upload.last_successful_sync, None);
     }
 
     #[test]
