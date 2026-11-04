@@ -12,7 +12,7 @@ use spl_core::crockford;
 use spl_core::pairlink::{self, PairLinkError, ParsedPairLink};
 use spl_core::relay_window;
 
-const PIN_MANIFEST_JSON: &str = "012fc87119ad9c831a76862a594f0529eb47bd647da549ca2acf7af1e91e8fce";
+const PIN_MANIFEST_JSON: &str = "6b3ae67058a47a27a5f07e99eae3b5421260e08c7fa492f3ec1df5c56f354968";
 const PIN_DEFINITION_JSON: &str =
     "918b0ade51280205b0853d7609a2b9928d4219b7a2d72a4e6a4f5c688c190e4a";
 const PIN_DEFINITION_SCHEMA_JSON: &str =
