@@ -493,6 +493,71 @@ pub fn on_mains_power() -> bool {
     }
 }
 
+/// False only while Windows reports that this PC has no network at all. Any
+/// other reading, including none yet or one Windows cannot give, is true.
+#[cfg(not(windows))]
+pub fn network_available() -> bool {
+    true
+}
+
+/// False only while Windows reports that this PC has no network at all. Any
+/// other reading, including none yet or one Windows cannot give, is true.
+/// The first call subscribes to Windows' connectivity hint for the life of
+/// the process; each later call reads the last hint Windows delivered.
+#[cfg(windows)]
+pub fn network_available() -> bool {
+    network_hint::available()
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod network_hint {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::Once;
+
+    use windows::Win32::Foundation::{BOOLEAN, HANDLE, NO_ERROR};
+    use windows::Win32::NetworkManagement::IpHelper::NotifyNetworkConnectivityHintChange;
+    use windows::Win32::Networking::WinSock::{
+        NetworkConnectivityLevelHintNone, NetworkConnectivityLevelHintUnknown,
+        NL_NETWORK_CONNECTIVITY_HINT,
+    };
+
+    static LEVEL: AtomicI32 = AtomicI32::new(NetworkConnectivityLevelHintUnknown.0);
+    static SUBSCRIBE: Once = Once::new();
+
+    unsafe extern "system" fn changed(
+        _context: *const core::ffi::c_void,
+        hint: NL_NETWORK_CONNECTIVITY_HINT,
+    ) {
+        LEVEL.store(hint.ConnectivityLevel.0, Ordering::Relaxed);
+    }
+
+    pub(super) fn available() -> bool {
+        SUBSCRIBE.call_once(|| {
+            let mut handle = HANDLE::default();
+            // SAFETY: `changed` matches the callback signature and only stores
+            // an atomic; `handle` is a valid out-pointer. The subscription is
+            // kept for the life of the process and never cancelled.
+            let status = unsafe {
+                NotifyNetworkConnectivityHintChange(
+                    Some(changed),
+                    None,
+                    BOOLEAN::from(true),
+                    &mut handle,
+                )
+            };
+            if status != NO_ERROR {
+                tracing::warn!(
+                    target: "pump",
+                    code = status.0,
+                    "network connectivity hint unavailable"
+                );
+            }
+        });
+        LEVEL.load(Ordering::Relaxed) != NetworkConnectivityLevelHintNone.0
+    }
+}
+
 /// Read-only probe for application process presence via session mutex and process snapshot.
 #[cfg(not(windows))]
 pub fn probe_app_presence(

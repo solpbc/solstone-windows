@@ -12,7 +12,9 @@
 //! One answer keeps connected true for a lease that fits a whole check cycle,
 //! so one slow or failed check changes nothing. A drop is held for a moment
 //! before connected may return, so the icon never flickers. Connecting turns
-//! into offline only after it has lasted.
+//! into offline only after it has lasted, or at once when Windows reports no
+//! network while nothing is being heard. No network alone never withdraws
+//! connected, and its return starts a new episode.
 //!
 //! The clock is injected: `now_ms` is any monotonic millisecond clock.
 
@@ -65,11 +67,14 @@ pub struct LinkInput {
     pub answered: Option<u64>,
     /// How long an answer keeps connected true, from the check cadence in force.
     pub lease_ms: u64,
+    /// False only while the OS reports no network at all.
+    pub network: bool,
 }
 
 /// Folds evidence readings into the presented [`JournalLink`].
 #[derive(Debug, Default)]
 pub struct LinkPresenter {
+    no_network: bool,
     answered: Option<u64>,
     heard_at: Option<u64>,
     /// The longest lease in force since the last answer, so a change of cadence
@@ -93,6 +98,9 @@ impl LinkPresenter {
             self.lease_ms = self.lease_ms.max(input.lease_ms);
         }
 
+        let network_back = input.network && self.no_network;
+        self.no_network = !input.network;
+
         if !input.up {
             self.shown = None;
             return None;
@@ -106,12 +114,16 @@ impl LinkPresenter {
             self.dropped_at = None;
             self.hold_until = (self.last_shown == Some(JournalLink::Connected) && !fresh)
                 .then_some(now_ms.saturating_add(RESUME_GRACE_MS));
+        } else if network_back {
+            // The network came back: connecting again, with a fresh wait.
+            self.unreached_since = now_ms;
         }
 
         let dwelling = self
             .dropped_at
             .is_some_and(|at| now_ms < at.saturating_add(DOWN_DWELL_MS));
-        let holding = !fresh && self.hold_until.is_some_and(|until| now_ms < until);
+        let holding =
+            !fresh && input.network && self.hold_until.is_some_and(|until| now_ms < until);
         let next = if (fresh && !dwelling) || holding {
             JournalLink::Connected
         } else {
@@ -119,7 +131,7 @@ impl LinkPresenter {
                 self.dropped_at = Some(now_ms);
                 self.unreached_since = now_ms;
             }
-            if now_ms.saturating_sub(self.unreached_since) >= OFFLINE_AFTER_MS {
+            if !input.network || now_ms.saturating_sub(self.unreached_since) >= OFFLINE_AFTER_MS {
                 JournalLink::Offline
             } else {
                 JournalLink::Connecting
@@ -177,6 +189,7 @@ mod tests {
                     up,
                     answered,
                     lease_ms: LEASE,
+                    network: true,
                 };
                 (at, presenter.present(input, at))
             })
@@ -335,6 +348,7 @@ mod tests {
             up: true,
             answered: Some(1),
             lease_ms,
+            network: true,
         };
         assert_eq!(
             presenter.present(reading(battery), 0),
@@ -354,6 +368,7 @@ mod tests {
             up: true,
             answered,
             lease_ms: LEASE,
+            network: true,
         };
         presenter.present(reading(None), 0);
         assert_eq!(presenter.next_change_ms(0), Some(OFFLINE_AFTER_MS));
@@ -368,6 +383,87 @@ mod tests {
         assert_eq!(
             presenter.next_change_ms(dropped + DOWN_DWELL_MS + 1),
             Some(dropped + OFFLINE_AFTER_MS)
+        );
+    }
+
+    /// A scripted trace with the OS network reading: (time, network, answer).
+    fn run_network(steps: &[(u64, bool, Option<u64>)]) -> Vec<(u64, Option<JournalLink>)> {
+        let mut presenter = LinkPresenter::default();
+        steps
+            .iter()
+            .map(|&(at, network, answered)| {
+                let input = LinkInput {
+                    up: true,
+                    answered,
+                    lease_ms: LEASE,
+                    network,
+                };
+                (at, presenter.present(input, at))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_network_while_unreached_shows_offline_at_once() {
+        // Launch with no network: offline, not thirty seconds of connecting.
+        let trace = run_network(&[(0, false, None)]);
+        assert_eq!(at(&trace, 0), Some(JournalLink::Offline));
+
+        // The lease runs out while there is no network: straight to offline.
+        let trace = run_network(&[(0, true, Some(1)), (LEASE, false, Some(1))]);
+        assert_eq!(at(&trace, LEASE), Some(JournalLink::Offline));
+
+        // Back from sleep with no network: no grace on a claim Windows
+        // already contradicts.
+        let mut presenter = LinkPresenter::default();
+        let reading = |up, network| LinkInput {
+            up,
+            answered: Some(1),
+            lease_ms: LEASE,
+            network,
+        };
+        presenter.present(reading(true, true), 0);
+        presenter.present(reading(false, true), 1_000);
+        assert_eq!(
+            presenter.present(reading(true, false), 3_600_000),
+            Some(JournalLink::Offline)
+        );
+    }
+
+    #[test]
+    fn no_network_alone_never_withdraws_connected_while_heard() {
+        let steps: Vec<_> = (0..=LEASE - 1_000)
+            .step_by(1_000)
+            .map(|when| (when, when < 2_000, Some(1)))
+            .collect();
+        let trace = run_network(&steps);
+        assert!(trace
+            .iter()
+            .all(|(_, link)| *link == Some(JournalLink::Connected)));
+    }
+
+    #[test]
+    fn the_network_coming_back_starts_a_new_episode() {
+        let back = 60_000;
+        let mut steps: Vec<_> = (0..back).step_by(1_000).map(|w| (w, false, None)).collect();
+        steps.push((back, true, None));
+        steps.push((back + OFFLINE_AFTER_MS - 1_000, true, None));
+        steps.push((back + OFFLINE_AFTER_MS, true, None));
+        steps.push((back + OFFLINE_AFTER_MS + 500, true, Some(1)));
+        let trace = run_network(&steps);
+        assert_eq!(at(&trace, back - 1_000), Some(JournalLink::Offline));
+        assert_eq!(at(&trace, back), Some(JournalLink::Connecting));
+        assert_eq!(
+            at(&trace, back + OFFLINE_AFTER_MS - 1_000),
+            Some(JournalLink::Connecting)
+        );
+        assert_eq!(
+            at(&trace, back + OFFLINE_AFTER_MS),
+            Some(JournalLink::Offline)
+        );
+        assert_eq!(
+            at(&trace, back + OFFLINE_AFTER_MS + 500),
+            Some(JournalLink::Connected)
         );
     }
 

@@ -27,6 +27,8 @@ windows-core = "=0.61.2"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_LibraryLoader",
     "Win32_System_Time",

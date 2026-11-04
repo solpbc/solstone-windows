@@ -133,6 +133,14 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "on_mains_power",
         owner: None,
     },
+    // One subscription to the connectivity hint, kept for the process; the
+    // callback only stores the level in an atomic.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::Mod,
+        name: "network_hint",
+        owner: None,
+    },
     ApprovedNode {
         path: "crates/platform-win/src/window_focus.rs",
         kind: ApprovedKind::Fn,

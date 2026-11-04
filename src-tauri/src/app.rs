@@ -462,13 +462,20 @@ fn build_sync_config() -> SyncConfig {
     }
 }
 
+/// What the previous reading fed the presenter, to spot a resume.
+#[derive(Default)]
+struct LinkWatch {
+    was_up: bool,
+    had_network: bool,
+}
+
 /// Feed one health reading to the link presenter, and set when the uploader
 /// checks the journal: often on mains power, rarely on battery, never while
-/// intake is paused or not paired. Back from a pause, a lock or sleep, a fresh
-/// check goes out at once.
+/// intake is paused, not paired, or Windows reports no network. Back from a
+/// pause, a lock, sleep or no network, a fresh check goes out at once.
 fn present_journal_link(
     presenter: &mut observer_model::LinkPresenter,
-    was_up: &mut bool,
+    watch: &mut LinkWatch,
     liveness: &pl_transport_win::Liveness,
     dump: &HealthDump,
     now_ms: u64,
@@ -482,16 +489,20 @@ fn present_journal_link(
     } else {
         BACKGROUND_CHECK_SECS
     };
-    liveness.set_cadence(if up { check_secs } else { 0 });
-    if up && !*was_up {
+    let network = platform_win::network_available();
+    let checking = up && network;
+    liveness.set_cadence(if checking { check_secs } else { 0 });
+    if checking && !(watch.was_up && watch.had_network) {
         liveness.resumed();
     }
-    *was_up = up;
+    watch.was_up = up;
+    watch.had_network = network;
     presenter.present(
         observer_model::LinkInput {
             up,
             answered: dump.sync.upload.last_successful_sync,
             lease_ms: lease_ms(check_secs),
+            network,
         },
         now_ms,
     )
@@ -989,14 +1000,14 @@ pub fn run(
                         .flatten();
                     let mut notifier = observer_model::TransitionNotifier::default();
                     let mut presenter = observer_model::LinkPresenter::default();
-                    let mut was_up = false;
+                    let mut link_watch = LinkWatch::default();
                     let started = tokio::time::Instant::now();
                     loop {
                         let mut dump = rx.borrow_and_update().clone();
                         // One presented link for the tray, its notices and Settings.
                         let link = present_journal_link(
                             &mut presenter,
-                            &mut was_up,
+                            &mut link_watch,
                             &liveness,
                             &dump,
                             started.elapsed().as_millis() as u64,
