@@ -181,6 +181,36 @@ describe("a journal found on this computer", () => {
     expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
   });
 
+  it.each([
+    ["connected", true],
+    ["connecting", false],
+    ["offline", false],
+  ] as const)("after the press, a journal link that is %s decides whether the status says connected", async (link, says) => {
+    setRoute("journal");
+    const paired = pairedWithMarkDump(found.mark);
+    const withLink = (journal_link: "connected" | "connecting" | "offline") =>
+      ({ ...paired, sync: { ...paired.sync, journal_link } }) as ReturnType<typeof notPairedDump>;
+    answering(found, async () => {
+      app.__test__.setHealth(withLink("connected"));
+    });
+    app.__test__.renderSettings(notPairedDump());
+    await look();
+    byId(ids["settings.pairing.foundConnect"])?.click();
+    await vi.waitFor(() =>
+      expect(byId(ids["settings.pairing.state"])?.textContent).toContain("connected to"),
+    );
+
+    app.__test__.renderSettings(withLink(link));
+    const status = byId(ids["settings.pairing.state"])?.textContent ?? "";
+    expect(status).toContain("piano");
+    expect(status.includes("connected to")).toBe(says);
+    expect(status.includes("paired with")).toBe(!says);
+
+    // A drop and a recovery are both earned from the link, with no new press.
+    app.__test__.renderSettings(withLink("connected"));
+    expect(byId(ids["settings.pairing.state"])?.textContent).toContain("connected to");
+  });
+
   it("keeps the offer on screen when a look from before the press comes back empty", async () => {
     setRoute("journal");
     answering(found);

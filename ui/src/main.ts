@@ -527,7 +527,7 @@ let foundJournalConnecting = false;
 // press, so its answer is dropped rather than pulling the offer out from under it.
 let foundJournalPresses = 0;
 // The press that connected, for this window's life: says "connected to" rather
-// than the ordinary paired status.
+// than the ordinary paired status, while the journal link presents as connected.
 let foundJournalConnected = false;
 
 const SETUP_LINK_ERRORS: Record<string, string> = {
@@ -1994,7 +1994,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
         selectable(automation(
           text(
             "div",
-            foundJournalConnected && presented.phase === "paired"
+            foundJournalConnected && presented.phase === "paired" && dump.sync.journal_link === "connected"
               ? `connected to ${markTextForm(presented.mark)}`
               : pairingPhaseLabel(presented),
           ),
