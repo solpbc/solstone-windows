@@ -181,6 +181,45 @@ describe("a journal found on this computer", () => {
     expect(byId(ids["settings.pairing.confirmYes"])).toBeNull();
   });
 
+  it("keeps the offer on screen when a look from before the press comes back empty", async () => {
+    setRoute("journal");
+    answering(found);
+    app.__test__.renderSettings(notPairedDump());
+    await look();
+    let answerLook: (value: null) => void = () => {};
+    let finishConnect: () => void = () => {};
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "find_local_journal") {
+        return new Promise((resolve) => {
+          answerLook = resolve as (value: null) => void;
+        });
+      }
+      if (command === "connect_found_journal") {
+        return new Promise<void>((resolve) => {
+          finishConnect = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 4000);
+      app.__test__.lookForFoundJournal();
+    } finally {
+      vi.useRealTimers();
+    }
+    byId(ids["settings.pairing.foundConnect"])?.click();
+    await vi.waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("connect_found_journal", {
+        instanceId: found.instance_id,
+      }),
+    );
+    answerLook(null);
+    await vi.waitFor(() => expect(app.__test__.foundJournalPending()).toBe(false));
+    expect(byId(ids["settings.pairing.foundJournal"])).not.toBeNull();
+    finishConnect();
+  });
+
   it("says a failed verification connected nothing, and keeps the offer and the paste field", async () => {
     setRoute("journal");
     answering(found, async () => {

@@ -401,8 +401,8 @@
 }
 
 /* one primary per screen: inside the card, accent buttons read as secondary,
-   except the pairing field's own button */
-.setup-frame .setup-card button.fluent-accent:not(input + button) {
+   except the pairing field's own button and the offer's connect button */
+.setup-frame .setup-card button.fluent-accent:not(input + button):not(.setup-primary) {
   background: var(--fill) !important;
   color: var(--fg) !important;
   border: 1px solid var(--border) !important;

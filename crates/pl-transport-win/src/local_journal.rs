@@ -10,6 +10,7 @@
 //! module sends the journal nothing of the owner's beyond the device label.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use observer_model::MarkRenderSpec;
@@ -25,6 +26,8 @@ const PAIR_START_PATH: &str = "/app/network/pair-start";
 const READ_BOUND: Duration = Duration::from_secs(3);
 const MINT_BOUND: Duration = Duration::from_secs(10);
 const RESPONSE_CAP: u64 = 256 * 1024;
+
+static LAST_FOUND: Mutex<Option<FoundJournal>> = Mutex::new(None);
 
 /// A committed journal answering on this computer: what the offer shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -66,8 +69,21 @@ impl LocalJournalDoor {
     pub fn identify(&self) -> Option<FoundJournal> {
         let identity = self.read_identity().ok()?;
         let instance_id = identity.instance_id.clone()?;
+        // Deriving a mark is the costly part of a look, and the journal rarely changes
+        // between looks. A connect always derives it again.
+        let mut last = LAST_FOUND.lock().ok()?;
+        if let Some(found) = last.as_ref() {
+            if identity.committed
+                && found.instance_id == instance_id
+                && identity.mark.as_ref() == Some(&found.mark)
+            {
+                return Some(found.clone());
+            }
+        }
         let mark = accept_link_identity(&identity, &instance_id).ok()?;
-        Some(FoundJournal { instance_id, mark })
+        let found = FoundJournal { instance_id, mark };
+        *last = Some(found.clone());
+        Some(found)
     }
 
     /// Have the journal mint a same-computer link, while it stays the instance the
@@ -349,6 +365,23 @@ mod door_tests {
                 "{status} {body}"
             );
         }
+    }
+
+    #[test]
+    fn a_journal_found_once_still_gets_no_offer_when_its_answer_goes_wrong() {
+        let good = serve(vec![(200, identity_body(INSTANCE))]);
+        assert!(LocalJournalDoor::at_port(good.port).identify().is_some());
+        let mut wrong_mark =
+            serde_json::from_str::<serde_json::Value>(&identity_body(INSTANCE)).unwrap();
+        wrong_mark["mark"]["words"][0] = "wrong".into();
+        let bad = serve(vec![(200, wrong_mark.to_string())]);
+        assert_eq!(LocalJournalDoor::at_port(bad.port).identify(), None);
+        let uncommitted = serve(vec![(
+            200,
+            serde_json::json!({ "committed": false, "instance_id": INSTANCE, "mark": mark_spec_for_jid(INSTANCE) })
+                .to_string(),
+        )]);
+        assert_eq!(LocalJournalDoor::at_port(uncommitted.port).identify(), None);
     }
 
     #[test]

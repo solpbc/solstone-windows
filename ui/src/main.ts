@@ -523,6 +523,9 @@ let foundJournal: FoundJournal | null = null;
 let foundJournalLookInFlight = false;
 let foundJournalLookedAt = 0;
 let foundJournalConnecting = false;
+// A look still in flight when the owner presses answers for the moment before the
+// press, so its answer is dropped rather than pulling the offer out from under it.
+let foundJournalPresses = 0;
 // The press that connected, for this window's life: says "connected to" rather
 // than the ordinary paired status.
 let foundJournalConnected = false;
@@ -633,10 +636,12 @@ function lookForFoundJournal(): void {
   if (foundJournalLookInFlight || now - foundJournalLookedAt < FOUND_JOURNAL_LOOK_MS) return;
   foundJournalLookInFlight = true;
   foundJournalLookedAt = now;
+  const presses = foundJournalPresses;
   void Promise.resolve(invoke<FoundJournal | null>("find_local_journal"))
     .catch(() => null)
     .then((found) => {
       foundJournalLookInFlight = false;
+      if (presses !== foundJournalPresses) return;
       const next = found && displayableMark(found.mark) ? found : null;
       if (next?.instance_id === foundJournal?.instance_id) return;
       foundJournal = next;
@@ -647,6 +652,7 @@ function lookForFoundJournal(): void {
 async function connectFoundJournal(found: FoundJournal): Promise<void> {
   if (foundJournalConnecting || pairingBusy) return;
   foundJournalConnecting = true;
+  foundJournalPresses += 1;
   rerender();
   try {
     await invoke("connect_found_journal", { instanceId: found.instance_id });
@@ -678,6 +684,7 @@ function renderFoundJournal(found: FoundJournal): HTMLElement {
     foundJournalConnecting,
     "accent",
   );
+  connect.classList.add("setup-primary");
   panel.append(heading, renderMarkCard(found.mark, "unavailable"), connect);
   return panel;
 }
@@ -2449,13 +2456,14 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     button.textContent = busy ? "pairing…" : "pair";
     button.disabled = busy;
     button.dataset.automationId = ids["settings.pairing.submit"];
-    button.classList.add("fluent-accent");
+    // Beside an offer the connect button is the screen's one primary.
+    button.classList.add(found ? "fluent-control" : "fluent-accent");
     button.style.fontSize = "13px";
     button.style.padding = "7px 14px";
-    button.style.border = "1px solid var(--accent)";
+    button.style.border = found ? "1px solid var(--border)" : "1px solid var(--accent)";
     button.style.borderRadius = "var(--radius-control)";
-    button.style.background = busy ? "var(--accent-busy)" : "var(--accent)";
-    button.style.color = "var(--accent-fg)";
+    button.style.background = found ? "var(--fill)" : busy ? "var(--accent-busy)" : "var(--accent)";
+    button.style.color = found ? "var(--fg)" : "var(--accent-fg)";
     button.style.cursor = busy ? "default" : "pointer";
     button.onclick = async () => {
       const link = pairingDraft.trim();
@@ -6269,6 +6277,7 @@ export const __test__ = {
     foundJournalLookInFlight = false;
     foundJournalLookedAt = 0;
     foundJournalConnecting = false;
+    foundJournalPresses = 0;
     foundJournalConnected = false;
     setupActionError.finish = "";
     setupActionError.browser = "";
