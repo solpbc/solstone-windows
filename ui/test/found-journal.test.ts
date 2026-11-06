@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import { automationContract } from "../src/lib/contract";
@@ -209,6 +209,61 @@ describe("a journal found on this computer", () => {
     // A drop and a recovery are both earned from the link, with no new press.
     app.__test__.renderSettings(withLink("connected"));
     expect(byId(ids["settings.pairing.state"])?.textContent).toContain("connected to");
+  });
+
+  describe("with no source on, so no journal link is presented", () => {
+    async function pressed(): Promise<ReturnType<typeof pairedWithMarkDump>> {
+      setRoute("journal");
+      const paired = pairedWithMarkDump(found.mark);
+      answering(found, async () => {
+        app.__test__.setHealth(paired as ReturnType<typeof notPairedDump>);
+      });
+      app.__test__.renderSettings(notPairedDump());
+      await look();
+      byId(ids["settings.pairing.foundConnect"])?.click();
+      await vi.waitFor(() =>
+        expect(byId(ids["settings.pairing.state"])?.textContent).toContain("connected to"),
+      );
+      return paired;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("the press carries connected for one lease, then the row lapses with nothing else changing", async () => {
+      await pressed();
+      vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 20_000);
+      app.__test__.lapseFoundJournalPress();
+      expect(byId(ids["settings.pairing.state"])?.textContent).toContain("connected to");
+
+      vi.setSystemTime(Date.now() + 2_000);
+      app.__test__.lapseFoundJournalPress();
+      const status = byId(ids["settings.pairing.state"])?.textContent ?? "";
+      expect(status).toContain("paired with");
+      expect(status).toContain("piano");
+    });
+
+    it("a render after the lease reads paired too, and a later connected link earns it back", async () => {
+      const paired = await pressed();
+      vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 22_000);
+      app.__test__.renderSettings(paired as ReturnType<typeof notPairedDump>);
+      expect(byId(ids["settings.pairing.state"])?.textContent).toContain("paired with");
+
+      app.__test__.renderSettings({
+        ...paired,
+        sync: { ...paired.sync, journal_link: "connected" },
+      } as ReturnType<typeof notPairedDump>);
+      expect(byId(ids["settings.pairing.state"])?.textContent).toContain("connected to");
+    });
+
+    it("a paired app that never pressed says paired, inside any lease", async () => {
+      setRoute("journal");
+      app.__test__.renderSettings(pairedWithMarkDump(found.mark) as ReturnType<typeof notPairedDump>);
+      expect(byId(ids["settings.pairing.state"])?.textContent).toContain("paired with");
+    });
   });
 
   it("keeps the offer on screen when a look from before the press comes back empty", async () => {

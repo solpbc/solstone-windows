@@ -529,6 +529,13 @@ let foundJournalPresses = 0;
 // The press that connected, for this window's life: says "connected to" rather
 // than the ordinary paired status, while the journal link presents as connected.
 let foundJournalConnected = false;
+// The press verified the journal over the pinned connection, which is hearing from
+// it. With no source on nothing presents the link, so that answer carries the row
+// for one mains lease: lease_ms(FOREGROUND_CHECK_SECS) in observer-model's
+// journal_link.rs, 15 s + 5 s + 1 s.
+const FOUND_JOURNAL_PRESS_LEASE_MS = 21_000;
+let foundJournalConnectedAt: number | null = null;
+let pairingStatusEl: HTMLElement | null = null;
 
 const SETUP_LINK_ERRORS: Record<string, string> = {
   setup_connect_failed: "this connection could not finish. try again, or paste a new pairing link from your journal.",
@@ -657,12 +664,40 @@ async function connectFoundJournal(found: FoundJournal): Promise<void> {
   try {
     await invoke("connect_found_journal", { instanceId: found.instance_id });
     foundJournalConnected = true;
+    foundJournalConnectedAt = Date.now();
     foundJournal = null;
   } catch {
     // Nothing connected; the pairing status carries the failure to the next render.
   } finally {
     foundJournalConnecting = false;
     retryHealth();
+  }
+}
+
+function foundJournalPressHolds(): boolean {
+  if (foundJournalConnectedAt === null) return false;
+  const elapsed = Date.now() - foundJournalConnectedAt;
+  return elapsed >= 0 && elapsed < FOUND_JOURNAL_PRESS_LEASE_MS;
+}
+
+function pairingStatusLabel(dump: HealthDump): string {
+  const presented = presentedPairing(dump.sync.pairing);
+  if (foundJournalConnected && presented.phase === "paired") {
+    const link = dump.sync.journal_link ?? null;
+    if (link === "connected" || (link === null && foundJournalPressHolds())) {
+      return `connected to ${markTextForm(presented.mark)}`;
+    }
+  }
+  return pairingPhaseLabel(presented);
+}
+
+// Runs on the window's one-second clock: a lapse changes nothing else, so no health
+// update would repaint the row, and a focused paste field holds back a full render.
+function lapseFoundJournalPress(): void {
+  if (foundJournalConnectedAt === null || foundJournalPressHolds()) return;
+  foundJournalConnectedAt = null;
+  if (pairingStatusEl?.isConnected && latestHealth) {
+    pairingStatusEl.textContent = pairingStatusLabel(latestHealth);
   }
 }
 
@@ -1988,18 +2023,11 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   const connectedInSetup = options.setupStep === true && pairing.phase === "paired";
   const pane = section("pairing");
   if (!connectedInSetup) {
+    pairingStatusEl = text("div", pairingStatusLabel(dump));
     pane.append(
       valueRow(
         "status",
-        selectable(automation(
-          text(
-            "div",
-            foundJournalConnected && presented.phase === "paired" && dump.sync.journal_link === "connected"
-              ? `connected to ${markTextForm(presented.mark)}`
-              : pairingPhaseLabel(presented),
-          ),
-          ids["settings.pairing.state"],
-        )),
+        selectable(automation(pairingStatusEl, ids["settings.pairing.state"])),
       ),
     );
   }
@@ -2472,6 +2500,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       }
       pairingBusy = true;
       foundJournalConnected = false;
+      foundJournalConnectedAt = null;
       button.disabled = true;
       button.textContent = "pairing…";
       try {
@@ -6135,12 +6164,14 @@ export function start(): void {
     updatePauseLabels();
     updateStatusClocks();
     lookForFoundJournal();
+    lapseFoundJournalPress();
   }, 1000);
 }
 
 export const __test__ = {
   refreshPairingPrefillOnFocus,
   lookForFoundJournal,
+  lapseFoundJournalPress,
   foundJournalPending: () => foundJournalLookInFlight,
   getHealth: () => latestHealth,
   updateStatusClocks,
@@ -6279,6 +6310,8 @@ export const __test__ = {
     foundJournalConnecting = false;
     foundJournalPresses = 0;
     foundJournalConnected = false;
+    foundJournalConnectedAt = null;
+    pairingStatusEl = null;
     setupActionError.finish = "";
     setupActionError.browser = "";
     setupActionError.retry = "";
