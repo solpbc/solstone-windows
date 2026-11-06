@@ -198,22 +198,29 @@ mod tests {
     #[test]
     fn a_published_port_is_read_through_the_setup_config() {
         let home = tempfile::tempdir().unwrap();
-        let journal = home.path().join(r#"a "quoted" \ folder"#);
+        let journal = home.path().join("a chosen folder");
         std::fs::create_dir_all(journal.join("health")).unwrap();
         std::fs::write(journal.join("health").join("convey.port"), "5016\n").unwrap();
         let config = home.path().join(".config").join("solstone");
         std::fs::create_dir_all(&config).unwrap();
-        let escaped = journal
-            .display()
-            .to_string()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let escaped = journal.display().to_string().replace('\\', "\\\\");
         std::fs::write(
             config.join("config.toml"),
             format!("journal = \"{escaped}\"\n"),
         )
         .unwrap();
         assert_eq!(published_port(home.path()), 5016);
+    }
+
+    #[test]
+    fn the_setup_configs_one_line_is_read_as_its_writer_escapes_it() {
+        assert_eq!(
+            journal_from_config("journal = \"D:\\\\my \\\"journal\\\"\"\n"),
+            Some(PathBuf::from("D:\\my \"journal\""))
+        );
+        assert_eq!(journal_from_config("journal = 'D:\\x'\n"), None);
+        assert_eq!(journal_from_config("journal = \"bad \\n escape\"\n"), None);
+        assert_eq!(journal_from_config("other = \"x\"\n"), None);
     }
 
     #[test]
