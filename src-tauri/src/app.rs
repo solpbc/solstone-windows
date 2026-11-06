@@ -911,7 +911,12 @@ pub fn run(
                     .await
                     {
                         Ok(listener) => {
-                            if let Err(error) = capture_engine::serve_health(listener, health.clone()).await
+                            if let Err(error) = capture_engine::serve_health(
+                                listener,
+                                health.clone(),
+                                crate::health::same_account,
+                            )
+                            .await
                             {
                                 tracing::error!(
                                     target: "health",

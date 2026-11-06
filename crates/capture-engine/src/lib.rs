@@ -2027,15 +2027,32 @@ fn downscale_screen_frame(frame: &ScreenFrame) -> ScreenPreviewFrame {
 
 /// Minimal loopback-only HTTP health responder. The caller owns binding and must
 /// bind to 127.0.0.1, never a wildcard address.
-pub async fn serve_health(listener: TcpListener, dump: Arc<Mutex<HealthDump>>) -> io::Result<()> {
+///
+/// `admit` decides each connection from its server and client addresses, off
+/// the runtime: this names device names and paths, so only the account running
+/// the app may read it.
+pub async fn serve_health(
+    listener: TcpListener,
+    dump: Arc<Mutex<HealthDump>>,
+    admit: fn(std::net::SocketAddr, std::net::SocketAddr) -> bool,
+) -> io::Result<()> {
     loop {
-        let (stream, _) = match listener.accept().await {
+        let (stream, client) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(error) => {
                 tracing::error!(target: "health", error = %error, "health server accept failed");
                 return Err(error);
             }
         };
+        let Ok(server) = stream.local_addr() else {
+            continue;
+        };
+        if !tokio::task::spawn_blocking(move || admit(server, client))
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
         if let Err(error) = handle_health_connection(stream, &dump).await {
             tracing::warn!(target: "health", error = %error, "health connection failed");
         }
@@ -4024,6 +4041,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_connection_that_is_not_admitted_gets_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fed = HealthDump {
+            app_state: AppPhase::Idle,
+            sources: Vec::new(),
+            frame_rate: None,
+            segment_dir: None,
+            segment_seconds_remaining: None,
+            engine_ready: true,
+            version: "test".into(),
+            sync: SyncSnapshot::default(),
+            screen_encoder: None,
+            exclusions: None,
+            storage: None,
+            pause: None,
+            views: Default::default(),
+            pump_degraded: false,
+            listener_faults: observer_model::ListenerFaults::default(),
+            setup: SetupSnapshot::default(),
+        };
+        let task = tokio::spawn(serve_health(listener, Arc::new(Mutex::new(fed)), |_, _| {
+            false
+        }));
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response).await;
+        assert!(response.is_empty());
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn loopback_health_serves_fixed_dump() {
         let fed = HealthDump {
             app_state: AppPhase::Idle,
@@ -4046,7 +4099,9 @@ mod tests {
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let task = tokio::spawn(serve_health(listener, Arc::new(Mutex::new(fed))));
+        let task = tokio::spawn(serve_health(listener, Arc::new(Mutex::new(fed)), |_, _| {
+            true
+        }));
 
         let mut bad = TcpStream::connect(addr).await.unwrap();
         bad.shutdown().await.unwrap();

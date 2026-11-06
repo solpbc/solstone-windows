@@ -86,6 +86,17 @@ impl std::fmt::Display for DumpStateError {
 
 impl std::error::Error for DumpStateError {}
 
+/// Whether a connection to one of the app's fixed ports comes from the account
+/// running the app. The ports are shared by every account on this PC.
+pub fn same_account(server: SocketAddr, client: SocketAddr) -> bool {
+    match (server, client) {
+        (SocketAddr::V4(server), SocketAddr::V4(client)) => {
+            platform_win::local_port::client_is_this_account(server, client)
+        }
+        _ => false,
+    }
+}
+
 /// Render the current snapshot as the canonical `--dump-state` / `/healthz` JSON.
 pub fn dump_state_json() -> Result<String, DumpStateError> {
     let (mutex, population) =

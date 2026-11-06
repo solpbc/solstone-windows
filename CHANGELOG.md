@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- this is a security fix. another account on this PC can no longer read the app's status, which named your audio devices, your folders and your journal's mark, or send the app commands.
+
 ## [2.0.44] - 2026-11-05
 
 ### Added

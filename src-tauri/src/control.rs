@@ -99,7 +99,16 @@ pub async fn serve(
     listener: tokio::net::TcpListener,
 ) -> std::io::Result<()> {
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, client) = listener.accept().await?;
+        let Ok(server) = stream.local_addr() else {
+            continue;
+        };
+        if !tokio::task::spawn_blocking(move || crate::health::same_account(server, client))
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let app = app.clone();
         tokio::spawn(async move {
             handle_connection(app, stream).await;
