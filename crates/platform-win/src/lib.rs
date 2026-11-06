@@ -37,6 +37,8 @@ pub use desktop_activity::{is_pump_ready, mark_pump_registration_finished};
 #[allow(unsafe_code)]
 pub mod local_offset;
 #[allow(unsafe_code)]
+pub mod local_port;
+#[allow(unsafe_code)]
 pub mod log_save;
 pub mod scheme;
 pub mod setup_over;

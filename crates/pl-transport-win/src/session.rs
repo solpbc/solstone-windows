@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use observer_model::{
     MarkRenderSpec, SyncSnapshot, MARK_REJECTED_DETAIL, PAIRING_CANCELLED_DETAIL,
+    SAME_COMPUTER_UNVERIFIED_DETAIL,
 };
 
 use crate::access::CredentialAccess;
@@ -71,65 +72,71 @@ async fn answer_locked(
     if action == PairingAction::Confirm {
         return confirm_current(binding, cfg, sync, access_guard.as_ref(), slot);
     }
+    let detail = if action == PairingAction::Reject {
+        MARK_REJECTED_DETAIL
+    } else {
+        PAIRING_CANCELLED_DETAIL
+    };
+    retire_held_pairing(binding, detail, cfg, sync, access_guard, slot).await
+}
+
+/// Retire a saved pairing that was never confirmed, on this app and at the journal,
+/// and say why through `detail`.
+async fn retire_held_pairing(
+    binding: &str,
+    detail: &str,
+    cfg: &SyncConfig,
+    sync: &Arc<Mutex<SyncSnapshot>>,
+    access_guard: &mut Option<CredentialAccess>,
+    slot: &mut UploaderSlot,
+) -> Result<AnswerEffect, StorageError> {
     let ans_path = answer_path(&cfg.state_path);
     let mut answer_state = crate::answer::read_answer_or_reset(&ans_path)?.unwrap_or_default();
 
-    match action {
-        PairingAction::Confirm => unreachable!("confirmation returns above"),
-        PairingAction::Reject | PairingAction::Cancel => {
-            let detail = if action == PairingAction::Reject {
-                MARK_REJECTED_DETAIL
-            } else {
-                PAIRING_CANCELLED_DETAIL
-            };
+    let outcome = crate::retirement::reject_pair_with(
+        &cfg.state_path,
+        binding,
+        || async {
+            answer_state.rejected = binding.to_string();
+            let write_result = write_answer(&ans_path, &answer_state).map_err(TransportError::from);
+            slot.stop().await;
+            if let Some(access) = access_guard.take() {
+                access.retire();
+            }
+            write_result
+        },
+        crate::retirement::retire_credential,
+    )
+    .await;
 
-            let outcome = crate::retirement::reject_pair_with(
-                &cfg.state_path,
-                binding,
-                || async {
-                    answer_state.rejected = binding.to_string();
-                    let write_result =
-                        write_answer(&ans_path, &answer_state).map_err(TransportError::from);
-                    slot.stop().await;
-                    if let Some(access) = access_guard.take() {
-                        access.retire();
-                    }
-                    write_result
+    Ok(match outcome {
+        Ok(crate::retirement::ReconcileOutcome::Completed) => {
+            if let Ok(mut confirmation) = cfg.confirmation.lock() {
+                confirmation.clear();
+            }
+            publish_pairing(
+                sync,
+                &cfg.confirmation,
+                &cfg.tombstone,
+                PairingWrite::NotPaired {
+                    detail: Some(detail.to_string()),
                 },
-                crate::retirement::retire_credential,
-            )
-            .await;
-
-            Ok(match outcome {
-                Ok(crate::retirement::ReconcileOutcome::Completed) => {
-                    if let Ok(mut confirmation) = cfg.confirmation.lock() {
-                        confirmation.clear();
-                    }
-                    publish_pairing(
-                        sync,
-                        &cfg.confirmation,
-                        &cfg.tombstone,
-                        PairingWrite::NotPaired {
-                            detail: Some(detail.to_string()),
-                        },
-                    );
-                    AnswerEffect::Closed
-                }
-                Ok(crate::retirement::ReconcileOutcome::Superseded) => AnswerEffect::Ignored,
-                Ok(crate::retirement::ReconcileOutcome::None) | Err(_) => {
-                    publish_pairing(
-                        sync,
-                        &cfg.confirmation,
-                        &cfg.tombstone,
-                        PairingWrite::Failed {
-                            detail: "client_retirement_pending".to_owned(),
-                        },
-                    );
-                    AnswerEffect::Ignored
-                }
-            })
+            );
+            AnswerEffect::Closed
         }
-    }
+        Ok(crate::retirement::ReconcileOutcome::Superseded) => AnswerEffect::Ignored,
+        Ok(crate::retirement::ReconcileOutcome::None) | Err(_) => {
+            publish_pairing(
+                sync,
+                &cfg.confirmation,
+                &cfg.tombstone,
+                PairingWrite::Failed {
+                    detail: "client_retirement_pending".to_owned(),
+                },
+            );
+            AnswerEffect::Ignored
+        }
+    })
 }
 
 /// The caller owns slot/access. Token publication precedes the durable owner
@@ -291,6 +298,29 @@ async fn prove_ordinary_same_pc<R, Fut>(
     }
 }
 
+/// Load the saved answer, or settle and create it, before a pairing is saved.
+fn prepare_answer_state(cfg: &SyncConfig) -> Result<(), TransportError> {
+    let ans_path = answer_path(&cfg.state_path);
+    match read_answer(&ans_path) {
+        Ok(Some(ans)) => {
+            if let Ok(mut lock) = cfg.confirmation.lock() {
+                *lock = ans.confirmed;
+            }
+        }
+        Ok(None) => {
+            let _ = crate::answer::settle_grandfather(&cfg.state_path, &cfg.confirmation);
+        }
+        Err(_) => {
+            // Unreadable answer file is not rewritten and is not a pair failure
+        }
+    }
+
+    if let Ok(None) = read_answer(&ans_path) {
+        write_answer(&ans_path, &crate::answer::AnswerState::default())?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn pair<FBridge, FWin, FutBridge, FutWin>(
     link: &str,
@@ -317,24 +347,7 @@ where
     let mut slot = slot_mutex.lock().await;
     let mut access_guard = access_mutex.lock().await;
 
-    let ans_path = answer_path(&cfg.state_path);
-    match read_answer(&ans_path) {
-        Ok(Some(ans)) => {
-            if let Ok(mut lock) = cfg.confirmation.lock() {
-                *lock = ans.confirmed;
-            }
-        }
-        Ok(None) => {
-            let _ = crate::answer::settle_grandfather(&cfg.state_path, &cfg.confirmation);
-        }
-        Err(_) => {
-            // Unreadable answer file is not rewritten and is not a pair failure
-        }
-    }
-
-    if let Ok(None) = read_answer(&ans_path) {
-        write_answer(&ans_path, &crate::answer::AnswerState::default())?;
-    }
+    prepare_answer_state(cfg)?;
 
     let paired = match crate::service::pair_with_identity_pending(
         link,
@@ -410,6 +423,253 @@ where
     .await;
 
     Ok(paired)
+}
+
+fn publish_found_journal_miss(sync: &Arc<Mutex<SyncSnapshot>>, cfg: &SyncConfig) {
+    publish_pairing(
+        sync,
+        &cfg.confirmation,
+        &cfg.tombstone,
+        PairingWrite::NotPaired {
+            detail: Some(SAME_COMPUTER_UNVERIFIED_DETAIL.to_string()),
+        },
+    );
+}
+
+/// True while this app holds nothing a connect could replace or talk over: no
+/// pairing of any kind, no retirement in progress, and no setup handoff still
+/// waiting to be used.
+fn holds_no_pairing(cfg: &SyncConfig) -> bool {
+    let Ok(paired) = PairedState::load(&cfg.state_path) else {
+        return false;
+    };
+    if paired.is_paired() || paired.retirement_intent.is_some() {
+        return false;
+    }
+    let Some(data_root) = cfg.state_path.parent() else {
+        return false;
+    };
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    match crate::handoff::read_active_progress(data_root) {
+        Ok(Some(progress)) => progress.is_expired(now_unix_ms),
+        Ok(None) => true,
+        Err(_) => false,
+    }
+}
+
+/// Whether the app may offer a journal it found on this computer right now.
+pub fn may_offer_found_journal(cfg: &SyncConfig, sync: &Arc<Mutex<SyncSnapshot>>) -> bool {
+    let phase = match sync.lock() {
+        Ok(snapshot) => snapshot.pairing.phase,
+        Err(_) => return false,
+    };
+    matches!(
+        phase,
+        observer_model::PairingPhase::NotPaired | observer_model::PairingPhase::Failed
+    ) && holds_no_pairing(cfg)
+}
+
+async fn verify_found_credential(
+    credential: &Credential,
+    expected_instance_id: &str,
+    expected_ca_fingerprint: &str,
+) -> Result<(), TransportError> {
+    let ca_pem = credential
+        .ca_chain_pem
+        .first()
+        .ok_or_else(|| TransportError::Pairing("empty CA chain".to_string()))?;
+    check_native_credential(
+        expected_ca_fingerprint,
+        expected_instance_id,
+        ca_pem,
+        &credential.instance_id,
+    )?;
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let client =
+        crate::ObserverClient::new(narrow_ipv4_loopback_credential(credential.clone()), gate)?;
+    let identity = client.get_link_identity().await?;
+    crate::client::accept_link_identity(&identity, expected_instance_id)?;
+    Ok(())
+}
+
+/// Best effort: a credential that was never saved leaves the journal's device
+/// list, as a rejected pairing does. There is nothing to reconcile on this side.
+async fn retire_unsaved_credential(credential: Credential) {
+    let Ok(client_id) = crate::migration::credential_cid(&credential) else {
+        return;
+    };
+    if let Err(error) = crate::retirement::retire_credential(credential, client_id).await {
+        tracing::warn!(target: "sync", error = %error, "journal did not confirm the unverified client's removal");
+    }
+}
+
+/// The handshake and the whole verification run on a credential held only in
+/// memory, so a miss leaves nothing on this app to send with or to answer.
+async fn verified_found_credential<M, MFut>(
+    expected_instance_id: &str,
+    mint: M,
+    cfg: &SyncConfig,
+) -> Result<Credential, TransportError>
+where
+    M: FnOnce() -> MFut,
+    MFut: std::future::Future<Output = Result<crate::local_journal::MintedLink, TransportError>>,
+{
+    let minted = mint().await?;
+    if !direct_link_is_ipv4_loopback(&minted.pair_link) {
+        return Err(TransportError::NoEndpoint);
+    }
+    let parsed = spl_core::pairlink::parse(&minted.pair_link)
+        .map_err(|error| TransportError::PairLink(error.to_string()))?;
+    let spl_core::pairlink::ParsedPairLink::Direct(direct) = parsed else {
+        return Err(TransportError::NoEndpoint);
+    };
+    if minted.ca_fingerprint.get(..32)
+        != Some(crate::credential::hex_lower(&direct.ca_fp_prefix).as_str())
+    {
+        return Err(TransportError::Pairing(
+            "CA fingerprint prefix mismatch".to_string(),
+        ));
+    }
+    let credential = crate::pairing::pair_from_link(&minted.pair_link, &cfg.device_label).await?;
+    if let Err(error) =
+        verify_found_credential(&credential, expected_instance_id, &minted.ca_fingerprint).await
+    {
+        retire_unsaved_credential(credential).await;
+        return Err(error);
+    }
+    Ok(credential)
+}
+
+/// One press of connect on a journal this app found on this computer. The app
+/// has the journal mint a same-computer link, pairs from it and verifies the
+/// mark itself over the authenticated connection. Anything short of a verified,
+/// saved confirmation ends with nothing connected and the owner told so; it
+/// never parks on a comparison they didn't ask for. A pairing already held is
+/// left exactly as it is.
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_found_journal<M, MFut, FBridge, FWin, FutBridge, FutWin>(
+    expected_instance_id: &str,
+    mint: M,
+    cfg: &SyncConfig,
+    sync: Arc<Mutex<SyncSnapshot>>,
+    slot_mutex: &tokio::sync::Mutex<UploaderSlot>,
+    access_mutex: &tokio::sync::Mutex<Option<CredentialAccess>>,
+    pairing_admission: &std::sync::atomic::AtomicBool,
+    shutdown_bridge: FBridge,
+    close_journal_window: FWin,
+) -> Result<(), TransportError>
+where
+    M: FnOnce() -> MFut,
+    MFut: std::future::Future<Output = Result<crate::local_journal::MintedLink, TransportError>>,
+    FBridge: FnOnce() -> FutBridge,
+    FutBridge: std::future::Future<Output = ()>,
+    FWin: FnOnce() -> FutWin,
+    FutWin: std::future::Future<Output = ()>,
+{
+    let data_root = cfg
+        .state_path
+        .parent()
+        .ok_or_else(|| TransportError::Io(std::io::Error::other("missing data root")))?;
+    let (_admission, ()) =
+        crate::handoff::claim_pairing_admission(data_root, pairing_admission, || Ok(()))?;
+    let mut slot = slot_mutex.lock().await;
+    let mut access_guard = access_mutex.lock().await;
+
+    if !holds_no_pairing(cfg) {
+        return Err(TransportError::Pairing(
+            "this app already holds a pairing".to_string(),
+        ));
+    }
+    publish_pairing(
+        &sync,
+        &cfg.confirmation,
+        &cfg.tombstone,
+        PairingWrite::BeginCeremony,
+    );
+
+    let credential = match verified_found_credential(expected_instance_id, mint, cfg).await {
+        Ok(credential) => credential,
+        Err(error) => {
+            publish_found_journal_miss(&sync, cfg);
+            return Err(error);
+        }
+    };
+
+    let paired = (|| -> Result<PairedState, TransportError> {
+        prepare_answer_state(cfg)?;
+        crate::migration::record_fresh_pair_offer(&cfg.state_path, &credential)?;
+        let paired = PairedState {
+            credential: Some(credential.clone()),
+            setup_history_unavailable: PairedState::setup_handoff_history(&cfg.state_path).is_err(),
+            ..Default::default()
+        };
+        paired.save(&cfg.state_path)?;
+        Ok(paired)
+    })();
+    let paired = match paired {
+        Ok(paired) => paired,
+        Err(error) => {
+            retire_unsaved_credential(credential).await;
+            publish_found_journal_miss(&sync, cfg);
+            return Err(error);
+        }
+    };
+    let binding = crate::ack::JournalIdentity::from_credential(&credential).client_cert_sha256;
+    cfg.journal_version.clear(&sync);
+
+    let access = match CredentialAccess::bind(&paired, cfg, sync.clone(), None) {
+        Ok(access) => access,
+        Err(error) => {
+            let _ = retire_held_pairing(
+                &binding,
+                SAME_COMPUTER_UNVERIFIED_DETAIL,
+                cfg,
+                &sync,
+                &mut access_guard,
+                &mut slot,
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    if let Some(previous) = access_guard.take() {
+        previous.retire();
+    }
+    *access_guard = Some(access.clone());
+
+    shutdown_bridge().await;
+    close_journal_window().await;
+
+    // Confirmed before the uploader starts, as on every same-PC path.
+    match confirm_current(&binding, cfg, &sync, access_guard.as_ref(), &slot) {
+        Ok(AnswerEffect::Confirmed) => {}
+        _ => {
+            let _ = retire_held_pairing(
+                &binding,
+                SAME_COMPUTER_UNVERIFIED_DETAIL,
+                cfg,
+                &sync,
+                &mut access_guard,
+                &mut slot,
+            )
+            .await;
+            return Err(TransportError::Pairing(
+                "same-computer confirmation did not save".to_string(),
+            ));
+        }
+    }
+
+    let wake = slot.wake();
+    let upload_cfg = cfg.clone();
+    let upload_sync = sync.clone();
+    slot.replace(move |rx| async move {
+        crate::run_uploader(access, upload_cfg, upload_sync, rx, wake).await;
+    })
+    .await;
+    Ok(())
 }
 
 /// Full SHA-256 of `der` equals `expected_hex`. A shared 32-hex prefix is not enough.
@@ -996,6 +1256,232 @@ mod pure_session_tests {
             #[cfg(feature = "awaiting-hold")]
             awaiting_hold: None,
         }
+    }
+
+    fn found_held_credential() -> Credential {
+        let generated = rcgen::generate_simple_self_signed(vec!["held".to_owned()]).unwrap();
+        Credential {
+            client_key_pem: generated.key_pair.serialize_pem(),
+            client_cert_pem: generated.cert.pem(),
+            ca_chain_pem: vec![generated.cert.pem()],
+            ca_fp_prefix: vec![1; 16],
+            instance_id: "held-journal".into(),
+            home_label: "Held".into(),
+            endpoints: vec![crate::credential::EndpointAddr {
+                host: "192.0.2.10".into(),
+                port: 7657,
+            }],
+            relay_origin: None,
+            device_token: None,
+            device_token_expires_at: None,
+        }
+    }
+
+    async fn run_found_connect(
+        cfg: &SyncConfig,
+        sync: &Arc<Mutex<SyncSnapshot>>,
+        minted: Result<crate::local_journal::MintedLink, TransportError>,
+    ) -> (Result<(), TransportError>, bool) {
+        let minted_called = std::sync::atomic::AtomicBool::new(false);
+        let result = connect_found_journal(
+            "offered-instance",
+            || {
+                minted_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                async { minted }
+            },
+            cfg,
+            sync.clone(),
+            &tokio::sync::Mutex::new(UploaderSlot::new()),
+            &tokio::sync::Mutex::new(None),
+            &std::sync::atomic::AtomicBool::new(false),
+            || async {},
+            || async {},
+        )
+        .await;
+        (
+            result,
+            minted_called.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    fn assert_found_miss(cfg: &SyncConfig, sync: &Arc<Mutex<SyncSnapshot>>) {
+        let snapshot = sync.lock().unwrap();
+        assert_eq!(
+            snapshot.pairing.phase,
+            observer_model::PairingPhase::NotPaired
+        );
+        assert_eq!(
+            snapshot.pairing.detail.as_deref(),
+            Some(SAME_COMPUTER_UNVERIFIED_DETAIL)
+        );
+        assert!(PairedState::load(&cfg.state_path)
+            .unwrap()
+            .credential
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn found_connect_says_so_and_saves_nothing_when_the_journal_gives_no_link() {
+        let root = TestRoot::new();
+        let cfg = test_config(root.path());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let (result, _) = run_found_connect(
+            &cfg,
+            &sync,
+            Err(TransportError::Pairing("refused".to_string())),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_found_miss(&cfg, &sync);
+    }
+
+    #[tokio::test]
+    async fn found_connect_never_dials_a_link_that_is_not_direct_ipv4_loopback() {
+        // Port 1 on addresses nothing answers: a dial would fail too, so what these
+        // pin is that each is refused at the link and says so the same way.
+        let prefix = [0xABu8; 16];
+        let frag = |blob: Vec<u8>| {
+            format!(
+                "https://go.solstone.app/p#{}",
+                spl_core::crockford::encode(&blob)
+            )
+        };
+        let mut remote = vec![4u8, 1, 192, 0, 2, 10, 0, 1];
+        remote.extend_from_slice(&[0x11; 16]);
+        remote.extend_from_slice(&prefix);
+        let mut mixed = vec![5u8, 1, 2, 0, 1, 127, 0, 0, 1, 192, 0, 2, 10];
+        mixed.extend_from_slice(&[0x11; 16]);
+        mixed.extend_from_slice(&prefix);
+        for link in [frag(remote), frag(mixed), "not a link".to_string()] {
+            assert!(!direct_link_is_ipv4_loopback(&link), "{link}");
+            let root = TestRoot::new();
+            let cfg = test_config(root.path());
+            let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+            let (result, _) = run_found_connect(
+                &cfg,
+                &sync,
+                Ok(crate::local_journal::MintedLink {
+                    pair_link: link,
+                    ca_fingerprint: "ab".repeat(32),
+                }),
+            )
+            .await;
+            assert!(matches!(result, Err(TransportError::NoEndpoint)));
+            assert_found_miss(&cfg, &sync);
+        }
+    }
+
+    #[tokio::test]
+    async fn found_connect_refuses_a_link_pinned_to_another_key_than_the_journal_named() {
+        let root = TestRoot::new();
+        let cfg = test_config(root.path());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let mut blob = vec![4u8, 1, 127, 0, 0, 1, 0, 1];
+        blob.extend_from_slice(&[0x11; 16]);
+        blob.extend_from_slice(&[0xCD; 16]);
+        let (result, _) = run_found_connect(
+            &cfg,
+            &sync,
+            Ok(crate::local_journal::MintedLink {
+                pair_link: format!(
+                    "https://go.solstone.app/p#{}",
+                    spl_core::crockford::encode(&blob)
+                ),
+                ca_fingerprint: "ab".repeat(32),
+            }),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_found_miss(&cfg, &sync);
+    }
+
+    #[tokio::test]
+    async fn found_connect_leaves_a_held_pairing_exactly_as_it_is() {
+        let root = TestRoot::new();
+        let cfg = test_config(root.path());
+        let held = PairedState {
+            credential: Some(found_held_credential()),
+            ..Default::default()
+        };
+        held.save(&cfg.state_path).unwrap();
+        let before = std::fs::read(&cfg.state_path).unwrap();
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        sync.lock().unwrap().pairing.phase = observer_model::PairingPhase::AwaitingConfirmation;
+        sync.lock().unwrap().pairing.binding = "held".to_string();
+        let (result, minted_called) = run_found_connect(
+            &cfg,
+            &sync,
+            Err(TransportError::Pairing("never reached".to_string())),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(
+            !minted_called,
+            "a held pairing asks the journal for nothing"
+        );
+        assert_eq!(std::fs::read(&cfg.state_path).unwrap(), before);
+        let snapshot = sync.lock().unwrap();
+        assert_eq!(
+            snapshot.pairing.phase,
+            observer_model::PairingPhase::AwaitingConfirmation
+        );
+        assert_eq!(snapshot.pairing.binding, "held");
+    }
+
+    #[test]
+    fn an_offer_applies_only_while_nothing_is_held_or_in_progress() {
+        use observer_model::PairingPhase;
+        let root = TestRoot::new();
+        let cfg = test_config(root.path());
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        assert!(may_offer_found_journal(&cfg, &sync));
+        sync.lock().unwrap().pairing.phase = PairingPhase::Failed;
+        assert!(may_offer_found_journal(&cfg, &sync));
+        for phase in [
+            PairingPhase::Pairing,
+            PairingPhase::AwaitingConfirmation,
+            PairingPhase::Paired,
+        ] {
+            sync.lock().unwrap().pairing.phase = phase;
+            assert!(!may_offer_found_journal(&cfg, &sync), "{phase:?}");
+        }
+        sync.lock().unwrap().pairing.phase = PairingPhase::NotPaired;
+
+        let progress = SetupHandoffProgress {
+            schema: observer_contract::PROGRESS_SCHEMA.into(),
+            handoff_id: "11111111-1111-4111-8111-111111111111".into(),
+            pairing_link: "https://go.solstone.app/p#0G0W000258DSX8DJRFAEBXG7308J4CT4ANK7F26YNPZEZJQYQAZ028T5CY4TQKFF".into(),
+            expected_ca_fingerprint: "ab".repeat(32),
+            expected_instance_id: "inst".into(),
+            accepted_unix_ms: 1_000,
+            expires_at_unix_ms: 2_000,
+        };
+        let progress_path = root.path().join(observer_contract::PROGRESS_FILE_NAME);
+        std::fs::write(&progress_path, serde_json::to_vec(&progress).unwrap()).unwrap();
+        assert!(
+            may_offer_found_journal(&cfg, &sync),
+            "a handoff that expired is no longer waiting"
+        );
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let live = SetupHandoffProgress {
+            accepted_unix_ms: now_ms,
+            expires_at_unix_ms: u64::MAX,
+            ..progress
+        };
+        std::fs::write(&progress_path, serde_json::to_vec(&live).unwrap()).unwrap();
+        assert!(!may_offer_found_journal(&cfg, &sync));
+        std::fs::remove_file(&progress_path).unwrap();
+
+        PairedState {
+            credential: Some(found_held_credential()),
+            ..Default::default()
+        }
+        .save(&cfg.state_path)
+        .unwrap();
+        assert!(!may_offer_found_journal(&cfg, &sync));
     }
 
     #[tokio::test]
@@ -3147,6 +3633,10 @@ mod tests {
         if matches!(case, "remote" | "unavailable" | "pending-service") {
             return;
         }
+        if case == "found-other-instance" {
+            serve_client_retirement(&listener, &identity_acceptor).await;
+            return;
+        }
         // Connection 2 must authenticate with the certificate just minted.
         let (tcp2, _) = listener.accept().await.unwrap();
         let mut tls2 = identity_acceptor.accept(tcp2).await.unwrap();
@@ -3191,6 +3681,12 @@ mod tests {
             "answer file must not be confirmed before identity response"
         );
         assert_eq!(sync.lock().unwrap().pairing.phase, PairingPhase::Pairing);
+        if case.starts_with("found-") {
+            assert!(
+                PairedState::load(&state_path).unwrap().credential.is_none(),
+                "a found journal's credential is saved only after it verifies"
+            );
+        }
 
         let mark = mark_spec_for_jid(&instance_id).expect("valid mark for instance");
         let mut id_body = serde_json::json!({
@@ -3200,9 +3696,11 @@ mod tests {
         });
         match case {
             "uncommitted" => id_body["committed"] = serde_json::json!(false),
-            "wrong-instance" => {
+            "wrong-instance" | "found-wrong-instance" => {
                 id_body["instance_id"] = serde_json::json!("5dda9388-857e-41a7-b89e-dd990a9ee026")
             }
+            "found-uncommitted" => id_body["committed"] = serde_json::json!(false),
+            "found-success" => {}
             "wrong-mark" => id_body["mark"]["words"][0] = serde_json::json!("wrong"),
             "malformed" => id_body["committed"] = serde_json::json!("yes"),
             "write-failure" => {
@@ -3229,6 +3727,46 @@ mod tests {
         tls2.write_all(&frame2.encode().unwrap()).await.unwrap();
         tls2.flush().await.unwrap();
         while tls2.read(&mut drain).await.unwrap_or(0) != 0 {}
+        if matches!(case, "found-wrong-instance" | "found-uncommitted") {
+            serve_client_retirement(&listener, &identity_acceptor).await;
+        }
+    }
+
+    /// The journal's side of removing a client: asserts the DELETE arrives.
+    async fn serve_client_retirement(listener: &TcpListener, acceptor: &TlsAcceptor) {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let mut decoder = FrameDecoder::new();
+        let mut request = Vec::new();
+        let mut stream_id = 1u32;
+        let mut buf = [0u8; 4096];
+        let mut closed = false;
+        while !closed {
+            let n = tls.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            decoder.feed(&buf[..n]);
+            for frame in decoder.drain().unwrap() {
+                stream_id = frame.stream_id;
+                if frame.flags & FLAG_DATA != 0 {
+                    request.extend_from_slice(&frame.payload);
+                }
+                if frame.flags & FLAG_CLOSE != 0 {
+                    closed = true;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&request).to_string();
+        assert!(
+            text.starts_with("DELETE /app/network/api/clients/"),
+            "{text}"
+        );
+        let response = b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response);
+        tls.write_all(&frame.encode().unwrap()).await.unwrap();
+        tls.flush().await.unwrap();
+        while tls.read(&mut buf).await.unwrap_or(0) != 0 {}
     }
 
     struct OrdinaryPairFixture {
@@ -3416,6 +3954,155 @@ mod tests {
             .unwrap()
             .unwrap();
         paired
+    }
+
+    /// `offered` of `None` offers the instance the journal really is.
+    async fn run_found_connect_fixture(
+        fixture: &OrdinaryPairFixture,
+        case: &'static str,
+        offered: Option<&str>,
+    ) -> Result<(), TransportError> {
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+        params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+        let signing_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let signing_cert = params.self_signed(&signing_key).unwrap();
+        let instance_id = jid_of(&signing_cert);
+        let ca_der = signing_cert.der();
+        let fingerprint = spl_core::ca::sha256_hex(ca_der);
+        let mut link_pin = [0u8; 16];
+        link_pin.copy_from_slice(&spl_core::ca::sha256(ca_der)[..16]);
+
+        let mut leaf_params = CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+        leaf_params.is_ca = IsCa::NoCa;
+        leaf_params
+            .extended_key_usages
+            .push(ExtendedKeyUsagePurpose::ServerAuth);
+        let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &signing_cert, &signing_key)
+            .unwrap();
+        let server_leaf_der = CertificateDer::from(leaf_cert.der().to_vec());
+        let server_ca_der = CertificateDer::from(ca_der.to_vec());
+        let server_key_der =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let chain = vec![server_leaf_der, server_ca_der.clone()];
+        let server_cfg = ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(chain.clone(), server_key_der.clone_key())
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(server_ca_der).unwrap();
+        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            Arc::new(roots),
+            provider.clone(),
+        )
+        .build()
+        .unwrap();
+        let identity_cfg = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(chain, server_key_der)
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let expected = offered.unwrap_or(&instance_id).to_owned();
+        let server = tokio::spawn(serve_pair_and_identity_response(
+            listener,
+            (
+                TlsAcceptor::from(Arc::new(server_cfg)),
+                TlsAcceptor::from(Arc::new(identity_cfg)),
+            ),
+            (signing_cert, signing_key),
+            case,
+            instance_id,
+            fixture.cfg.state_path.clone(),
+            fixture.sync.clone(),
+        ));
+        let minted = crate::local_journal::MintedLink {
+            pair_link: direct_loopback_link(port, &link_pin),
+            ca_fingerprint: fingerprint,
+        };
+        let result = connect_found_journal(
+            &expected,
+            || async { Ok(minted) },
+            &fixture.cfg,
+            fixture.sync.clone(),
+            &fixture.slot,
+            &fixture.access,
+            &std::sync::atomic::AtomicBool::new(false),
+            || async {},
+            || async {},
+        )
+        .await;
+        // The server finishing proves every connection it expects arrived, the
+        // client's removal among them.
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .unwrap()
+            .unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn found_connect_confirms_itself_and_shows_the_journals_mark() {
+        let fixture = OrdinaryPairFixture::new("found-success");
+        run_found_connect_fixture(&fixture, "found-success", None)
+            .await
+            .unwrap();
+        let paired = PairedState::load(&fixture.cfg.state_path).unwrap();
+        fixture.assert_confirmation(&paired, true).await;
+        let instance = paired.credential.as_ref().unwrap().instance_id.clone();
+        assert_eq!(
+            fixture.sync.lock().unwrap().pairing.mark,
+            mark_spec_for_jid(&instance)
+        );
+        fixture.finish().await;
+    }
+
+    #[tokio::test]
+    async fn found_connect_miss_connects_nothing_and_removes_the_client_from_the_journal() {
+        for (case, offered) in [
+            ("found-wrong-instance", None),
+            ("found-uncommitted", None),
+            (
+                "found-other-instance",
+                Some("5dda9388-857e-41a7-b89e-dd990a9ee026"),
+            ),
+        ] {
+            let fixture = OrdinaryPairFixture::new(case);
+            let result = run_found_connect_fixture(&fixture, case, offered).await;
+            assert!(result.is_err(), "{case}");
+            {
+                let snapshot = fixture.sync.lock().unwrap();
+                assert_eq!(snapshot.pairing.phase, PairingPhase::NotPaired, "{case}");
+                assert_eq!(
+                    snapshot.pairing.detail.as_deref(),
+                    Some(SAME_COMPUTER_UNVERIFIED_DETAIL),
+                    "{case}"
+                );
+            }
+            assert!(
+                PairedState::load(&fixture.cfg.state_path)
+                    .unwrap()
+                    .credential
+                    .is_none(),
+                "{case}"
+            );
+            assert!(fixture.access.lock().await.is_none(), "{case}");
+            assert!(
+                read_answer(&answer_path(&fixture.cfg.state_path))
+                    .unwrap()
+                    .is_none_or(|answer| answer.confirmed.is_empty()),
+                "{case}"
+            );
+            fixture.finish().await;
+        }
     }
 
     #[tokio::test]

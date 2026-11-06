@@ -511,6 +511,22 @@ const setupActionError = { finish: "", browser: "", retry: "", connect: "", defe
 let wizardPauseFailure: "pause" | "resume" | null = null;
 let unknownLoginAttempt: boolean | null = null;
 
+// A journal the app found on this computer, while it holds no pairing. Only ever
+// an offer: nothing connects until the owner presses its one button.
+interface FoundJournal {
+  instance_id: string;
+  mark: MarkRenderSpec;
+}
+const SAME_COMPUTER_UNVERIFIED = "same_computer_unverified";
+const FOUND_JOURNAL_LOOK_MS = 3000;
+let foundJournal: FoundJournal | null = null;
+let foundJournalLookInFlight = false;
+let foundJournalLookedAt = 0;
+let foundJournalConnecting = false;
+// The press that connected, for this window's life: says "connected to" rather
+// than the ordinary paired status.
+let foundJournalConnected = false;
+
 const SETUP_LINK_ERRORS: Record<string, string> = {
   setup_connect_failed: "this connection could not finish. try again, or paste a new pairing link from your journal.",
   setup_finish_failed: "this connection could not finish. try again.",
@@ -589,6 +605,81 @@ function openJournalPaneForWaitingLink(dump: HealthDump): void {
       navigateTo("journal");
     })
     .catch(() => {});
+}
+
+function foundJournalLookApplies(dump: HealthDump): boolean {
+  if (label !== "settings" || document.visibilityState === "hidden") return false;
+  const phase = dump.sync.pairing.phase;
+  if (phase !== "not_paired" && phase !== "failed") return false;
+  if (nativeContinuationPending(dump)) return false;
+  return settingsShowsSetupFrame(dump)
+    ? dump.setup?.wizard === "connection"
+    : activeRoute === "journal";
+}
+
+// Runs on the window's one-second clock. It costs one local lookup every few
+// seconds, and only while the connect step or journal pane is showing with no
+// pairing held, so a journal that finishes setup later is offered with no restart.
+function lookForFoundJournal(): void {
+  const dump = latestHealth;
+  if (!dump || foundJournalConnecting || pairingBusy || !foundJournalLookApplies(dump)) {
+    if (foundJournal && !foundJournalConnecting) {
+      foundJournal = null;
+      requestRerender();
+    }
+    return;
+  }
+  const now = Date.now();
+  if (foundJournalLookInFlight || now - foundJournalLookedAt < FOUND_JOURNAL_LOOK_MS) return;
+  foundJournalLookInFlight = true;
+  foundJournalLookedAt = now;
+  void Promise.resolve(invoke<FoundJournal | null>("find_local_journal"))
+    .catch(() => null)
+    .then((found) => {
+      foundJournalLookInFlight = false;
+      const next = found && displayableMark(found.mark) ? found : null;
+      if (next?.instance_id === foundJournal?.instance_id) return;
+      foundJournal = next;
+      requestRerender();
+    });
+}
+
+async function connectFoundJournal(found: FoundJournal): Promise<void> {
+  if (foundJournalConnecting || pairingBusy) return;
+  foundJournalConnecting = true;
+  rerender();
+  try {
+    await invoke("connect_found_journal", { instanceId: found.instance_id });
+    foundJournalConnected = true;
+    foundJournal = null;
+  } catch {
+    // Nothing connected; the pairing status carries the failure to the next render.
+  } finally {
+    foundJournalConnecting = false;
+    retryHealth();
+  }
+}
+
+function renderFoundJournal(found: FoundJournal): HTMLElement {
+  const panel = automation(document.createElement("div"), ids["settings.pairing.foundJournal"]);
+  panel.style.display = "flex";
+  panel.style.flexDirection = "column";
+  panel.style.alignItems = "flex-start";
+  panel.style.gap = "10px";
+  panel.style.padding = "7px 0 12px";
+  const heading = text("div", "found your journal on this PC");
+  heading.style.fontWeight = "600";
+  heading.style.fontSize = "14px";
+  const connect = actionButton(
+    foundJournalConnecting ? "connecting…" : "connect to your journal",
+    ids["settings.pairing.foundConnect"],
+    !foundJournalConnecting,
+    () => void connectFoundJournal(found),
+    foundJournalConnecting,
+    "accent",
+  );
+  panel.append(heading, renderMarkCard(found.mark, "unavailable"), connect);
+  return panel;
 }
 
 function homeShowsPairing(dump: HealthDump): boolean {
@@ -1893,7 +1984,15 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     pane.append(
       valueRow(
         "status",
-        selectable(automation(text("div", pairingPhaseLabel(presented)), ids["settings.pairing.state"])),
+        selectable(automation(
+          text(
+            "div",
+            foundJournalConnected && presented.phase === "paired"
+              ? `connected to ${markTextForm(presented.mark)}`
+              : pairingPhaseLabel(presented),
+          ),
+          ids["settings.pairing.state"],
+        )),
       ),
     );
   }
@@ -2066,18 +2165,32 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   }
 
   const paired = pairing.phase === "paired";
-  pane.append(
-    valueRow(
-      "mark",
-      automation(
-        renderMarkCard(paired ? pairing.mark : null, paired ? "unavailable" : "generic"),
-        ids["settings.pairing.mark"],
+  const found = !paired && foundJournal && !nativeContinuationPending(dump) ? foundJournal : null;
+  if (found) {
+    pane.append(renderFoundJournal(found));
+  } else {
+    pane.append(
+      valueRow(
+        "mark",
+        automation(
+          renderMarkCard(paired ? pairing.mark : null, paired ? "unavailable" : "generic"),
+          ids["settings.pairing.mark"],
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   if (pairing.phase === "not_paired") {
-    if (pairing.detail === "mark_rejected") {
+    if (pairing.detail === SAME_COMPUTER_UNVERIFIED) {
+      const msg = automation(
+        text("div", "couldn't verify your journal, so nothing connected. try again, or paste a pairing link."),
+        ids["settings.pairing.foundFailed"],
+      );
+      msg.style.fontSize = "12px";
+      msg.style.color = "var(--fg-subtle)";
+      msg.style.margin = "8px 0";
+      pane.append(msg);
+    } else if (pairing.detail === "mark_rejected") {
       const msg = text(
         "div",
         "you said this mark doesn't match the one your journal shows, so this PC isn't paired. you may have pasted the wrong link, or something isn't right. paste a fresh link from your journal, or email support@solstone.app and we'll help.",
@@ -2350,6 +2463,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
         return;
       }
       pairingBusy = true;
+      foundJournalConnected = false;
       button.disabled = true;
       button.textContent = "pairing…";
       try {
@@ -6012,11 +6126,15 @@ export function start(): void {
     }
     updatePauseLabels();
     updateStatusClocks();
+    lookForFoundJournal();
   }, 1000);
 }
 
 export const __test__ = {
   refreshPairingPrefillOnFocus,
+  lookForFoundJournal,
+  foundJournalPending: () => foundJournalLookInFlight,
+  getHealth: () => latestHealth,
   updateStatusClocks,
   setRoot(el: HTMLDivElement) {
     root = el;
@@ -6147,6 +6265,11 @@ export const __test__ = {
     retryInFlight = false;
     nativeConnectInFlight = false;
     deferredInFlight = false;
+    foundJournal = null;
+    foundJournalLookInFlight = false;
+    foundJournalLookedAt = 0;
+    foundJournalConnecting = false;
+    foundJournalConnected = false;
     setupActionError.finish = "";
     setupActionError.browser = "";
     setupActionError.retry = "";

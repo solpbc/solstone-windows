@@ -153,6 +153,14 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "browser_pipe",
         owner: None,
     },
+    // One read-only table of TCP listeners into a local aligned buffer; the
+    // owner check itself is browser_pipe's.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "local_port",
+        owner: None,
+    },
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::ModDecl,

@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- when your journal is running on this PC and the app isn't paired, the connect step and the journal pane now say they found it, with its mark and one button. press it and the app connects and checks the mark for you, with no link to paste and nothing to compare. it works whichever you installed first, without restarting either. nothing connects until you press, and pasting a pairing link still works.
+
 ## [2.0.43] - 2026-11-04
 
 ### Fixed

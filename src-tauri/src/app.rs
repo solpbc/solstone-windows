@@ -655,6 +655,8 @@ pub fn run(
             crate::ipc::open_setup_journal,
             crate::ipc::retry_setup_link,
             crate::ipc::connect_native_handoff,
+            crate::ipc::find_local_journal,
+            crate::ipc::connect_found_journal,
             crate::ipc::use_deferred_link,
             crate::ipc::dismiss_deferred_link,
         ])

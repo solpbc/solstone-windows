@@ -35,6 +35,7 @@ pub mod journal_bridge;
 pub mod journal_version;
 pub mod liveness;
 mod local_endpoints;
+pub mod local_journal;
 pub mod migration;
 mod ordinary_request;
 pub mod pairing;

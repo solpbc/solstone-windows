@@ -1185,6 +1185,133 @@ pub async fn connect_native_handoff_surface<S: crate::windows::JournalSurface>(
     .map_err(|error| setup_transport_error("connect", &error))
 }
 
+/// The way to a journal on this computer, when something under this account
+/// listens on its port. A listener this account can't be tied to is not offered.
+fn local_journal_door() -> Option<pl_transport_win::local_journal::LocalJournalDoor> {
+    let home = std::env::var_os("USERPROFILE")?;
+    let port = pl_transport_win::local_journal::published_port(std::path::Path::new(&home));
+    platform_win::local_port::listener_is_this_account(port)
+        .then(|| pl_transport_win::local_journal::LocalJournalDoor::at_port(port))
+}
+
+/// Look for a journal to offer, once. The settings window calls this only while it
+/// shows the connect step or the journal pane; a window that isn't on screen and
+/// an app holding any pairing look for nothing.
+#[tauri::command]
+pub async fn find_local_journal(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<Option<pl_transport_win::local_journal::FoundJournal>, String> {
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return Ok(None);
+    }
+    if state
+        .pairing_admission
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(None);
+    }
+    let cfg = state.sync_config.clone();
+    let sync = state.sync.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if !pl_transport_win::session::may_offer_found_journal(&cfg, &sync) {
+            return None;
+        }
+        local_journal_door()?.identify()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// One press of connect on the journal the owner was offered.
+#[tauri::command]
+pub async fn connect_found_journal(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+    instance_id: String,
+) -> Result<(), String> {
+    Box::pin(connect_found_journal_surface(&app, &state, instance_id)).await
+}
+
+pub async fn connect_found_journal_surface<S: crate::windows::JournalSurface>(
+    surface: &S,
+    state: &crate::app::AppState,
+    instance_id: String,
+) -> Result<(), String> {
+    let cfg = state.sync_config.clone();
+    let sync = state.sync.clone();
+    let journal_bridge = state.journal_bridge.clone();
+    let setup_browser = state.setup_browser.clone();
+    let shutdown_bridge = move || {
+        let journal_bridge = journal_bridge.clone();
+        let setup_browser = setup_browser.clone();
+        async move {
+            let bridge = journal_bridge
+                .lock()
+                .ok()
+                .and_then(|mut bridge| bridge.take());
+            if let Some(bridge) = bridge {
+                bridge.shutdown_and_wait().await;
+            }
+            let s_bridge = setup_browser
+                .lock()
+                .ok()
+                .and_then(|mut bridge| bridge.take());
+            if let Some(s_bridge) = s_bridge {
+                s_bridge.handle.shutdown_and_wait().await;
+            }
+        }
+    };
+    let _journal_open_guard = state.journal_open_lock.lock().await;
+    let close_journal_window = {
+        let surface_ref = surface;
+        move || {
+            surface_ref.close_journal();
+            async move {}
+        }
+    };
+    let mint = {
+        let expected = instance_id.clone();
+        let device_label = cfg.device_label.clone();
+        move || async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                local_journal_door()
+                    .ok_or_else(|| {
+                        pl_transport_win::TransportError::Pairing(
+                            "no local journal to connect to".to_string(),
+                        )
+                    })?
+                    .mint_link(&expected, &device_label)
+            })
+            .await
+            .map_err(|error| pl_transport_win::TransportError::Pairing(error.to_string()))?
+        }
+    };
+    let result = pl_transport_win::session::connect_found_journal(
+        &instance_id,
+        mint,
+        &cfg,
+        sync,
+        &state.uploader_slot,
+        &state.credential_access,
+        &state.pairing_admission,
+        shutdown_bridge,
+        close_journal_window,
+    )
+    .await;
+    match result {
+        Ok(()) => {
+            tracing::info!(target: "sync", outcome = "paired", "same-computer connect result");
+            Ok(())
+        }
+        Err(error) => {
+            let reason = pl_transport_win::transport_error_code(&error);
+            tracing::warn!(target: "sync", %reason, "same-computer connect result");
+            Err(reason)
+        }
+    }
+}
+
 #[tauri::command]
 pub fn use_deferred_link(state: tauri::State<'_, crate::app::AppState>) -> Result<String, String> {
     require_setup_sequence()?;

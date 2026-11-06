@@ -124,6 +124,11 @@ pub mod settings {
     pub const PAIRING_STATE: &str = "settings.pairing.state";
     pub const PAIRING_INPUT: &str = "settings.pairing.input";
     pub const PAIRING_SUBMIT: &str = "settings.pairing.submit";
+    /// The offer of a journal the app found on this computer, its one connect
+    /// button, and the line saying a connect verified nothing.
+    pub const PAIRING_FOUND_JOURNAL: &str = "settings.pairing.foundJournal";
+    pub const PAIRING_FOUND_CONNECT: &str = "settings.pairing.foundConnect";
+    pub const PAIRING_FOUND_FAILED: &str = "settings.pairing.foundFailed";
     pub const PAIRING_FINISH_CONNECTING: &str = "settings.pairing.finishConnecting";
     pub const SETUP_BROWSER_JOURNAL: &str = "settings.setup.browserJournal";
     /// The mark row is the journal's identity whenever the confirmation card
@@ -319,6 +324,18 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("settings.pairing.state", settings::PAIRING_STATE),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
+        (
+            "settings.pairing.foundJournal",
+            settings::PAIRING_FOUND_JOURNAL,
+        ),
+        (
+            "settings.pairing.foundConnect",
+            settings::PAIRING_FOUND_CONNECT,
+        ),
+        (
+            "settings.pairing.foundFailed",
+            settings::PAIRING_FOUND_FAILED,
+        ),
         (
             "settings.pairing.finishConnecting",
             settings::PAIRING_FINISH_CONNECTING,

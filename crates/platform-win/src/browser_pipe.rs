@@ -15,6 +15,8 @@
 use std::io;
 
 #[cfg(windows)]
+pub(crate) use imp::process_is_current_user;
+#[cfg(windows)]
 pub use imp::{connect, create_server, pipe_name};
 
 #[cfg(windows)]
@@ -92,6 +94,17 @@ mod imp {
 
     fn current_user_sid() -> io::Result<String> {
         process_user_sid(unsafe { GetCurrentProcess() })
+    }
+
+    /// Whether process `pid` runs under this process's user.
+    pub(crate) fn process_is_current_user(pid: u32) -> io::Result<bool> {
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+            .map_err(win_err)?;
+        let owner = process_user_sid(process);
+        unsafe {
+            let _ = CloseHandle(process);
+        }
+        Ok(owner? == current_user_sid()?)
     }
 
     fn current_session() -> io::Result<u32> {

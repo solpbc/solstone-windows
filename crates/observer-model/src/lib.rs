@@ -442,6 +442,7 @@ pub enum PairingPhase {
 
 pub const MARK_REJECTED_DETAIL: &str = "mark_rejected";
 pub const PAIRING_CANCELLED_DETAIL: &str = "pairing_cancelled";
+pub const SAME_COMPUTER_UNVERIFIED_DETAIL: &str = "same_computer_unverified";
 
 /// How `--open-journal` / tray Open Journal should route based on honest pairing phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
