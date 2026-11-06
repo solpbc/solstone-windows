@@ -34,7 +34,7 @@ export type MarkFallback =
   | "not-presented";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const GENERIC_CHIPS = ["#E8913A", "#D4A017"];
+const GENERIC_CHIPS = ["#B06A1A", "#A57F0E"];
 const ALLOWED_SHAPES = new Set(["path", "circle", "rect", "line", "polyline", "polygon", "ellipse"]);
 const SHAPE_ATTRIBUTES = [
   "d", "cx", "cy", "r", "rx", "ry", "x", "y", "width", "height", "x1", "y1", "x2", "y2", "points",
@@ -68,7 +68,12 @@ export const MARK_CSS = `
   align-items: center;
   justify-content: center;
 }
-.mark-chip.dashed { border-style: dashed; }
+/* Paper fills the chip and runs under the dashes, so every gap sits on paper. */
+.mark-chip.dashed {
+  border-style: dashed;
+  background: #FEFCF8;
+  box-shadow: 0 0 0 2px #FEFCF8;
+}
 .mark-chip.rotated { transform: rotate(45deg); }
 .mark-chip svg { width: 58%; height: 58%; }
 .mark-chip-unknown { font-size: 24px; font-weight: 700; color: var(--mark-neutral-ink); }
@@ -199,7 +204,6 @@ function unavailableChip(): HTMLDivElement {
 function genericChip(hex: string, rotated: boolean): HTMLDivElement {
   const el = chip(rotated ? ["dashed", "rotated"] : ["dashed"]);
   el.style.borderColor = hex;
-  el.style.background = `${hex}12`;
   return el;
 }
 

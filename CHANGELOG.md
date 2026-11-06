@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- the empty "your · journal" mark is now easy to see on any background.
+
 ### Fixed
 
 - this is a security fix. another account on this PC can no longer read the app's status, which named your audio devices, your folders and your journal's mark, or send the app commands.
