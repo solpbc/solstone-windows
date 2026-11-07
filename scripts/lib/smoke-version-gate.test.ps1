@@ -48,7 +48,7 @@ Assert-Throws { Assert-NativeProofHealthVersion -Body '{"version":null}' -Expect
 $SmokeSource = Get-Content -LiteralPath $SmokeScript -Raw -Encoding UTF8
 $KillIndex = $SmokeSource.IndexOf('Get-Process solstone-windows-app')
 $LaunchIndex = $SmokeSource.IndexOf('Invoke-InSession1 "solstone-smoke-app" $AppLaunchCmd ""', $KillIndex)
-$GateBannerIndex = $SmokeSource.IndexOf('Write-Host "=== run health/render gate in Session 0 ==="', $LaunchIndex)
+$GateBannerIndex = $SmokeSource.IndexOf('Write-Host "=== run health/render gate ==="', $LaunchIndex)
 $GateIndex = $SmokeSource.IndexOf('& $DriverExe @GateArgs', $GateBannerIndex)
 $GateFailureIndex = $SmokeSource.IndexOf('if ($GateExit -ne 0)', $GateIndex)
 $GateExitIndex = $SmokeSource.IndexOf('$SmokeExit = $GateExit', $GateFailureIndex)

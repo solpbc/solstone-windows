@@ -6,8 +6,12 @@
 #   1. Build + publish the net48 FlaUI driver (Accessibility.dll in the publish
 #      layout; see ../harness/README.md).
 #   2. Launch the installed app in interactive Session 1.
-#   3. Run the deterministic health/render driver directly in Session 0, then run
-#      the FlaUI/UIA Tier 1 pass separately as advisory.
+#   3. Run the deterministic health/render driver directly in this script's own
+#      session, then run the FlaUI/UIA Tier 1 pass separately as advisory.
+#
+# Run the script itself in the signed-in user's interactive session (an
+# Interactive scheduled task), never over SSH: the app refuses /healthz from a
+# Session 0 client, so the gate would fail a healthy build.
 #
 # The deterministic gate is the health oracle (Tier 0): poll /healthz until
 # the selected readiness predicate passes, then require the per-view
@@ -118,6 +122,14 @@ Write-Host "=== driver --selftest (pure logic) ==="
 & $DriverExe --selftest
 if ($LASTEXITCODE -ne 0) { throw "driver --selftest failed ($LASTEXITCODE)" }
 if ($SelftestOnly) { Write-Host "SMOKE_SELFTEST_OK"; exit 0 }
+
+# The app answers /healthz only to a client it can confirm runs as its own
+# account, and a Session 0 process (an SSH or service context) reads as another
+# account. Run from there, the gate would fail a healthy build, so refuse first.
+# Run this script as an Interactive scheduled task in the signed-in session.
+if ((Get-Process -Id $PID).SessionId -eq 0) {
+    throw "smoke must run in the signed-in user's interactive session, not Session 0 (SSH or a service): the app refuses /healthz from a client it cannot confirm as its own account. Run it as an Interactive scheduled task."
+}
 
 # Native proof accepts exactly one explicit app and verifies its identity before
 # launch. It cannot enter the recursive installed-app fallback.
@@ -273,10 +285,11 @@ if ($FailInject) {
     $GateArgs += "--fail-inject"
 }
 
-# Run the load-bearing gate directly in Session 0. /healthz is loopback-reachable
-# from SSH, so the gate can use the actual driver process exit instead of racing
-# Task Scheduler's transient Last Result (0x00041301 = still running).
-Write-Host "=== run health/render gate in Session 0 ==="
+# Run the load-bearing gate directly in this script's session, which the check
+# above keeps out of Session 0, so the gate can use the actual driver process
+# exit instead of racing Task Scheduler's transient Last Result (0x00041301 =
+# still running).
+Write-Host "=== run health/render gate ==="
 & $DriverExe @GateArgs
 $GateExit = $LASTEXITCODE
 

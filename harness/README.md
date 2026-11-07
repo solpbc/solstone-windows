@@ -48,8 +48,12 @@ best-effort.
 
 `scripts/smoke.ps1` registers + fires a low-privilege scheduled task
 (`LogonType=Interactive`) into Session 1 only to launch the installed observer.
-The load-bearing driver then runs directly in the SSH/Session-0 context and
+The load-bearing driver then runs directly in the script's own session and
 polls loopback `/healthz` for `observing` plus the Settings render beacon. The
+app answers `/healthz` only to a client it can confirm runs as its own account,
+and a Session 0 process (SSH or a service) cannot be confirmed, so run
+`smoke.ps1` itself as an Interactive scheduled task in the signed-in session;
+it refuses to start from Session 0. The
 FlaUI/UIA native-chrome pass runs afterward in Session 1 as a bounded advisory
 step and cannot decide `SMOKE_OK` / `SMOKE_FAIL`. A failure-injection mode (kill
 system audio) asserts the drop out of `observing` and exits non-zero.
