@@ -37,6 +37,6 @@ Installers:
   # let one "correct" this to x86.
   - Architecture: x64
     InstallerUrl: https://github.com/solpbc/solstone-windows/releases/download/v2.0.45/solstone-setup-2.0.45.exe
-    InstallerSha256: 553F6DD1D6913FCF702269F34F6BA552CE5B465BBD8A1A58B16F2DA6285D4587
+    InstallerSha256: A0F94FBADCCE40739B640FD1B4F03CA65C0A4629E7BE7EC4EDD9F4974B0BE24F
 ManifestType: installer
 ManifestVersion: 1.12.0
