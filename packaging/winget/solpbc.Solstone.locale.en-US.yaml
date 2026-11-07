@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.44
+PackageVersion: 2.0.45
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,8 +22,10 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Added
-  - when your journal is running on this PC and the app isn't paired, the connect step and the journal pane now say they found it, with its mark and one button. press it and the app connects and checks the mark for you, with no link to paste and nothing to compare. it works whichever you installed first, without restarting either. nothing connects until you press, and pasting a pairing link still works.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.44
+  Changed
+  - the "your · journal" mark shown before your journal is set up is now easy to see on any background.
+  Fixed
+  - this is a security fix. another account on this PC can no longer read the app's status, which named your audio devices, your folders and your journal's mark, or make the app open its windows.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.45
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

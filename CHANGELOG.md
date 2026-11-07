@@ -4,15 +4,15 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.45] - 2026-11-06
 
 ### Changed
 
-- the empty "your · journal" mark is now easy to see on any background.
+- the "your · journal" mark shown before your journal is set up is now easy to see on any background.
 
 ### Fixed
 
-- this is a security fix. another account on this PC can no longer read the app's status, which named your audio devices, your folders and your journal's mark, or send the app commands.
+- this is a security fix. another account on this PC can no longer read the app's status, which named your audio devices, your folders and your journal's mark, or make the app open its windows.
 
 ## [2.0.44] - 2026-11-05
 
