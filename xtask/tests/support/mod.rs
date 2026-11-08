@@ -1185,6 +1185,11 @@ impl CommandRunner for FakeReleaseRunner {
                     .any(|arg| arg == "packaging/signing/append-nested-signature.ps1") =>
             {
                 self.require_signing_child_env(env)?;
+                // The script signs the versioned setup in place, so it must already exist.
+                let setup = args.last().map(PathBuf::from);
+                if !setup.as_deref().is_some_and(Path::is_file) {
+                    return Err(CommandRunnerError::UnexpectedInvocation);
+                }
                 match self.mutation {
                     RunnerMutation::NestedSigning => Ok(Self::output(Vec::new())),
                     RunnerMutation::NestedSigningFailure => {

@@ -686,6 +686,9 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         "vpk_pack",
         runner,
     )?;
+    let has_delta = reconcile_vpk_output(version, &paths.output, &seed_digests)?;
+    // Velopack's default-named setup becomes the versioned setup in reconciliation,
+    // so the nested signature is appended to the final name, before any ledger check.
     let names = BundleNames::for_version(version);
     if signing_policy
         .as_ref()
@@ -707,7 +710,6 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             runner,
         )?;
     }
-    let has_delta = reconcile_vpk_output(version, &paths.output, &seed_digests)?;
     rust_release_manifest::validate_release_ledgers(&paths.output, version, has_delta)
         .map_err(|_| FinalizeError::LedgerReconciliation)?;
 
