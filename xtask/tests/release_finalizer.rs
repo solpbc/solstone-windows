@@ -210,7 +210,28 @@ fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
             .any(|pair| pair[0] == "--signTemplate" && pair[1].contains(SMCTL)),
         _ => false,
     }));
-    assert_eq!(nested_sign_invocations(&events).len(), 0);
+    assert_eq!(
+        nested_sign_invocations(&events).len(),
+        1,
+        "the committed policy appends one nested signature"
+    );
+}
+
+#[test]
+fn a_single_signature_policy_runs_no_nested_signer() {
+    let checkout = FakeReleaseCheckout::new("single-signature-policy", false);
+    let runner =
+        FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::SingleSignaturePolicy);
+    let clock = FixedClock::new(CHECKED_AT).expect("create fixed clock");
+    let result = finalize(
+        checkout.runtime(Some("test-keypair")),
+        &request(SelectionMode::Signed, false),
+        &runner,
+        &clock,
+    )
+    .expect("finalize single-signature release");
+    assert_eq!(result.signing_mode, "signed-verified");
+    assert_eq!(nested_sign_invocations(&runner.events()).len(), 0);
 }
 
 fn nested_sign_invocations(events: &[WitnessEvent]) -> Vec<usize> {
@@ -233,7 +254,7 @@ fn nested_sign_invocations(events: &[WitnessEvent]) -> Vec<usize> {
 #[test]
 fn a_nested_policy_appends_one_nested_signature_between_pack_and_verify() {
     let checkout = FakeReleaseCheckout::new("nested-signed", false);
-    let runner = FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::NestedSigning);
+    let runner = FakeReleaseRunner::new(&checkout, false);
     let clock = FixedClock::new(CHECKED_AT).expect("create fixed clock");
     let result = finalize(
         checkout.runtime(Some("test-keypair")),

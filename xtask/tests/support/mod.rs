@@ -260,7 +260,7 @@ pub enum WitnessEvent {
 pub enum RunnerMutation {
     #[default]
     None,
-    NestedSigning,
+    SingleSignaturePolicy,
     NestedSigningFailure,
     SourceDirty,
     SourceUntracked,
@@ -552,23 +552,20 @@ impl FakeReleaseRunner {
     ) -> Self {
         let advisory_repository_name = checkout.advisory_repository_name.clone();
         let packet_root = checkout.root().join("operator-mirror-packet");
-        if matches!(
-            mutation,
-            RunnerMutation::NestedSigning | RunnerMutation::NestedSigningFailure
-        ) {
+        if mutation == RunnerMutation::SingleSignaturePolicy {
             let policy_path = checkout.root().join("packaging/signing-policy.json");
             let mut policy: Value =
                 serde_json::from_slice(&fs::read(&policy_path).expect("read checkout policy"))
                     .expect("parse checkout policy");
-            policy["nested"] = json!({
-                "leaf_subject": "sol pbc",
-                "root_subject": "Microsoft Identity Verification Root Certificate Authority 2020"
-            });
+            policy
+                .as_object_mut()
+                .expect("policy object")
+                .remove("nested");
             fs::write(
                 &policy_path,
-                serde_json::to_vec(&policy).expect("render nested policy"),
+                serde_json::to_vec(&policy).expect("render single-signature policy"),
             )
-            .expect("write nested checkout policy");
+            .expect("write single-signature checkout policy");
         }
         match mutation {
             RunnerMutation::AdvisoryMirrorWrongKey => {
@@ -921,6 +918,15 @@ impl FakeReleaseRunner {
         }
     }
 
+    fn policy_names_nested_signer(&self) -> bool {
+        let policy: Value = serde_json::from_slice(
+            &fs::read(self.checkout.join("packaging/signing-policy.json"))
+                .expect("read checkout signing policy"),
+        )
+        .expect("parse checkout signing policy");
+        policy.get("nested").is_some()
+    }
+
     fn require_signing_child_env(
         &self,
         env: Option<&BTreeMap<String, String>>,
@@ -1190,31 +1196,39 @@ impl CommandRunner for FakeReleaseRunner {
                 if !setup.as_deref().is_some_and(Path::is_file) {
                     return Err(CommandRunnerError::UnexpectedInvocation);
                 }
-                match self.mutation {
-                    RunnerMutation::NestedSigning => Ok(Self::output(Vec::new())),
-                    RunnerMutation::NestedSigningFailure => {
-                        Ok(Self::failure(b"nested signing: jsign exited 1"))
-                    }
-                    _ => Err(CommandRunnerError::UnexpectedInvocation),
+                if !self.policy_names_nested_signer() {
+                    return Err(CommandRunnerError::UnexpectedInvocation);
                 }
+                Ok(if self.mutation == RunnerMutation::NestedSigningFailure {
+                    Self::failure(b"nested signing: jsign exited 1")
+                } else {
+                    Self::output(Vec::new())
+                })
             }
             Some(SIGNTOOL) => Ok(match self.mutation {
-                RunnerMutation::NestedSigning => Self::output(
-                    include_str!("../fixtures/signtool/verify-nested-signed-setup.txt")
-                        .as_bytes()
-                        .to_vec(),
-                ),
                 RunnerMutation::SignToolFailure => Self::failure(b"signature verification failed"),
-                RunnerMutation::SignToolGrammarDrift => Self::output(
-                    concat!(
+                RunnerMutation::SignToolGrammarDrift => {
+                    let mut drift = concat!(
                         "Verifying: synthetic-setup.exe\n",
                         "Signature Index: 0 (Primary Signature)\n",
                         "SYNTHETIC-SIGNTOOL-GRAMMAR-DRIFT\n",
                         "The signature is timestamped: synthetic-time\n",
                         "Timestamp Verified by:\n",
                     )
-                    .as_bytes()
-                    .to_vec(),
+                    .to_owned();
+                    if self.policy_names_nested_signer() {
+                        drift.push_str(concat!(
+                            "Signature Index: 1\n",
+                            "The signature is timestamped: synthetic-time\n",
+                            "Timestamp Verified by:\n",
+                        ));
+                    }
+                    Self::output(drift.into_bytes())
+                }
+                _ if self.policy_names_nested_signer() => Self::output(
+                    include_str!("../fixtures/signtool/verify-nested-signed-setup.txt")
+                        .as_bytes()
+                        .to_vec(),
                 ),
                 _ => Self::output(accepted_signtool_grammar().into_bytes()),
             }),

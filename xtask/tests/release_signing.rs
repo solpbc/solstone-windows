@@ -66,8 +66,17 @@ fn policy_bytes() -> &'static [u8] {
     include_bytes!("../../packaging/signing-policy.json")
 }
 
+/// The committed policy without its nested signer: the single-signature grammar
+/// that the DigiCert-only release path verifies.
 fn policy() -> SigningPolicy {
-    SigningPolicy::parse(policy_bytes()).expect("parse committed signing policy")
+    let mut value: serde_json::Value =
+        serde_json::from_slice(policy_bytes()).expect("parse policy value");
+    value
+        .as_object_mut()
+        .expect("policy object")
+        .remove("nested");
+    SigningPolicy::parse(&serde_json::to_vec(&value).expect("render single policy"))
+        .expect("parse single-signature policy")
 }
 
 fn action(program: &str) -> SelectedAction {
@@ -388,7 +397,8 @@ fn committed_policy_is_exact_closed_and_has_no_source_header() {
         "{\"schema\":\"solstone.signing-policy.v1\",\"authenticode\":{",
         "\"leaf_sha1\":\"ac5472d41d5f63e339468e41f7b4438126e84860\",",
         "\"require_trusted_chain\":true,\"timestamp_protocol\":\"rfc3161\",",
-        "\"require_timestamp\":true}}\n"
+        "\"require_timestamp\":true},\"nested\":{\"leaf_subject\":\"sol pbc\",",
+        "\"root_subject\":\"Microsoft Identity Verification Root Certificate Authority 2020\"}}\n"
     )
     .as_bytes();
     assert_eq!(policy_bytes(), exact);
@@ -718,11 +728,7 @@ fn nested_grammar() -> String {
 }
 
 fn nested_policy() -> SigningPolicy {
-    let mut value: serde_json::Value =
-        serde_json::from_slice(policy_bytes()).expect("parse policy value");
-    value["nested"] = serde_json::json!({"leaf_subject": "sol pbc", "root_subject": NESTED_ROOT});
-    SigningPolicy::parse(&serde_json::to_vec(&value).expect("render nested policy"))
-        .expect("nested policy parses")
+    SigningPolicy::parse(policy_bytes()).expect("parse committed signing policy")
 }
 
 fn nested_block_start(grammar: &str) -> usize {
@@ -751,7 +757,11 @@ fn verify_grammar(
 
 #[test]
 fn nested_signer_policy_is_closed_to_the_approved_subjects() {
-    assert_eq!(policy().nested, None);
+    assert_eq!(
+        policy().nested,
+        None,
+        "the single-signature helper drops it"
+    );
     assert_eq!(
         nested_policy().nested,
         Some(NestedSignerPolicy {
