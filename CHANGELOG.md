@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- settings no longer asks you to choose sites after you add the solstone extension. your browser decides that.
+
 ## [2.0.45] - 2026-11-06
 
 ### Changed

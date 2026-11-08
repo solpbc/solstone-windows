@@ -3618,7 +3618,7 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
     const block = document.createElement("div");
     const guidance = text(
       "div",
-      "if you haven't yet, add the solstone extension to a browser on this PC, then choose which sites to share. what you share goes into your journal.",
+      "if you haven't yet, add the solstone extension to a browser on this PC. what you share goes into your journal.",
     );
     automation(guidance, ids["settings.sources.browser.offer"]);
     const storesContainer = document.createElement("div");
