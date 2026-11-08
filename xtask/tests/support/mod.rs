@@ -19,7 +19,7 @@ use xtask::release_advisory::{
 use xtask::release_clock::UtcTimestamp;
 use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::release_finalizer::{FinalizeRequest, FinalizeRuntime};
-use xtask::release_selection::{SelectionMode, PACK_TITLE, PORTABLE_LAUNCHER};
+use xtask::release_selection::{artifact_sign_argv, SelectionMode, PACK_TITLE, PORTABLE_LAUNCHER};
 use xtask::release_source_binding::SourceBinding;
 use xtask::rust_release_manifest::{
     companion_basename, default_velopack_setup_basename, gather_checkout_facts_from_binding,
@@ -262,6 +262,10 @@ pub enum RunnerMutation {
     None,
     SingleSignaturePolicy,
     NestedSigningFailure,
+    SignatureRemoveFailure,
+    SmctlSignFailure,
+    InternalDigiCertSigned,
+    InternalUnsigned,
     SourceDirty,
     SourceUntracked,
     SourceUnmerged,
@@ -406,6 +410,7 @@ impl FakeReleaseCheckout {
         copy_workspace_file(&root, "deny.toml");
         copy_workspace_file(&root, "packaging/release-toolchain.json");
         copy_workspace_file(&root, "packaging/signing-policy.json");
+        copy_workspace_file(&root, "packaging/signing/artifact-sign.ps1");
         copy_workspace_file(&root, "THIRD_PARTY_NOTICES.md");
         copy_workspace_file(&root, "RUST_DEPENDENCY_NOTICES.txt");
         copy_workspace_file(&root, "packaging/rust-notices/index.json");
@@ -511,7 +516,14 @@ pub struct FakeReleaseRunner {
     source_ref_reads: AtomicU64,
     source_status_reads: AtomicU64,
     events: Mutex<Vec<WitnessEvent>>,
+    template_signatures: Mutex<Vec<String>>,
+    internal_signer: Mutex<Option<&'static str>>,
 }
+
+/// The fake setup records its signatures in its own bytes, so each signing step
+/// sees what the previous one left and a step out of order fails.
+const SETUP_SIGNATURES: &str = "inert signed setup executable; signatures: ";
+pub const ARTIFACT_SIGN_SCRIPT: &str = "packaging/signing/artifact-sign.ps1";
 
 impl FakeReleaseRunner {
     pub fn new(checkout: &FakeReleaseCheckout, reverse_output_order: bool) -> Self {
@@ -561,6 +573,10 @@ impl FakeReleaseRunner {
                 .as_object_mut()
                 .expect("policy object")
                 .remove("nested");
+            policy
+                .as_object_mut()
+                .expect("policy object")
+                .remove("internal");
             fs::write(
                 &policy_path,
                 serde_json::to_vec(&policy).expect("render single-signature policy"),
@@ -618,11 +634,221 @@ impl FakeReleaseRunner {
             source_ref_reads: AtomicU64::new(0),
             source_status_reads: AtomicU64::new(0),
             events: Mutex::new(Vec::new()),
+            template_signatures: Mutex::new(Vec::new()),
+            internal_signer: Mutex::new(None),
         }
     }
 
     pub fn events(&self) -> Vec<WitnessEvent> {
         self.events.lock().expect("read fake witness").clone()
+    }
+
+    /// The files Velopack signed through `--signTemplate`, in order. They run
+    /// inside the vpk invocation, so they are not runner invocations.
+    #[allow(dead_code)]
+    pub fn template_signatures(&self) -> Vec<String> {
+        self.template_signatures
+            .lock()
+            .expect("read fake template signatures")
+            .clone()
+    }
+
+    fn policy_names_internal_signer(&self) -> bool {
+        let policy: Value = serde_json::from_slice(
+            &fs::read(self.checkout.join("packaging/signing-policy.json"))
+                .expect("read checkout signing policy"),
+        )
+        .expect("parse checkout signing policy");
+        policy.get("internal").is_some()
+    }
+
+    /// The exact template the finalizer must hand Velopack for Artifact Signing.
+    fn artifact_template(&self) -> Result<String, CommandRunnerError> {
+        let script = ARTIFACT_SIGN_SCRIPT
+            .split('/')
+            .fold(self.checkout.clone(), |path, part| path.join(part));
+        if !script.is_file() {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        let script =
+            child_process_path_text(&script).ok_or(CommandRunnerError::UnexpectedInvocation)?;
+        Ok(format!(
+            "\"{POWERSHELL}\" -NoProfile -ExecutionPolicy Bypass -File \"{script}\" -Mode replace -Path {{{{file}}}}"
+        ))
+    }
+
+    fn versioned_setup(&self) -> PathBuf {
+        self.checkout.join(format!(
+            "target/release-finalizer/{VERSION}/vpk-output/{}",
+            setup_exe_name(VERSION)
+        ))
+    }
+
+    /// The signatures the versioned setup carries now. Refuses any path other
+    /// than the versioned setup and a setup that does not exist yet.
+    fn setup_signatures(&self, path: &Path) -> Result<String, CommandRunnerError> {
+        let canonical =
+            fs::canonicalize(path).map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        let expected = fs::canonicalize(self.versioned_setup())
+            .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        if canonical != expected {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        let bytes = fs::read(path).map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
+        String::from_utf8(bytes)
+            .ok()
+            .and_then(|text| text.strip_prefix(SETUP_SIGNATURES).map(str::to_owned))
+            .ok_or(CommandRunnerError::UnexpectedInvocation)
+    }
+
+    fn set_setup_signatures(
+        &self,
+        path: &Path,
+        signatures: &str,
+    ) -> Result<(), CommandRunnerError> {
+        fs::write(path, format!("{SETUP_SIGNATURES}{signatures}"))
+            .map_err(|_| CommandRunnerError::UnexpectedInvocation)
+    }
+
+    fn run_artifact_signer(
+        &self,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        self.require_signing_child_env(env)?;
+        let mode = argument_after(args, "-Mode")?;
+        let path = PathBuf::from(argument_after(args, "-Path")?);
+        if args.last() != Some(&path.to_string_lossy().into_owned()) {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        let signatures = self.setup_signatures(&path)?;
+        match mode {
+            // Removal strips whatever Velopack's template put on the setup.
+            "remove" if self.policy_names_internal_signer() => {
+                if self.mutation == RunnerMutation::SignatureRemoveFailure {
+                    return Ok(Self::failure(
+                        b"artifact signing: jsign exited 1; the setup still carries its signature.",
+                    ));
+                }
+                if signatures != "artifact" {
+                    return Err(CommandRunnerError::UnexpectedInvocation);
+                }
+                self.set_setup_signatures(&path, "none")?;
+                Ok(Self::output(Vec::new()))
+            }
+            // The nested signature goes after a DigiCert primary, never before it.
+            "append" if self.policy_names_nested_signer() => {
+                if self.mutation == RunnerMutation::NestedSigningFailure {
+                    return Ok(Self::failure(
+                        b"artifact signing: jsign exited 1; the setup was not given its nested signature.",
+                    ));
+                }
+                if signatures != "digicert" {
+                    return Err(CommandRunnerError::UnexpectedInvocation);
+                }
+                self.set_setup_signatures(&path, "digicert+nested")?;
+                Ok(Self::output(Vec::new()))
+            }
+            // replace runs only inside Velopack, through the template.
+            _ => Err(CommandRunnerError::UnexpectedInvocation),
+        }
+    }
+
+    fn run_smctl(
+        &self,
+        args: &[String],
+        env: Option<&BTreeMap<String, String>>,
+    ) -> Result<CommandOutput, CommandRunnerError> {
+        self.require_signing_child_env(env)?;
+        let [sign, alias_flag, alias, input_flag, path] = args else {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        };
+        if sign != "sign"
+            || alias_flag != "--keypair-alias"
+            || alias != "test-keypair"
+            || input_flag != "--input"
+            || !self.policy_names_internal_signer()
+        {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        let path = PathBuf::from(path);
+        if self.setup_signatures(&path)? != "none" {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        if self.mutation == RunnerMutation::SmctlSignFailure {
+            return Ok(Self::failure(b"smctl: keypair signing failed"));
+        }
+        self.set_setup_signatures(&path, "digicert")?;
+        Ok(Self::output(Vec::new()))
+    }
+
+    fn run_signtool(&self, args: &[String]) -> Result<CommandOutput, CommandRunnerError> {
+        let file = PathBuf::from(
+            args.last()
+                .ok_or(CommandRunnerError::UnexpectedInvocation)?,
+        );
+        if !file.is_file() {
+            return Err(CommandRunnerError::UnexpectedInvocation);
+        }
+        let name = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(CommandRunnerError::UnexpectedInvocation)?;
+        if name != setup_exe_name(VERSION) {
+            return self.verify_internal(name);
+        }
+        Ok(match self.mutation {
+            RunnerMutation::SignToolFailure => Self::failure(b"signature verification failed"),
+            RunnerMutation::SignToolGrammarDrift => {
+                let mut drift = concat!(
+                    "Verifying: synthetic-setup.exe\n",
+                    "Signature Index: 0 (Primary Signature)\n",
+                    "SYNTHETIC-SIGNTOOL-GRAMMAR-DRIFT\n",
+                    "The signature is timestamped: synthetic-time\n",
+                    "Timestamp Verified by:\n",
+                )
+                .to_owned();
+                if self.policy_names_nested_signer() {
+                    drift.push_str(concat!(
+                        "Signature Index: 1\n",
+                        "The signature is timestamped: synthetic-time\n",
+                        "Timestamp Verified by:\n",
+                    ));
+                }
+                Self::output(drift.into_bytes())
+            }
+            _ => match self.setup_signatures(&file)?.as_str() {
+                "digicert+nested" => Self::output(
+                    include_str!("../fixtures/signtool/verify-nested-signed-setup.txt")
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                "digicert" => Self::output(accepted_signtool_grammar().into_bytes()),
+                "artifact" => Self::output(artifact_signtool_grammar().into_bytes()),
+                _ => Self::failure(b"SignTool Error: No signature found."),
+            },
+        })
+    }
+
+    /// SignTool's answer for one executable extracted from a package: whatever
+    /// Velopack's template signed it with, unless a mutation replaces one member.
+    fn verify_internal(&self, name: &str) -> Result<CommandOutput, CommandRunnerError> {
+        if self.mutation == RunnerMutation::InternalDigiCertSigned && name.ends_with("Squirrel.exe")
+        {
+            return Ok(Self::output(accepted_signtool_grammar().into_bytes()));
+        }
+        if self.mutation == RunnerMutation::InternalUnsigned && name.ends_with("Update.exe") {
+            return Ok(Self::failure(b"SignTool Error: No signature found."));
+        }
+        match *self
+            .internal_signer
+            .lock()
+            .map_err(|_| CommandRunnerError::FakeStatePoisoned)?
+        {
+            Some("artifact") => Ok(Self::output(artifact_signtool_grammar().into_bytes())),
+            Some("digicert") => Ok(Self::output(accepted_signtool_grammar().into_bytes())),
+            _ => Err(CommandRunnerError::UnexpectedInvocation),
+        }
     }
 
     fn output(stdout: impl Into<Vec<u8>>) -> CommandOutput {
@@ -956,11 +1182,42 @@ impl FakeReleaseRunner {
         let stage = argument_after(args, "--packDir")?;
         let output = argument_after(args, "--outputDir")?;
         let signed = args.iter().any(|arg| arg == "--signTemplate");
-        if signed {
+        let signer = if signed {
             self.require_signing_child_env(env)?;
+            let template = argument_after(args, "--signTemplate")?;
+            let signer = if template == self.artifact_template()? {
+                "artifact"
+            } else if template.starts_with(&format!("\"{SMCTL}\" sign --keypair-alias "))
+                && template.ends_with(" --input {{file}}")
+            {
+                "digicert"
+            } else {
+                return Err(CommandRunnerError::UnexpectedInvocation);
+            };
+            // Velopack signs the app, the stub and the updater it builds, then
+            // the setup, once each through the template.
+            self.template_signatures
+                .lock()
+                .map_err(|_| CommandRunnerError::FakeStatePoisoned)?
+                .extend(
+                    [
+                        "solstone-windows-app.exe",
+                        "solstone-windows-app_ExecutionStub.exe",
+                        "Squirrel.exe",
+                        default_velopack_setup_basename(),
+                    ]
+                    .map(str::to_owned),
+                );
+            *self
+                .internal_signer
+                .lock()
+                .map_err(|_| CommandRunnerError::FakeStatePoisoned)? = Some(signer);
+            Some(signer)
         } else if env.is_some() {
             return Err(CommandRunnerError::UnexpectedInvocation);
-        }
+        } else {
+            None
+        };
         let staged_bytes = fs::read(Path::new(stage).join("solstone-windows-app.exe"))
             .map_err(|_| CommandRunnerError::UnexpectedInvocation)?;
         let notice_bytes = fs::read(Path::new(stage).join("THIRD_PARTY_NOTICES.md"))
@@ -977,7 +1234,7 @@ impl FakeReleaseRunner {
             app_bytes,
             &notice_bytes,
             &rust_notice_bytes,
-            signed,
+            signer,
             self.reverse_output_order,
             self.mutation,
         )?;
@@ -1185,53 +1442,11 @@ impl CommandRunner for FakeReleaseRunner {
                     Self::output(Vec::new())
                 })
             }
-            Some(POWERSHELL)
-                if args
-                    .iter()
-                    .any(|arg| arg == "packaging/signing/append-nested-signature.ps1") =>
-            {
-                self.require_signing_child_env(env)?;
-                // The script signs the versioned setup in place, so it must already exist.
-                let setup = args.last().map(PathBuf::from);
-                if !setup.as_deref().is_some_and(Path::is_file) {
-                    return Err(CommandRunnerError::UnexpectedInvocation);
-                }
-                if !self.policy_names_nested_signer() {
-                    return Err(CommandRunnerError::UnexpectedInvocation);
-                }
-                Ok(if self.mutation == RunnerMutation::NestedSigningFailure {
-                    Self::failure(b"nested signing: jsign exited 1")
-                } else {
-                    Self::output(Vec::new())
-                })
+            Some(POWERSHELL) if args.iter().any(|arg| arg == ARTIFACT_SIGN_SCRIPT) => {
+                self.run_artifact_signer(args, env)
             }
-            Some(SIGNTOOL) => Ok(match self.mutation {
-                RunnerMutation::SignToolFailure => Self::failure(b"signature verification failed"),
-                RunnerMutation::SignToolGrammarDrift => {
-                    let mut drift = concat!(
-                        "Verifying: synthetic-setup.exe\n",
-                        "Signature Index: 0 (Primary Signature)\n",
-                        "SYNTHETIC-SIGNTOOL-GRAMMAR-DRIFT\n",
-                        "The signature is timestamped: synthetic-time\n",
-                        "Timestamp Verified by:\n",
-                    )
-                    .to_owned();
-                    if self.policy_names_nested_signer() {
-                        drift.push_str(concat!(
-                            "Signature Index: 1\n",
-                            "The signature is timestamped: synthetic-time\n",
-                            "Timestamp Verified by:\n",
-                        ));
-                    }
-                    Self::output(drift.into_bytes())
-                }
-                _ if self.policy_names_nested_signer() => Self::output(
-                    include_str!("../fixtures/signtool/verify-nested-signed-setup.txt")
-                        .as_bytes()
-                        .to_vec(),
-                ),
-                _ => Self::output(accepted_signtool_grammar().into_bytes()),
-            }),
+            Some(SMCTL) => self.run_smctl(args, env),
+            Some(SIGNTOOL) => self.run_signtool(args),
             Some(POWERSHELL) if args.iter().any(|arg| arg == "scripts/smoke.ps1") => {
                 self.run_native_smoke(args, env)
             }
@@ -1693,18 +1908,13 @@ fn selection_value(mode: SelectionMode) -> Value {
             ],
         );
         actions["signtool_verify"] = action(SIGNTOOL, &["verify", "/pa", "/all", "/v", "{file}"]);
-        actions["nested_sign"] = action(
-            POWERSHELL,
-            &[
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                "packaging/signing/append-nested-signature.ps1",
-                "-Setup",
-                "{file}",
-            ],
-        );
+        for (name, mode) in [
+            ("nested_sign", "append"),
+            ("internal_sign", "replace"),
+            ("signature_remove", "remove"),
+        ] {
+            actions[name] = action(POWERSHELL, &artifact_sign_argv(mode));
+        }
     }
     json!({
         "schema": "solstone.release-tool-selection.v1",
@@ -1744,7 +1954,7 @@ fn emit_velopack_output(
     app_bytes: &[u8],
     notice_bytes: &[u8],
     rust_notice_bytes: &[u8],
-    signed: bool,
+    setup_signer: Option<&str>,
     reverse_order: bool,
     mutation: RunnerMutation,
 ) -> Result<(), CommandRunnerError> {
@@ -1824,10 +2034,9 @@ fn emit_velopack_output(
         _ => build_velopack_portable_with_notices(app_bytes, portable_notice, portable_rust_notice),
     };
     let delta = format!("inert delta for {VERSION}").into_bytes();
-    let setup = if signed {
-        b"inert signed setup executable".as_slice()
-    } else {
-        b"inert unsigned setup executable".as_slice()
+    let setup = match setup_signer {
+        Some(signer) => format!("{SETUP_SIGNATURES}{signer}").into_bytes(),
+        None => b"inert unsigned setup executable".to_vec(),
     };
     let mut assets = assets_bytes(
         &full_name,
@@ -1900,7 +2109,7 @@ fn emit_velopack_output(
         (feed_name, &feed),
         (full_name.clone(), &full),
         (portable_name.clone(), &portable),
-        (default_setup_name.to_owned(), setup),
+        (default_setup_name.to_owned(), &setup),
     ];
     if has_delta && mutation != RunnerMutation::DeltaPackageMissing {
         files.push((delta_name.clone(), &delta));
@@ -2113,6 +2322,10 @@ fn releases_bytes(
 
 fn accepted_signtool_grammar() -> String {
     include_str!("../fixtures/signtool/verify-signed-setup.txt").to_owned()
+}
+
+fn artifact_signtool_grammar() -> String {
+    include_str!("../fixtures/signtool/verify-artifact-signed-internal.txt").to_owned()
 }
 
 fn hex_sha1(bytes: &[u8]) -> String {

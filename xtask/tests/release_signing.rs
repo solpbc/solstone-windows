@@ -12,9 +12,9 @@ use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::release_finalizer::FinalizeError;
 use xtask::release_selection::SelectedAction;
 use xtask::release_signing::{
-    verify_release_signing, AuthenticodePolicy, NestedSignerPolicy, SigningError,
-    SigningGrammarStage, SigningPolicy, SigningVerificationRequest, SIGNED_VERIFIED_MODE,
-    UNSIGNED_MODE,
+    verify_internal_signature, verify_release_signing, AuthenticodePolicy, InternalSignerPolicy,
+    NestedSignerPolicy, SigningError, SigningGrammarStage, SigningPolicy,
+    SigningVerificationRequest, SIGNED_VERIFIED_MODE, UNSIGNED_MODE,
 };
 
 const SETUP: &str = "solstone-setup-0.2.11.exe";
@@ -66,15 +66,14 @@ fn policy_bytes() -> &'static [u8] {
     include_bytes!("../../packaging/signing-policy.json")
 }
 
-/// The committed policy without its nested signer: the single-signature grammar
+/// The committed policy without its Artifact signers: the single-signature grammar
 /// that the DigiCert-only release path verifies.
 fn policy() -> SigningPolicy {
     let mut value: serde_json::Value =
         serde_json::from_slice(policy_bytes()).expect("parse policy value");
-    value
-        .as_object_mut()
-        .expect("policy object")
-        .remove("nested");
+    for signer in ["nested", "internal"] {
+        value.as_object_mut().expect("policy object").remove(signer);
+    }
     SigningPolicy::parse(&serde_json::to_vec(&value).expect("render single policy"))
         .expect("parse single-signature policy")
 }
@@ -103,6 +102,7 @@ fn synthetic_policy() -> SigningPolicy {
             require_timestamp: true,
         },
         nested: None,
+        internal: None,
     }
 }
 
@@ -398,6 +398,8 @@ fn committed_policy_is_exact_closed_and_has_no_source_header() {
         "\"leaf_sha1\":\"ac5472d41d5f63e339468e41f7b4438126e84860\",",
         "\"require_trusted_chain\":true,\"timestamp_protocol\":\"rfc3161\",",
         "\"require_timestamp\":true},\"nested\":{\"leaf_subject\":\"sol pbc\",",
+        "\"root_subject\":\"Microsoft Identity Verification Root Certificate Authority 2020\"},",
+        "\"internal\":{\"leaf_subject\":\"sol pbc\",",
         "\"root_subject\":\"Microsoft Identity Verification Root Certificate Authority 2020\"}}\n"
     )
     .as_bytes();
@@ -893,6 +895,167 @@ fn nested_signature_identity_count_and_timestamp_are_enforced() {
     for (label, mutated, expected) in cases {
         assert_eq!(
             verify_grammar(label, &mutated, &signing_policy).expect_err("mutation must fail"),
+            expected,
+            "{label}"
+        );
+    }
+}
+
+fn artifact_grammar() -> String {
+    include_str!("fixtures/signtool/verify-artifact-signed-internal.txt").to_owned()
+}
+
+fn verify_internal_grammar(
+    label: &str,
+    status: i32,
+    grammar: &str,
+    signing_policy: &SigningPolicy,
+) -> Result<(), SigningError> {
+    let candidate = Candidate::new(label);
+    let runner = FakeCommandRunner::new(vec![command(&candidate, status, grammar.as_bytes(), b"")]);
+    verify_internal_signature(
+        signing_policy,
+        &candidate.root,
+        SETUP,
+        Path::new(SIGNTOOL),
+        &action(SIGNTOOL),
+        &runner,
+    )
+}
+
+#[test]
+fn internal_signer_policy_is_closed_to_the_approved_subjects() {
+    assert_eq!(
+        nested_policy().internal,
+        Some(InternalSignerPolicy {
+            leaf_subject: "sol pbc".to_owned(),
+            root_subject: NESTED_ROOT.to_owned(),
+        }),
+        "the committed policy names the internal signer"
+    );
+    for (field, value) in [
+        ("leaf_subject", "someone else"),
+        ("root_subject", "DigiCert Assured ID Root CA"),
+    ] {
+        let mut mutated: serde_json::Value =
+            serde_json::from_slice(policy_bytes()).expect("parse policy value");
+        mutated["internal"][field] = serde_json::json!(value);
+        assert_eq!(
+            SigningPolicy::parse(&serde_json::to_vec(&mutated).expect("render"))
+                .expect_err("unapproved internal subject must fail"),
+            SigningError::PolicyMismatch
+        );
+    }
+    let mut unknown: serde_json::Value =
+        serde_json::from_slice(policy_bytes()).expect("parse policy value");
+    unknown["internal"]["thumbprint"] = serde_json::json!("x");
+    assert_eq!(
+        SigningPolicy::parse(&serde_json::to_vec(&unknown).expect("render"))
+            .expect_err("unknown internal field must fail"),
+        SigningError::PolicyMalformed
+    );
+}
+
+#[test]
+fn captured_artifact_only_signature_is_admitted_only_as_an_internal_signature() {
+    verify_internal_grammar(
+        "artifact-internal",
+        0,
+        &artifact_grammar(),
+        &nested_policy(),
+    )
+    .expect("captured Artifact-only output verifies as an internal signature");
+    assert_eq!(
+        verify_grammar("artifact-as-setup", &artifact_grammar(), &policy())
+            .expect_err("an Artifact-only setup is never the primary release identity"),
+        SigningError::WrongLeaf
+    );
+    assert_eq!(
+        verify_internal_grammar("internal-without-policy", 0, &artifact_grammar(), &policy())
+            .expect_err("internal verification needs the policy to name the signer"),
+        SigningError::PolicyMismatch
+    );
+}
+
+#[test]
+fn an_internal_executable_must_carry_artifact_signing_alone() {
+    let grammar = artifact_grammar();
+    let cases = [
+        (
+            "internal-digicert",
+            0,
+            accepted_grammar(),
+            SigningError::WrongInternalSigner,
+        ),
+        (
+            "internal-digicert-plus-nested",
+            0,
+            nested_grammar(),
+            SigningError::WrongInternalSigner,
+        ),
+        (
+            "internal-unsigned",
+            1,
+            "SignTool Error: No signature found.\n".to_owned(),
+            SigningError::InternalUnsigned,
+        ),
+        (
+            "internal-wrong-leaf-subject",
+            0,
+            grammar.replacen("Issued to: sol pbc", "Issued to: someone else", 1),
+            SigningError::WrongInternalSigner,
+        ),
+        (
+            "internal-wrong-root",
+            0,
+            grammar.replacen(
+                &format!("Issued to: {NESTED_ROOT}"),
+                "Issued to: Some Other Root",
+                1,
+            ),
+            SigningError::WrongInternalSigner,
+        ),
+        (
+            "internal-carries-primary-leaf",
+            0,
+            grammar.replacen(
+                "SHA1 hash: B25369C9F483A2723365D4F968B1F0F0DA0C5CF2",
+                &format!("SHA1 hash: {PUBLIC_LEAF_UPPER}"),
+                1,
+            ),
+            SigningError::WrongInternalSigner,
+        ),
+        (
+            "internal-untimestamped",
+            0,
+            {
+                let cut = grammar
+                    .find("The signature is timestamped: ")
+                    .expect("timestamp");
+                let end = grammar
+                    .find("Successfully verified: ")
+                    .expect("success line");
+                format!("{}{}", &grammar[..cut], &grammar[end..])
+            },
+            SigningError::MissingTimestamp,
+        ),
+        (
+            "internal-count-two",
+            0,
+            grammar.replace(
+                "Number of signatures successfully Verified: 1",
+                "Number of signatures successfully Verified: 2",
+            ),
+            SigningError::GrammarDrift {
+                stage: SigningGrammarStage::SuccessCountValue,
+            },
+        ),
+    ];
+    let signing_policy = nested_policy();
+    for (label, status, mutated, expected) in cases {
+        assert_eq!(
+            verify_internal_grammar(label, status, &mutated, &signing_policy)
+                .expect_err("mutation must fail"),
             expected,
             "{label}"
         );

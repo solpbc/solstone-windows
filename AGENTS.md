@@ -293,8 +293,9 @@ after R2 publication, before refreshing package-manager channels.
 The in-app updater fetches `releases.win.json` via a query-free first-party
 manifest GET (a small custom Velopack `UpdateSource`); package downloads still
 request the package files by filename from the same first-party feed host.
-Release artifacts are signed (DigiCert
-KeyLocker via Velopack's `--signTemplate`); signing is opt-in and release-only
+Release artifacts are signed (the setup
+with DigiCert KeyLocker plus a nested Artifact signature, every other executable
+with Microsoft Artifact Signing via Velopack's `--signTemplate`); signing is opt-in and release-only
 (`-Sign` / `SOLSTONE_SIGN=1`) so dev/local packs stay unsigned, and the
 credentials are env-supplied, never committed. Signing covers release artifacts
 only. Package construction performs no publication auth or transport; R2

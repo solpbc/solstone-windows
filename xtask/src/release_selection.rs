@@ -130,6 +130,8 @@ pub struct SelectedActions {
     pub smctl_sign: Option<SelectedAction>,
     pub signtool_verify: Option<SelectedAction>,
     pub nested_sign: Option<SelectedAction>,
+    pub internal_sign: Option<SelectedAction>,
+    pub signature_remove: Option<SelectedAction>,
     pub cargo_deny_advisories: SelectedAction,
     pub native_smoke: SelectedAction,
 }
@@ -456,6 +458,8 @@ impl ReleaseToolSelection {
                     || self.actions.smctl_sign.is_some()
                     || self.actions.signtool_verify.is_some()
                     || self.actions.nested_sign.is_some()
+                    || self.actions.internal_sign.is_some()
+                    || self.actions.signature_remove.is_some()
                 {
                     return Err(SelectionError::SignedActionSetMismatch);
                 }
@@ -465,6 +469,8 @@ impl ReleaseToolSelection {
                     || self.actions.smctl_sign.is_none()
                     || self.actions.signtool_verify.is_none()
                     || self.actions.nested_sign.is_none()
+                    || self.actions.internal_sign.is_none()
+                    || self.actions.signature_remove.is_none()
                 {
                     return Err(SelectionError::SignedActionSetMismatch);
                 }
@@ -622,22 +628,20 @@ impl ReleaseToolSelection {
                 &["{file}"],
             )?;
         }
-        if let Some(nested) = &self.actions.nested_sign {
-            validate_action(
-                "nested_sign",
-                nested,
-                &self.tools.powershell.path,
-                &[
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    "packaging/signing/append-nested-signature.ps1",
-                    "-Setup",
-                    "{file}",
-                ],
-                &["{file}"],
-            )?;
+        for (name, action, mode) in [
+            ("nested_sign", &self.actions.nested_sign, "append"),
+            ("internal_sign", &self.actions.internal_sign, "replace"),
+            ("signature_remove", &self.actions.signature_remove, "remove"),
+        ] {
+            if let Some(action) = action {
+                validate_action(
+                    name,
+                    action,
+                    &self.tools.powershell.path,
+                    &artifact_sign_argv(mode),
+                    &["{file}"],
+                )?;
+            }
         }
         Ok(())
     }
@@ -722,6 +726,8 @@ fn validate_mode_specific_presence(value: &Value) -> Result<(), SelectionError> 
         "smctl_sign",
         "signtool_verify",
         "nested_sign",
+        "internal_sign",
+        "signature_remove",
     ]
     .iter()
     .map(|name| actions.contains_key(*name));
@@ -745,6 +751,25 @@ fn validate_mode_specific_presence(value: &Value) -> Result<(), SelectionError> 
         _ => return Err(SelectionError::MalformedRecord),
     }
     Ok(())
+}
+
+/// The one pinned Artifact Signing script, as every Artifact action runs it.
+pub const ARTIFACT_SIGN_SCRIPT: &str = "packaging/signing/artifact-sign.ps1";
+
+/// The exact argv of an Artifact Signing action in `mode` (replace, append or
+/// remove), with the `{file}` placeholder last.
+pub fn artifact_sign_argv(mode: &'static str) -> [&'static str; 9] {
+    [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ARTIFACT_SIGN_SCRIPT,
+        "-Mode",
+        mode,
+        "-Path",
+        "{file}",
+    ]
 }
 
 fn validate_action(

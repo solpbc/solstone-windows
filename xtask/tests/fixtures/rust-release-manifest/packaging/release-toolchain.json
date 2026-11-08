@@ -50,7 +50,15 @@
       },
       "nested_sign": {
         "tool": "powershell",
-        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "packaging/signing/append-nested-signature.ps1", "-Setup", "{file}"]
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "packaging/signing/artifact-sign.ps1", "-Mode", "append", "-Path", "{file}"]
+      },
+      "internal_sign": {
+        "tool": "powershell",
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "packaging/signing/artifact-sign.ps1", "-Mode", "replace", "-Path", "{file}"]
+      },
+      "signature_remove": {
+        "tool": "powershell",
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "packaging/signing/artifact-sign.ps1", "-Mode", "remove", "-Path", "{file}"]
       },
       "cargo_deny_advisories": {
         "tool": "cargo",

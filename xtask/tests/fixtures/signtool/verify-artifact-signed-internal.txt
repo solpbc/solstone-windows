@@ -1,0 +1,49 @@
+Verifying: solstone-windows-app.exe
+
+Signature Index: 0 (Primary Signature)
+Hash of file (sha256): 015EB26214F8A5AA401D001C843D7D54CE1F520F9A9B90E313B34CC570697558
+
+Signing Certificate Chain:
+    Issued to: Microsoft Identity Verification Root Certificate Authority 2020
+    Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+    Expires:   Sun Apr 16 10:44:40 2045
+    SHA1 hash: F40042E2E5F7E8EF8189FED15519AECE42C3BFA2
+
+        Issued to: Microsoft ID Verified Code Signing PCA 2021
+        Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+        Expires:   Tue Apr 01 12:15:20 2036
+        SHA1 hash: 8E750F459DAF9A79D6370DB747AD2226866AD818
+
+            Issued to: Microsoft ID Verified CS AOC CA 04
+            Issued by: Microsoft ID Verified Code Signing PCA 2021
+            Expires:   Wed Mar 26 10:11:29 2031
+            SHA1 hash: 4C07413E5DA89A259A127E1D76F792AF239CD9D9
+
+                Issued to: sol pbc
+                Issued by: Microsoft ID Verified CS AOC CA 04
+                Expires:   Tue Nov 10 20:20:21 2026
+                SHA1 hash: B25369C9F483A2723365D4F968B1F0F0DA0C5CF2
+
+The signature is timestamped: Sat Nov 07 21:03:32 2026
+Timestamp Verified by:
+    Issued to: Microsoft Identity Verification Root Certificate Authority 2020
+    Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+    Expires:   Sun Apr 16 10:44:40 2045
+    SHA1 hash: F40042E2E5F7E8EF8189FED15519AECE42C3BFA2
+
+        Issued to: Microsoft Public RSA Timestamping CA 2020
+        Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+        Expires:   Mon Nov 19 12:42:31 2035
+        SHA1 hash: 27F0ABAC2877BA255F62B389B43FF539A0FB598E
+
+            Issued to: Microsoft Public RSA Time Stamping Authority
+            Issued by: Microsoft Public RSA Timestamping CA 2020
+            Expires:   Tue Sep 14 10:57:21 2027
+            SHA1 hash: BDA7BAB5B5B180CF0768C06C0F11C49ACC9690F5
+
+
+Successfully verified: solstone-windows-app.exe
+
+Number of signatures successfully Verified: 1
+Number of warnings: 0
+Number of errors: 0

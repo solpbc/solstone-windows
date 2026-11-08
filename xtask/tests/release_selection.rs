@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use xtask::release_selection::{
-    ReleaseToolSelection, SelectionError, SelectionMode, PACK_TITLE, PORTABLE_LAUNCHER,
+    artifact_sign_argv, ReleaseToolSelection, SelectionError, SelectionMode, PACK_TITLE,
+    PORTABLE_LAUNCHER,
 };
 
 #[cfg(not(windows))]
@@ -159,21 +160,16 @@ fn valid_selection(mode: SelectionMode) -> Value {
             "signtool_verify".to_owned(),
             action(&signtool, &["verify", "/pa", "/all", "/v", "{file}"]),
         );
-        actions.as_object_mut().expect("actions object").insert(
-            "nested_sign".to_owned(),
-            action(
-                &powershell,
-                &[
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    "packaging/signing/append-nested-signature.ps1",
-                    "-Setup",
-                    "{file}",
-                ],
-            ),
-        );
+        for (name, mode) in [
+            ("nested_sign", "append"),
+            ("internal_sign", "replace"),
+            ("signature_remove", "remove"),
+        ] {
+            actions.as_object_mut().expect("actions object").insert(
+                name.to_owned(),
+                action(&powershell, &artifact_sign_argv(mode)),
+            );
+        }
     }
 
     json!({
@@ -218,6 +214,8 @@ fn committed_action_templates_match_the_closed_selection_parser() {
         "smctl_sign",
         "signtool_verify",
         "nested_sign",
+        "internal_sign",
+        "signature_remove",
     ];
 
     for mode in [SelectionMode::Unsigned, SelectionMode::Signed] {
@@ -546,21 +544,45 @@ fn signed_only_actions_are_absent_in_unsigned_and_required_in_signed() {
         parse(&signed).expect_err("missing signed action must fail"),
         SelectionError::SignedActionSetMismatch
     );
-    let mut signed = valid_selection(SelectionMode::Signed);
-    signed["actions"]
-        .as_object_mut()
-        .expect("actions object")
-        .remove("nested_sign");
-    assert_eq!(
-        parse(&signed).expect_err("missing nested signing action must fail"),
-        SelectionError::SignedActionSetMismatch
-    );
-    let mut signed = valid_selection(SelectionMode::Signed);
-    signed["actions"]["nested_sign"]["argv"][4] = json!("scripts/other.ps1");
-    assert!(
-        parse(&signed).is_err(),
-        "a nested signing action running another script must fail"
-    );
+    for name in ["nested_sign", "internal_sign", "signature_remove"] {
+        let mut signed = valid_selection(SelectionMode::Signed);
+        signed["actions"]
+            .as_object_mut()
+            .expect("actions object")
+            .remove(name);
+        assert_eq!(
+            parse(&signed).expect_err("missing Artifact signing action must fail"),
+            SelectionError::SignedActionSetMismatch,
+            "{name}"
+        );
+        let mut signed = valid_selection(SelectionMode::Signed);
+        signed["actions"][name]["argv"][4] = json!("scripts/other.ps1");
+        assert_eq!(
+            parse(&signed).expect_err("an Artifact action running another script must fail"),
+            SelectionError::ActionArgvMismatch { action: name },
+        );
+        let mut unsigned = valid_selection(SelectionMode::Unsigned);
+        unsigned["actions"][name] = valid_selection(SelectionMode::Signed)["actions"][name].clone();
+        assert_eq!(
+            parse(&unsigned).expect_err("an Artifact action in unsigned mode must fail"),
+            SelectionError::SignedActionSetMismatch,
+            "{name}"
+        );
+    }
+    // Each Artifact action is pinned to its own mode: the template action can
+    // never remove, and the removal action can never sign.
+    for (name, wrong_mode) in [
+        ("internal_sign", "remove"),
+        ("signature_remove", "replace"),
+        ("nested_sign", "replace"),
+    ] {
+        let mut signed = valid_selection(SelectionMode::Signed);
+        signed["actions"][name]["argv"][6] = json!(wrong_mode);
+        assert_eq!(
+            parse(&signed).expect_err("an Artifact action in another mode must fail"),
+            SelectionError::ActionArgvMismatch { action: name },
+        );
+    }
 }
 
 #[test]

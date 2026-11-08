@@ -381,8 +381,11 @@ R2 publication on it.
 
 ## Signing (wired; opt-in, release-only)
 
-Release artifacts are signed with the sol pbc code-signing certificate via
-Velopack's `--signTemplate` (DigiCert KeyLocker / `smctl`). Signing is **opt-in
+Every executable Velopack signs except the setup (the app, its execution stub and
+the updater) is signed with Microsoft Artifact Signing alone, through Velopack's
+`--signTemplate`. The setup keeps the DigiCert KeyLocker certificate (`smctl`) as
+its primary signature plus one nested Artifact signature; the finalizer applies
+both after reconciliation. `packaging/signing/README.md` has the detail. Signing is **opt-in
 and release-only**: dev/local and delta-update-validation packs stay unsigned so
 they do not burn the certificate's finite signature quota or churn the binary's
 SmartScreen reputation hashes.
@@ -402,19 +405,25 @@ compiler variables, or retry with another environment. MSVC/vcvars activation
 is not what supplies SignTool. Other environment values remain inherited, so
 the selected authentication/signing actions read signing configuration and
 credentials from the operator's environment, never from committed source:
-`SM_HOST`, `SM_API_KEY`, `SM_CLIENT_CERT_FILE`, `SM_CLIENT_CERT_PASSWORD`, and
-`SM_KEYPAIR_ALIAS`. The operator supplies these on the build box at sign time;
+`SM_HOST`, `SM_API_KEY`, `SM_CLIENT_CERT_FILE`, `SM_CLIENT_CERT_PASSWORD`,
+`SM_KEYPAIR_ALIAS`, and `SOLSTONE_NESTED_SIGNING_TOKEN` (a short-lived Artifact
+Signing token per release, which the preflight does not check). The operator
+supplies these on the build box at sign time;
 they are never committed. The preflight uses the real signing-child environment
 and fails fast (with a secret-free message) if it is not provisioned or the
 credentials cannot sign.
 
-After Velopack emits the final setup bytes, the finalizer invokes the actual
-resolver-selected SignTool with `/pa /all /v`. It requires one Authenticode
-signature, the public policy leaf thumbprint, trusted chain-policy success,
-one timestamp statement, and one verified timestamp certificate chain
-terminating at the successful-verification line. That output states no
-timestamp protocol, so RFC 3161 is established at sign time by the KeyLocker
-`--signTemplate` path, not asserted from verify output. Parsed success earns
+After the setup's last signature, the finalizer invokes the actual
+resolver-selected SignTool with `/pa /all /v`. On the setup it requires the
+primary signature pinned to the public policy leaf thumbprint and, when the
+policy names a nested signer, one nested signature chaining from the Microsoft
+Identity Verification root to `sol pbc`; each needs trusted chain-policy
+success, one timestamp statement, and one verified timestamp certificate chain.
+It then extracts the app, stub and updater from both packages and requires each
+to carry exactly one such Artifact signature and no DigiCert certificate. That
+output states no timestamp protocol, so RFC 3161 is established at sign time by
+the signing actions (jsign's `--tsmode RFC3161` for Artifact signatures, smctl
+for the setup's primary), not asserted from verify output. Parsed success earns
 manifest `native_tools.signing_mode = "signed-verified"`; process exit or
 success prose alone is insufficient.
 

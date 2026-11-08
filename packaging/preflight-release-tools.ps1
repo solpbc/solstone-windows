@@ -98,6 +98,8 @@ $ActionNames = @(
     "smctl_sign",
     "signtool_verify",
     "nested_sign",
+    "internal_sign",
+    "signature_remove",
     "cargo_deny_advisories",
     "native_smoke"
 )
@@ -682,6 +684,8 @@ if ($SignEnabled) {
     $Actions["smctl_sign"] = (Selected-Action "smctl_sign")
     $Actions["signtool_verify"] = (Selected-Action "signtool_verify")
     $Actions["nested_sign"] = (Selected-Action "nested_sign")
+    $Actions["internal_sign"] = (Selected-Action "internal_sign")
+    $Actions["signature_remove"] = (Selected-Action "signature_remove")
 }
 $Actions["cargo_deny_advisories"] = (Selected-Action "cargo_deny_advisories")
 $Actions["native_smoke"] = (Selected-Action "native_smoke")

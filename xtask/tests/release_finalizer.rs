@@ -17,6 +17,7 @@ use support::{
     MIRROR_ADVISORY_REPOSITORY, POWERSHELL, RUST_DEPENDENCY_NOTICE_BYTES, SIGNED_APP_BYTES,
     SIGNTOOL, SMCTL, THIRD_PARTY_NOTICE_BYTES, UNSIGNED_APP_BYTES, VERSION, VPK,
 };
+use xtask::artifact_fs::child_process_path_text;
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
 use xtask::release_advisory::{AdvisoryError, MIRROR_COHORT_ID};
 use xtask::release_clock::FixedClock;
@@ -204,17 +205,81 @@ fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
         event,
         WitnessEvent::Invocation { program, .. } if program == Path::new(SIGNTOOL)
     )));
-    assert!(events.iter().any(|event| match event {
-        WitnessEvent::Invocation { program, args, .. } if program == Path::new(VPK) => args
-            .windows(2)
-            .any(|pair| pair[0] == "--signTemplate" && pair[1].contains(SMCTL)),
-        _ => false,
-    }));
+    let script = child_process_path_text(
+        &fs::canonicalize(checkout.root())
+            .expect("canonical fake checkout")
+            .join("packaging")
+            .join("signing")
+            .join("artifact-sign.ps1"),
+    )
+    .expect("child-process script path");
     assert_eq!(
-        nested_sign_invocations(&events).len(),
+        sign_template(&events),
+        format!(
+            "\"{POWERSHELL}\" -NoProfile -ExecutionPolicy Bypass -File \"{script}\" -Mode replace -Path {{{{file}}}}"
+        ),
+        "Velopack signs with the Artifact signer in replace mode, by absolute script path"
+    );
+    assert_eq!(
+        runner.template_signatures(),
+        [
+            "solstone-windows-app.exe",
+            "solstone-windows-app_ExecutionStub.exe",
+            "Squirrel.exe",
+            "Solstone-win-Setup.exe",
+        ],
+        "four Artifact signatures through the template: app, stub, updater, setup"
+    );
+    assert_eq!(artifact_signer_invocations(&events, "remove").len(), 1);
+    assert_eq!(
+        invocations_of(&events, SMCTL).len(),
+        1,
+        "one DigiCert signature per pack"
+    );
+    assert_eq!(
+        artifact_signer_invocations(&events, "append").len(),
         1,
         "the committed policy appends one nested signature"
     );
+    assert_eq!(
+        invocations_of(&events, SIGNTOOL).len(),
+        7,
+        "the setup plus three executables in each of the two packages"
+    );
+}
+
+/// The `--signTemplate` value the finalizer handed Velopack.
+fn sign_template(events: &[WitnessEvent]) -> String {
+    events
+        .iter()
+        .find_map(|event| match event {
+            WitnessEvent::Invocation { program, args, .. } if program == Path::new(VPK) => args
+                .windows(2)
+                .find(|pair| pair[0] == "--signTemplate")
+                .map(|pair| pair[1].clone()),
+            _ => None,
+        })
+        .expect("signed vpk invocation carries a sign template")
+}
+
+fn invocations_of(events: &[WitnessEvent], wanted: &str) -> Vec<usize> {
+    events
+        .iter()
+        .enumerate()
+        .filter_map(|(position, event)| match event {
+            WitnessEvent::Invocation { program, .. } if program == Path::new(wanted) => {
+                Some(position)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn phase_position(events: &[WitnessEvent], wanted: &str) -> usize {
+    events
+        .iter()
+        .position(|event| matches!(event, WitnessEvent::Phase(phase) if phase == wanted))
+        .expect("phase witnessed")
 }
 
 #[test]
@@ -231,10 +296,24 @@ fn a_single_signature_policy_runs_no_nested_signer() {
     )
     .expect("finalize single-signature release");
     assert_eq!(result.signing_mode, "signed-verified");
-    assert_eq!(nested_sign_invocations(&runner.events()).len(), 0);
+    let events = runner.events();
+    assert!(
+        sign_template(&events)
+            .starts_with(&format!("\"{SMCTL}\" sign --keypair-alias test-keypair")),
+        "without an internal signer Velopack signs everything with DigiCert, as before"
+    );
+    for mode in ["append", "remove"] {
+        assert_eq!(artifact_signer_invocations(&events, mode).len(), 0);
+    }
+    assert_eq!(invocations_of(&events, SMCTL).len(), 0);
+    assert_eq!(
+        invocations_of(&events, SIGNTOOL).len(),
+        1,
+        "only the setup is verified"
+    );
 }
 
-fn nested_sign_invocations(events: &[WitnessEvent]) -> Vec<usize> {
+fn artifact_signer_invocations(events: &[WitnessEvent], mode: &str) -> Vec<usize> {
     events
         .iter()
         .enumerate()
@@ -242,7 +321,10 @@ fn nested_sign_invocations(events: &[WitnessEvent]) -> Vec<usize> {
             WitnessEvent::Invocation { args, .. }
                 if args
                     .iter()
-                    .any(|arg| arg == "packaging/signing/append-nested-signature.ps1") =>
+                    .any(|arg| arg == "packaging/signing/artifact-sign.ps1")
+                    && args
+                        .windows(2)
+                        .any(|pair| pair[0] == "-Mode" && pair[1] == mode) =>
             {
                 Some(position)
             }
@@ -252,7 +334,7 @@ fn nested_sign_invocations(events: &[WitnessEvent]) -> Vec<usize> {
 }
 
 #[test]
-fn a_nested_policy_appends_one_nested_signature_between_pack_and_verify() {
+fn the_setup_takes_digicert_then_its_nested_signature_after_reconciliation() {
     let checkout = FakeReleaseCheckout::new("nested-signed", false);
     let runner = FakeReleaseRunner::new(&checkout, false);
     let clock = FixedClock::new(CHECKED_AT).expect("create fixed clock");
@@ -266,62 +348,181 @@ fn a_nested_policy_appends_one_nested_signature_between_pack_and_verify() {
     assert_eq!(result.signing_mode, "signed-verified");
 
     let events = runner.events();
-    let nested = nested_sign_invocations(&events);
-    assert_eq!(nested.len(), 1, "exactly one nested signing run");
-    let position_of = |wanted: &str| {
-        events
-            .iter()
-            .position(|event| matches!(event, WitnessEvent::Invocation { program, .. } if program == Path::new(wanted)))
-            .expect("invocation present")
+    let [vpk] = invocations_of(&events, VPK)[..] else {
+        panic!("one pack");
     };
+    let [remove] = artifact_signer_invocations(&events, "remove")[..] else {
+        panic!("one signature removal");
+    };
+    let [smctl] = invocations_of(&events, SMCTL)[..] else {
+        panic!("one DigiCert signature");
+    };
+    let [append] = artifact_signer_invocations(&events, "append")[..] else {
+        panic!("one nested signature");
+    };
+    let signtool = invocations_of(&events, SIGNTOOL);
+    let phase_6 = phase_position(&events, PHASE_6_BASELINE_CANDIDATE);
     assert!(
-        position_of(VPK) < nested[0],
-        "nested signing follows the pack"
+        vpk < remove && remove < smctl && smctl < append && append < phase_6,
+        "pack, then remove, DigiCert and the nested append, all before the candidate phase"
     );
     assert!(
-        nested[0] < position_of(SIGNTOOL),
-        "verification follows nested signing"
+        signtool.iter().all(|position| append < *position),
+        "every verification follows the last signature"
     );
     let signing_environment = ReleaseToolSelection::parse(&selection_record(SelectionMode::Signed))
         .expect("parse selected signing tools")
         .signing_child_env_overlay()
         .expect("construct signing child environment");
-    match &events[nested[0]] {
-        WitnessEvent::Invocation { program, args, env } => {
-            assert_eq!(program, Path::new(POWERSHELL));
-            assert_eq!(env.as_ref(), Some(&signing_environment));
-            let setup = args.last().expect("setup argument");
-            assert!(
-                setup.ends_with(&format!("solstone-setup-{VERSION}.exe")),
-                "nested signing targets the versioned setup"
-            );
+    for (position, program) in [(remove, POWERSHELL), (smctl, SMCTL), (append, POWERSHELL)] {
+        match &events[position] {
+            WitnessEvent::Invocation {
+                program: invoked,
+                args,
+                env,
+            } => {
+                assert_eq!(invoked, Path::new(program));
+                assert_eq!(env.as_ref(), Some(&signing_environment));
+                let setup = args.last().expect("setup argument");
+                assert!(
+                    setup.ends_with(&format!("solstone-setup-{VERSION}.exe")),
+                    "each setup signing step targets the versioned setup"
+                );
+            }
+            WitnessEvent::Phase(_) => unreachable!(),
         }
+    }
+    match &events[smctl] {
+        WitnessEvent::Invocation { args, .. } => assert_eq!(
+            args[..4],
+            ["sign", "--keypair-alias", "test-keypair", "--input"]
+        ),
         WitnessEvent::Phase(_) => unreachable!(),
+    }
+
+    // The setup is verified first, then each package executable from its own
+    // extracted copy in the transaction directory.
+    let verified: Vec<String> = signtool
+        .iter()
+        .map(|position| match &events[*position] {
+            WitnessEvent::Invocation { args, .. } => {
+                let file = Path::new(args.last().expect("verified file"));
+                file.file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("verified file name")
+                    .to_owned()
+            }
+            WitnessEvent::Phase(_) => unreachable!(),
+        })
+        .collect();
+    assert_eq!(
+        verified,
+        [
+            format!("solstone-setup-{VERSION}.exe"),
+            "nupkg-solstone-windows-app.exe".to_owned(),
+            "nupkg-solstone-windows-app_ExecutionStub.exe".to_owned(),
+            "nupkg-Squirrel.exe".to_owned(),
+            "portable-solstone-windows-app.exe".to_owned(),
+            "portable-solstone.exe".to_owned(),
+            "portable-Update.exe".to_owned(),
+        ]
+    );
+    let internals = checkout.root().join(format!(
+        "target/release-finalizer/{VERSION}/signed-internals"
+    ));
+    assert_eq!(
+        fs::read(internals.join("nupkg-Squirrel.exe")).expect("read extracted updater"),
+        b"inert squirrel executable"
+    );
+    assert_eq!(
+        fs::read(internals.join("portable-solstone-windows-app.exe")).expect("read extracted app"),
+        SIGNED_APP_BYTES
+    );
+}
+
+#[test]
+fn a_failed_setup_signing_step_fails_the_release_before_verification() {
+    for (label, mutation, action, output_tail) in [
+        (
+            "signature-remove-failure",
+            RunnerMutation::SignatureRemoveFailure,
+            "signature_remove",
+            "artifact signing: jsign exited 1; the setup still carries its signature.",
+        ),
+        (
+            "smctl-sign-failure",
+            RunnerMutation::SmctlSignFailure,
+            "smctl_sign",
+            "smctl: keypair signing failed",
+        ),
+        (
+            "nested-signing-failure",
+            RunnerMutation::NestedSigningFailure,
+            "nested_sign",
+            "artifact signing: jsign exited 1; the setup was not given its nested signature.",
+        ),
+    ] {
+        let checkout = FakeReleaseCheckout::new(label, false);
+        let runner = FakeReleaseRunner::with_mutation(&checkout, false, mutation);
+        assert_engine_failure(
+            &checkout,
+            &runner,
+            request(SelectionMode::Signed, false),
+            FinalizeError::ActionFailed {
+                action,
+                output_tail: output_tail.to_owned(),
+                output_truncated: false,
+            },
+            PHASE_5_VELOPACK,
+            false,
+            false,
+        );
+        assert!(
+            invocations_of(&runner.events(), SIGNTOOL).is_empty(),
+            "{label}: nothing is verified after a failed signing step"
+        );
     }
 }
 
 #[test]
-fn a_failed_nested_signature_fails_the_release_before_verification() {
-    let checkout = FakeReleaseCheckout::new("nested-signing-failure", false);
-    let runner =
-        FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::NestedSigningFailure);
-    assert_engine_failure(
-        &checkout,
-        &runner,
-        request(SelectionMode::Signed, false),
-        FinalizeError::ActionFailed {
-            action: "nested_sign",
-            output_tail: "nested signing: jsign exited 1".to_owned(),
-            output_truncated: false,
-        },
-        PHASE_5_VELOPACK,
-        false,
-        false,
-    );
-    assert!(runner.events().iter().all(|event| !matches!(
-        event,
-        WitnessEvent::Invocation { program, .. } if program == Path::new(SIGNTOOL)
-    )));
+fn an_internal_executable_not_signed_by_artifact_signing_alone_fails_the_release() {
+    for (label, mutation, member, cause) in [
+        (
+            "internal-digicert",
+            RunnerMutation::InternalDigiCertSigned,
+            "full nupkg lib/app/Squirrel.exe",
+            SigningError::WrongInternalSigner,
+        ),
+        (
+            "internal-unsigned",
+            RunnerMutation::InternalUnsigned,
+            "portable ZIP Update.exe",
+            SigningError::InternalUnsigned,
+        ),
+    ] {
+        let checkout = FakeReleaseCheckout::new(label, false);
+        let runner = FakeReleaseRunner::with_mutation(&checkout, false, mutation);
+        let error = run_engine_failure(&checkout, &runner, request(SelectionMode::Signed, false));
+        assert_eq!(
+            error,
+            FinalizeError::InternalSigning {
+                member: member.to_owned(),
+                cause,
+            },
+            "{label}"
+        );
+        assert!(error
+            .to_string()
+            .starts_with(&format!("{member} failed signing verification: ")));
+        assert_failure_contract(
+            &checkout,
+            &runner,
+            &error,
+            PHASE_6_BASELINE_CANDIDATE,
+            false,
+            false,
+        );
+    }
 }
 
 #[test]

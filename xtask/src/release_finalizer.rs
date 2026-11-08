@@ -18,8 +18,8 @@ use crate::release_advisory::{
 };
 use crate::release_clock::Clock;
 use crate::release_container::{
-    compare_executable_baseline, ContainerMemberReader, ExecutableContainerReader,
-    ReleaseContainerError,
+    compare_executable_baseline, pe_member_names, ContainerKind, ContainerMemberReader,
+    ExecutableContainerReader, ReleaseContainerError,
 };
 use crate::release_exec::{CommandOutput, CommandRunner};
 use crate::release_finalizer_fs::{
@@ -31,10 +31,12 @@ use crate::release_receipt::{
     FINALIZATION_RECEIPT_SCHEMA_V2,
 };
 use crate::release_selection::{
-    ManifestSafeToolProjection, ReleaseToolSelection, SelectedAction, SelectionMode,
+    artifact_sign_argv, ManifestSafeToolProjection, ReleaseToolSelection, SelectedAction,
+    SelectionMode, ARTIFACT_SIGN_SCRIPT, PORTABLE_LAUNCHER,
 };
 use crate::release_signing::{
-    verify_release_signing, SigningError, SigningPolicy, SigningVerificationRequest,
+    verify_internal_signature, verify_release_signing, SigningError, SigningPolicy,
+    SigningVerificationRequest,
 };
 use crate::release_source_binding::{SourceBinding, SourceBindingError, SourceBindingVerifier};
 use crate::rust_release_manifest::{
@@ -51,6 +53,18 @@ const STAGED_RUST_NOTICES: &str = "RUST_DEPENDENCY_NOTICES.txt";
 const NUPKG_RUST_NOTICES: &str = "lib/app/RUST_DEPENDENCY_NOTICES.txt";
 const PORTABLE_RUST_NOTICES: &str = "current/RUST_DEPENDENCY_NOTICES.txt";
 const SIGNING_POLICY: &str = "packaging/signing-policy.json";
+/// Every executable Velopack signs inside each package: the app, its execution
+/// stub and the updater. The setup is signed separately.
+const NUPKG_SIGNED_INTERNALS: [&str; 3] = [
+    "lib/app/solstone-windows-app.exe",
+    "lib/app/solstone-windows-app_ExecutionStub.exe",
+    "lib/app/Squirrel.exe",
+];
+const PORTABLE_SIGNED_INTERNALS: [&str; 3] = [
+    "current/solstone-windows-app.exe",
+    PORTABLE_LAUNCHER,
+    "Update.exe",
+];
 const ACTION_OUTPUT_TAIL_BYTES: usize = 512;
 
 pub const PHASE_1_REQUEST_SOURCE: &str = "finalize.phase-1.request-source";
@@ -129,6 +143,13 @@ pub enum FinalizeError {
     AssetsReconciliation,
     LedgerReconciliation,
     SigningVerification(SigningError),
+    SignedInternalsInventory {
+        container: ContainerKind,
+    },
+    InternalSigning {
+        member: String,
+        cause: SigningError,
+    },
     ExecutableDivergence {
         nupkg: PackagedExecutableEvidence,
         portable: PackagedExecutableEvidence,
@@ -269,6 +290,14 @@ impl fmt::Display for FinalizeError {
             ),
             Self::SigningVerification(cause) => {
                 write!(formatter, "final setup signing verification failed: {cause}")
+            }
+            Self::SignedInternalsInventory { container } => write!(
+                formatter,
+                "{} does not hold exactly the executables Velopack signs for this app (app, execution stub, updater); inspect the pinned Velopack output and rebuild the candidate",
+                container.label()
+            ),
+            Self::InternalSigning { member, cause } => {
+                write!(formatter, "{member} failed signing verification: {cause}")
             }
             Self::ExecutableDivergence {
                 nupkg,
@@ -424,6 +453,7 @@ struct TransactionPaths {
     stage: PathBuf,
     output: PathBuf,
     notes: PathBuf,
+    internals: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -656,20 +686,6 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             ),
         ]),
     )?;
-    if selection.mode == SelectionMode::Signed {
-        let alias = runtime
-            .signing_keypair_alias
-            .filter(|value| safe_alias(value))
-            .ok_or(FinalizeError::SigningRuntime)?;
-        let smctl = selection
-            .actions
-            .smctl_sign
-            .as_ref()
-            .ok_or(FinalizeError::SelectionInvalid)?;
-        let template = sign_template(smctl, alias)?;
-        vpk_args.push("--signTemplate".to_owned());
-        vpk_args.push(template);
-    }
     let signing_policy = match selection.mode {
         SelectionMode::Unsigned => None,
         SelectionMode::Signed => {
@@ -679,6 +695,40 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             Some(SigningPolicy::parse(&policy_bytes).map_err(FinalizeError::SigningVerification)?)
         }
     };
+    let signing_alias = match selection.mode {
+        SelectionMode::Unsigned => None,
+        SelectionMode::Signed => Some(
+            runtime
+                .signing_keypair_alias
+                .filter(|value| safe_alias(value))
+                .ok_or(FinalizeError::SigningRuntime)?,
+        ),
+    };
+    if let (Some(policy), Some(alias)) = (signing_policy.as_ref(), signing_alias) {
+        // With an internal signer, Velopack signs every file it signs (the setup
+        // too) with Artifact Signing; the setup takes DigiCert after reconciliation.
+        let template = if policy.internal.is_some() {
+            artifact_sign_template(
+                selection
+                    .actions
+                    .internal_sign
+                    .as_ref()
+                    .ok_or(FinalizeError::SelectionInvalid)?,
+                checkout,
+            )?
+        } else {
+            sign_template(
+                selection
+                    .actions
+                    .smctl_sign
+                    .as_ref()
+                    .ok_or(FinalizeError::SelectionInvalid)?,
+                alias,
+            )?
+        };
+        vpk_args.push("--signTemplate".to_owned());
+        vpk_args.push(template);
+    }
     run_program(
         &selection.actions.vpk_pack,
         &vpk_args,
@@ -688,27 +738,55 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
     )?;
     let has_delta = reconcile_vpk_output(version, &paths.output, &seed_digests)?;
     // Velopack's default-named setup becomes the versioned setup in reconciliation,
-    // so the nested signature is appended to the final name, before any ledger check.
+    // so the setup's own signatures are made on the final name, before any ledger
+    // check: Velopack's Artifact signature off, DigiCert on as the primary, then
+    // the nested Artifact signature after it.
     let names = BundleNames::for_version(version);
-    if signing_policy
-        .as_ref()
-        .is_some_and(|policy| policy.nested.is_some())
-    {
-        let setup = paths.output.join(names.setup());
-        run_action(
-            selection
-                .actions
-                .nested_sign
-                .as_ref()
-                .ok_or(FinalizeError::SelectionInvalid)?,
-            &BTreeMap::from([(
-                "{file}",
-                child_process_path_text(&setup).ok_or(FinalizeError::TransactionDirectory)?,
-            )]),
-            signing_child_env.as_ref(),
-            "nested_sign",
-            runner,
-        )?;
+    if let (Some(policy), Some(alias)) = (signing_policy.as_ref(), signing_alias) {
+        let setup = BTreeMap::from([(
+            "{file}",
+            child_process_path_text(&paths.output.join(names.setup()))
+                .ok_or(FinalizeError::TransactionDirectory)?,
+        )]);
+        if policy.internal.is_some() {
+            run_action(
+                selection
+                    .actions
+                    .signature_remove
+                    .as_ref()
+                    .ok_or(FinalizeError::SelectionInvalid)?,
+                &setup,
+                signing_child_env.as_ref(),
+                "signature_remove",
+                runner,
+            )?;
+            let mut smctl_replacements = setup.clone();
+            smctl_replacements.insert("{keypair_alias}", alias.to_owned());
+            run_action(
+                selection
+                    .actions
+                    .smctl_sign
+                    .as_ref()
+                    .ok_or(FinalizeError::SelectionInvalid)?,
+                &smctl_replacements,
+                signing_child_env.as_ref(),
+                "smctl_sign",
+                runner,
+            )?;
+        }
+        if policy.nested.is_some() {
+            run_action(
+                selection
+                    .actions
+                    .nested_sign
+                    .as_ref()
+                    .ok_or(FinalizeError::SelectionInvalid)?,
+                &setup,
+                signing_child_env.as_ref(),
+                "nested_sign",
+                runner,
+            )?;
+        }
     }
     rust_release_manifest::validate_release_ledgers(&paths.output, version, has_delta)
         .map_err(|_| FinalizeError::LedgerReconciliation)?;
@@ -805,6 +883,19 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
             pre_pack,
         }
     })?;
+    if let Some(policy) = signing_policy
+        .as_ref()
+        .filter(|policy| policy.internal.is_some())
+    {
+        verify_signed_internals(
+            policy,
+            &paths.internals,
+            &nupkg_bytes,
+            &portable_bytes,
+            selection,
+            runner,
+        )?;
+    }
 
     let candidate = create_candidate_temp(checkout.canonical_path(), version)
         .map_err(|_| FinalizeError::CandidateAssembly)?;
@@ -940,7 +1031,13 @@ fn create_transaction_paths(
     let stage_relative = format!("{root_relative}/vpk-stage");
     let output_relative = format!("{root_relative}/vpk-output");
     let cargo_target_relative = format!("{root_relative}/cargo-target");
-    for relative in [&stage_relative, &output_relative, &cargo_target_relative] {
+    let internals_relative = format!("{root_relative}/signed-internals");
+    for relative in [
+        &stage_relative,
+        &output_relative,
+        &cargo_target_relative,
+        &internals_relative,
+    ] {
         create_contained_directory(checkout.path(), checkout.canonical_path(), relative)
             .map_err(|_| FinalizeError::TransactionDirectory)?;
         let inventory = artifact_fs::walk_directory(
@@ -960,6 +1057,7 @@ fn create_transaction_paths(
         stage: checkout.canonical_path().join(&stage_relative),
         output: checkout.canonical_path().join(&output_relative),
         notes: checkout.canonical_path().join(&notes_relative),
+        internals: checkout.canonical_path().join(&internals_relative),
     })
 }
 
@@ -1119,6 +1217,108 @@ fn sign_template(action: &SelectedAction, alias: &str) -> Result<String, Finaliz
     Ok(format!(
         "\"{program}\" sign --keypair-alias {alias} --input {{{{file}}}}"
     ))
+}
+
+/// Velopack's `--signTemplate` for the Artifact signer in replace mode, built
+/// from the validated `internal_sign` action. Velopack runs it through
+/// `cmd.exe /S /C` in its own working directory and substitutes a quoted path
+/// for `{{file}}`, so the program and the checkout's script are absolute and
+/// quoted.
+fn artifact_sign_template(
+    action: &SelectedAction,
+    checkout: &ContainedRoot,
+) -> Result<String, FinalizeError> {
+    if action
+        .argv
+        .iter()
+        .map(String::as_str)
+        .ne(artifact_sign_argv("replace"))
+    {
+        return Err(FinalizeError::SelectionInvalid);
+    }
+    let program = child_process_path_text(&action.program).ok_or(FinalizeError::SigningRuntime)?;
+    let script = ARTIFACT_SIGN_SCRIPT
+        .split('/')
+        .fold(checkout.canonical_path().to_path_buf(), |path, part| {
+            path.join(part)
+        });
+    let script = child_process_path_text(&script).ok_or(FinalizeError::SigningRuntime)?;
+    let mut template = format!("\"{program}\"");
+    for arg in &action.argv {
+        template.push(' ');
+        match arg.as_str() {
+            ARTIFACT_SIGN_SCRIPT => template.push_str(&format!("\"{script}\"")),
+            "{file}" => template.push_str("{{file}}"),
+            other => template.push_str(other),
+        }
+    }
+    Ok(template)
+}
+
+/// Extracts every executable Velopack signs from both packages into the
+/// transaction's own directory and verifies each carries Artifact Signing alone.
+fn verify_signed_internals<R: CommandRunner + ?Sized>(
+    policy: &SigningPolicy,
+    root: &Path,
+    nupkg_bytes: &[u8],
+    portable_bytes: &[u8],
+    selection: &ReleaseToolSelection,
+    runner: &R,
+) -> Result<(), FinalizeError> {
+    let signtool = &selection
+        .tools
+        .signtool
+        .as_ref()
+        .ok_or(FinalizeError::SelectionInvalid)?
+        .path;
+    let action = selection
+        .actions
+        .signtool_verify
+        .as_ref()
+        .ok_or(FinalizeError::SelectionInvalid)?;
+    for (container, archive, expected, prefix) in [
+        (
+            ContainerKind::Nupkg,
+            nupkg_bytes,
+            NUPKG_SIGNED_INTERNALS,
+            "nupkg",
+        ),
+        (
+            ContainerKind::Portable,
+            portable_bytes,
+            PORTABLE_SIGNED_INTERNALS,
+            "portable",
+        ),
+    ] {
+        let found: BTreeSet<String> = pe_member_names(archive, container)
+            .map_err(FinalizeError::ExecutableContainer)?
+            .into_iter()
+            .collect();
+        if found != expected.iter().map(|member| (*member).to_owned()).collect() {
+            return Err(FinalizeError::SignedInternalsInventory { container });
+        }
+        for member in expected {
+            let bytes = match container {
+                ContainerKind::Nupkg => ContainerMemberReader::extract_nupkg(archive, member),
+                ContainerKind::Portable => ContainerMemberReader::extract_portable(archive, member),
+            }
+            .map_err(FinalizeError::ExecutableContainer)?;
+            let basename = member.rsplit('/').next().unwrap_or(member);
+            let relative = format!("{prefix}-{basename}");
+            write_new_synced(
+                &root.join(&relative),
+                &bytes,
+                FinalizeError::TransactionDirectory,
+            )?;
+            verify_internal_signature(policy, root, &relative, signtool, action, runner).map_err(
+                |cause| FinalizeError::InternalSigning {
+                    member: format!("{} {member}", container.label()),
+                    cause,
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn safe_alias(value: &str) -> bool {

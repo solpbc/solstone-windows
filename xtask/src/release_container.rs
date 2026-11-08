@@ -166,11 +166,59 @@ impl ContainerMemberReader {
         Self::read(archive_bytes, ContainerKind::Portable, canonical_member)
     }
 
+    /// The exact bytes of one member of the full nupkg, under the same archive
+    /// checks as its evidence.
+    pub fn extract_nupkg(
+        archive_bytes: &[u8],
+        member: &str,
+    ) -> Result<Vec<u8>, ReleaseContainerError> {
+        Self::extract(archive_bytes, ContainerKind::Nupkg, member)
+    }
+
+    /// The exact bytes of one member of the portable ZIP, under the same archive
+    /// checks as its evidence.
+    pub fn extract_portable(
+        archive_bytes: &[u8],
+        member: &str,
+    ) -> Result<Vec<u8>, ReleaseContainerError> {
+        Self::extract(archive_bytes, ContainerKind::Portable, member)
+    }
+
+    fn extract(
+        archive_bytes: &[u8],
+        container: ContainerKind,
+        member: &str,
+    ) -> Result<Vec<u8>, ReleaseContainerError> {
+        let mut bytes = Vec::new();
+        Self::stream(archive_bytes, container, member, &mut |chunk| {
+            bytes.extend_from_slice(chunk);
+        })?;
+        Ok(bytes)
+    }
+
     fn read(
         archive_bytes: &[u8],
         container: ContainerKind,
         canonical_member: &str,
     ) -> Result<PackagedExecutableEvidence, ReleaseContainerError> {
+        let mut hasher = Sha256::new();
+        let bytes = Self::stream(archive_bytes, container, canonical_member, &mut |chunk| {
+            hasher.update(chunk);
+        })?;
+        Ok(PackagedExecutableEvidence {
+            sha256: format!("{:x}", hasher.finalize()),
+            bytes,
+        })
+    }
+
+    /// Validates the whole archive, then streams one exact regular member to
+    /// `sink` and returns its verified size.
+    fn stream(
+        archive_bytes: &[u8],
+        container: ContainerKind,
+        canonical_member: &str,
+        sink: &mut dyn FnMut(&[u8]),
+    ) -> Result<u64, ReleaseContainerError> {
         validate_relative_path(canonical_member)
             .map_err(|_| ReleaseContainerError::InvalidEntryName { container })?;
         let mut archive = ZipArchive::new(Cursor::new(archive_bytes))
@@ -243,7 +291,6 @@ impl ContainerMemberReader {
             return Err(ReleaseContainerError::EmptyCanonicalMember { container });
         }
 
-        let mut hasher = Sha256::new();
         let mut actual_size = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
@@ -258,17 +305,37 @@ impl ContainerMemberReader {
                     ReleaseContainerError::CanonicalMemberSizeMismatch { container }
                 })?)
                 .ok_or(ReleaseContainerError::CanonicalMemberSizeMismatch { container })?;
-            hasher.update(&buffer[..read]);
+            sink(&buffer[..read]);
         }
         if actual_size != declared_size {
             return Err(ReleaseContainerError::CanonicalMemberSizeMismatch { container });
         }
-
-        Ok(PackagedExecutableEvidence {
-            sha256: format!("{:x}", hasher.finalize()),
-            bytes: actual_size,
-        })
+        Ok(actual_size)
     }
+}
+
+/// The names of every non-directory member Velopack would treat as a PE image
+/// (`.exe`, `.dll`, `.node`, any case), in archive order, after the same entry
+/// name checks the member readers apply.
+pub fn pe_member_names(
+    archive_bytes: &[u8],
+    container: ContainerKind,
+) -> Result<Vec<String>, ReleaseContainerError> {
+    let archive = ZipArchive::new(Cursor::new(archive_bytes))
+        .map_err(|_| ReleaseContainerError::InvalidArchive { container })?;
+    let names =
+        central_directory_names(archive_bytes, archive.central_directory_start(), container)?;
+    validate_entry_names(&names, container)?;
+    Ok(names
+        .into_iter()
+        .filter(|name| !name.ends_with('/'))
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            [".exe", ".dll", ".node"]
+                .iter()
+                .any(|extension| lower.ends_with(extension))
+        })
+        .collect())
 }
 
 pub fn compare_executable_baseline(

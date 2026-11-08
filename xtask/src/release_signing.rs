@@ -10,14 +10,15 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::artifact_fs::{child_process_path_text, ContainedRoot, UnixModePolicy};
-use crate::release_exec::CommandRunner;
+use crate::release_exec::{CommandOutput, CommandRunner};
 use crate::release_selection::SelectedAction;
 
 pub const SIGNING_POLICY_SCHEMA: &str = "solstone.signing-policy.v1";
 pub const SIGNED_VERIFIED_MODE: &str = "signed-verified";
 pub const UNSIGNED_MODE: &str = "unsigned";
-const NESTED_LEAF_SUBJECT: &str = "sol pbc";
-const NESTED_ROOT_SUBJECT: &str = "Microsoft Identity Verification Root Certificate Authority 2020";
+const ARTIFACT_LEAF_SUBJECT: &str = "sol pbc";
+const ARTIFACT_ROOT_SUBJECT: &str =
+    "Microsoft Identity Verification Root Certificate Authority 2020";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +30,18 @@ pub struct SigningPolicy {
     /// so it is admitted by its chain's subjects rather than a thumbprint.
     #[serde(default)]
     pub nested: Option<NestedSignerPolicy>,
+    /// When present, every executable Velopack signs inside the packages (the
+    /// app, its execution stub and the updater) carries exactly one Microsoft
+    /// Artifact Signing signature and no other, admitted by its chain's subjects.
+    #[serde(default)]
+    pub internal: Option<InternalSignerPolicy>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InternalSignerPolicy {
+    pub leaf_subject: String,
+    pub root_subject: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -147,6 +160,8 @@ pub enum SigningError {
     MissingSignature,
     WrongLeaf,
     WrongNestedSigner,
+    InternalUnsigned,
+    WrongInternalSigner,
     UntrustedChain,
     NonzeroExit,
     MissingTimestamp,
@@ -217,6 +232,14 @@ impl fmt::Display for SigningError {
                 formatter,
                 "nested Authenticode signature does not chain from the approved root to the approved publisher subject; re-append it with the approved Artifact Signing profile"
             ),
+            Self::InternalUnsigned => write!(
+                formatter,
+                "packaged executable has no Authenticode signature; check that Velopack's sign template ran the Artifact signer in replace mode and rebuild the candidate"
+            ),
+            Self::WrongInternalSigner => write!(
+                formatter,
+                "packaged executable is not signed by Artifact Signing alone; it needs exactly one timestamped signature chaining from the approved root to the approved publisher subject, so re-sign it through the Artifact sign template and rebuild the candidate"
+            ),
             Self::UntrustedChain => write!(
                 formatter,
                 "SignTool /pa chain-policy verification failed; restore host trust and rebuild or reverify the candidate"
@@ -256,8 +279,12 @@ impl SigningPolicy {
             || policy.authenticode.timestamp_protocol != "rfc3161"
             || !policy.authenticode.require_timestamp
             || policy.nested.as_ref().is_some_and(|nested| {
-                nested.leaf_subject != NESTED_LEAF_SUBJECT
-                    || nested.root_subject != NESTED_ROOT_SUBJECT
+                nested.leaf_subject != ARTIFACT_LEAF_SUBJECT
+                    || nested.root_subject != ARTIFACT_ROOT_SUBJECT
+            })
+            || policy.internal.as_ref().is_some_and(|internal| {
+                internal.leaf_subject != ARTIFACT_LEAF_SUBJECT
+                    || internal.root_subject != ARTIFACT_ROOT_SUBJECT
             })
         {
             return Err(SigningError::PolicyMismatch);
@@ -300,6 +327,65 @@ fn verify_signed_setup<R: CommandRunner + ?Sized>(
     action: &SelectedAction,
     runner: &R,
 ) -> Result<SigningVerification, SigningError> {
+    let (output, before_sha256) = run_selected_signtool(
+        candidate_root,
+        setup_relative,
+        selected_signtool,
+        action,
+        runner,
+    )?;
+    parse_signtool_output(output.status, &output.stdout, &output.stderr, policy)?;
+    Ok(SigningVerification {
+        signing_mode: SIGNED_VERIFIED_MODE,
+        setup_sha256: Some(before_sha256),
+    })
+}
+
+/// Verifies one executable extracted from a package: exactly one Authenticode
+/// signature, timestamped, whose chain runs from the policy's internal root to
+/// its publisher subject and carries no certificate of the primary release
+/// identity. The policy must name an internal signer.
+pub fn verify_internal_signature<R: CommandRunner + ?Sized>(
+    policy: &SigningPolicy,
+    root: &Path,
+    relative: &str,
+    selected_signtool: &Path,
+    action: &SelectedAction,
+    runner: &R,
+) -> Result<(), SigningError> {
+    let internal = policy
+        .internal
+        .as_ref()
+        .ok_or(SigningError::PolicyMismatch)?;
+    let (output, _) = run_selected_signtool(root, relative, selected_signtool, action, runner)?;
+    let chains = parse_signature_chains(output.status, &output.stdout, &output.stderr, 1).map_err(
+        |error| match error {
+            SigningError::Unsigned => SigningError::InternalUnsigned,
+            SigningError::DuplicateSignature => SigningError::WrongInternalSigner,
+            other => other,
+        },
+    )?;
+    if !chain_matches_subjects(
+        &chains[0],
+        &internal.root_subject,
+        &internal.leaf_subject,
+        &policy.authenticode.leaf_sha1,
+    ) {
+        return Err(SigningError::WrongInternalSigner);
+    }
+    Ok(())
+}
+
+/// Runs the selected SignTool verify action on one contained file and proves the
+/// file is byte-identical afterwards. Returns SignTool's output and the file's
+/// SHA-256.
+fn run_selected_signtool<R: CommandRunner + ?Sized>(
+    candidate_root: &Path,
+    setup_relative: &str,
+    selected_signtool: &Path,
+    action: &SelectedAction,
+    runner: &R,
+) -> Result<(CommandOutput, String), SigningError> {
     if action.program != selected_signtool {
         return Err(SigningError::WrongSelectedSignTool);
     }
@@ -341,11 +427,7 @@ fn verify_signed_setup<R: CommandRunner + ?Sized>(
     if before_sha256 != sha256_hex(&after) || before != after {
         return Err(SigningError::SetupMutated);
     }
-    parse_signtool_output(output.status, &output.stdout, &output.stderr, policy)?;
-    Ok(SigningVerification {
-        signing_mode: SIGNED_VERIFIED_MODE,
-        setup_sha256: Some(before_sha256),
-    })
+    Ok((output, before_sha256))
 }
 
 fn parse_signtool_output(
@@ -354,6 +436,57 @@ fn parse_signtool_output(
     stderr: &[u8],
     policy: &SigningPolicy,
 ) -> Result<(), SigningError> {
+    let signatures = if policy.nested.is_some() { 2 } else { 1 };
+    let signing_chains = parse_signature_chains(status, stdout, stderr, signatures)?;
+    let expected_leaf = &policy.authenticode.leaf_sha1;
+    let primary = &signing_chains[0];
+    if primary.last().map(|(_, thumbprint)| thumbprint) != Some(expected_leaf)
+        || primary
+            .iter()
+            .filter(|(_, thumbprint)| thumbprint == expected_leaf)
+            .count()
+            != 1
+    {
+        return Err(SigningError::WrongLeaf);
+    }
+    if let Some(nested) = &policy.nested {
+        if !chain_matches_subjects(
+            &signing_chains[1],
+            &nested.root_subject,
+            &nested.leaf_subject,
+            expected_leaf,
+        ) {
+            return Err(SigningError::WrongNestedSigner);
+        }
+    }
+    Ok(())
+}
+
+/// A rotating Artifact Signing chain is admitted by its subjects: at least a root
+/// and a leaf, the approved root first, the approved publisher last, and no
+/// certificate of the pinned primary identity anywhere in it.
+fn chain_matches_subjects(
+    chain: &[(String, String)],
+    root_subject: &str,
+    leaf_subject: &str,
+    primary_leaf_sha1: &str,
+) -> bool {
+    chain.len() >= 2
+        && chain.first().map(|(subject, _)| subject.as_str()) == Some(root_subject)
+        && chain.last().map(|(subject, _)| subject.as_str()) == Some(leaf_subject)
+        && !chain
+            .iter()
+            .any(|(_, thumbprint)| thumbprint == primary_leaf_sha1)
+}
+
+/// Parses SignTool's `/pa /all /v` output as exactly `signatures` signature
+/// blocks (one or two) and returns each block's signing chain, root first.
+fn parse_signature_chains(
+    status: i32,
+    stdout: &[u8],
+    stderr: &[u8],
+    signatures: usize,
+) -> Result<Vec<Vec<(String, String)>>, SigningError> {
     if stdout.is_empty() && stderr.is_empty() {
         return Err(SigningError::MissingOutput);
     }
@@ -387,7 +520,7 @@ fn parse_signtool_output(
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
-    let expected_indexes: &[&str] = if policy.nested.is_some() {
+    let expected_indexes: &[&str] = if signatures == 2 {
         &[PRIMARY_INDEX_LINE, NESTED_INDEX_LINE]
     } else {
         &[PRIMARY_INDEX_LINE]
@@ -448,7 +581,7 @@ fn parse_signtool_output(
     let count = lines
         .get(cursor)
         .ok_or(SigningGrammarStage::SuccessCountLine)?;
-    let accepted_counts: &[&str] = if policy.nested.is_some() {
+    let accepted_counts: &[&str] = if signatures == 2 {
         &["Number of signatures successfully Verified: 2"]
     } else {
         &[
@@ -475,33 +608,7 @@ fn parse_signtool_output(
     if cursor != lines.len() {
         return Err(SigningGrammarStage::TrailingOutput.into());
     }
-
-    let expected_leaf = &policy.authenticode.leaf_sha1;
-    let primary = &signing_chains[0];
-    if primary.last().map(|(_, thumbprint)| thumbprint) != Some(expected_leaf)
-        || primary
-            .iter()
-            .filter(|(_, thumbprint)| thumbprint == expected_leaf)
-            .count()
-            != 1
-    {
-        return Err(SigningError::WrongLeaf);
-    }
-    if let Some(nested) = &policy.nested {
-        let chain = &signing_chains[1];
-        let root = chain.first().map(|(subject, _)| subject.as_str());
-        let leaf = chain.last().map(|(subject, _)| subject.as_str());
-        if chain.len() < 2
-            || root != Some(nested.root_subject.as_str())
-            || leaf != Some(nested.leaf_subject.as_str())
-            || chain
-                .iter()
-                .any(|(_, thumbprint)| thumbprint == expected_leaf)
-        {
-            return Err(SigningError::WrongNestedSigner);
-        }
-    }
-    Ok(())
+    Ok(signing_chains)
 }
 
 const PRIMARY_INDEX_LINE: &str = "Signature Index: 0 (Primary Signature)";
