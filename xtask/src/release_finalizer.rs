@@ -670,6 +670,15 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         vpk_args.push("--signTemplate".to_owned());
         vpk_args.push(template);
     }
+    let signing_policy = match selection.mode {
+        SelectionMode::Unsigned => None,
+        SelectionMode::Signed => {
+            let policy_bytes = checkout
+                .read(SIGNING_POLICY, "signing policy")
+                .map_err(|_| FinalizeError::SigningVerification(SigningError::PolicyUnavailable))?;
+            Some(SigningPolicy::parse(&policy_bytes).map_err(FinalizeError::SigningVerification)?)
+        }
+    };
     run_program(
         &selection.actions.vpk_pack,
         &vpk_args,
@@ -677,12 +686,32 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
         "vpk_pack",
         runner,
     )?;
+    let names = BundleNames::for_version(version);
+    if signing_policy
+        .as_ref()
+        .is_some_and(|policy| policy.nested.is_some())
+    {
+        let setup = paths.output.join(names.setup());
+        run_action(
+            selection
+                .actions
+                .nested_sign
+                .as_ref()
+                .ok_or(FinalizeError::SelectionInvalid)?,
+            &BTreeMap::from([(
+                "{file}",
+                child_process_path_text(&setup).ok_or(FinalizeError::TransactionDirectory)?,
+            )]),
+            signing_child_env.as_ref(),
+            "nested_sign",
+            runner,
+        )?;
+    }
     let has_delta = reconcile_vpk_output(version, &paths.output, &seed_digests)?;
     rust_release_manifest::validate_release_ledgers(&paths.output, version, has_delta)
         .map_err(|_| FinalizeError::LedgerReconciliation)?;
 
     record_phase(runner, PHASE_6_BASELINE_CANDIDATE)?;
-    let names = BundleNames::for_version(version);
     let signing_mode = match selection.mode {
         SelectionMode::Unsigned => {
             verify_release_signing(SigningVerificationRequest::Unsigned, runner)
@@ -690,14 +719,12 @@ fn run_mutating_transaction<R: CommandRunner + ?Sized, C: Clock + ?Sized>(
                 .signing_mode
         }
         SelectionMode::Signed => {
-            let policy_bytes = checkout
-                .read(SIGNING_POLICY, "signing policy")
-                .map_err(|_| FinalizeError::SigningVerification(SigningError::PolicyUnavailable))?;
-            let policy =
-                SigningPolicy::parse(&policy_bytes).map_err(FinalizeError::SigningVerification)?;
+            let policy = signing_policy
+                .as_ref()
+                .ok_or(FinalizeError::SelectionInvalid)?;
             verify_release_signing(
                 SigningVerificationRequest::Signed {
-                    policy: &policy,
+                    policy,
                     candidate_root: &paths.output,
                     setup_relative: names.setup(),
                     selected_signtool: &selection

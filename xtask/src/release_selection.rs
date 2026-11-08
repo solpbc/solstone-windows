@@ -129,6 +129,7 @@ pub struct SelectedActions {
     pub vpk_pack: SelectedAction,
     pub smctl_sign: Option<SelectedAction>,
     pub signtool_verify: Option<SelectedAction>,
+    pub nested_sign: Option<SelectedAction>,
     pub cargo_deny_advisories: SelectedAction,
     pub native_smoke: SelectedAction,
 }
@@ -454,6 +455,7 @@ impl ReleaseToolSelection {
                 if self.actions.signing_auth_preflight.is_some()
                     || self.actions.smctl_sign.is_some()
                     || self.actions.signtool_verify.is_some()
+                    || self.actions.nested_sign.is_some()
                 {
                     return Err(SelectionError::SignedActionSetMismatch);
                 }
@@ -462,6 +464,7 @@ impl ReleaseToolSelection {
                 if self.actions.signing_auth_preflight.is_none()
                     || self.actions.smctl_sign.is_none()
                     || self.actions.signtool_verify.is_none()
+                    || self.actions.nested_sign.is_none()
                 {
                     return Err(SelectionError::SignedActionSetMismatch);
                 }
@@ -619,6 +622,23 @@ impl ReleaseToolSelection {
                 &["{file}"],
             )?;
         }
+        if let Some(nested) = &self.actions.nested_sign {
+            validate_action(
+                "nested_sign",
+                nested,
+                &self.tools.powershell.path,
+                &[
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "packaging/signing/append-nested-signature.ps1",
+                    "-Setup",
+                    "{file}",
+                ],
+                &["{file}"],
+            )?;
+        }
         Ok(())
     }
 
@@ -697,9 +717,14 @@ fn validate_mode_specific_presence(value: &Value) -> Result<(), SelectionError> 
     let signed_tools_present = ["smctl", "signtool"]
         .iter()
         .map(|name| tools.contains_key(*name));
-    let signed_actions_present = ["signing_auth_preflight", "smctl_sign", "signtool_verify"]
-        .iter()
-        .map(|name| actions.contains_key(*name));
+    let signed_actions_present = [
+        "signing_auth_preflight",
+        "smctl_sign",
+        "signtool_verify",
+        "nested_sign",
+    ]
+    .iter()
+    .map(|name| actions.contains_key(*name));
     match mode {
         "unsigned" => {
             if signed_tools_present.clone().any(|present| present) {

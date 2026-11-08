@@ -159,6 +159,21 @@ fn valid_selection(mode: SelectionMode) -> Value {
             "signtool_verify".to_owned(),
             action(&signtool, &["verify", "/pa", "/all", "/v", "{file}"]),
         );
+        actions.as_object_mut().expect("actions object").insert(
+            "nested_sign".to_owned(),
+            action(
+                &powershell,
+                &[
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "packaging/signing/append-nested-signature.ps1",
+                    "-Setup",
+                    "{file}",
+                ],
+            ),
+        );
     }
 
     json!({
@@ -198,7 +213,12 @@ fn committed_action_templates_match_the_closed_selection_parser() {
             .expect("read release-toolchain authority"),
     )
     .expect("parse release-toolchain authority");
-    let signed_only = ["signing_auth_preflight", "smctl_sign", "signtool_verify"];
+    let signed_only = [
+        "signing_auth_preflight",
+        "smctl_sign",
+        "signtool_verify",
+        "nested_sign",
+    ];
 
     for mode in [SelectionMode::Unsigned, SelectionMode::Signed] {
         let mut selection = valid_selection(mode);
@@ -525,6 +545,21 @@ fn signed_only_actions_are_absent_in_unsigned_and_required_in_signed() {
     assert_eq!(
         parse(&signed).expect_err("missing signed action must fail"),
         SelectionError::SignedActionSetMismatch
+    );
+    let mut signed = valid_selection(SelectionMode::Signed);
+    signed["actions"]
+        .as_object_mut()
+        .expect("actions object")
+        .remove("nested_sign");
+    assert_eq!(
+        parse(&signed).expect_err("missing nested signing action must fail"),
+        SelectionError::SignedActionSetMismatch
+    );
+    let mut signed = valid_selection(SelectionMode::Signed);
+    signed["actions"]["nested_sign"]["argv"][4] = json!("scripts/other.ps1");
+    assert!(
+        parse(&signed).is_err(),
+        "a nested signing action running another script must fail"
     );
 }
 

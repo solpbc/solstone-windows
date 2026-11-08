@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use support::{
     checkout_facts, request, selection_record, FakeReleaseCheckout, FakeReleaseRunner,
     RunnerMutation, WitnessEvent, ADVISORY_MIRROR_LOCATOR, CHECKED_AT, COMMIT, MINISIGN,
-    MIRROR_ADVISORY_REPOSITORY, RUST_DEPENDENCY_NOTICE_BYTES, SIGNED_APP_BYTES, SIGNTOOL, SMCTL,
-    THIRD_PARTY_NOTICE_BYTES, UNSIGNED_APP_BYTES, VERSION, VPK,
+    MIRROR_ADVISORY_REPOSITORY, POWERSHELL, RUST_DEPENDENCY_NOTICE_BYTES, SIGNED_APP_BYTES,
+    SIGNTOOL, SMCTL, THIRD_PARTY_NOTICE_BYTES, UNSIGNED_APP_BYTES, VERSION, VPK,
 };
 use xtask::artifact_fs::{walk_directory, UnixModePolicy};
 use xtask::release_advisory::{AdvisoryError, MIRROR_COHORT_ID};
@@ -210,6 +210,97 @@ fn signed_happy_path_keeps_stage_unsigned_and_uses_signed_container_baseline() {
             .any(|pair| pair[0] == "--signTemplate" && pair[1].contains(SMCTL)),
         _ => false,
     }));
+    assert_eq!(nested_sign_invocations(&events).len(), 0);
+}
+
+fn nested_sign_invocations(events: &[WitnessEvent]) -> Vec<usize> {
+    events
+        .iter()
+        .enumerate()
+        .filter_map(|(position, event)| match event {
+            WitnessEvent::Invocation { args, .. }
+                if args
+                    .iter()
+                    .any(|arg| arg == "packaging/signing/append-nested-signature.ps1") =>
+            {
+                Some(position)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_nested_policy_appends_one_nested_signature_between_pack_and_verify() {
+    let checkout = FakeReleaseCheckout::new("nested-signed", false);
+    let runner = FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::NestedSigning);
+    let clock = FixedClock::new(CHECKED_AT).expect("create fixed clock");
+    let result = finalize(
+        checkout.runtime(Some("test-keypair")),
+        &request(SelectionMode::Signed, false),
+        &runner,
+        &clock,
+    )
+    .expect("finalize nested-signed release");
+    assert_eq!(result.signing_mode, "signed-verified");
+
+    let events = runner.events();
+    let nested = nested_sign_invocations(&events);
+    assert_eq!(nested.len(), 1, "exactly one nested signing run");
+    let position_of = |wanted: &str| {
+        events
+            .iter()
+            .position(|event| matches!(event, WitnessEvent::Invocation { program, .. } if program == Path::new(wanted)))
+            .expect("invocation present")
+    };
+    assert!(
+        position_of(VPK) < nested[0],
+        "nested signing follows the pack"
+    );
+    assert!(
+        nested[0] < position_of(SIGNTOOL),
+        "verification follows nested signing"
+    );
+    let signing_environment = ReleaseToolSelection::parse(&selection_record(SelectionMode::Signed))
+        .expect("parse selected signing tools")
+        .signing_child_env_overlay()
+        .expect("construct signing child environment");
+    match &events[nested[0]] {
+        WitnessEvent::Invocation { program, args, env } => {
+            assert_eq!(program, Path::new(POWERSHELL));
+            assert_eq!(env.as_ref(), Some(&signing_environment));
+            let setup = args.last().expect("setup argument");
+            assert!(
+                setup.ends_with(&format!("solstone-setup-{VERSION}.exe")),
+                "nested signing targets the versioned setup"
+            );
+        }
+        WitnessEvent::Phase(_) => unreachable!(),
+    }
+}
+
+#[test]
+fn a_failed_nested_signature_fails_the_release_before_verification() {
+    let checkout = FakeReleaseCheckout::new("nested-signing-failure", false);
+    let runner =
+        FakeReleaseRunner::with_mutation(&checkout, false, RunnerMutation::NestedSigningFailure);
+    assert_engine_failure(
+        &checkout,
+        &runner,
+        request(SelectionMode::Signed, false),
+        FinalizeError::ActionFailed {
+            action: "nested_sign",
+            output_tail: "nested signing: jsign exited 1".to_owned(),
+            output_truncated: false,
+        },
+        PHASE_5_VELOPACK,
+        false,
+        false,
+    );
+    assert!(runner.events().iter().all(|event| !matches!(
+        event,
+        WitnessEvent::Invocation { program, .. } if program == Path::new(SIGNTOOL)
+    )));
 }
 
 #[test]

@@ -97,6 +97,7 @@ $ActionNames = @(
     "vpk_pack",
     "smctl_sign",
     "signtool_verify",
+    "nested_sign",
     "cargo_deny_advisories",
     "native_smoke"
 )
@@ -680,6 +681,7 @@ $Actions["vpk_pack"] = (Selected-Action "vpk_pack")
 if ($SignEnabled) {
     $Actions["smctl_sign"] = (Selected-Action "smctl_sign")
     $Actions["signtool_verify"] = (Selected-Action "signtool_verify")
+    $Actions["nested_sign"] = (Selected-Action "nested_sign")
 }
 $Actions["cargo_deny_advisories"] = (Selected-Action "cargo_deny_advisories")
 $Actions["native_smoke"] = (Selected-Action "native_smoke")

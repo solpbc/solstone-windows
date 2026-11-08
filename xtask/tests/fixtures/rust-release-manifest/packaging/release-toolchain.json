@@ -48,6 +48,10 @@
         "tool": "signtool",
         "argv": ["verify", "/pa", "/all", "/v", "{file}"]
       },
+      "nested_sign": {
+        "tool": "powershell",
+        "argv": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "packaging/signing/append-nested-signature.ps1", "-Setup", "{file}"]
+      },
       "cargo_deny_advisories": {
         "tool": "cargo",
         "argv": ["deny", "--locked", "--offline", "--config", "{advisory_config}", "check", "advisories"]

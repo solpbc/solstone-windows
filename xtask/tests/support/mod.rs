@@ -260,6 +260,8 @@ pub enum WitnessEvent {
 pub enum RunnerMutation {
     #[default]
     None,
+    NestedSigning,
+    NestedSigningFailure,
     SourceDirty,
     SourceUntracked,
     SourceUnmerged,
@@ -550,6 +552,24 @@ impl FakeReleaseRunner {
     ) -> Self {
         let advisory_repository_name = checkout.advisory_repository_name.clone();
         let packet_root = checkout.root().join("operator-mirror-packet");
+        if matches!(
+            mutation,
+            RunnerMutation::NestedSigning | RunnerMutation::NestedSigningFailure
+        ) {
+            let policy_path = checkout.root().join("packaging/signing-policy.json");
+            let mut policy: Value =
+                serde_json::from_slice(&fs::read(&policy_path).expect("read checkout policy"))
+                    .expect("parse checkout policy");
+            policy["nested"] = json!({
+                "leaf_subject": "sol pbc",
+                "root_subject": "Microsoft Identity Verification Root Certificate Authority 2020"
+            });
+            fs::write(
+                &policy_path,
+                serde_json::to_vec(&policy).expect("render nested policy"),
+            )
+            .expect("write nested checkout policy");
+        }
         match mutation {
             RunnerMutation::AdvisoryMirrorWrongKey => {
                 fs::write(
@@ -1159,7 +1179,26 @@ impl CommandRunner for FakeReleaseRunner {
                     Self::output(Vec::new())
                 })
             }
+            Some(POWERSHELL)
+                if args
+                    .iter()
+                    .any(|arg| arg == "packaging/signing/append-nested-signature.ps1") =>
+            {
+                self.require_signing_child_env(env)?;
+                match self.mutation {
+                    RunnerMutation::NestedSigning => Ok(Self::output(Vec::new())),
+                    RunnerMutation::NestedSigningFailure => {
+                        Ok(Self::failure(b"nested signing: jsign exited 1"))
+                    }
+                    _ => Err(CommandRunnerError::UnexpectedInvocation),
+                }
+            }
             Some(SIGNTOOL) => Ok(match self.mutation {
+                RunnerMutation::NestedSigning => Self::output(
+                    include_str!("../fixtures/signtool/verify-nested-signed-setup.txt")
+                        .as_bytes()
+                        .to_vec(),
+                ),
                 RunnerMutation::SignToolFailure => Self::failure(b"signature verification failed"),
                 RunnerMutation::SignToolGrammarDrift => Self::output(
                     concat!(
@@ -1635,6 +1674,18 @@ fn selection_value(mode: SelectionMode) -> Value {
             ],
         );
         actions["signtool_verify"] = action(SIGNTOOL, &["verify", "/pa", "/all", "/v", "{file}"]);
+        actions["nested_sign"] = action(
+            POWERSHELL,
+            &[
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "packaging/signing/append-nested-signature.ps1",
+                "-Setup",
+                "{file}",
+            ],
+        );
     }
     json!({
         "schema": "solstone.release-tool-selection.v1",
