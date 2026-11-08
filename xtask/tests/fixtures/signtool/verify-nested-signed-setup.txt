@@ -1,0 +1,96 @@
+Verifying: solstone-setup-2.0.45.exe
+
+Signature Index: 0 (Primary Signature)
+Hash of file (sha256): 015EB26214F8A5AA401D001C843D7D54CE1F520F9A9B90E313B34CC570697558
+
+Signing Certificate Chain:
+    Issued to: DigiCert Assured ID Root CA
+    Issued by: DigiCert Assured ID Root CA
+    Expires:   Sun Nov 09 16:00:00 2031
+    SHA1 hash: 0563B8630D62D75ABBC8AB1E4BDFB5A899B24D43
+
+        Issued to: DigiCert Trusted Root G4
+        Issued by: DigiCert Assured ID Root CA
+        Expires:   Sun Nov 09 15:59:59 2031
+        SHA1 hash: A99D5B79E9F1CDA59CDAB6373169D5353F5874C6
+
+            Issued to: DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1
+            Issued by: DigiCert Trusted Root G4
+            Expires:   Mon Apr 28 15:59:59 2036
+            SHA1 hash: 7B0F360B775F76C94A12CA48445AA2D2A875701C
+
+                Issued to: sol pbc
+                Issued by: DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1
+                Expires:   Mon Jun 21 15:59:59 2027
+                SHA1 hash: AC5472D41D5F63E339468E41F7B4438126E84860
+
+The signature is timestamped: Fri Nov 06 21:53:26 2026
+Timestamp Verified by:
+    Issued to: DigiCert Assured ID Root CA
+    Issued by: DigiCert Assured ID Root CA
+    Expires:   Sun Nov 09 16:00:00 2031
+    SHA1 hash: 0563B8630D62D75ABBC8AB1E4BDFB5A899B24D43
+
+        Issued to: DigiCert Trusted Root G4
+        Issued by: DigiCert Assured ID Root CA
+        Expires:   Sun Nov 09 15:59:59 2031
+        SHA1 hash: A99D5B79E9F1CDA59CDAB6373169D5353F5874C6
+
+            Issued to: DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1
+            Issued by: DigiCert Trusted Root G4
+            Expires:   Thu Jan 14 15:59:59 2038
+            SHA1 hash: 07894D00FC194A17DB273AEB5CF8FACEF14423A4
+
+                Issued to: DigiCert SHA256 RSA4096 Timestamp Responder 2026 1
+                Issued by: DigiCert Trusted G4 TimeStamping RSA4096 SHA256 2025 CA1
+                Expires:   Wed Nov 04 15:59:59 2037
+                SHA1 hash: 51D9ABDA034973D84F4266ACA48248E6B369C439
+
+
+Signature Index: 1
+Hash of file (sha256): 015EB26214F8A5AA401D001C843D7D54CE1F520F9A9B90E313B34CC570697558
+
+Signing Certificate Chain:
+    Issued to: Microsoft Identity Verification Root Certificate Authority 2020
+    Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+    Expires:   Sun Apr 16 10:44:40 2045
+    SHA1 hash: F40042E2E5F7E8EF8189FED15519AECE42C3BFA2
+
+        Issued to: Microsoft ID Verified Code Signing PCA 2021
+        Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+        Expires:   Tue Apr 01 12:15:20 2036
+        SHA1 hash: 8E750F459DAF9A79D6370DB747AD2226866AD818
+
+            Issued to: Microsoft ID Verified CS AOC CA 04
+            Issued by: Microsoft ID Verified Code Signing PCA 2021
+            Expires:   Wed Mar 26 10:11:29 2031
+            SHA1 hash: 4C07413E5DA89A259A127E1D76F792AF239CD9D9
+
+                Issued to: sol pbc
+                Issued by: Microsoft ID Verified CS AOC CA 04
+                Expires:   Tue Nov 10 20:20:21 2026
+                SHA1 hash: B25369C9F483A2723365D4F968B1F0F0DA0C5CF2
+
+The signature is timestamped: Sat Nov 07 21:36:05 2026
+Timestamp Verified by:
+    Issued to: Microsoft Identity Verification Root Certificate Authority 2020
+    Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+    Expires:   Sun Apr 16 10:44:40 2045
+    SHA1 hash: F40042E2E5F7E8EF8189FED15519AECE42C3BFA2
+
+        Issued to: Microsoft Public RSA Timestamping CA 2020
+        Issued by: Microsoft Identity Verification Root Certificate Authority 2020
+        Expires:   Mon Nov 19 12:42:31 2035
+        SHA1 hash: 27F0ABAC2877BA255F62B389B43FF539A0FB598E
+
+            Issued to: Microsoft Public RSA Time Stamping Authority
+            Issued by: Microsoft Public RSA Timestamping CA 2020
+            Expires:   Tue Sep 14 10:57:23 2027
+            SHA1 hash: DEAE1DD9B03C7C70D88D763F0BE6AE36F1FFE805
+
+
+Successfully verified: solstone-setup-2.0.45.exe
+
+Number of signatures successfully Verified: 2
+Number of warnings: 0
+Number of errors: 0

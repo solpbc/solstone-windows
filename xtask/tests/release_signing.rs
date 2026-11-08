@@ -12,8 +12,9 @@ use xtask::release_exec::{CommandOutput, CommandRunner, CommandRunnerError};
 use xtask::release_finalizer::FinalizeError;
 use xtask::release_selection::SelectedAction;
 use xtask::release_signing::{
-    verify_release_signing, AuthenticodePolicy, SigningError, SigningGrammarStage, SigningPolicy,
-    SigningVerificationRequest, SIGNED_VERIFIED_MODE, UNSIGNED_MODE,
+    verify_release_signing, AuthenticodePolicy, NestedSignerPolicy, SigningError,
+    SigningGrammarStage, SigningPolicy, SigningVerificationRequest, SIGNED_VERIFIED_MODE,
+    UNSIGNED_MODE,
 };
 
 const SETUP: &str = "solstone-setup-0.2.11.exe";
@@ -92,6 +93,7 @@ fn synthetic_policy() -> SigningPolicy {
             timestamp_protocol: "synthetic-protocol".to_owned(),
             require_timestamp: true,
         },
+        nested: None,
     }
 }
 
@@ -196,6 +198,9 @@ fn replace_synthetic_once(baseline: &str, from: &str, to: &str) -> String {
 fn synthetic_grammar_mutation(stage: SigningGrammarStage) -> (Vec<u8>, Vec<u8>) {
     let baseline = synthetic_accepted_grammar();
     let stdout = match stage {
+        SigningGrammarStage::NestedSignatureLine => {
+            unreachable!("a single-signature policy never reaches the nested stage; see nested_signature_identity_count_and_timestamp_are_enforced")
+        }
         SigningGrammarStage::StdoutEncoding => return (vec![0xff], Vec::new()),
         SigningGrammarStage::StderrEncoding => {
             return (baseline.into_bytes(), vec![0xff]);
@@ -704,4 +709,182 @@ fn errors_and_results_do_not_leak_private_paths_credentials_or_certificates() {
     assert!(!rendered.contains(candidate.root.to_str().expect("utf8 root")));
     assert!(!rendered.contains("credential"));
     assert!(!rendered.contains("SHA1"));
+}
+
+const NESTED_ROOT: &str = "Microsoft Identity Verification Root Certificate Authority 2020";
+
+fn nested_grammar() -> String {
+    include_str!("fixtures/signtool/verify-nested-signed-setup.txt").to_owned()
+}
+
+fn nested_policy() -> SigningPolicy {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(policy_bytes()).expect("parse policy value");
+    value["nested"] = serde_json::json!({"leaf_subject": "sol pbc", "root_subject": NESTED_ROOT});
+    SigningPolicy::parse(&serde_json::to_vec(&value).expect("render nested policy"))
+        .expect("nested policy parses")
+}
+
+fn nested_block_start(grammar: &str) -> usize {
+    grammar
+        .find("Signature Index: 1")
+        .expect("captured fixture has a nested block")
+}
+
+/// Replace `from` once, only inside the nested signature block.
+fn replace_in_nested_block(grammar: &str, from: &str, to: &str) -> String {
+    let start = nested_block_start(grammar);
+    let (primary, nested) = grammar.split_at(start);
+    assert!(nested.contains(from), "nested mutation source must exist");
+    format!("{primary}{}", nested.replacen(from, to, 1))
+}
+
+fn verify_grammar(
+    label: &str,
+    grammar: &str,
+    signing_policy: &SigningPolicy,
+) -> Result<xtask::release_signing::SigningVerification, SigningError> {
+    let candidate = Candidate::new(label);
+    let runner = FakeCommandRunner::new(vec![command(&candidate, 0, grammar.as_bytes(), b"")]);
+    verify_with_policy(&candidate, &runner, signing_policy)
+}
+
+#[test]
+fn nested_signer_policy_is_closed_to_the_approved_subjects() {
+    assert_eq!(policy().nested, None);
+    assert_eq!(
+        nested_policy().nested,
+        Some(NestedSignerPolicy {
+            leaf_subject: "sol pbc".to_owned(),
+            root_subject: NESTED_ROOT.to_owned(),
+        })
+    );
+    for (field, value) in [
+        ("leaf_subject", "someone else"),
+        ("root_subject", "Some Other Root"),
+    ] {
+        let mut mutated: serde_json::Value =
+            serde_json::from_slice(policy_bytes()).expect("parse policy value");
+        mutated["nested"] =
+            serde_json::json!({"leaf_subject": "sol pbc", "root_subject": NESTED_ROOT});
+        mutated["nested"][field] = serde_json::json!(value);
+        assert_eq!(
+            SigningPolicy::parse(&serde_json::to_vec(&mutated).expect("render"))
+                .expect_err("unapproved nested subject must fail"),
+            SigningError::PolicyMismatch
+        );
+    }
+    let mut unknown: serde_json::Value =
+        serde_json::from_slice(policy_bytes()).expect("parse policy value");
+    unknown["nested"] = serde_json::json!({"leaf_subject": "sol pbc", "root_subject": NESTED_ROOT, "thumbprint": "x"});
+    assert_eq!(
+        SigningPolicy::parse(&serde_json::to_vec(&unknown).expect("render"))
+            .expect_err("unknown nested field must fail"),
+        SigningError::PolicyMalformed
+    );
+}
+
+#[test]
+fn captured_nested_artifact_signature_is_admitted_only_under_a_nested_policy() {
+    let verified = verify_grammar("nested-accepted", &nested_grammar(), &nested_policy())
+        .expect("captured DigiCert-primary plus nested Artifact Signing output verifies");
+    assert_eq!(verified.signing_mode, SIGNED_VERIFIED_MODE);
+
+    assert_eq!(
+        verify_grammar("nested-under-single-policy", &nested_grammar(), &policy())
+            .expect_err("a second signature stays refused without a nested policy"),
+        SigningError::DuplicateSignature
+    );
+    assert_eq!(
+        verify_grammar(
+            "single-under-nested-policy",
+            &accepted_grammar(),
+            &nested_policy()
+        )
+        .expect_err("a nested policy requires the nested signature"),
+        SigningError::MissingSignature
+    );
+}
+
+#[test]
+fn nested_signature_identity_count_and_timestamp_are_enforced() {
+    let grammar = nested_grammar();
+    let cases = [
+        (
+            "nested-wrong-leaf-subject",
+            replace_in_nested_block(&grammar, "Issued to: sol pbc", "Issued to: someone else"),
+            SigningError::WrongNestedSigner,
+        ),
+        (
+            "nested-wrong-root",
+            replace_in_nested_block(
+                &grammar,
+                &format!("Issued to: {NESTED_ROOT}"),
+                "Issued to: Some Other Root",
+            ),
+            SigningError::WrongNestedSigner,
+        ),
+        (
+            "nested-carries-primary-leaf",
+            replace_in_nested_block(
+                &grammar,
+                "SHA1 hash: B25369C9F483A2723365D4F968B1F0F0DA0C5CF2",
+                &format!("SHA1 hash: {PUBLIC_LEAF_UPPER}"),
+            ),
+            SigningError::WrongNestedSigner,
+        ),
+        (
+            "nested-primary-leaf-changed",
+            grammar.replacen(
+                PUBLIC_LEAF_UPPER,
+                "4444444444444444444444444444444444444444",
+                1,
+            ),
+            SigningError::WrongLeaf,
+        ),
+        (
+            "nested-count-one",
+            grammar.replace(
+                "Number of signatures successfully Verified: 2",
+                "Number of signatures successfully Verified: 1",
+            ),
+            SigningError::GrammarDrift {
+                stage: SigningGrammarStage::SuccessCountValue,
+            },
+        ),
+        (
+            "nested-untimestamped",
+            {
+                let start = nested_block_start(&grammar);
+                let (primary, nested) = grammar.split_at(start);
+                let cut = nested
+                    .find("The signature is timestamped: ")
+                    .expect("nested timestamp");
+                let end = nested
+                    .find("Successfully verified: ")
+                    .expect("success line");
+                format!("{primary}{}{}", &nested[..cut], &nested[end..])
+            },
+            SigningError::MissingTimestamp,
+        ),
+        (
+            "nested-index-out-of-place",
+            {
+                let start = nested_block_start(&grammar);
+                let (primary, nested) = grammar.split_at(start);
+                format!("{primary}Successfully verified: early\n{nested}")
+            },
+            SigningError::GrammarDrift {
+                stage: SigningGrammarStage::NestedSignatureLine,
+            },
+        ),
+    ];
+    let signing_policy = nested_policy();
+    for (label, mutated, expected) in cases {
+        assert_eq!(
+            verify_grammar(label, &mutated, &signing_policy).expect_err("mutation must fail"),
+            expected,
+            "{label}"
+        );
+    }
 }

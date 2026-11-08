@@ -16,12 +16,26 @@ use crate::release_selection::SelectedAction;
 pub const SIGNING_POLICY_SCHEMA: &str = "solstone.signing-policy.v1";
 pub const SIGNED_VERIFIED_MODE: &str = "signed-verified";
 pub const UNSIGNED_MODE: &str = "unsigned";
+const NESTED_LEAF_SUBJECT: &str = "sol pbc";
+const NESTED_ROOT_SUBJECT: &str = "Microsoft Identity Verification Root Certificate Authority 2020";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SigningPolicy {
     pub schema: String,
     pub authenticode: AuthenticodePolicy,
+    /// When present, the setup carries exactly one nested signature after the
+    /// primary one: a Microsoft Artifact Signing signature whose leaf rotates,
+    /// so it is admitted by its chain's subjects rather than a thumbprint.
+    #[serde(default)]
+    pub nested: Option<NestedSignerPolicy>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NestedSignerPolicy {
+    pub leaf_subject: String,
+    pub root_subject: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -56,6 +70,7 @@ pub enum SigningGrammarStage {
     StderrEncoding,
     VerifyingLine,
     PrimarySignatureLine,
+    NestedSignatureLine,
     FileHashLine,
     FileHashValue,
     SigningChainHeader,
@@ -87,6 +102,7 @@ impl fmt::Display for SigningGrammarStage {
             Self::StderrEncoding => "stderr encoding",
             Self::VerifyingLine => "verifying line",
             Self::PrimarySignatureLine => "primary-signature line",
+            Self::NestedSignatureLine => "nested-signature line",
             Self::FileHashLine => "file-hash line",
             Self::FileHashValue => "file-hash value",
             Self::SigningChainHeader => "signing-chain header",
@@ -130,6 +146,7 @@ pub enum SigningError {
     DuplicateSignature,
     MissingSignature,
     WrongLeaf,
+    WrongNestedSigner,
     UntrustedChain,
     NonzeroExit,
     MissingTimestamp,
@@ -196,6 +213,10 @@ impl fmt::Display for SigningError {
                 formatter,
                 "Authenticode leaf certificate does not match the approved public thumbprint; sign with the approved release identity"
             ),
+            Self::WrongNestedSigner => write!(
+                formatter,
+                "nested Authenticode signature does not chain from the approved root to the approved publisher subject; re-append it with the approved Artifact Signing profile"
+            ),
             Self::UntrustedChain => write!(
                 formatter,
                 "SignTool /pa chain-policy verification failed; restore host trust and rebuild or reverify the candidate"
@@ -234,6 +255,10 @@ impl SigningPolicy {
             || !policy.authenticode.require_trusted_chain
             || policy.authenticode.timestamp_protocol != "rfc3161"
             || !policy.authenticode.require_timestamp
+            || policy.nested.as_ref().is_some_and(|nested| {
+                nested.leaf_subject != NESTED_LEAF_SUBJECT
+                    || nested.root_subject != NESTED_ROOT_SUBJECT
+            })
         {
             return Err(SigningError::PolicyMismatch);
         }
@@ -316,12 +341,7 @@ fn verify_signed_setup<R: CommandRunner + ?Sized>(
     if before_sha256 != sha256_hex(&after) || before != after {
         return Err(SigningError::SetupMutated);
     }
-    parse_signtool_output(
-        output.status,
-        &output.stdout,
-        &output.stderr,
-        &policy.authenticode,
-    )?;
+    parse_signtool_output(output.status, &output.stdout, &output.stderr, policy)?;
     Ok(SigningVerification {
         signing_mode: SIGNED_VERIFIED_MODE,
         setup_sha256: Some(before_sha256),
@@ -332,7 +352,7 @@ fn parse_signtool_output(
     status: i32,
     stdout: &[u8],
     stderr: &[u8],
-    policy: &AuthenticodePolicy,
+    policy: &SigningPolicy,
 ) -> Result<(), SigningError> {
     if stdout.is_empty() && stderr.is_empty() {
         return Err(SigningError::MissingOutput);
@@ -367,15 +387,20 @@ fn parse_signtool_output(
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
+    let expected_indexes: &[&str] = if policy.nested.is_some() {
+        &[PRIMARY_INDEX_LINE, NESTED_INDEX_LINE]
+    } else {
+        &[PRIMARY_INDEX_LINE]
+    };
     let signature_indexes: Vec<&str> = lines
         .iter()
         .copied()
         .filter(|line| line.starts_with("Signature Index:"))
         .collect();
-    if signature_indexes.len() > 1 {
+    if signature_indexes.len() > expected_indexes.len() {
         return Err(SigningError::DuplicateSignature);
     }
-    if signature_indexes.as_slice() != ["Signature Index: 0 (Primary Signature)"] {
+    if signature_indexes.as_slice() != expected_indexes {
         return Err(SigningError::MissingSignature);
     }
 
@@ -388,7 +413,8 @@ fn parse_signtool_output(
         .iter()
         .filter(|line| **line == "Timestamp Verified by:")
         .count();
-    if timestamp_statements != 1 || timestamp_chains != 1 {
+    if timestamp_statements != expected_indexes.len() || timestamp_chains != expected_indexes.len()
+    {
         return Err(SigningError::MissingTimestamp);
     }
 
@@ -399,50 +425,20 @@ fn parse_signtool_output(
         "Verifying: ",
         SigningGrammarStage::VerifyingLine,
     )?;
-    expect_exact(
-        &lines,
-        &mut cursor,
-        "Signature Index: 0 (Primary Signature)",
-        SigningGrammarStage::PrimarySignatureLine,
-    )?;
-    let file_hash = take_prefix(
-        &lines,
-        &mut cursor,
-        "Hash of file (sha256): ",
-        SigningGrammarStage::FileHashLine,
-    )?;
-    if !is_upper_or_lower_hex(file_hash, 64) {
-        return Err(SigningGrammarStage::FileHashValue.into());
+    let mut signing_chains = Vec::with_capacity(expected_indexes.len());
+    for (position, index_line) in expected_indexes.iter().enumerate() {
+        expect_exact(
+            &lines,
+            &mut cursor,
+            index_line,
+            if position == 0 {
+                SigningGrammarStage::PrimarySignatureLine
+            } else {
+                SigningGrammarStage::NestedSignatureLine
+            },
+        )?;
+        signing_chains.push(parse_signature_block(&lines, &mut cursor)?);
     }
-    expect_exact(
-        &lines,
-        &mut cursor,
-        "Signing Certificate Chain:",
-        SigningGrammarStage::SigningChainHeader,
-    )?;
-    let signing_thumbprints = parse_certificate_chain(
-        &lines,
-        &mut cursor,
-        "The signature is timestamped: ",
-        SIGNING_CERTIFICATE_STAGES,
-    )?;
-    lines
-        .get(cursor)
-        .and_then(|line| line.strip_prefix("The signature is timestamped: "))
-        .ok_or(SigningError::MissingTimestamp)?;
-    cursor += 1;
-    expect_exact(
-        &lines,
-        &mut cursor,
-        "Timestamp Verified by:",
-        SigningGrammarStage::TimestampChainHeader,
-    )?;
-    parse_certificate_chain(
-        &lines,
-        &mut cursor,
-        "Successfully verified: ",
-        TIMESTAMP_CERTIFICATE_STAGES,
-    )?;
     take_prefix(
         &lines,
         &mut cursor,
@@ -452,9 +448,15 @@ fn parse_signtool_output(
     let count = lines
         .get(cursor)
         .ok_or(SigningGrammarStage::SuccessCountLine)?;
-    if *count != "Number of signatures successfully Verified: 1"
-        && *count != "Number of files successfully Verified: 1"
-    {
+    let accepted_counts: &[&str] = if policy.nested.is_some() {
+        &["Number of signatures successfully Verified: 2"]
+    } else {
+        &[
+            "Number of signatures successfully Verified: 1",
+            "Number of files successfully Verified: 1",
+        ]
+    };
+    if !accepted_counts.contains(count) {
         return Err(SigningGrammarStage::SuccessCountValue.into());
     }
     cursor += 1;
@@ -474,17 +476,82 @@ fn parse_signtool_output(
         return Err(SigningGrammarStage::TrailingOutput.into());
     }
 
-    let expected_leaf = &policy.leaf_sha1;
-    if signing_thumbprints.last() != Some(expected_leaf)
-        || signing_thumbprints
+    let expected_leaf = &policy.authenticode.leaf_sha1;
+    let primary = &signing_chains[0];
+    if primary.last().map(|(_, thumbprint)| thumbprint) != Some(expected_leaf)
+        || primary
             .iter()
-            .filter(|thumbprint| *thumbprint == expected_leaf)
+            .filter(|(_, thumbprint)| thumbprint == expected_leaf)
             .count()
             != 1
     {
         return Err(SigningError::WrongLeaf);
     }
+    if let Some(nested) = &policy.nested {
+        let chain = &signing_chains[1];
+        let root = chain.first().map(|(subject, _)| subject.as_str());
+        let leaf = chain.last().map(|(subject, _)| subject.as_str());
+        if chain.len() < 2
+            || root != Some(nested.root_subject.as_str())
+            || leaf != Some(nested.leaf_subject.as_str())
+            || chain
+                .iter()
+                .any(|(_, thumbprint)| thumbprint == expected_leaf)
+        {
+            return Err(SigningError::WrongNestedSigner);
+        }
+    }
     Ok(())
+}
+
+const PRIMARY_INDEX_LINE: &str = "Signature Index: 0 (Primary Signature)";
+const NESTED_INDEX_LINE: &str = "Signature Index: 1";
+
+/// One signature block after its index line: file hash, signing chain and its
+/// verified timestamp chain. Returns the signing chain, root first.
+fn parse_signature_block(
+    lines: &[&str],
+    cursor: &mut usize,
+) -> Result<Vec<(String, String)>, SigningError> {
+    let file_hash = take_prefix(
+        lines,
+        cursor,
+        "Hash of file (sha256): ",
+        SigningGrammarStage::FileHashLine,
+    )?;
+    if !is_upper_or_lower_hex(file_hash, 64) {
+        return Err(SigningGrammarStage::FileHashValue.into());
+    }
+    expect_exact(
+        lines,
+        cursor,
+        "Signing Certificate Chain:",
+        SigningGrammarStage::SigningChainHeader,
+    )?;
+    let signing_chain = parse_certificate_chain(
+        lines,
+        cursor,
+        &["The signature is timestamped: "],
+        SIGNING_CERTIFICATE_STAGES,
+    )?;
+    lines
+        .get(*cursor)
+        .and_then(|line| line.strip_prefix("The signature is timestamped: "))
+        .ok_or(SigningError::MissingTimestamp)?;
+    *cursor += 1;
+    expect_exact(
+        lines,
+        cursor,
+        "Timestamp Verified by:",
+        SigningGrammarStage::TimestampChainHeader,
+    )?;
+    parse_certificate_chain(
+        lines,
+        cursor,
+        &["Successfully verified: ", "Signature Index: "],
+        TIMESTAMP_CERTIFICATE_STAGES,
+    )?;
+    Ok(signing_chain)
 }
 
 #[derive(Clone, Copy)]
@@ -518,22 +585,23 @@ const TIMESTAMP_CERTIFICATE_STAGES: CertificateGrammarStages = CertificateGramma
 fn parse_certificate_chain(
     lines: &[&str],
     cursor: &mut usize,
-    terminator: &str,
+    terminators: &[&str],
     stages: CertificateGrammarStages,
-) -> Result<Vec<String>, SigningGrammarStage> {
+) -> Result<Vec<(String, String)>, SigningGrammarStage> {
     let mut thumbprints = Vec::new();
-    while lines
-        .get(*cursor)
-        .is_some_and(|line| !line.starts_with(terminator))
-    {
-        take_prefix(lines, cursor, "Issued to: ", stages.issued_to)?;
+    while lines.get(*cursor).is_some_and(|line| {
+        !terminators
+            .iter()
+            .any(|terminator| line.starts_with(terminator))
+    }) {
+        let subject = take_prefix(lines, cursor, "Issued to: ", stages.issued_to)?;
         take_prefix(lines, cursor, "Issued by: ", stages.issued_by)?;
         take_prefix(lines, cursor, "Expires: ", stages.expiration)?;
         let thumbprint = take_prefix(lines, cursor, "SHA1 hash: ", stages.thumbprint)?;
         if !is_upper_or_lower_hex(thumbprint, 40) {
             return Err(stages.fields);
         }
-        thumbprints.push(thumbprint.to_ascii_lowercase());
+        thumbprints.push((subject.to_owned(), thumbprint.to_ascii_lowercase()));
     }
     if thumbprints.is_empty() {
         return Err(stages.chain);
