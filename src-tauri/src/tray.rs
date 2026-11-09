@@ -45,7 +45,11 @@ fn browsers_menu_text(status: Option<&browser_host::hub::BrowserStatus>) -> Stri
         return "browsers \u{00B7} none connected now".to_string();
     };
     let connected_brands: Vec<&str> = status.connected.iter().map(|c| c.brand.as_str()).collect();
-    match browser_host::stores::browsers_tray(status.capture, &connected_brands) {
+    match browser_host::stores::browsers_tray(
+        status.capture,
+        status.custody.full,
+        &connected_brands,
+    ) {
         browser_host::stores::BrowsersTray::Names(names) => {
             let display_names: Vec<&str> = names
                 .iter()
@@ -59,7 +63,12 @@ fn browsers_menu_text(status: Option<&browser_host::hub::BrowserStatus>) -> Stri
             format!("browsers \u{00B7} {}", display_names.join(", "))
         }
         browser_host::stores::BrowsersTray::Paused => "browsers \u{00B7} paused".to_string(),
-        browser_host::stores::BrowsersTray::Off => "browsers \u{00B7} off".to_string(),
+        browser_host::stores::BrowsersTray::Held => {
+            "browsers \u{00B7} not taking in new pages".to_string()
+        }
+        browser_host::stores::BrowsersTray::Full => {
+            "browsers \u{00B7} no room for more right now".to_string()
+        }
         browser_host::stores::BrowsersTray::None => {
             "browsers \u{00B7} none connected now".to_string()
         }

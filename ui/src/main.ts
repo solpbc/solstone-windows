@@ -881,7 +881,7 @@ type BrowserStatus = {
   delivery: "unknown" | "kept_locally" | "delivered" | "idle" | "failed";
   failure: string | null;
   connected: { brand: string; connected_at_ms: number }[];
-  custody: { held_bytes: number; waiting: boolean };
+  custody: { held_bytes: number; waiting: boolean; full: boolean };
   stores: string[];
 };
 let latestBrowser: BrowserStatus | null = null;
@@ -3562,6 +3562,7 @@ const BROWSER_COPY = {
   none: "no browser connected now",
   paused: "paused with the rest of the solstone app. pausing doesn't hold back what's already taken in.",
   held: "new browser pages aren't being taken in right now.",
+  full: "no room for more right now. new pages are taken in again once there's room.",
   notPaired: "pair with your journal first",
   failed: "kept on this PC, not reaching your journal right now",
   discard: "discard waiting browser pages",
@@ -3581,6 +3582,11 @@ function browserStateText(status: BrowserStatus): string {
   }
   if (status.capture === "paused") {
     return BROWSER_COPY.paused;
+  }
+  if (status.custody.full) {
+    return status.delivery === "failed"
+      ? `${BROWSER_COPY.full} ${BROWSER_COPY.failed}`
+      : BROWSER_COPY.full;
   }
   if (status.delivery === "failed" && status.custody.held_bytes > 0) {
     return BROWSER_COPY.failed;

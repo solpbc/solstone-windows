@@ -8,6 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- when there's no room for more browser pages, the tray and sources page say so, and the extension stops asking you to turn browser pages back on.
 - on a PC where only Obsidian notes go into your journal, "journal last reached" on the home pane now shows when this PC last reached your journal, instead of "not yet".
 
 ## [2.0.46] - 2026-11-08

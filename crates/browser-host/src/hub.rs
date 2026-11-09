@@ -448,11 +448,13 @@ impl Hub {
         } else {
             "permitted"
         };
-        let failure = delivery_failure.or(if custody.full {
+        // The intake hold is the actionable cause while the store is full.
+        // Delivery remains failed independently and its cause returns when room clears.
+        let failure = if custody.full && !custody.failed {
             Some("queue_full")
         } else {
-            None
-        });
+            delivery_failure
+        };
         let (generation, period) = if matches!(capture, "unavailable" | "not_paired") {
             (None, None)
         } else {

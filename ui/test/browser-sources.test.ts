@@ -18,7 +18,7 @@ type BrowserStatusFixture = {
   delivery: "unknown" | "kept_locally" | "delivered" | "idle" | "failed";
   failure: string | null;
   connected: { brand: string; connected_at_ms: number }[];
-  custody: { held_bytes: number; waiting: boolean };
+  custody: { held_bytes: number; waiting: boolean; full: boolean };
   stores: string[];
 };
 
@@ -40,7 +40,7 @@ function browserStatus(overrides: Partial<BrowserStatusFixture> = {}): BrowserSt
     delivery: "idle",
     failure: null,
     connected: [],
-    custody: { held_bytes: 0, waiting: false },
+    custody: { held_bytes: 0, waiting: false, full: false },
     stores: ["chrome", "edge"],
     ...overrides,
   };

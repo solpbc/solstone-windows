@@ -49,17 +49,24 @@ pub fn get(brand: &str) -> Option<BrowserStore> {
 pub enum BrowsersTray {
     Names(Vec<String>),
     Paused,
-    Off,
+    Held,
+    Full,
     None,
 }
 
 /// Intake off, then pause, win over a connection, so the row never reads as
 /// taking in pages while it isn't. Otherwise connected brands, in the order
 /// given, with duplicates collapsed.
-pub fn browsers_tray(capture: &str, connected_brands_in_order: &[&str]) -> BrowsersTray {
+pub fn browsers_tray(
+    capture: &str,
+    full: bool,
+    connected_brands_in_order: &[&str],
+) -> BrowsersTray {
     match capture {
-        "intake_off" => return BrowsersTray::Off,
         "paused" => return BrowsersTray::Paused,
+        "not_paired" => return BrowsersTray::None,
+        _ if full => return BrowsersTray::Full,
+        "intake_off" | "unavailable" => return BrowsersTray::Held,
         _ => {}
     }
     let mut names = Vec::new();
@@ -125,29 +132,55 @@ mod tests {
     #[test]
     fn browsers_tray_connected_brands_order_and_deduplication() {
         assert_eq!(
-            browsers_tray("permitted", &["chrome", "edge"]),
+            browsers_tray("permitted", false, &["chrome", "edge"]),
             BrowsersTray::Names(vec!["chrome".to_string(), "edge".to_string()])
         );
         assert_eq!(
-            browsers_tray("permitted", &["chrome", "chrome", "edge"]),
+            browsers_tray("permitted", false, &["chrome", "chrome", "edge"]),
             BrowsersTray::Names(vec!["chrome".to_string(), "edge".to_string()])
         );
         assert_eq!(
-            browsers_tray("permitted", &["edge", "chrome"]),
+            browsers_tray("permitted", false, &["edge", "chrome"]),
             BrowsersTray::Names(vec!["edge".to_string(), "chrome".to_string()])
         );
         // Off and pause win over a connection.
-        assert_eq!(browsers_tray("paused", &["chrome"]), BrowsersTray::Paused);
-        assert_eq!(browsers_tray("intake_off", &["chrome"]), BrowsersTray::Off);
+        assert_eq!(
+            browsers_tray("paused", false, &["chrome"]),
+            BrowsersTray::Paused
+        );
+        assert_eq!(
+            browsers_tray("intake_off", false, &["chrome"]),
+            BrowsersTray::Held
+        );
+    }
+
+    #[test]
+    fn pressure_is_held_and_owner_pause_still_leads() {
+        assert_eq!(
+            browsers_tray("intake_off", true, &["chrome"]),
+            BrowsersTray::Full
+        );
+        assert_eq!(
+            browsers_tray("paused", true, &["chrome"]),
+            BrowsersTray::Paused
+        );
+        assert_eq!(browsers_tray("not_paired", true, &[]), BrowsersTray::None);
+        assert_eq!(
+            browsers_tray("permitted", false, &["chrome"]),
+            BrowsersTray::Names(vec!["chrome".into()])
+        );
     }
 
     #[test]
     fn browsers_tray_empty_connected_states() {
-        assert_eq!(browsers_tray("paused", &[]), BrowsersTray::Paused);
-        assert_eq!(browsers_tray("intake_off", &[]), BrowsersTray::Off);
-        assert_eq!(browsers_tray("not_paired", &[]), BrowsersTray::None);
-        assert_eq!(browsers_tray("unavailable", &[]), BrowsersTray::None);
-        assert_eq!(browsers_tray("permitted", &[]), BrowsersTray::None);
-        assert_eq!(browsers_tray("something-else", &[]), BrowsersTray::None);
+        assert_eq!(browsers_tray("paused", false, &[]), BrowsersTray::Paused);
+        assert_eq!(browsers_tray("intake_off", false, &[]), BrowsersTray::Held);
+        assert_eq!(browsers_tray("not_paired", false, &[]), BrowsersTray::None);
+        assert_eq!(browsers_tray("unavailable", false, &[]), BrowsersTray::Held);
+        assert_eq!(browsers_tray("permitted", false, &[]), BrowsersTray::None);
+        assert_eq!(
+            browsers_tray("something-else", false, &[]),
+            BrowsersTray::None
+        );
     }
 }

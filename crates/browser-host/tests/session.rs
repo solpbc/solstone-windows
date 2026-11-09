@@ -792,6 +792,11 @@ async fn a_pause_outranks_a_full_spool() {
     );
     assert_eq!(hub.status().capture, "intake_off");
     assert_eq!(hub.status().failure, Some("queue_full"));
+    hub.set_delivery_failure(Some("relay_unavailable"));
+    let full = hub.status();
+    assert_eq!(full.capture, "intake_off");
+    assert_eq!(full.failure, Some("queue_full"));
+    assert_eq!(full.delivery, "failed");
     hub.update_gates(Gates {
         paused: true,
         ..paired(JOURNAL_A)
