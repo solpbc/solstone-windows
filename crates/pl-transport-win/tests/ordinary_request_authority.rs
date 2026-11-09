@@ -192,6 +192,8 @@ fn response_body(request: &[u8]) -> &'static [u8] {
         br#"{"days":{"20260914":{"segments":0}}}"#
     } else if request.starts_with("GET /app/devices/ingest/segments/") {
         br#"{"items":[],"total":0,"protocol_version":3}"#
+    } else if request.starts_with("GET /app/devices/ingest/obsidian/vaults ") {
+        br#"{"vaults":[]}"#
     } else if request.starts_with("GET /api/system/status ") {
         br#"{"version":{"current":"2026.9.14"}}"#
     } else if request.starts_with("GET /api/system/about ") {
@@ -253,7 +255,7 @@ async fn serve_one_system_status(
 }
 
 async fn ordinary_client() -> (ObserverClient, Arc<AtomicUsize>, JoinHandle<Vec<Vec<u8>>>) {
-    ordinary_client_with_route_count(14).await
+    ordinary_client_with_route_count(15).await
 }
 
 async fn ordinary_client_with_route_count(
@@ -346,7 +348,7 @@ async fn all_nine_production_helpers_use_the_shared_ordinary_request_authority()
 }
 
 #[tokio::test]
-async fn all_fourteen_production_helpers_use_the_shared_ordinary_request_authority() {
+async fn all_fifteen_production_helpers_use_the_shared_ordinary_request_authority() {
     let (client, accepts, server) = ordinary_client().await;
 
     client.list_paired_devices().await.unwrap();
@@ -382,9 +384,11 @@ async fn all_fourteen_production_helpers_use_the_shared_ordinary_request_authori
     client.get_migration_state().await.unwrap();
     client.put_migration_decision(b"{}").await.unwrap();
     client.get_local_endpoints().await.unwrap();
+    let vaults = client.obsidian_vaults().await.unwrap();
+    assert_eq!(vaults.status, 200);
 
     let requests = server.await.unwrap();
-    assert_eq!(accepts.load(Ordering::SeqCst), 14);
+    assert_eq!(accepts.load(Ordering::SeqCst), 15);
     let targets: Vec<_> = requests
         .iter()
         .map(|request| {
@@ -412,6 +416,7 @@ async fn all_fourteen_production_helpers_use_the_shared_ordinary_request_authori
             "GET /app/network/api/clients/self/migration HTTP/1.1",
             "PUT /app/network/api/clients/self/migration HTTP/1.1",
             "GET /app/network/local-endpoints HTTP/1.1",
+            "GET /app/devices/ingest/obsidian/vaults HTTP/1.1",
         ]
     );
     for request in &requests {

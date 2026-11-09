@@ -801,6 +801,47 @@ pub fn browser_discard_waiting() -> Option<serde_json::Value> {
     }
 }
 
+/// The Obsidian source's current state for the Settings window.
+#[tauri::command]
+pub fn obsidian_status() -> Option<serde_json::Value> {
+    crate::obsidian::status()
+}
+
+/// The vaults Obsidian lists on this computer, whose folders still have
+/// `.obsidian`. Off the main thread: a folder on an unreachable network drive
+/// can take a while to answer.
+#[tauri::command(async)]
+pub fn obsidian_found_vaults() -> Vec<obsidian_source::FoundVault> {
+    crate::obsidian::found()
+}
+
+#[tauri::command]
+pub async fn obsidian_use_found_vault(path: String) -> Result<Option<serde_json::Value>, String> {
+    crate::obsidian::use_found_vault(path).await
+}
+
+#[tauri::command]
+pub async fn obsidian_choose_folder(
+    window: tauri::WebviewWindow,
+) -> Result<Option<serde_json::Value>, String> {
+    crate::obsidian::choose_folder(window).await
+}
+
+#[tauri::command]
+pub async fn obsidian_turn_off() -> Option<serde_json::Value> {
+    crate::obsidian::turn_off().await
+}
+
+#[tauri::command]
+pub async fn obsidian_continue_warning() -> Option<serde_json::Value> {
+    crate::obsidian::continue_warning().await
+}
+
+#[tauri::command]
+pub async fn obsidian_cancel_warning() -> Option<serde_json::Value> {
+    crate::obsidian::cancel_warning().await
+}
+
 #[tauri::command]
 pub fn open_browser_store(app: tauri::AppHandle, brand: String) -> Result<bool, String> {
     #[cfg(feature = "browser-host")]

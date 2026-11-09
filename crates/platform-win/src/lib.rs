@@ -34,6 +34,12 @@ pub mod autostart;
 #[allow(unsafe_code)]
 pub mod desktop_activity;
 pub use desktop_activity::{is_pump_ready, mark_pump_registration_finished};
+/// Directory file ids for the Obsidian source (one enumeration per directory).
+#[allow(unsafe_code)]
+pub mod dir_file_ids;
+/// The native folder picker.
+#[allow(unsafe_code)]
+pub mod folder_picker;
 #[allow(unsafe_code)]
 pub mod local_offset;
 #[allow(unsafe_code)]

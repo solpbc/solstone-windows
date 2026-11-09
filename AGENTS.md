@@ -173,6 +173,7 @@ crates/
   pl-transport-win/    framed-mTLS transport (rustls) + observer client + upload coordinator + heartbeat
   ── composition tier ──
   capture-engine/      orchestrator: sources→writer→rotation→state→recovery
+  obsidian-source/     the Obsidian vault source: the vault engine's schedule and journal seam
 src-tauri/             the binary: tray + Settings/About + IPC + arg dispatch
 ui/                    WebView2 front-end (vanilla TS + Vite); pure renderer
 xtask/                 cargo xtask: contract [--check], purity-check, rust-notices check, version-gate, package, dev

@@ -41,6 +41,8 @@ observer-log.workspace = true
 journal-window.workspace = true
 # The browser extension's native host; only in a build with `browser-host`.
 browser-host = { workspace = true, optional = true }
+# The Obsidian vault source: the shared engine and the journal seam around it.
+obsidian-source.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

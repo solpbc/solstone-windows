@@ -66,4 +66,6 @@ pub mod paths {
     pub const INGEST_MANIFEST: &str = "/app/devices/ingest/manifest";
     /// Per-day segment list for reconciliation (append `/<YYYYMMDD>`).
     pub const INGEST_SEGMENTS: &str = "/app/devices/ingest/segments";
+    /// The vaults this journal has from other devices.
+    pub const INGEST_OBSIDIAN_VAULTS: &str = "/app/devices/ingest/obsidian/vaults";
 }

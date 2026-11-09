@@ -641,6 +641,13 @@ pub fn run(
             crate::ipc::browser_status,
             crate::ipc::open_browser_store,
             crate::ipc::browser_discard_waiting,
+            crate::ipc::obsidian_status,
+            crate::ipc::obsidian_found_vaults,
+            crate::ipc::obsidian_use_found_vault,
+            crate::ipc::obsidian_choose_folder,
+            crate::ipc::obsidian_turn_off,
+            crate::ipc::obsidian_continue_warning,
+            crate::ipc::obsidian_cancel_warning,
             crate::ipc::set_source_enabled,
             crate::ipc::set_desktop_activity_through_pause,
             crate::ipc::set_desktop_activity_window_titles,
@@ -869,6 +876,9 @@ pub fn run(
             #[cfg(feature = "browser-host")]
             crate::browser::start(app.handle().clone(), installed_copy_exe());
 
+            // The Obsidian vault source: scan, hold, deliver when asked.
+            crate::obsidian::start(app.handle().clone());
+
             // In-app updater: construct the Velopack-backed controller (honest
             // state earned from the feed, persisted next to pairing.json),
             // rehydrate any staged-pending-restart update, and start the owned
@@ -1009,6 +1019,9 @@ pub fn run(
                     let mut presenter = observer_model::LinkPresenter::default();
                     let mut link_watch = LinkWatch::default();
                     let started = tokio::time::Instant::now();
+                    // Turning the Obsidian source on or off changes what Pause can do
+                    // without changing the health dump.
+                    let mut obsidian_on = crate::obsidian::on_changes();
                     loop {
                         let mut dump = rx.borrow_and_update().clone();
                         // One presented link for the tray, its notices and Settings.
@@ -1035,6 +1048,7 @@ pub fn run(
                             &mi_restart,
                             mi_browsers.as_ref(),
                             &dump,
+                            obsidian_on.as_mut().is_some_and(|on| *on.borrow_and_update()),
                         );
                         if let Some(notice) =
                             notifier.observe(visual, blocked, started.elapsed().as_secs())
@@ -1061,6 +1075,16 @@ pub fn run(
                                 match next_change {
                                     Some(at) => tokio::time::sleep_until(at).await,
                                     None => std::future::pending().await,
+                                }
+                            } => {}
+                            _ = async {
+                                match obsidian_on.as_mut() {
+                                    Some(on) => {
+                                        if on.changed().await.is_err() {
+                                            std::future::pending::<()>().await;
+                                        }
+                                    }
+                                    None => std::future::pending::<()>().await,
                                 }
                             } => {}
                         }
@@ -1123,6 +1147,7 @@ pub fn run(
                         &mi_restart,
                         mi_browsers.as_ref(),
                         &terminal,
+                        false,
                     );
                     let _ = app.emit("health://changed", &terminal);
                 }

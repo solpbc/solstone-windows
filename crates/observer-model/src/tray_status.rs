@@ -17,8 +17,12 @@ pub enum TrayVisual {
     Off,
 }
 
-pub fn pause_enabled(phase: AppPhase) -> bool {
+/// Whether there is anything to pause. `other_source_on` is a source that runs
+/// beside capture and leaves the phase idle, so an owner using only that source
+/// can still pause it.
+pub fn pause_enabled(phase: AppPhase, other_source_on: bool) -> bool {
     matches!(phase, AppPhase::Starting | AppPhase::Observing)
+        || (phase == AppPhase::Idle && other_source_on)
 }
 
 pub fn resume_enabled(phase: AppPhase) -> bool {
@@ -413,10 +417,16 @@ mod tests {
 
     #[test]
     fn tray_action_enablement_matches_phase() {
-        assert!(pause_enabled(AppPhase::Starting));
-        assert!(pause_enabled(AppPhase::Observing));
-        assert!(!pause_enabled(AppPhase::Paused));
-        assert!(!pause_enabled(AppPhase::Error));
+        assert!(pause_enabled(AppPhase::Starting, false));
+        assert!(pause_enabled(AppPhase::Observing, false));
+        assert!(!pause_enabled(AppPhase::Paused, false));
+        assert!(!pause_enabled(AppPhase::Error, false));
+
+        // Idle has nothing to pause, unless a source beside capture is on.
+        assert!(!pause_enabled(AppPhase::Idle, false));
+        assert!(pause_enabled(AppPhase::Idle, true));
+        assert!(!pause_enabled(AppPhase::Paused, true));
+        assert!(!pause_enabled(AppPhase::Error, true));
 
         assert!(!resume_enabled(AppPhase::Starting));
         assert!(!resume_enabled(AppPhase::Observing));

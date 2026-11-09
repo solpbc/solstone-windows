@@ -887,6 +887,34 @@ type BrowserStatus = {
 let latestBrowser: BrowserStatus | null = null;
 let browserDiscard: "idle" | "confirm" | "busy" | "done" | "failed" = "idle";
 let browserStoreFailure: string | null = null;
+type ObsidianStateName =
+  | "off"
+  | "checking"
+  | "confirm"
+  | "on"
+  | "paused"
+  | "waiting_for_journal_update"
+  | "needs_attention";
+type ObsidianAttention = "vault_unreadable" | "part_unreadable" | "file_refused" | "storage";
+type ObsidianRefusal = "not_a_vault" | "unusable_name";
+type ObsidianStatus = {
+  state: ObsidianStateName;
+  vault: string | null;
+  warning: { vault: string; device: string | null; last_synced_at: string | null } | null;
+  last_checked_ms: number | null;
+  waiting: number;
+  first_sync: { found: number; sent: number } | null;
+  not_on_device: number;
+  too_large: number;
+  attention: ObsidianAttention | null;
+};
+type ObsidianDocument = { v: number; status: ObsidianStatus; refusal?: ObsidianRefusal | null };
+type ObsidianVault = { name: string; path: string };
+let latestObsidian: ObsidianStatus | null = null;
+let obsidianFound: ObsidianVault[] = [];
+let obsidianRefusal: ObsidianRefusal | null = null;
+let obsidianBusy = false;
+let obsidianFailed = false;
 let micDevices: MicDeviceRef[] = [];
 let runningApps: RunningApp[] = [];
 let titleDraft = "";
@@ -3682,6 +3710,224 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
   return rows;
 }
 
+const OBSIDIAN_COPY = {
+  label: "Obsidian",
+  explain:
+    "the solstone app takes in the notes in one vault on this computer. all of them go into your journal, then each one as it changes. your vault stays as it is.",
+  foundLabel: "vaults on this computer",
+  noneFound: "the solstone app didn't find a vault on this computer. choose its folder instead.",
+  use: "use this vault",
+  chooseFolder: "choose a folder",
+  refusedNotVault: "that folder isn't an Obsidian vault, so nothing was sent.",
+  refusedName: "that folder's name can't be a vault's name in your journal. rename the folder and try again.",
+  couldNotTurnOn: "couldn't turn this on. try again.",
+  checking: "waiting to reach your journal",
+  waitingUpdate: "waiting for a journal update",
+  waitingUpdateDetail: "your journal needs an update before it can take these notes. they're waiting on this computer.",
+  on: "on",
+  paused: "paused",
+  needsAttention: "needs attention",
+  vault: "vault",
+  lastChecked: "last checked",
+  notOnDevice: "not on this device",
+  tooLarge: "too large to bring in",
+  attentionVault:
+    "the solstone app can't read this vault. check that its folder is there and that the drive it's on is connected. nothing changes in your journal while it's out of reach.",
+  attentionPart: "part of this vault can't be read. check the permissions on the folders inside it. the rest of the vault keeps going into your journal.",
+  attentionFile: "some notes couldn't go into your journal. the solstone app tries them again the next time it starts.",
+  attentionStorage: "the solstone app couldn't save its place for this vault. check that this computer has free space.",
+  warningHeading: "a vault with this name is already in your journal",
+  continue: "continue",
+  cancel: "cancel",
+  turnOff: "turn off",
+  turnOffNote:
+    "turning this off stops bringing in changes. what's already in your journal stays there, and what's waiting stays on this computer until you turn it on again.",
+} as const;
+
+function obsidianWarningText(warning: NonNullable<ObsidianStatus["warning"]>): string {
+  const from = warning.device ? `from ${warning.device}` : "from another device";
+  let date = "";
+  const parsed = warning.last_synced_at ? new Date(warning.last_synced_at) : null;
+  if (parsed && !Number.isNaN(parsed.getTime())) {
+    date = `, last updated ${parsed.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
+  }
+  return `your journal already has a vault named ${warning.vault} ${from}${date}. if you continue, changes from both devices go into your journal.`;
+}
+
+function obsidianProgressText(sync: NonNullable<ObsidianStatus["first_sync"]>): string {
+  return `${sync.sent} of ${sync.found} notes in your journal`;
+}
+
+function obsidianStateText(state: ObsidianStateName): string {
+  switch (state) {
+    case "checking":
+      return OBSIDIAN_COPY.checking;
+    case "confirm":
+      return "";
+    case "on":
+      return OBSIDIAN_COPY.on;
+    case "paused":
+      return OBSIDIAN_COPY.paused;
+    case "waiting_for_journal_update":
+      return OBSIDIAN_COPY.waitingUpdate;
+    case "needs_attention":
+      return OBSIDIAN_COPY.needsAttention;
+    case "off":
+      return "off";
+  }
+}
+
+function obsidianAttentionText(attention: ObsidianAttention): string {
+  switch (attention) {
+    case "vault_unreadable":
+      return OBSIDIAN_COPY.attentionVault;
+    case "part_unreadable":
+      return OBSIDIAN_COPY.attentionPart;
+    case "file_refused":
+      return OBSIDIAN_COPY.attentionFile;
+    case "storage":
+      return OBSIDIAN_COPY.attentionStorage;
+  }
+}
+
+function obsidianRefusalText(refusal: ObsidianRefusal): string {
+  return refusal === "not_a_vault" ? OBSIDIAN_COPY.refusedNotVault : OBSIDIAN_COPY.refusedName;
+}
+
+async function refreshObsidianFound(): Promise<void> {
+  const listed = await invoke<ObsidianVault[] | null>("obsidian_found_vaults").catch(() => null);
+  obsidianFound = listed ?? [];
+  requestRerender();
+}
+
+async function applyObsidianDocument(run: Promise<ObsidianDocument | null>): Promise<void> {
+  obsidianBusy = true;
+  obsidianFailed = false;
+  requestRerender();
+  try {
+    const document = await run;
+    if (document) {
+      latestObsidian = document.status;
+      obsidianRefusal = document.refusal ?? null;
+    }
+  } catch {
+    obsidianFailed = true;
+  }
+  obsidianBusy = false;
+  await refreshObsidianFound();
+}
+
+function renderObsidianRows(status: ObsidianStatus): HTMLElement[] {
+  const stateValue = selectable(automation(text("div", obsidianStateText(status.state)), ids["settings.sources.obsidian.state"]));
+  const rows: HTMLElement[] = [valueRow(OBSIDIAN_COPY.label, stateValue)];
+
+  if (status.state === "off") {
+    const block = document.createElement("div");
+    const explain = text("div", OBSIDIAN_COPY.explain);
+    explain.style.margin = "0 0 8px";
+    block.append(explain);
+    const found = document.createElement("div");
+    automation(found, ids["settings.sources.obsidian.found"]);
+    if (obsidianFound.length > 0) {
+      found.append(text("div", OBSIDIAN_COPY.foundLabel));
+      for (const vault of obsidianFound) {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.gap = "10px";
+        row.style.padding = "4px 0";
+        row.append(selectable(text("div", vault.name)));
+        const use = actionButton(OBSIDIAN_COPY.use, undefined, !obsidianBusy, () => {
+          obsidianRefusal = null;
+          void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_use_found_vault", { path: vault.path }));
+        }, obsidianBusy, "standard");
+        row.append(use);
+        found.append(row);
+      }
+    } else {
+      found.append(text("div", OBSIDIAN_COPY.noneFound));
+    }
+    block.append(found);
+    const choose = actionButton(OBSIDIAN_COPY.chooseFolder, ids["settings.sources.obsidian.choose"], !obsidianBusy, () => {
+      obsidianRefusal = null;
+      void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_choose_folder"));
+    }, obsidianBusy, "standard");
+    const actions = document.createElement("div");
+    actions.style.marginTop = "8px";
+    actions.append(choose);
+    block.append(actions);
+    if (obsidianRefusal !== null || obsidianFailed) {
+      const refusal = text("div", obsidianRefusal !== null ? obsidianRefusalText(obsidianRefusal) : OBSIDIAN_COPY.couldNotTurnOn);
+      refusal.style.color = "var(--danger)";
+      refusal.style.marginTop = "6px";
+      block.append(automation(refusal, ids["settings.sources.obsidian.refusal"]));
+    }
+    rows.push(valueRow("", block));
+    return rows;
+  }
+
+  if (status.state === "confirm" && status.warning) {
+    const block = document.createElement("div");
+    const heading = text("div", OBSIDIAN_COPY.warningHeading);
+    heading.style.fontWeight = "600";
+    heading.style.marginBottom = "4px";
+    block.append(heading, automation(text("div", obsidianWarningText(status.warning)), ids["settings.sources.obsidian.warning"]));
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.gap = "8px";
+    actions.style.marginTop = "8px";
+    actions.append(
+      actionButton(OBSIDIAN_COPY.continue, ids["settings.sources.obsidian.continue"], !obsidianBusy, () => {
+        void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_continue_warning"));
+      }, obsidianBusy),
+      actionButton(OBSIDIAN_COPY.cancel, ids["settings.sources.obsidian.cancel"], !obsidianBusy, () => {
+        void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_cancel_warning"));
+      }, obsidianBusy, "standard"),
+    );
+    block.append(actions);
+    rows.push(valueRow("", block));
+    return rows;
+  }
+
+  if (status.vault) {
+    rows.push(valueRow(OBSIDIAN_COPY.vault, selectable(text("div", status.vault))));
+  }
+  if (status.state === "waiting_for_journal_update") {
+    rows.push(valueRow("", text("div", OBSIDIAN_COPY.waitingUpdateDetail)));
+  }
+  if (status.first_sync) {
+    rows.push(valueRow("", selectable(text("div", obsidianProgressText(status.first_sync)))));
+  }
+  if (status.waiting > 0) {
+    rows.push(valueRow("", selectable(text("div", `${status.waiting} waiting to sync`))));
+  }
+  rows.push(valueRow(OBSIDIAN_COPY.lastChecked, selectable(text("div", lastSyncedLabel(status.last_checked_ms, nowSecs())))));
+  if (status.not_on_device > 0) {
+    rows.push(valueRow(OBSIDIAN_COPY.notOnDevice, selectable(text("div", String(status.not_on_device)))));
+  }
+  if (status.too_large > 0) {
+    rows.push(valueRow(OBSIDIAN_COPY.tooLarge, selectable(text("div", String(status.too_large)))));
+  }
+  if (status.attention) {
+    const attention = automation(text("div", obsidianAttentionText(status.attention)), ids["settings.sources.obsidian.attention"]);
+    attention.style.color = "var(--danger)";
+    rows.push(valueRow("", attention));
+  }
+  const offBlock = document.createElement("div");
+  offBlock.append(
+    actionButton(OBSIDIAN_COPY.turnOff, ids["settings.sources.obsidian.turnOff"], !obsidianBusy, () => {
+      void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_turn_off"));
+    }, obsidianBusy, "standard"),
+  );
+  const offNote = text("div", OBSIDIAN_COPY.turnOffNote);
+  offNote.style.fontSize = "12px";
+  offNote.style.color = "var(--fg-subtle)";
+  offNote.style.marginTop = "6px";
+  offBlock.append(offNote);
+  rows.push(valueRow("", offBlock));
+  return rows;
+}
+
 function renderSourceControl(
   kind: SourceKind,
   report: SourceReport | undefined,
@@ -3835,6 +4081,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
       sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), isSourcePaused(dump, kind), report), isAccessDenied(report)), id))));
     }
     if (latestBrowser) sources.append(...renderBrowserRows(latestBrowser));
+    if (latestObsidian) sources.append(...renderObsidianRows(latestObsidian));
     return sources;
   }
   const sources = section("sources");
@@ -3889,6 +4136,9 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   }
   if (latestBrowser) {
     sources.append(...renderBrowserRows(latestBrowser));
+  }
+  if (latestObsidian) {
+    sources.append(...renderObsidianRows(latestObsidian));
   }
   return sources;
 }
@@ -4109,7 +4359,9 @@ function reconcileUnknownLoginAttempt(dump: HealthDump): void {
 // restart from error, and a disabled pause otherwise. Setup uses the control below.
 function createPauseButton(dump: HealthDump): HTMLButtonElement {
   const phase = latestHealth?.app_state ?? dump.app_state;
-  if (phase === "observing") {
+  // The Obsidian source runs beside capture and leaves the phase idle.
+  const obsidianOn = latestObsidian !== null && latestObsidian.state !== "off";
+  if (phase === "observing" || (phase === "idle" && obsidianOn)) {
     return actionButton("pause", undefined, true, async () => {
       try {
         await invoke("pause", { reason: "operator", durationSecs: null });
@@ -5958,6 +6210,43 @@ async function refreshBrowserStatus(): Promise<void> {
   latestBrowser = await invoke<BrowserStatus | null>("browser_status").catch(() => null);
 }
 
+let obsidianFetching = false;
+
+// The Obsidian row: fetched with the heartbeat, and every couple of seconds while
+// the source is doing something and Settings is on screen. Renders once the
+// answer is in, and only when it says something new.
+async function refreshObsidianStatus(): Promise<void> {
+  if (obsidianFetching) {
+    return;
+  }
+  obsidianFetching = true;
+  try {
+    const doc = await invoke<ObsidianDocument | null>("obsidian_status").catch(() => null);
+    const next = doc ? doc.status : null;
+    const changed = JSON.stringify(next) !== JSON.stringify(latestObsidian);
+    latestObsidian = next;
+    if (next?.state === "off") {
+      const listed = await invoke<ObsidianVault[] | null>("obsidian_found_vaults").catch(() => null);
+      obsidianFound = listed ?? [];
+    }
+    if (changed) {
+      requestRerender();
+    }
+  } finally {
+    obsidianFetching = false;
+  }
+}
+
+function pollObsidianStatus(): Promise<void> {
+  if (label !== "settings" || document.visibilityState === "hidden" || obsidianBusy) {
+    return Promise.resolve();
+  }
+  if (!latestObsidian || latestObsidian.state === "off") {
+    return Promise.resolve();
+  }
+  return refreshObsidianStatus();
+}
+
 async function boot(): Promise<void> {
   if (label === "about") {
     setLatestHealth(await invoke<HealthDump>("get_health").catch(() => null));
@@ -5989,6 +6278,7 @@ async function boot(): Promise<void> {
   migrationOfferBinding = latestMigration.migration?.offer_binding ?? null;
   migrationRefreshAt = Date.now();
   await refreshBrowserStatus();
+  await refreshObsidianStatus();
   rerender();
 }
 
@@ -6132,6 +6422,7 @@ export function start(): void {
   void listen<HealthDump>("health://changed", (event) => {
     setLatestHealth(event.payload);
     void refreshBrowserStatus();
+    void refreshObsidianStatus();
     void refreshMigrationState();
     requestRerender();
   });
@@ -6166,6 +6457,9 @@ export function start(): void {
     lookForFoundJournal();
     lapseFoundJournalPress();
   }, 1000);
+  setInterval(() => {
+    void pollObsidianStatus();
+  }, 2500);
 }
 
 export const __test__ = {
@@ -6229,6 +6523,14 @@ export const __test__ = {
   setBrowser(status: BrowserStatus | null) {
     latestBrowser = status;
   },
+  pollObsidianStatus,
+  setObsidian(status: ObsidianStatus | null, found: ObsidianVault[] = [], refusal: ObsidianRefusal | null = null) {
+    latestObsidian = status;
+    obsidianFound = found;
+    obsidianRefusal = refusal;
+    obsidianBusy = false;
+    obsidianFailed = false;
+  },
   setPreview(v: PreviewSnapshot | null) {
     applyPreview(v ?? {});
   },
@@ -6283,6 +6585,11 @@ export const __test__ = {
     micDevices = [];
     runningApps = [];
     latestBrowser = null;
+    latestObsidian = null;
+    obsidianFound = [];
+    obsidianRefusal = null;
+    obsidianBusy = false;
+    obsidianFailed = false;
     browserDiscard = "idle";
     browserStoreFailure = null;
     activeRoute = "home";

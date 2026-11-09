@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Obsidian is now a source. in the solstone app's settings, pick a vault or choose a folder, and every note in that vault goes into your journal, then each one as it changes. your vault stays as it is.
+
 ### Changed
 
 - settings no longer asks you to choose sites after you add the solstone extension. your browser decides that.

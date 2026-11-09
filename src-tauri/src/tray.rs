@@ -249,6 +249,7 @@ pub fn apply_state(
     mi_restart: &MenuItem<Wry>,
     browsers: Option<&MenuItem<Wry>>,
     dump: &HealthDump,
+    obsidian_on: bool,
 ) -> (TrayVisual, Option<SourceKind>) {
     let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), |kind| {
         dump.setup.is_enabled(kind)
@@ -265,7 +266,7 @@ pub fn apply_state(
     );
     let _ = tray.set_icon(Some(icon_for(visual)));
     let _ = tray.set_tooltip(Some(tooltip));
-    let _ = pause_submenu.set_enabled(pause_enabled(dump.app_state));
+    let _ = pause_submenu.set_enabled(pause_enabled(dump.app_state, obsidian_on));
     let _ = mi_resume.set_enabled(resume_enabled(dump.app_state));
     let _ = mi_restart.set_enabled(restart_enabled(dump.app_state));
     #[cfg(feature = "browser-host")]

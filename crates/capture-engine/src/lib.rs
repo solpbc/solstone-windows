@@ -2967,6 +2967,47 @@ mod tests {
         assert_eq!(engine.health_dump().app_state, AppPhase::Observing);
     }
 
+    /// A source beside capture leaves the phase idle, and the owner can still
+    /// pause it: pausing with nothing to stop holds the owner's pause, and resuming
+    /// clears it and starts nothing.
+    #[test]
+    fn pause_and_resume_work_with_every_source_off() {
+        let (sources, handles) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        for kind in [
+            SourceKind::Screen,
+            SourceKind::SystemAudio,
+            SourceKind::Mic,
+            SourceKind::DesktopActivity,
+        ] {
+            engine.apply_command(EngineCommand::SetSourceEnabled {
+                kind,
+                enabled: false,
+            });
+        }
+        engine.start();
+        assert_eq!(engine.health_dump().app_state, AppPhase::Idle);
+
+        engine.apply_command(EngineCommand::Pause {
+            reason: PauseReason::Operator,
+            duration_secs: None,
+        });
+        let paused = engine.health_dump();
+        assert_eq!(paused.app_state, AppPhase::Paused);
+        assert_eq!(paused.pause.unwrap().reason, PauseReason::Operator);
+
+        engine.apply_command(EngineCommand::Resume);
+        let resumed = engine.health_dump();
+        assert_eq!(resumed.app_state, AppPhase::Idle);
+        assert!(resumed.pause.is_none());
+        assert_eq!(handles.screen.starts(), 0);
+    }
+
     /// An in-memory pause store shared with the test, standing in for the file.
     #[derive(Clone, Default)]
     struct MemoryPauseStore(Arc<Mutex<Option<HeldPause>>>);

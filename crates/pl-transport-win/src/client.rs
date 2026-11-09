@@ -1310,6 +1310,50 @@ impl ObserverClient {
         }
     }
 
+    /// The capabilities the journal lists in `/api/system/status`. A journal that
+    /// answers without the list has none.
+    pub async fn system_capabilities(&self) -> Result<Vec<String>, TransportError> {
+        let fetch = async {
+            let mut headers = self.v3_headers();
+            headers.push(("Cache-Control".into(), "no-cache".into()));
+            let (response, _) = self
+                .ordinary_request(OrdinaryRequest::SystemStatusGet, None, &headers, b"")
+                .await
+                .map_err(|error| match error {
+                    RouteError::Transport(error) => error,
+                    RouteError::AwaitingConfirmation => TransportError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "awaiting mark confirmation",
+                    )),
+                })?;
+            if response.status != 200 {
+                return Err(TransportError::Rejected {
+                    status: response.status,
+                    body: response.body_text(),
+                });
+            }
+            let value: serde_json::Value = serde_json::from_slice(&response.body)?;
+            Ok(capabilities_from_status(&value))
+        };
+        match tokio::time::timeout(Duration::from_secs(5), fetch).await {
+            Ok(result) => result,
+            Err(_) => Err(TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "system_status request timed out",
+            ))),
+        }
+    }
+
+    /// The vaults this journal has from other devices. A journal without the
+    /// route answers 404, which the caller reads as an empty list.
+    pub async fn obsidian_vaults(&self) -> Result<HttpResponse, RouteError> {
+        let headers = self.v3_headers();
+        let (response, _) = self
+            .ordinary_request(OrdinaryRequest::ObsidianVaultsGet, None, &headers, b"")
+            .await?;
+        Ok(response)
+    }
+
     /// One liveness check: ask the journal for its status, bounded by the
     /// check timeout. Any answer proves the journal is reachable over this
     /// pairing; what it says does not matter here. Each check is one fresh dial.
@@ -1475,7 +1519,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 15);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 16);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);
@@ -1613,6 +1657,19 @@ fn is_observer_auth_header(name: &str) -> bool {
     name.eq_ignore_ascii_case("authorization")
         || name.eq_ignore_ascii_case(OBSERVER_HANDLE_HEADER)
         || name.eq_ignore_ascii_case(PROTOCOL_VERSION_HEADER)
+}
+
+fn capabilities_from_status(status: &serde_json::Value) -> Vec<String> {
+    status
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(serde::Deserialize)]

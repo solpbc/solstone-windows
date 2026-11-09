@@ -477,6 +477,7 @@ fn production_exception_set_is_exact() {
             "capture-screen-encode",
             "capture-wasapi",
             "capture-wgc",
+            "obsidian-source",
             "pl-transport-win",
             "platform-win",
             "solstone-windows-app",

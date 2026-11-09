@@ -3335,6 +3335,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "obsidian-source"
+version = "2.0.45"
+dependencies = [
+ "serde",
+ "serde_json",
+ "solstone-vault",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3623,6 +3635,8 @@ dependencies = [
  "observer-recovery",
  "observer-segment",
  "serde_json",
+ "solstone-vault",
+ "tempfile",
  "tokio",
  "tracing",
  "webview2-com",
@@ -4677,6 +4691,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "solstone-vault"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "solstone-windows-app"
 version = "2.0.45"
 dependencies = [
@@ -4696,6 +4721,7 @@ dependencies = [
  "observer-model",
  "observer-state",
  "observer-update",
+ "obsidian-source",
  "pl-transport-win",
  "platform-win",
  "rcgen",

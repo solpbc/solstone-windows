@@ -24,6 +24,7 @@ members = [
     "crates/pl-transport-win",
     "crates/capture-engine",
     "crates/browser-host",
+    "crates/obsidian-source",
     "crates/journal-window",
     "src-tauri",
     "xtask",
@@ -102,6 +103,10 @@ platform-win = { path = "crates/platform-win" }
 pl-transport-win = { path = "crates/pl-transport-win" }
 capture-engine = { path = "crates/capture-engine" }
 browser-host = { path = "crates/browser-host" }
+obsidian-source = { path = "crates/obsidian-source" }
+# The Obsidian vault engine, shared with the Linux desktop app. This copy comes
+# from solstone-linux crates/solstone-vault at 1c34a89.
+solstone-vault = { path = "vendor/solstone-vault" }
 journal-window = { path = "crates/journal-window" }
 # Shared native-browser contract crate, vendored byte-for-byte from
 # solstone-browser (see vendor/native-browser/VENDORED.md). Outside the

@@ -120,7 +120,7 @@ struct PreviewStore {
 #[derive(Default)]
 pub struct LogExports(tokio::sync::Mutex<PreviewStore>);
 
-fn require_settings(window: &tauri::WebviewWindow) -> Result<(), String> {
+pub(crate) fn require_settings(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() == "settings" {
         Ok(())
     } else {

@@ -29,6 +29,7 @@ pub(crate) enum OrdinaryRequest {
     MigrationDecisionPut,
     LocalEndpointsGet,
     LinkIdentityGet,
+    ObsidianVaultsGet,
 }
 
 /// One route's transport authority.
@@ -43,7 +44,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -59,6 +60,7 @@ impl OrdinaryRequest {
         Self::MigrationDecisionPut,
         Self::LocalEndpointsGet,
         Self::LinkIdentityGet,
+        Self::ObsidianVaultsGet,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
@@ -167,6 +169,13 @@ impl OrdinaryRequest {
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: false,
+            },
+            Self::ObsidianVaultsGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: paths::INGEST_OBSIDIAN_VAULTS,
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
             },
         }
     }
@@ -346,6 +355,14 @@ mod tests {
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 false,
+            ),
+            (
+                OrdinaryRequest::ObsidianVaultsGet,
+                "GET",
+                "/app/devices/ingest/obsidian/vaults",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
             ),
         ];
 

@@ -111,6 +111,21 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "log_save",
         owner: None,
     },
+    // One enumeration of a directory into a local aligned buffer, for file ids
+    // the Obsidian source pairs renames by. Opens no entry in it.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "dir_file_ids",
+        owner: None,
+    },
+    // The native folder dialog behind choosing an Obsidian vault.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "folder_picker",
+        owner: None,
+    },
     // The logon-session read, parent-process lookup and handle-inheritance clear
     // behind restarting the app after a silent Setup.
     ApprovedNode {

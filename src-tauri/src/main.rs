@@ -24,6 +24,7 @@ mod lifecycle;
 mod logs;
 mod mic;
 mod notify;
+mod obsidian;
 mod support;
 mod tray;
 mod update;

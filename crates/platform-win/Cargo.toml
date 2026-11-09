@@ -39,6 +39,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Pipes",
     "Win32_Security_Authorization",
@@ -53,3 +55,10 @@ windows = { version = "0.58", features = [
 tokio = { workspace = true, features = ["net", "time", "io-util"] }
 # Per-user autostart `Run`-key registration (safe wrapper over the HKCU registry).
 winreg = "0.55"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+solstone-vault.workspace = true
+serde_json.workspace = true
