@@ -19,7 +19,7 @@ use obsidian_source::{
     ObsidianDocument, ObsidianHandle, VaultList, CAPABILITY, SOURCE,
 };
 use pl_transport_win::source_upload::{upload_source_file_for_reply, SourceFile, SourceFileReply};
-use pl_transport_win::ObserverClient;
+use pl_transport_win::{ObserverClient, TransportError};
 use tauri::Manager;
 
 static HANDLE: OnceLock<ObsidianHandle> = OnceLock::new();
@@ -42,8 +42,8 @@ pub(crate) struct ClientJournal {
 }
 
 impl ClientJournal {
-    /// `heard` runs whenever the journal answers a delivery, so a PC sending
-    /// only notes still shows when it last reached the journal.
+    /// `heard` runs whenever the journal answers, a delivery or the capability
+    /// check, so a PC sending only notes still shows when it last reached it.
     pub(crate) fn new(load_client: LoadClient, load_zone: LoadZone, heard: Heard) -> Self {
         Self {
             load_client,
@@ -62,7 +62,11 @@ impl Journal for ClientJournal {
                 return Capability::Unknown;
             };
             *self.asked.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::clone(&client));
-            match client.system_capabilities().await {
+            let answer = client.system_capabilities().await;
+            if matches!(answer, Ok(_) | Err(TransportError::Rejected { .. })) {
+                (self.heard)();
+            }
+            match answer {
                 Ok(listed) if listed.iter().any(|name| name == CAPABILITY) => Capability::Supported,
                 Ok(_) => Capability::NotListed,
                 Err(_) => Capability::Unknown,
@@ -571,9 +575,14 @@ mod tests {
             (200, "not json".into()),
         ])
         .await;
-        let journal = journal_for(client);
+        let (journal, heard) = journal_counting_answers(client);
         assert_eq!(journal.capability().await, Capability::Supported);
         assert_eq!(journal.capability().await, Capability::NotListed);
+        assert_eq!(
+            heard.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a capability answer is reaching the journal"
+        );
         match journal.vault_list().await {
             VaultList::Listed(list) => {
                 assert_eq!(list.len(), 1);
