@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.45
+PackageVersion: 2.0.46
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,10 +22,10 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
+  Added
+  - Obsidian is now a source. in the solstone app's settings, pick a vault or choose its folder, and every note in that vault goes into your journal, then each one as it changes. your vault stays as it is.
   Changed
-  - the "your · journal" mark shown before your journal is set up is now easy to see on any background.
-  Fixed
-  - this is a security fix. another account on this PC can no longer read the app's status, which named your audio devices, your folders and your journal's mark, or make the app open its windows.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.45
+  - settings no longer asks you to choose sites after you add the solstone extension. you choose them in your browser.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.46
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

@@ -4,15 +4,15 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.46] - 2026-11-08
 
 ### Added
 
-- Obsidian is now a source. in the solstone app's settings, pick a vault or choose a folder, and every note in that vault goes into your journal, then each one as it changes. your vault stays as it is.
+- Obsidian is now a source. in the solstone app's settings, pick a vault or choose its folder, and every note in that vault goes into your journal, then each one as it changes. your vault stays as it is.
 
 ### Changed
 
-- settings no longer asks you to choose sites after you add the solstone extension. your browser decides that.
+- settings no longer asks you to choose sites after you add the solstone extension. you choose them in your browser.
 
 ## [2.0.45] - 2026-11-06
 

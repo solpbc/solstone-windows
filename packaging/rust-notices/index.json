@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "8ece13d945d6e7841d14793bf02aab2abaf4b4993e8e1554eff5263df7a4ca06",
+  "cargo_lock_sha256": "af20a3b7ad6585b7fe6aa926d36f663d6137fd50c4111aa963f315eb157cd153",
   "notice_texts": [
     {
       "byte_end_exclusive": 1418,
@@ -10336,7 +10336,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 290,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-11-09T02:54:49.381874+00:00",
+    "query_utc": "2026-11-09T05:58:05.665543+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 27
