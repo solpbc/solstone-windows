@@ -31,19 +31,24 @@ type LoadClient = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Option<Arc<ObserverClient>>> + Send>> + Send + Sync,
 >;
 type LoadZone = Arc<dyn Fn() -> Option<LocalZone> + Send + Sync>;
+type Heard = Arc<dyn Fn() + Send + Sync>;
 
 /// The journal, over the app's paired upload path.
 pub(crate) struct ClientJournal {
     load_client: LoadClient,
     load_zone: LoadZone,
+    heard: Heard,
     asked: Mutex<Option<Arc<ObserverClient>>>,
 }
 
 impl ClientJournal {
-    pub(crate) fn new(load_client: LoadClient, load_zone: LoadZone) -> Self {
+    /// `heard` runs whenever the journal answers a delivery, so a PC sending
+    /// only notes still shows when it last reached the journal.
+    pub(crate) fn new(load_client: LoadClient, load_zone: LoadZone, heard: Heard) -> Self {
         Self {
             load_client,
             load_zone,
+            heard,
             asked: Mutex::new(None),
         }
     }
@@ -109,6 +114,9 @@ impl Journal for ClientJournal {
                 },
             )
             .await;
+            if matches!(reply, SourceFileReply::Answered { .. }) {
+                (self.heard)();
+            }
             answer_for(reply)
         })
     }
@@ -158,6 +166,13 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 fn local_zone() -> Option<LocalZone> {
     platform_win::WindowsLocalOffset.local_zone(now_secs()).ok()
 }
@@ -172,6 +187,7 @@ pub fn start(app: tauri::AppHandle) {
             pl_transport_win::access::load_current_client(&state.credential_access).await
         })
     });
+    let heard_app = app.clone();
     let paused_app = app;
     // Only the owner's pause holds delivery. A locked screen or a suspending PC
     // pauses capture, and has no bearing on notes already written.
@@ -185,7 +201,13 @@ pub fn start(app: tauri::AppHandle) {
     });
     let dir_ids: Arc<obsidian_source::ReadDirFileIds> =
         Arc::new(|dir: &Path| platform_win::dir_file_ids::file_ids_in_dir(dir));
-    let journal = ClientJournal::new(load_client, Arc::new(local_zone));
+    let heard: Heard = Arc::new(move || {
+        let state = heard_app.state::<crate::app::AppState>();
+        if let Ok(mut sync) = state.sync.lock() {
+            sync.upload.record_answer(now_millis());
+        };
+    });
+    let journal = ClientJournal::new(load_client, Arc::new(local_zone), heard);
     let root = platform_win::local_data_root().join("obsidian");
     let (handle, work) = obsidian_source::start(root, Some(dir_ids), journal, paused);
     let _ = HANDLE.set(handle);
@@ -395,11 +417,20 @@ mod tests {
     }
 
     fn journal_for(client: Arc<ObserverClient>) -> ClientJournal {
+        journal_counting_answers(client).0
+    }
+
+    /// The journal seam, and how many times it has heard the journal answer.
+    fn journal_counting_answers(
+        client: Arc<ObserverClient>,
+    ) -> (ClientJournal, Arc<std::sync::atomic::AtomicUsize>) {
         let load: LoadClient = Arc::new(move || {
             let client = Arc::clone(&client);
             Box::pin(async move { Some(client) })
         });
-        ClientJournal::new(
+        let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&heard);
+        let journal = ClientJournal::new(
             load,
             Arc::new(|| {
                 Some(LocalZone {
@@ -407,7 +438,11 @@ mod tests {
                     tz: None,
                 })
             }),
-        )
+            Arc::new(move || {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        );
+        (journal, heard)
     }
 
     fn delivery_file(dir: &Path) -> Delivery {
@@ -488,6 +523,34 @@ mod tests {
             body.contains(&format!("obsidian_{}.jsonl", "a".repeat(64))),
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_delivery_the_journal_answers_counts_as_reaching_it() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let delivery = delivery_file(dir.path());
+
+        let (client, _requests) = start_journal(vec![(200, OK_BODY.into())]).await;
+        let (journal, heard) = journal_counting_answers(client);
+        assert_eq!(
+            journal.deliver(&delivery).await,
+            DeliveryResult::Answer(Answer::Delivered)
+        );
+        assert_eq!(heard.load(Ordering::SeqCst), 1, "answered: reached");
+
+        // Nothing listening: not reached.
+        let (cert, _) = self_signed();
+        let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+        let unreachable = Arc::new(
+            ObserverClient::new(credential(pin, 1), Arc::new(AtomicBool::new(true))).unwrap(),
+        );
+        let (journal, heard) = journal_counting_answers(unreachable);
+        assert_eq!(
+            journal.deliver(&delivery).await,
+            DeliveryResult::Answer(Answer::Retry)
+        );
+        assert_eq!(heard.load(Ordering::SeqCst), 0, "no answer: not reached");
     }
 
     #[tokio::test]
