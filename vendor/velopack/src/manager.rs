@@ -411,27 +411,6 @@ impl UpdateManager {
             return Ok(());
         }
 
-        let old_nupkg_pattern = format!("{}/*.nupkg", packages_dir.to_string_lossy());
-        let old_partial_pattern = format!("{}/*.partial", packages_dir.to_string_lossy());
-        let delta_pattern = format!("{}/*-delta.nupkg", packages_dir.to_string_lossy());
-        let mut to_delete = Vec::new();
-
-        fn find_files_to_delete(pattern: &str, to_delete: &mut Vec<PathBuf>) {
-            match glob::glob(pattern) {
-                Ok(paths) => {
-                    for path in paths.into_iter().flatten() {
-                        to_delete.push(path);
-                    }
-                }
-                Err(e) => {
-                    error!("Error while searching for packages to clean: {}", e);
-                }
-            }
-        }
-
-        find_files_to_delete(&old_nupkg_pattern, &mut to_delete);
-        find_files_to_delete(&old_partial_pattern, &mut to_delete);
-
         if update.BaseRelease.is_some() && !update.DeltasToTarget.is_empty() {
             info!("Beginning delta update process.");
             if self.download_and_apply_delta_updates(update, &partial_file, progress.clone()).is_err() {
@@ -455,7 +434,6 @@ impl UpdateManager {
         // Reauthenticate the final file and keep its read guard through helper extraction.
         let _package_guard = self.inner.source.open_admitted_release_entry(&update.TargetFullRelease, &final_target_file)?;
 
-        find_files_to_delete(&delta_pattern, &mut to_delete);
 
         // extract new Update.exe on Windows only
         #[cfg(target_os = "windows")]
@@ -472,10 +450,8 @@ impl UpdateManager {
             }
         }
 
-        for path in to_delete {
-            info!("Deleting up old package: '{:?}'", path);
-            let _ = fs::remove_file(&path);
-        }
+        // The caller retires its own pending namespace before downloading. Do
+        // not best-effort glob-delete unrelated packages or orphan sidecars.
 
         Ok(())
     }

@@ -20,13 +20,19 @@ pub struct PlatformConnectionCost {
 #[allow(unsafe_code)]
 pub fn connection_cost() -> PlatformConnectionCost {
     use windows::Networking::Connectivity::{NetworkCostType, NetworkInformation};
-    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
-    // Initialize MTA. CoInitializeEx returning S_OK (0), S_FALSE (1), or RPC_E_CHANGED_MODE
-    // (already initialized) is treated as success.
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    // Balance both successful HRESULTs. An existing STA apartment remains usable,
+    // but RPC_E_CHANGED_MODE did not acquire an initialization to release.
+    struct Apartment(bool);
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
     }
+    let _apartment = Apartment(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok());
 
     let profile = match NetworkInformation::GetInternetConnectionProfile() {
         Ok(p) => p,

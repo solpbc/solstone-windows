@@ -100,18 +100,6 @@ fn main() -> ExitCode {
         if early_args.iter().any(|a| a == "--apply-update") {
             return update::apply_pending_cli(&early_args);
         }
-        match update::startup_apply_verified() {
-            update::ApplyOutcome::Started => return ExitCode::SUCCESS,
-            update::ApplyOutcome::NothingPending => {}
-            update::ApplyOutcome::Failed(e) => {
-                tracing::warn!(
-                    target: "update",
-                    step = "startup_apply",
-                    error = %e,
-                    "startup apply skipped"
-                );
-            }
-        }
     }
 
     // Velopack-aware entry — MUST run first after host mode. For the installer lifecycle args

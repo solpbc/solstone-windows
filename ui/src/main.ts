@@ -445,7 +445,7 @@ interface UpdateView {
   downloaded: boolean;
   cost_deferral: "metered" | "roaming" | "restricted" | "unknown" | null;
   installs_next_start: boolean;
-  recovery: "check" | "download" | null;
+  recovery: "check" | "download" | "install" | null;
   notes: string | null;
   download_pct: number | null;
   prefs: UpdatePrefs;
@@ -5637,6 +5637,9 @@ function updateHeadline(view: UpdateView): string {
       if (view.recovery === "download") {
         return "couldn't download update";
       }
+      if (view.recovery === "install") {
+        return "couldn't install update";
+      }
       return "couldn't check for updates";
     case "failed_with_available":
       if (view.recovery === "download") {
@@ -5693,6 +5696,8 @@ function updateSubtitle(
       text += " · the last check for updates failed";
     } else if (view.recovery === "download") {
       text += " · the download did not finish";
+    } else if (view.recovery === "install") {
+      text += " · the update couldn't be installed";
     }
     return { text, live: false };
   }
@@ -5705,14 +5710,6 @@ function updateSubtitle(
         text: view.prefs.auto_check
           ? "automatic checks are on"
           : "automatic checks are off",
-        live: false,
-      };
-    case "checking":
-    case "downloading":
-      return null;
-    case "staged":
-      return {
-        text: "it installs the next time the solstone app restarts, including sign-in",
         live: false,
       };
     case "unavailable":
@@ -6057,7 +6054,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
     );
     anyAction = true;
   }
-  if (view.display === "available" || a.can_download) {
+  if ((view.display === "available" || a.can_download) && view.recovery !== "download") {
     actions.append(
       actionButton("download", ids["settings.updates.download"], a.can_download, () => {
         void invoke("update_download");
@@ -6073,7 +6070,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
     );
     anyAction = true;
   }
-  if (view.display === "failed" || view.display === "failed_with_available" || view.recovery === "download") {
+  if ((view.display === "failed" || view.display === "failed_with_available" || view.recovery === "download") && view.recovery !== "install") {
     const isDownloadRecovery = view.recovery === "download";
     actions.append(
       actionButton("retry", ids["settings.updates.retry"], isDownloadRecovery ? a.can_download : a.can_retry, () => {

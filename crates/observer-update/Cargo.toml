@@ -11,6 +11,9 @@ description = "Honest update state model + reducer for the in-app updater. Earne
 [lints]
 workspace = true
 
+[features]
+transport-tests = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

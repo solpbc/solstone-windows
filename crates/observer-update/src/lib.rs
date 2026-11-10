@@ -51,6 +51,50 @@ pub struct UpdatePrefs {
     pub auto_download: bool,
 }
 
+/// Which update preferences the owner has set.
+///
+/// A `None` field has not been set. It reads as the current default, so a later
+/// default change still reaches that owner. `Some` is the owner's choice even
+/// when it equals today's default. Owner setters write it. Opening a file from
+/// before this record also keeps concrete values that differ from the defaults.
+/// This is not the migration marker ([`UpdateDocument::daily_background`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplicitUpdateChoices {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_check: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<CheckInterval>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_download: Option<bool>,
+}
+
+impl ExplicitUpdateChoices {
+    pub fn is_unset(self) -> bool {
+        self.auto_check.is_none() && self.interval.is_none() && self.auto_download.is_none()
+    }
+
+    /// Effective preferences. Unset fields take `defaults`.
+    pub fn resolve(self, defaults: UpdatePrefs) -> UpdatePrefs {
+        UpdatePrefs {
+            auto_check: self.auto_check.unwrap_or(defaults.auto_check),
+            interval: self.interval.unwrap_or(defaults.interval),
+            auto_download: self.auto_download.unwrap_or(defaults.auto_download),
+        }
+    }
+
+    /// A document that predates this record stored concrete prefs on every save.
+    /// A value that still equals `defaults` was not an owner choice we can see.
+    /// A value that differs was set by the owner and is kept.
+    pub fn from_nondefault_prefs(prefs: UpdatePrefs, defaults: UpdatePrefs) -> Self {
+        Self {
+            auto_check: (prefs.auto_check != defaults.auto_check).then_some(prefs.auto_check),
+            interval: (prefs.interval != defaults.interval).then_some(prefs.interval),
+            auto_download: (prefs.auto_download != defaults.auto_download)
+                .then_some(prefs.auto_download),
+        }
+    }
+}
+
 impl Default for UpdatePrefs {
     fn default() -> Self {
         Self {
@@ -68,17 +112,50 @@ pub struct UpdateDocument {
     pub prefs: UpdatePrefs,
     #[serde(default)]
     pub status: ReconciledUpdateStatus,
+    /// Legacy migration has finished. Not a record of which prefs the owner set.
     #[serde(default)]
     pub daily_background: bool,
+    /// Present once this file uses the explicit-choice record, including when
+    /// every field is still unset. Absent on a `daily_background` file written
+    /// before the record existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_choices: Option<ExplicitUpdateChoices>,
+}
+
+impl UpdateDocument {
+    fn choices_mut(&mut self) -> &mut ExplicitUpdateChoices {
+        self.explicit_choices
+            .get_or_insert_with(ExplicitUpdateChoices::default)
+    }
+
+    /// Record an owner change of auto-check. Does not touch the migration marker.
+    pub fn set_auto_check(&mut self, on: bool) {
+        self.choices_mut().auto_check = Some(on);
+        self.prefs.auto_check = on;
+    }
+
+    /// Record an owner change of the check interval. Does not touch the migration marker.
+    pub fn set_interval(&mut self, interval: CheckInterval) {
+        self.choices_mut().interval = Some(interval);
+        self.prefs.interval = interval;
+    }
+
+    /// Record an owner change of auto-download. Does not touch the migration marker.
+    pub fn set_auto_download(&mut self, on: bool) {
+        self.choices_mut().auto_download = Some(on);
+        self.prefs.auto_download = on;
+    }
 }
 
 /// Create a fresh document for an unreadable or missing file.
-/// This sets the migration marker to true without running migration.
+/// This sets the migration marker to true without running migration, and writes
+/// an empty explicit-choice record so the defaults are not owner edits.
 pub fn fresh_update_document() -> UpdateDocument {
     UpdateDocument {
         prefs: UpdatePrefs::default(),
         status: ReconciledUpdateStatus::default(),
         daily_background: true,
+        explicit_choices: Some(ExplicitUpdateChoices::default()),
     }
 }
 
@@ -89,11 +166,31 @@ pub fn load_update_document(text: &str) -> Result<UpdateDocument, serde_json::Er
 
 /// Migrate a legacy readable document once. If `daily_background` is false or missing,
 /// sets the approved default preferences and the marker, copying status through unchanged.
+/// Legacy preference values are not owner choices, so the explicit record is empty.
 pub fn migrate_update_document(mut doc: UpdateDocument) -> UpdateDocument {
     if !doc.daily_background {
         doc.prefs = UpdatePrefs::default();
+        doc.explicit_choices = Some(ExplicitUpdateChoices::default());
         doc.daily_background = true;
     }
+    doc
+}
+
+/// Load path: migrate once, then resolve prefs from the explicit-choice record.
+///
+/// A `daily_background` file with no record yet adopted only the concrete prefs
+/// that differ from the defaults (the owner setters of that format). Unset
+/// fields then take the current defaults, ignoring a stale prefs cache.
+pub fn open_update_document(mut doc: UpdateDocument) -> UpdateDocument {
+    doc = migrate_update_document(doc);
+    if doc.explicit_choices.is_none() {
+        doc.explicit_choices = Some(ExplicitUpdateChoices::from_nondefault_prefs(
+            doc.prefs,
+            UpdatePrefs::default(),
+        ));
+    }
+    let choices = doc.explicit_choices.unwrap_or_default();
+    doc.prefs = choices.resolve(UpdatePrefs::default());
     doc
 }
 
@@ -284,7 +381,13 @@ pub struct UpdateState {
     #[serde(default)]
     pub download_failed: bool,
     #[serde(default)]
+    pub install_failed: bool,
+    #[serde(default)]
     pub prefs: UpdatePrefs,
+    /// Owner choices carried through every save, including a background status write.
+    /// Unset fields are not choices. Not the migration marker.
+    #[serde(default)]
+    pub explicit_choices: ExplicitUpdateChoices,
     /// Whether the updater could be configured at all (feed URL valid, manager
     /// constructed). `false` => "this build can't check for updates on its own".
     #[serde(default = "default_true")]
@@ -305,7 +408,9 @@ impl Default for UpdateState {
             download_pct: None,
             cost_deferral: None,
             download_failed: false,
+            install_failed: false,
             prefs: UpdatePrefs::default(),
+            explicit_choices: ExplicitUpdateChoices::default(),
             config_valid: true,
         }
     }
@@ -314,6 +419,24 @@ impl Default for UpdateState {
 impl UpdateState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Owner setter. Records the choice and the effective preference together.
+    pub fn set_auto_check(&mut self, on: bool) {
+        self.explicit_choices.auto_check = Some(on);
+        self.prefs.auto_check = on;
+    }
+
+    /// Owner setter. Records the choice and the effective preference together.
+    pub fn set_interval(&mut self, interval: CheckInterval) {
+        self.explicit_choices.interval = Some(interval);
+        self.prefs.interval = interval;
+    }
+
+    /// Owner setter. Records the choice and the effective preference together.
+    pub fn set_auto_download(&mut self, on: bool) {
+        self.explicit_choices.auto_download = Some(on);
+        self.prefs.auto_download = on;
     }
 
     fn in_flight(&self) -> bool {
@@ -340,6 +463,16 @@ impl UpdateState {
         }
         if self.is_staged() {
             return UpdateDisplay::Staged;
+        }
+        if self.install_failed {
+            return UpdateDisplay::Failed;
+        }
+        if self.download_failed {
+            return if self.available.is_some() {
+                UpdateDisplay::FailedWithAvailable
+            } else {
+                UpdateDisplay::Failed
+            };
         }
         if matches!(self.status.last_check_outcome, Some(UpdateOutcome::Failed)) {
             if self.status.failed_with_available {
@@ -370,7 +503,9 @@ impl UpdateState {
     /// The full computed snapshot pushed to the webview over `update://changed`.
     pub fn view(&self, explicit_allowed: bool) -> UpdateView {
         let display = self.display();
-        let recovery = if self.download_failed {
+        let recovery = if self.install_failed {
+            Some(Recovery::Install)
+        } else if self.download_failed {
             Some(Recovery::Download)
         } else if self.status.last_check_outcome == Some(UpdateOutcome::Failed)
             || matches!(
@@ -440,6 +575,7 @@ pub enum UpdateDisplay {
 pub enum Recovery {
     Check,
     Download,
+    Install,
 }
 
 /// Per-control actionability. Every flag is derived from real state — there are
@@ -542,6 +678,8 @@ pub enum UpdateEvent {
     DownloadProgress(u8),
     /// Applying a staged update (terminal before relaunch).
     InstallStarted,
+    /// Applying an authenticated pending update failed without changing its identity.
+    InstallFailed,
     /// Operator dismissed a found/failed block back to idle.
     Dismissed,
     /// A check completed with the given outcome, at wall-clock `now` (epoch secs).
@@ -591,11 +729,13 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
     match event {
         UpdateEvent::CheckStarted => {
             state.activity = UpdateActivity::Checking;
+            state.install_failed = false;
             state.cost_deferral = None;
             state.download_failed = false;
         }
         UpdateEvent::DownloadStarted => {
             state.activity = UpdateActivity::Downloading;
+            state.install_failed = false;
             state.download_pct = Some(0);
             state.cost_deferral = None;
             state.download_failed = false;
@@ -605,8 +745,14 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
         }
         UpdateEvent::InstallStarted => {
             state.activity = UpdateActivity::Installing;
+            state.install_failed = false;
+        }
+        UpdateEvent::InstallFailed => {
+            state.activity = UpdateActivity::Idle;
+            state.install_failed = true;
         }
         UpdateEvent::Dismissed => {
+            state.install_failed = false;
             state.activity = UpdateActivity::Idle;
             state.available = None;
             state.download_pct = None;
@@ -624,6 +770,7 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
             }
         }
         UpdateEvent::CheckResult { now, result } => {
+            state.install_failed = false;
             state.activity = UpdateActivity::Idle;
             state.status.last_checked_at = Some(now);
             state.status.failed_with_available = false;
@@ -663,12 +810,14 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
             state.available = None;
             state.cost_deferral = None;
             state.download_failed = false;
+            state.install_failed = false;
             state.status.available_version = Some(version.clone());
             state.status.last_check_outcome = Some(UpdateOutcome::Staged);
             state.status.failed_with_available = false;
             state.staged = Some(StagedUpdate { version });
         }
         UpdateEvent::CheckFailed { now } => {
+            state.install_failed = false;
             state.activity = UpdateActivity::Idle;
             state.download_pct = None;
             state.cost_deferral = None;
@@ -679,6 +828,7 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
             state.status.failed_with_available = state.status.available_version.is_some();
         }
         UpdateEvent::DownloadFailed => {
+            state.install_failed = false;
             state.activity = UpdateActivity::Idle;
             state.download_pct = None;
             state.download_failed = true;
@@ -686,10 +836,12 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
         UpdateEvent::DownloadDeferred { reason } => {
             state.activity = UpdateActivity::Idle;
             state.cost_deferral = Some(reason);
+            state.download_failed = false;
         }
         UpdateEvent::PendingMissing => {
             state.activity = UpdateActivity::Idle;
             state.staged = None;
+            state.install_failed = true;
             if state.status.last_check_outcome == Some(UpdateOutcome::Staged) {
                 state.status.last_check_outcome = if state.status.available_version.is_some() {
                     Some(UpdateOutcome::Found)
@@ -1182,6 +1334,10 @@ mod tests {
         assert_eq!(migrated.prefs.interval, CheckInterval::Day);
         assert!(migrated.prefs.auto_download);
         assert!(migrated.prefs.auto_check);
+        assert!(migrated
+            .explicit_choices
+            .expect("migration writes an empty record")
+            .is_unset());
         assert_eq!(migrated.status.last_checked_at, Some(100));
     }
 
@@ -1195,6 +1351,10 @@ mod tests {
         assert_eq!(migrated.prefs.interval, CheckInterval::Day);
         assert!(migrated.prefs.auto_download);
         assert!(migrated.prefs.auto_check);
+        assert!(migrated
+            .explicit_choices
+            .expect("migration writes an empty record")
+            .is_unset());
     }
 
     #[test]
@@ -1213,14 +1373,173 @@ mod tests {
 
     #[test]
     fn owner_edit_after_migration_retains_marker_and_choices() {
-        let mut doc = fresh_update_document();
+        let legacy_json = r#"{"prefs":{"auto_check":false,"interval":"month","auto_download":false},"status":{"last_checked_at":9}}"#;
+        let mut doc = open_update_document(load_update_document(legacy_json).unwrap());
         assert!(doc.daily_background);
-        doc.prefs.interval = CheckInterval::Month;
-        doc.prefs.auto_download = false;
-        let migrated_again = migrate_update_document(doc);
+        assert!(doc.explicit_choices.expect("record").is_unset());
+        assert_eq!(doc.status.last_checked_at, Some(9));
+        doc.set_interval(CheckInterval::Month);
+        doc.set_auto_download(false);
+        let migrated_again = migrate_update_document(doc.clone());
         assert!(migrated_again.daily_background);
+        assert_eq!(migrated_again.explicit_choices, doc.explicit_choices);
         assert_eq!(migrated_again.prefs.interval, CheckInterval::Month);
         assert!(!migrated_again.prefs.auto_download);
+        assert!(migrated_again.prefs.auto_check);
+        assert!(migrated_again
+            .explicit_choices
+            .expect("record")
+            .auto_check
+            .is_none());
+
+        let text = serde_json::to_string(&migrated_again).unwrap();
+        let reloaded = open_update_document(load_update_document(&text).unwrap());
+        assert_eq!(reloaded.explicit_choices, migrated_again.explicit_choices);
+        assert_eq!(reloaded.prefs, migrated_again.prefs);
+        assert_eq!(reloaded.status.last_checked_at, Some(9));
+        assert!(reloaded.daily_background);
+    }
+
+    #[test]
+    fn owner_edit_of_defaults_differs_from_untouched_and_survives_later_defaults() {
+        let legacy_json =
+            r#"{"prefs":{"auto_check":false,"interval":"week","auto_download":false},"status":{}}"#;
+        let untouched = open_update_document(load_update_document(legacy_json).unwrap());
+        let mut edited = untouched.clone();
+        edited.set_auto_check(true);
+        edited.set_interval(CheckInterval::Day);
+        edited.set_auto_download(true);
+
+        assert_eq!(untouched.prefs, edited.prefs);
+        assert_eq!(untouched.prefs, UpdatePrefs::default());
+        assert_ne!(untouched.explicit_choices, edited.explicit_choices);
+        assert!(untouched.explicit_choices.expect("record").is_unset());
+        let edited_choices = edited.explicit_choices.expect("record");
+        assert_eq!(edited_choices.auto_check, Some(true));
+        assert_eq!(edited_choices.interval, Some(CheckInterval::Day));
+        assert_eq!(edited_choices.auto_download, Some(true));
+
+        let later = UpdatePrefs {
+            auto_check: false,
+            interval: CheckInterval::Week,
+            auto_download: false,
+        };
+        assert_eq!(
+            untouched.explicit_choices.expect("record").resolve(later),
+            later
+        );
+        assert_eq!(edited_choices.resolve(later), UpdatePrefs::default());
+
+        let untouched_text = serde_json::to_string(&untouched).unwrap();
+        let edited_text = serde_json::to_string(&edited).unwrap();
+        assert_ne!(untouched_text, edited_text);
+        let untouched_loaded = open_update_document(load_update_document(&untouched_text).unwrap());
+        let edited_loaded = open_update_document(load_update_document(&edited_text).unwrap());
+        assert_eq!(
+            untouched_loaded.explicit_choices,
+            untouched.explicit_choices
+        );
+        assert_eq!(edited_loaded.explicit_choices, edited.explicit_choices);
+        assert_eq!(untouched_loaded.prefs, edited_loaded.prefs);
+    }
+
+    #[test]
+    fn background_status_save_keeps_explicit_choices_and_adds_none() {
+        let mut doc = fresh_update_document();
+        doc.set_auto_download(true);
+        doc.set_interval(CheckInterval::Week);
+        doc.status.last_checked_at = Some(42);
+        doc.status.last_check_outcome = Some(UpdateOutcome::UpToDate);
+
+        let text = serde_json::to_string(&doc).unwrap();
+        let reloaded = open_update_document(load_update_document(&text).unwrap());
+        let choices = reloaded.explicit_choices.expect("record");
+        assert!(choices.auto_check.is_none());
+        assert_eq!(choices.auto_download, Some(true));
+        assert_eq!(choices.interval, Some(CheckInterval::Week));
+        assert!(reloaded.prefs.auto_check);
+        assert!(reloaded.prefs.auto_download);
+        assert_eq!(reloaded.prefs.interval, CheckInterval::Week);
+        assert_eq!(reloaded.status.last_checked_at, Some(42));
+        assert_eq!(
+            reloaded.status.last_check_outcome,
+            Some(UpdateOutcome::UpToDate)
+        );
+        assert!(reloaded.daily_background);
+    }
+
+    #[test]
+    fn concrete_prefs_without_explicit_record_adopt_only_nondefaults() {
+        let json = r#"{"prefs":{"auto_check":true,"interval":"week","auto_download":false},"status":{"last_checked_at":7},"daily_background":true}"#;
+        let opened = open_update_document(load_update_document(json).unwrap());
+        let choices = opened.explicit_choices.expect("adopted record");
+        assert!(choices.auto_check.is_none());
+        assert_eq!(choices.interval, Some(CheckInterval::Week));
+        assert_eq!(choices.auto_download, Some(false));
+        assert!(opened.prefs.auto_check);
+        assert_eq!(opened.prefs.interval, CheckInterval::Week);
+        assert!(!opened.prefs.auto_download);
+        assert_eq!(opened.status.last_checked_at, Some(7));
+
+        let mut saved = opened;
+        saved.set_interval(CheckInterval::Day);
+        let text = serde_json::to_string(&saved).unwrap();
+        let reloaded = open_update_document(load_update_document(&text).unwrap());
+        assert_eq!(
+            reloaded.explicit_choices.expect("record").interval,
+            Some(CheckInterval::Day)
+        );
+        assert_eq!(reloaded.prefs.interval, CheckInterval::Day);
+        assert_eq!(
+            reloaded.explicit_choices.expect("record").auto_download,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn state_setter_document_keeps_choices_across_a_status_save() {
+        let mut state = UpdateState::new();
+        state.set_auto_check(false);
+        state.status.last_checked_at = Some(3);
+        let mut saved = UpdateDocument {
+            prefs: state.prefs,
+            status: state.status.clone(),
+            daily_background: true,
+            explicit_choices: Some(state.explicit_choices),
+        };
+        saved.status.last_check_outcome = Some(UpdateOutcome::Failed);
+        let text = serde_json::to_string(&saved).unwrap();
+        let opened = open_update_document(load_update_document(&text).unwrap());
+        let choices = opened.explicit_choices.expect("record");
+        assert_eq!(choices.auto_check, Some(false));
+        assert!(choices.interval.is_none());
+        assert!(choices.auto_download.is_none());
+        assert!(!opened.prefs.auto_check);
+        assert_eq!(opened.prefs.interval, CheckInterval::Day);
+        assert!(opened.prefs.auto_download);
+        assert_eq!(opened.status.last_checked_at, Some(3));
+        assert_eq!(
+            opened.status.last_check_outcome,
+            Some(UpdateOutcome::Failed)
+        );
+    }
+
+    #[test]
+    fn unset_explicit_record_ignores_stale_prefs() {
+        let json = r#"{"prefs":{"auto_check":false,"interval":"month","auto_download":false},"status":{},"daily_background":true,"explicit_choices":{"auto_check":true}}"#;
+        let opened = open_update_document(load_update_document(json).unwrap());
+        assert!(opened.prefs.auto_check);
+        assert_eq!(opened.prefs.interval, CheckInterval::Day);
+        assert!(opened.prefs.auto_download);
+        let choices = opened.explicit_choices.expect("record");
+        assert_eq!(choices.auto_check, Some(true));
+        assert!(choices.interval.is_none());
+        assert!(choices.auto_download.is_none());
+
+        let stale_defaults = r#"{"prefs":{"auto_check":false,"interval":"month","auto_download":false},"status":{},"daily_background":true,"explicit_choices":{}}"#;
+        let defaults = open_update_document(load_update_document(stale_defaults).unwrap());
+        assert_eq!(defaults.prefs, UpdatePrefs::default());
+        assert!(defaults.explicit_choices.expect("record").is_unset());
     }
 
     #[test]
@@ -1228,8 +1547,14 @@ mod tests {
         let fresh = fresh_update_document();
         assert!(fresh.daily_background);
         assert_eq!(fresh.prefs, UpdatePrefs::default());
+        assert!(fresh.explicit_choices.expect("record").is_unset());
         assert_eq!(fresh.status, ReconciledUpdateStatus::default());
         assert!(load_update_document("not-json").is_err());
+        let text = serde_json::to_string(&fresh).unwrap();
+        assert!(text.contains("\"explicit_choices\""));
+        let opened = open_update_document(load_update_document(&text).unwrap());
+        assert_eq!(opened.explicit_choices, fresh.explicit_choices);
+        assert_eq!(opened.prefs, fresh.prefs);
     }
 
     #[test]
@@ -1550,5 +1875,79 @@ mod tests {
         assert!(feed_replaces_pending(Some(&v1_0_0), &v1_1_0));
         assert!(!feed_replaces_pending(Some(&v1_0_0), &v1_0_0));
         assert!(!feed_replaces_pending(Some(&v1_0_0), &v0_9_0));
+    }
+    #[test]
+    fn download_failure_uses_failure_view_without_changing_feed_time() {
+        let mut state = UpdateState::new();
+        reduce(
+            &mut state,
+            UpdateEvent::CheckResult {
+                now: 123,
+                result: CheckOutcome::UpdateAvailable {
+                    version: "2.0.34".into(),
+                    notes: None,
+                },
+            },
+        );
+        reduce(&mut state, UpdateEvent::DownloadStarted);
+        reduce(&mut state, UpdateEvent::DownloadFailed);
+        let view = state.view(true);
+        assert_eq!(view.display, UpdateDisplay::FailedWithAvailable);
+        assert_eq!(view.recovery, Some(Recovery::Download));
+        assert_eq!(view.available_version.as_deref(), Some("2.0.34"));
+        assert_eq!(view.last_checked_at, Some(123));
+        assert!(view.actions.can_download);
+        reduce(
+            &mut state,
+            UpdateEvent::DownloadDeferred {
+                reason: CostDeferral::Metered,
+            },
+        );
+        assert_eq!(state.view(true).display, UpdateDisplay::Available);
+        assert_eq!(state.view(true).recovery, None);
+    }
+
+    #[test]
+    fn failed_install_preserves_pending_identity_and_install_action() {
+        let mut state = UpdateState::new();
+        state.status.last_checked_at = Some(123);
+        reduce(
+            &mut state,
+            UpdateEvent::Downloaded {
+                version: "2.0.34".into(),
+            },
+        );
+        reduce(&mut state, UpdateEvent::InstallStarted);
+        reduce(&mut state, UpdateEvent::InstallFailed);
+        let view = state.view(true);
+        assert_eq!(view.display, UpdateDisplay::Staged);
+        assert_eq!(view.recovery, Some(Recovery::Install));
+        assert_eq!(view.downloaded_version.as_deref(), Some("2.0.34"));
+        assert!(view.actions.can_install);
+        assert_eq!(view.last_checked_at, Some(123));
+        reduce(&mut state, UpdateEvent::PendingMissing);
+        assert_eq!(state.view(true).display, UpdateDisplay::Failed);
+        assert!(!state.view(true).actions.can_install);
+    }
+    #[test]
+    fn recovery_or_dismissal_clears_the_previous_install_failure() {
+        let mut state = UpdateState::new();
+        reduce(&mut state, UpdateEvent::PendingMissing);
+        assert_eq!(state.view(true).recovery, Some(Recovery::Install));
+        reduce(
+            &mut state,
+            UpdateEvent::CheckResult {
+                now: 123,
+                result: CheckOutcome::UpToDate,
+            },
+        );
+        assert_eq!(state.view(true).display, UpdateDisplay::UpToDate);
+        assert_eq!(state.view(true).recovery, None);
+        reduce(&mut state, UpdateEvent::InstallFailed);
+        reduce(&mut state, UpdateEvent::Dismissed);
+        assert_eq!(state.view(true).recovery, None);
+        reduce(&mut state, UpdateEvent::InstallFailed);
+        reduce(&mut state, UpdateEvent::DownloadFailed);
+        assert_eq!(state.view(true).recovery, Some(Recovery::Download));
     }
 }

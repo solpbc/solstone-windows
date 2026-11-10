@@ -352,19 +352,36 @@ pub fn admit_package_reader<R: Read + Seek>(
 
 /// Retires an asset by deleting only its package, partial, and sidecar names.
 /// Never globs other packages.
-pub fn retire_asset(dir: &Path, file_name: &str) {
-    if check_plain_filename(file_name).is_err() {
-        return;
-    }
-    let target = dir.join(file_name);
-    let partial = dir.join(Path::new(file_name).with_extension("partial"));
-    let sig = dir.join(format!("{file_name}.minisig"));
-    let sig_partial = dir.join(format!("{file_name}.minisig.partial"));
+fn owned_full_version(file_name: &str) -> Option<semver::Version> {
+    file_name
+        .strip_prefix("Solstone-")
+        .and_then(|name| name.strip_suffix("-full.nupkg"))
+        .and_then(|version| semver::Version::parse(version).ok())
+}
 
-    let _ = std::fs::remove_file(target);
-    let _ = std::fs::remove_file(partial);
-    let _ = std::fs::remove_file(sig);
-    let _ = std::fs::remove_file(sig_partial);
+pub fn retire_asset(dir: &Path, file_name: &str) -> std::io::Result<()> {
+    check_plain_filename(file_name)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    if owned_full_version(file_name).is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not an update package owned by this app",
+        ));
+    }
+    for path in [
+        dir.join(file_name),
+        dir.join(Path::new(file_name).with_extension("partial")),
+        dir.join(format!("{file_name}.partial")),
+        dir.join(format!("{file_name}.minisig")),
+        dir.join(format!("{file_name}.minisig.partial")),
+    ] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// An authenticated cached archive, held stable through the installer handoff.
@@ -442,16 +459,18 @@ pub fn scan_authenticated_packages(
         }
         // Setup and older clients can leave the installed package without a sidecar.
         // A canonical old filename only excludes a non-candidate; it never admits one.
-        if name
+        let Some(filename_version) = name
             .strip_prefix("Solstone-")
             .and_then(|name| name.strip_suffix("-full.nupkg"))
             .and_then(|version| semver::Version::parse(version).ok())
-            .is_some_and(|version| version <= *installed)
-        {
+        else {
+            continue;
+        };
+        if filename_version <= *installed {
             continue;
         }
         match admit_cached_package(&path, verifier) {
-            Ok(package) if package.identity.version > *installed => {
+            Ok(package) if package.identity.version == filename_version => {
                 if scan
                     .selected
                     .as_ref()
@@ -460,7 +479,9 @@ pub fn scan_authenticated_packages(
                     scan.selected = Some(package);
                 }
             }
-            Ok(_) => {}
+            Ok(_) => {
+                scan.rejected = true;
+            }
             Err(_) => {
                 scan.rejected = true;
             }
@@ -475,37 +496,66 @@ pub fn retain_admitted_pending(
     dir: &Path,
     keep_file_name: Option<&str>,
     installed: &semver::Version,
-) {
+) -> std::io::Result<()> {
+    if keep_file_name.is_some_and(|keep| {
+        check_plain_filename(keep).is_err() || owned_full_version(keep).is_none()
+    }) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid pending package name",
+        ));
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(_) => return,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
     };
+    // Recognize our own package namespace even when only a sidecar or partial
+    // remains. Do not follow or remove other products' files in this directory.
+    let mut packages = std::collections::BTreeSet::new();
     for entry in entries {
-        let Ok(entry) = entry else {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let stem = [
+            ".nupkg.minisig.partial",
+            ".nupkg.minisig",
+            ".nupkg.partial",
+            ".nupkg",
+            ".partial",
+        ]
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix));
+        let Some(stem) = stem else { continue };
+        let Some(version) = stem
+            .strip_prefix("Solstone-")
+            .and_then(|stem| stem.strip_suffix("-full"))
+            .and_then(|version| semver::Version::parse(version).ok())
+        else {
             continue;
         };
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if !name.ends_with("-full.nupkg") || check_plain_filename(name).is_err() {
-            continue;
+        let package_name = format!("{stem}.nupkg");
+        if version > *installed && keep_file_name != Some(package_name.as_str()) {
+            packages.insert(package_name);
         }
-        if let Some(keep) = keep_file_name {
-            if name == keep {
-                continue;
+    }
+    for name in packages {
+        retire_asset(dir, &name)?;
+    }
+    if let Some(keep) = keep_file_name {
+        for path in [
+            dir.join(Path::new(keep).with_extension("partial")),
+            dir.join(format!("{keep}.partial")),
+            dir.join(format!("{keep}.minisig.partial")),
+        ] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
         }
-        if name
-            .strip_prefix("Solstone-")
-            .and_then(|v| v.strip_suffix("-full.nupkg"))
-            .and_then(|v| semver::Version::parse(v).ok())
-            .is_some_and(|v| v <= *installed)
-        {
-            continue;
-        }
-        retire_asset(dir, name);
     }
+    Ok(())
 }
 
 /// File identity descriptor for held regular file verification.
@@ -905,7 +955,7 @@ mod tests {
         assert_eq!(admission2, Admission::Ready);
 
         // Retire asset deletes only the target's four filenames
-        retire_asset(dir.path(), "Solstone-2.0.34-full.nupkg");
+        retire_asset(dir.path(), "Solstone-2.0.34-full.nupkg").unwrap();
         assert!(!pkg_path.exists());
         assert!(!partial_path.exists());
         assert!(!sig_path.exists());
@@ -915,6 +965,7 @@ mod tests {
         assert!(second_pkg.exists());
     }
 
+    #[cfg(feature = "transport-tests")]
     #[test]
     fn unsafe_cleanup_names_leave_outside_files_untouched() {
         let root = tempfile::tempdir().unwrap();
@@ -930,8 +981,21 @@ mod tests {
             ".hidden",
         ] {
             assert!(check_plain_filename(name).is_err());
-            retire_asset(&packages, name);
+            assert_eq!(
+                retire_asset(&packages, name).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
             assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep pairing");
+        }
+        for name in ["readme.txt", "OtherProduct-2.0.34-full.nupkg"] {
+            let path = packages.join(name);
+            std::fs::write(&path, b"unrelated").unwrap();
+            assert!(check_plain_filename(name).is_ok());
+            assert_eq!(
+                retire_asset(&packages, name).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+            assert_eq!(std::fs::read(path).unwrap(), b"unrelated");
         }
     }
 
@@ -979,6 +1043,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "transport-tests")]
     #[test]
     fn retain_admitted_pending_leaves_single_full_package_and_cleans_obsolete() {
         let root = tempfile::tempdir().unwrap();
@@ -1004,17 +1069,24 @@ mod tests {
         // Newly admitted package 1.2.0 (keep_file_name)
         let new_pkg = packages.join("Solstone-1.2.0-full.nupkg");
         std::fs::write(&new_pkg, b"new").unwrap();
+        let kept_partial = packages.join("Solstone-1.2.0-full.partial");
+        let kept_sig_partial = packages.join("Solstone-1.2.0-full.nupkg.minisig.partial");
+        std::fs::write(&kept_partial, b"stale transfer").unwrap();
+        std::fs::write(&kept_sig_partial, b"stale signature").unwrap();
 
-        retain_admitted_pending(&packages, Some("Solstone-1.2.0-full.nupkg"), &installed);
+        retain_admitted_pending(&packages, Some("Solstone-1.2.0-full.nupkg"), &installed).unwrap();
 
         assert!(installed_pkg.exists());
         assert!(new_pkg.exists());
+        assert!(!kept_partial.exists());
+        assert!(!kept_sig_partial.exists());
         assert!(!obs_pkg.exists());
         assert!(!obs_partial.exists());
         assert!(!obs_sig.exists());
         assert!(!obs_sig_partial.exists());
     }
 
+    #[cfg(feature = "transport-tests")]
     #[test]
     fn retain_admitted_pending_preserves_beta_id_and_unrelated_files() {
         let root = tempfile::tempdir().unwrap();
@@ -1029,15 +1101,16 @@ mod tests {
         std::fs::write(&other_file, b"text").unwrap();
 
         let installed = semver::Version::parse("1.0.0").unwrap();
-        retain_admitted_pending(&packages, None, &installed);
+        retain_admitted_pending(&packages, None, &installed).unwrap();
 
         assert_eq!(std::fs::read(&beta_id).unwrap(), b"id");
         assert_eq!(std::fs::read(&pairing).unwrap(), b"pairing");
         assert_eq!(std::fs::read(&other_file).unwrap(), b"text");
     }
 
+    #[cfg(feature = "transport-tests")]
     #[test]
-    fn failed_replacement_leaves_existing_admitted_package_intact() {
+    fn retiring_failed_transfer_does_not_touch_a_different_package() {
         let root = tempfile::tempdir().unwrap();
         let packages = root.path().join("packages");
         std::fs::create_dir(&packages).unwrap();
@@ -1050,9 +1123,25 @@ mod tests {
         let failed_partial = packages.join("Solstone-1.2.0-full.partial");
         std::fs::write(&failed_partial, b"failed").unwrap();
 
-        retire_asset(&packages, failed_pkg_name);
+        retire_asset(&packages, failed_pkg_name).unwrap();
 
         assert!(existing_pkg.exists());
         assert!(!failed_partial.exists());
+    }
+    #[cfg(feature = "transport-tests")]
+    #[test]
+    fn retirement_reports_failure_and_cleans_orphan_sidecars_on_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let old = "Solstone-2.0.34-full.nupkg";
+        let blocked = root.path().join(old);
+        std::fs::create_dir(&blocked).unwrap();
+        let sidecar = root.path().join(format!("{old}.minisig"));
+        std::fs::write(&sidecar, b"orphan after a partial retirement").unwrap();
+        let installed = semver::Version::parse("2.0.33").unwrap();
+        assert!(retain_admitted_pending(root.path(), None, &installed).is_err());
+        assert!(sidecar.exists());
+        std::fs::remove_dir(blocked).unwrap();
+        retain_admitted_pending(root.path(), None, &installed).unwrap();
+        assert!(!sidecar.exists());
     }
 }

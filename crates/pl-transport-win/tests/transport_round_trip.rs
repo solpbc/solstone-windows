@@ -1204,10 +1204,11 @@ async fn service_pair_refuses_a_peer_claiming_another_journals_id_and_pairs_a_ge
     let cfg = service_config(state_path.clone());
     let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
 
-    let error = service::pair(&direct_pair_link(port, &forger_pin), &cfg, sync.clone())
-        .await
-        .err()
-        .expect("a forged id must not pair");
+    let error = match service::pair(&direct_pair_link(port, &forger_pin), &cfg, sync.clone()).await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a forged id must not pair"),
+    };
 
     assert!(matches!(error, TransportError::Pairing(_)), "{error:?}");
     forger.await.unwrap();

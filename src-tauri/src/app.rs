@@ -710,6 +710,23 @@ pub fn run(
                 }
             }
 
+            // Only a genuine owning GUI start may apply a pending package.
+            // Diagnostics and second-instance launches never reach this point.
+            let mut startup_apply_failed = false;
+            if std::env::var_os("VELOPACK_RESTART").is_none() {
+                match crate::update::startup_apply_verified() {
+                    crate::update::ApplyOutcome::Started => {
+                        app.handle().cleanup_before_exit();
+                        std::process::exit(0);
+                    }
+                    crate::update::ApplyOutcome::NothingPending => {}
+                    crate::update::ApplyOutcome::Failed(error) => {
+                        startup_apply_failed = true;
+                        tracing::warn!(target: "update", step = "startup_apply", %error, "startup apply skipped");
+                    }
+                }
+            }
+
             // Setup stops the app without letting it clear this, so a silent
             // Setup knows to start it again; the owner's Quit clears it.
             if let Err(error) =
@@ -887,6 +904,7 @@ pub fn run(
             let updater = crate::update::UpdateController::new(
                 app.handle().clone(),
                 platform_win::local_data_root().join("update.json"),
+                startup_apply_failed,
             );
             app.manage(updater.clone());
             updater.spawn_timer();

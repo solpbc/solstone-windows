@@ -114,6 +114,21 @@ struct Runtime {
     last_automatic_failure_at: Option<u64>,
 }
 
+/// Keep the live state lock through persistence, so a stale snapshot cannot
+/// land after a later owner edit. The writer seam also permits in-memory proof.
+fn persist_runtime(
+    runtime: &Mutex<Runtime>,
+    write: impl FnOnce(&observer_update::UpdateDocument) -> Result<(), String>,
+) -> Result<(), String> {
+    let rt = runtime.lock().expect("update rt");
+    write(&observer_update::UpdateDocument {
+        prefs: rt.state.prefs,
+        status: rt.state.status.clone(),
+        daily_background: true,
+        explicit_choices: Some(rt.state.explicit_choices),
+    })
+}
+
 struct Inner {
     rt: Mutex<Runtime>,
     /// `None` when the app is not Velopack-installed (e.g. a dev tree) — surfaced
@@ -248,12 +263,33 @@ fn stage_full_package(
     stage_full_package_with_verifier(manager, info, progress, &ProductionReleaseVerifier)
 }
 
+// Covers arbitration as well as transfer across GUI and headless processes.
+// Velopack's nested download lock remains separate and keeps its usual role.
+fn cache_operation_lock(manager: &UpdateManager) -> Result<velopack::lockfile::LockFile, String> {
+    let directory = manager.get_packages_dir();
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    velopack::lockfile::LockFile::try_acquire_lock(directory.join(".solstone_update_lock"))
+        .map_err(|error| format!("update cache is unavailable: {error}"))
+}
+
+fn retain_pending(manager: &UpdateManager, keep: Option<&str>) -> Result<(), String> {
+    let installed = manager_installed_version(manager)
+        .ok_or_else(|| "installed version is invalid".to_string())?;
+    observer_update::admission::retain_admitted_pending(
+        &manager.get_packages_dir(),
+        keep,
+        &installed,
+    )
+    .map_err(|error| format!("pending update cleanup failed: {error}"))
+}
+
 fn stage_full_package_with_verifier(
     manager: &UpdateManager,
     info: &UpdateInfo,
     progress: Option<mpsc::Sender<i16>>,
     verifier: &impl observer_update::admission::PackageVerifier,
 ) -> Result<VelopackAsset, String> {
+    let _cache_guard = cache_operation_lock(manager)?;
     let packages = manager.get_packages_dir();
     let dir = packages.as_path();
     let mut forced = info.clone();
@@ -266,13 +302,36 @@ fn stage_full_package_with_verifier(
         return Err("the update feed did not name a full package".to_string());
     }
     let version = &target.Version;
+    if *file_name != format!("Solstone-{version}-full.nupkg") {
+        return Err("the update feed named a package outside this app's version namespace".into());
+    }
+    let requested = semver::Version::parse(version).map_err(|error| error.to_string())?;
+    let installed = manager_installed_version(manager)
+        .ok_or_else(|| "installed version is invalid".to_string())?;
+    // The CLI and GUI share this boundary: an older feed offer never retires
+    // a newer authenticated pending release.
+    {
+        let pending = scan_authenticated_packages(dir, &installed, verifier)
+            .selected
+            .and_then(into_admitted);
+        if let Some(pending) = pending {
+            if pending.package.identity.version >= requested {
+                retain_pending(manager, Some(&pending.asset.FileName))?;
+                return Ok(pending.asset);
+            }
+        }
+    }
     let nupkg_path = dir.join(file_name);
 
     if nupkg_path.exists() {
         match admit_named_package(dir, file_name, version, verifier) {
-            Admission::Ready => return Ok(target),
+            Admission::Ready => {
+                retain_pending(manager, Some(file_name))?;
+                return Ok(target);
+            }
             Admission::Refuse | Admission::NotReady => {
-                retire_asset(dir, file_name);
+                retire_asset(dir, file_name)
+                    .map_err(|error| format!("rejected package cleanup failed: {error}"))?;
                 return Err(format!(
                     "cached package for {file_name} was not admitted and was retired"
                 ));
@@ -280,18 +339,28 @@ fn stage_full_package_with_verifier(
         }
     }
 
+    // Once a replacement begins, the prior pending package is retired before
+    // any new full file can be promoted. A failed retirement blocks transfer.
+    retain_pending(manager, Some(file_name))?;
     if let Err(e) = manager.download_updates(&forced, progress) {
-        retire_asset(dir, file_name);
+        retire_asset(dir, file_name)
+            .map_err(|error| format!("download failed: {e}; cleanup failed: {error}"))?;
         return Err(format!("download_updates failed: {e}"));
     }
 
     match admit_named_package(dir, file_name, version, verifier) {
-        Admission::Ready => Ok(target),
+        Admission::Ready => {
+            retain_pending(manager, Some(file_name))?;
+            Ok(target)
+        }
         Admission::Refuse => {
-            retire_asset(dir, file_name);
+            retire_asset(dir, file_name)
+                .map_err(|error| format!("refused package cleanup failed: {error}"))?;
             Err("package refused on re-admission".to_string())
         }
         Admission::NotReady => {
+            retire_asset(dir, file_name)
+                .map_err(|error| format!("incomplete package cleanup failed: {error}"))?;
             Err("package not ready after sidecar write (sidecar missing or unreadable)".to_string())
         }
     }
@@ -388,10 +457,22 @@ fn apply_from_cache(
     quiesce: impl FnOnce(),
     resume: impl FnOnce(),
 ) -> ApplyOutcome {
+    let _cache_guard = match cache_operation_lock(manager) {
+        Ok(guard) => guard,
+        Err(error) => return ApplyOutcome::Failed(error),
+    };
     let Some(installed) = manager_installed_version(manager) else {
         return ApplyOutcome::Failed("installed version is invalid".to_string());
     };
     let scan = scan_authenticated_packages(&manager.get_packages_dir(), &installed, verifier);
+    let keep = scan
+        .selected
+        .as_ref()
+        .and_then(|package| package.path.file_name())
+        .and_then(|name| name.to_str());
+    if let Err(error) = retain_pending(manager, keep) {
+        return ApplyOutcome::Failed(error);
+    }
     let Some(admitted) = scan.selected.and_then(into_admitted) else {
         return if scan.rejected {
             ApplyOutcome::Failed("cached update could not be authenticated".to_string())
@@ -495,10 +576,13 @@ pub fn check_update_cli(args: &[String]) -> std::process::ExitCode {
             println!("{}", format_update_plan(&plan));
 
             let v = info.TargetFullRelease.Version.clone();
-            println!("--check-update: update available: {v}; downloading...");
+            println!("--check-update: update available: {v}");
             match stage_full_package(&manager, &info, None) {
-                Ok(_staged) => {
-                    println!("--check-update: downloaded + staged {v} (apply with --apply-update)");
+                Ok(staged) => {
+                    println!(
+                        "--check-update: downloaded + staged {} (apply with --apply-update)",
+                        staged.Version
+                    );
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -558,12 +642,12 @@ impl UpdateController {
     /// Build the controller: construct the `UpdateManager` (`None` if the app is
     /// not Velopack-installed), load persisted prefs+status, and rehydrate any
     /// staged asset only from the authenticated manager-selected cache.
-    pub fn new(app: AppHandle, state_path: PathBuf) -> Self {
+    pub fn new(app: AppHandle, state_path: PathBuf, startup_apply_failed: bool) -> Self {
         let manager = build_manager();
 
         let doc = match std::fs::read_to_string(&state_path) {
             Ok(text) => match observer_update::load_update_document(&text) {
-                Ok(doc) => observer_update::migrate_update_document(doc),
+                Ok(doc) => observer_update::open_update_document(doc),
                 Err(_) => observer_update::fresh_update_document(),
             },
             Err(_) => observer_update::fresh_update_document(),
@@ -571,11 +655,19 @@ impl UpdateController {
 
         let mut state = UpdateState::new();
         state.prefs = doc.prefs;
+        state.explicit_choices = doc.explicit_choices.unwrap_or_default();
         state.status = doc.status;
         state.config_valid = manager.is_some();
 
         let mut staged_asset = None;
-        if let Some(m) = &manager {
+        let cache_guard = manager.as_ref().and_then(|manager| {
+            cache_operation_lock(manager)
+                .map_err(|error| {
+                    tracing::warn!(target: "update", %error, "cache rehydration deferred");
+                })
+                .ok()
+        });
+        if let (Some(m), Some(_cache_guard)) = (&manager, cache_guard) {
             let installed_opt = manager_installed_version(m);
             let scan = installed_opt.as_ref().map(|installed| {
                 scan_authenticated_packages(
@@ -586,31 +678,28 @@ impl UpdateController {
             });
             let rejected = scan.as_ref().is_some_and(|scan| scan.rejected);
             if let Some(admitted) = scan.and_then(|scan| scan.selected).and_then(into_admitted) {
-                if let Some(installed) = &installed_opt {
-                    let _ = observer_update::admission::retain_admitted_pending(
-                        &m.get_packages_dir(),
-                        Some(&admitted.asset.FileName),
-                        installed,
-                    );
+                match retain_pending(m, Some(&admitted.asset.FileName)) {
+                    Ok(()) => {
+                        reduce(
+                            &mut state,
+                            UpdateEvent::Downloaded {
+                                version: admitted.asset.Version.clone(),
+                            },
+                        );
+                        staged_asset = Some(admitted.asset);
+                    }
+                    Err(error) => {
+                        tracing::warn!(target: "update", %error, "pending cache cleanup failed");
+                        reduce(&mut state, UpdateEvent::PendingMissing);
+                    }
                 }
-                reduce(
-                    &mut state,
-                    UpdateEvent::Downloaded {
-                        version: admitted.asset.Version.clone(),
-                    },
-                );
-                staged_asset = Some(admitted.asset);
             } else {
                 let outcome_staged_or_found = matches!(
                     state.status.last_check_outcome,
                     Some(UpdateOutcome::Staged) | Some(UpdateOutcome::Found)
                 );
-                if let Some(installed) = &installed_opt {
-                    let _ = observer_update::admission::retain_admitted_pending(
-                        &m.get_packages_dir(),
-                        None,
-                        installed,
-                    );
+                if let Err(error) = retain_pending(m, None) {
+                    tracing::warn!(target: "update", %error, "pending cache cleanup failed");
                 }
                 if rejected || outcome_staged_or_found {
                     reduce(&mut state, UpdateEvent::PendingMissing);
@@ -618,6 +707,9 @@ impl UpdateController {
             }
         }
 
+        if startup_apply_failed {
+            reduce(&mut state, UpdateEvent::InstallFailed);
+        }
         let inner = Arc::new(Inner {
             rt: Mutex::new(Runtime {
                 state,
@@ -652,34 +744,26 @@ impl UpdateController {
     }
 
     fn persist(&self) {
-        let doc = {
-            let rt = self.inner.rt.lock().expect("update rt");
-            observer_update::UpdateDocument {
-                prefs: rt.state.prefs,
-                status: rt.state.status.clone(),
-                daily_background: true,
+        persist_runtime(&self.inner.rt, |doc| {
+            let text = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
+            if let Some(dir) = self.inner.state_path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             }
-        };
-        match serde_json::to_string_pretty(&doc) {
-            Ok(text) => {
-                if let Some(dir) = self.inner.state_path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                if let Err(e) = std::fs::write(&self.inner.state_path, text) {
-                    tracing::warn!(
-                        target: "update",
-                        path = %self.inner.state_path.display(),
-                        error = %e,
-                        "persist failed"
-                    );
-                }
+            let temporary = self.inner.state_path.with_extension("json.tmp");
+            match std::fs::remove_file(&temporary) {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(error.to_string()),
             }
-            Err(e) => tracing::warn!(
-                target: "update",
-                error = %e,
-                "serialize failed"
-            ),
-        }
+            let mut file = std::fs::File::create_new(&temporary).map_err(|e| e.to_string())?;
+            std::io::Write::write_all(&mut file, text.as_bytes()).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            drop(file);
+            std::fs::rename(&temporary, &self.inner.state_path).map_err(|e| e.to_string())
+        })
+        .unwrap_or_else(|error| {
+            tracing::warn!(target: "update", path = %self.inner.state_path.display(), %error, "persist failed");
+        });
     }
 
     /// Reduce a durable-affecting event, persist, and push the snapshot.
@@ -700,7 +784,6 @@ impl UpdateController {
         }
         self.emit();
     }
-
     fn try_begin(&self) -> bool {
         self.inner
             .busy
@@ -896,17 +979,15 @@ impl UpdateController {
         // Downloader.
         let ctrl = self.clone();
         std::thread::spawn(move || {
-            let _guard = AutomaticTransferGuard::new(automatic);
+            let transfer_guard = AutomaticTransferGuard::new(automatic);
+            {
+                let mut rt = ctrl.inner.rt.lock().expect("update rt");
+                rt.staged_asset = None;
+                rt.state.staged = None;
+            }
             match stage_full_package(&manager, &info, Some(tx)) {
                 Ok(staged) => {
                     let version = staged.Version.clone();
-                    if let Some(installed) = manager_installed_version(&manager) {
-                        let _ = observer_update::admission::retain_admitted_pending(
-                            &manager.get_packages_dir(),
-                            Some(&staged.FileName),
-                            &installed,
-                        );
-                    }
                     {
                         let mut rt = ctrl.inner.rt.lock().expect("update rt");
                         rt.staged_asset = Some(staged);
@@ -929,11 +1010,30 @@ impl UpdateController {
                         error = %e,
                         "update download failed"
                     );
-                    retire_asset(
-                        &manager.get_packages_dir(),
-                        &info.TargetFullRelease.FileName,
-                    );
+                    // A retirement can fail part way through. Reconstruct only
+                    // what remains authenticated rather than retaining a stale label.
+                    let pending = select_admitted(&manager).map(|admitted| admitted.asset);
+                    {
+                        let mut rt = ctrl.inner.rt.lock().expect("update rt");
+                        rt.state.staged =
+                            pending.as_ref().map(|asset| observer_update::StagedUpdate {
+                                version: asset.Version.clone(),
+                            });
+                        rt.staged_asset = pending;
+                    }
                     if automatic {
+                        if let Some(reason) = observer_update::cost_deferral(current_network_cost())
+                        {
+                            ctrl.inner
+                                .rt
+                                .lock()
+                                .expect("update rt")
+                                .last_automatic_failure_at = None;
+                            ctrl.signal(UpdateEvent::DownloadDeferred { reason });
+                            drop(transfer_guard);
+                            ctrl.end();
+                            return;
+                        }
                         let now = now_secs();
                         ctrl.inner
                             .rt
@@ -944,6 +1044,7 @@ impl UpdateController {
                     ctrl.apply(UpdateEvent::DownloadFailed);
                 }
             }
+            drop(transfer_guard);
             ctrl.end();
         });
     }
@@ -961,15 +1062,21 @@ impl UpdateController {
             }
         };
 
+        let cache_guard = match cache_operation_lock(&manager) {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!(target: "update", %error, "apply deferred");
+                self.apply(UpdateEvent::InstallFailed);
+                self.end();
+                return;
+            }
+        };
+
         let admitted = match select_admitted(&manager) {
             Some(a) => a,
             None => {
-                if let Some(installed) = manager_installed_version(&manager) {
-                    let _ = observer_update::admission::retain_admitted_pending(
-                        &manager.get_packages_dir(),
-                        None,
-                        &installed,
-                    );
+                if let Err(error) = retain_pending(&manager, None) {
+                    tracing::warn!(target: "update", %error, "rejected cache cleanup failed");
                 }
                 self.inner.rt.lock().expect("update rt").staged_asset = None;
                 self.apply(UpdateEvent::PendingMissing);
@@ -977,6 +1084,13 @@ impl UpdateController {
                 return;
             }
         };
+
+        if let Err(error) = retain_pending(&manager, Some(&admitted.asset.FileName)) {
+            tracing::warn!(target: "update", %error, "pending cleanup blocked apply");
+            self.apply(UpdateEvent::InstallFailed);
+            self.end();
+            return;
+        }
 
         self.signal(UpdateEvent::InstallStarted);
         tracing::info!(
@@ -989,7 +1103,7 @@ impl UpdateController {
 
         let ctrl = self.clone();
         std::thread::spawn(move || {
-            let version = admitted.asset.Version.clone();
+            let _cache_guard = cache_guard;
             let result = spawn_admitted(
                 &manager,
                 admitted,
@@ -1006,7 +1120,7 @@ impl UpdateController {
                 Ok(()) => std::process::exit(0),
                 Err(error) => {
                     tracing::warn!(target: "update", operation = "apply_restart", error = %error, "update apply failed");
-                    ctrl.apply(UpdateEvent::Downloaded { version });
+                    ctrl.apply(UpdateEvent::InstallFailed);
                     ctrl.end();
                 }
             }
@@ -1024,8 +1138,7 @@ impl UpdateController {
             .lock()
             .expect("update rt")
             .state
-            .prefs
-            .auto_check = on;
+            .set_auto_check(on);
         self.persist();
         self.emit();
         if on {
@@ -1039,8 +1152,7 @@ impl UpdateController {
             .lock()
             .expect("update rt")
             .state
-            .prefs
-            .auto_download = on;
+            .set_auto_download(on);
         self.persist();
         self.emit();
         if on {
@@ -1054,8 +1166,7 @@ impl UpdateController {
             .lock()
             .expect("update rt")
             .state
-            .prefs
-            .interval = interval;
+            .set_interval(interval);
         self.persist();
         self.emit();
     }
@@ -1153,6 +1264,95 @@ mod boundary_tests {
     use std::time::Instant;
     use velopack::sources::UpdateSource;
 
+    #[test]
+    fn persistence_holds_live_state_through_write_and_keeps_later_owner_edit() {
+        let runtime = Arc::new(Mutex::new(Runtime {
+            state: UpdateState::new(),
+            available_info: None,
+            staged_asset: None,
+            last_automatic_failure_at: None,
+        }));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_runtime = runtime.clone();
+        let writer = std::thread::spawn(move || {
+            persist_runtime(&writer_runtime, |_| {
+                ready_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        ready_rx.recv().unwrap();
+        assert!(matches!(
+            runtime.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        runtime.lock().unwrap().state.set_auto_download(false);
+        let mut saved = String::new();
+        persist_runtime(&runtime, |doc| {
+            saved = serde_json::to_string(doc).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let reopened = observer_update::open_update_document(
+            observer_update::load_update_document(&saved).unwrap(),
+        );
+        assert!(!reopened.prefs.auto_download);
+        assert_eq!(
+            reopened.explicit_choices.unwrap().auto_download,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn failed_retirement_blocks_transfer_and_helper_extraction() {
+        #[derive(Clone)]
+        struct NoDownload(Arc<std::sync::atomic::AtomicUsize>);
+        impl UpdateSource for NoDownload {
+            fn get_release_feed(
+                &self,
+                _: &str,
+                _: &velopack::bundle::Manifest,
+                _: &str,
+            ) -> Result<velopack::VelopackAssetFeed, velopack::Error> {
+                unreachable!()
+            }
+            fn download_release_entry(
+                &self,
+                _: &VelopackAsset,
+                _: &Path,
+                _: Option<mpsc::Sender<i16>>,
+            ) -> Result<(), velopack::Error> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(velopack::Error::Other("unexpected transfer".into()))
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let manager = manager_with_source(root.path(), NoDownload(calls.clone()), false);
+        let old = root.path().join("packages").join(NAME);
+        std::fs::create_dir(&old).unwrap();
+        let mut next = update_info();
+        next.TargetFullRelease.Version = "2.0.35".into();
+        next.TargetFullRelease.FileName = "Solstone-2.0.35-full.nupkg".into();
+        let error = stage_full_package_with_verifier(
+            &manager,
+            &next,
+            None,
+            &KeyedTestReleaseVerifier(PUBLIC),
+        )
+        .unwrap_err();
+        assert!(error.contains("cleanup failed"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(old.is_dir());
+        assert_eq!(
+            std::fs::read(root.path().join("Update.exe")).unwrap(),
+            b"incumbent helper"
+        );
+    }
+
     const PACKAGE: &[u8] = include_bytes!(
         "../../crates/pl-transport-win/tests/fixtures/update/fixture-2.0.34-full.nupkg"
     );
@@ -1244,6 +1444,15 @@ mod boundary_tests {
         source: impl UpdateSource + 'static,
         executable: bool,
     ) -> UpdateManager {
+        manager_with_source_version(root, source, executable, "2.0.33")
+    }
+
+    fn manager_with_source_version(
+        root: &Path,
+        source: impl UpdateSource + 'static,
+        executable: bool,
+        version: &str,
+    ) -> UpdateManager {
         let packages = root.join("packages");
         let current = root.join("current");
         std::fs::create_dir_all(&packages).unwrap();
@@ -1255,7 +1464,7 @@ mod boundary_tests {
             std::fs::write(&helper, b"incumbent helper").unwrap();
         }
         let manifest = current.join("sq.version");
-        std::fs::write(&manifest, "<package><metadata><id>Solstone</id><version>2.0.33</version><channel>win</channel><mainExe>solstone-windows-app.exe</mainExe></metadata></package>").unwrap();
+        std::fs::write(&manifest, format!("<package><metadata><id>Solstone</id><version>{version}</version><channel>win</channel><mainExe>solstone-windows-app.exe</mainExe></metadata></package>")).unwrap();
         UpdateManager::new(
             source,
             Some(UpdateOptions {
@@ -1295,6 +1504,71 @@ mod boundary_tests {
     fn pair(dir: &Path, name: &str) {
         std::fs::write(dir.join(name), PACKAGE).unwrap();
         std::fs::write(dir.join(format!("{name}.minisig")), SIGNATURE).unwrap();
+    }
+
+    #[test]
+    fn shared_staging_keeps_a_newer_authenticated_pending_release() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager_with_source_version(
+            root.path(),
+            R2FeedSource::fixture("http://127.0.0.1:9".into(), PUBLIC),
+            false,
+            "2.0.32",
+        );
+        let packages = root.path().join("packages");
+        pair(&packages, NAME);
+        let mut older_offer = update_info();
+        older_offer.TargetFullRelease.Version = "2.0.33".into();
+        older_offer.TargetFullRelease.FileName = "Solstone-2.0.33-full.nupkg".into();
+        let staged = stage_full_package_with_verifier(
+            &manager,
+            &older_offer,
+            None,
+            &KeyedTestReleaseVerifier(PUBLIC),
+        )
+        .unwrap();
+        assert_eq!(staged.Version, "2.0.34");
+        assert_eq!(std::fs::read(packages.join(NAME)).unwrap(), PACKAGE);
+        assert!(!packages
+            .join(&older_offer.TargetFullRelease.FileName)
+            .exists());
+        assert_eq!(
+            std::fs::read(root.path().join("Update.exe")).unwrap(),
+            b"incumbent helper"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staging_arbitration_and_apply_share_the_process_wide_cache_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager_with_source_version(
+            root.path(),
+            R2FeedSource::fixture("http://127.0.0.1:9".into(), PUBLIC),
+            false,
+            "2.0.32",
+        );
+        let packages = root.path().join("packages");
+        let guard = cache_operation_lock(&manager).unwrap();
+        pair(&packages, NAME);
+        let mut older_offer = update_info();
+        older_offer.TargetFullRelease.Version = "2.0.33".into();
+        older_offer.TargetFullRelease.FileName = "Solstone-2.0.33-full.nupkg".into();
+        let key = KeyedTestReleaseVerifier(PUBLIC);
+        assert!(stage_full_package_with_verifier(&manager, &older_offer, None, &key).is_err());
+        assert!(matches!(
+            apply_from_cache(
+                &manager,
+                &key,
+                || panic!("must not quiesce"),
+                || panic!("must not resume")
+            ),
+            ApplyOutcome::Failed(_)
+        ));
+        assert_eq!(std::fs::read(packages.join(NAME)).unwrap(), PACKAGE);
+        drop(guard);
+        let staged = stage_full_package_with_verifier(&manager, &older_offer, None, &key).unwrap();
+        assert_eq!(staged.Version, "2.0.34");
     }
 
     struct AfterDownload {
@@ -1458,11 +1732,12 @@ mod boundary_tests {
             Some("invalid signature".to_string()),
             Some(short.join("\n") + "\n"),
         ] {
+            std::fs::write(packages.join(higher), PACKAGE).unwrap();
             let signature = packages.join(format!("{higher}.minisig"));
             if let Some(text) = sidecar {
                 std::fs::write(&signature, text).unwrap();
             } else if signature.exists() {
-                std::fs::remove_file(signature).unwrap();
+                std::fs::remove_file(&signature).unwrap();
             }
             assert!(matches!(
                 apply_from_cache(
@@ -1476,6 +1751,8 @@ mod boundary_tests {
             assert_eq!(quiesced.get(), 0);
             assert_eq!(resumed.get(), 0);
             assert!(!root.path().join("Update.argv").exists());
+            assert!(!packages.join(higher).exists());
+            assert!(!signature.exists());
         }
         pair(&packages, NAME);
         assert!(matches!(
@@ -1501,8 +1778,8 @@ mod boundary_tests {
             .windows(2)
             .any(|args| args[0] == "--package" && Path::new(args[1]) == packages.join(NAME)));
         assert!(
-            packages.join(higher).exists(),
-            "the unsigned higher sibling still exists at helper handoff"
+            !packages.join(higher).exists(),
+            "the unsigned higher sibling is retired before helper handoff"
         );
     }
 

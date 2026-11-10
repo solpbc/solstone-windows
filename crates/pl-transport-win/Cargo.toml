@@ -38,7 +38,7 @@ tracing.workspace = true
 [features]
 update-test-fixtures = []
 awaiting-hold = []
-transport-tests = []
+transport-tests = ["observer-update/transport-tests"]
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem"] }
