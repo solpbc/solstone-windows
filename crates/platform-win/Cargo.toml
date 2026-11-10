@@ -17,6 +17,7 @@ observer-audio.workspace = true
 observer-segment.workspace = true
 observer-recovery.workspace = true
 observer-hotkey.workspace = true
+source-counters.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 

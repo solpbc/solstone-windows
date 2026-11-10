@@ -12,7 +12,7 @@ use crate::{
     platform::{self, DirFileIds},
     scan::{self, Note, VaultUnreadable, Walked},
     store,
-    table::{FirstSync, Row, Table},
+    table::{FirstSync, Intake, Row, Table},
     wire::{self, Answer, Change, Line, MAX_FILE_BYTES, MAX_NOTE_BYTES},
 };
 use serde::{Deserialize, Serialize};
@@ -223,6 +223,10 @@ impl EarliestChange {
     }
 }
 
+/// Told when placed notes have been saved with the table. Returning true means
+/// the caller kept them, and the engine then drops those rows.
+pub type IntakeHook = Arc<dyn Fn(&[Intake]) -> bool + Send + Sync>;
+
 /// The source's whole held state, under one private directory.
 pub struct Engine {
     root: PathBuf,
@@ -237,6 +241,9 @@ pub struct Engine {
     table_saved_ms: i64,
     table_dirty: bool,
     dir_file_ids: Option<Arc<DirFileIds>>,
+    inventory_walk: bool,
+    intake_buf: Vec<Intake>,
+    intake_hook: Option<IntakeHook>,
 }
 
 impl Engine {
@@ -259,6 +266,9 @@ impl Engine {
             table_saved_ms: 0,
             table_dirty: false,
             dir_file_ids: None,
+            inventory_walk: false,
+            intake_buf: Vec::new(),
+            intake_hook: None,
         };
         if engine.source.enabled {
             engine.table = Some(Table::load(&engine.table_path())?);
@@ -272,6 +282,39 @@ impl Engine {
     pub fn with_dir_file_ids(mut self, read: Arc<DirFileIds>) -> Self {
         self.dir_file_ids = Some(read);
         self
+    }
+
+    pub fn set_intake_hook(&mut self, hook: IntakeHook) {
+        self.intake_hook = Some(hook);
+    }
+
+    pub fn known_note_paths(&self) -> Vec<String> {
+        self.table
+            .as_ref()
+            .map(|table| table.rows.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn intakes(&self) -> Vec<Intake> {
+        self.table
+            .as_ref()
+            .map(|table| table.intakes.clone())
+            .unwrap_or_default()
+    }
+
+    /// Drop intakes that have already been counted. A failed save puts them back.
+    pub fn ack_intakes(&mut self, through: u64) -> io::Result<()> {
+        let path = self.table_path();
+        let Some(table) = self.table.as_mut() else {
+            return Ok(());
+        };
+        let previous = table.intakes.clone();
+        table.intakes.retain(|intake| intake.id > through);
+        if let Err(error) = table.save(&path) {
+            table.intakes = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn vault_root(&self) -> Option<PathBuf> {
@@ -479,6 +522,7 @@ impl Engine {
         cancel: &AtomicBool,
     ) -> io::Result<bool> {
         let mut changed = false;
+        self.inventory_walk = !table.first_sync_started;
         if !table.first_sync_started {
             table.first_sync_started = true;
             table.first_sync = Some(FirstSync { found: 0, sent: 0 });
@@ -884,7 +928,32 @@ impl Engine {
     /// before the change itself is durable.
     fn checkpoint(&mut self, table: &mut Table) -> io::Result<()> {
         self.pending.sync()?;
-        table.save(&self.table_path())?;
+        if !self.intake_buf.is_empty() {
+            for mut intake in self.intake_buf.drain(..) {
+                intake.id = table.next_intake_id;
+                table.next_intake_id = table.next_intake_id.saturating_add(1);
+                table.intakes.push(intake);
+            }
+        }
+        let path = self.table_path();
+        table.save(&path)?;
+        if let Some(hook) = self.intake_hook.clone()
+            && !table.intakes.is_empty()
+            && hook(&table.intakes)
+        {
+            let through = table
+                .intakes
+                .iter()
+                .map(|intake| intake.id)
+                .max()
+                .unwrap_or(0);
+            let previous = table.intakes.clone();
+            table.intakes.retain(|intake| intake.id > through);
+            if let Err(error) = table.save(&path) {
+                table.intakes = previous;
+                return Err(error);
+            }
+        }
         self.table_saved_ms = self.clock.now_ms();
         self.table_dirty = false;
         Ok(())
@@ -1020,6 +1089,16 @@ impl Engine {
         }
         self.pending
             .put(&replace, Some((&window, &meta, change.text)))?;
+        self.intake_buf.push(Intake {
+            id: 0,
+            path: meta.path.clone(),
+            previous_path: meta.previous_path.clone(),
+            replaced: replace.iter().map(|(_, _, path)| path.clone()).collect(),
+            first_sight: meta.first_sight,
+            removed: meta.change == Change::Removed,
+            inventory: self.inventory_walk,
+            at_ms: meta.observed_at.ms,
+        });
         Ok(Emitted::Placed(changed_at))
     }
 

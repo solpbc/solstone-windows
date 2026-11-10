@@ -1175,11 +1175,96 @@ fn flush_due(elapsed_since_last: Option<Duration>) -> bool {
     }
 }
 
+fn intake_from_spans(boundary_epoch_secs: u64, spans: &[(u64, u64)]) -> Option<i64> {
+    let end = spans.iter().map(|(_, end)| *end).max()?;
+    (end > 0).then_some((boundary_epoch_secs as i64).saturating_add((end / 1_000_000) as i64))
+}
+
+fn timeline_spans_for(dir: &Path, source: SourceKind) -> io::Result<Vec<(u64, u64)>> {
+    let timeline_path = dir.join(source_timeline_file_name(source));
+    let bytes = match fs::read(&timeline_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let fmt_path = dir.join(source_fmt_file_name(source));
+    let rate = match fs::read(&fmt_path) {
+        Ok(fmt_bytes) => serde_json::from_slice::<AudioFormat>(&fmt_bytes)
+            .ok()
+            .map(|format| {
+                source_counters::pcm_byte_rate(
+                    format.sample_rate_hz,
+                    format.channels,
+                    format.bits_per_sample,
+                )
+            })
+            .unwrap_or(0),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => 0,
+        Err(err) => return Err(err),
+    };
+    Ok(source_counters::spans_from_timeline(
+        &String::from_utf8_lossy(&bytes),
+        rate,
+    ))
+}
+
+/// `Ok(None)` when both timelines fail to read. An absent file adds nothing,
+/// and a zero byte rate adds nothing from that source alone.
+fn audio_timeline_spans(dir: &Path) -> io::Result<Option<Vec<(u64, u64)>>> {
+    let mut spans = Vec::new();
+    let mut unreadable = 0u8;
+    for source in [SourceKind::Mic, SourceKind::SystemAudio] {
+        match timeline_spans_for(dir, source) {
+            Ok(part) => spans.extend(part),
+            Err(_) => unreadable += 1,
+        }
+    }
+    if unreadable == 2 {
+        return Ok(None);
+    }
+    if unreadable > 0 {
+        return Err(io::Error::other("audio timeline unreadable"));
+    }
+    Ok(Some(spans))
+}
+
+fn seal_audio_counters(
+    counters: Option<&source_counters::SharedCounters>,
+    key: SegmentKey,
+    dir: &Path,
+    seal: bool,
+) -> io::Result<()> {
+    let Some(counters) = counters else {
+        return Ok(());
+    };
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    match audio_timeline_spans(dir)? {
+        None => {
+            if seal {
+                Err(io::Error::other("audio timelines unreadable"))
+            } else {
+                Ok(())
+            }
+        }
+        Some(spans) => {
+            let intake = intake_from_spans(key.boundary_epoch_secs, &spans);
+            if counters.seal_audio(key.index, Some(&spans), intake, seal) {
+                Ok(())
+            } else {
+                Err(io::Error::other("source counters did not save"))
+            }
+        }
+    }
+}
+
 /// Real `%LocalAppData%`-backed segment filesystem.
 #[derive(Debug)]
 pub struct LocalSegmentFs {
     root: PathBuf,
     handles: BTreeMap<(SegmentKey, SourceKind), SegmentHandle>,
+    counters: Option<source_counters::SharedCounters>,
     #[cfg(test)]
     pub fail_set_len: bool,
 }
@@ -1189,9 +1274,14 @@ impl LocalSegmentFs {
         Self {
             root,
             handles: BTreeMap::new(),
+            counters: None,
             #[cfg(test)]
             fail_set_len: false,
         }
+    }
+
+    pub fn set_counters(&mut self, counters: source_counters::SharedCounters) {
+        self.counters = Some(counters);
     }
 }
 
@@ -1407,6 +1497,7 @@ impl SegmentFs for LocalSegmentFs {
             }
         }
         let dir = incomplete_dir(&self.root, key);
+        seal_audio_counters(self.counters.as_ref(), key, &dir, true)?;
         seal_audio_flac(&dir)?;
         persist_seal_len(&dir, video_end_secs, DEFAULT_SEGMENT_SECS)?;
         seal_or_merge(&dir, &sealed_dir(&self.root, key), DEFAULT_SEGMENT_SECS)
@@ -1418,11 +1509,20 @@ impl SegmentFs for LocalSegmentFs {
 pub struct LocalRecoveryFs {
     root: PathBuf,
     period_secs: u64,
+    counters: Option<source_counters::SharedCounters>,
 }
 
 impl LocalRecoveryFs {
     pub fn new(root: PathBuf, period_secs: u64) -> Self {
-        Self { root, period_secs }
+        Self {
+            root,
+            period_secs,
+            counters: None,
+        }
+    }
+
+    pub fn set_counters(&mut self, counters: source_counters::SharedCounters) {
+        self.counters = Some(counters);
     }
 }
 
@@ -1476,6 +1576,9 @@ impl RecoveryFs for LocalRecoveryFs {
                 boundary_epoch_secs: index * self.period_secs,
                 index,
             };
+            if let Err(error) = seal_audio_counters(self.counters.as_ref(), key, &path, false) {
+                tracing::warn!(target: "storage", %error, "audio counter reconcile skipped");
+            }
             if is_live_segment(key, now_epoch_secs, self.period_secs) {
                 continue;
             }
@@ -1495,12 +1598,18 @@ impl RecoveryFs for LocalRecoveryFs {
         // remaining final media files.
         let dir = Path::new(&seg.path);
         remove_partial_media(dir)?;
+        seal_audio_counters(self.counters.as_ref(), seg.key, dir, true)?;
         seal_audio_flac(dir)?;
         persist_seal_len(dir, None, self.period_secs)?;
         seal_or_merge(dir, &sealed_dir(&self.root, seg.key), self.period_secs)
     }
 
     fn quarantine(&mut self, seg: &StaleSegment) -> Result<(), Self::Error> {
+        if let Some(counters) = &self.counters {
+            if !counters.quarantine(seg.key.index) {
+                return Err(io::Error::other("source counters did not save"));
+            }
+        }
         let quarantine = self.root.join("quarantine");
         fs::create_dir_all(&quarantine)?;
         let preferred = format!("{}.incomplete", seg.key.index);
@@ -1530,6 +1639,43 @@ mod tests {
             boundary_epoch_secs: index * DEFAULT_SEGMENT_SECS,
             index,
         }
+    }
+
+    #[test]
+    fn a_timeline_is_counted_once_when_the_segment_is_sealed() {
+        let root = temp_root("timeline-counter");
+        let counters_dir = root.join("counters");
+        fs::create_dir_all(&counters_dir).unwrap();
+        let counters = source_counters::SharedCounters::open(&counters_dir, "2026-11-09").unwrap();
+        let key = key(10);
+        let dir = root.join(format!("{}.incomplete", key.index));
+        fs::create_dir_all(&dir).unwrap();
+        let rate = 16_000u32 * 2;
+        fs::write(
+            dir.join("mic.fmt.json"),
+            serde_json::to_vec(&AudioFormat {
+                sample_rate_hz: 16_000,
+                channels: 1,
+                bits_per_sample: 16,
+                is_float: false,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.join("mic.timeline"), format!("0 {rate}\n")).unwrap();
+        fs::write(dir.join("mic.pcm"), vec![0u8; rate as usize]).unwrap();
+
+        let mut recovery = LocalRecoveryFs::new(root.clone(), DEFAULT_SEGMENT_SECS);
+        recovery.set_counters(counters.clone());
+        let stale = recovery.scan_incomplete().unwrap();
+        assert_eq!(counters.audio_seconds(), 1);
+        let seg = stale.iter().find(|seg| seg.key.index == key.index).unwrap();
+        recovery.finalize(seg).unwrap();
+        assert_eq!(counters.audio_seconds(), 1);
+        let again = source_counters::SharedCounters::open(&counters_dir, "2026-11-10").unwrap();
+        assert_eq!(again.audio_seconds(), 1);
+        assert_eq!(again.audio_seconds(), counters.audio_seconds());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
