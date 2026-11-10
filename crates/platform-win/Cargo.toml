@@ -27,6 +27,7 @@ webview2-com = "=0.38.2"
 windows-core = "=0.61.2"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",

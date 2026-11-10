@@ -42,6 +42,26 @@ fn mica_effects() -> tauri::utils::config::WindowEffectsConfig {
     EffectsBuilder::new().effect(Effect::Mica).build()
 }
 
+/// Color the native settings caption to the ground. Decorations stay, so
+/// Windows keeps drawing the buttons. A refused call (Windows 10) leaves the
+/// system caption in place.
+fn paint_settings_caption(window: &WebviewWindow, dark: bool) {
+    #[cfg(windows)]
+    {
+        if let Ok(hwnd) = window.hwnd() {
+            let _ = platform_win::caption_color::apply_caption_colors(hwnd.0 as isize, dark);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, dark);
+    }
+}
+
+fn settings_caption_is_dark(window: &WebviewWindow) -> bool {
+    matches!(window.theme(), Ok(tauri::Theme::Dark))
+}
+
 pub(crate) fn settings_proof_eligible(app: &tauri::AppHandle) -> bool {
     app.get_webview_window("settings").is_some_and(|window| {
         #[cfg(windows)]
@@ -114,17 +134,25 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
         WebviewUrl::App("index.html".into())
     };
 
+    // Native decorations stay. This window is opaque, so the webview's ground
+    // is the ground. About and the journal keep Mica.
     let window = shared_webview_environment(WebviewWindowBuilder::new(app, "settings", url))
-        .title("solstone settings")
-        .inner_size(820.0, 580.0)
-        .min_inner_size(460.0, 480.0)
-        .transparent(true)
-        .effects(mica_effects())
+        .title("solstone")
+        .inner_size(1180.0, 760.0)
+        .min_inner_size(360.0, 480.0)
         .visible(true)
         .build()?;
+    paint_settings_caption(&window, settings_caption_is_dark(&window));
 
     let teardown_app = app.clone();
+    let caption_window = window.clone();
     window.on_window_event(move |event| {
+        if let tauri::WindowEvent::ThemeChanged(theme) = &event {
+            paint_settings_caption(&caption_window, matches!(theme, tauri::Theme::Dark));
+        }
+        if matches!(event, tauri::WindowEvent::Focused(true)) {
+            paint_settings_caption(&caption_window, settings_caption_is_dark(&caption_window));
+        }
         if matches!(event, tauri::WindowEvent::Destroyed)
             || (matches!(event, tauri::WindowEvent::Focused(false))
                 && !settings_proof_eligible(&teardown_app))

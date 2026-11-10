@@ -36,6 +36,7 @@ pub use connection_cost::{connection_cost, PlatformConnectionCost, PlatformConne
 #[allow(unsafe_code)]
 pub mod desktop_activity;
 pub use desktop_activity::{is_pump_ready, mark_pump_registration_finished};
+pub mod caption_color;
 /// Directory file ids for the Obsidian source (one enumeration per directory).
 #[allow(unsafe_code)]
 pub mod dir_file_ids;
