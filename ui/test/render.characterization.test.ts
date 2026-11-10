@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 
 import { automationContract } from "../src/lib/contract";
 import * as app from "../src/main";
@@ -19,6 +20,7 @@ import {
 } from "./fixtures";
 
 const ids = automationContract.automation_ids;
+const invokeMock = vi.mocked(invoke);
 const STORE_APPS_LABEL =
   "store apps (all). apps from the Microsoft Store share one entry, so excluding it excludes all of them";
 const EXCLUSION_BOUNDARY =
@@ -50,6 +52,8 @@ function absent(id: string): void {
 describe("settings renderer characterization", () => {
   beforeEach(() => {
     resetRoot();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined as never);
   });
 
   it("renders the observing home emitted ids", () => {
@@ -302,10 +306,10 @@ describe("settings renderer characterization", () => {
   });
 
   it.each([
-    ["never_checked", ["state", "checkNow", "autoCheck", "frequency", "autoDownload"], ["lastChecked", "notes", "download", "install", "retry"]],
+    ["never_checked", ["state", "lastChecked", "checkNow", "autoCheck", "frequency", "autoDownload"], ["notes", "download", "install", "retry"]],
     ["available", ["state", "lastChecked", "notes", "checkNow", "download", "autoCheck", "frequency", "autoDownload"], ["install", "retry"]],
-    ["downloading", ["state", "autoCheck", "frequency", "autoDownload"], ["lastChecked", "notes", "checkNow", "download", "install", "retry"]],
-    ["staged", ["state", "checkNow", "install", "autoCheck", "frequency", "autoDownload"], ["lastChecked", "notes", "download", "retry"]],
+    ["downloading", ["state", "lastChecked", "autoCheck", "frequency", "autoDownload"], ["notes", "checkNow", "download", "install", "retry"]],
+    ["staged", ["state", "lastChecked", "checkNow", "install", "autoCheck", "frequency", "autoDownload"], ["notes", "download", "retry"]],
     ["failed", ["state", "lastChecked", "checkNow", "retry", "autoCheck", "frequency", "autoDownload"], ["notes", "download", "install"]],
   ] as Array<[UpdateDisplayKind, string[], string[]]>)(
     "renders the %s updates emitted-id subset",
@@ -326,6 +330,44 @@ describe("settings renderer characterization", () => {
       absent(ids["settings.updates.cancel"]);
     },
   );
+
+  it("download failure recovery invokes update_download", async () => {
+    const dump = observingDump();
+    app.__test__.setRoute("updates");
+    app.__test__.setHealth(dump);
+    app.__test__.setUpdate(
+      updateView("failed", {
+        recovery: "download",
+        actions: { can_retry: true, can_download: true },
+      }),
+    );
+
+    app.__test__.renderSettings(dump);
+
+    const retryBtn = present(ids["settings.updates.retry"]) as HTMLButtonElement;
+    expect(retryBtn.disabled).toBe(false);
+
+    invokeMock.mockClear();
+    retryBtn.click();
+    expect(invokeMock).toHaveBeenCalledWith("update_download");
+    expect(invokeMock).not.toHaveBeenCalledWith("update_check_now");
+  });
+
+  it("check now remains enabled while update is pending restart", () => {
+    const dump = observingDump();
+    app.__test__.setRoute("updates");
+    app.__test__.setHealth(dump);
+    app.__test__.setUpdate(
+      updateView("staged", {
+        actions: { can_check_now: true, can_install: true },
+      }),
+    );
+
+    app.__test__.renderSettings(dump);
+
+    const checkBtn = present(ids["settings.updates.checkNow"]) as HTMLButtonElement;
+    expect(checkBtn.disabled).toBe(false);
+  });
 
   it("renders the about surface with its emitted ids", () => {
     const dump = observingDump();

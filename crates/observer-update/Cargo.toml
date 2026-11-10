@@ -6,17 +6,17 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Honest update state model + reducer for the in-app updater. Earned from Velopack results only; actionability derives 'no dead buttons' (incl. the staged-blocks-recheck case) so the platform driver and webview can never render an un-actionable control."
+description = "Honest update state model + reducer for the in-app updater. Earned from Velopack results only; actionability derives 'no dead buttons' (incl. checking while an update is staged) so the platform driver and webview can never render an un-actionable control."
 
 [lints]
 workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 zip = { version = "=9.0.3", default-features = false, features = ["deflate"] }
 xml = "=1.3.0"
 semver = "=1.0.28"
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile = "3"

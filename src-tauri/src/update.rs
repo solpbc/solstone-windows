@@ -36,12 +36,10 @@ use observer_update::admission::{
     Admission, AuthenticatedPackage,
 };
 use observer_update::{
-    classify_update_plan, format_update_plan, reduce, CheckInterval, CheckOutcome,
-    ReconciledUpdateStatus, UpdateActivity, UpdateAssetDescriptor, UpdateEvent, UpdateOutcome,
-    UpdatePrefs, UpdateState, UpdateView,
+    classify_update_plan, format_update_plan, reduce, CheckInterval, CheckOutcome, CostDeferral,
+    UpdateActivity, UpdateAssetDescriptor, UpdateEvent, UpdateOutcome, UpdateState, UpdateView,
 };
 use pl_transport_win::release_signature::ProductionReleaseVerifier;
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use velopack::{UpdateCheck, UpdateInfo, UpdateManager, UpdateOptions, VelopackAsset};
 
@@ -58,13 +56,51 @@ const UPDATE_EVENT: &str = "update://changed";
 /// the real cadence is `prefs.interval`, gated on `last_checked_at`.
 const TIMER_TICK: Duration = Duration::from_secs(60);
 
-/// The durable parts persisted to `update.json` (next to `pairing.json`).
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct PersistedUpdate {
-    #[serde(default)]
-    prefs: UpdatePrefs,
-    #[serde(default)]
-    status: ReconciledUpdateStatus,
+static AUTOMATIC_TRANSFER: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn is_automatic_transfer() -> bool {
+    AUTOMATIC_TRANSFER.load(Ordering::SeqCst)
+}
+
+struct AutomaticTransferGuard(bool);
+
+impl AutomaticTransferGuard {
+    fn new(automatic: bool) -> Self {
+        if automatic {
+            AUTOMATIC_TRANSFER.store(true, Ordering::SeqCst);
+        }
+        Self(automatic)
+    }
+}
+
+impl Drop for AutomaticTransferGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            AUTOMATIC_TRANSFER.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+fn current_network_cost() -> observer_update::NetworkCost {
+    let p = platform_win::connection_cost();
+    observer_update::NetworkCost {
+        kind: match p.kind {
+            platform_win::PlatformConnectionCostKind::Unrestricted => {
+                observer_update::NetworkCostKind::Unrestricted
+            }
+            platform_win::PlatformConnectionCostKind::Fixed => {
+                observer_update::NetworkCostKind::Fixed
+            }
+            platform_win::PlatformConnectionCostKind::Variable => {
+                observer_update::NetworkCostKind::Variable
+            }
+            platform_win::PlatformConnectionCostKind::Unknown => {
+                observer_update::NetworkCostKind::Unknown
+            }
+        },
+        roaming: p.roaming,
+        background_restricted: p.background_restricted,
+    }
 }
 
 /// The reducer state plus the live Velopack objects the pure tier can't hold.
@@ -74,6 +110,8 @@ struct Runtime {
     available_info: Option<UpdateInfo>,
     /// The staged asset pending relaunch (to apply).
     staged_asset: Option<VelopackAsset>,
+    /// Last automatic download failure timestamp (unix secs), for 900s retry backoff.
+    last_automatic_failure_at: Option<u64>,
 }
 
 struct Inner {
@@ -510,6 +548,12 @@ pub fn apply_pending_cli(args: &[String]) -> std::process::ExitCode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduledDownloadAction {
+    Start,
+    Defer(CostDeferral),
+}
+
 impl UpdateController {
     /// Build the controller: construct the `UpdateManager` (`None` if the app is
     /// not Velopack-installed), load persisted prefs+status, and rehydrate any
@@ -517,26 +561,38 @@ impl UpdateController {
     pub fn new(app: AppHandle, state_path: PathBuf) -> Self {
         let manager = build_manager();
 
+        let doc = match std::fs::read_to_string(&state_path) {
+            Ok(text) => match observer_update::load_update_document(&text) {
+                Ok(doc) => observer_update::migrate_update_document(doc),
+                Err(_) => observer_update::fresh_update_document(),
+            },
+            Err(_) => observer_update::fresh_update_document(),
+        };
+
         let mut state = UpdateState::new();
-        if let Ok(text) = std::fs::read_to_string(&state_path) {
-            if let Ok(p) = serde_json::from_str::<PersistedUpdate>(&text) {
-                state.prefs = p.prefs;
-                state.status = p.status;
-            }
-        }
+        state.prefs = doc.prefs;
+        state.status = doc.status;
         state.config_valid = manager.is_some();
 
         let mut staged_asset = None;
         if let Some(m) = &manager {
-            let scan = manager_installed_version(m).map(|installed| {
+            let installed_opt = manager_installed_version(m);
+            let scan = installed_opt.as_ref().map(|installed| {
                 scan_authenticated_packages(
                     &m.get_packages_dir(),
-                    &installed,
+                    installed,
                     &ProductionReleaseVerifier,
                 )
             });
             let rejected = scan.as_ref().is_some_and(|scan| scan.rejected);
             if let Some(admitted) = scan.and_then(|scan| scan.selected).and_then(into_admitted) {
+                if let Some(installed) = &installed_opt {
+                    let _ = observer_update::admission::retain_admitted_pending(
+                        &m.get_packages_dir(),
+                        Some(&admitted.asset.FileName),
+                        installed,
+                    );
+                }
                 reduce(
                     &mut state,
                     UpdateEvent::Downloaded {
@@ -549,8 +605,15 @@ impl UpdateController {
                     state.status.last_check_outcome,
                     Some(UpdateOutcome::Staged) | Some(UpdateOutcome::Found)
                 );
+                if let Some(installed) = &installed_opt {
+                    let _ = observer_update::admission::retain_admitted_pending(
+                        &m.get_packages_dir(),
+                        None,
+                        installed,
+                    );
+                }
                 if rejected || outcome_staged_or_found {
-                    reduce(&mut state, UpdateEvent::CheckFailed { now: now_secs() });
+                    reduce(&mut state, UpdateEvent::PendingMissing);
                 }
             }
         }
@@ -560,6 +623,7 @@ impl UpdateController {
                 state,
                 available_info: None,
                 staged_asset,
+                last_automatic_failure_at: None,
             }),
             manager,
             app,
@@ -573,7 +637,13 @@ impl UpdateController {
 
     /// The current honest snapshot (for the initial render on Settings open).
     pub fn view(&self) -> UpdateView {
-        self.inner.rt.lock().expect("update rt").state.view()
+        let explicit_allowed = observer_update::explicit_download_allowed(current_network_cost());
+        self.inner
+            .rt
+            .lock()
+            .expect("update rt")
+            .state
+            .view(explicit_allowed)
     }
 
     fn emit(&self) {
@@ -582,14 +652,15 @@ impl UpdateController {
     }
 
     fn persist(&self) {
-        let p = {
+        let doc = {
             let rt = self.inner.rt.lock().expect("update rt");
-            PersistedUpdate {
+            observer_update::UpdateDocument {
                 prefs: rt.state.prefs,
                 status: rt.state.status.clone(),
+                daily_background: true,
             }
         };
-        match serde_json::to_string_pretty(&p) {
+        match serde_json::to_string_pretty(&doc) {
             Ok(text) => {
                 if let Some(dir) = self.inner.state_path.parent() {
                     let _ = std::fs::create_dir_all(dir);
@@ -642,24 +713,14 @@ impl UpdateController {
 
     // ── Intents ──────────────────────────────────────────────────────────────
 
-    /// Start a check (manual or scheduled). No-op when there is no manager, an op
-    /// is already in flight, or a staged update is parked (the staged-blocks-
-    /// recheck rule the actionability already enforces in the UI).
+    /// Start a check (manual or scheduled). No-op when there is no manager or an
+    /// op is already in flight. A pending staged update does NOT block checking for
+    /// a newer offer.
     pub fn check(&self) {
         let manager = match &self.inner.manager {
             Some(m) => m.clone(),
             None => return,
         };
-        if self
-            .inner
-            .rt
-            .lock()
-            .expect("update rt")
-            .staged_asset
-            .is_some()
-        {
-            return;
-        }
         if !self.try_begin() {
             return;
         }
@@ -669,48 +730,69 @@ impl UpdateController {
         std::thread::spawn(move || match manager.check_for_updates() {
             Ok(UpdateCheck::UpdateAvailable(mut info)) => {
                 force_full_package(&mut info);
-                let base = info.BaseRelease.as_ref().map(|a| {
-                    UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
-                });
-                let deltas = info
-                    .DeltasToTarget
-                    .iter()
-                    .map(|a| {
-                        UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
-                    })
-                    .collect();
-                let target = UpdateAssetDescriptor::new(
-                    &info.TargetFullRelease.FileName,
-                    info.TargetFullRelease.Version.to_string(),
-                    &info.TargetFullRelease.Type,
-                );
-                let plan = classify_update_plan(base, deltas, target);
                 let version = info.TargetFullRelease.Version.clone();
                 let notes = non_empty(&info.TargetFullRelease.NotesMarkdown);
-                ctrl.inner.rt.lock().expect("update rt").available_info = Some(*info);
-                tracing::info!(
-                    target: "update",
-                    operation = "check",
-                    result = "available",
-                    version = %version,
-                    plan = %format_update_plan(&plan),
-                    "update check result"
-                );
-                ctrl.apply(UpdateEvent::CheckResult {
-                    now: now_secs(),
-                    result: CheckOutcome::UpdateAvailable { version, notes },
-                });
-                ctrl.end();
-                let auto = ctrl
+                let staged_ver = ctrl
                     .inner
                     .rt
                     .lock()
                     .expect("update rt")
-                    .state
-                    .prefs
-                    .auto_download;
-                if auto {
-                    ctrl.download();
+                    .staged_asset
+                    .as_ref()
+                    .and_then(|a| semver::Version::parse(&a.Version).ok());
+                let feed_ver = semver::Version::parse(&version).ok();
+                let replaces = match feed_ver {
+                    Some(ref fv) => observer_update::feed_replaces_pending(staged_ver.as_ref(), fv),
+                    None => false,
+                };
+
+                if replaces {
+                    let base = info.BaseRelease.as_ref().map(|a| {
+                        UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
+                    });
+                    let deltas = info
+                        .DeltasToTarget
+                        .iter()
+                        .map(|a| {
+                            UpdateAssetDescriptor::new(&a.FileName, a.Version.to_string(), &a.Type)
+                        })
+                        .collect();
+                    let target = UpdateAssetDescriptor::new(
+                        &info.TargetFullRelease.FileName,
+                        info.TargetFullRelease.Version.to_string(),
+                        &info.TargetFullRelease.Type,
+                    );
+                    let plan = classify_update_plan(base, deltas, target);
+                    ctrl.inner.rt.lock().expect("update rt").available_info = Some(*info);
+                    tracing::info!(
+                        target: "update",
+                        operation = "check",
+                        result = "available",
+                        version = %version,
+                        plan = %format_update_plan(&plan),
+                        "update check result"
+                    );
+                    ctrl.apply(UpdateEvent::CheckResult {
+                        now: now_secs(),
+                        result: CheckOutcome::UpdateAvailable { version, notes },
+                    });
+                    ctrl.end();
+
+                    ctrl.scheduled_or_post_check(true);
+                } else {
+                    ctrl.inner.rt.lock().expect("update rt").available_info = None;
+                    tracing::info!(
+                        target: "update",
+                        operation = "check",
+                        result = "up_to_date_pending_preserved",
+                        version = %version,
+                        "feed version does not replace pending package"
+                    );
+                    ctrl.apply(UpdateEvent::CheckResult {
+                        now: now_secs(),
+                        result: CheckOutcome::UpToDate,
+                    });
+                    ctrl.end();
                 }
             }
             Ok(UpdateCheck::NoUpdateAvailable) => {
@@ -755,8 +837,36 @@ impl UpdateController {
     }
 
     /// Download the currently-available update (always downloads the full asset
-    /// and admits the detached signature before staging).
+    /// and admits the detached signature before staging). Explicit user action.
     pub fn download(&self) {
+        let cost = current_network_cost();
+        if !observer_update::explicit_download_allowed(cost) {
+            return;
+        }
+        self.download_internal(false);
+    }
+
+    fn download_automatic(&self) {
+        let (auto_download, cost) = {
+            let rt = self.inner.rt.lock().expect("update rt");
+            (rt.state.prefs.auto_download, current_network_cost())
+        };
+        if !observer_update::automatic_download_eligible(auto_download, cost) {
+            if let Some(reason) = observer_update::cost_deferral(cost) {
+                tracing::info!(
+                    target: "update",
+                    operation = "download_automatic",
+                    deferral = ?reason,
+                    "automatic download deferred due to network cost"
+                );
+                self.signal(UpdateEvent::DownloadDeferred { reason });
+            }
+            return;
+        }
+        self.download_internal(true);
+    }
+
+    fn download_internal(&self, automatic: bool) {
         let manager = match &self.inner.manager {
             Some(m) => m.clone(),
             None => return,
@@ -786,10 +896,23 @@ impl UpdateController {
         // Downloader.
         let ctrl = self.clone();
         std::thread::spawn(move || {
+            let _guard = AutomaticTransferGuard::new(automatic);
             match stage_full_package(&manager, &info, Some(tx)) {
                 Ok(staged) => {
                     let version = staged.Version.clone();
-                    ctrl.inner.rt.lock().expect("update rt").staged_asset = Some(staged);
+                    if let Some(installed) = manager_installed_version(&manager) {
+                        let _ = observer_update::admission::retain_admitted_pending(
+                            &manager.get_packages_dir(),
+                            Some(&staged.FileName),
+                            &installed,
+                        );
+                    }
+                    {
+                        let mut rt = ctrl.inner.rt.lock().expect("update rt");
+                        rt.staged_asset = Some(staged);
+                        rt.available_info = None;
+                        rt.last_automatic_failure_at = None;
+                    }
                     tracing::info!(
                         target: "update",
                         operation = "download",
@@ -806,8 +929,19 @@ impl UpdateController {
                         error = %e,
                         "update download failed"
                     );
-                    ctrl.inner.rt.lock().expect("update rt").staged_asset = None;
-                    ctrl.apply(UpdateEvent::CheckFailed { now: now_secs() });
+                    retire_asset(
+                        &manager.get_packages_dir(),
+                        &info.TargetFullRelease.FileName,
+                    );
+                    if automatic {
+                        let now = now_secs();
+                        ctrl.inner
+                            .rt
+                            .lock()
+                            .expect("update rt")
+                            .last_automatic_failure_at = Some(now);
+                    }
+                    ctrl.apply(UpdateEvent::DownloadFailed);
                 }
             }
             ctrl.end();
@@ -830,8 +964,15 @@ impl UpdateController {
         let admitted = match select_admitted(&manager) {
             Some(a) => a,
             None => {
+                if let Some(installed) = manager_installed_version(&manager) {
+                    let _ = observer_update::admission::retain_admitted_pending(
+                        &manager.get_packages_dir(),
+                        None,
+                        &installed,
+                    );
+                }
                 self.inner.rt.lock().expect("update rt").staged_asset = None;
-                self.apply(UpdateEvent::CheckFailed { now: now_secs() });
+                self.apply(UpdateEvent::PendingMissing);
                 self.end();
                 return;
             }
@@ -887,9 +1028,8 @@ impl UpdateController {
             .auto_check = on;
         self.persist();
         self.emit();
-        // Turning auto-check on may make a check immediately due.
         if on {
-            self.scheduled_check_if_due();
+            self.scheduled_or_post_check(false);
         }
     }
 
@@ -903,6 +1043,9 @@ impl UpdateController {
             .auto_download = on;
         self.persist();
         self.emit();
+        if on {
+            self.scheduled_or_post_check(true);
+        }
     }
 
     pub fn set_interval(&self, interval: CheckInterval) {
@@ -917,38 +1060,83 @@ impl UpdateController {
         self.emit();
     }
 
-    /// Fire a scheduled check when due per prefs (reads live state each call, so
-    /// pref changes + the persisted `last_checked_at` are honored across restarts).
-    fn scheduled_check_if_due(&self) {
-        let due = {
+    fn scheduled_or_post_check(&self, allow_download: bool) {
+        let (due, action) = {
             let rt = self.inner.rt.lock().expect("update rt");
-            let s = &rt.state;
-            if !s.config_valid
-                || !s.prefs.auto_check
-                || rt.staged_asset.is_some()
-                || !matches!(s.activity, UpdateActivity::Idle)
-            {
-                false
-            } else {
-                match s.status.last_checked_at {
-                    None => true,
-                    Some(t) => now_secs().saturating_sub(t) >= s.prefs.interval.secs(),
-                }
+            if !rt.state.config_valid {
+                return;
             }
+            let in_flight = self.inner.busy.load(Ordering::SeqCst)
+                || !matches!(rt.state.activity, UpdateActivity::Idle);
+            let now = now_secs();
+            let due = observer_update::check_is_due(
+                now,
+                rt.state.status.last_checked_at,
+                rt.state.prefs.interval,
+                rt.state.prefs.auto_check,
+                in_flight,
+            );
+            let action = if due || !allow_download {
+                None
+            } else {
+                let cost = current_network_cost();
+                let have_unadmitted_target = rt.available_info.is_some();
+                let should_start = observer_update::automatic_download_should_start(
+                    now,
+                    rt.state.prefs.auto_download,
+                    cost,
+                    in_flight,
+                    have_unadmitted_target,
+                    rt.last_automatic_failure_at,
+                );
+                if should_start {
+                    Some(ScheduledDownloadAction::Start)
+                } else if rt.state.prefs.auto_download
+                    && have_unadmitted_target
+                    && !in_flight
+                    && !observer_update::automatic_download_eligible(
+                        rt.state.prefs.auto_download,
+                        cost,
+                    )
+                {
+                    observer_update::cost_deferral(cost).map(ScheduledDownloadAction::Defer)
+                } else {
+                    None
+                }
+            };
+            (due, action)
         };
+
         if due {
             self.check();
+        } else if let Some(action) = action {
+            match action {
+                ScheduledDownloadAction::Start => self.download_automatic(),
+                ScheduledDownloadAction::Defer(reason) => {
+                    tracing::info!(
+                        target: "update",
+                        operation = "scheduled_or_post_check",
+                        deferral = ?reason,
+                        "automatic download deferred due to network cost"
+                    );
+                    self.signal(UpdateEvent::DownloadDeferred { reason });
+                }
+            }
         }
     }
 
+    fn scheduled_tick(&self) {
+        self.scheduled_or_post_check(true);
+    }
+
     /// Spawn the background-check timer: wake every [`TIMER_TICK`], fire a
-    /// scheduled check when due.
+    /// scheduled check or automatic download when due.
     pub fn spawn_timer(&self) {
         let ctrl = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(TIMER_TICK).await;
-                ctrl.scheduled_check_if_due();
+                ctrl.scheduled_tick();
             }
         });
     }

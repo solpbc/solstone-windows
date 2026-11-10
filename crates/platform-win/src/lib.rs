@@ -31,6 +31,8 @@ pub mod about_observation;
 /// Where Windows registers an installed program (`App Paths`, safe `winreg`).
 pub mod app_paths;
 pub mod autostart;
+pub mod connection_cost;
+pub use connection_cost::{connection_cost, PlatformConnectionCost, PlatformConnectionCostKind};
 #[allow(unsafe_code)]
 pub mod desktop_activity;
 pub use desktop_activity::{is_pump_ready, mark_pump_registration_finished};

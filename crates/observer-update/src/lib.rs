@@ -12,11 +12,9 @@
 //!
 //! The actionability ([`UpdateActions`]) is the load-bearing honesty: every
 //! control's enabled flag is *derived* from real state, so the UI cannot paint a
-//! dead button. In particular a downloaded-and-staged update (pending relaunch)
-//! has idle activity and no in-flight session, yet "check now" must stay disabled
-//! — a naive `!in_flight` gate would wrongly re-enable it (the bug the macOS
-//! scope-check caught). [`UpdateActions::derive`] folds `is_staged` in for that
-//! reason; [`check_now_disabled_while_staged`] pins it.
+//! dead button. A downloaded-and-staged update (pending relaunch)
+//! has idle activity and no in-flight session, and "check now" remains enabled
+//! while parked. [`check_enabled_while_staged_and_disabled_while_in_flight`] pins it.
 
 #![forbid(unsafe_code)]
 
@@ -45,7 +43,7 @@ impl CheckInterval {
 }
 
 /// Persisted updater preferences. Defaults are the operator-approved set:
-/// auto-check **on**, **weekly**, auto-download **off** (install on relaunch).
+/// auto-check **on**, **daily**, auto-download **on** (install on relaunch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdatePrefs {
     pub auto_check: bool,
@@ -57,9 +55,154 @@ impl Default for UpdatePrefs {
     fn default() -> Self {
         Self {
             auto_check: true,
-            interval: CheckInterval::Week,
-            auto_download: false,
+            interval: CheckInterval::Day,
+            auto_download: true,
         }
+    }
+}
+
+/// Persisted update document on disk (`update.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateDocument {
+    #[serde(default)]
+    pub prefs: UpdatePrefs,
+    #[serde(default)]
+    pub status: ReconciledUpdateStatus,
+    #[serde(default)]
+    pub daily_background: bool,
+}
+
+/// Create a fresh document for an unreadable or missing file.
+/// This sets the migration marker to true without running migration.
+pub fn fresh_update_document() -> UpdateDocument {
+    UpdateDocument {
+        prefs: UpdatePrefs::default(),
+        status: ReconciledUpdateStatus::default(),
+        daily_background: true,
+    }
+}
+
+/// Deserialize the persisted update document from JSON text.
+pub fn load_update_document(text: &str) -> Result<UpdateDocument, serde_json::Error> {
+    serde_json::from_str::<UpdateDocument>(text)
+}
+
+/// Migrate a legacy readable document once. If `daily_background` is false or missing,
+/// sets the approved default preferences and the marker, copying status through unchanged.
+pub fn migrate_update_document(mut doc: UpdateDocument) -> UpdateDocument {
+    if !doc.daily_background {
+        doc.prefs = UpdatePrefs::default();
+        doc.daily_background = true;
+    }
+    doc
+}
+
+/// Network cost classification for update transfers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkCostKind {
+    Unrestricted,
+    Fixed,
+    Variable,
+    Unknown,
+}
+
+/// Network cost profile reported by the platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkCost {
+    pub kind: NetworkCostKind,
+    pub roaming: bool,
+    pub background_restricted: bool,
+}
+
+/// True only when auto_download is enabled on an unrestricted, non-roaming,
+/// background-unrestricted connection.
+pub fn automatic_download_eligible(auto_download: bool, cost: NetworkCost) -> bool {
+    auto_download
+        && cost.kind == NetworkCostKind::Unrestricted
+        && !cost.roaming
+        && !cost.background_restricted
+}
+
+/// True when the user may explicitly initiate a download (metered or unknown allowed;
+/// roaming and background-use restrictions refused).
+pub fn explicit_download_allowed(cost: NetworkCost) -> bool {
+    !cost.roaming && !cost.background_restricted
+}
+
+/// Reasons why an automatic download is deferred due to connection cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostDeferral {
+    Metered,
+    Roaming,
+    Restricted,
+    Unknown,
+}
+
+/// Returns the deferral reason in priority order: Roaming, Restricted, Metered, Unknown.
+/// Returns None when the connection is eligible for automatic download (ignoring the auto-download pref).
+pub fn cost_deferral(cost: NetworkCost) -> Option<CostDeferral> {
+    if cost.roaming {
+        Some(CostDeferral::Roaming)
+    } else if cost.background_restricted {
+        Some(CostDeferral::Restricted)
+    } else if matches!(
+        cost.kind,
+        NetworkCostKind::Fixed | NetworkCostKind::Variable
+    ) {
+        Some(CostDeferral::Metered)
+    } else if cost.kind == NetworkCostKind::Unknown {
+        Some(CostDeferral::Unknown)
+    } else {
+        None
+    }
+}
+
+/// Determine whether a scheduled update check is due.
+pub fn check_is_due(
+    now: u64,
+    last_checked_at: Option<u64>,
+    interval: CheckInterval,
+    auto_check: bool,
+    in_flight: bool,
+) -> bool {
+    if !auto_check || in_flight {
+        return false;
+    }
+    match last_checked_at {
+        None => true,
+        Some(t) => now.saturating_sub(t) >= interval.secs(),
+    }
+}
+
+/// Automatic retry delay after an automatic download failure (15 minutes).
+pub const AUTOMATIC_RETRY_SECS: u64 = 900;
+
+/// Determine whether an automatic download should start.
+pub fn automatic_download_should_start(
+    now: u64,
+    auto_download: bool,
+    cost: NetworkCost,
+    in_flight: bool,
+    have_unadmitted_target: bool,
+    last_automatic_failure_at: Option<u64>,
+) -> bool {
+    if in_flight || !have_unadmitted_target || !automatic_download_eligible(auto_download, cost) {
+        return false;
+    }
+    if let Some(failed_at) = last_automatic_failure_at {
+        now >= failed_at.saturating_add(AUTOMATIC_RETRY_SECS)
+    } else {
+        true
+    }
+}
+
+/// Returns true only when there is no pending package or the feed offer is strictly newer.
+pub fn feed_replaces_pending(pending: Option<&semver::Version>, feed: &semver::Version) -> bool {
+    match pending {
+        None => true,
+        Some(p) => feed > p,
     }
 }
 
@@ -94,13 +237,17 @@ pub enum UpdateActivity {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ReconciledUpdateStatus {
     /// Unix epoch seconds of the last *completed* check (success or failure).
+    #[serde(default)]
     pub last_checked_at: Option<u64>,
     /// Outcome of that last completed check.
+    #[serde(default)]
     pub last_check_outcome: Option<UpdateOutcome>,
     /// The version last known available (found or staged), persisted so a later
     /// failed check can still honestly say "version X was found earlier".
+    #[serde(default)]
     pub available_version: Option<String>,
     /// A check failed but an earlier check had found a version.
+    #[serde(default)]
     pub failed_with_available: bool,
 }
 
@@ -133,6 +280,10 @@ pub struct UpdateState {
     #[serde(default)]
     pub download_pct: Option<u8>,
     #[serde(default)]
+    pub cost_deferral: Option<CostDeferral>,
+    #[serde(default)]
+    pub download_failed: bool,
+    #[serde(default)]
     pub prefs: UpdatePrefs,
     /// Whether the updater could be configured at all (feed URL valid, manager
     /// constructed). `false` => "this build can't check for updates on its own".
@@ -152,6 +303,8 @@ impl Default for UpdateState {
             available: None,
             staged: None,
             download_pct: None,
+            cost_deferral: None,
+            download_failed: false,
             prefs: UpdatePrefs::default(),
             config_valid: true,
         }
@@ -188,29 +341,47 @@ impl UpdateState {
         if self.is_staged() {
             return UpdateDisplay::Staged;
         }
+        if matches!(self.status.last_check_outcome, Some(UpdateOutcome::Failed)) {
+            if self.status.failed_with_available {
+                return UpdateDisplay::FailedWithAvailable;
+            } else {
+                return UpdateDisplay::Failed;
+            }
+        }
         if self.available.is_some() {
             return UpdateDisplay::Available;
         }
         match self.status.last_check_outcome {
-            Some(UpdateOutcome::Failed) => {
+            Some(UpdateOutcome::UpToDate) => UpdateDisplay::UpToDate,
+            // Found/Staged without a live transient: fall back to failed / failed-with-available
+            // rather than claiming an up-to-date state after losing or missing files.
+            Some(UpdateOutcome::Found) | Some(UpdateOutcome::Staged) => {
                 if self.status.failed_with_available {
                     UpdateDisplay::FailedWithAvailable
                 } else {
                     UpdateDisplay::Failed
                 }
             }
-            Some(UpdateOutcome::UpToDate) => UpdateDisplay::UpToDate,
-            // Found/Staged without a live transient (e.g. after restart with no
-            // staged asset): fall back to up-to-date display rather than claim an
-            // actionable update we can't act on this session.
-            Some(UpdateOutcome::Found) | Some(UpdateOutcome::Staged) => UpdateDisplay::UpToDate,
             None => UpdateDisplay::NeverChecked,
+            Some(UpdateOutcome::Failed) => unreachable!(),
         }
     }
 
     /// The full computed snapshot pushed to the webview over `update://changed`.
-    pub fn view(&self) -> UpdateView {
+    pub fn view(&self, explicit_allowed: bool) -> UpdateView {
         let display = self.display();
+        let recovery = if self.download_failed {
+            Some(Recovery::Download)
+        } else if self.status.last_check_outcome == Some(UpdateOutcome::Failed)
+            || matches!(
+                display,
+                UpdateDisplay::Failed | UpdateDisplay::FailedWithAvailable
+            )
+        {
+            Some(Recovery::Check)
+        } else {
+            None
+        };
         UpdateView {
             display,
             activity: self.activity,
@@ -219,12 +390,22 @@ impl UpdateState {
                 .available
                 .as_ref()
                 .map(|a| a.version.clone())
-                .or_else(|| self.staged.as_ref().map(|s| s.version.clone()))
-                .or_else(|| self.status.available_version.clone()),
+                .or_else(|| {
+                    if self.staged.is_none() {
+                        self.status.available_version.clone()
+                    } else {
+                        None
+                    }
+                }),
+            downloaded_version: self.staged.as_ref().map(|s| s.version.clone()),
+            downloaded: self.is_staged(),
             notes: self.available.as_ref().and_then(|a| a.notes.clone()),
             download_pct: self.download_pct,
+            cost_deferral: self.cost_deferral,
+            installs_next_start: self.is_staged(),
+            recovery,
             prefs: self.prefs,
-            actions: UpdateActions::derive(self, display),
+            actions: UpdateActions::derive(self, display, explicit_allowed),
         }
     }
 }
@@ -253,6 +434,14 @@ pub enum UpdateDisplay {
     Unavailable,
 }
 
+/// Recovery action available to the owner after a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Recovery {
+    Check,
+    Download,
+}
+
 /// Per-control actionability. Every flag is derived from real state — there are
 /// no dead buttons, and a control is only enabled when invoking it would do
 /// something. The webview renders each control `disabled` from the inverse.
@@ -270,47 +459,58 @@ pub struct UpdateActions {
 }
 
 impl UpdateActions {
-    /// Derive actionability from state. The `!is_staged` term on `can_check_now`
-    /// is the load-bearing macOS-parity catch: a staged-pending-relaunch update is
-    /// `Idle` with no in-flight session, so a naive `config_valid && !in_flight`
-    /// gate would wrongly re-enable "check now" while an update is already parked.
-    pub fn derive(state: &UpdateState, display: UpdateDisplay) -> Self {
+    /// Derive actionability from state. Check-now remains enabled while staged.
+    pub fn derive(state: &UpdateState, display: UpdateDisplay, explicit_allowed: bool) -> Self {
         let in_flight = state.in_flight();
         let is_staged = state.is_staged();
         let config_valid = state.config_valid;
-        let has_available = state.available.is_some();
+        let has_unadmitted_target = match (&state.available, &state.staged) {
+            (Some(_avail), None) => true,
+            (Some(avail), Some(staged)) => {
+                match (
+                    semver::Version::parse(&avail.version),
+                    semver::Version::parse(&staged.version),
+                ) {
+                    (Ok(v_avail), Ok(v_staged)) => v_avail > v_staged,
+                    _ => false,
+                }
+            }
+            (None, _) => false,
+        };
         let failed = matches!(
             display,
             UpdateDisplay::Failed | UpdateDisplay::FailedWithAvailable
         );
 
         Self {
-            can_check_now: config_valid && !in_flight && !is_staged,
+            can_check_now: config_valid && !in_flight,
             can_cancel: matches!(
                 state.activity,
                 UpdateActivity::Checking | UpdateActivity::Downloading
             ),
-            can_download: config_valid && !in_flight && !is_staged && has_available,
+            can_download: config_valid && !in_flight && explicit_allowed && has_unadmitted_target,
             can_install: !in_flight && is_staged,
-            can_retry: config_valid && !in_flight && !is_staged && failed,
-            can_dismiss: !in_flight && (has_available || failed),
+            can_retry: config_valid && !in_flight && failed,
+            can_dismiss: !in_flight && (state.available.is_some() || failed),
             frequency_enabled: state.prefs.auto_check,
         }
     }
 }
 
-/// The computed snapshot the driver serializes to `update://changed`. The live
-/// "last checked … / just now" clock is computed in the webview from
-/// `last_checked_at` (re-rendered every second), the JS analog of the macOS
-/// `TimelineView` — so it is never a frozen render-time string here.
+/// The computed snapshot the driver serializes to `update://changed`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateView {
     pub display: UpdateDisplay,
     pub activity: UpdateActivity,
     pub last_checked_at: Option<u64>,
     pub available_version: Option<String>,
+    pub downloaded_version: Option<String>,
+    pub downloaded: bool,
     pub notes: Option<String>,
     pub download_pct: Option<u8>,
+    pub cost_deferral: Option<CostDeferral>,
+    pub installs_next_start: bool,
+    pub recovery: Option<Recovery>,
     pub prefs: UpdatePrefs,
     pub actions: UpdateActions,
 }
@@ -349,8 +549,14 @@ pub enum UpdateEvent {
     /// A download completed and staged `version` (pending relaunch). Also used at
     /// boot to rehydrate a staged asset from `get_update_pending_restart()`.
     Downloaded { version: String },
-    /// A check failed at wall-clock `now` (epoch secs).
+    /// A completed feed check failed at wall-clock `now` (epoch secs).
     CheckFailed { now: u64 },
+    /// An in-progress package download failed.
+    DownloadFailed,
+    /// An automatic download was deferred due to connection cost.
+    DownloadDeferred { reason: CostDeferral },
+    /// Cache package file missing or rejected at boot or install.
+    PendingMissing,
     /// The updater could not be configured (bad feed / unconstructable manager).
     ConfigInvalid,
 }
@@ -385,10 +591,14 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
     match event {
         UpdateEvent::CheckStarted => {
             state.activity = UpdateActivity::Checking;
+            state.cost_deferral = None;
+            state.download_failed = false;
         }
         UpdateEvent::DownloadStarted => {
             state.activity = UpdateActivity::Downloading;
             state.download_pct = Some(0);
+            state.cost_deferral = None;
+            state.download_failed = false;
         }
         UpdateEvent::DownloadProgress(pct) => {
             state.download_pct = Some(pct.min(100));
@@ -400,6 +610,8 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
             state.activity = UpdateActivity::Idle;
             state.available = None;
             state.download_pct = None;
+            state.cost_deferral = None;
+            state.download_failed = false;
             // Clear a failed block so the pane returns to its last durable state.
             if matches!(state.status.last_check_outcome, Some(UpdateOutcome::Failed)) {
                 state.status.last_check_outcome = state
@@ -415,16 +627,33 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
             state.activity = UpdateActivity::Idle;
             state.status.last_checked_at = Some(now);
             state.status.failed_with_available = false;
+            state.cost_deferral = None;
+            state.download_failed = false;
             match result {
                 CheckOutcome::UpToDate | CheckOutcome::Empty => {
-                    state.status.last_check_outcome = Some(UpdateOutcome::UpToDate);
                     state.available = None;
-                    state.status.available_version = None;
+                    if state.staged.is_none() {
+                        state.status.last_check_outcome = Some(UpdateOutcome::UpToDate);
+                        state.status.available_version = None;
+                    }
                 }
                 CheckOutcome::UpdateAvailable { version, notes } => {
-                    state.status.last_check_outcome = Some(UpdateOutcome::Found);
-                    state.status.available_version = Some(version.clone());
-                    state.available = Some(AvailableUpdate { version, notes });
+                    let pending_ver = state
+                        .staged
+                        .as_ref()
+                        .and_then(|s| semver::Version::parse(&s.version).ok());
+                    let replaces = semver::Version::parse(&version).is_ok_and(|feed_ver| {
+                        feed_replaces_pending(pending_ver.as_ref(), &feed_ver)
+                    });
+                    if replaces {
+                        state.status.last_check_outcome = Some(UpdateOutcome::Found);
+                        state.status.available_version = Some(version.clone());
+                        state.available = Some(AvailableUpdate { version, notes });
+                    } else if state.staged.is_some() {
+                        state.status.last_check_outcome = Some(UpdateOutcome::Staged);
+                    } else {
+                        state.status.last_check_outcome = Some(UpdateOutcome::UpToDate);
+                    }
                 }
             }
         }
@@ -432,6 +661,8 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
             state.activity = UpdateActivity::Idle;
             state.download_pct = None;
             state.available = None;
+            state.cost_deferral = None;
+            state.download_failed = false;
             state.status.available_version = Some(version.clone());
             state.status.last_check_outcome = Some(UpdateOutcome::Staged);
             state.status.failed_with_available = false;
@@ -439,12 +670,33 @@ pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
         }
         UpdateEvent::CheckFailed { now } => {
             state.activity = UpdateActivity::Idle;
-            // A refusal is not installable, and a persisted Staged outcome must not paint up to date.
-            state.staged = None;
-            state.available = None;
             state.download_pct = None;
+            state.cost_deferral = None;
+            state.download_failed = false;
+            // Feed failure does not clear staged or available
             state.status.last_checked_at = Some(now);
             state.status.last_check_outcome = Some(UpdateOutcome::Failed);
+            state.status.failed_with_available = state.status.available_version.is_some();
+        }
+        UpdateEvent::DownloadFailed => {
+            state.activity = UpdateActivity::Idle;
+            state.download_pct = None;
+            state.download_failed = true;
+        }
+        UpdateEvent::DownloadDeferred { reason } => {
+            state.activity = UpdateActivity::Idle;
+            state.cost_deferral = Some(reason);
+        }
+        UpdateEvent::PendingMissing => {
+            state.activity = UpdateActivity::Idle;
+            state.staged = None;
+            if state.status.last_check_outcome == Some(UpdateOutcome::Staged) {
+                state.status.last_check_outcome = if state.status.available_version.is_some() {
+                    Some(UpdateOutcome::Found)
+                } else {
+                    None
+                };
+            }
             state.status.failed_with_available = state.status.available_version.is_some();
         }
         UpdateEvent::ConfigInvalid => {
@@ -551,7 +803,7 @@ mod tests {
         let s = UpdateState::new();
         assert_eq!(s.display(), UpdateDisplay::NeverChecked);
         // No dead "check now": it IS actionable from the never-checked idle state.
-        assert!(s.view().actions.can_check_now);
+        assert!(s.view(true).actions.can_check_now);
     }
 
     #[test]
@@ -598,18 +850,15 @@ mod tests {
             },
         );
         assert_eq!(s.display(), UpdateDisplay::Available);
-        let a = s.view().actions;
+        let a = s.view(true).actions;
         assert!(a.can_download);
         assert!(a.can_dismiss);
         assert!(!a.can_install);
         assert!(a.can_check_now);
     }
 
-    /// The load-bearing macOS-parity catch: a downloaded-and-staged update is
-    /// `Idle` with no in-flight session, yet "check now" must stay disabled. An
-    /// implementation deriving only from `!in_flight` would wrongly return true.
     #[test]
-    fn check_now_disabled_while_staged() {
+    fn check_enabled_while_staged_and_disabled_while_in_flight() {
         let mut s = UpdateState::new();
         reduce(
             &mut s,
@@ -618,19 +867,23 @@ mod tests {
             },
         );
         assert_eq!(s.display(), UpdateDisplay::Staged);
-        assert_eq!(s.activity, UpdateActivity::Idle); // not in-flight…
-        let a = s.view().actions;
-        assert!(!a.can_check_now, "staged update must block re-check");
-        assert!(!a.can_download, "nothing left to download");
+        assert_eq!(s.activity, UpdateActivity::Idle);
+        let a = s.view(true).actions;
+        assert!(a.can_check_now, "check now remains enabled while parked");
+        assert!(!a.can_download, "nothing unadmitted left to download");
         assert!(a.can_install, "relaunch-to-install is the staged action");
         assert!(!a.can_retry);
+
+        // While in-flight check, check now is disabled
+        reduce(&mut s, UpdateEvent::CheckStarted);
+        assert!(!s.view(true).actions.can_check_now);
     }
 
     #[test]
     fn in_flight_check_disables_actions_and_enables_cancel() {
         let mut s = UpdateState::new();
         reduce(&mut s, UpdateEvent::CheckStarted);
-        let a = s.view().actions;
+        let a = s.view(true).actions;
         assert!(!a.can_check_now);
         assert!(!a.can_download);
         assert!(a.can_cancel);
@@ -652,7 +905,7 @@ mod tests {
         reduce(&mut s, UpdateEvent::DownloadStarted);
         reduce(&mut s, UpdateEvent::DownloadProgress(42));
         assert_eq!(s.display(), UpdateDisplay::Downloading);
-        let v = s.view();
+        let v = s.view(true);
         assert_eq!(v.download_pct, Some(42));
         assert!(v.actions.can_cancel);
         assert!(!v.actions.can_check_now);
@@ -663,7 +916,7 @@ mod tests {
         let mut s = UpdateState::new();
         reduce(&mut s, UpdateEvent::CheckFailed { now: 9 });
         assert_eq!(s.display(), UpdateDisplay::Failed);
-        let a = s.view().actions;
+        let a = s.view(true).actions;
         assert!(a.can_retry);
         assert!(a.can_dismiss);
         assert!(a.can_check_now);
@@ -686,7 +939,7 @@ mod tests {
         reduce(&mut s, UpdateEvent::CheckFailed { now: 2 });
         assert_eq!(s.display(), UpdateDisplay::FailedWithAvailable);
         assert!(s.status.failed_with_available);
-        assert_eq!(s.view().available_version.as_deref(), Some("0.3.0"));
+        assert_eq!(s.view(true).available_version.as_deref(), Some("0.3.0"));
     }
 
     #[test]
@@ -704,7 +957,7 @@ mod tests {
         );
         reduce(&mut s, UpdateEvent::Dismissed);
         assert!(s.available.is_none());
-        assert!(!s.view().actions.can_download);
+        assert!(!s.view(true).actions.can_download);
     }
 
     #[test]
@@ -713,7 +966,7 @@ mod tests {
         reduce(&mut s, UpdateEvent::ConfigInvalid);
         assert!(!s.config_valid);
         assert_eq!(s.display(), UpdateDisplay::Unavailable);
-        let a = s.view().actions;
+        let a = s.view(true).actions;
         assert!(!a.can_check_now);
         assert!(!a.can_download);
         assert!(!a.can_retry);
@@ -730,15 +983,15 @@ mod tests {
     fn defaults_are_the_approved_set() {
         let p = UpdatePrefs::default();
         assert!(p.auto_check);
-        assert_eq!(p.interval, CheckInterval::Week);
-        assert!(!p.auto_download);
+        assert_eq!(p.interval, CheckInterval::Day);
+        assert!(p.auto_download);
     }
 
     #[test]
     fn frequency_picker_disabled_when_auto_check_off() {
         let mut s = UpdateState::new();
         s.prefs.auto_check = false;
-        assert!(!s.view().actions.frequency_enabled);
+        assert!(!s.view(true).actions.frequency_enabled);
     }
 
     #[test]
@@ -791,7 +1044,7 @@ mod tests {
                 },
             },
         );
-        let json = serde_json::to_string(&s.view()).unwrap();
+        let json = serde_json::to_string(&s.view(true)).unwrap();
         assert!(json.contains("\"available\""));
         assert!(json.contains("\"can_download\":true"));
     }
@@ -915,7 +1168,387 @@ mod tests {
 
         reduce(&mut s, UpdateEvent::CheckFailed { now: 20 });
         assert_eq!(s.display(), UpdateDisplay::FailedWithAvailable);
-        assert!(!s.view().actions.can_install);
-        assert!(s.view().actions.can_retry);
+        assert!(!s.view(true).actions.can_install);
+        assert!(s.view(true).actions.can_retry);
+    }
+
+    #[test]
+    fn migration_runs_once_for_legacy_document() {
+        let legacy_json = r#"{"prefs":{"auto_check":true,"interval":"week","auto_download":false},"status":{"last_checked_at":100,"last_check_outcome":"up_to_date","available_version":null,"failed_with_available":false}}"#;
+        let doc = load_update_document(legacy_json).unwrap();
+        assert!(!doc.daily_background);
+        let migrated = migrate_update_document(doc);
+        assert!(migrated.daily_background);
+        assert_eq!(migrated.prefs.interval, CheckInterval::Day);
+        assert!(migrated.prefs.auto_download);
+        assert!(migrated.prefs.auto_check);
+        assert_eq!(migrated.status.last_checked_at, Some(100));
+    }
+
+    #[test]
+    fn migration_sets_daily_and_auto_download_for_legacy_off() {
+        let legacy_json = r#"{"prefs":{"auto_check":false,"interval":"month","auto_download":false},"status":{}}"#;
+        let doc = load_update_document(legacy_json).unwrap();
+        assert!(!doc.daily_background);
+        let migrated = migrate_update_document(doc);
+        assert!(migrated.daily_background);
+        assert_eq!(migrated.prefs.interval, CheckInterval::Day);
+        assert!(migrated.prefs.auto_download);
+        assert!(migrated.prefs.auto_check);
+    }
+
+    #[test]
+    fn migration_preserves_status_bytes() {
+        let legacy_json = r#"{"prefs":{"auto_check":true,"interval":"week","auto_download":false},"status":{"last_checked_at":555,"last_check_outcome":"failed","available_version":"1.2.3","failed_with_available":true}}"#;
+        let doc = load_update_document(legacy_json).unwrap();
+        let migrated = migrate_update_document(doc);
+        assert_eq!(migrated.status.last_checked_at, Some(555));
+        assert_eq!(
+            migrated.status.last_check_outcome,
+            Some(UpdateOutcome::Failed)
+        );
+        assert_eq!(migrated.status.available_version.as_deref(), Some("1.2.3"));
+        assert!(migrated.status.failed_with_available);
+    }
+
+    #[test]
+    fn owner_edit_after_migration_retains_marker_and_choices() {
+        let mut doc = fresh_update_document();
+        assert!(doc.daily_background);
+        doc.prefs.interval = CheckInterval::Month;
+        doc.prefs.auto_download = false;
+        let migrated_again = migrate_update_document(doc);
+        assert!(migrated_again.daily_background);
+        assert_eq!(migrated_again.prefs.interval, CheckInterval::Month);
+        assert!(!migrated_again.prefs.auto_download);
+    }
+
+    #[test]
+    fn fresh_document_is_not_migration_of_garbage_json() {
+        let fresh = fresh_update_document();
+        assert!(fresh.daily_background);
+        assert_eq!(fresh.prefs, UpdatePrefs::default());
+        assert_eq!(fresh.status, ReconciledUpdateStatus::default());
+        assert!(load_update_document("not-json").is_err());
+    }
+
+    #[test]
+    fn check_is_due_boundary_86399_and_86400() {
+        let now = 100_000;
+        let last = Some(now - 86_399);
+        assert!(!check_is_due(now, last, CheckInterval::Day, true, false));
+        let last_due = Some(now - 86_400);
+        assert!(check_is_due(now, last_due, CheckInterval::Day, true, false));
+    }
+
+    #[test]
+    fn check_is_due_not_suppressed_by_pending_staged() {
+        // Staged status does not pass into check_is_due and does not suppress it
+        let now = 100_000;
+        let last = Some(now - 86_400);
+        assert!(check_is_due(now, last, CheckInterval::Day, true, false));
+    }
+
+    #[test]
+    fn check_is_due_false_when_in_flight() {
+        let now = 100_000;
+        let last = Some(now - 86_400);
+        assert!(!check_is_due(now, last, CheckInterval::Day, true, true));
+    }
+
+    #[test]
+    fn check_is_due_false_when_auto_check_off() {
+        let now = 100_000;
+        let last = Some(now - 86_400);
+        assert!(!check_is_due(now, last, CheckInterval::Day, false, false));
+    }
+
+    #[test]
+    fn check_is_due_week_at_86400_is_false() {
+        let now = 100_000;
+        let last = Some(now - 86_400);
+        assert!(!check_is_due(now, last, CheckInterval::Week, true, false));
+    }
+
+    #[test]
+    fn automatic_download_eligible_predicate_table() {
+        let eligible_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: false,
+            background_restricted: false,
+        };
+        assert!(automatic_download_eligible(true, eligible_cost));
+        assert!(!automatic_download_eligible(false, eligible_cost));
+
+        for kind in [
+            NetworkCostKind::Fixed,
+            NetworkCostKind::Variable,
+            NetworkCostKind::Unknown,
+        ] {
+            let cost = NetworkCost {
+                kind,
+                roaming: false,
+                background_restricted: false,
+            };
+            assert!(!automatic_download_eligible(true, cost));
+        }
+
+        let roaming_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: true,
+            background_restricted: false,
+        };
+        assert!(!automatic_download_eligible(true, roaming_cost));
+
+        let restricted_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: false,
+            background_restricted: true,
+        };
+        assert!(!automatic_download_eligible(true, restricted_cost));
+    }
+
+    #[test]
+    fn explicit_download_allowed_metered_and_unknown_allowed_roaming_restricted_refused() {
+        for kind in [
+            NetworkCostKind::Unrestricted,
+            NetworkCostKind::Fixed,
+            NetworkCostKind::Variable,
+            NetworkCostKind::Unknown,
+        ] {
+            let cost = NetworkCost {
+                kind,
+                roaming: false,
+                background_restricted: false,
+            };
+            assert!(explicit_download_allowed(cost));
+        }
+
+        let roaming_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: true,
+            background_restricted: false,
+        };
+        assert!(!explicit_download_allowed(roaming_cost));
+
+        let restricted_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: false,
+            background_restricted: true,
+        };
+        assert!(!explicit_download_allowed(restricted_cost));
+    }
+
+    #[test]
+    fn cost_deferral_priority_roaming_restricted_metered_unknown() {
+        // Eligible: None
+        let eligible = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: false,
+            background_restricted: false,
+        };
+        assert_eq!(cost_deferral(eligible), None);
+
+        // Roaming takes precedence over restricted and metered
+        let roaming_metered = NetworkCost {
+            kind: NetworkCostKind::Fixed,
+            roaming: true,
+            background_restricted: true,
+        };
+        assert_eq!(cost_deferral(roaming_metered), Some(CostDeferral::Roaming));
+
+        // Restricted takes precedence over metered
+        let restricted_metered = NetworkCost {
+            kind: NetworkCostKind::Fixed,
+            roaming: false,
+            background_restricted: true,
+        };
+        assert_eq!(
+            cost_deferral(restricted_metered),
+            Some(CostDeferral::Restricted)
+        );
+
+        // Metered (Fixed and Variable)
+        let fixed = NetworkCost {
+            kind: NetworkCostKind::Fixed,
+            roaming: false,
+            background_restricted: false,
+        };
+        assert_eq!(cost_deferral(fixed), Some(CostDeferral::Metered));
+
+        let variable = NetworkCost {
+            kind: NetworkCostKind::Variable,
+            roaming: false,
+            background_restricted: false,
+        };
+        assert_eq!(cost_deferral(variable), Some(CostDeferral::Metered));
+
+        // Unknown
+        let unknown = NetworkCost {
+            kind: NetworkCostKind::Unknown,
+            roaming: false,
+            background_restricted: false,
+        };
+        assert_eq!(cost_deferral(unknown), Some(CostDeferral::Unknown));
+    }
+
+    #[test]
+    fn automatic_retry_delay_899_false_and_900_true() {
+        let eligible_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: false,
+            background_restricted: false,
+        };
+        let failed_at = 1_000;
+        assert!(!automatic_download_should_start(
+            failed_at + 899,
+            true,
+            eligible_cost,
+            false,
+            true,
+            Some(failed_at),
+        ));
+        assert!(automatic_download_should_start(
+            failed_at + 900,
+            true,
+            eligible_cost,
+            false,
+            true,
+            Some(failed_at),
+        ));
+    }
+
+    #[test]
+    fn automatic_retry_not_a_check_and_does_not_move_last_checked_at() {
+        let eligible_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: false,
+            background_restricted: false,
+        };
+        let failed_at = 1_000;
+        let should_start = automatic_download_should_start(
+            failed_at + 900,
+            true,
+            eligible_cost,
+            false,
+            true,
+            Some(failed_at),
+        );
+        assert!(should_start);
+        // Pure function takes no status and does not mutate checked_at
+    }
+
+    #[test]
+    fn automatic_retry_deferral_without_failure_starts_immediately_when_eligible() {
+        let eligible_cost = NetworkCost {
+            kind: NetworkCostKind::Unrestricted,
+            roaming: false,
+            background_restricted: false,
+        };
+        assert!(automatic_download_should_start(
+            500,
+            true,
+            eligible_cost,
+            false,
+            true,
+            None,
+        ));
+    }
+
+    #[test]
+    fn feed_failure_empty_and_uptodate_preserve_staged_package() {
+        let mut s = UpdateState::new();
+        reduce(
+            &mut s,
+            UpdateEvent::Downloaded {
+                version: "1.0.0".into(),
+            },
+        );
+        assert_eq!(s.display(), UpdateDisplay::Staged);
+
+        // CheckFailed preserves staged
+        reduce(&mut s, UpdateEvent::CheckFailed { now: 50 });
+        assert_eq!(s.staged.as_ref().map(|x| x.version.as_str()), Some("1.0.0"));
+        assert_eq!(s.display(), UpdateDisplay::Staged);
+        let view = s.view(true);
+        assert_eq!(view.recovery, Some(Recovery::Check));
+        assert_eq!(view.downloaded_version.as_deref(), Some("1.0.0"));
+        assert_eq!(view.last_checked_at, Some(50));
+        assert_eq!(s.staged.as_ref().map(|x| x.version.as_str()), Some("1.0.0"));
+
+        // Empty preserves staged
+        reduce(
+            &mut s,
+            UpdateEvent::CheckResult {
+                now: 60,
+                result: CheckOutcome::Empty,
+            },
+        );
+        assert_eq!(s.staged.as_ref().map(|x| x.version.as_str()), Some("1.0.0"));
+        assert_eq!(s.display(), UpdateDisplay::Staged);
+
+        // UpToDate preserves staged
+        reduce(
+            &mut s,
+            UpdateEvent::CheckResult {
+                now: 70,
+                result: CheckOutcome::UpToDate,
+            },
+        );
+        assert_eq!(s.staged.as_ref().map(|x| x.version.as_str()), Some("1.0.0"));
+        assert_eq!(s.display(), UpdateDisplay::Staged);
+    }
+
+    #[test]
+    fn feed_failure_moves_last_checked_at_download_failure_does_not() {
+        let mut s = UpdateState::new();
+        reduce(&mut s, UpdateEvent::CheckFailed { now: 123 });
+        assert_eq!(s.status.last_checked_at, Some(123));
+
+        reduce(&mut s, UpdateEvent::DownloadFailed);
+        assert_eq!(s.status.last_checked_at, Some(123));
+        assert!(s.download_failed);
+    }
+
+    #[test]
+    fn download_deferred_transient_does_not_alter_status() {
+        let mut s = UpdateState::new();
+        s.status.last_checked_at = Some(10);
+        reduce(
+            &mut s,
+            UpdateEvent::DownloadDeferred {
+                reason: CostDeferral::Metered,
+            },
+        );
+        assert_eq!(s.status.last_checked_at, Some(10));
+        assert_eq!(s.cost_deferral, Some(CostDeferral::Metered));
+    }
+
+    #[test]
+    fn pending_missing_clears_staged_without_moving_last_checked_at_and_not_uptodate() {
+        let mut s = UpdateState::new();
+        reduce(
+            &mut s,
+            UpdateEvent::Downloaded {
+                version: "1.0.0".into(),
+            },
+        );
+        s.status.last_checked_at = Some(88);
+        reduce(&mut s, UpdateEvent::PendingMissing);
+        assert!(s.staged.is_none());
+        assert_eq!(s.status.last_checked_at, Some(88));
+        assert_ne!(s.status.last_check_outcome, Some(UpdateOutcome::UpToDate));
+    }
+
+    #[test]
+    fn feed_replaces_pending_newer_true_same_or_older_false() {
+        let v1_0_0 = semver::Version::parse("1.0.0").unwrap();
+        let v1_1_0 = semver::Version::parse("1.1.0").unwrap();
+        let v0_9_0 = semver::Version::parse("0.9.0").unwrap();
+
+        assert!(feed_replaces_pending(None, &v1_0_0));
+        assert!(feed_replaces_pending(Some(&v1_0_0), &v1_1_0));
+        assert!(!feed_replaces_pending(Some(&v1_0_0), &v1_0_0));
+        assert!(!feed_replaces_pending(Some(&v1_0_0), &v0_9_0));
     }
 }

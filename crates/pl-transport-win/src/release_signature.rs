@@ -10,7 +10,7 @@ use std::io::{Read, Seek, Write};
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
-use minisign::{PublicKeyBox, SignatureBox};
+use minisign::{PublicKey, PublicKeyBox, SignatureBox};
 
 const PRODUCTION_PUBLIC_KEY: &str = include_str!("../../../packaging/keys/solstone-release.pub");
 
@@ -98,6 +98,7 @@ impl<'a> observer_update::admission::PackageVerifier for KeyedTestReleaseVerifie
 }
 
 /// Production package download, streaming signature verification, and nuspec admission.
+#[allow(clippy::too_many_arguments)]
 fn download_and_verify_entry_impl(
     key_text: &str,
     feed_base: &str,
@@ -106,6 +107,7 @@ fn download_and_verify_entry_impl(
     expected_version: &str,
     partial_file: &Path,
     progress_sender: Option<Sender<i16>>,
+    automatic_cost: Option<&mut dyn FnMut() -> observer_update::NetworkCost>,
 ) -> Result<String, String> {
     // 1. Non-full type -> Err before network
     if !observer_update::admission::is_full_asset_type(asset_type) {
@@ -179,21 +181,68 @@ fn download_and_verify_entry_impl(
         let _ = std::fs::create_dir_all(parent);
     }
 
+    let reader = pkg_body.into_reader();
+    stream_verify_and_promote(
+        &pk,
+        &sig_box,
+        &sidecar_text,
+        expected_version,
+        partial_file,
+        &sig_name,
+        total_size,
+        reader,
+        progress_sender,
+        automatic_cost,
+    )?;
+
+    // 8. Return sidecar text on success
+    Ok(sidecar_text)
+}
+
+/// Body read, streaming signature verification, Nuspec check, and atomic promotion.
+#[allow(clippy::too_many_arguments)]
+fn stream_verify_and_promote(
+    pk: &PublicKey,
+    sig_box: &SignatureBox,
+    sidecar_text: &str,
+    expected_version: &str,
+    partial_file: &Path,
+    sig_name: &str,
+    total_size: Option<u64>,
+    mut reader: impl std::io::Read,
+    progress_sender: Option<Sender<i16>>,
+    mut automatic_cost: Option<&mut dyn FnMut() -> observer_update::NetworkCost>,
+) -> Result<(), String> {
+    if let Some(parent) = partial_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
     let sidecar_final = partial_file
         .parent()
         .ok_or("partial package has no parent")?
-        .join(&sig_name);
+        .join(sig_name);
     let sidecar_partial = sidecar_final.with_file_name(format!("{sig_name}.partial"));
+
     let result = (|| -> Result<(), String> {
+        if let Some(ref mut probe) = automatic_cost {
+            if !observer_update::automatic_download_eligible(true, probe()) {
+                return Err("automatic download ineligible before stream".to_string());
+            }
+        }
+
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(partial_file)
             .map_err(|e| format!("partial package create failed: {e}"))?;
-        let mut reader = pkg_body.into_reader();
         let mut downloaded = 0u64;
         let mut buffer = [0u8; 65536];
         loop {
+            if let Some(ref mut probe) = automatic_cost {
+                if !observer_update::automatic_download_eligible(true, probe()) {
+                    return Err("automatic download became ineligible during stream".to_string());
+                }
+            }
             let size = reader
                 .read(&mut buffer)
                 .map_err(|e| format!("package read failed: {e}"))?;
@@ -203,6 +252,11 @@ fn download_and_verify_entry_impl(
             file.write_all(&buffer[..size])
                 .map_err(|e| format!("package write failed: {e}"))?;
             downloaded += size as u64;
+            if let Some(ref mut probe) = automatic_cost {
+                if !observer_update::automatic_download_eligible(true, probe()) {
+                    return Err("automatic download became ineligible after write".to_string());
+                }
+            }
             if let (Some(total), Some(sender)) = (total_size.filter(|v| *v > 0), &progress_sender) {
                 let percent = (u128::from(downloaded) * 100 / u128::from(total)).min(100) as i16;
                 let _ = sender.send(percent);
@@ -211,11 +265,19 @@ fn download_and_verify_entry_impl(
         file.sync_all()
             .map_err(|e| format!("package sync failed: {e}"))?;
         drop(file);
+
+        if let Some(ref mut probe) = automatic_cost {
+            if !observer_update::automatic_download_eligible(true, probe()) {
+                return Err("automatic download became ineligible before verification".to_string());
+            }
+        }
+
         let mut package = observer_update::admission::open_regular_package(partial_file)?;
-        minisign::verify(&pk, &sig_box, &mut package.file, true, false, false)
+        minisign::verify(pk, sig_box, &mut package.file, true, false, false)
             .map_err(|e| format!("package signature verification failed: {e}"))?;
         observer_update::admission::verify_nuspec(&mut package.file, expected_version)?;
         drop(package);
+
         let mut sidecar = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -228,21 +290,27 @@ fn download_and_verify_entry_impl(
             .sync_all()
             .map_err(|e| format!("sidecar sync failed: {e}"))?;
         drop(sidecar);
+
+        if let Some(ref mut probe) = automatic_cost {
+            if !observer_update::automatic_download_eligible(true, probe()) {
+                return Err("automatic download became ineligible before promotion".to_string());
+            }
+        }
+
         std::fs::rename(&sidecar_partial, &sidecar_final)
             .map_err(|e| format!("sidecar promotion failed: {e}"))?;
         Ok(())
     })();
+
     if result.is_err() {
         let _ = std::fs::remove_file(partial_file);
         let _ = std::fs::remove_file(&sidecar_partial);
     }
-    result?;
-
-    // 8. Return sidecar text on success
-    Ok(sidecar_text)
+    result
 }
 
 /// Production package download entry point used by R2FeedSource.
+#[allow(clippy::too_many_arguments)]
 pub fn download_and_verify_release_entry(
     feed_base: &str,
     asset_type: &str,
@@ -250,6 +318,7 @@ pub fn download_and_verify_release_entry(
     expected_version: &str,
     partial_file: &Path,
     progress_sender: Option<Sender<i16>>,
+    automatic_cost: Option<&mut dyn FnMut() -> observer_update::NetworkCost>,
 ) -> Result<String, String> {
     download_and_verify_entry_impl(
         PRODUCTION_PUBLIC_KEY,
@@ -259,11 +328,13 @@ pub fn download_and_verify_release_entry(
         expected_version,
         partial_file,
         progress_sender,
+        automatic_cost,
     )
 }
 
 /// Test-only package download entry point with key injection.
 #[cfg(any(test, feature = "update-test-fixtures"))]
+#[allow(clippy::too_many_arguments)]
 pub fn download_and_verify_release_entry_with_key(
     key_text: &str,
     feed_base: &str,
@@ -272,6 +343,7 @@ pub fn download_and_verify_release_entry_with_key(
     expected_version: &str,
     partial_file: &Path,
     progress_sender: Option<Sender<i16>>,
+    automatic_cost: Option<&mut dyn FnMut() -> observer_update::NetworkCost>,
 ) -> Result<String, String> {
     download_and_verify_entry_impl(
         key_text,
@@ -281,6 +353,7 @@ pub fn download_and_verify_release_entry_with_key(
         expected_version,
         partial_file,
         progress_sender,
+        automatic_cost,
     )
 }
 
@@ -682,7 +755,8 @@ mod tests {
                 "Solstone-2.0.34-full.nupkg",
                 "2.0.34",
                 &partial,
-                None
+                None,
+                None,
             )
             .is_err());
             worker.join().unwrap();
@@ -717,7 +791,8 @@ mod tests {
             "Solstone-2.0.34-full.nupkg",
             "2.0.34",
             &partial,
-            None
+            None,
+            None,
         )
         .is_err());
         worker.join().unwrap();
@@ -738,6 +813,7 @@ mod tests {
             "Solstone-2.0.34-1.2.2-delta.nupkg",
             "2.0.34",
             &partial,
+            None,
             None,
         );
         assert!(res.is_err());
@@ -766,6 +842,7 @@ mod tests {
             "2.0.34",
             &partial,
             None,
+            None,
         );
         assert!(res.is_err());
         server.join().unwrap();
@@ -793,6 +870,7 @@ mod tests {
             "Solstone-2.0.34-full.nupkg",
             "2.0.34",
             &partial,
+            None,
             None,
         );
         assert!(res.is_err());
@@ -849,6 +927,7 @@ mod tests {
             "2.0.34",
             &partial,
             None,
+            None,
         );
         assert!(res.is_err());
         server.join().unwrap();
@@ -888,6 +967,7 @@ mod tests {
             "Solstone-2.0.34-full.nupkg",
             "2.0.34",
             &partial,
+            None,
             None,
         );
         assert!(res.is_err());
@@ -932,6 +1012,7 @@ mod tests {
             "2.0.34",
             &partial,
             None,
+            None,
         );
         assert_eq!(res.unwrap(), FIXTURE_SIG);
         server.join().unwrap();
@@ -959,9 +1040,125 @@ mod tests {
             "2.0.34",
             &partial,
             None,
+            None,
         );
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), FIXTURE_SIG);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn stream_loop_probe_flips_cost_after_first_bytes() {
+        use observer_update::{NetworkCost, NetworkCostKind};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let partial = temp_dir.path().join("Solstone-2.0.34-full.partial");
+        let sig_name = "Solstone-2.0.34-full.nupkg.minisig";
+        let sidecar_final = temp_dir.path().join(sig_name);
+        let sidecar_partial = temp_dir.path().join(format!("{sig_name}.partial"));
+
+        let pk = PublicKeyBox::from_string(FIXTURE_PUB)
+            .unwrap()
+            .into_public_key()
+            .unwrap();
+        let sig_box = parse_signature(FIXTURE_SIG).unwrap();
+
+        // Injected reader that yields 100 bytes on first read, then the rest
+        struct ChunkedReader<'a> {
+            data: &'a [u8],
+            offset: usize,
+        }
+        impl<'a> std::io::Read for ChunkedReader<'a> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.offset >= self.data.len() {
+                    return Ok(0);
+                }
+                let chunk_size = (self.data.len() - self.offset).min(100).min(buf.len());
+                buf[..chunk_size]
+                    .copy_from_slice(&self.data[self.offset..self.offset + chunk_size]);
+                self.offset += chunk_size;
+                Ok(chunk_size)
+            }
+        }
+
+        // 1. Automatic call: probe returns Unrestricted on first two checks, flips to Fixed/ineligible after write
+        let mut calls = 0;
+        let mut probe = || {
+            calls += 1;
+            if calls <= 2 {
+                NetworkCost {
+                    kind: NetworkCostKind::Unrestricted,
+                    roaming: false,
+                    background_restricted: false,
+                }
+            } else {
+                NetworkCost {
+                    kind: NetworkCostKind::Fixed,
+                    roaming: false,
+                    background_restricted: false,
+                }
+            }
+        };
+
+        let reader = ChunkedReader {
+            data: FIXTURE_NUPKG,
+            offset: 0,
+        };
+        let res = stream_verify_and_promote(
+            &pk,
+            &sig_box,
+            FIXTURE_SIG,
+            "2.0.34",
+            &partial,
+            sig_name,
+            Some(FIXTURE_NUPKG.len() as u64),
+            reader,
+            None,
+            Some(&mut probe),
+        );
+        assert_eq!(
+            res.as_ref().map_err(|s| s.as_str()),
+            Err("automatic download became ineligible after write"),
+            "automatic stream must stop on post-write cost flip"
+        );
+        assert!(!partial.exists(), "partial must be removed on failure");
+        assert!(
+            !sidecar_partial.exists(),
+            "sidecar partial must be removed on failure"
+        );
+        assert!(!sidecar_final.exists(), "sidecar must not be promoted");
+
+        // create_new on that partial path succeeds
+        let f = std::fs::File::create_new(&partial);
+        assert!(f.is_ok(), "create_new on partial path must succeed");
+        drop(f);
+        let _ = std::fs::remove_file(&partial);
+
+        // 2. Explicit call with the exact same cost flip completes
+        let reader2 = ChunkedReader {
+            data: FIXTURE_NUPKG,
+            offset: 0,
+        };
+        let res_explicit = stream_verify_and_promote(
+            &pk,
+            &sig_box,
+            FIXTURE_SIG,
+            "2.0.34",
+            &partial,
+            sig_name,
+            Some(FIXTURE_NUPKG.len() as u64),
+            reader2,
+            None,
+            None,
+        );
+        assert!(
+            res_explicit.is_ok(),
+            "explicit call must complete without probe"
+        );
+        assert!(
+            sidecar_final.exists(),
+            "sidecar must be promoted on explicit success"
+        );
+        assert!(!sidecar_partial.exists());
     }
 }

@@ -21,6 +21,11 @@ interface UpdateViewFixture {
   activity: "idle" | "checking" | "downloading" | "installing";
   last_checked_at: number | null;
   available_version: string | null;
+  downloaded_version: string | null;
+  downloaded: boolean;
+  cost_deferral: "metered" | "roaming" | "restricted" | "unknown" | null;
+  installs_next_start: boolean;
+  recovery: "check" | "download" | null;
   notes: string | null;
   download_pct: number | null;
   prefs: {
@@ -199,12 +204,17 @@ export function updateView(
     activity: "idle",
     last_checked_at: 1_700_000_000,
     available_version: null,
+    downloaded_version: null,
+    downloaded: false,
+    cost_deferral: null,
+    installs_next_start: false,
+    recovery: null,
     notes: null,
     download_pct: null,
     prefs: {
       auto_check: true,
       interval: "day",
-      auto_download: false,
+      auto_download: true,
     },
     actions: {
       can_check_now: true,
@@ -229,9 +239,13 @@ export function updateView(
     base.download_pct = 42;
     base.actions.can_check_now = false;
   } else if (display === "staged") {
-    base.available_version = "0.2.1";
+    base.downloaded_version = "0.2.1";
+    base.downloaded = true;
+    base.installs_next_start = true;
     base.actions.can_install = true;
+    base.actions.can_check_now = true;
   } else if (display === "failed") {
+    base.recovery = "check";
     base.actions.can_retry = true;
   }
 

@@ -50,6 +50,7 @@ windows = { version = "0.58", features = [
     "Win32_System_JobObjects",
     "Data_Xml_Dom",
     "UI_Notifications",
+    "Networking_Connectivity",
 ] }
 # The browser native host's named pipe (server in the app, client in host mode).
 tokio = { workspace = true, features = ["net", "time", "io-util"] }

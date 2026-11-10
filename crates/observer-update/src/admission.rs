@@ -469,6 +469,45 @@ pub fn scan_authenticated_packages(
     scan
 }
 
+/// Retains only the newly admitted pending package and packages <= installed.
+/// Retires all other obsolete -full.nupkg packages and their temp/sidecar files.
+pub fn retain_admitted_pending(
+    dir: &Path,
+    keep_file_name: Option<&str>,
+    installed: &semver::Version,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with("-full.nupkg") || check_plain_filename(name).is_err() {
+            continue;
+        }
+        if let Some(keep) = keep_file_name {
+            if name == keep {
+                continue;
+            }
+        }
+        if name
+            .strip_prefix("Solstone-")
+            .and_then(|v| v.strip_suffix("-full.nupkg"))
+            .and_then(|v| semver::Version::parse(v).ok())
+            .is_some_and(|v| v <= *installed)
+        {
+            continue;
+        }
+        retire_asset(dir, name);
+    }
+}
+
 /// File identity descriptor for held regular file verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileIdentity {
@@ -938,5 +977,82 @@ mod tests {
             symlink(&target, &link).unwrap();
             assert!(open_regular_package(&link).is_err());
         }
+    }
+
+    #[test]
+    fn retain_admitted_pending_leaves_single_full_package_and_cleans_obsolete() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = root.path().join("packages");
+        std::fs::create_dir(&packages).unwrap();
+
+        let installed = semver::Version::parse("1.0.0").unwrap();
+
+        // Installed package <= installed (must be kept)
+        let installed_pkg = packages.join("Solstone-1.0.0-full.nupkg");
+        std::fs::write(&installed_pkg, b"installed").unwrap();
+
+        // Obsolete package 1.1.0 with partial, minisig, minisig.partial (must be retired)
+        let obs_pkg = packages.join("Solstone-1.1.0-full.nupkg");
+        let obs_partial = packages.join("Solstone-1.1.0-full.partial");
+        let obs_sig = packages.join("Solstone-1.1.0-full.nupkg.minisig");
+        let obs_sig_partial = packages.join("Solstone-1.1.0-full.nupkg.minisig.partial");
+        std::fs::write(&obs_pkg, b"obs").unwrap();
+        std::fs::write(&obs_partial, b"obs part").unwrap();
+        std::fs::write(&obs_sig, b"obs sig").unwrap();
+        std::fs::write(&obs_sig_partial, b"obs sig part").unwrap();
+
+        // Newly admitted package 1.2.0 (keep_file_name)
+        let new_pkg = packages.join("Solstone-1.2.0-full.nupkg");
+        std::fs::write(&new_pkg, b"new").unwrap();
+
+        retain_admitted_pending(&packages, Some("Solstone-1.2.0-full.nupkg"), &installed);
+
+        assert!(installed_pkg.exists());
+        assert!(new_pkg.exists());
+        assert!(!obs_pkg.exists());
+        assert!(!obs_partial.exists());
+        assert!(!obs_sig.exists());
+        assert!(!obs_sig_partial.exists());
+    }
+
+    #[test]
+    fn retain_admitted_pending_preserves_beta_id_and_unrelated_files() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = root.path().join("packages");
+        std::fs::create_dir(&packages).unwrap();
+
+        let beta_id = packages.join(".betaId");
+        let pairing = root.path().join("pairing.json");
+        let other_file = packages.join("other.txt");
+        std::fs::write(&beta_id, b"id").unwrap();
+        std::fs::write(&pairing, b"pairing").unwrap();
+        std::fs::write(&other_file, b"text").unwrap();
+
+        let installed = semver::Version::parse("1.0.0").unwrap();
+        retain_admitted_pending(&packages, None, &installed);
+
+        assert_eq!(std::fs::read(&beta_id).unwrap(), b"id");
+        assert_eq!(std::fs::read(&pairing).unwrap(), b"pairing");
+        assert_eq!(std::fs::read(&other_file).unwrap(), b"text");
+    }
+
+    #[test]
+    fn failed_replacement_leaves_existing_admitted_package_intact() {
+        let root = tempfile::tempdir().unwrap();
+        let packages = root.path().join("packages");
+        std::fs::create_dir(&packages).unwrap();
+
+        let existing_pkg = packages.join("Solstone-1.1.0-full.nupkg");
+        std::fs::write(&existing_pkg, b"existing").unwrap();
+
+        // Failed download only touches its own partial/target via retire_asset
+        let failed_pkg_name = "Solstone-1.2.0-full.nupkg";
+        let failed_partial = packages.join("Solstone-1.2.0-full.partial");
+        std::fs::write(&failed_partial, b"failed").unwrap();
+
+        retire_asset(&packages, failed_pkg_name);
+
+        assert!(existing_pkg.exists());
+        assert!(!failed_partial.exists());
     }
 }

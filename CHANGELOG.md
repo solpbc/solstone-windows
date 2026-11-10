@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- updates now check daily in the background, download the package when your network is unmetered, and install the next time the solstone app starts, including after sign-in. settings keeps controls to check now, download on demand, or change update behavior.
+
 ### Fixed
 
 - when there's no room for more browser pages, the tray and sources page say so, and the extension stops asking you to turn browser pages back on.

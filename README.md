@@ -52,10 +52,10 @@ spikes/                    reference-only code (excluded from the build)
 Everything the app takes in is written locally first, then goes into your
 journal. There is no analytics, telemetry, tracking, or crash reporting. The app
 reaches your journal directly or through a relay (by default the one sol pbc
-runs at link.solstone.app). The only other request it makes on its own is an
-update check to updates.solstone.app, which carries no app version or install
-id. If you turn on automatic downloads, the update itself comes from the same
-place. State is always earned: the app never shows "on" unless it truly is.
+runs at link.solstone.app). It checks for updates at updates.solstone.app, and
+those checks carry no app version or install id. On an unmetered connection it
+downloads the update package from that same place unless that is turned off in
+settings. State is always earned: the app never shows "on" unless it truly is.
 
 ## Build & test
 

@@ -156,6 +156,13 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "network_hint",
         owner: None,
     },
+    // Query Windows.Networking.Connectivity for connection cost / metered status.
+    ApprovedNode {
+        path: "crates/platform-win/src/connection_cost.rs",
+        kind: ApprovedKind::Fn,
+        name: "connection_cost",
+        owner: None,
+    },
     ApprovedNode {
         path: "crates/platform-win/src/window_focus.rs",
         kind: ApprovedKind::Fn,

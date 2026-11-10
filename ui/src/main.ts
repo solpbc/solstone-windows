@@ -441,6 +441,11 @@ interface UpdateView {
   activity: UpdateActivityKind;
   last_checked_at: number | null;
   available_version: string | null;
+  downloaded_version: string | null;
+  downloaded: boolean;
+  cost_deferral: "metered" | "roaming" | "restricted" | "unknown" | null;
+  installs_next_start: boolean;
+  recovery: "check" | "download" | null;
   notes: string | null;
   download_pct: number | null;
   prefs: UpdatePrefs;
@@ -5611,8 +5616,9 @@ function lastCheckedRelative(checkedAt: number | null, secsNow: number): string 
 
 function updateHeadline(view: UpdateView): string {
   const v = view.available_version ?? "";
+  const stagedV = view.downloaded_version ?? "";
   if (view.activity === "installing") {
-    return v ? `installing solstone ${v}…` : "installing…";
+    return stagedV ? `installing solstone ${stagedV}…` : "installing…";
   }
   switch (view.display) {
     case "never_checked":
@@ -5626,13 +5632,32 @@ function updateHeadline(view: UpdateView): string {
     case "downloading":
       return `downloading solstone ${v}`;
     case "staged":
-      return `solstone ${v} is ready to install`;
+      return stagedV ? `solstone ${stagedV} is ready to install` : "solstone is ready to install";
     case "failed":
+      if (view.recovery === "download") {
+        return "couldn't download update";
+      }
       return "couldn't check for updates";
     case "failed_with_available":
+      if (view.recovery === "download") {
+        return `couldn't download solstone ${v}`;
+      }
       return `couldn't check for updates. solstone ${v} was found earlier`;
     case "unavailable":
       return "this build can't update itself";
+  }
+}
+
+function costDeferralText(deferral: "metered" | "roaming" | "restricted" | "unknown"): string {
+  switch (deferral) {
+    case "metered":
+      return "download deferred on a metered connection";
+    case "roaming":
+      return "download deferred while roaming";
+    case "restricted":
+      return "background data use is restricted";
+    case "unknown":
+      return "download deferred: connection status unknown";
   }
 }
 
@@ -5647,6 +5672,33 @@ function updateSubtitle(
   if (view.activity === "installing") {
     return { text: "this only takes a moment", live: false };
   }
+  if (view.display === "checking" || view.activity === "checking") {
+    if (view.downloaded_version) {
+      return {
+        text: `solstone ${view.downloaded_version} installs the next time the solstone app restarts, including sign-in`,
+        live: false,
+      };
+    }
+    return null;
+  }
+  if (view.display === "downloading" || view.activity === "downloading") {
+    return null;
+  }
+  if (view.display === "staged" || view.installs_next_start) {
+    let text = "it installs the next time the solstone app restarts, including sign-in";
+    if (view.cost_deferral) {
+      text += ` · ${costDeferralText(view.cost_deferral)}`;
+    }
+    if (view.recovery === "check") {
+      text += " · the last check for updates failed";
+    } else if (view.recovery === "download") {
+      text += " · the download did not finish";
+    }
+    return { text, live: false };
+  }
+  if (view.cost_deferral) {
+    return { text: costDeferralText(view.cost_deferral), live: false };
+  }
   switch (view.display) {
     case "never_checked":
       return {
@@ -5659,7 +5711,10 @@ function updateSubtitle(
     case "downloading":
       return null;
     case "staged":
-      return { text: "it installs the next time the solstone app restarts", live: false };
+      return {
+        text: "it installs the next time the solstone app restarts, including sign-in",
+        live: false,
+      };
     case "unavailable":
       return {
         text: "download the latest from solstone.app/download/windows",
@@ -5951,6 +6006,19 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
     }
     pane.append(sub);
   }
+  // Always render settings.updates.lastChecked regardless of state (including checking,
+  // downloading, staged, and never-checked).
+  if (lastCheckedEl == null) {
+    const lastCheckedDiv = automation(
+      text("div", lastCheckedRelative(view.last_checked_at, nowSecs())),
+      ids["settings.updates.lastChecked"],
+    );
+    lastCheckedDiv.style.fontSize = "13px";
+    lastCheckedDiv.style.color = "var(--fg-subtle)";
+    lastCheckedDiv.style.margin = "3px 0 0";
+    lastCheckedEl = lastCheckedDiv;
+    pane.append(lastCheckedDiv);
+  }
 
   // Progress — determinate for a download, an indeterminate sweep while a check
   // or install is in flight.
@@ -5989,7 +6057,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
     );
     anyAction = true;
   }
-  if (view.display === "available") {
+  if (view.display === "available" || a.can_download) {
     actions.append(
       actionButton("download", ids["settings.updates.download"], a.can_download, () => {
         void invoke("update_download");
@@ -5997,7 +6065,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
     );
     anyAction = true;
   }
-  if (view.display === "staged" && view.activity !== "installing") {
+  if (view.installs_next_start && view.activity !== "installing") {
     actions.append(
       actionButton("relaunch to install", ids["settings.updates.install"], a.can_install, () => {
         void invoke("update_install");
@@ -6005,10 +6073,15 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
     );
     anyAction = true;
   }
-  if (view.display === "failed" || view.display === "failed_with_available") {
+  if (view.display === "failed" || view.display === "failed_with_available" || view.recovery === "download") {
+    const isDownloadRecovery = view.recovery === "download";
     actions.append(
-      actionButton("retry", ids["settings.updates.retry"], a.can_retry, () => {
-        void invoke("update_check_now");
+      actionButton("retry", ids["settings.updates.retry"], isDownloadRecovery ? a.can_download : a.can_retry, () => {
+        if (isDownloadRecovery) {
+          void invoke("update_download");
+        } else {
+          void invoke("update_check_now");
+        }
       }),
     );
     anyAction = true;

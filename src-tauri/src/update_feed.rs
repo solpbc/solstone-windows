@@ -124,11 +124,45 @@ impl UpdateSource for R2FeedSource {
             "{}",
             observer_update::format_downloading_asset(&asset.FileName, &asset.Type)
         );
+        let is_auto = crate::update::is_automatic_transfer();
+        let mut probe = || {
+            let p = platform_win::connection_cost();
+            observer_update::NetworkCost {
+                kind: match p.kind {
+                    platform_win::PlatformConnectionCostKind::Unrestricted => {
+                        observer_update::NetworkCostKind::Unrestricted
+                    }
+                    platform_win::PlatformConnectionCostKind::Fixed => {
+                        observer_update::NetworkCostKind::Fixed
+                    }
+                    platform_win::PlatformConnectionCostKind::Variable => {
+                        observer_update::NetworkCostKind::Variable
+                    }
+                    platform_win::PlatformConnectionCostKind::Unknown => {
+                        observer_update::NetworkCostKind::Unknown
+                    }
+                },
+                roaming: p.roaming,
+                background_restricted: p.background_restricted,
+            }
+        };
+        let automatic_cost: Option<&mut dyn FnMut() -> observer_update::NetworkCost> =
+            if is_auto { Some(&mut probe) } else { None };
+
         #[cfg(test)]
         if let Some(key) = self.test_key {
             return pl_transport_win::release_signature::download_and_verify_release_entry_with_key(
-                key, &self.base, &asset.Type, &asset.FileName, &asset.Version, local_file, progress_sender)
-                .map(|_| ()).map_err(Error::Other);
+                key,
+                &self.base,
+                &asset.Type,
+                &asset.FileName,
+                &asset.Version,
+                local_file,
+                progress_sender,
+                automatic_cost,
+            )
+            .map(|_| ())
+            .map_err(Error::Other);
         }
         pl_transport_win::release_signature::download_and_verify_release_entry(
             &self.base,
@@ -137,6 +171,7 @@ impl UpdateSource for R2FeedSource {
             &asset.Version,
             local_file,
             progress_sender,
+            automatic_cost,
         )
         .map_err(Error::Other)?;
 
