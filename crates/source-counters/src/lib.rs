@@ -620,18 +620,26 @@ impl Counters {
     }
 
     fn apply_intake(&mut self, intake: &NoteIntake) {
-        if intake.id <= self.disk.obsidian.intake {
+        // An id of 0 was assigned before ids started at 1. Apply it by the path
+        // set and do not store 0 as the cursor: 0 means nothing has been applied.
+        if intake.id != 0 && intake.id <= self.disk.obsidian.intake {
             return;
         }
-        self.disk.obsidian.intake = intake.id;
-        self.dirty = true;
+        if intake.id != 0 {
+            self.disk.obsidian.intake = intake.id;
+            self.dirty = true;
+        }
         let path_hash = digest(intake.path.as_bytes());
         if intake.removed {
-            self.disk.note_hashes.remove(&path_hash);
+            if self.disk.note_hashes.remove(&path_hash) {
+                self.dirty = true;
+            }
             return;
         }
         if intake.inventory {
-            self.disk.note_hashes.insert(path_hash);
+            if self.disk.note_hashes.insert(path_hash) {
+                self.dirty = true;
+            }
             return;
         }
         let mut moved = false;
@@ -646,7 +654,10 @@ impl Counters {
             }
         }
         if moved || !intake.first_sight {
-            self.disk.note_hashes.insert(path_hash);
+            let inserted = self.disk.note_hashes.insert(path_hash);
+            if moved || inserted {
+                self.dirty = true;
+            }
             return;
         }
         if self.disk.note_hashes.insert(path_hash) {
@@ -655,6 +666,7 @@ impl Counters {
                 self.disk.obsidian.last =
                     Some(self.disk.obsidian.last.map_or(at, |prev| prev.max(at)));
             }
+            self.dirty = true;
         }
     }
 
@@ -1204,6 +1216,109 @@ mod tests {
         let mut restarted = Counters::open(dir.path(), "2026-11-09").unwrap();
         assert!(restarted.reconcile_notes(&known, &[intake(4, "new.md")]));
         assert_eq!(restarted.note_count(), 1);
+    }
+
+    #[test]
+    fn an_intake_whose_id_is_zero_counts_once_and_applying_it_again_stays_at_one() {
+        let (dir, mut counters) = open_at("2026-11-09");
+        audio(&mut counters, 1, 0, 99, 10);
+        assert_eq!(counters.audio_seconds(), 99);
+        assert!(counters.apply_intakes(&[intake(0, "a.md")]));
+        assert_eq!(counters.note_count(), 1);
+        assert_eq!(counters.last(Source::Obsidian), Some(50));
+        assert_eq!(counters.audio_seconds(), 99);
+        assert!(counters.apply_intakes(&[intake(0, "a.md")]));
+        assert_eq!(counters.note_count(), 1);
+        assert_eq!(counters.audio_seconds(), 99);
+        drop(counters);
+        let on_disk: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(on_disk["obsidian"]["intake"], 0);
+        assert_eq!(on_disk["obsidian"]["total"], 1);
+        assert_eq!(on_disk["audio"]["seconds"], 99);
+        let mut restarted = Counters::open(dir.path(), "2026-11-09").unwrap();
+        assert!(restarted.apply_intakes(&[intake(0, "a.md")]));
+        assert_eq!(restarted.note_count(), 1);
+        assert!(restarted.apply_intakes(&[intake(1, "b.md")]));
+        assert_eq!(restarted.note_count(), 2);
+        assert_eq!(restarted.audio_seconds(), 99);
+        drop(restarted);
+        let again: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(again["obsidian"]["intake"], 1);
+        assert_eq!(again["obsidian"]["total"], 2);
+        assert_eq!(again["audio"]["seconds"], 99);
+    }
+
+    #[test]
+    fn an_intake_whose_id_is_zero_and_is_inventory_records_the_path_and_does_not_count() {
+        let (dir, mut counters) = open_at("2026-11-09");
+        audio(&mut counters, 1, 0, 99, 10);
+        let recorded = NoteIntake {
+            inventory: true,
+            ..intake(0, "a.md")
+        };
+        assert!(counters.apply_intakes(std::slice::from_ref(&recorded)));
+        assert_eq!(counters.note_count(), 0);
+        assert_eq!(counters.last(Source::Obsidian), None);
+        assert_eq!(counters.audio_seconds(), 99);
+        assert!(counters.apply_intakes(&[recorded]));
+        assert_eq!(counters.note_count(), 0);
+        drop(counters);
+        let on_disk: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(on_disk["obsidian"]["intake"], 0);
+        assert_eq!(on_disk["obsidian"]["total"], 0);
+        assert_eq!(on_disk["audio"]["seconds"], 99);
+        let mut restarted = Counters::open(dir.path(), "2026-11-09").unwrap();
+        assert!(restarted.apply_intakes(&[intake(1, "a.md")]));
+        assert_eq!(restarted.note_count(), 0);
+        assert!(restarted.apply_intakes(&[intake(2, "b.md")]));
+        assert_eq!(restarted.note_count(), 1);
+        assert_eq!(restarted.audio_seconds(), 99);
+        drop(restarted);
+        let again: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(again["obsidian"]["intake"], 2);
+        assert_eq!(again["obsidian"]["total"], 1);
+        assert_eq!(again["audio"]["seconds"], 99);
+    }
+
+    #[test]
+    fn an_intake_whose_id_is_zero_and_is_a_removal_drops_the_hash_and_does_not_count() {
+        let (dir, mut counters) = open_at("2026-11-09");
+        audio(&mut counters, 1, 0, 99, 10);
+        assert!(counters.apply_intakes(&[NoteIntake {
+            inventory: true,
+            ..intake(0, "a.md")
+        }]));
+        let removal = NoteIntake {
+            removed: true,
+            first_sight: false,
+            ..intake(0, "a.md")
+        };
+        assert!(counters.apply_intakes(std::slice::from_ref(&removal)));
+        assert_eq!(counters.note_count(), 0);
+        assert_eq!(counters.last(Source::Obsidian), None);
+        assert_eq!(counters.audio_seconds(), 99);
+        assert!(counters.apply_intakes(&[removal]));
+        assert_eq!(counters.note_count(), 0);
+        drop(counters);
+        let on_disk: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(on_disk["obsidian"]["intake"], 0);
+        assert_eq!(on_disk["obsidian"]["total"], 0);
+        assert_eq!(on_disk["audio"]["seconds"], 99);
+        let mut restarted = Counters::open(dir.path(), "2026-11-09").unwrap();
+        assert!(restarted.apply_intakes(&[intake(1, "a.md")]));
+        assert_eq!(restarted.note_count(), 1);
+        assert_eq!(restarted.audio_seconds(), 99);
+        drop(restarted);
+        let again: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(again["obsidian"]["intake"], 1);
+        assert_eq!(again["obsidian"]["total"], 1);
+        assert_eq!(again["audio"]["seconds"], 99);
     }
 
     #[test]
