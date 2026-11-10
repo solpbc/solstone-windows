@@ -113,12 +113,11 @@ impl OpenJournalError {
     }
 }
 
-fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Result<()> {
+fn open_settings_internal(app: &tauri::AppHandle, destination: &str) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("settings") {
         window.set_focus()?;
-        if sources {
-            let _ = window.emit("settings://navigate", "sources");
-        }
+        // Focus alone is not navigation. The same event opens the deck or a source page.
+        let _ = window.emit("settings://navigate", destination);
         tracing::info!(
             target: "window",
             label = "settings",
@@ -128,8 +127,10 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
         return Ok(());
     }
 
-    let url = if sources {
+    let url = if destination == "sources" {
         WebviewUrl::App("index.html?route=sources".into())
+    } else if matches!(destination, "audio" | "screen" | "browsers" | "obsidian") {
+        WebviewUrl::App(format!("index.html?route={destination}").into())
     } else {
         WebviewUrl::App("index.html".into())
     };
@@ -169,14 +170,23 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
     Ok(())
 }
 
-/// Open (or focus) the Settings window.
+/// Open (or focus) the Settings window on the deck, with status in the pane.
 pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
-    open_settings_internal(app, false)
+    open_settings_internal(app, "sources")
 }
 
-/// Open (or focus) the Settings window on the sources pane.
+/// Open (or focus) the Settings window on the deck. Same destination as [`open_settings`].
 pub fn open_settings_sources(app: &tauri::AppHandle) -> tauri::Result<()> {
-    open_settings_internal(app, true)
+    open_settings_internal(app, "sources")
+}
+
+/// Open (or focus) the Settings window on one source's page.
+pub fn open_settings_source(app: &tauri::AppHandle, source: &str) -> tauri::Result<()> {
+    let destination = match source {
+        "audio" | "screen" | "browsers" | "obsidian" => source,
+        _ => "sources",
+    };
+    open_settings_internal(app, destination)
 }
 
 /// Dispatch opening journal based on pairing phase.

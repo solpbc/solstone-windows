@@ -9,6 +9,7 @@ import {
   headerWhilePaused,
   journalPill,
   legacyRoute,
+  settingsNavigate,
   menuRows,
   obsidianTile,
   pauseTimeLeft,
@@ -259,9 +260,41 @@ describe("restart", () => {
       }),
     ).toBe("technicalDetails");
   });
+
+  it("puts a screen or activity fault on the screen page, and an audio fault wins", () => {
+    const quiet = {
+      phaseError: true,
+      micFaulted: false,
+      systemAudioFaulted: false,
+      screenFaulted: false,
+      activityFaulted: false,
+      storageFault: false,
+    };
+    expect(restartPlace({ ...quiet, screenFaulted: true })).toBe("screen");
+    expect(restartPlace({ ...quiet, activityFaulted: true })).toBe("screen");
+    expect(restartPlace({ ...quiet, systemAudioFaulted: true })).toBe("audio");
+    expect(
+      restartPlace({
+        ...quiet,
+        micFaulted: true,
+        screenFaulted: true,
+        activityFaulted: true,
+        storageFault: true,
+      }),
+    ).toBe("audio");
+    expect(restartPlace(quiet)).toBe("absent");
+  });
 });
 
 describe("routes and widths", () => {
+  it("opens the deck from sources, and a source page from the attention payload", () => {
+    expect(settingsNavigate("sources")).toEqual({ row: "home", pane: "status" });
+    expect(settingsNavigate("home")).toEqual({ row: "home", pane: "status" });
+    expect(settingsNavigate("audio")).toEqual({ row: "home", pane: "audio" });
+    expect(settingsNavigate("screen")).toEqual({ row: "home", pane: "screen" });
+    expect(settingsNavigate("journal")).toEqual({ row: "journal", pane: "status" });
+  });
+
   it("maps each old route", () => {
     expect(legacyRoute("home")).toEqual({ row: "home", pane: "status" });
     expect(legacyRoute("sources")).toEqual({ row: "home", pane: "status" });

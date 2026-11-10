@@ -255,6 +255,22 @@ export function restartPlace(input: {
   return "absent";
 }
 
+/** `settings://navigate` payload. `sources` is the deck with status. A source id opens that page. */
+export function settingsNavigate(payload: string): { row: ShelfRow; pane: Pane } {
+  switch (payload) {
+    case "audio":
+    case "screen":
+    case "browsers":
+    case "obsidian":
+      return { row: "home", pane: payload };
+    case "sources":
+    case "home":
+      return { row: "home", pane: "status" };
+    default:
+      return legacyRoute(payload);
+  }
+}
+
 export function legacyRoute(route: string): { row: ShelfRow; pane: Pane } {
   switch (route) {
     case "home":

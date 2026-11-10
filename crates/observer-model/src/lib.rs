@@ -1510,6 +1510,47 @@ mod tests {
     }
 
     #[test]
+    fn health_about_and_report_omit_counter_document_keys() {
+        let mut dump = base_dump();
+        dump.setup.system_audio_wanted = Some(false);
+        let health = serde_json::to_value(&dump).unwrap();
+        let about = serde_json::to_value(crate::about::NativeAboutSnapshot::unknown(
+            "windows",
+            "10.0.22631",
+            "x86_64",
+        ))
+        .unwrap();
+        let report = crate::about::build_report_url(&dump, Some("10.0.22631"));
+        for key in [
+            "seconds",
+            "last",
+            "total",
+            "audio",
+            "browsers",
+            "obsidian",
+            "remainder_us",
+            "note_hashes",
+            "pages_applied",
+        ] {
+            assert!(!json_has_key(&health, key), "{key} is in the health dump");
+            assert!(!json_has_key(&about, key), "{key} is in the about snapshot");
+            assert!(!report.contains(key), "{key} is in the support report");
+        }
+        assert!(json_has_key(&health, "last_uploaded_segment"));
+        assert!(json_has_key(&health, "system_audio_wanted"));
+    }
+
+    fn json_has_key(value: &serde_json::Value, key: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|child| json_has_key(child, key))
+            }
+            serde_json::Value::Array(items) => items.iter().any(|child| json_has_key(child, key)),
+            _ => false,
+        }
+    }
+
+    #[test]
     fn upload_status_failure_clamps_and_single_lines_reason() {
         let mut upload = UploadStatus::default();
         for _ in 0..100 {

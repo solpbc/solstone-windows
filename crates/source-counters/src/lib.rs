@@ -849,6 +849,65 @@ fn parse_disk(bytes: &[u8]) -> io::Result<Disk> {
     Ok(disk)
 }
 
+/// One source total as stored, for the settings window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowSourceTotal {
+    pub total: u64,
+    pub last: Option<i64>,
+}
+
+/// The counter document the settings window may show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowCounterDocument {
+    pub started: String,
+    pub audio: WindowSourceTotal,
+    pub screen: WindowSourceTotal,
+    pub browsers: WindowSourceTotal,
+    pub obsidian: WindowSourceTotal,
+}
+
+/// What the settings window's read found.
+///
+/// This read does not create a file, does not open the backup, and does not
+/// promote one. Absence, a backup alone, and an unreadable file are all
+/// [`WindowCounterRead::NoRows`]. An I/O failure is the command error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowCounterRead {
+    NoRows,
+    Document(WindowCounterDocument),
+}
+
+/// Read `counters.json` for the settings window.
+pub fn read_window_counters(dir: &Path) -> io::Result<WindowCounterRead> {
+    let path = dir.join(FILE_NAME);
+    match fs::read(&path) {
+        Ok(bytes) => match parse_disk(&bytes) {
+            Ok(disk) => Ok(WindowCounterRead::Document(WindowCounterDocument {
+                started: disk.started,
+                audio: WindowSourceTotal {
+                    total: disk.audio.seconds,
+                    last: disk.audio.last,
+                },
+                screen: WindowSourceTotal {
+                    total: disk.screen.seconds,
+                    last: disk.screen.last,
+                },
+                browsers: WindowSourceTotal {
+                    total: disk.browsers.total,
+                    last: disk.browsers.last,
+                },
+                obsidian: WindowSourceTotal {
+                    total: disk.obsidian.total,
+                    last: disk.obsidian.last,
+                },
+            })),
+            Err(_) => Ok(WindowCounterRead::NoRows),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(WindowCounterRead::NoRows),
+        Err(error) => Err(error),
+    }
+}
+
 fn sync_dir(dir: Option<&Path>) {
     #[cfg(unix)]
     if let Some(dir) = dir {
@@ -1464,5 +1523,66 @@ mod tests {
         assert_eq!(spans, vec![(0, 10 * S), (10 * S, 15 * S)]);
         assert_eq!(calendar_date(0, 0), "1970-01-01");
         assert_eq!(calendar_date(86_400, 0), "1970-01-02");
+    }
+
+    #[test]
+    fn the_window_read_does_not_create_or_promote_a_counter_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = read_window_counters(dir.path()).unwrap();
+        assert_eq!(read, WindowCounterRead::NoRows);
+        assert!(!dir.path().join(FILE_NAME).exists());
+        assert!(!bak_path(&dir.path().join(FILE_NAME)).exists());
+
+        let bak = bak_path(&dir.path().join(FILE_NAME));
+        let bak_bytes = br#"{"v":1,"started":"2026-11-09","audio":{"seconds":4,"remainder_us":0,"last":7},"screen":{"seconds":0,"remainder_us":0,"last":null},"browsers":{"total":0,"last":null},"obsidian":{"total":0,"last":null,"baselined":false,"intake":0}}"#;
+        fs::write(&bak, bak_bytes).unwrap();
+        assert_eq!(
+            read_window_counters(dir.path()).unwrap(),
+            WindowCounterRead::NoRows
+        );
+        assert_eq!(fs::read(&bak).unwrap(), bak_bytes);
+        assert!(!dir.path().join(FILE_NAME).exists());
+
+        let path = dir.path().join(FILE_NAME);
+        fs::write(&path, b"{not json").unwrap();
+        assert_eq!(
+            read_window_counters(dir.path()).unwrap(),
+            WindowCounterRead::NoRows
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"{not json");
+
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(read_window_counters(dir.path()).is_err());
+        assert!(path.is_dir());
+        assert_eq!(fs::read(&bak).unwrap(), bak_bytes);
+    }
+
+    #[test]
+    fn the_window_read_returns_each_sources_stored_total_and_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = br#"{"v":1,"started":"2026-11-01","audio":{"seconds":0,"remainder_us":0,"last":20},"screen":{"seconds":3,"remainder_us":0,"last":99},"browsers":{"total":2,"last":5},"obsidian":{"total":0,"last":null,"baselined":false,"intake":0}}"#;
+        fs::write(dir.path().join(FILE_NAME), bytes).unwrap();
+        let WindowCounterRead::Document(doc) = read_window_counters(dir.path()).unwrap() else {
+            panic!("expected the stored document");
+        };
+        assert_eq!(doc.started, "2026-11-01");
+        assert_eq!(doc.audio.total, 0);
+        assert_eq!(doc.audio.last, Some(20));
+        assert_eq!(doc.screen.total, 3);
+        assert_eq!(doc.screen.last, Some(99));
+        assert_eq!(doc.browsers.total, 2);
+        assert_eq!(doc.browsers.last, Some(5));
+        assert_eq!(doc.obsidian.total, 0);
+        assert_eq!(doc.obsidian.last, None);
+        assert_eq!(fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
+
+        let positive = br#"{"v":1,"started":"2026-11-01","audio":{"seconds":15,"remainder_us":0,"last":8},"screen":{"seconds":0,"remainder_us":0,"last":null},"browsers":{"total":0,"last":null},"obsidian":{"total":0,"last":null,"baselined":false,"intake":0}}"#;
+        fs::write(dir.path().join(FILE_NAME), positive).unwrap();
+        let WindowCounterRead::Document(doc) = read_window_counters(dir.path()).unwrap() else {
+            panic!("expected the stored document");
+        };
+        assert_eq!(doc.audio.total, 15);
+        assert_eq!(fs::read(dir.path().join(FILE_NAME)).unwrap(), positive);
     }
 }
