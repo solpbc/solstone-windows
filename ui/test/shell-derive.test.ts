@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  addMoreSources,
   audioTile,
   browsersTile,
   counterFacts,
   deckColumns,
+  deckTiles,
   derivedComputerSoundWanted,
   greeting,
   headerWhilePaused,
@@ -15,6 +17,8 @@ import {
   pauseTimeLeft,
   restartPlace,
   screenTile,
+  shelfBadges,
+  spaceOnTile,
   statusRowOpens,
   widthClass,
   type AudioTileInput,
@@ -110,6 +114,32 @@ describe("audio", () => {
       audioTile({ ...quietAudio, micEnabled: true, micTakingIn: true, appPaused: true }).word,
     ).toBe("paused");
   });
+
+  it("names a microphone only while audio is on and that microphone is taking something in", () => {
+    expect(
+      audioTile({ ...quietAudio, micEnabled: true, micDevicePresent: true, micTakingIn: true }).namesMicrophone,
+    ).toBe(true);
+    expect(
+      audioTile({
+        ...quietAudio,
+        micDevicePresent: false,
+        systemAudioEnabled: true,
+        systemAudioTakingIn: true,
+      }).namesMicrophone,
+    ).toBe(false);
+    expect(
+      audioTile({ ...quietAudio, micEnabled: true, micAccessDenied: true, micTakingIn: true }).namesMicrophone,
+    ).toBe(false);
+    expect(
+      audioTile({
+        ...quietAudio,
+        micEnabled: false,
+        micTakingIn: true,
+        systemAudioEnabled: true,
+        systemAudioTakingIn: true,
+      }).namesMicrophone,
+    ).toBe(false);
+  });
 });
 
 describe("screen", () => {
@@ -117,6 +147,23 @@ describe("screen", () => {
     const tile = screenTile({ ...quietScreen, activityOn: true });
     expect(tile.word).toBe("off");
     expect(tile.activityKept).toBe(true);
+    expect(tile.activityAlongside).toBe(false);
+  });
+
+  it("names activity beside an on tile and not beside a fault", () => {
+    const on = screenTile({ ...quietScreen, enabled: true, running: true, activityOn: true });
+    expect(on.word).toBe("on");
+    expect(on.activityAlongside).toBe(true);
+    expect(on.activityKept).toBe(false);
+    const faulted = screenTile({
+      ...quietScreen,
+      enabled: true,
+      running: true,
+      activityOn: true,
+      accessDenied: true,
+    });
+    expect(faulted.word).toBe("needs attention");
+    expect(faulted.activityAlongside).toBe(false);
   });
 
   it("stays paused when activity is still going, and carries that fact", () => {
@@ -138,6 +185,8 @@ describe("browsers", () => {
       word: "on",
       switchOn: null,
       activityKept: false,
+      activityAlongside: false,
+      namesMicrophone: false,
     });
     expect(browsersTile({ capture: "intake_off", deliveryFailed: false, appPaused: false }).word).toBe(
       "needs attention",
@@ -346,6 +395,31 @@ describe("counters", () => {
     expect(bySource.obsidian.nothingYet).toBe(true);
     expect(bySource.obsidian.last).toBeNull();
     expect(bySource.obsidian.pageIncludesStarted).toBe(false);
+  });
+});
+
+describe("deck and shelf", () => {
+  it("lists the four sources and then add more", () => {
+    expect(deckTiles()).toEqual(["audio", "screen", "browsers", "obsidian", "addMore"]);
+    expect(addMoreSources()).toEqual(["audio", "screen", "browsers", "obsidian"]);
+  });
+
+  it("badges the shelf row a notice belongs to", () => {
+    expect(
+      shelfBadges({ unknownJournal: false, shortcutNeedsRepair: false, updateAvailable: false }),
+    ).toEqual([]);
+    expect(
+      shelfBadges({ unknownJournal: true, shortcutNeedsRepair: true, updateAvailable: true }),
+    ).toEqual(["journal", "thisPc", "updates"]);
+  });
+
+  it("space toggles a switch, skips browsers, and opens Obsidian to turn it on", () => {
+    expect(spaceOnTile("audio", true)).toBe("toggle");
+    expect(spaceOnTile("screen", false)).toBe("toggle");
+    expect(spaceOnTile("browsers", null)).toBe("none");
+    expect(spaceOnTile("obsidian", false)).toBe("open");
+    expect(spaceOnTile("obsidian", true)).toBe("toggle");
+    expect(spaceOnTile("obsidian", null)).toBe("none");
   });
 });
 

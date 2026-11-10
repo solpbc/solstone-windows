@@ -72,6 +72,10 @@ export type TileView = {
   switchOn: boolean | null;
   /** Screen is off or paused while activity is still going in. A fact, not a sentence. */
   activityKept: boolean;
+  /** Screen is on and activity is on. The on sub-line names activity. */
+  activityAlongside: boolean;
+  /** Audio is on and a microphone is taking something in. The sub-line names that microphone. */
+  namesMicrophone: boolean;
 };
 
 export function audioTile(input: AudioTileInput): TileView {
@@ -87,7 +91,15 @@ export function audioTile(input: AudioTileInput): TileView {
   else if (input.appPaused) word = "paused";
   else if (input.micTakingIn || input.systemAudioTakingIn) word = "on";
   else word = "setting up";
-  return { word, switchOn: eitherOn, activityKept: false };
+  const namesMicrophone =
+    word === "on" && input.micEnabled && input.micDevicePresent && input.micTakingIn;
+  return {
+    word,
+    switchOn: eitherOn,
+    activityKept: false,
+    activityAlongside: false,
+    namesMicrophone,
+  };
 }
 
 export type ScreenTileInput = {
@@ -111,7 +123,13 @@ export function screenTile(input: ScreenTileInput): TileView {
   else if (input.running) word = "on";
   else if (!input.permissionAsked) word = "ready to set up";
   else word = "setting up";
-  return { word, switchOn: input.enabled, activityKept };
+  return {
+    word,
+    switchOn: input.enabled,
+    activityKept,
+    activityAlongside: word === "on" && input.activityOn,
+    namesMicrophone: false,
+  };
 }
 
 export type BrowserCapture = "unavailable" | "not_paired" | "permitted" | "paused" | "intake_off";
@@ -126,7 +144,13 @@ export function browsersTile(input: {
   else if (input.capture === "not_paired" || input.capture === "unavailable") word = "ready to set up";
   else if (input.capture === "paused" || input.appPaused) word = "paused";
   else word = "on";
-  return { word, switchOn: null, activityKept: false };
+  return {
+    word,
+    switchOn: null,
+    activityKept: false,
+    activityAlongside: false,
+    namesMicrophone: false,
+  };
 }
 
 export type ObsidianStateName =
@@ -152,7 +176,47 @@ export function obsidianTile(input: {
   else if (input.vault === null && input.foundCount === 0) word = "ready to set up";
   else word = "off";
   const switchOn = word === "off" || word === "ready to set up" ? false : word === "on" || word === "paused" ? true : null;
-  return { word, switchOn, activityKept: false };
+  return {
+    word,
+    switchOn,
+    activityKept: false,
+    activityAlongside: false,
+    namesMicrophone: false,
+  };
+}
+
+export type DeckTileId = SourceId | "addMore";
+
+/** Source tiles, then `addMore`. No terminal, import, or screenshots. */
+export function deckTiles(): readonly DeckTileId[] {
+  return [...SOURCE_ORDER, "addMore"];
+}
+
+/** The add-more page lists the sources already on the deck, in that order, as one section. */
+export function addMoreSources(): readonly SourceId[] {
+  return SOURCE_ORDER;
+}
+
+export type ShelfNotice = "journal" | "thisPc" | "updates";
+
+/** A notice that belongs to no tile badges its shelf row. Home and help never badge. */
+export function shelfBadges(input: {
+  unknownJournal: boolean;
+  shortcutNeedsRepair: boolean;
+  updateAvailable: boolean;
+}): ShelfNotice[] {
+  const rows: ShelfNotice[] = [];
+  if (input.unknownJournal) rows.push("journal");
+  if (input.shortcutNeedsRepair) rows.push("thisPc");
+  if (input.updateAvailable) rows.push("updates");
+  return rows;
+}
+
+/** Space toggles a switch. Browsers has none. Obsidian's on action opens the page. */
+export function spaceOnTile(source: SourceId, switchOn: boolean | null): "toggle" | "open" | "none" {
+  if (source === "browsers" || switchOn === null) return "none";
+  if (source === "obsidian") return switchOn ? "toggle" : "open";
+  return "toggle";
 }
 
 export type JournalPillInput = {
