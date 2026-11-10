@@ -173,7 +173,8 @@ impl Hub {
     /// Count visits the store already accepted, including a batch whose save
     /// did not reach the counter file before the last process stopped.
     pub fn set_counters(&self, counters: source_counters::SharedCounters) {
-        if let Ok(batches) = self.store().pending_batches() {
+        let batches = self.store().pending_batches();
+        if let Ok(batches) = batches {
             let mapped: Vec<source_counters::PageBatch> = batches
                 .iter()
                 .map(|batch| source_counters::PageBatch {

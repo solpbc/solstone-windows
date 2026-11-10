@@ -1005,3 +1005,19 @@ async fn a_held_mark_clears_a_previous_failure() {
     deliver_pending(&rig.hub, || async { Some(held.clone()) }).await;
     assert_eq!(rig.hub.status().delivery, "kept_locally");
 }
+
+#[test]
+fn counters_attach_completes_for_a_fresh_store() {
+    let rig = rig(false);
+    let counters =
+        source_counters::SharedCounters::open(&rig._dir.path().join("counts"), "2026-11-10")
+            .unwrap();
+    let (finished, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        rig.hub.set_counters(counters);
+        finished.send(()).unwrap();
+    });
+    receive
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("attaching counters must release the store before clearing its pending batches");
+}
