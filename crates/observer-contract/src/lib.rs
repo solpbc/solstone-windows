@@ -56,6 +56,8 @@ pub mod tray {
     pub const MENU_PAUSE_1H: &str = "tray.menu.pause1h";
     pub const MENU_PAUSE_INDEFINITE: &str = "tray.menu.pauseIndefinite";
     pub const MENU_RESUME: &str = "tray.menu.resume";
+    pub const MENU_ATTENTION: &str = "tray.menu.attention";
+    pub const MENU_STATUS: &str = "tray.menu.status";
     pub const MENU_RESTART_OBSERVING: &str = "tray.menu.restartObserving";
     pub const MENU_BROWSERS: &str = "tray.menu.browsers";
     pub const MENU_OPEN_JOURNAL: &str = "tray.menu.openJournal";
@@ -216,6 +218,8 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("tray.menu.pause1h", tray::MENU_PAUSE_1H),
         ("tray.menu.pauseIndefinite", tray::MENU_PAUSE_INDEFINITE),
         ("tray.menu.resume", tray::MENU_RESUME),
+        ("tray.menu.attention", tray::MENU_ATTENTION),
+        ("tray.menu.status", tray::MENU_STATUS),
         ("tray.menu.restartObserving", tray::MENU_RESTART_OBSERVING),
         ("tray.menu.browsers", tray::MENU_BROWSERS),
         ("tray.menu.openJournal", tray::MENU_OPEN_JOURNAL),

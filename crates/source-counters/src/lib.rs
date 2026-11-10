@@ -870,11 +870,66 @@ pub struct WindowCounterDocument {
 ///
 /// This read does not create a file, does not open the backup, and does not
 /// promote one. Absence, a backup alone, and an unreadable file are all
-/// [`WindowCounterRead::NoRows`]. An I/O failure is the command error.
+/// [`WindowCounterRead::NoRows`]. An I/O failure is [`Err`]. The settings
+/// command turns that error into no rows, which is not `nothing yet`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowCounterRead {
     NoRows,
     Document(WindowCounterDocument),
+}
+
+/// A time source as the window shows it: whole seconds, not the two halves.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WindowSecondsCell {
+    pub seconds: u64,
+    pub last: Option<i64>,
+}
+
+/// A counted source as the window shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WindowCountCell {
+    pub total: u64,
+    pub last: Option<i64>,
+}
+
+/// The counter document the settings window renders. `None` from
+/// [`window_payload`] means no rows.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WindowCounterPayload {
+    pub started: String,
+    pub audio: WindowSecondsCell,
+    pub screen: WindowSecondsCell,
+    pub browsers: WindowCountCell,
+    pub obsidian: WindowCountCell,
+}
+
+/// Map a window read onto the document the window renders.
+///
+/// Time sources keep the stored seconds. Counted sources keep the stored
+/// total. A missing read stays missing. This does not open or write a file.
+pub fn window_payload(read: &WindowCounterRead) -> Option<WindowCounterPayload> {
+    let WindowCounterRead::Document(doc) = read else {
+        return None;
+    };
+    Some(WindowCounterPayload {
+        started: doc.started.clone(),
+        audio: WindowSecondsCell {
+            seconds: doc.audio.total,
+            last: doc.audio.last,
+        },
+        screen: WindowSecondsCell {
+            seconds: doc.screen.total,
+            last: doc.screen.last,
+        },
+        browsers: WindowCountCell {
+            total: doc.browsers.total,
+            last: doc.browsers.last,
+        },
+        obsidian: WindowCountCell {
+            total: doc.obsidian.total,
+            last: doc.obsidian.last,
+        },
+    })
 }
 
 /// Read `counters.json` for the settings window.
@@ -1584,5 +1639,26 @@ mod tests {
         };
         assert_eq!(doc.audio.total, 15);
         assert_eq!(fs::read(dir.path().join(FILE_NAME)).unwrap(), positive);
+    }
+
+    #[test]
+    fn the_window_payload_uses_seconds_for_time_and_total_for_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = br#"{"v":1,"started":"2026-11-01","audio":{"seconds":0,"remainder_us":0,"last":20},"screen":{"seconds":3,"remainder_us":0,"last":99},"browsers":{"total":2,"last":5},"obsidian":{"total":0,"last":null,"baselined":false,"intake":0}}"#;
+        fs::write(dir.path().join(FILE_NAME), bytes).unwrap();
+        let read = read_window_counters(dir.path()).unwrap();
+        let value = serde_json::to_value(window_payload(&read)).unwrap();
+        let audio = value.get("audio").unwrap();
+        let browsers = value.get("browsers").unwrap();
+        assert_eq!(audio.get("seconds").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(audio.get("last").and_then(|v| v.as_i64()), Some(20));
+        assert!(audio.get("total").is_none());
+        assert_eq!(browsers.get("total").and_then(|v| v.as_u64()), Some(2));
+        assert!(browsers.get("seconds").is_none());
+        assert!(value.get("remainder_us").is_none());
+        assert!(value.get("note_hashes").is_none());
+        assert!(value.get("pages_applied").is_none());
+        assert!(window_payload(&WindowCounterRead::NoRows).is_none());
+        assert_eq!(fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
     }
 }

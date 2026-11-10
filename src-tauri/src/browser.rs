@@ -436,6 +436,11 @@ mod imp {
         HUB.get().map(|hub| hub.status())
     }
 
+    /// Store full, or a delivery that failed. The tile has no switch.
+    pub fn needs_attention() -> bool {
+        status().is_some_and(|status| status.capture == "intake_off" || status.delivery == "failed")
+    }
+
     /// `--browser-status`: print what the running app last published.
     pub fn status_cli() -> ExitCode {
         match std::fs::read_to_string(status_path()) {

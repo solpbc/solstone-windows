@@ -77,6 +77,45 @@ pub fn paused_menu_status(seconds_left: Option<u64>) -> PausedMenuStatus {
     }
 }
 
+/// The disabled menu row. While paused it is the time left. Otherwise it is the
+/// journal pill. A failed pairing reads as not paired: the dump does not say
+/// whether the mark was refused or the link needs replacing.
+pub fn menu_status_line(dump: &crate::HealthDump) -> String {
+    if dump.app_state == AppPhase::Paused {
+        let seconds = dump
+            .pause
+            .as_ref()
+            .and_then(|pause| pause.seconds_remaining);
+        return match paused_menu_status(seconds) {
+            PausedMenuStatus::UntilResume => "paused until you resume".to_string(),
+            PausedMenuStatus::LessThanAMinute => "paused, less than a minute left".to_string(),
+            PausedMenuStatus::Minutes(mins) => format!("paused, {mins} min left"),
+        };
+    }
+    let waiting = dump.sync.upload.pending_segments;
+    let count = if waiting == 0 {
+        String::new()
+    } else {
+        format!(" · {waiting} waiting")
+    };
+    match dump.sync.pairing.phase {
+        PairingPhase::NotPaired | PairingPhase::Failed => "not paired".to_string(),
+        PairingPhase::Pairing => "connecting…".to_string(),
+        PairingPhase::AwaitingConfirmation => {
+            if waiting == 0 {
+                "confirm the mark".to_string()
+            } else {
+                format!("confirm the mark{count}")
+            }
+        }
+        PairingPhase::Paired => match dump.sync.journal_link {
+            Some(crate::JournalLink::Offline) => format!("offline{count}"),
+            Some(crate::JournalLink::Connected) => "connected".to_string(),
+            Some(crate::JournalLink::Connecting) | None => "connecting…".to_string(),
+        },
+    }
+}
+
 const STORAGE_FAULT_FOR_OWNER: &str = "can't save on this PC";
 
 /// What the tray says stopped, in owner words. A fault's detail is a diagnostic
@@ -727,6 +766,77 @@ mod tests {
         assert_eq!(attention_source(&[], |_| true, false, false), None);
         let off = [denied(SourceKind::Mic)];
         assert_eq!(attention_source(&off, |_| false, false, false), None);
+    }
+
+    fn dump_with(
+        phase: PairingPhase,
+        link: Option<crate::JournalLink>,
+        pending: u64,
+    ) -> crate::HealthDump {
+        crate::HealthDump {
+            app_state: AppPhase::Observing,
+            sources: Vec::new(),
+            frame_rate: None,
+            segment_dir: None,
+            segment_seconds_remaining: None,
+            engine_ready: true,
+            version: "test".into(),
+            sync: SyncSnapshot {
+                pairing: PairingState {
+                    phase,
+                    ..Default::default()
+                },
+                upload: UploadStatus {
+                    pending_segments: pending,
+                    ..Default::default()
+                },
+                journal_link: link,
+                ..Default::default()
+            },
+            screen_encoder: None,
+            exclusions: None,
+            storage: None,
+            pause: None,
+            views: Default::default(),
+            pump_degraded: false,
+            listener_faults: Default::default(),
+            setup: Default::default(),
+        }
+    }
+
+    #[test]
+    fn menu_status_uses_the_pill_and_rounds_a_pause() {
+        let connected = dump_with(PairingPhase::Paired, Some(crate::JournalLink::Connected), 0);
+        let offline = dump_with(PairingPhase::Paired, Some(crate::JournalLink::Offline), 3);
+        assert_ne!(menu_status_line(&connected), menu_status_line(&offline));
+        assert!(menu_status_line(&offline).contains('3'));
+        assert_eq!(
+            menu_status_line(&dump_with(PairingPhase::NotPaired, None, 0)),
+            menu_status_line(&dump_with(PairingPhase::Failed, None, 4))
+        );
+
+        let mut paused = dump_with(PairingPhase::Paired, Some(crate::JournalLink::Connected), 0);
+        paused.app_state = AppPhase::Paused;
+        paused.pause = Some(PauseSnapshot {
+            reason: PauseReason::Operator,
+            seconds_remaining: Some(61),
+        });
+        let one_minute = {
+            let mut dump = paused.clone();
+            dump.pause = Some(PauseSnapshot {
+                reason: PauseReason::Operator,
+                seconds_remaining: Some(60),
+            });
+            menu_status_line(&dump)
+        };
+        let two_minutes = menu_status_line(&paused);
+        assert!(two_minutes.contains('2'));
+        assert_ne!(two_minutes, one_minute);
+        paused.pause = Some(PauseSnapshot {
+            reason: PauseReason::Operator,
+            seconds_remaining: None,
+        });
+        assert_ne!(menu_status_line(&paused), two_minutes);
     }
 
     #[test]

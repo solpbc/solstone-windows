@@ -627,6 +627,7 @@ pub fn run(
             crate::ipc::resume,
             crate::ipc::quit,
             crate::ipc::get_health,
+            crate::ipc::get_source_counters,
             crate::logs::read_recent_logs,
             crate::logs::save_recent_logs,
             crate::ipc::open_settings,
@@ -955,8 +956,7 @@ pub fn run(
             app.manage(hotkey.clone());
             app.manage(mic.clone());
 
-            let (tray, pause_submenu, mi_resume, mi_restart, mi_browsers) =
-                crate::tray::init(app, cmd_tx.clone())?;
+            let mut tray_menu = crate::tray::init(app, cmd_tx.clone())?;
 
             tauri::async_runtime::spawn(async move {
                 let exit = engine.run(shutdown_rx, cmd_rx).await;
@@ -1055,11 +1055,6 @@ pub fn run(
             tauri::async_runtime::spawn({
                 let app = app.handle().clone();
                 let health = health.clone();
-                let tray = tray.clone();
-                let pause_submenu = pause_submenu.clone();
-                let mi_resume = mi_resume.clone();
-                let mi_restart = mi_restart.clone();
-                let mi_browsers = mi_browsers.clone();
                 let shared_sync = sync.clone();
                 let liveness = liveness.clone();
                 let mut rx = watch_rx;
@@ -1073,8 +1068,8 @@ pub fn run(
                     let mut presenter = observer_model::LinkPresenter::default();
                     let mut link_watch = LinkWatch::default();
                     let started = tokio::time::Instant::now();
-                    // Turning the Obsidian source on or off changes what Pause can do
-                    // without changing the health dump.
+                    // Obsidian turning on or off changes the attention row without a new
+                    // health dump.
                     let mut obsidian_on = crate::obsidian::on_changes();
                     loop {
                         let mut dump = rx.borrow_and_update().clone();
@@ -1095,15 +1090,7 @@ pub fn run(
                             .as_ref()
                             .is_none_or(|prev| should_emit(prev, &dump));
                         previous = Some(dump.clone());
-                        let (visual, blocked) = crate::tray::apply_state(
-                            &tray,
-                            &pause_submenu,
-                            &mi_resume,
-                            &mi_restart,
-                            mi_browsers.as_ref(),
-                            &dump,
-                            obsidian_on.as_mut().is_some_and(|on| *on.borrow_and_update()),
-                        );
+                        let (visual, blocked) = crate::tray::apply_state(&mut tray_menu, &dump);
                         if let Some(notice) =
                             notifier.observe(visual, blocked, started.elapsed().as_secs())
                         {
@@ -1194,15 +1181,7 @@ pub fn run(
                     if let Ok(mut health) = health.lock() {
                         *health = terminal.clone();
                     }
-                    crate::tray::apply_state(
-                        &tray,
-                        &pause_submenu,
-                        &mi_resume,
-                        &mi_restart,
-                        mi_browsers.as_ref(),
-                        &terminal,
-                        false,
-                    );
+                    crate::tray::apply_state(&mut tray_menu, &terminal);
                     let _ = app.emit("health://changed", &terminal);
                 }
             });

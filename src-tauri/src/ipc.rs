@@ -52,6 +52,22 @@ pub fn quit(app: tauri::AppHandle) {
     crate::lifecycle::quit(&app);
 }
 
+/// Read the counter file for the settings window.
+///
+/// This does not create the file, does not open a backup, and does not add the
+/// document to health. No file, a backup alone, an unreadable file, and a
+/// failed read are all no rows.
+#[tauri::command]
+pub fn get_source_counters() -> Option<source_counters::WindowCounterPayload> {
+    match source_counters::read_window_counters(&platform_win::local_data_root()) {
+        Ok(read) => source_counters::window_payload(&read),
+        Err(error) => {
+            tracing::warn!(target: "storage", %error, "counter window read failed");
+            None
+        }
+    }
+}
+
 /// Return the current honest health snapshot (same payload as `--dump-state`
 /// and `/healthz`).
 #[tauri::command]
