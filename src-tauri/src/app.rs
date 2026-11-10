@@ -588,7 +588,7 @@ fn open_source_counters(data_root: &std::path::Path) -> Option<source_counters::
     let offset = match platform_win::WindowsLocalOffset.local_zone(now) {
         Ok(zone) => zone.utc_offset_seconds,
         Err(error) => {
-            tracing::warn!(target: "storage", %error, "counters skipped, local date unavailable");
+            tracing::warn!(target: "storage", ?error, "counters skipped, local date unavailable");
             return None;
         }
     };
