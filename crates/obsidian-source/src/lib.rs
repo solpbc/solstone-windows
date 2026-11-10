@@ -47,22 +47,51 @@ pub fn start<J: Journal>(
     dir_file_ids: Option<Arc<DirFileIds>>,
     journal: J,
     paused: Paused,
+    counters: Option<source_counters::SharedCounters>,
 ) -> (ObsidianHandle, impl Future<Output = ()> + Send + 'static) {
     let (handle, worker) = Worker::new(None, journal, paused);
     (handle, async move {
-        open_and_run(root, dir_file_ids, worker).await
+        open_and_run(root, dir_file_ids, counters, worker).await
     })
+}
+
+fn note_intake(intake: &solstone_vault::Intake) -> source_counters::NoteIntake {
+    source_counters::NoteIntake {
+        id: intake.id,
+        path: intake.path.clone(),
+        previous_path: intake.previous_path.clone(),
+        replaced: intake.replaced.clone(),
+        first_sight: intake.first_sight,
+        removed: intake.removed,
+        inventory: intake.inventory,
+        at_secs: Some(intake.at_ms.div_euclid(1000)),
+    }
 }
 
 async fn open_and_run<J: Journal>(
     root: PathBuf,
     dir_file_ids: Option<Arc<DirFileIds>>,
+    counters: Option<source_counters::SharedCounters>,
     mut worker: Worker<J>,
 ) {
     let opened = tokio::task::spawn_blocking(move || {
         let mut engine = Engine::open(root, Arc::new(SystemClock))?;
         if let Some(read) = dir_file_ids {
             engine = engine.with_dir_file_ids(read);
+        }
+        if let Some(counters) = counters {
+            let paths = engine.known_note_paths();
+            let intakes = engine.intakes();
+            let mapped: Vec<_> = intakes.iter().map(note_intake).collect();
+            if counters.reconcile_notes(&paths, &mapped) {
+                let through = counters.last_intake_id();
+                let _ = engine.ack_intakes(through);
+            }
+            let hooked = counters.clone();
+            engine.set_intake_hook(std::sync::Arc::new(move |intakes| {
+                let mapped: Vec<_> = intakes.iter().map(note_intake).collect();
+                hooked.apply_intakes(&mapped)
+            }));
         }
         Ok::<Engine, std::io::Error>(engine)
     })

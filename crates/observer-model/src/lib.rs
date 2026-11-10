@@ -867,6 +867,8 @@ pub trait CaptureSink: Send + Sync {
     fn begin_stream(&self) {}
     fn emit(&self, chunk: CaptureChunk);
     fn emit_screen_frame(&self, frame: ScreenFrame);
+    /// The frame was not taken in. The open screen interval ends without that gap.
+    fn note_screen_held(&self) {}
 }
 
 /// Injected wall-clock seam used by the engine's rotation logic.

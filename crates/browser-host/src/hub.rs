@@ -134,6 +134,7 @@ pub struct Hub {
     next_session: AtomicU64,
     sessions_changed: Notify,
     tx: broadcast::Sender<Publication>,
+    page_counters: Mutex<Option<source_counters::SharedCounters>>,
 }
 
 fn destination_key(gates: &Gates) -> Option<String> {
@@ -165,7 +166,40 @@ impl Hub {
             next_session: AtomicU64::new(1),
             sessions_changed: Notify::new(),
             tx,
+            page_counters: Mutex::new(None),
         })
+    }
+
+    /// Count visits the store already accepted, including a batch whose save
+    /// did not reach the counter file before the last process stopped.
+    pub fn set_counters(&self, counters: source_counters::SharedCounters) {
+        if let Ok(batches) = self.store().pending_batches() {
+            let mapped: Vec<source_counters::PageBatch> = batches
+                .iter()
+                .map(|batch| source_counters::PageBatch {
+                    browser_id: batch.browser_id.clone(),
+                    batch_id: batch.batch_id.clone(),
+                    records: batch
+                        .records
+                        .iter()
+                        .map(|record| source_counters::PageRecord {
+                            snapshot: record.snapshot,
+                            ctx: record.ctx.clone(),
+                            url: record.url.clone(),
+                            url_is_digest: true,
+                            at_secs: record.at_secs,
+                        })
+                        .collect(),
+                })
+                .collect();
+            if counters.reconcile_pages(&mapped) {
+                self.store().clear_pending_pages();
+            }
+        }
+        *self
+            .page_counters
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(counters);
     }
 
     fn now(&self) -> u64 {
@@ -496,6 +530,52 @@ impl Hub {
         hint.admits(brand) && (mode == Mode::Production || self.cfg.development)
     }
 
+    fn count_accepted_pages(&self, inst: &str, batch_id: &str, batch: &Value) {
+        let Some(counters) = self
+            .page_counters
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+        else {
+            return;
+        };
+        let pending_records: Vec<crate::custody::PendingRecord> = batch
+            .get("records")
+            .and_then(Value::as_array)
+            .map(|records| {
+                records
+                    .iter()
+                    .filter_map(crate::custody::record_from_value)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let browser_id = crate::custody::inst_hash(inst);
+        let page_batch = source_counters::PageBatch {
+            browser_id: browser_id.clone(),
+            batch_id: batch_id.to_string(),
+            records: pending_records
+                .iter()
+                .map(|record| source_counters::PageRecord {
+                    snapshot: record.snapshot,
+                    ctx: record.ctx.clone(),
+                    url: record.url.clone(),
+                    url_is_digest: false,
+                    at_secs: record.at_secs,
+                })
+                .collect(),
+        };
+        if counters.reconcile_pages(std::slice::from_ref(&page_batch)) {
+            self.store().forget_pending_batch(&browser_id, batch_id);
+        } else {
+            self.store()
+                .remember_pending_batch(&crate::custody::PendingBatch {
+                    browser_id,
+                    batch_id: batch_id.to_string(),
+                    records: pending_records,
+                });
+        }
+    }
+
     /// Offer one batch (blocking file I/O; call off the async reactor).
     fn offer(&self, batch: &Value, inst: &str) -> Value {
         let batch_generation = batch["destination_generation"].as_str().unwrap_or("");
@@ -541,6 +621,7 @@ impl Hub {
         m.insert("type".into(), json!("accepted"));
         match &result {
             BatchResult::Accepted { period_id } => {
+                self.count_accepted_pages(inst, batch_id, batch);
                 m.insert("result".into(), json!("accepted"));
                 m.insert("period_id".into(), json!(period_id));
             }

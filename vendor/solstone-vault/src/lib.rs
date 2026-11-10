@@ -28,6 +28,7 @@ pub use engine::{
     Attention, Engine, ListedVault, Phase, ScanOutcome, State, Status, next_scan_delay,
 };
 pub use outbox::Delivery;
+pub use table::Intake;
 pub use wire::{Answer, Change, Line, MAX_FILE_BYTES, MAX_FILE_LINES, MAX_NOTE_BYTES};
 
 #[cfg(test)]

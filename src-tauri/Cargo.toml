@@ -24,6 +24,7 @@ observer-contract.workspace = true
 semver = "=1.0.28"
 # Engine + platform sources injected at the seam.
 capture-engine.workspace = true
+source-counters.workspace = true
 capture-screen-encode.workspace = true
 platform-win.workspace = true
 capture-wgc.workspace = true

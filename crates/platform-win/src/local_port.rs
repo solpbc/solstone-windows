@@ -91,7 +91,7 @@ mod imp {
         for _ in 0..4 {
             // u32 words keep the table's alignment.
             let mut buffer = vec![0u32; (size as usize).div_ceil(4)];
-            let pointer = (!buffer.is_empty()).then(|| buffer.as_mut_ptr() as *mut c_void);
+            let pointer = (!buffer.is_empty()).then_some(buffer.as_mut_ptr() as *mut c_void);
             let result = unsafe {
                 GetExtendedTcpTable(pointer, &mut size, false, AF_INET.0 as u32, class, 0)
             };

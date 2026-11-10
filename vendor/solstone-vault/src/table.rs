@@ -28,6 +28,20 @@ pub struct FirstSync {
     pub sent: u64,
 }
 
+/// A note the engine has placed, recorded in the same save as the table row.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Intake {
+    pub id: u64,
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub replaced: Vec<String>,
+    pub first_sight: bool,
+    pub removed: bool,
+    /// The walk that first listed a vault already on this computer.
+    pub inventory: bool,
+    pub at_ms: i64,
+}
+
 #[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Table {
     pub rows: BTreeMap<String, Row>,
@@ -36,6 +50,10 @@ pub struct Table {
     pub first_send_done: bool,
     pub first_sync: Option<FirstSync>,
     pub first_sync_started: bool,
+    #[serde(default)]
+    pub intakes: Vec<Intake>,
+    #[serde(default)]
+    pub next_intake_id: u64,
 }
 
 impl Table {

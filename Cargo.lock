@@ -463,6 +463,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "source-counters",
  "tempfile",
  "tokio",
  "tracing",
@@ -574,6 +575,7 @@ dependencies = [
  "pl-transport-win",
  "platform-win",
  "serde_json",
+ "source-counters",
  "tokio",
  "tracing",
 ]
@@ -3341,6 +3343,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solstone-vault",
+ "source-counters",
  "tempfile",
  "tokio",
  "tracing",
@@ -3636,6 +3639,7 @@ dependencies = [
  "observer-segment",
  "serde_json",
  "solstone-vault",
+ "source-counters",
  "tempfile",
  "tokio",
  "tracing",
@@ -4730,6 +4734,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "source-counters",
  "spl-core",
  "tauri",
  "tauri-build",
@@ -4767,6 +4772,16 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "source-counters"
+version = "2.0.46"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
