@@ -439,6 +439,29 @@ impl UpdateState {
         self.prefs.auto_download = on;
     }
 
+    /// The last checked offer has been installed. Keep the actual check time;
+    /// a successful restart is not another feed check.
+    pub fn reconcile_installed_version(&mut self, installed: &semver::Version) {
+        if !matches!(
+            self.status.last_check_outcome,
+            Some(UpdateOutcome::Found | UpdateOutcome::Staged)
+        ) {
+            return;
+        }
+        let satisfied = self
+            .status
+            .available_version
+            .as_deref()
+            .and_then(|version| semver::Version::parse(version).ok())
+            .is_some_and(|offered| offered <= *installed);
+        if satisfied {
+            self.status.available_version = None;
+            self.status.failed_with_available = false;
+            self.status.last_check_outcome =
+                self.status.last_checked_at.map(|_| UpdateOutcome::UpToDate);
+        }
+    }
+
     fn in_flight(&self) -> bool {
         !matches!(self.activity, UpdateActivity::Idle)
     }
@@ -447,8 +470,8 @@ impl UpdateState {
         self.staged.is_some()
     }
 
-    /// The honest display state the UI paints. "up to date" is shown ONLY when the
-    /// last completed check genuinely returned `UpToDate`; before any check it is
+    /// The honest display state the UI paints. "up to date" requires a completed
+    /// feed check satisfied by the installed version; before any check it is
     /// `NeverChecked`, never a false "up to date".
     pub fn display(&self) -> UpdateDisplay {
         if !self.config_valid {
@@ -1949,5 +1972,62 @@ mod tests {
         reduce(&mut state, UpdateEvent::InstallFailed);
         reduce(&mut state, UpdateEvent::DownloadFailed);
         assert_eq!(state.view(true).recovery, Some(Recovery::Download));
+    }
+}
+
+#[cfg(test)]
+mod installed_offer_tests {
+    use super::*;
+
+    #[test]
+    fn installing_the_last_offer_clears_pending_status_without_another_check() {
+        for outcome in [UpdateOutcome::Found, UpdateOutcome::Staged] {
+            let mut state = UpdateState::new();
+            state.set_auto_check(false);
+            state.set_auto_download(false);
+            state.set_interval(CheckInterval::Month);
+            state.status.last_checked_at = Some(100);
+            state.status.last_check_outcome = Some(outcome);
+            state.status.available_version = Some("2.0.46".into());
+            state.status.failed_with_available = true;
+            state.reconcile_installed_version(&semver::Version::parse("2.0.46").unwrap());
+            assert_eq!(state.display(), UpdateDisplay::UpToDate);
+            assert_eq!(state.status.last_checked_at, Some(100));
+            assert_eq!(state.status.available_version, None);
+            assert!(!state.status.failed_with_available);
+            assert!(!state.prefs.auto_check);
+            assert!(!state.prefs.auto_download);
+            assert_eq!(state.prefs.interval, CheckInterval::Month);
+            assert_eq!(state.explicit_choices.auto_check, Some(false));
+        }
+    }
+
+    #[test]
+    fn an_installed_cli_offer_does_not_invent_a_feed_check() {
+        let mut state = UpdateState::new();
+        state.status.last_check_outcome = Some(UpdateOutcome::Staged);
+        state.status.available_version = Some("2.0.46".into());
+        state.status.failed_with_available = true;
+        state.reconcile_installed_version(&semver::Version::parse("2.0.46").unwrap());
+        assert_eq!(state.status.last_checked_at, None);
+        assert_eq!(state.status.available_version, None);
+        assert!(!state.status.failed_with_available);
+        assert_eq!(state.display(), UpdateDisplay::NeverChecked);
+    }
+
+    #[test]
+    fn an_uninstalled_offer_or_failed_check_is_not_a_success() {
+        for (outcome, installed) in [
+            (UpdateOutcome::Staged, "2.0.45"),
+            (UpdateOutcome::Failed, "2.0.46"),
+        ] {
+            let mut state = UpdateState::new();
+            state.status.last_checked_at = Some(100);
+            state.status.last_check_outcome = Some(outcome);
+            state.status.available_version = Some("2.0.46".into());
+            state.reconcile_installed_version(&semver::Version::parse(installed).unwrap());
+            assert_eq!(state.status.last_check_outcome, Some(outcome));
+            assert_eq!(state.status.available_version.as_deref(), Some("2.0.46"));
+        }
     }
 }

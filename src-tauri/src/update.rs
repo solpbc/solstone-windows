@@ -669,6 +669,9 @@ impl UpdateController {
         });
         if let (Some(m), Some(_cache_guard)) = (&manager, cache_guard) {
             let installed_opt = manager_installed_version(m);
+            if let Some(installed) = installed_opt.as_ref() {
+                state.reconcile_installed_version(installed);
+            }
             let scan = installed_opt.as_ref().map(|installed| {
                 scan_authenticated_packages(
                     &m.get_packages_dir(),
