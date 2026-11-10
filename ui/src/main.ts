@@ -5707,14 +5707,6 @@ function updateSubtitle(
           : "automatic checks are off",
         live: false,
       };
-    case "checking":
-    case "downloading":
-      return null;
-    case "staged":
-      return {
-        text: "it installs the next time the solstone app restarts, including sign-in",
-        live: false,
-      };
     case "unavailable":
       return {
         text: "download the latest from solstone.app/download/windows",
