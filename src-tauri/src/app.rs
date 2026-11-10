@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use capture_engine::{CaptureEngine, EngineCommand, EngineConfig, Sources, SystemClock};
 use observer_model::{
-    control_client_exit_code, should_emit, AppPhase, HealthDump, PauseReason, SourceKind,
-    SourceState, SyncSnapshot,
+    control_client_exit_code, should_emit, AppPhase, HealthDump, LocalOffset, PauseReason,
+    SourceKind, SourceState, SyncSnapshot,
 };
 use pl_transport_win::service::SyncConfig;
 use pl_transport_win::{CredentialAccess, UploaderSlot};
@@ -588,7 +588,7 @@ fn open_source_counters(data_root: &std::path::Path) -> Option<source_counters::
     let offset = match platform_win::WindowsLocalOffset.local_zone(now) {
         Ok(zone) => zone.utc_offset_seconds,
         Err(error) => {
-            tracing::warn!(target: "storage", %error, "counters skipped, local date unavailable");
+            tracing::warn!(target: "storage", ?error, "counters skipped, local date unavailable");
             return None;
         }
     };
