@@ -96,10 +96,11 @@ fn main() -> ExitCode {
         .first()
         .is_some_and(|a| a.starts_with("--veloapp-"));
 
-    if !is_veloapp && std::env::var_os("VELOPACK_RESTART").is_none() {
-        if early_args.iter().any(|a| a == "--apply-update") {
-            return update::apply_pending_cli(&early_args);
-        }
+    if !is_veloapp
+        && std::env::var_os("VELOPACK_RESTART").is_none()
+        && early_args.iter().any(|a| a == "--apply-update")
+    {
+        return update::apply_pending_cli(&early_args);
     }
 
     // Velopack-aware entry — MUST run first after host mode. For the installer lifecycle args
