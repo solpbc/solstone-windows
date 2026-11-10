@@ -197,7 +197,11 @@ mod imp {
 
     /// Bind the endpoint, open custody and start the gate, clock and delivery
     /// tasks. Called once from setup, after the single-instance gate.
-    pub fn start(app: tauri::AppHandle, installed_exe: Option<PathBuf>) {
+    pub fn start(
+        app: tauri::AppHandle,
+        installed_exe: Option<PathBuf>,
+        counters: Option<source_counters::SharedCounters>,
+    ) {
         if let Some(exe) = installed_exe {
             ensure_registration(&exe);
         }
@@ -215,6 +219,9 @@ mod imp {
             store,
             Box::new(now_ms),
         );
+        if let Some(counters) = counters {
+            hub.set_counters(counters);
+        }
         let _ = HUB.set(Arc::clone(&hub));
 
         // The endpoint: first instance only; a name someone else holds is a

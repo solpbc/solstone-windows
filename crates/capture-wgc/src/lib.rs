@@ -227,7 +227,10 @@ mod imp {
                             self.stats.frames_redacted.fetch_add(1, Ordering::Relaxed);
                         }
                         ExclusionDecision::Drop => {
+                            // A frame that merely stops arriving is not a hold.
+                            // Only an exclusion drop voids the open interval.
                             self.stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
+                            self.sink.note_screen_held();
                             self.set_state(SourceState::Active);
                             return Ok(());
                         }
@@ -235,6 +238,7 @@ mod imp {
                     Err(()) => {
                         // We can't prove the frame is clean — fail closed.
                         self.stats.frames_dropped.fetch_add(1, Ordering::Relaxed);
+                        self.sink.note_screen_held();
                         self.set_state(SourceState::Active);
                         return Ok(());
                     }

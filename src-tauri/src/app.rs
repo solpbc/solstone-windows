@@ -580,6 +580,28 @@ pub(crate) fn native_opener_plugin() -> impl tauri::plugin::Plugin<tauri::Wry> {
         .build()
 }
 
+fn open_source_counters(data_root: &std::path::Path) -> Option<source_counters::SharedCounters> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let offset = match platform_win::WindowsLocalOffset.local_zone(now) {
+        Ok(zone) => zone.utc_offset_seconds,
+        Err(error) => {
+            tracing::warn!(target: "storage", %error, "counters skipped, local date unavailable");
+            return None;
+        }
+    };
+    let today = source_counters::calendar_date(now, offset);
+    match source_counters::SharedCounters::open(data_root, &today) {
+        Ok(counters) => Some(counters),
+        Err(error) => {
+            tracing::warn!(target: "storage", %error, "counters unavailable");
+            None
+        }
+    }
+}
+
 /// Boot the tray-resident observer.
 pub fn run(
     open_view: Option<observer_model::View>,
@@ -768,9 +790,16 @@ pub fn run(
                 desktop_activity: Box::new(platform_win::DesktopActivityProbe::new()),
             };
             let engine_config = EngineConfig::default();
+            let source_counters = open_source_counters(&data_root);
             let mut recovery =
                 platform_win::LocalRecoveryFs::new(platform_win::segments_dir(), engine_config.segment_secs);
-            let segment_fs = platform_win::LocalSegmentFs::default();
+            if let Some(counters) = source_counters.clone() {
+                recovery.set_counters(counters);
+            }
+            let mut segment_fs = platform_win::LocalSegmentFs::default();
+            if let Some(counters) = source_counters.clone() {
+                segment_fs.set_counters(counters);
+            }
             tracing::info!(target: "engine", operation = "start", "engine start");
             let (mut engine, _outcomes) = CaptureEngine::new(
                 sources,
@@ -779,6 +808,9 @@ pub fn run(
                 segment_fs,
                 Box::new(SystemClock),
             )?;
+            if let Some(counters) = source_counters.clone() {
+                engine.set_counters(counters);
+            }
             let health = engine.health_handle();
             let sync = engine.sync_handle();
             let about_observation = platform_win::about_observation::windows_about_observation();
@@ -874,10 +906,14 @@ pub fn run(
             // The browser extension's native host (compiled in only with the
             // `browser-host` feature): endpoint, custody, gate and delivery.
             #[cfg(feature = "browser-host")]
-            crate::browser::start(app.handle().clone(), installed_copy_exe());
+            crate::browser::start(
+                app.handle().clone(),
+                installed_copy_exe(),
+                source_counters.clone(),
+            );
 
             // The Obsidian vault source: scan, hold, deliver when asked.
-            crate::obsidian::start(app.handle().clone());
+            crate::obsidian::start(app.handle().clone(), source_counters);
 
             // In-app updater: construct the Velopack-backed controller (honest
             // state earned from the feed, persisted next to pairing.json),

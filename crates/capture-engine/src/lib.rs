@@ -153,6 +153,7 @@ struct InputAdmission {
 enum CaptureEvent {
     Audio(SourceKind, InputAdmission, CaptureChunk),
     Screen(InputAdmission, ScreenFrame),
+    ScreenHeld(InputAdmission),
 }
 
 struct EngineSink {
@@ -183,6 +184,11 @@ impl CaptureSink for EngineSink {
     fn emit_screen_frame(&self, frame: ScreenFrame) {
         let admission = self.admission(SourceKind::Screen);
         let _ = self.tx.send(CaptureEvent::Screen(admission, frame));
+    }
+
+    fn note_screen_held(&self) {
+        let admission = self.admission(SourceKind::Screen);
+        let _ = self.tx.send(CaptureEvent::ScreenHeld(admission));
     }
 }
 
@@ -217,6 +223,13 @@ impl CaptureSink for SourceSink {
 
     fn emit_screen_frame(&self, frame: ScreenFrame) {
         let _ = self.tx.send(CaptureEvent::Screen(self.admission(), frame));
+    }
+
+    fn note_screen_held(&self) {
+        if self.kind != SourceKind::Screen {
+            return;
+        }
+        let _ = self.tx.send(CaptureEvent::ScreenHeld(self.admission()));
     }
 }
 
@@ -309,6 +322,8 @@ pub struct CaptureEngine<SFS: SegmentFs> {
     activity_allowed: bool,
     /// Desktop activity keeps running through the main pause and with screen off.
     activity_through_pause: bool,
+    counters: Option<source_counters::SharedCounters>,
+    audio_byte_rate: BTreeMap<SourceKind, u64>,
 }
 
 impl<SFS> CaptureEngine<SFS>
@@ -403,6 +418,8 @@ where
             activity_batch_written: false,
             activity_allowed: observer_model::setup::DESKTOP_ACTIVITY_DEFAULT,
             activity_through_pause: observer_model::setup::DESKTOP_ACTIVITY_THROUGH_PAUSE_DEFAULT,
+            counters: None,
+            audio_byte_rate: BTreeMap::new(),
         };
         for outcome in &outcomes {
             if let RecoveryOutcome::Deferred(key) = outcome {
@@ -415,6 +432,10 @@ where
         engine.refresh_health();
 
         Ok((engine, outcomes))
+    }
+
+    pub fn set_counters(&mut self, counters: source_counters::SharedCounters) {
+        self.counters = Some(counters);
     }
 
     /// Stores the shared exclusion rules handle for desktop activity.
@@ -837,6 +858,7 @@ where
         self.pump_desktop_activity();
         self.fold_source_states();
         self.refresh_health();
+        self.pulse_screen_counter();
     }
 
     /// Production loop. Shutdown exits cleanly; source facts and health are
@@ -874,9 +896,33 @@ where
                     self.pump_desktop_activity();
                     self.fold_source_states();
                     self.refresh_health();
+                    self.pulse_screen_counter();
                 }
             }
         }
+    }
+
+    /// Extend an open screen interval while the source is active and not held.
+    /// Paused time, and a segment change, drop the unsaved tail instead of
+    /// counting it. A pulse does not open an interval; a kept frame does.
+    fn pulse_screen_counter(&mut self) {
+        let Some(counters) = self.counters.clone() else {
+            return;
+        };
+        let index = self
+            .current_segment
+            .as_ref()
+            .map(|segment| segment.key.index);
+        let counting = index.is_some()
+            && self.state.is_source_enabled(SourceKind::Screen)
+            && self.should_be_capturing();
+        let at = self.clock.now_monotonic_us();
+        if !counting {
+            counters.note_screen_held(index.unwrap_or(0), at);
+            return;
+        }
+        let intake = Some(self.clock.now_epoch_secs() as i64);
+        counters.pulse_screen(index.expect("counting"), at, intake);
     }
 
     fn reduce(&mut self, event: AppEvent) -> AppPhase {
@@ -1173,14 +1219,45 @@ where
                 self.update_screen_preview(&frame, admission.proof_generation);
                 self.encode_screen_frame(frame);
             }
+            CaptureEvent::ScreenHeld(admission) => {
+                let current_gen = self
+                    .generations
+                    .get(&SourceKind::Screen)
+                    .map(|g| g.load(Ordering::SeqCst))
+                    .unwrap_or(0);
+                if admission.source_generation != current_gen
+                    || admission.stream_generation
+                        != self.sink.streams[&SourceKind::Screen].load(Ordering::SeqCst)
+                {
+                    return;
+                }
+                if !self.state.is_source_enabled(SourceKind::Screen) || !self.should_be_capturing()
+                {
+                    return;
+                }
+                let st = self.source_state(SourceKind::Screen);
+                if matches!(
+                    st,
+                    SourceState::Inactive
+                        | SourceState::NoInputDevice
+                        | SourceState::Faulted { .. }
+                ) {
+                    return;
+                }
+                let at = self.clock.now_monotonic_us();
+                if let Some(counters) = &self.counters {
+                    counters.note_screen_held(0, at);
+                }
+            }
         }
     }
 
     fn write_audio_chunk(&mut self, mut chunk: CaptureChunk) {
-        let Some(segment) = self.current_segment.as_mut() else {
+        let Some(segment) = self.current_segment.as_ref() else {
             return;
         };
-
+        let index = segment.key.index;
+        let key = segment.key;
         if let Some(at_us) = chunk.at_us {
             chunk.at_us = Some(
                 segment
@@ -1188,12 +1265,43 @@ where
                     .saturating_add(at_us.saturating_sub(segment.opened_monotonic_us)),
             );
         }
+        let at_us = chunk.at_us;
+        let source = chunk.source;
+        let bytes = chunk.data.len() as u64;
+        if let Some(format) = chunk.format {
+            let rate = source_counters::pcm_byte_rate(
+                format.sample_rate_hz,
+                format.channels,
+                format.bits_per_sample,
+            );
+            if rate > 0 {
+                self.audio_byte_rate.insert(source, rate);
+            }
+        }
 
-        match self.segment_fs.write_chunk(segment.key, &chunk) {
+        match self.segment_fs.write_chunk(key, &chunk) {
             Ok(()) => {
                 if self.write_stalled {
                     self.write_stalled = false;
                     self.attempt_clear_storage();
+                }
+                if let Some(start) = at_us {
+                    let rate = self.audio_byte_rate.get(&source).copied().unwrap_or(0);
+                    if let Some(dur) = bytes
+                        .saturating_mul(1_000_000)
+                        .checked_div(rate)
+                        .filter(|dur| *dur > 0)
+                    {
+                        let intake = Some(self.clock.now_epoch_secs() as i64);
+                        if let Some(counters) = &self.counters {
+                            counters.add_audio_span(
+                                index,
+                                start,
+                                start.saturating_add(dur),
+                                intake,
+                            );
+                        }
+                    }
                 }
             }
             Err(error) => {
@@ -1230,6 +1338,19 @@ where
 
         if let Err(error) = self.sources.screen_encoder.encode_frame(&frame) {
             self.apply_encoder_error(error);
+            return;
+        }
+        let index = self
+            .current_segment
+            .as_ref()
+            .map(|segment| segment.key.index);
+        let Some(index) = index else {
+            return;
+        };
+        let at = self.clock.now_monotonic_us();
+        let intake = Some(self.clock.now_epoch_secs() as i64);
+        if let Some(counters) = &self.counters {
+            counters.note_screen_kept(index, at, 0, intake);
         }
     }
 

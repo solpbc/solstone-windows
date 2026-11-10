@@ -349,6 +349,11 @@ impl Store {
             if batch_files(&dir)?.is_empty() {
                 continue;
             }
+            // A pending file that cannot be read or written must not take the
+            // batch identity with it. Leave the period open and keep going.
+            if self.remember_open_dir(&dir).is_err() {
+                continue;
+            }
             let period = OpenPeriod {
                 id: meta.period_id,
                 start_ms: meta.start_ms,
@@ -632,6 +637,9 @@ impl Store {
     }
 
     fn finalize_dir(&mut self, period: &OpenPeriod, dir: &Path, end_ms: u64) -> io::Result<u64> {
+        // The open filename is the only copy of the browser and batch ids.
+        // Record visits before that filename is folded away.
+        self.remember_open_dir(dir)?;
         let outbox = self.root.join("outbox");
         let name = format!("{:015}-{}", period.start_ms, period.id);
         let final_dir = outbox.join(&name);
@@ -972,6 +980,86 @@ impl Store {
     pub fn fail_next_payload_removes(&mut self, n: usize) {
         self.fail_next_payload_removes = n;
     }
+
+    /// Visits still waiting to be counted. `Err` means the file is present and
+    /// unreadable: the caller leaves it in place.
+    pub(crate) fn pending_batches(&self) -> Result<Vec<PendingBatch>, ()> {
+        match read_pending_batches(&self.root.join(PENDING_PAGES_FILE)) {
+            Ok(batches) => Ok(batches),
+            Err(PendingError::Absent) => Ok(Vec::new()),
+            Err(PendingError::Corrupt) => Err(()),
+        }
+    }
+
+    pub(crate) fn clear_pending_pages(&self) {
+        let _ = fs::remove_file(self.root.join(PENDING_PAGES_FILE));
+    }
+
+    pub(crate) fn forget_pending_batch(&self, browser_id: &str, batch_id: &str) {
+        let path = self.root.join(PENDING_PAGES_FILE);
+        let Ok(mut batches) = read_pending_batches(&path) else {
+            return;
+        };
+        let before = batches.len();
+        batches.retain(|batch| !(batch.browser_id == browser_id && batch.batch_id == batch_id));
+        if batches.len() == before {
+            return;
+        }
+        if batches.is_empty() {
+            let _ = fs::remove_file(path);
+            return;
+        }
+        let _ = write_pending_batches(&path, &batches);
+    }
+
+    pub(crate) fn remember_pending_batch(&self, batch: &PendingBatch) {
+        let path = self.root.join(PENDING_PAGES_FILE);
+        let mut batches = match read_pending_batches(&path) {
+            Ok(batches) => batches,
+            Err(PendingError::Absent) => Vec::new(),
+            Err(PendingError::Corrupt) => return,
+        };
+        let mut batch = batch.clone();
+        batch.records = batch.records.into_iter().map(stored_record).collect();
+        upsert_pending(&mut batches, batch);
+        let _ = write_pending_batches(&path, &batches);
+    }
+
+    fn remember_open_dir(&self, dir: &Path) -> io::Result<()> {
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        let files = batch_files(dir)?;
+        if files.is_empty() {
+            return Ok(());
+        }
+        let path = self.root.join(PENDING_PAGES_FILE);
+        let mut batches = match read_pending_batches(&path) {
+            Ok(batches) => batches,
+            Err(PendingError::Absent) => Vec::new(),
+            Err(PendingError::Corrupt) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "pending pages file is unreadable",
+                ));
+            }
+        };
+        for (name, browser_id, batch_id) in files {
+            let bytes = fs::read(dir.join(name))?;
+            upsert_pending(
+                &mut batches,
+                PendingBatch {
+                    browser_id,
+                    batch_id,
+                    records: records_from_jsonl(&bytes)
+                        .into_iter()
+                        .map(stored_record)
+                        .collect(),
+                },
+            );
+        }
+        write_pending_batches(&path, &batches)
+    }
 }
 
 fn commit(
@@ -1018,8 +1106,114 @@ fn commit(
     Ok(())
 }
 
-fn inst_hash(inst: &str) -> String {
+pub(crate) fn inst_hash(inst: &str) -> String {
     hex(&Sha256::digest(inst.as_bytes()))[..16].to_string()
+}
+
+const PENDING_PAGES_FILE: &str = "pending-pages.json";
+
+/// The pending file keeps the visit identity, not the address.
+fn stored_record(mut record: PendingRecord) -> PendingRecord {
+    record.url = record
+        .url
+        .as_deref()
+        .filter(|url| !url.is_empty())
+        .map(source_counters::url_digest);
+    record
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingRecord {
+    pub snapshot: bool,
+    pub ctx: Option<String>,
+    pub url: Option<String>,
+    pub at_secs: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingBatch {
+    pub browser_id: String,
+    pub batch_id: String,
+    pub records: Vec<PendingRecord>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PendingFile {
+    v: u32,
+    batches: Vec<PendingBatch>,
+}
+
+enum PendingError {
+    Absent,
+    Corrupt,
+}
+
+pub(crate) fn record_from_value(value: &Value) -> Option<PendingRecord> {
+    let kind = value.get("t")?.as_str()?;
+    let at_secs = value.get("ts").and_then(Value::as_i64).map(|ts| {
+        if ts.abs() > 10_000_000_000 {
+            ts / 1000
+        } else {
+            ts
+        }
+    });
+    Some(PendingRecord {
+        snapshot: kind == "segment_start",
+        ctx: value.get("ctx").and_then(Value::as_str).map(str::to_owned),
+        url: value.get("url").and_then(Value::as_str).map(str::to_owned),
+        at_secs,
+    })
+}
+
+fn records_from_jsonl(bytes: &[u8]) -> Vec<PendingRecord> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut records = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(record) = record_from_value(&value) {
+            records.push(record);
+        }
+    }
+    records
+}
+
+fn read_pending_batches(path: &Path) -> Result<Vec<PendingBatch>, PendingError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Err(PendingError::Absent),
+        Err(_) => return Err(PendingError::Corrupt),
+    };
+    let file: PendingFile = serde_json::from_slice(&bytes).map_err(|_| PendingError::Corrupt)?;
+    if file.v != 1 {
+        return Err(PendingError::Corrupt);
+    }
+    Ok(file.batches)
+}
+
+fn write_pending_batches(path: &Path, batches: &[PendingBatch]) -> io::Result<()> {
+    let bytes = serde_json::to_vec(&PendingFile {
+        v: 1,
+        batches: batches.to_vec(),
+    })
+    .map_err(io::Error::other)?;
+    write_bytes_atomic(path, &bytes)
+}
+
+fn upsert_pending(batches: &mut Vec<PendingBatch>, batch: PendingBatch) {
+    if let Some(existing) = batches
+        .iter_mut()
+        .find(|item| item.browser_id == batch.browser_id && item.batch_id == batch.batch_id)
+    {
+        existing.records = batch.records;
+    } else {
+        batches.push(batch);
+    }
 }
 
 /// `(file name, inst hash, batch id)` for each committed batch in `dir`.
@@ -1128,6 +1322,46 @@ mod tests {
 
     fn delta(ctx: &str, text: &str) -> Value {
         json!({"t": "delta", "ts": 2, "ctx": ctx, "site": "example.com", "op": "add", "block": {"id": "b2", "text": text}})
+    }
+
+    #[test]
+    fn an_open_page_is_recorded_before_its_period_is_finalized() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(dir.path(), T0);
+        let record = json!({
+            "t": "segment_start",
+            "ts": 1_700_000_000_000i64,
+            "ctx": "tab-1",
+            "url": "https://example.com/a",
+            "blocks": [{"id": "b1", "text": "hi"}]
+        });
+        let result = offer(&mut store, &id(1), &[record], T0);
+        assert!(matches!(result, BatchResult::Accepted { .. }));
+        drop(store);
+
+        let store = open(dir.path(), T0 + 1);
+        let pending_bytes = fs::read(dir.path().join("pending-pages.json")).expect("pending pages");
+        let address = b"https://example.com/a";
+        assert!(!pending_bytes
+            .windows(address.len())
+            .any(|window| window == address));
+        let pending: Value = serde_json::from_slice(&pending_bytes).unwrap();
+        let batches = pending["batches"].as_array().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0]["records"][0]["url"],
+            source_counters::url_digest("https://example.com/a")
+        );
+        assert_eq!(batches[0]["records"][0]["snapshot"], true);
+        assert!(batches[0]["browser_id"].as_str().unwrap().len() == 16);
+        drop(store);
+
+        let _store = open(dir.path(), T0 + 2);
+        let again: Value = serde_json::from_slice(
+            &fs::read(dir.path().join("pending-pages.json")).expect("pending pages"),
+        )
+        .unwrap();
+        assert_eq!(again["batches"].as_array().unwrap().len(), 1);
     }
 
     fn offer(store: &mut Store, batch_id: &str, records: &[Value], now: u64) -> BatchResult {

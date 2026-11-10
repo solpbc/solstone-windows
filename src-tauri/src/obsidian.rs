@@ -182,7 +182,7 @@ fn local_zone() -> Option<LocalZone> {
 }
 
 /// Open the source and start its work, off the setup path.
-pub fn start(app: tauri::AppHandle) {
+pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCounters>) {
     let client_app = app.clone();
     let load_client: LoadClient = Arc::new(move || {
         let app = client_app.clone();
@@ -213,7 +213,7 @@ pub fn start(app: tauri::AppHandle) {
     });
     let journal = ClientJournal::new(load_client, Arc::new(local_zone), heard);
     let root = platform_win::local_data_root().join("obsidian");
-    let (handle, work) = obsidian_source::start(root, Some(dir_ids), journal, paused);
+    let (handle, work) = obsidian_source::start(root, Some(dir_ids), journal, paused, counters);
     let _ = HANDLE.set(handle);
     tauri::async_runtime::spawn(work);
 }
