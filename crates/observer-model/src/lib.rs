@@ -47,8 +47,9 @@ pub use setup::{
     SetupAuthority, SetupConfig, SetupSnapshot, WizardStep, CURRENT_SETUP_VERSION, SETUP_FILE_NAME,
 };
 pub use tray_status::{
-    classify_tray, owner_fault_detail, pause_enabled, permission_blocked, restart_enabled,
-    resume_enabled, source_owner_name, TrayVisual,
+    attention_source, classify_tray, owner_fault_detail, pause_enabled, paused_menu_status,
+    permission_blocked, restart_enabled, resume_enabled, source_owner_name, PausedMenuStatus,
+    TrayVisual,
 };
 
 /// Process-monotonic microsecond clock for timestamping capture chunks.

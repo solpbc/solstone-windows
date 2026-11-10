@@ -33,6 +33,50 @@ pub fn restart_enabled(phase: AppPhase) -> bool {
     matches!(phase, AppPhase::Error)
 }
 
+/// The one menu attention row, in tile order. A fault on a source the owner
+/// turned on counts, including a refused permission. Activity is the screen row.
+pub fn attention_source(
+    sources: &[SourceReport],
+    is_enabled: impl Fn(SourceKind) -> bool,
+    browsers_need_attention: bool,
+    obsidian_needs_attention: bool,
+) -> Option<&'static str> {
+    let faulted = |kind: SourceKind| {
+        is_enabled(kind)
+            && sources.iter().any(|source| {
+                source.kind == kind && matches!(source.state, SourceState::Faulted { .. })
+            })
+    };
+    if faulted(SourceKind::Mic) || faulted(SourceKind::SystemAudio) {
+        return Some("audio");
+    }
+    if faulted(SourceKind::Screen) || faulted(SourceKind::DesktopActivity) {
+        return Some("screen");
+    }
+    if browsers_need_attention {
+        return Some("browsers");
+    }
+    if obsidian_needs_attention {
+        return Some("Obsidian");
+    }
+    None
+}
+
+/// How the disabled menu status line reads while paused. `{n}` is whole minutes, rounded up.
+pub enum PausedMenuStatus {
+    UntilResume,
+    LessThanAMinute,
+    Minutes(u64),
+}
+
+pub fn paused_menu_status(seconds_left: Option<u64>) -> PausedMenuStatus {
+    match seconds_left {
+        None => PausedMenuStatus::UntilResume,
+        Some(secs) if secs < 60 => PausedMenuStatus::LessThanAMinute,
+        Some(secs) => PausedMenuStatus::Minutes(secs.div_ceil(60)),
+    }
+}
+
 const STORAGE_FAULT_FOR_OWNER: &str = "can't save on this PC";
 
 /// What the tray says stopped, in owner words. A fault's detail is a diagnostic
@@ -647,5 +691,61 @@ mod tests {
         // All disabled -> returns None
         let detail_none = owner_fault_detail(&sources, None, |_| false);
         assert_eq!(detail_none, None);
+    }
+
+    fn denied(kind: SourceKind) -> SourceReport {
+        SourceReport {
+            kind,
+            state: SourceState::Faulted {
+                reason: ErrorReason::AccessDenied,
+                detail: "denied".into(),
+            },
+            device: None,
+        }
+    }
+
+    #[test]
+    fn attention_names_the_first_source_and_skips_one_that_is_off() {
+        let mic = [
+            denied(SourceKind::Mic),
+            faulted_source(SourceKind::Screen, "x"),
+        ];
+        assert_eq!(attention_source(&mic, |_| true, true, true), Some("audio"));
+        let screen = [faulted_source(SourceKind::DesktopActivity, "x")];
+        assert_eq!(
+            attention_source(&screen, |_| true, false, false),
+            Some("screen")
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, true, true),
+            Some("browsers")
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, false, true),
+            Some("Obsidian")
+        );
+        assert_eq!(attention_source(&[], |_| true, false, false), None);
+        let off = [denied(SourceKind::Mic)];
+        assert_eq!(attention_source(&off, |_| false, false, false), None);
+    }
+
+    #[test]
+    fn paused_menu_status_rounds_up_and_keeps_indefinite_apart() {
+        assert!(matches!(
+            paused_menu_status(None),
+            PausedMenuStatus::UntilResume
+        ));
+        assert!(matches!(
+            paused_menu_status(Some(59)),
+            PausedMenuStatus::LessThanAMinute
+        ));
+        assert!(matches!(
+            paused_menu_status(Some(60)),
+            PausedMenuStatus::Minutes(1)
+        ));
+        assert!(matches!(
+            paused_menu_status(Some(61)),
+            PausedMenuStatus::Minutes(2)
+        ));
     }
 }
