@@ -4691,9 +4691,14 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
       : report?.reason === "access_denied" || report?.reason === "AccessDenied"
         ? ACCESS_DENIED_LINE
         : undefined;
-    const label = reason ? `${status}: ${reason}` : status;
-    const textEl = text("span", label);
+    const noDevice = reason === NO_MICROPHONE_LINE || reason === NO_OUTPUT_LINE;
+    const textEl = text("span", reason ?? status);
     textEl.classList.add("proof-status");
+    // A missing device is picked up on its own, so there is nothing to retry.
+    if (noDevice) {
+      node.replaceChildren(textEl);
+      return;
+    }
     const retryBtn = actionButton("retry", undefined, true, () => {
       void invoke("set_source_enabled", { kind, enabled: true }).then(() => retryHealth());
     }, false, "standard");
