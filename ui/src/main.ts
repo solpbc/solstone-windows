@@ -5678,7 +5678,7 @@ function updateSubtitle(
   if (view.display === "checking" || view.activity === "checking") {
     if (view.downloaded_version) {
       return {
-        text: `solstone ${view.downloaded_version} installs the next time the solstone app restarts, including sign-in`,
+        text: `solstone ${view.downloaded_version} installs the next time the solstone app starts, including when you sign in to windows`,
         live: false,
       };
     }
@@ -5688,7 +5688,7 @@ function updateSubtitle(
     return null;
   }
   if (view.display === "staged" || view.installs_next_start) {
-    let text = "it installs the next time the solstone app restarts, including sign-in";
+    let text = "it installs the next time the solstone app starts, including when you sign in to windows";
     if (view.cost_deferral) {
       text += ` · ${costDeferralText(view.cost_deferral)}`;
     }
