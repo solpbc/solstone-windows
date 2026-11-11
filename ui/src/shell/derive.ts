@@ -247,6 +247,63 @@ export function journalPill(input: JournalPillInput): string {
   return "connected";
 }
 
+export type StatusLead = {
+  headline: string;
+  lines: readonly string[];
+};
+
+/**
+ * Status-pane lead. Caught up is the phone's two lines.
+ * Offline with a count leads with that count, then where it waits.
+ * A quiet offline lead is the word only: no zero, and nothing is on the device.
+ */
+export function statusLead(input: JournalPillInput): StatusLead {
+  const caughtUp =
+    input.paired &&
+    !input.needsNewLink &&
+    !input.refused &&
+    !input.syncPaused &&
+    !input.held &&
+    !input.offline &&
+    !input.connecting &&
+    !input.waitingToSync;
+  if (caughtUp) {
+    return { headline: "all caught up", lines: ["everything is in your journal"] };
+  }
+  if (input.paired && input.offline) {
+    if (input.waiting > 0) {
+      return { headline: String(input.waiting), lines: ["waiting to sync", "on this device"] };
+    }
+    return { headline: "offline", lines: [] };
+  }
+  if (input.paired && input.waitingToSync) {
+    return { headline: "waiting to sync", lines: ["on this device"] };
+  }
+  return { headline: "", lines: [] };
+}
+
+export type JournalLinkWord = "connected" | "connecting" | "offline";
+
+export type JournalFact = {
+  label: "connection" | "last reached";
+  value: string;
+};
+
+/** Connection, and last reached only when a pair has a real instant. */
+export function journalFacts(input: {
+  paired: boolean;
+  link: JournalLinkWord | null;
+  lastReached: string | null;
+}): JournalFact[] {
+  if (!input.paired) return [];
+  const facts: JournalFact[] = [];
+  if (input.link === "connected") facts.push({ label: "connection", value: "connected" });
+  if (input.link === "connecting") facts.push({ label: "connection", value: "connecting…" });
+  if (input.link === "offline") facts.push({ label: "connection", value: "offline" });
+  if (input.lastReached) facts.push({ label: "last reached", value: input.lastReached });
+  return facts;
+}
+
 export type PauseTimeLeft =
   | { kind: "untilResume" }
   | { kind: "lessThanAMinute" }

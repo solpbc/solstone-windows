@@ -37,6 +37,11 @@ export interface DeskView {
   rows: readonly DeskStatusRow[];
   paneTitle: string;
   paneIsStatus: boolean;
+  /** Caught up: a green dot beside the word. No other pill is green. */
+  connected: boolean;
+  leadHeadline: string;
+  leadLines: readonly string[];
+  facts: readonly { label: string; value: string }[];
   /** Unpaired status offers the existing connect action. */
   showConnect: boolean;
   /** Shelf pages replace the deck. Home keeps the deck beside the pane. */
@@ -151,6 +156,7 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
 
   const pill = el("button", "desk-pill", view.pill);
   pill.type = "button";
+  if (view.connected) pill.dataset.connected = "true";
   pill.onclick = () => actions.onPill();
   head.append(pill);
   deck.append(head);
@@ -220,6 +226,16 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
   pane.append(head);
 
   if (view.paneIsStatus) {
+    if (view.leadHeadline || view.leadLines.length > 0) {
+      const lead = el("div", "desk-lead");
+      if (view.leadHeadline) {
+        const headline = el("p", "desk-lead-headline", view.leadHeadline);
+        if (/^\d+$/.test(view.leadHeadline)) headline.dataset.count = "true";
+        lead.append(headline);
+      }
+      for (const line of view.leadLines) lead.append(el("p", "desk-lead-line", line));
+      pane.append(lead);
+    }
     if (view.showConnect) {
       const connect = el("button", "desk-connect", "connect a journal");
       connect.type = "button";
@@ -231,6 +247,15 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
     pane.append(labels);
     for (const row of view.rows) {
       pane.append(renderStatusRow(row, actions));
+    }
+    if (view.facts.length > 0) {
+      const facts = el("div", "desk-facts");
+      for (const fact of view.facts) {
+        const row = el("div", "desk-fact");
+        row.append(el("span", "desk-fact-label", fact.label), el("span", "desk-fact-value", fact.value));
+        facts.append(row);
+      }
+      pane.append(facts);
     }
   }
   if (parts.paneExtra) pane.append(parts.paneExtra);

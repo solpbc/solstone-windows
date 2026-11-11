@@ -16,6 +16,7 @@ html:has(.desk-shell) #app {
   --desk-hairline: #ece3d0;
   --desk-line: rgba(26, 26, 26, 0.12);
   --desk-accent: #b06a1a;
+  --desk-connected: #3f9d6a;
   --desk-shadow: 0 14px 40px rgb(60 40 10 / 0.28);
   height: 100%;
   min-height: 0;
@@ -39,15 +40,16 @@ html:has(.desk-shell) #app {
     --desk-line: rgba(252, 243, 228, 0.14);
     --desk-accent: #e8913a;
     --desk-shadow: 0 14px 40px rgb(0 0 0 / 0.45);
+    --desk-connected: #7ab58b;
   }
 }
 
 .desk-shell[data-width="full"] {
-  grid-template-columns: 220px minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns: 220px minmax(0, 1fr) 360px;
 }
 
 .desk-shell[data-width="narrower"] {
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+  grid-template-columns: minmax(0, 1fr) 320px;
 }
 
 .desk-shell[data-width="phone"] {
@@ -166,6 +168,21 @@ html:has(.desk-shell) #app {
   border-radius: 999px;
   padding: 6px 12px;
   cursor: pointer;
+}
+
+.desk-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.desk-pill[data-connected="true"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--desk-connected);
+  flex: none;
 }
 
 .desk-shelf-button,
@@ -355,6 +372,43 @@ html:has(.desk-shell) #app {
   border-radius: 0;
   background: var(--desk-pane);
   border-left: 1px solid var(--desk-hairline);
+  overflow-wrap: anywhere;
+}
+
+.desk-lead-headline {
+  margin: 0;
+  font-family: Comfortaa, sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.desk-lead-headline[data-count="true"] {
+  font-size: 34px;
+  line-height: 1;
+}
+
+.desk-lead-line {
+  margin: 4px 0 0;
+  color: var(--desk-subtle);
+}
+
+.desk-facts {
+  margin-top: 18px;
+}
+
+.desk-fact {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.desk-fact-label {
+  color: var(--desk-subtle);
+}
+
+.desk-fact-value {
+  min-width: 0;
 }
 
 .desk-shell[data-width="phone"][data-page="deck"] .desk-pane,

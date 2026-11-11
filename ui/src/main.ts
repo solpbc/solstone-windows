@@ -27,6 +27,7 @@ import {
   derivedComputerSoundWanted,
   durationTotal,
   greeting,
+  journalFacts,
   journalPill,
   legacyRoute,
   obsidianTile,
@@ -37,9 +38,11 @@ import {
   settingsNavigate,
   shelfBadges,
   spaceOnTile,
+  statusLead,
   startedLabel,
   widthClass,
   type CounterDocument,
+  type JournalPillInput,
   type Pane,
   type ShelfRow,
   type SourceFacts,
@@ -5588,12 +5591,12 @@ function deskPausedLine(dump: HealthDump): string | null {
   return `paused, ${left.minutes} min left`;
 }
 
-function deskPill(dump: HealthDump): string {
+function deskJournalInput(dump: HealthDump): JournalPillInput {
   const phase = dump.sync.pairing.phase;
   const waiting = dump.sync.upload.pending_segments ?? 0;
   const link = dump.sync.journal_link;
   const paired = phase === "paired" || phase === "awaiting_confirmation" || phase === "pairing";
-  return journalPill({
+  return {
     paired,
     needsNewLink: false,
     refused: false,
@@ -5604,7 +5607,17 @@ function deskPill(dump: HealthDump): string {
     waitingToSync: phase === "paired" && waiting > 0 && link !== "offline" && link !== "connecting",
     waiting,
     sourceNeedsAttention: false,
-  });
+  };
+}
+
+function deskFacts(dump: HealthDump): { label: string; value: string }[] {
+  const phase = dump.sync.pairing.phase;
+  const paired = phase === "paired" || phase === "awaiting_confirmation";
+  const link = dump.sync.journal_link;
+  const synced = dump.sync.upload.last_successful_sync;
+  const lastReached = typeof synced === "number" ? lastSyncedLabel(synced, nowSecs()) : null;
+  const word = link === "connected" || link === "connecting" || link === "offline" ? link : null;
+  return journalFacts({ paired, link: word, lastReached });
 }
 
 function deskSourceName(id: string): string {
@@ -5917,13 +5930,16 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
         })()
       : null;
   const updateDisplay = latestUpdate?.display;
+  const journal = deskJournalInput(dump);
+  const lead = statusLead(journal);
+  const pill = journalPill(journal);
   const view = {
     width,
     row: deskRow,
     shelfOpen: deskShelfOpen,
     phoneShowsPane: width === "phone" && deskRow === "home" && deskPhonePane,
     greeting: greeting(new Date().getHours()),
-    pill: deskPill(dump),
+    pill,
     pausedLine: deskPausedLine(dump),
     badges: shelfBadges({
       unknownJournal: (dump.sync.unknown_journals?.length ?? 0) > 0,
@@ -5938,6 +5954,10 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
     rows: deskStatusRows(),
     paneTitle: deskPaneTitle(),
     paneIsStatus: deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump),
+    connected: pill === "connected",
+    leadHeadline: lead.headline,
+    leadLines: lead.lines,
+    facts: deskFacts(dump),
     showConnect:
       deskRow === "home" &&
       deskPane === "status" &&

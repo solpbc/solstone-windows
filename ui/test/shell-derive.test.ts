@@ -9,6 +9,7 @@ import {
   derivedComputerSoundWanted,
   greeting,
   headerWhilePaused,
+  journalFacts,
   journalPill,
   legacyRoute,
   settingsNavigate,
@@ -19,6 +20,7 @@ import {
   screenTile,
   shelfBadges,
   spaceOnTile,
+  statusLead,
   statusRowOpens,
   widthClass,
   type AudioTileInput,
@@ -222,6 +224,33 @@ describe("journal pill and pause header", () => {
     expect(faulted).not.toBe("needs attention");
     expect(faulted).not.toBe("on");
     expect(faulted).not.toBe("off");
+  });
+
+  it("leads caught up with the journal line, and offline with the count", () => {
+    const calm = statusLead(caughtUp);
+    expect(calm.headline).toBe("all caught up");
+    expect(calm.lines).toContain("everything is in your journal");
+    expect(calm.lines.join(" ")).not.toContain("on this device");
+
+    const waiting = statusLead({ ...caughtUp, offline: true, waiting: 4 });
+    expect(waiting.headline).toContain("4");
+    expect(waiting.lines).toContain("on this device");
+    expect(waiting.lines).toContain("waiting to sync");
+
+    const quiet = statusLead({ ...caughtUp, offline: true, waiting: 0 });
+    expect(quiet.headline).toContain("offline");
+    expect(quiet.headline).not.toMatch(/\d/);
+    expect(quiet.lines.join(" ")).not.toMatch(/\d/);
+    expect(quiet.lines).not.toContain("on this device");
+  });
+
+  it("names connection, and last reached only for a real instant", () => {
+    expect(journalFacts({ paired: false, link: "connected", lastReached: "just now" })).toEqual([]);
+    const live = journalFacts({ paired: true, link: "connected", lastReached: "just now" });
+    expect(live.map((fact) => fact.label)).toEqual(["connection", "last reached"]);
+    const open = journalFacts({ paired: true, link: "offline", lastReached: null });
+    expect(open.map((fact) => fact.label)).toEqual(["connection"]);
+    expect(open[0]?.value).not.toBe(live[0]?.value);
   });
 
   it("keeps an offline line, and the count only when there is one", () => {
