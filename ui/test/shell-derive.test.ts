@@ -249,16 +249,15 @@ describe("journal pill and pause header", () => {
     expect(faulted).not.toBe("off");
   });
 
-  it("leads caught up with the journal line, and offline with the count", () => {
+  it("leads caught up with the journal line, and offline with the pill's words", () => {
     const calm = statusLead(caughtUp);
     expect(calm.headline).toBe("all caught up");
     expect(calm.lines).toContain("everything is in your journal");
     expect(calm.lines.join(" ")).not.toContain("on this device");
 
     const waiting = statusLead({ ...caughtUp, offline: true, waiting: 4 });
-    expect(waiting.headline).toContain("4");
-    expect(waiting.lines).toContain("on this device");
-    expect(waiting.lines).toContain("waiting to sync");
+    expect(waiting.headline).toBe(journalPill({ ...caughtUp, offline: true, waiting: 4 }));
+    expect(waiting.lines).toEqual(["on this device"]);
 
     const quiet = statusLead({ ...caughtUp, offline: true, waiting: 0 });
     expect(quiet.headline).toContain("offline");
@@ -444,6 +443,9 @@ describe("routes and widths", () => {
     expect(sourceSubline({ word: "off", paired: false, companion: "x", setup: "s", attention: "a" })).toBe(
       "turn it on any time.",
     );
+    expect(sourceSubline({ word: "off", paired: true, companion: "x", setup: "s", attention: "a" })).toBe(
+      sourceSubline({ word: "off", paired: false, companion: "x", setup: "s", attention: "a" }),
+    );
     expect(sourceSubline({ word: "setting up", paired: false, companion: "x", setup: "s", attention: "a" })).toBe(
       "getting ready…",
     );
@@ -507,11 +509,14 @@ describe("deck and shelf", () => {
 
   it("badges the shelf row a notice belongs to", () => {
     expect(
-      shelfBadges({ unknownJournal: false, shortcutNeedsRepair: false, updateAvailable: false }),
+      shelfBadges({ unknownJournal: false, journalOffline: false, shortcutNeedsRepair: false, updateAvailable: false }),
     ).toEqual([]);
     expect(
-      shelfBadges({ unknownJournal: true, shortcutNeedsRepair: true, updateAvailable: true }),
+      shelfBadges({ unknownJournal: true, journalOffline: false, shortcutNeedsRepair: true, updateAvailable: true }),
     ).toEqual(["journal", "thisPc", "updates"]);
+    expect(
+      shelfBadges({ unknownJournal: false, journalOffline: true, shortcutNeedsRepair: false, updateAvailable: false }),
+    ).toEqual(["journal"]);
   });
 
   it("space toggles a switch, skips browsers, and opens Obsidian to turn it on", () => {

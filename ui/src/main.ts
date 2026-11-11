@@ -1626,9 +1626,9 @@ function isAccessDenied(report: SourceReport | undefined): boolean {
 }
 
 const NO_MICROPHONE_LINE =
-  "no microphone is available. connect or enable a microphone in windows sound settings, then retry.";
+  "no microphone is available. connect or enable one in windows sound settings. the solstone app starts using it on its own.";
 const NO_OUTPUT_LINE =
-  "no sound output is available. connect or enable an output device in windows sound settings, then retry.";
+  "no sound output is available. connect or enable one in windows sound settings. the solstone app starts using it on its own.";
 const ACCESS_DENIED_LINE = "access was denied. check windows permissions for this source, then retry.";
 const NO_MICROPHONE_TILE = "no microphone found.";
 const NO_OUTPUT_TILE = "no sound output found.";
@@ -5863,8 +5863,20 @@ function deskFactBlock(source: SourceId): HTMLElement | null {
 
 function deskJournalName(dump: HealthDump): string {
   const phase = dump.sync.pairing.phase;
-  if (phase === "paired" || phase === "awaiting_confirmation") return markTextForm(dump.sync.pairing.mark);
+  if (phase === "paired" || phase === "awaiting_confirmation") {
+    const mark = dump.sync.pairing.mark;
+    if (!mark) return "mark \u00B7 unavailable";
+    return `${mark.words[0].toLowerCase()} \u00B7 ${mark.words[1].toLowerCase()}`;
+  }
   return "your \u00B7 journal";
+}
+
+function deskJournalChips(dump: HealthDump): { hex: string; rotated: boolean }[] | null {
+  const phase = dump.sync.pairing.phase;
+  if (phase !== "paired" && phase !== "awaiting_confirmation") return null;
+  const mark = dump.sync.pairing.mark;
+  if (!displayableMark(mark)) return null;
+  return [mark.icon1, mark.icon2].map((icon) => ({ hex: icon.color.hex, rotated: icon.rot === 45 }));
 }
 
 function deskByteLabel(bytes: number): string {
@@ -6293,9 +6305,11 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
     greeting: greeting(new Date().getHours()),
     pill,
     journalName: deskJournalName(dump),
+    journalChips: deskJournalChips(dump),
     pausedLine: deskPausedLine(dump),
     badges: shelfBadges({
       unknownJournal: (dump.sync.unknown_journals?.length ?? 0) > 0,
+      journalOffline: journal.offline,
       shortcutNeedsRepair: latestHotkey?.registration === "combo_taken" || latestHotkey?.registration === "failed",
       updateAvailable:
         updateDisplay === "available" ||

@@ -206,11 +206,12 @@ export type ShelfNotice = "journal" | "thisPc" | "updates";
 /** A notice that belongs to no tile badges its shelf row. Home and help never badge. */
 export function shelfBadges(input: {
   unknownJournal: boolean;
+  journalOffline: boolean;
   shortcutNeedsRepair: boolean;
   updateAvailable: boolean;
 }): ShelfNotice[] {
   const rows: ShelfNotice[] = [];
-  if (input.unknownJournal) rows.push("journal");
+  if (input.unknownJournal || input.journalOffline) rows.push("journal");
   if (input.shortcutNeedsRepair) rows.push("thisPc");
   if (input.updateAvailable) rows.push("updates");
   return rows;
@@ -259,7 +260,7 @@ export function sourceSubline(input: {
 }): string {
   if (input.word === "needs attention") return input.attention;
   if (input.word === "off") {
-    return input.paired ? "intake is off. turn it on any time." : "turn it on any time.";
+    return "turn it on any time.";
   }
   if (input.word === "setting up") {
     return input.paired ? "getting ready. connecting to your journal." : "getting ready…";
@@ -295,7 +296,7 @@ export type StatusLead = {
 
 /**
  * Status-pane lead. Caught up is the phone's two lines.
- * Offline with a count leads with that count, then where it waits.
+ * Offline with a count leads with the pill's words, then where it waits.
  * A quiet offline lead is the word only: no zero, and nothing is on the device.
  */
 export function statusLead(input: JournalPillInput): StatusLead {
@@ -313,7 +314,7 @@ export function statusLead(input: JournalPillInput): StatusLead {
   }
   if (input.paired && input.offline) {
     if (input.waiting > 0) {
-      return { headline: String(input.waiting), lines: ["waiting to sync", "on this device"] };
+      return { headline: `offline · ${input.waiting} waiting`, lines: ["on this device"] };
     }
     return { headline: "offline", lines: [] };
   }
@@ -340,7 +341,7 @@ export function journalFacts(input: {
   const facts: JournalFact[] = [];
   if (input.link === "connected") facts.push({ label: "connection", value: "connected" });
   if (input.link === "connecting") facts.push({ label: "connection", value: "connecting…" });
-  if (input.link === "offline") facts.push({ label: "connection", value: "offline" });
+  if (input.link === "offline") facts.push({ label: "connection", value: "not reaching your journal right now" });
   if (input.lastReached) facts.push({ label: "last reached", value: input.lastReached });
   return facts;
 }

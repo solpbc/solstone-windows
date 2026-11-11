@@ -43,6 +43,8 @@ export interface DeskView {
   pill: string;
   /** Foot of the deck. Unpaired is the placeholder pair. A pair uses its mark. */
   journalName: string;
+  /** The pair's two chip colours, when its mark can be drawn. Null shows no chips. */
+  journalChips: readonly { hex: string; rotated: boolean }[] | null;
   pausedLine: string | null;
   badges: readonly string[];
   tiles: readonly DeskTile[];
@@ -211,6 +213,15 @@ function journalFoot(view: DeskView, actions: DeskActions): HTMLButtonElement {
     first.setAttribute("aria-hidden", "true");
     second.setAttribute("aria-hidden", "true");
     foot.append(first, second);
+  } else if (view.journalChips) {
+    for (const chip of view.journalChips) {
+      const mark = el("span", "desk-mark-chip");
+      mark.setAttribute("aria-hidden", "true");
+      if (chip.rotated) mark.dataset.rotated = "true";
+      mark.style.borderColor = chip.hex;
+      mark.style.background = `${chip.hex}1f`;
+      foot.append(mark);
+    }
   }
   foot.append(el("span", "desk-journal-name", view.journalName));
   foot.onclick = () => actions.onShelf("journal");
@@ -344,6 +355,8 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
 
 function factRow(label: string, value: string): HTMLElement {
   const row = el("div", "desk-fact");
+  // A long value drops under its label, so the pane keeps its width.
+  if (value.length > 22) row.dataset.stacked = "true";
   row.append(el("span", "desk-fact-label", label), el("span", "desk-fact-value", value));
   return row;
 }

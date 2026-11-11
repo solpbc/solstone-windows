@@ -305,7 +305,8 @@ html:has(.desk-shell) #app {
   background: var(--desk-card);
   color: inherit;
   border-radius: 16px;
-  padding: 14px 56px 14px 14px;
+  /* The switch sits beside the glyph row only. Text below it runs the tile's width. */
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -455,6 +456,18 @@ html:has(.desk-shell) #app {
   opacity: 0.55;
 }
 
+.desk-mark-chip {
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border-radius: 4px;
+  border: 1.5px solid;
+}
+
+.desk-mark-chip[data-rotated="true"] {
+  transform: rotate(45deg) scale(0.85);
+}
+
 .desk-pane {
   margin: 0;
   padding: 28px 20px 16px;
@@ -501,6 +514,17 @@ html:has(.desk-shell) #app {
 .desk-fact-value {
   margin-left: auto;
   text-align: right;
+}
+
+.desk-fact[data-stacked="true"] {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.desk-fact[data-stacked="true"] .desk-fact-value {
+  margin-left: 0;
+  text-align: left;
 }
 
 .desk-shell[data-width="phone"][data-page="deck"] .desk-pane,
@@ -614,6 +638,10 @@ html:has(.desk-shell) #app {
 .desk-reason {
   line-height: 1.45;
   margin: 0 0 12px;
+}
+
+.desk-reason + .desk-connect {
+  margin-bottom: 16px;
 }
 
 .desk-switch-row {

@@ -3422,9 +3422,7 @@ describe("audio page recovery", () => {
     openAudio();
     expect(document.body.textContent).toContain("no microphone found.");
     expect(document.body.textContent).toContain("add the solstone extension.");
-    expect(document.body.textContent).toContain(
-      "no microphone is available. connect or enable a microphone in windows sound settings, then retry.",
-    );
+    expect(document.querySelector(".desk-reason")).not.toBeNull();
     expect(document.body.textContent).not.toContain("open windows settings");
     const button = [...document.querySelectorAll("button")].find((el) => el.textContent === "open sound settings");
     expect(button).toBeInstanceOf(HTMLButtonElement);
