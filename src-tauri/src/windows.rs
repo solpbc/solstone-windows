@@ -50,21 +50,24 @@ fn caption_stand_in(dark: bool) -> (u8, u8, u8) {
     }
 }
 
+fn caption_colors() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>> {
+    static COLORS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>>> =
+        OnceLock::new();
+    COLORS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 fn remembered_caption(label: &str) -> Option<(u8, u8, u8)> {
-    CAPTION_COLOR
+    caption_colors()
         .lock()
         .ok()
         .and_then(|colors| colors.get(label).copied())
 }
 
 fn remember_caption(label: &str, color: (u8, u8, u8)) {
-    if let Ok(mut colors) = CAPTION_COLOR.lock() {
+    if let Ok(mut colors) = caption_colors().lock() {
         colors.insert(label.to_string(), color);
     }
 }
-
-static CAPTION_COLOR: std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>> =
-    std::sync::Mutex::new(std::collections::HashMap::new());
 
 /// Color the native caption and hide its text. Decorations stay, so Windows
 /// keeps drawing the buttons. A refused call (Windows 10) leaves the system
