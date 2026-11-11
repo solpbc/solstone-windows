@@ -409,7 +409,8 @@ html:has(.desk-shell) #app {
 
 .desk-journal {
   appearance: none;
-  align-self: flex-start;
+  align-self: center;
+  margin-top: auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -425,13 +426,14 @@ html:has(.desk-shell) #app {
 .desk-mark-slot {
   width: 14px;
   height: 14px;
+  box-sizing: border-box;
   border-radius: 4px;
-  background: var(--desk-accent);
-  opacity: 0.55;
+  border: 1.5px dashed var(--desk-accent);
+  background: transparent;
 }
 
 .desk-mark-slot + .desk-mark-slot {
-  opacity: 0.85;
+  opacity: 0.55;
 }
 
 .desk-pane {
