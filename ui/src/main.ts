@@ -6152,14 +6152,17 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     const capture = latestBrowser?.capture;
     if (capture === "not_paired" || capture === "unavailable" || !latestBrowser) {
       body.append(deskReason(BROWSER_COPY.setup));
-      if (latestBrowser) {
+      if (latestBrowser && latestBrowser.stores.length > 0) {
+        const stores = document.createElement("div");
+        stores.className = "desk-actions";
         for (const brand of latestBrowser.stores) {
-          body.append(
+          stores.append(
             deskAction(`add to ${BROWSER_NAMES[brand] ?? brand}`, () => {
               void openBrowserStore(brand);
             }),
           );
         }
+        body.append(stores);
       }
     } else if (capture === "intake_off" || latestBrowser.delivery === "failed") {
       body.append(deskReason(capture === "intake_off" ? BROWSER_COPY.held : BROWSER_COPY.failed));
