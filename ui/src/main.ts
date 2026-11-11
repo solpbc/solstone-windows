@@ -5722,6 +5722,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     failed: Boolean(screen && screen.status === "faulted" && !isAccessDenied(screen)),
     activityFailed: Boolean(activity && activity.status === "faulted" && !isAccessDenied(activity) && setup?.desktop_activity === true),
     activityOn: setup?.desktop_activity === true,
+    activityRunning: activity?.status === "active",
     appPaused: paused,
     running: screen?.status === "active",
     permissionAsked: true,

@@ -109,6 +109,8 @@ export type ScreenTileInput = {
   failed: boolean;
   activityFailed: boolean;
   activityOn: boolean;
+  /** Activity is really going in right now, not just switched on. */
+  activityRunning: boolean;
   appPaused: boolean;
   running: boolean;
   permissionAsked: boolean;
@@ -116,7 +118,7 @@ export type ScreenTileInput = {
 
 export function screenTile(input: ScreenTileInput): TileView {
   const fault = input.accessDenied || input.failed || input.activityFailed;
-  const activityKept = input.activityOn && (!input.enabled || input.appPaused);
+  const activityKept = input.activityRunning && (!input.enabled || input.appPaused);
   let word: StateWord;
   if (fault) word = "needs attention";
   else if (!input.enabled) word = "off";
@@ -128,7 +130,8 @@ export function screenTile(input: ScreenTileInput): TileView {
     word,
     switchOn: input.enabled,
     activityKept,
-    activityAlongside: word === "on" && input.activityOn,
+    // A paused tile keeps its own line, so activity is named there too unless it is still going.
+    activityAlongside: (word === "on" || word === "paused") && input.activityOn && !activityKept,
     namesMicrophone: false,
   };
 }
