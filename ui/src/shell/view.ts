@@ -37,6 +37,8 @@ export interface DeskView {
   rows: readonly DeskStatusRow[];
   paneTitle: string;
   paneIsStatus: boolean;
+  /** Unpaired status offers the existing connect action. */
+  showConnect: boolean;
   /** Shelf pages replace the deck. Home keeps the deck beside the pane. */
   shelfPage: boolean;
 }
@@ -92,6 +94,7 @@ export function renderDesk(view: DeskView, parts: DeskParts, actions: DeskAction
   if (view.shelfPage && parts.shelfBody) {
     const page = el("div", "desk-deck");
     page.setAttribute("data-automation-id", "settings.deck");
+    if (view.width === "phone") page.append(backHome(actions));
     page.append(parts.shelfBody);
     shell.append(page);
     return shell;
@@ -121,19 +124,27 @@ function renderShelf(view: DeskView, actions: DeskActions): HTMLElement {
   return rail;
 }
 
+function backHome(actions: DeskActions): HTMLButtonElement {
+  const back = el("button", "desk-back", "‹ home");
+  back.type = "button";
+  back.setAttribute("aria-label", "home");
+  back.onclick = () => actions.onBackHome();
+  return back;
+}
+
 function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTMLElement {
   const deck = el("div", "desk-deck");
   deck.setAttribute("data-automation-id", "settings.deck");
+  if (parts.unread) deck.append(parts.unread);
+
+  const head = el("div", "desk-head");
   if (view.width !== "full") {
     const opener = el("button", "desk-shelf-button", "home");
     opener.type = "button";
     opener.setAttribute("aria-label", "home");
     opener.onclick = () => actions.onShelfToggle();
-    deck.append(opener);
+    head.append(opener);
   }
-  if (parts.unread) deck.append(parts.unread);
-
-  const head = el("div", "desk-head");
   const greeting = el("h1", "desk-greeting", view.greeting);
   greeting.tabIndex = -1;
   head.append(greeting);
@@ -170,7 +181,11 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
   const open = el("button", "desk-tile-open");
   open.type = "button";
   open.append(el("span", "desk-tile-name", tile.name));
-  if (tile.word) open.append(el("span", "desk-tile-word", tile.word));
+  if (tile.word) {
+    const word = el("span", "desk-tile-word", tile.word);
+    word.dataset.word = tile.word;
+    open.append(word);
+  }
   if (tile.sub) open.append(el("span", "desk-tile-sub", tile.sub));
   open.onclick = () => actions.onTile(tile.id);
   card.append(open);
@@ -191,13 +206,7 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
 function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTMLElement {
   const pane = el("aside", "desk-pane");
   const head = el("div", "desk-pane-head");
-  if (view.width === "phone") {
-    const back = el("button", "desk-back", "‹ home");
-    back.type = "button";
-    back.setAttribute("aria-label", "home");
-    back.onclick = () => actions.onBackHome();
-    head.append(back);
-  }
+  if (view.width === "phone") head.append(backHome(actions));
   const title = el("h2", "desk-pane-title", view.paneTitle);
   title.tabIndex = -1;
   head.append(title);
@@ -211,6 +220,15 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
   pane.append(head);
 
   if (view.paneIsStatus) {
+    if (view.showConnect) {
+      const connect = el("button", "desk-connect", "connect a journal");
+      connect.type = "button";
+      connect.onclick = () => actions.onShelf("journal");
+      pane.append(connect);
+    }
+    const labels = el("div", "desk-status-labels");
+    labels.append(el("span", "", "sources"), el("span", "", "so far"), el("span", "", "last taken in"));
+    pane.append(labels);
     for (const row of view.rows) {
       pane.append(renderStatusRow(row, actions));
     }

@@ -5921,7 +5921,7 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
     width,
     row: deskRow,
     shelfOpen: deskShelfOpen,
-    phoneShowsPane: width === "phone" && (deskPhonePane || deskRow !== "home"),
+    phoneShowsPane: width === "phone" && deskRow === "home" && deskPhonePane,
     greeting: greeting(new Date().getHours()),
     pill: deskPill(dump),
     pausedLine: deskPausedLine(dump),
@@ -5938,6 +5938,11 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
     rows: deskStatusRows(),
     paneTitle: deskPaneTitle(),
     paneIsStatus: deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump),
+    showConnect:
+      deskRow === "home" &&
+      deskPane === "status" &&
+      !homeShowsPairing(dump) &&
+      (dump.sync.pairing.phase === "not_paired" || dump.sync.pairing.phase === "failed"),
     shelfPage: deskRow !== "home",
   };
   return renderDesk(
@@ -6079,10 +6084,13 @@ function renderSettings(dump: HealthDump): void {
     logText.scrollLeft = logPosition[3];
   }
   // The mark is spoken before the question, the first time its card is on screen.
+  // The desk draws a ring only after a keyboard focus, so it does not take one here.
   const unfocusedMarkCard = markCardFocused
     ? null
     : root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`);
-  if (focusWizardPrimary) {
+  if (showDesk) {
+    focusPaneTitleOnRender = false;
+  } else if (focusWizardPrimary) {
     focusWizardPrimary = false;
     focusPaneTitleOnRender = false;
     root.querySelector<HTMLElement>(".wizard-step-title")?.focus();

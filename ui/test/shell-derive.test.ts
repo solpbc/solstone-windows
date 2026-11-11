@@ -224,6 +224,16 @@ describe("journal pill and pause header", () => {
     expect(faulted).not.toBe("off");
   });
 
+  it("keeps an offline line, and the count only when there is one", () => {
+    const quiet = journalPill({ ...caughtUp, offline: true, waiting: 0 });
+    const counted = journalPill({ ...caughtUp, offline: true, waiting: 4 });
+    expect(quiet.trim().length).toBeGreaterThan(0);
+    expect(counted).not.toBe(quiet);
+    expect(counted).toContain("4");
+    expect(quiet).not.toMatch(/\d/);
+    expect(quiet).toContain("offline");
+  });
+
   it("uses a journal word for the computer-only cases", () => {
     expect(journalPill({ ...caughtUp, syncPaused: true, waiting: 2 })).toContain("sync paused");
     expect(journalPill({ ...caughtUp, needsNewLink: true })).toBe("your journal needs a new link");

@@ -1,13 +1,28 @@
+html:has(.desk-shell),
+html:has(.desk-shell) body,
+html:has(.desk-shell) #app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
 .desk-shell {
   position: relative;
   --desk-ink: #1a1a1a;
   --desk-subtle: #5b5246;
   --desk-glass: rgba(255, 252, 248, 0.72);
+  --desk-card: #fefcf8;
+  --desk-pane: #fefcf8;
+  --desk-hairline: #ece3d0;
   --desk-line: rgba(26, 26, 26, 0.12);
   --desk-accent: #b06a1a;
+  --desk-shadow: 0 14px 40px rgb(60 40 10 / 0.28);
   height: 100%;
-  min-height: 100vh;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   color: var(--desk-ink);
   font-family: "Segoe UI", sans-serif;
   background: transparent;
@@ -18,8 +33,12 @@
     --desk-ink: #fcf3e4;
     --desk-subtle: #d0c6b8;
     --desk-glass: rgba(40, 30, 23, 0.72);
+    --desk-card: #2b231c;
+    --desk-pane: #221c19;
+    --desk-hairline: #484038;
     --desk-line: rgba(252, 243, 228, 0.14);
     --desk-accent: #e8913a;
+    --desk-shadow: 0 14px 40px rgb(0 0 0 / 0.45);
   }
 }
 
@@ -45,16 +64,22 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .desk-shell[data-width="narrower"] .settings-rail,
 .desk-shell[data-width="phone"] .settings-rail {
   position: absolute;
   z-index: 3;
-  top: 56px;
+  top: 64px;
   left: 16px;
+  bottom: 16px;
   width: 220px;
   margin: 0;
+  background: var(--desk-card);
+  backdrop-filter: none;
+  box-shadow: var(--desk-shadow);
 }
 
 .desk-shell[data-width="narrower"][data-shelf="closed"] .settings-rail,
@@ -92,14 +117,34 @@
 .desk-pane {
   min-width: 0;
   min-height: 0;
+  max-height: 100%;
   overflow: auto;
-  padding: 20px 22px 28px;
 }
 
 .desk-deck {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding: 20px 24px 28px;
+}
+
+.desk-shell:not([data-row="home"]) .desk-deck {
+  grid-column: 1 / -1;
+  margin: 16px;
+  padding: 20px 22px 28px;
+  border-radius: 16px;
+  background: var(--desk-pane);
+  border: 1px solid var(--desk-hairline);
+}
+
+.desk-shell[data-width="full"]:not([data-row="home"]) .desk-deck {
+  grid-column: 2 / -1;
+}
+
+.desk-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .desk-greeting {
@@ -107,21 +152,57 @@
   font-size: 28px;
   font-weight: 600;
   margin: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 .desk-pill,
-.desk-resume,
-.desk-shelf-button,
-.desk-back,
-.desk-close {
+.desk-resume {
   appearance: none;
-  border: 1px solid var(--desk-line);
-  background: var(--desk-glass);
+  border: 1px solid var(--desk-hairline);
+  background: var(--desk-card);
   color: inherit;
   font: inherit;
   border-radius: 999px;
   padding: 6px 12px;
   cursor: pointer;
+}
+
+.desk-shelf-button,
+.desk-back,
+.desk-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.desk-back {
+  color: var(--desk-accent);
+  font-weight: 600;
+}
+
+.desk-close {
+  margin-left: auto;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--desk-subtle);
+}
+
+.desk-connect {
+  appearance: none;
+  border: 0;
+  background: var(--desk-accent);
+  color: #1a1a1a;
+  font: inherit;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  width: fit-content;
 }
 
 .desk-paused {
@@ -132,6 +213,7 @@
 .desk-grid {
   display: grid;
   gap: 12px;
+  align-content: start;
 }
 
 .desk-shell[data-width="full"] .desk-grid {
@@ -147,17 +229,24 @@
 }
 
 .desk-tile {
+  position: relative;
   text-align: left;
-  border: 1px solid var(--desk-line);
-  background: var(--desk-glass);
+  border: 1px solid var(--desk-hairline);
+  background: var(--desk-card);
   color: inherit;
   border-radius: 16px;
-  padding: 14px;
+  padding: 14px 56px 14px 14px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-height: 112px;
   font: inherit;
+}
+
+.desk-tile[data-tile="addMore"] {
+  background: transparent;
+  border-style: dashed;
+  padding-right: 14px;
 }
 
 .desk-tile-open {
@@ -175,7 +264,8 @@
 }
 
 .desk-tile[aria-current="true"] {
-  outline: 2px solid var(--desk-accent);
+  border-color: var(--desk-accent);
+  box-shadow: 0 0 0 1px var(--desk-accent);
 }
 
 .desk-tile-name {
@@ -183,21 +273,88 @@
   font-size: 18px;
 }
 
-.desk-tile-word,
+.desk-tile-word {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--desk-ink);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.desk-tile-word::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1.6px solid currentColor;
+}
+
+.desk-tile-word[data-word="on"]::before {
+  background: var(--desk-accent);
+  border-color: var(--desk-accent);
+}
+
+.desk-tile-word[data-word="needs attention"]::before {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 1.5px;
+  background: #9f2d2d;
+  transform: rotate(45deg);
+}
+
+.desk-tile-word[data-word="paused"]::before {
+  width: 8px;
+  height: 9px;
+  border: 0;
+  border-radius: 0;
+  border-left: 2.5px solid currentColor;
+  border-right: 2.5px solid currentColor;
+  background: transparent;
+}
+
 .desk-tile-sub {
   color: var(--desk-subtle);
   font-size: 13px;
 }
 
 .desk-tile-switch {
-  margin-top: auto;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 40px;
+  height: 24px;
+  border-radius: 12px;
+  background: #c9c3b8;
+}
+
+.desk-tile-switch:has(input:checked) {
+  background: var(--desk-accent);
+}
+
+.desk-tile-switch input {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin: 2px;
+  border-radius: 50%;
+  background: #fff;
+  display: block;
+  cursor: pointer;
+}
+
+.desk-tile-switch:has(input:checked) input {
+  margin-left: 18px;
 }
 
 .desk-pane {
-  margin: 16px 16px 16px 0;
-  border-radius: 16px;
-  background: var(--desk-glass);
-  border: 1px solid var(--desk-line);
+  margin: 0;
+  padding: 28px 20px 16px;
+  border-radius: 0;
+  background: var(--desk-pane);
+  border-left: 1px solid var(--desk-hairline);
 }
 
 .desk-shell[data-width="phone"][data-page="deck"] .desk-pane,
@@ -207,15 +364,8 @@
   display: none;
 }
 
-.desk-shell[data-width="phone"] .desk-shelf-button,
-.desk-shell[data-width="narrower"] .desk-shelf-button {
-  justify-self: start;
-  margin: 12px 0 0 16px;
-}
-
 .desk-pane-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
@@ -227,15 +377,28 @@
   margin: 0;
 }
 
+.desk-status-labels,
 .desk-status-row {
   width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 12px;
   align-items: center;
+}
+
+.desk-status-labels {
+  margin-top: 16px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--desk-hairline);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--desk-subtle);
+}
+
+.desk-status-row {
   padding: 10px 0;
   border: 0;
-  border-bottom: 1px solid var(--desk-line);
+  border-bottom: 1px solid var(--desk-hairline);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -250,6 +413,15 @@
 .desk-breath {
   line-height: 1.45;
   margin: 0 0 12px;
+}
+
+.desk-shell :focus {
+  outline: none;
+}
+
+.desk-shell :focus-visible {
+  outline: 2px solid var(--desk-accent);
+  outline-offset: 2px;
 }
 
 #app.desk-about {

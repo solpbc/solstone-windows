@@ -840,6 +840,44 @@ mod tests {
     }
 
     #[test]
+    fn menu_status_line_is_never_blank() {
+        let phases = [
+            PairingPhase::NotPaired,
+            PairingPhase::Failed,
+            PairingPhase::Pairing,
+            PairingPhase::AwaitingConfirmation,
+            PairingPhase::Paired,
+        ];
+        for phase in phases {
+            for link in [
+                None,
+                Some(crate::JournalLink::Connected),
+                Some(crate::JournalLink::Connecting),
+                Some(crate::JournalLink::Offline),
+            ] {
+                for pending in [0, 4] {
+                    let line = menu_status_line(&dump_with(phase, link, pending));
+                    assert!(!line.trim().is_empty());
+                }
+            }
+        }
+        let quiet = menu_status_line(&dump_with(
+            PairingPhase::Paired,
+            Some(crate::JournalLink::Offline),
+            0,
+        ));
+        let counted = menu_status_line(&dump_with(
+            PairingPhase::Paired,
+            Some(crate::JournalLink::Offline),
+            4,
+        ));
+        assert_ne!(quiet, counted);
+        assert!(counted.contains('4'));
+        assert!(!quiet.chars().any(|ch| ch.is_ascii_digit()));
+        assert!(quiet.contains("offline"));
+    }
+
+    #[test]
     fn paused_menu_status_rounds_up_and_keeps_indefinite_apart() {
         assert!(matches!(
             paused_menu_status(None),
