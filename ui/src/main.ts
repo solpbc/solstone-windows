@@ -1630,6 +1630,11 @@ const NO_MICROPHONE_LINE =
 const NO_OUTPUT_LINE =
   "no sound output is available. connect or enable an output device in windows sound settings, then retry.";
 const ACCESS_DENIED_LINE = "access was denied. check windows permissions for this source, then retry.";
+const NO_MICROPHONE_TILE = "no microphone found.";
+const NO_OUTPUT_TILE = "no sound output found.";
+const ACCESS_DENIED_TILE = "access was denied.";
+const BROWSER_TILE_SETUP = "add the solstone extension.";
+const OBSIDIAN_TILE_SETUP = "choose a folder.";
 
 // A source's raw fault detail is a diagnostic for logs and the health dump;
 // the pill carries only the status word.
@@ -2852,9 +2857,9 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
   if (desk) {
     pane.append(
       deskSwitchRow(
-        "keep private windows out of your journal: Edge and Firefox set to English",
+        "private windows",
         rules.exclude_private_browsing,
-        null,
+        "Edge and Firefox set to English",
         (on) => {
           void applyExclusions({ ...rules, exclude_private_browsing: on }, { kind: "toggle" });
         },
@@ -5766,17 +5771,17 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
               : "";
     const setupLine =
       id === "browsers"
-        ? BROWSER_COPY.setup
+        ? BROWSER_TILE_SETUP
         : id === "obsidian"
           ? obsidianFound.length === 0
-            ? OBSIDIAN_COPY.noneFound
+            ? OBSIDIAN_TILE_SETUP
             : OBSIDIAN_COPY.foundLabel
           : "";
     const attention =
       id === "audio"
-        ? audioDiagnosis(dump)
+        ? audioTileAttention(dump)
         : id === "screen" && (isAccessDenied(screen) || isAccessDenied(activity))
-          ? ACCESS_DENIED_LINE
+          ? ACCESS_DENIED_TILE
           : id === "browsers"
             ? browsers.word === "needs attention"
               ? latestBrowser?.capture === "intake_off"
@@ -5849,7 +5854,7 @@ function deskFactBlock(source: SourceId): HTMLElement | null {
   last.className = "desk-fact";
   const lastLabel = text("span", "last taken in");
   lastLabel.className = "desk-fact-label";
-  const lastValue = text("span", fact.last === null ? "" : relativeTaken(fact.last, nowSecs()));
+  const lastValue = text("span", fact.last === null ? "nothing yet" : relativeTaken(fact.last, nowSecs()));
   lastValue.className = "desk-fact-value";
   last.append(lastLabel, lastValue);
   block.append(soFar, last);
@@ -5980,6 +5985,15 @@ function audioDiagnosis(dump: HealthDump): string {
   return "";
 }
 
+function audioTileAttention(dump: HealthDump): string {
+  const mic = sourceByKind(dump, "mic");
+  const sound = sourceByKind(dump, "system_audio");
+  if (isAccessDenied(mic) || isAccessDenied(sound)) return ACCESS_DENIED_TILE;
+  if (mic?.status === "no_input_device") return NO_MICROPHONE_TILE;
+  if (sound?.status === "no_input_device") return NO_OUTPUT_TILE;
+  return "";
+}
+
 function deskMicChildren(): HTMLElement | null {
   if (!latestMic) return null;
   const ordered = orderedMicDevices(latestMic.config, micDevices);
@@ -6043,12 +6057,18 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
       const diagnosis = audioDiagnosis(dump);
       if (diagnosis) body.append(deskReason(diagnosis));
       const mic = sourceByKind(dump, "mic");
-      // A refusal opens microphone privacy settings. A missing microphone is not that page, so the sentence stands alone.
+      // A refusal opens microphone privacy settings. A missing device opens the sound page.
       if (isAccessDenied(mic)) {
         body.append(
           deskAction("open windows settings", () => {
             void invoke("open_microphone_privacy_settings").catch(() => undefined);
           }, ids["settings.sources.mic.permission"]),
+        );
+      } else if (diagnosis === NO_MICROPHONE_LINE || diagnosis === NO_OUTPUT_LINE) {
+        body.append(
+          deskAction("open sound settings", () => {
+            void invoke("open_sound_settings").catch(() => undefined);
+          }),
         );
       }
     }

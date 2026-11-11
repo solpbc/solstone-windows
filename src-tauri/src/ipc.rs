@@ -192,6 +192,15 @@ pub fn open_microphone_privacy_settings(app: tauri::AppHandle) -> Result<(), Str
         .map_err(|e| e.to_string())
 }
 
+/// Open the Windows sound page. A missing microphone or output is turned on there.
+#[tauri::command]
+pub fn open_sound_settings(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url("ms-settings:sound", None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Persist a structurally minimal frontend error event.
 #[tauri::command]
 pub fn log_frontend_error(record: observer_log::FrontendErrorRecord) {

@@ -701,16 +701,17 @@ html:has(.desk-shell) #app {
   }
 }
 
+/* The engine arcs across the window. Slide left by the pane so that arc sits on the deck. */
 html:has(.desk-shell[data-width="full"]) #setup-sun .sunarc-sun,
 html:has(.desk-shell[data-width="full"]) #setup-sun .sunarc-glow,
 html:has(.desk-shell[data-width="full"]) #setup-sun .sunarc-twilight {
-  transform: translate(20vw, 16vh);
+  transform: translate(-360px, 18vh);
 }
 
 html:has(.desk-shell[data-width="narrower"]) #setup-sun .sunarc-sun,
 html:has(.desk-shell[data-width="narrower"]) #setup-sun .sunarc-glow,
 html:has(.desk-shell[data-width="narrower"]) #setup-sun .sunarc-twilight {
-  transform: translate(15vw, 16vh);
+  transform: translate(-320px, 18vh);
 }
 
 html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-sun,

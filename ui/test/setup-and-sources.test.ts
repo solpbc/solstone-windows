@@ -3417,11 +3417,30 @@ describe("audio page recovery", () => {
     open!.click();
   }
 
-  it("states a missing microphone without a button that opens privacy settings", () => {
+  it("states a missing microphone with a short tile line and a sound settings button", () => {
     app.__test__.renderSettings(deskDump({ kind: "mic", status: "no_input_device", device: null }) as never);
     openAudio();
-    expect(document.body.textContent).toContain("no microphone is available");
+    expect(document.body.textContent).toContain("no microphone found.");
+    expect(document.body.textContent).toContain("add the solstone extension.");
+    expect(document.body.textContent).toContain(
+      "no microphone is available. connect or enable a microphone in windows sound settings, then retry.",
+    );
     expect(document.body.textContent).not.toContain("open windows settings");
+    const button = [...document.querySelectorAll("button")].find((el) => el.textContent === "open sound settings");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    (button as HTMLButtonElement).click();
+    expect(invokeMock).toHaveBeenCalledWith("open_sound_settings");
+  });
+
+  it("names private windows on one line, with the browser note under it", () => {
+    app.__test__.setExclusions({ excluded_exes: [], title_patterns: [], exclude_private_browsing: true });
+    app.__test__.renderSettings(deskDump({ kind: "mic", status: "inactive", device: null }) as never);
+    const open = document.querySelector<HTMLButtonElement>('[data-tile="screen"] .desk-tile-open');
+    expect(open).not.toBeNull();
+    open!.click();
+    expect(document.body.textContent).toContain("private windows");
+    expect(document.body.textContent).toContain("Edge and Firefox set to English");
+    expect(document.body.textContent).not.toContain("keep private windows out of your journal");
   });
 
   it("opens microphone privacy settings when access was denied", () => {

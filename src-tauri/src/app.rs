@@ -656,6 +656,7 @@ pub fn run(
             crate::ipc::storage_info,
             crate::ipc::open_storage_folder,
             crate::ipc::open_microphone_privacy_settings,
+            crate::ipc::open_sound_settings,
             crate::ipc::answer_pairing,
             crate::ipc::pairing_migration_state,
             crate::ipc::pairing_migration_decide,
