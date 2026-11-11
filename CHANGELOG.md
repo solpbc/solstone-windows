@@ -4,15 +4,15 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.47] - 2026-11-10
 
 ### Changed
 
-- updates now check daily in the background, download the package when your network is unmetered, and install the next time the solstone app starts, including after sign-in. settings keeps controls to check now, download on demand, or change update behavior.
+- the solstone app now checks for updates daily and downloads them in the background when your network is unmetered. a downloaded update installs the next time the solstone app starts, including when you sign in to windows. this update resets your automatic update settings once, even if you'd changed them. you can change them in settings, where you can also check now or download on demand.
 
 ### Fixed
 
-- when there's no room for more browser pages, the tray and sources page say so, and the extension stops asking you to turn browser pages back on.
+- when there's no room for more browser pages, the tray and sources page say so, and the solstone extension stops asking you to turn browser pages back on.
 - on a PC where only Obsidian notes go into your journal, "journal last reached" on the home pane now shows when this PC last reached your journal, instead of "not yet".
 
 ## [2.0.46] - 2026-11-08
