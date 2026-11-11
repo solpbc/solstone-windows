@@ -234,6 +234,8 @@ html:has(.desk-shell) #app {
 .desk-back {
   color: var(--desk-accent);
   font-weight: 600;
+  text-align: left;
+  align-self: flex-start;
 }
 
 .desk-close {
