@@ -3380,3 +3380,62 @@ describe("setup frame design and lifecycle", () => {
     }
   });
 });
+
+describe("audio page recovery", () => {
+  beforeEach(() => {
+    resetRoot();
+    app.__test__.setLabel("settings");
+    app.__test__.setRoute("home");
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined as never);
+  });
+
+  function deskDump(mic: { kind: "mic"; status: string; device: null; reason?: string; detail?: string }) {
+    return {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "done" as const,
+        notice_dismissed: true,
+        system_audio_wanted: true,
+      },
+      sources: [
+        { kind: "screen" as const, status: "active" as const, device: "Display 1" },
+        { kind: "system_audio" as const, status: "inactive" as const, device: "Speakers" },
+        mic,
+      ],
+    };
+  }
+
+  function openAudio(): void {
+    const open = document.querySelector<HTMLButtonElement>('[data-tile="audio"] .desk-tile-open');
+    expect(open).not.toBeNull();
+    open!.click();
+  }
+
+  it("states a missing microphone without a button that opens privacy settings", () => {
+    app.__test__.renderSettings(deskDump({ kind: "mic", status: "no_input_device", device: null }) as never);
+    openAudio();
+    expect(document.body.textContent).toContain("no microphone is available");
+    expect(document.body.textContent).not.toContain("open windows settings");
+  });
+
+  it("opens microphone privacy settings when access was denied", () => {
+    app.__test__.renderSettings(deskDump({
+      kind: "mic",
+      status: "faulted",
+      reason: "access_denied",
+      detail: "",
+      device: null,
+    }) as never);
+    openAudio();
+    const button = [...document.querySelectorAll("button")].find((el) => el.textContent === "open windows settings");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    (button as HTMLButtonElement).click();
+    expect(invokeMock).toHaveBeenCalledWith("open_microphone_privacy_settings");
+  });
+});

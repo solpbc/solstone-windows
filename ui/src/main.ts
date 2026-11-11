@@ -6043,8 +6043,8 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
       const diagnosis = audioDiagnosis(dump);
       if (diagnosis) body.append(deskReason(diagnosis));
       const mic = sourceByKind(dump, "mic");
-      // The one recovery opens microphone settings. A missing output has no opener, so it stays a sentence.
-      if (mic?.status === "no_input_device" || isAccessDenied(mic)) {
+      // A refusal opens microphone privacy settings. A missing microphone is not that page, so the sentence stands alone.
+      if (isAccessDenied(mic)) {
         body.append(
           deskAction("open windows settings", () => {
             void invoke("open_microphone_privacy_settings").catch(() => undefined);
