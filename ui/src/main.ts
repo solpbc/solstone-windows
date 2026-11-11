@@ -5730,7 +5730,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
   });
 }
 
-function deskStatusRows(dump: HealthDump): DeskStatusRow[] {
+function deskStatusRows(): DeskStatusRow[] {
   const now = nowSecs();
   return (["audio", "screen", "browsers", "obsidian"] as const).map((id) => {
     const fact = factFor(id);
@@ -5883,7 +5883,7 @@ function deskShelfBody(dump: HealthDump): HTMLElement | null {
   return null;
 }
 
-function deskPaneTitle(dump: HealthDump): string {
+function deskPaneTitle(): string {
   if (deskRow === "journal") return "your journal";
   if (deskRow === "thisPc") return "this PC";
   if (deskRow === "updates") return "updates";
@@ -5935,8 +5935,8 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
         updateDisplay === "failed_with_available",
     }),
     tiles: deskTilesFor(dump),
-    rows: deskStatusRows(dump),
-    paneTitle: deskPaneTitle(dump),
+    rows: deskStatusRows(),
+    paneTitle: deskPaneTitle(),
     paneIsStatus: deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump),
     shelfPage: deskRow !== "home",
   };

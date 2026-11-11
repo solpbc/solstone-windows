@@ -63,18 +63,20 @@ export function publishCaptionColor(
 ): void {
   if (!frame?.ground) return;
   const engine = (window as unknown as { SunArc?: SunArcLike }).SunArc;
+  const glowAt = engine?.glowAt;
+  const parse = engine?.parseColorToRgb;
   const tokens = engine?.parseTokens?.(ground);
-  const valid = tokens && engine?.tokensValid?.(tokens) && engine.glowAt && engine.parseColorToRgb;
-  const color = valid
-    ? compositeTopEdge(
-        frame.ground,
-        [frame.glow, frame.halo],
-        ground.clientWidth || window.innerWidth || 1,
-        engine.glowAt as (glow: GlowSample, x: number, y: number, tokens: unknown) => number,
-        engine.parseColorToRgb as (color: string) => number[],
-        tokens,
-      )
-    : hexColor(frame.ground);
+  const color =
+    tokens && engine?.tokensValid?.(tokens) && glowAt && parse
+      ? compositeTopEdge(
+          frame.ground,
+          [frame.glow, frame.halo],
+          ground.clientWidth || window.innerWidth || 1,
+          glowAt,
+          parse,
+          tokens,
+        )
+      : hexColor(frame.ground);
   if (!color) return;
   const key = `${color.red},${color.green},${color.blue}`;
   if (key === lastSent) return;
