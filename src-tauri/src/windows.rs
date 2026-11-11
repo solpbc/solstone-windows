@@ -18,7 +18,6 @@ use observer_log::{
     classify_journal_open_failure, strip_cap, usable_failure_reason, UsableFailureReason,
 };
 use tauri::webview::{PageLoadEvent, ScrollBarStyle};
-use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tokio::sync::{oneshot, Notify};
 
@@ -38,28 +37,78 @@ fn shared_webview_environment(
         .scroll_bar_style(ScrollBarStyle::FluentOverlay)
 }
 
-fn mica_effects() -> tauri::utils::config::WindowEffectsConfig {
-    EffectsBuilder::new().effect(Effect::Mica).build()
+fn caption_is_dark(window: &WebviewWindow) -> bool {
+    matches!(window.theme(), Ok(tauri::Theme::Dark))
 }
 
-/// Color the native settings caption to the ground. Decorations stay, so
-/// Windows keeps drawing the buttons. A refused call (Windows 10) leaves the
-/// system caption in place.
-fn paint_settings_caption(window: &WebviewWindow, dark: bool) {
+/// Day ground, used only until the page reports the sun-arc frame.
+fn caption_stand_in(dark: bool) -> (u8, u8, u8) {
+    if dark {
+        (0x39, 0x2E, 0x26)
+    } else {
+        (0xFE, 0xFC, 0xF8)
+    }
+}
+
+fn remembered_caption(label: &str) -> Option<(u8, u8, u8)> {
+    CAPTION_COLOR
+        .lock()
+        .ok()
+        .and_then(|colors| colors.get(label).copied())
+}
+
+fn remember_caption(label: &str, color: (u8, u8, u8)) {
+    if let Ok(mut colors) = CAPTION_COLOR.lock() {
+        colors.insert(label.to_string(), color);
+    }
+}
+
+static CAPTION_COLOR: std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>> =
+    std::sync::Mutex::new(std::collections::HashMap::new());
+
+/// Color the native caption and hide its text. Decorations stay, so Windows
+/// keeps drawing the buttons. A refused call (Windows 10) leaves the system
+/// caption in place.
+fn paint_caption(window: &WebviewWindow, red: u8, green: u8, blue: u8) {
+    remember_caption(window.label(), (red, green, blue));
     #[cfg(windows)]
     {
         if let Ok(hwnd) = window.hwnd() {
-            let _ = platform_win::caption_color::apply_caption_colors(hwnd.0 as isize, dark);
+            let _ = platform_win::caption_color::apply_caption_colors(
+                hwnd.0 as isize,
+                red,
+                green,
+                blue,
+            );
         }
     }
     #[cfg(not(windows))]
     {
-        let _ = (window, dark);
+        let _ = (window, red, green, blue);
     }
 }
 
-fn settings_caption_is_dark(window: &WebviewWindow) -> bool {
-    matches!(window.theme(), Ok(tauri::Theme::Dark))
+pub(crate) fn paint_caption_rgb(window: &WebviewWindow, red: u8, green: u8, blue: u8) {
+    paint_caption(window, red, green, blue);
+}
+
+fn paint_remembered_caption(window: &WebviewWindow) {
+    let (red, green, blue) = remembered_caption(window.label())
+        .unwrap_or_else(|| caption_stand_in(caption_is_dark(window)));
+    paint_caption(window, red, green, blue);
+}
+
+fn bind_caption(window: &WebviewWindow) {
+    paint_remembered_caption(window);
+    let caption_window = window.clone();
+    window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::ThemeChanged(_) | tauri::WindowEvent::Focused(true)
+        ) {
+            paint_remembered_caption(&caption_window);
+        }
+    });
 }
 
 pub(crate) fn settings_proof_eligible(app: &tauri::AppHandle) -> bool {
@@ -136,24 +185,17 @@ fn open_settings_internal(app: &tauri::AppHandle, destination: &str) -> tauri::R
     };
 
     // Native decorations stay. This window is opaque, so the webview's ground
-    // is the ground. About and the journal keep Mica.
+    // is the ground. About uses this same caption.
     let window = shared_webview_environment(WebviewWindowBuilder::new(app, "settings", url))
         .title("solstone")
         .inner_size(1180.0, 760.0)
         .min_inner_size(360.0, 480.0)
         .visible(true)
         .build()?;
-    paint_settings_caption(&window, settings_caption_is_dark(&window));
+    bind_caption(&window);
 
     let teardown_app = app.clone();
-    let caption_window = window.clone();
     window.on_window_event(move |event| {
-        if let tauri::WindowEvent::ThemeChanged(theme) = &event {
-            paint_settings_caption(&caption_window, matches!(theme, tauri::Theme::Dark));
-        }
-        if matches!(event, tauri::WindowEvent::Focused(true)) {
-            paint_settings_caption(&caption_window, settings_caption_is_dark(&caption_window));
-        }
         if matches!(event, tauri::WindowEvent::Destroyed)
             || (matches!(event, tauri::WindowEvent::Focused(false))
                 && !settings_proof_eligible(&teardown_app))
@@ -882,17 +924,18 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    shared_webview_environment(WebviewWindowBuilder::new(
+    // Same caption as settings: native buttons, no caption text, color from the
+    // sun-arc ground. Opaque, so that ground is the page and not Mica.
+    let window = shared_webview_environment(WebviewWindowBuilder::new(
         app,
         "about",
         WebviewUrl::App("index.html".into()),
     ))
     .title("about solstone")
     .inner_size(360.0, 480.0)
-    .transparent(true)
-    .effects(mica_effects())
     .visible(true)
     .build()?;
+    bind_caption(&window);
     tracing::info!(
         target: "window",
         label = "about",

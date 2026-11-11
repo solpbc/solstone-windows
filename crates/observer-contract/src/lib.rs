@@ -71,6 +71,8 @@ pub mod tray {
 /// Settings window.
 pub mod settings {
     pub const WINDOW_ROOT: &str = "settings.window.root";
+    /// The deck, once setup is finished.
+    pub const DECK: &str = "settings.deck";
     /// Home pane: the first-run kinship intro block (shown only while not paired).
     pub const HOME_KINSHIP: &str = "settings.home.kinship";
     pub const LOGS_READ: &str = "settings.logs.read";
@@ -229,6 +231,7 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ("tray.menu.about", tray::MENU_ABOUT),
         ("tray.menu.quit", tray::MENU_QUIT),
         ("settings.window.root", settings::WINDOW_ROOT),
+        ("settings.deck", settings::DECK),
         ("settings.home.kinship", settings::HOME_KINSHIP),
         ("settings.logs.read", settings::LOGS_READ),
         ("settings.logs.preview", settings::LOGS_PREVIEW),

@@ -15,6 +15,37 @@ import { automationContract } from "./lib/contract";
 import { createLogHelp } from "./logs";
 import { displayableMark, MARK_CSS, renderMarkCard, type MarkRenderSpec } from "./mark";
 import setupFrameCss from "./setup-frame.css?inline";
+import shellCss from "./shell/shell.css?inline";
+import { publishCaptionColor, resetCaptionReport } from "./shell/caption";
+import {
+  addMoreSources,
+  audioTile,
+  browsersTile,
+  countTotal,
+  counterFacts,
+  deckTiles,
+  derivedComputerSoundWanted,
+  durationTotal,
+  greeting,
+  journalPill,
+  legacyRoute,
+  obsidianTile,
+  pauseTimeLeft,
+  relativeTaken,
+  restartPlace,
+  screenTile,
+  settingsNavigate,
+  shelfBadges,
+  spaceOnTile,
+  startedLabel,
+  widthClass,
+  type CounterDocument,
+  type Pane,
+  type ShelfRow,
+  type SourceFacts,
+  type SourceId,
+} from "./shell/derive";
+import { renderDesk, type DeskStatusRow, type DeskTile } from "./shell/view";
 
 type FrontendOrigin = "settings" | "about" | "none";
 type FrontendErrorKind = "error" | "unhandled_rejection";
@@ -263,6 +294,7 @@ interface SetupSnapshot {
   desktop_activity_through_pause?: boolean;
   desktop_activity_window_titles?: boolean;
   desktop_activity_page_addresses?: boolean;
+  system_audio_wanted?: boolean | null;
   desktop_activity_through_pause_save_failed?: boolean;
   desktop_activity_window_titles_save_failed?: boolean;
   desktop_activity_page_addresses_save_failed?: boolean;
@@ -471,6 +503,15 @@ let migrationRefreshInFlight = false;
 let migrationOfferBinding: string | null = null;
 let selectedMigrationDevice: MigrationDevice | null = null;
 let activeRoute: Route = "home";
+let deskRow: ShelfRow = "home";
+let deskPane: Pane | "addMore" = "status";
+let deskShelfOpen = false;
+let deskPhonePane = false;
+let latestCounters: CounterDocument | null | undefined;
+let countersFor: HealthDump | null = null;
+let captionWatch: MutationObserver | null = null;
+let deskKeysBound = false;
+let openedFromSourcesQuery = false;
 let renderBeaconFired = false;
 let focusPaneTitleOnRender = false;
 type ProofConsumerState = "mic" | "system_audio" | "screen" | "closed";
@@ -3538,6 +3579,17 @@ function routeLabel(route: Route): string {
 }
 
 function navigateTo(route: Route): void {
+  if (latestHealth && showsDesktopShell(latestHealth)) {
+    const mapped = legacyRoute(route);
+    deskRow = mapped.row;
+    deskPane = mapped.pane;
+    deskPhonePane = mapped.row !== "home" || mapped.pane !== "status";
+    closeProofConsumer();
+    focusPaneTitleOnRender = true;
+    closeNavOverlay();
+    rerender();
+    return;
+  }
   activeRoute = route;
   closeProofConsumer();
   focusPaneTitleOnRender = true;
@@ -5413,6 +5465,529 @@ function renderPane(dump: HealthDump): HTMLElement {
   return pane;
 }
 
+const DESK_BREATH = {
+  audio: "while this is on, the solstone app takes in sound, and all of it goes into your journal.",
+  screen: "while this is on, the solstone app takes in what's on your screen, and all of it goes into your journal.",
+  browsers:
+    "on the sites you allow, the solstone extension takes in the page's text and rough layout, and all of it goes into your journal.",
+} as const;
+
+function showsDesktopShell(dump: HealthDump | null): boolean {
+  if (!dump || label !== "settings") return false;
+  if (activeRoute !== "home") return false;
+  if (dump.setup?.sequence_enabled !== true || dump.setup.wizard !== "done") return false;
+  return !settingsShowsSetupFrame(dump);
+}
+
+function ensureShellCss(): void {
+  if (document.getElementById("desk-shell-css")) return;
+  const style = document.createElement("style");
+  style.id = "desk-shell-css";
+  style.textContent = shellCss;
+  document.head.append(style);
+}
+
+function watchCaption(ground: HTMLElement): void {
+  captionWatch?.disconnect();
+  captionWatch = new MutationObserver(() => reportCaption());
+  // The ground hex can stay put while the glow at the top edge moves. Every
+  // paint writes a style on the sun or a glow, so the subtree is the signal.
+  captionWatch.observe(ground, {
+    attributes: true,
+    attributeFilter: ["style"],
+    subtree: true,
+  });
+  reportCaption();
+}
+
+function reportCaption(): void {
+  const ground = document.getElementById("setup-sun");
+  if (!ground || ground.hidden || !setupSun?.getFrame) return;
+  publishCaptionColor(ground, setupSun.getFrame(), (color) => {
+    void Promise.resolve(invoke("set_caption_color", { red: color.red, green: color.green, blue: color.blue })).catch(() => {});
+  });
+}
+
+function maybeRefreshCounters(dump: HealthDump): void {
+  if (countersFor === dump) return;
+  countersFor = dump;
+  void Promise.resolve(invoke<CounterDocument | null>("get_source_counters"))
+    .then((doc) => {
+      latestCounters = doc ?? null;
+      if (latestHealth === dump) requestRerender();
+    })
+    .catch(() => {
+      latestCounters = null;
+    });
+}
+
+function bindDeskKeys(): void {
+  if (deskKeysBound) return;
+  deskKeysBound = true;
+  document.addEventListener("keydown", onDeskKey);
+  window.addEventListener("resize", () => {
+    if (latestHealth && showsDesktopShell(latestHealth)) requestRerender();
+  });
+}
+
+function onDeskKey(event: KeyboardEvent): void {
+  if (!latestHealth || !showsDesktopShell(latestHealth)) return;
+  if (event.ctrlKey && event.key === ",") {
+    if (isTextEntryTarget(event.target)) return;
+    event.preventDefault();
+    deskRow = "thisPc";
+    deskPane = "status";
+    deskPhonePane = true;
+    rerender();
+    return;
+  }
+  const tiles = [...document.querySelectorAll<HTMLButtonElement>(".desk-tile-open")];
+  const index = tiles.indexOf(document.activeElement as HTMLButtonElement);
+  if (index < 0) return;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    event.preventDefault();
+    tiles[(index + 1) % tiles.length]?.focus();
+    return;
+  }
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    event.preventDefault();
+    tiles[(index - 1 + tiles.length) % tiles.length]?.focus();
+    return;
+  }
+  if (event.key !== " " && event.key !== "Spacebar") return;
+  const id = tiles[index].closest("[data-tile]")?.getAttribute("data-tile");
+  if (!id || id === "addMore") return;
+  const input = tiles[index].closest("[data-tile]")?.querySelector("input");
+  const switchOn = input instanceof HTMLInputElement ? input.checked : null;
+  const action = spaceOnTile(id as SourceId, id === "browsers" ? null : switchOn);
+  if (action === "none") return;
+  event.preventDefault();
+  if (action === "open") {
+    openDeskSource(id);
+    return;
+  }
+  if (input instanceof HTMLInputElement) {
+    input.checked = !input.checked;
+    input.dispatchEvent(new Event("change"));
+  }
+}
+
+function sourceFaulted(dump: HealthDump, kind: SourceKind): boolean {
+  const report = sourceByKind(dump, kind);
+  return Boolean(report && report.status === "faulted" && !isAccessDenied(report) && isSourceEnabled(dump.setup, kind));
+}
+
+function deskPausedLine(dump: HealthDump): string | null {
+  if (!globalPauseActive(dump)) return null;
+  const secs = dump.pause?.seconds_remaining;
+  const remaining =
+    secs == null || healthReceivedAt == null ? null : Math.max(0, secs - (nowSecs() - healthReceivedAt));
+  const left = pauseTimeLeft(dump.pause ? remaining : null);
+  if (left.kind === "untilResume") return "paused until you resume";
+  if (left.kind === "lessThanAMinute") return "paused, less than a minute left";
+  return `paused, ${left.minutes} min left`;
+}
+
+function deskPill(dump: HealthDump): string {
+  const phase = dump.sync.pairing.phase;
+  const waiting = dump.sync.upload.pending_segments ?? 0;
+  const link = dump.sync.journal_link;
+  const paired = phase === "paired" || phase === "awaiting_confirmation" || phase === "pairing";
+  return journalPill({
+    paired,
+    needsNewLink: false,
+    refused: false,
+    syncPaused: false,
+    held: phase === "awaiting_confirmation",
+    offline: phase === "paired" && link === "offline",
+    connecting: phase === "pairing" || (phase === "paired" && link === "connecting"),
+    waitingToSync: phase === "paired" && waiting > 0 && link !== "offline" && link !== "connecting",
+    waiting,
+    sourceNeedsAttention: false,
+  });
+}
+
+function deskSourceName(id: string): string {
+  if (id === "obsidian") return "Obsidian";
+  if (id === "addMore") return "add more";
+  return id;
+}
+
+function totalWords(source: SourceId, total: number): string {
+  if (source === "audio" || source === "screen") return durationTotal(total);
+  if (source === "browsers") return countTotal(total, "page", "pages");
+  return countTotal(total, "note", "notes");
+}
+
+function factFor(source: SourceId): SourceFacts | undefined {
+  const facts = counterFacts(latestCounters ?? null);
+  return facts?.find((fact) => fact.source === source);
+}
+
+function openDeskSource(id: string): void {
+  deskRow = "home";
+  deskPane = id === "addMore" ? "addMore" : (id as Pane);
+  deskPhonePane = true;
+  deskShelfOpen = false;
+  rerender();
+}
+
+function onDeskSwitch(id: string, on: boolean): void {
+  if (id === "audio") {
+    void invoke("set_audio_tile", { on }).then(() => retryHealth());
+    return;
+  }
+  if (id === "screen") {
+    void invoke("set_source_enabled", { kind: "screen", enabled: on }).then(() => retryHealth());
+    return;
+  }
+  if (id === "obsidian" && !on) {
+    void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_turn_off"));
+  }
+}
+
+function deskTilesFor(dump: HealthDump): DeskTile[] {
+  const paused = globalPauseActive(dump);
+  const setup = dump.setup;
+  const mic = sourceByKind(dump, "mic");
+  const sound = sourceByKind(dump, "system_audio");
+  const screen = sourceByKind(dump, "screen");
+  const activity = sourceByKind(dump, "desktop_activity");
+  const audio = audioTile({
+    micEnabled: setup?.mic === true,
+    micAccessDenied: isAccessDenied(mic),
+    micDevicePresent: mic?.status !== "no_input_device",
+    micTakingIn: mic?.status === "active",
+    systemAudioEnabled: setup?.system_audio === true,
+    systemAudioFaulted: Boolean(sound && sound.status === "faulted" && !isAccessDenied(sound)),
+    systemAudioTakingIn: sound?.status === "active",
+    appPaused: paused,
+    wanted: setup?.system_audio_wanted ?? null,
+  });
+  const screenView = screenTile({
+    enabled: setup?.screen === true,
+    accessDenied: isAccessDenied(screen),
+    failed: Boolean(screen && screen.status === "faulted" && !isAccessDenied(screen)),
+    activityFailed: Boolean(activity && activity.status === "faulted" && !isAccessDenied(activity) && setup?.desktop_activity === true),
+    activityOn: setup?.desktop_activity === true,
+    appPaused: paused,
+    running: screen?.status === "active",
+    permissionAsked: true,
+  });
+  const browsers = browsersTile({
+    capture: latestBrowser?.capture ?? "unavailable",
+    deliveryFailed: latestBrowser?.delivery === "failed",
+    appPaused: paused,
+  });
+  const obsidian = obsidianTile({
+    state: latestObsidian?.state ?? "off",
+    vault: latestObsidian?.vault ?? null,
+    foundCount: obsidianFound.length,
+  });
+  const browserNames = latestBrowser
+    ? [...new Set(latestBrowser.connected.map((item) => BROWSER_NAMES[item.brand] ?? item.brand))]
+    : [];
+  return deckTiles().map((id) => {
+    if (id === "addMore") {
+      return {
+        id,
+        name: "add more",
+        word: "",
+        sub: "",
+        switchOn: null,
+        switchId: null,
+        switchLabel: "",
+        selected: deskPane === "addMore",
+      };
+    }
+    const view = id === "audio" ? audio : id === "screen" ? screenView : id === "browsers" ? browsers : obsidian;
+    const sub =
+      id === "audio"
+        ? audio.namesMicrophone
+          ? mic?.device || "microphone"
+          : ""
+        : id === "screen"
+          ? screenView.activityKept
+            ? "activity is still on."
+            : screenView.activityAlongside
+              ? "with activity"
+              : ""
+          : id === "browsers"
+            ? browserNames.join(", ")
+            : obsidian.word === "on" || obsidian.word === "paused"
+              ? latestObsidian?.vault ?? ""
+              : "";
+    return {
+      id,
+      name: deskSourceName(id),
+      word: view.word,
+      sub,
+      switchOn: view.switchOn,
+      switchId: id === "screen" ? ids["settings.sources.screen.enabled"] : null,
+      switchLabel: id === "obsidian" ? "Obsidian" : id,
+      selected: deskPane === id,
+    };
+  });
+}
+
+function deskStatusRows(dump: HealthDump): DeskStatusRow[] {
+  const now = nowSecs();
+  return (["audio", "screen", "browsers", "obsidian"] as const).map((id) => {
+    const fact = factFor(id);
+    if (!fact) return { id, name: deskSourceName(id), nothingYet: false, total: "", relative: "", hasFacts: false };
+    return {
+      id,
+      name: deskSourceName(id),
+      nothingYet: fact.nothingYet,
+      total: fact.nothingYet ? "" : totalWords(id, fact.total),
+      relative: fact.last === null ? "" : relativeTaken(fact.last, now),
+      hasFacts: true,
+    };
+  });
+}
+
+function deskSoFar(source: SourceId): HTMLElement | null {
+  const fact = factFor(source);
+  if (!fact) return null;
+  const line = fact.nothingYet
+    ? "nothing yet"
+    : `${totalWords(source, fact.total)}, since ${startedLabel(fact.started ?? "", new Date().getFullYear())}`;
+  const node = text("p", line);
+  node.classList.add("desk-breath");
+  if (fact.last !== null) {
+    const taken = text("p", relativeTaken(fact.last, nowSecs()));
+    taken.classList.add("desk-breath");
+    const wrap = document.createElement("div");
+    wrap.append(node, taken);
+    return wrap;
+  }
+  return node;
+}
+
+function restartControl(): HTMLButtonElement {
+  return actionButton("restart intake", ids["tray.menu.restartObserving"], true, () => {
+    void invoke("resume").then(() => retryHealth());
+  });
+}
+
+function deskRestart(dump: HealthDump, place: "audio" | "screen" | "technicalDetails"): HTMLElement | null {
+  const where = restartPlace({
+    phaseError: dump.app_state === "error",
+    micFaulted: sourceFaulted(dump, "mic"),
+    systemAudioFaulted: sourceFaulted(dump, "system_audio"),
+    screenFaulted: sourceFaulted(dump, "screen"),
+    activityFaulted: sourceFaulted(dump, "desktop_activity"),
+    storageFault: dump.app_state === "error",
+  });
+  return where === place ? restartControl() : null;
+}
+
+function breath(sentence: string): HTMLElement {
+  const node = text("p", sentence);
+  node.classList.add("desk-breath");
+  return node;
+}
+
+function deskPaneExtra(dump: HealthDump): HTMLElement | null {
+  if (deskRow !== "home") return null;
+  if (homeShowsPairing(dump) && deskPane === "status") return renderRouteContent("journal", dump);
+  const body = document.createElement("div");
+  if (deskPane === "status") {
+    const heading = text("h3", "technical details");
+    body.append(heading, renderStatusStrip(dump));
+    const restart = deskRestart(dump, "technicalDetails");
+    if (restart) body.append(restart);
+    return body;
+  }
+  if (deskPane === "audio") {
+    body.append(breath(DESK_BREATH.audio));
+    const wanted = derivedComputerSoundWanted(
+      dump.setup?.mic === true,
+      dump.setup?.system_audio === true,
+      dump.setup?.system_audio_wanted ?? null,
+    );
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = wanted;
+    input.setAttribute("aria-label", "computer sound");
+    input.onchange = () => {
+      void invoke("set_computer_sound", { wanted: input.checked }).then(() => retryHealth());
+    };
+    label.append(input, document.createTextNode(" computer sound"));
+    body.append(label);
+    const soFar = deskSoFar("audio");
+    if (soFar) body.append(soFar);
+    if (latestMic) body.append(renderMicSection(latestMic));
+    const restart = deskRestart(dump, "audio");
+    if (restart) body.append(restart);
+    return body;
+  }
+  if (deskPane === "screen") {
+    body.append(breath(DESK_BREATH.screen));
+    const soFar = deskSoFar("screen");
+    if (soFar) body.append(soFar);
+    body.append(text("h3", "goes along with it"));
+    body.append(renderDesktopActivityControl(sourceByKind(dump, "desktop_activity"), dump));
+    body.append(text("p", "this list applies to activity too"));
+    if (latestExclusions) body.append(renderExclusionsSection(latestExclusions, dump));
+    const restart = deskRestart(dump, "screen");
+    if (restart) body.append(restart);
+    return body;
+  }
+  if (deskPane === "browsers") {
+    body.append(breath(DESK_BREATH.browsers));
+    const soFar = deskSoFar("browsers");
+    if (soFar) body.append(soFar);
+    if (latestBrowser) body.append(...renderBrowserRows(latestBrowser));
+    return body;
+  }
+  if (deskPane === "obsidian") {
+    body.append(breath(OBSIDIAN_COPY.explain));
+    const soFar = deskSoFar("obsidian");
+    if (soFar) body.append(soFar);
+    if (latestObsidian) body.append(...renderObsidianRows(latestObsidian));
+    return body;
+  }
+  if (deskPane === "addMore") {
+    body.append(text("h3", "already on home"));
+    for (const source of addMoreSources()) body.append(text("div", deskSourceName(source)));
+    return body;
+  }
+  if (deskPane === "screenLeftOut") {
+    body.append(latestExclusions ? renderExclusionsSection(latestExclusions, dump) : loadingCaption());
+    return body;
+  }
+  return null;
+}
+
+function deskShelfBody(dump: HealthDump): HTMLElement | null {
+  if (deskRow === "journal") return renderRouteContent("journal", dump);
+  if (deskRow === "thisPc") {
+    const body = document.createElement("div");
+    body.append(latestHotkey ? renderHotkeySection(latestHotkey) : loadingCaption());
+    const location = document.createElement("div");
+    location.append(storageRow(latestStorage));
+    body.append(location, renderStartAtLoginControl(dump));
+    return body;
+  }
+  if (deskRow === "updates") return latestUpdate ? renderUpdatesSection(latestUpdate) : loadingCaption();
+  if (deskRow === "help") {
+    const body = renderRouteContent("help", dump);
+    body.append(
+      actionButton("get help", undefined, true, () => void invoke("open_help")),
+      actionButton("report a problem", undefined, true, () => void invoke("open_support_report")),
+    );
+    return body;
+  }
+  return null;
+}
+
+function deskPaneTitle(dump: HealthDump): string {
+  if (deskRow === "journal") return "your journal";
+  if (deskRow === "thisPc") return "this PC";
+  if (deskRow === "updates") return "updates";
+  if (deskRow === "help") return "help";
+  if (deskPane === "status") return "status";
+  if (deskPane === "addMore") return "add more";
+  if (deskPane === "screenLeftOut") return "left out";
+  return deskSourceName(deskPane);
+}
+
+function renderDesktopShell(dump: HealthDump): HTMLElement {
+  ensureShellCss();
+  const width = widthClass(window.innerWidth || 1180);
+  const saveFailed = Boolean(
+    (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
+      dump.setup?.desktop_activity_through_pause_save_failed ||
+      dump.setup?.desktop_activity_window_titles_save_failed ||
+      dump.setup?.desktop_activity_page_addresses_save_failed,
+  );
+  const retry = saveFailed
+    ? actionButton("retry", ids["settings.sources.saveRetry"], true, () => {
+        void invoke("retry_save").then(() => retryHealth());
+      })
+    : null;
+  const unread =
+    dump.setup?.setup_read_failed === true
+      ? (() => {
+          const notice = text("div", savedChoicesUnread);
+          notice.classList.add("save-failure");
+          return notice;
+        })()
+      : null;
+  const updateDisplay = latestUpdate?.display;
+  const view = {
+    width,
+    row: deskRow,
+    shelfOpen: deskShelfOpen,
+    phoneShowsPane: width === "phone" && (deskPhonePane || deskRow !== "home"),
+    greeting: greeting(new Date().getHours()),
+    pill: deskPill(dump),
+    pausedLine: deskPausedLine(dump),
+    badges: shelfBadges({
+      unknownJournal: (dump.sync.unknown_journals?.length ?? 0) > 0,
+      shortcutNeedsRepair: latestHotkey?.registration === "combo_taken" || latestHotkey?.registration === "failed",
+      updateAvailable:
+        updateDisplay === "available" ||
+        updateDisplay === "downloading" ||
+        updateDisplay === "staged" ||
+        updateDisplay === "failed_with_available",
+    }),
+    tiles: deskTilesFor(dump),
+    rows: deskStatusRows(dump),
+    paneTitle: deskPaneTitle(dump),
+    paneIsStatus: deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump),
+    shelfPage: deskRow !== "home",
+  };
+  return renderDesk(
+    view,
+    {
+      notice: dump.setup?.notice_dismissed ? null : renderSourcesNotice(dump),
+      unread,
+      saveRetry: retry,
+      paneExtra: deskPaneExtra(dump),
+      shelfBody: deskShelfBody(dump),
+    },
+    {
+      onShelf: (row) => {
+        deskRow = row;
+        deskShelfOpen = false;
+        if (row === "home") deskPhonePane = deskPane !== "status";
+        rerender();
+      },
+      onShelfToggle: () => {
+        deskShelfOpen = !deskShelfOpen;
+        rerender();
+      },
+      onBackHome: () => {
+        deskRow = "home";
+        deskPane = "status";
+        deskPhonePane = false;
+        deskShelfOpen = false;
+        rerender();
+      },
+      onPill: () => {
+        deskRow = "home";
+        deskPane = "status";
+        deskPhonePane = width === "phone";
+        rerender();
+      },
+      onResume: () => {
+        void invoke("resume").then(() => retryHealth());
+      },
+      onClosePane: () => {
+        deskPane = "status";
+        deskPhonePane = false;
+        rerender();
+      },
+      onTile: (id) => openDeskSource(id),
+      onSwitch: (id, on) => onDeskSwitch(id, on),
+      onStatus: (id) => openDeskSource(id),
+    },
+  );
+}
+
 function renderSettingsShell(dump: HealthDump): HTMLElement {
   const shell = document.createElement("div");
   shell.classList.add("settings-shell");
@@ -5425,23 +6000,6 @@ function renderSettingsShell(dump: HealthDump): HTMLElement {
   return shell;
 }
 
-let settingsWindowTitledForSetup = false;
-
-function syncSettingsWindowTitle(showFrame: boolean): void {
-  if (label !== "settings") return;
-  if (settingsWindowTitledForSetup === showFrame) return;
-  settingsWindowTitledForSetup = showFrame;
-  const targetTitle = showFrame ? "set up solstone" : "solstone settings";
-  try {
-    const pending = getCurrentWindow().setTitle(targetTitle);
-    if (pending) {
-      void Promise.resolve(pending).catch(() => {});
-    }
-  } catch {
-    // Missing setTitle throws (e.g. in test mocks without setTitle).
-  }
-}
-
 function settingsShowsSetupFrame(dump: HealthDump): boolean {
   return activeRoute === "home" && dump.setup?.sequence_enabled === true && dump.setup.wizard !== "done";
 }
@@ -5449,8 +6007,14 @@ function settingsShowsSetupFrame(dump: HealthDump): boolean {
 // The sun arc behind the setup frame, drawn by the journal's own engine (./brand/sunarc.js).
 // It lives outside #app, which every health update rebuilds, and is torn down (its clock and
 // listeners stopped) whenever the frame is not showing.
+interface SunFrame {
+  ground?: string;
+  glow?: { x: number; y: number; r: number; a: number; color: string } | null;
+  halo?: { x: number; y: number; r: number; a: number; color: string } | null;
+}
 interface SunArcInstance {
   teardown(): void;
+  getFrame?: () => SunFrame | null;
 }
 let setupSun: SunArcInstance | null = null;
 
@@ -5459,6 +6023,9 @@ function syncSetupSun(framed: boolean): void {
   if (setupSun && (!framed || !ground?.isConnected)) {
     setupSun.teardown();
     setupSun = null;
+    captionWatch?.disconnect();
+    captionWatch = null;
+    resetCaptionReport();
     if (ground) ground.hidden = true;
   }
   if (!framed || setupSun) return;
@@ -5472,7 +6039,11 @@ function syncSetupSun(framed: boolean): void {
   }
   ground.hidden = false;
   setupSun = engine.mount(ground);
-  if (!setupSun) ground.hidden = true;
+  if (!setupSun) {
+    ground.hidden = true;
+    return;
+  }
+  watchCaption(ground);
 }
 
 function renderSettings(dump: HealthDump): void {
@@ -5483,10 +6054,25 @@ function renderSettings(dump: HealthDump): void {
   root.style.padding = "0";
   root.style.overflow = "hidden";
   root.style.boxSizing = "border-box";
+  if (
+    openedFromSourcesQuery &&
+    activeRoute === "sources" &&
+    dump.setup?.sequence_enabled === true &&
+    dump.setup.wizard === "done"
+  ) {
+    activeRoute = "home";
+    deskRow = "home";
+    deskPane = "status";
+  }
   const showFrame = settingsShowsSetupFrame(dump);
-  syncSettingsWindowTitle(showFrame);
-  root.append(showFrame ? renderSetupFrame(dump) : renderSettingsShell(dump));
-  syncSetupSun(showFrame);
+  const showDesk = showsDesktopShell(dump);
+  root.classList.remove("desk-about");
+  root.append(showFrame ? renderSetupFrame(dump) : showDesk ? renderDesktopShell(dump) : renderSettingsShell(dump));
+  syncSetupSun(showFrame || showDesk);
+  if (showDesk) {
+    bindDeskKeys();
+    maybeRefreshCounters(dump);
+  }
   if (logText && logPosition) {
     logText.setSelectionRange(logPosition[0], logPosition[1]);
     logText.scrollTop = logPosition[2];
@@ -5518,7 +6104,9 @@ function renderSettings(dump: HealthDump): void {
 
 function renderAbout(dump: HealthDump): void {
   resetRoot(ids["about.window.root"]);
-  syncSetupSun(false);
+  ensureShellCss();
+  root.classList.add("desk-about");
+  syncSetupSun(true);
   root.style.padding = "22px";
   root.style.boxSizing = "border-box";
 
@@ -6381,6 +6969,7 @@ export function start(): void {
   root = queriedRoot;
 
   if (new URLSearchParams(window.location.search).get("route") === "sources") {
+    openedFromSourcesQuery = true;
     activeRoute = "sources";
     focusPaneTitleOnRender = true;
   }
@@ -6491,6 +7080,14 @@ export function start(): void {
 
   void boot();
   void listen<string>("settings://navigate", (event) => {
+    if (latestHealth && showsDesktopShell(latestHealth)) {
+      const next = settingsNavigate(event.payload);
+      deskRow = next.row;
+      deskPane = next.pane;
+      deskPhonePane = next.row !== "home" || next.pane !== "status";
+      rerender();
+      return;
+    }
     if (event.payload === "sources") {
       navigateTo("sources");
     }
@@ -6704,7 +7301,13 @@ export const __test__ = {
     unknownLoginAttempt = null;
     hotkeyCapturing = false;
     titleDraft = "";
-    settingsWindowTitledForSetup = false;
+    deskRow = "home";
+    deskPane = "status";
+    deskShelfOpen = false;
+    deskPhonePane = false;
+    latestCounters = undefined;
+    countersFor = null;
+    openedFromSourcesQuery = false;
   },
 };
 

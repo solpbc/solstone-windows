@@ -1,47 +1,55 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! Caption colors for the settings window.
+//! Native caption for a window whose page paints the sun-arc ground.
 //!
-//! Windows 11 accepts a caption, border, and caption-text color. Windows 10
-//! refuses those attributes; the caller ignores the failure and the system
-//! caption stays. The buttons stay the ones Windows draws.
+//! Windows 11 accepts a caption and border color. Windows 10 refuses those
+//! attributes; the caller ignores the failure and the system caption stays.
+//! The buttons stay the ones Windows draws. Caption text and the icon are
+//! hidden. The window title itself is left alone, for the taskbar and for
+//! accessibility.
 
 /// Pack a color as COLORREF, `0x00BBGGRR`.
 pub fn colorref(red: u8, green: u8, blue: u8) -> u32 {
     u32::from(blue) << 16 | u32::from(green) << 8 | u32::from(red)
 }
 
-/// Caption, text, and border for the light or dark ground.
-pub fn caption_colors(dark: bool) -> (u32, u32, u32) {
-    if dark {
-        let ground = colorref(0x22, 0x1C, 0x19);
-        let text = colorref(0xFC, 0xF3, 0xE4);
-        (ground, text, ground)
+/// A readable caption-text color, used only if Windows still draws the title.
+pub fn caption_text_color(red: u8, green: u8, blue: u8) -> u32 {
+    let luminance = 0.2126 * f32::from(red) + 0.7152 * f32::from(green) + 0.0722 * f32::from(blue);
+    if luminance > 140.0 {
+        colorref(0x1A, 0x1A, 0x1A)
     } else {
-        let ground = colorref(0xFC, 0xF3, 0xE4);
-        let text = colorref(0x1A, 0x1A, 0x1A);
-        (ground, text, ground)
+        colorref(0xFC, 0xF3, 0xE4)
     }
 }
 
-/// Paint the native caption. Returns false when the handle is absent or the
-/// OS refuses the attributes.
+/// Paint the native caption and hide its text and icon.
+///
+/// Returns false when the handle is absent or the OS refuses an attribute.
 #[allow(unsafe_code)]
-pub fn apply_caption_colors(window: isize, dark: bool) -> bool {
+pub fn apply_caption_colors(window: isize, red: u8, green: u8, blue: u8) -> bool {
     #[cfg(windows)]
     {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::Graphics::Dwm::{
             DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
         };
+        use windows::Win32::UI::Controls::{
+            SetWindowThemeAttribute, WTA_NONCLIENT, WTA_OPTIONS, WTNCA_NODRAWCAPTION,
+            WTNCA_NODRAWICON,
+        };
 
         if window == 0 {
             return false;
         }
-        let (caption, text, border) = caption_colors(dark);
+        let caption = colorref(red, green, blue);
+        let text = caption_text_color(red, green, blue);
+        let border = caption;
         let hwnd = HWND(window as *mut std::ffi::c_void);
-        // The attribute call writes three local colors through an opaque handle.
+        // Color first, then hide the caption text. Each call passes a local
+        // value by pointer and does not retain it. A refusal leaves that
+        // attribute as the system drew it.
         unsafe {
             let border_ok = DwmSetWindowAttribute(
                 hwnd,
@@ -64,12 +72,23 @@ pub fn apply_caption_colors(window: isize, dark: bool) -> bool {
                 std::mem::size_of::<u32>() as u32,
             )
             .is_ok();
-            border_ok && caption_ok && text_ok
+            let options = WTA_OPTIONS {
+                dwFlags: WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON,
+                dwMask: WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON,
+            };
+            let hidden_ok = SetWindowThemeAttribute(
+                hwnd,
+                WTA_NONCLIENT,
+                &options as *const WTA_OPTIONS as *const _,
+                std::mem::size_of::<WTA_OPTIONS>() as u32,
+            )
+            .is_ok();
+            border_ok && caption_ok && text_ok && hidden_ok
         }
     }
     #[cfg(not(windows))]
     {
-        let _ = (window, dark);
+        let _ = (window, red, green, blue);
         false
     }
 }
@@ -77,21 +96,16 @@ pub fn apply_caption_colors(window: isize, dark: bool) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn caption_colors_pack_ground_and_text() {
-        let (caption, text, border) = super::caption_colors(false);
-        assert_eq!(caption, 0x00E4_F3FC);
-        assert_eq!(text, 0x001A_1A1A);
-        assert_eq!(border, caption);
-
-        let (caption, text, border) = super::caption_colors(true);
-        assert_eq!(caption, 0x0019_1C22);
-        assert_eq!(text, 0x00E4_F3FC);
-        assert_eq!(border, caption);
+    fn caption_colors_pack_ground_and_a_contrasting_text() {
+        assert_eq!(super::colorref(0xFC, 0xF3, 0xE4), 0x00E4_F3FC);
+        assert_eq!(super::colorref(0x22, 0x1C, 0x19), 0x0019_1C22);
+        assert_eq!(super::caption_text_color(0xFE, 0xFC, 0xF8), 0x001A_1A1A);
+        assert_eq!(super::caption_text_color(0x28, 0x1E, 0x17), 0x00E4_F3FC);
     }
 
     #[test]
     fn absent_window_refuses_caption_color() {
-        assert!(!super::apply_caption_colors(0, false));
-        assert!(!super::apply_caption_colors(0, true));
+        assert!(!super::apply_caption_colors(0, 0xFE, 0xFC, 0xF8));
+        assert!(!super::apply_caption_colors(0, 0x28, 0x1E, 0x17));
     }
 }

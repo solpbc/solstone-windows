@@ -1,0 +1,264 @@
+.desk-shell {
+  position: relative;
+  --desk-ink: #1a1a1a;
+  --desk-subtle: #5b5246;
+  --desk-glass: rgba(255, 252, 248, 0.72);
+  --desk-line: rgba(26, 26, 26, 0.12);
+  --desk-accent: #b06a1a;
+  height: 100%;
+  min-height: 100vh;
+  display: grid;
+  color: var(--desk-ink);
+  font-family: "Segoe UI", sans-serif;
+  background: transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+  .desk-shell {
+    --desk-ink: #fcf3e4;
+    --desk-subtle: #d0c6b8;
+    --desk-glass: rgba(40, 30, 23, 0.72);
+    --desk-line: rgba(252, 243, 228, 0.14);
+    --desk-accent: #e8913a;
+  }
+}
+
+.desk-shell[data-width="full"] {
+  grid-template-columns: 220px minmax(0, 1fr) minmax(280px, 360px);
+}
+
+.desk-shell[data-width="narrower"] {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+}
+
+.desk-shell[data-width="phone"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.desk-shell .settings-rail {
+  margin: 16px 0 16px 16px;
+  padding: 12px;
+  border-radius: 16px;
+  background: var(--desk-glass);
+  border: 1px solid var(--desk-line);
+  backdrop-filter: blur(18px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.desk-shell[data-width="narrower"] .settings-rail,
+.desk-shell[data-width="phone"] .settings-rail {
+  position: absolute;
+  z-index: 3;
+  top: 56px;
+  left: 16px;
+  width: 220px;
+  margin: 0;
+}
+
+.desk-shell[data-width="narrower"][data-shelf="closed"] .settings-rail,
+.desk-shell[data-width="phone"][data-shelf="closed"] .settings-rail {
+  display: none;
+}
+
+.desk-shell .settings-nav-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.desk-shell .settings-nav-item[aria-current="page"] {
+  background: rgba(232, 145, 58, 0.18);
+}
+
+.desk-shell .desk-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--desk-accent);
+}
+
+.desk-deck,
+.desk-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 22px 28px;
+}
+
+.desk-deck {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.desk-greeting {
+  font-family: Comfortaa, sans-serif;
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.desk-pill,
+.desk-resume,
+.desk-shelf-button,
+.desk-back,
+.desk-close {
+  appearance: none;
+  border: 1px solid var(--desk-line);
+  background: var(--desk-glass);
+  color: inherit;
+  font: inherit;
+  border-radius: 999px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.desk-paused {
+  margin: 0;
+  color: var(--desk-subtle);
+}
+
+.desk-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.desk-shell[data-width="full"] .desk-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.desk-shell[data-width="narrower"] .desk-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.desk-shell[data-width="phone"] .desk-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.desk-tile {
+  text-align: left;
+  border: 1px solid var(--desk-line);
+  background: var(--desk-glass);
+  color: inherit;
+  border-radius: 16px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 112px;
+  font: inherit;
+}
+
+.desk-tile-open {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.desk-tile[aria-current="true"] {
+  outline: 2px solid var(--desk-accent);
+}
+
+.desk-tile-name {
+  font-family: Comfortaa, sans-serif;
+  font-size: 18px;
+}
+
+.desk-tile-word,
+.desk-tile-sub {
+  color: var(--desk-subtle);
+  font-size: 13px;
+}
+
+.desk-tile-switch {
+  margin-top: auto;
+}
+
+.desk-pane {
+  margin: 16px 16px 16px 0;
+  border-radius: 16px;
+  background: var(--desk-glass);
+  border: 1px solid var(--desk-line);
+}
+
+.desk-shell[data-width="phone"][data-page="deck"] .desk-pane,
+.desk-shell[data-width="phone"][data-page="pane"] .desk-deck,
+.desk-shell[data-width="full"] .desk-shelf-button,
+.desk-shell[data-width="full"] .desk-back {
+  display: none;
+}
+
+.desk-shell[data-width="phone"] .desk-shelf-button,
+.desk-shell[data-width="narrower"] .desk-shelf-button {
+  justify-self: start;
+  margin: 12px 0 0 16px;
+}
+
+.desk-pane-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.desk-pane-title {
+  font-family: Comfortaa, sans-serif;
+  font-size: 22px;
+  margin: 0;
+}
+
+.desk-status-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--desk-line);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.desk-status-row.is-empty {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.desk-breath {
+  line-height: 1.45;
+  margin: 0 0 12px;
+}
+
+#app.desk-about {
+  background: transparent;
+  color: #1a1a1a;
+}
+
+@media (prefers-color-scheme: dark) {
+  #app.desk-about {
+    color: #fcf3e4;
+  }
+}

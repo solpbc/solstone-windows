@@ -380,6 +380,67 @@ export type SourceFacts = {
   pageIncludesStarted: boolean;
 };
 
+const MONTHS = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+] as const;
+
+/** A stored date, month and day, with the year only when it is not `nowYear`. */
+export function startedLabel(isoDate: string, nowYear: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
+  if (!match) return isoDate;
+  const year = Number(match[1]);
+  const month = MONTHS[Number(match[2]) - 1];
+  const day = Number(match[3]);
+  if (!month || !day) return isoDate;
+  return year === nowYear ? `${month} ${day}` : `${month} ${day}, ${year}`;
+}
+
+/** Hours, or minutes under an hour, or the under-a-minute band. */
+export function durationTotal(seconds: number): string {
+  if (seconds < 60) return "less than a minute";
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return minutes === 1 ? "1 minute" : `${minutes.toLocaleString("en-US")} minutes`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  return hours === 1 ? "1 hour" : `${hours.toLocaleString("en-US")} hours`;
+}
+
+/** A counted total. One uses `one`, any other count uses `many`. */
+export function countTotal(count: number, one: string, many: string): string {
+  return count === 1 ? `1 ${one}` : `${count.toLocaleString("en-US")} ${many}`;
+}
+
+/**
+ * How long since `unixSecs`. Under a minute, then minutes, then hours, then
+ * yesterday, then the date.
+ */
+export function relativeTaken(unixSecs: number, nowSecs: number): string {
+  const delta = Math.max(0, nowSecs - unixSecs);
+  if (delta < 60) return "just now";
+  if (delta < 3600) {
+    const minutes = Math.floor(delta / 60);
+    return `${minutes} min ago`;
+  }
+  if (delta < 86_400) {
+    const hours = Math.floor(delta / 3600);
+    return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+  }
+  if (delta < 172_800) return "yesterday";
+  return startedLabel(new Date(unixSecs * 1000).toISOString().slice(0, 10), new Date(nowSecs * 1000).getUTCFullYear());
+}
+
 /** `null` is an absent, unreadable, or failed read: no rows, and not `nothing yet`. */
 export function counterFacts(document: CounterDocument | null): SourceFacts[] | null {
   if (document === null) return null;

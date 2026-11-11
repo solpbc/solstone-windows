@@ -911,6 +911,100 @@ fn require_setup_sequence() -> Result<(), String> {
     }
 }
 
+/// The page reports the sun-arc color at the top edge. The caption follows it.
+#[tauri::command]
+pub fn set_caption_color(window: tauri::WebviewWindow, red: u8, green: u8, blue: u8) {
+    crate::windows::paint_caption_rgb(&window, red, green, blue);
+}
+
+/// Turn the audio tile on or off in one save.
+#[tauri::command]
+pub fn set_audio_tile(
+    state: tauri::State<'_, crate::app::AppState>,
+    on: bool,
+) -> Result<(), String> {
+    require_setup_sequence()?;
+    let (saved, mic, system_audio) = {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let saved = auth.set_audio_tile(on);
+        let projection = auth.projection();
+        (saved, projection.mic, projection.system_audio)
+    };
+    if saved {
+        let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+            kind: observer_model::SourceKind::Mic,
+            enabled: mic,
+        });
+        let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+            kind: observer_model::SourceKind::SystemAudio,
+            enabled: system_audio,
+        });
+    }
+    publish_setup(&state);
+    if !saved {
+        return Err("failed to save audio".to_string());
+    }
+    Ok(())
+}
+
+/// Remember computer sound. The live key changes only while the tile is on.
+#[tauri::command]
+pub fn set_computer_sound(
+    state: tauri::State<'_, crate::app::AppState>,
+    wanted: bool,
+) -> Result<(), String> {
+    require_setup_sequence()?;
+    let (saved, system_audio) = {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let saved = auth.set_computer_sound(wanted);
+        let projection = auth.projection();
+        (saved, projection.system_audio)
+    };
+    if saved {
+        let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+            kind: observer_model::SourceKind::SystemAudio,
+            enabled: system_audio,
+        });
+    }
+    publish_setup(&state);
+    if !saved {
+        return Err("failed to save computer sound".to_string());
+    }
+    Ok(())
+}
+
+/// Open the help page in the owner's browser. The address is fixed here.
+#[tauri::command]
+pub fn open_help(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(crate::support::HELP_URL, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Open the support report for this PC. The address is built here, not passed in.
+#[tauri::command]
+pub fn open_support_report(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dump = state
+        .health
+        .lock()
+        .map(|health| health.clone())
+        .map_err(|_| "health mutex poisoned".to_string())?;
+    app.opener()
+        .open_url(crate::support::report_url(&dump), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Enable or disable a single capture source.
 #[tauri::command]
 pub fn set_source_enabled(

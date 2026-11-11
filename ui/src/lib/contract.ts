@@ -10,6 +10,7 @@ export const automationContract = {
     "about.journalVersion": "about.journalVersion",
     "about.version": "about.version",
     "about.window.root": "about.window.root",
+    "settings.deck": "settings.deck",
     "settings.exclusions.activity": "settings.exclusions.activity",
     "settings.exclusions.appAdd": "settings.exclusions.appAdd",
     "settings.exclusions.appInput": "settings.exclusions.appInput",

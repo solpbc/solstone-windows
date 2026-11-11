@@ -169,8 +169,9 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "is_foreground_root",
         owner: None,
     },
-    // Three DwmSetWindowAttribute writes. Each passes a local color by pointer
-    // and does not retain it. A refusal leaves the system caption as it is.
+    // DwmSetWindowAttribute writes a local color by pointer, and
+    // SetWindowThemeAttribute hides caption text. Neither call retains the
+    // pointer. A refusal leaves that attribute as the system drew it.
     ApprovedNode {
         path: "crates/platform-win/src/caption_color.rs",
         kind: ApprovedKind::Fn,
