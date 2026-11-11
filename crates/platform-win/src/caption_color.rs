@@ -83,6 +83,24 @@ pub fn apply_caption_colors(window: isize, red: u8, green: u8, blue: u8) -> bool
                 std::mem::size_of::<WTA_OPTIONS>() as u32,
             )
             .is_ok();
+            // Windows 11 keeps drawing the caption icon after NODRAWICON once
+            // the caption color is custom. The small icon is the one in the
+            // caption. The big icon stays, so the taskbar keeps it. A frame
+            // change makes the nodraw flags take effect.
+            clear_caption_icon(hwnd);
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                hwnd,
+                HWND(std::ptr::null_mut()),
+                0,
+                0,
+                0,
+                0,
+                windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
+                    | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                    | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
+                    | windows::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
+                    | windows::Win32::UI::WindowsAndMessaging::SWP_FRAMECHANGED,
+            );
             border_ok && caption_ok && text_ok && hidden_ok
         }
     }
@@ -90,6 +108,16 @@ pub fn apply_caption_colors(window: isize, red: u8, green: u8, blue: u8) -> bool
     {
         let _ = (window, red, green, blue);
         false
+    }
+}
+
+/// Drop the caption's small icon. The big icon stays, so the taskbar keeps it.
+#[cfg(windows)]
+fn clear_caption_icon(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, ICON_SMALL, WM_SETICON};
+    unsafe {
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(usize::from(ICON_SMALL)), LPARAM(0));
     }
 }
 

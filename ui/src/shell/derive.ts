@@ -31,10 +31,9 @@ export function widthClass(innerWidth: number): WidthClass {
   return "phone";
 }
 
-export function deckColumns(width: WidthClass): 1 | 2 | 3 {
+export function deckColumns(width: WidthClass): 2 | 3 {
   if (width === "full") return 3;
-  if (width === "narrower") return 2;
-  return 1;
+  return 2;
 }
 
 export function greeting(hour: number): "good morning" | "good afternoon" | "good evening" {
@@ -231,6 +230,24 @@ export type JournalPillInput = {
   waiting: number;
   sourceNeedsAttention: boolean;
 };
+
+/** Audio's companion line. Computer sound wins over a microphone name. */
+export function audioSubline(input: {
+  systemAudioOn: boolean;
+  word: StateWord;
+  microphone: string | null;
+}): string {
+  if ((input.word === "on" || input.word === "paused") && input.systemAudioOn) {
+    return "with computer sound";
+  }
+  if (input.word === "on" && input.microphone) return input.microphone;
+  return "";
+}
+
+/** The about row's value. The unknown line does not repeat the word journal. */
+export function aboutJournalValue(line: string): string {
+  return line === "journal unknown" ? "unknown" : line;
+}
 
 /** Journal words only. `sourceNeedsAttention` is ignored on purpose. */
 export function journalPill(input: JournalPillInput): string {

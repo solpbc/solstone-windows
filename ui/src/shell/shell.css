@@ -16,6 +16,8 @@ html:has(.desk-shell) #app {
   --desk-hairline: #ece3d0;
   --desk-line: rgba(26, 26, 26, 0.12);
   --desk-accent: #b06a1a;
+  --accent: var(--desk-accent);
+  accent-color: var(--desk-accent);
   --desk-connected: #3f9d6a;
   --desk-shadow: 0 14px 40px rgb(60 40 10 / 0.28);
   height: 100%;
@@ -108,6 +110,15 @@ html:has(.desk-shell) #app {
   background: rgba(232, 145, 58, 0.18);
 }
 
+.desk-shell .settings-nav-item[aria-current="page"]::before {
+  content: none;
+}
+
+.desk-shell .desk-shelf-name {
+  flex: 1;
+  min-width: 0;
+}
+
 .desk-shell .desk-badge {
   width: 8px;
   height: 8px;
@@ -197,6 +208,29 @@ html:has(.desk-shell) #app {
   cursor: pointer;
 }
 
+.desk-shelf-button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.desk-glyph {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: block;
+}
+
+.settings-nav-item .desk-glyph,
+.desk-status-row .desk-glyph,
+.desk-pane-title-row .desk-glyph {
+  width: 18px;
+  height: 18px;
+}
+
 .desk-back {
   color: var(--desk-accent);
   font-weight: 600;
@@ -211,9 +245,9 @@ html:has(.desk-shell) #app {
 
 .desk-connect {
   appearance: none;
-  border: 0;
-  background: var(--desk-accent);
-  color: #1a1a1a;
+  border: 1.5px solid var(--desk-accent);
+  background: transparent;
+  color: var(--desk-ink);
   font: inherit;
   font-weight: 600;
   border-radius: 999px;
@@ -242,7 +276,7 @@ html:has(.desk-shell) #app {
 }
 
 .desk-shell[data-width="phone"] .desk-grid {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .desk-tile {
@@ -255,8 +289,7 @@ html:has(.desk-shell) #app {
   padding: 14px 56px 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-height: 112px;
+  gap: 4px;
   font: inherit;
 }
 
@@ -276,7 +309,8 @@ html:has(.desk-shell) #app {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  width: 100%;
   cursor: pointer;
 }
 
@@ -288,6 +322,7 @@ html:has(.desk-shell) #app {
 .desk-tile-name {
   font-family: Comfortaa, sans-serif;
   font-size: 18px;
+  overflow-wrap: anywhere;
 }
 
 .desk-tile-word {
@@ -335,23 +370,29 @@ html:has(.desk-shell) #app {
 .desk-tile-sub {
   color: var(--desk-subtle);
   font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.desk-switch {
+  position: relative;
+  width: 40px;
+  height: 24px;
+  flex: none;
+  border-radius: 12px;
+  background: #c9c3b8;
 }
 
 .desk-tile-switch {
   position: absolute;
   top: 12px;
   right: 12px;
-  width: 40px;
-  height: 24px;
-  border-radius: 12px;
-  background: #c9c3b8;
 }
 
-.desk-tile-switch:has(input:checked) {
+.desk-switch:has(input:checked) {
   background: var(--desk-accent);
 }
 
-.desk-tile-switch input {
+.desk-switch input {
   appearance: none;
   width: 20px;
   height: 20px;
@@ -362,8 +403,35 @@ html:has(.desk-shell) #app {
   cursor: pointer;
 }
 
-.desk-tile-switch:has(input:checked) input {
+.desk-switch:has(input:checked) input {
   margin-left: 18px;
+}
+
+.desk-journal {
+  appearance: none;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--desk-hairline);
+  background: var(--desk-card);
+  color: inherit;
+  font: inherit;
+  border-radius: 999px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.desk-mark-slot {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--desk-accent);
+  opacity: 0.55;
+}
+
+.desk-mark-slot + .desk-mark-slot {
+  opacity: 0.85;
 }
 
 .desk-pane {
@@ -425,6 +493,60 @@ html:has(.desk-shell) #app {
   margin-bottom: 12px;
 }
 
+.desk-shell[data-width="phone"] .desk-pane-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.desk-pane-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.desk-verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.desk-verdict .desk-switch {
+  margin-left: auto;
+}
+
+.desk-section {
+  margin: 16px 0 4px;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--desk-subtle);
+}
+
+.desk-technical {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--desk-hairline);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.desk-chevron {
+  color: var(--desk-subtle);
+}
+
 .desk-pane-title {
   font-family: Comfortaa, sans-serif;
   font-size: 22px;
@@ -435,7 +557,7 @@ html:has(.desk-shell) #app {
 .desk-status-row {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
   gap: 12px;
   align-items: center;
 }
@@ -461,7 +583,7 @@ html:has(.desk-shell) #app {
 }
 
 .desk-status-row.is-empty {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
 }
 
 .desk-breath {
@@ -479,12 +601,29 @@ html:has(.desk-shell) #app {
 }
 
 #app.desk-about {
+  --accent: #b06a1a;
+  accent-color: #b06a1a;
   background: transparent;
   color: #1a1a1a;
 }
 
+.desk-about-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  font-size: 13px;
+  padding: 7px 0;
+}
+
+.desk-about-label {
+  color: var(--fg-subtle);
+}
+
 @media (prefers-color-scheme: dark) {
   #app.desk-about {
+    --accent: #e8913a;
+    accent-color: #e8913a;
     color: #fcf3e4;
   }
 }

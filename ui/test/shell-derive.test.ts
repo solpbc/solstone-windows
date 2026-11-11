@@ -4,6 +4,8 @@ import {
   audioTile,
   browsersTile,
   counterFacts,
+  aboutJournalValue,
+  audioSubline,
   deckColumns,
   deckTiles,
   derivedComputerSoundWanted,
@@ -406,7 +408,21 @@ describe("routes and widths", () => {
     expect(widthClass(1100)).toBe("full");
     expect(deckColumns(widthClass(1100))).toBe(3);
     expect(deckColumns(widthClass(800))).toBe(2);
-    expect(deckColumns(widthClass(400))).toBe(1);
+    expect(deckColumns(widthClass(400))).toBe(2);
+  });
+
+  it("names computer sound ahead of a microphone", () => {
+    expect(audioSubline({ systemAudioOn: true, word: "on", microphone: "mic" })).toBe("with computer sound");
+    expect(audioSubline({ systemAudioOn: true, word: "paused", microphone: null })).toBe("with computer sound");
+    expect(audioSubline({ systemAudioOn: false, word: "on", microphone: "mic" })).toBe("mic");
+    expect(audioSubline({ systemAudioOn: false, word: "off", microphone: "mic" })).toBe("");
+  });
+
+  it("does not repeat journal on the unknown about value", () => {
+    expect(aboutJournalValue("journal unknown")).toBe("unknown");
+    expect(aboutJournalValue("journal 0.4.2 · ubuntu 24.04 · x86_64")).toBe(
+      "journal 0.4.2 · ubuntu 24.04 · x86_64",
+    );
   });
 });
 

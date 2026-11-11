@@ -1,5 +1,7 @@
 // The desktop shell's document. Decisions live in derive.ts. This only paints.
 
+import { glyph, glyphForTile, type GlyphName } from "./glyphs";
+
 export interface DeskTile {
   id: string;
   name: string;
@@ -24,6 +26,14 @@ export interface DeskStatusRow {
 export type DeskWidth = "full" | "narrower" | "phone";
 export type DeskRow = "home" | "journal" | "thisPc" | "updates" | "help";
 
+export interface DeskPageVerdict {
+  id: string;
+  word: string;
+  switchOn: boolean | null;
+  switchId: string | null;
+  switchLabel: string;
+}
+
 export interface DeskView {
   width: DeskWidth;
   row: DeskRow;
@@ -31,21 +41,29 @@ export interface DeskView {
   phoneShowsPane: boolean;
   greeting: string;
   pill: string;
+  /** Foot of the deck. Unpaired is the placeholder pair. A pair uses its mark. */
+  journalName: string;
   pausedLine: string | null;
   badges: readonly string[];
   tiles: readonly DeskTile[];
   rows: readonly DeskStatusRow[];
   paneTitle: string;
+  titleGlyph: GlyphName | null;
   paneIsStatus: boolean;
   /** Caught up: a green dot beside the word. No other pill is green. */
   connected: boolean;
   leadHeadline: string;
   leadLines: readonly string[];
+  /** Unpaired storage, when a real size is known. Not a journal fact. */
+  kept: { label: string; value: string } | null;
   facts: readonly { label: string; value: string }[];
   /** Unpaired status offers the existing connect action. */
   showConnect: boolean;
+  /** Status offers one closed row. The strip itself is a deeper page. */
+  showTechnical: boolean;
   /** Shelf pages replace the deck. Home keeps the deck beside the pane. */
   shelfPage: boolean;
+  pageVerdict: DeskPageVerdict | null;
 }
 
 export interface DeskParts {
@@ -63,17 +81,18 @@ export interface DeskActions {
   onPill: () => void;
   onResume: () => void;
   onClosePane: () => void;
+  onTechnical: () => void;
   onTile: (id: string) => void;
   onSwitch: (id: string, on: boolean) => void;
   onStatus: (id: string) => void;
 }
 
-const SHELF: readonly { row: DeskRow; label: string }[] = [
-  { row: "home", label: "home" },
-  { row: "journal", label: "your journal" },
-  { row: "thisPc", label: "this PC" },
-  { row: "updates", label: "updates" },
-  { row: "help", label: "help" },
+const SHELF: readonly { row: DeskRow; label: string; mark: GlyphName }[] = [
+  { row: "home", label: "home", mark: "home" },
+  { row: "journal", label: "your journal", mark: "journal" },
+  { row: "thisPc", label: "this PC", mark: "device" },
+  { row: "updates", label: "updates", mark: "updates" },
+  { row: "help", label: "help", mark: "help" },
 ];
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -115,8 +134,9 @@ function renderShelf(view: DeskView, actions: DeskActions): HTMLElement {
   rail.id = "settings-nav";
   rail.setAttribute("aria-label", "settings");
   for (const item of SHELF) {
-    const button = el("button", "settings-nav-item", item.label);
+    const button = el("button", "settings-nav-item");
     button.type = "button";
+    button.append(glyph(item.mark), el("span", "desk-shelf-name", item.label));
     if (item.row === view.row) button.setAttribute("aria-current", "page");
     if (view.badges.includes(item.row)) {
       const dot = el("span", "desk-badge");
@@ -144,9 +164,10 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
 
   const head = el("div", "desk-head");
   if (view.width !== "full") {
-    const opener = el("button", "desk-shelf-button", "home");
+    const opener = el("button", "desk-shelf-button");
     opener.type = "button";
     opener.setAttribute("aria-label", "home");
+    opener.append(glyph("side"));
     opener.onclick = () => actions.onShelfToggle();
     head.append(opener);
   }
@@ -176,8 +197,20 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
   for (const tile of view.tiles) {
     grid.append(renderTile(tile, actions));
   }
-  deck.append(grid);
+  deck.append(grid, journalFoot(view, actions));
   return deck;
+}
+
+function journalFoot(view: DeskView, actions: DeskActions): HTMLButtonElement {
+  const foot = el("button", "desk-journal");
+  foot.type = "button";
+  const first = el("span", "desk-mark-slot");
+  const second = el("span", "desk-mark-slot");
+  first.setAttribute("aria-hidden", "true");
+  second.setAttribute("aria-hidden", "true");
+  foot.append(first, second, el("span", "desk-journal-name", view.journalName));
+  foot.onclick = () => actions.onShelf("journal");
+  return foot;
 }
 
 function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
@@ -186,6 +219,7 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
   if (tile.selected) card.setAttribute("aria-current", "true");
   const open = el("button", "desk-tile-open");
   open.type = "button";
+  open.append(glyph(glyphForTile(tile.id)));
   open.append(el("span", "desk-tile-name", tile.name));
   if (tile.word) {
     const word = el("span", "desk-tile-word", tile.word);
@@ -196,34 +230,68 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
   open.onclick = () => actions.onTile(tile.id);
   card.append(open);
   if (tile.switchOn !== null) {
-    const label = el("label", "desk-tile-switch");
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = tile.switchOn;
-    if (tile.switchId) input.setAttribute("data-automation-id", tile.switchId);
-    input.setAttribute("aria-label", tile.switchLabel);
-    input.onchange = () => actions.onSwitch(tile.id, input.checked);
-    label.append(input);
-    card.append(label);
+    card.append(switchControl(tile.id, tile.switchOn, tile.switchId, tile.switchLabel, "desk-switch desk-tile-switch", actions));
   }
   return card;
+}
+
+function switchControl(
+  id: string,
+  switchOn: boolean,
+  switchId: string | null,
+  switchLabel: string,
+  className: string,
+  actions: DeskActions,
+): HTMLLabelElement {
+  const label = el("label", className);
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = switchOn;
+  if (switchId) input.setAttribute("data-automation-id", switchId);
+  input.setAttribute("aria-label", switchLabel);
+  input.onchange = () => actions.onSwitch(id, input.checked);
+  label.append(input);
+  return label;
 }
 
 function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTMLElement {
   const pane = el("aside", "desk-pane");
   const head = el("div", "desk-pane-head");
   if (view.width === "phone") head.append(backHome(actions));
+  const titleRow = el("div", "desk-pane-title-row");
+  if (view.titleGlyph) titleRow.append(glyph(view.titleGlyph));
   const title = el("h2", "desk-pane-title", view.paneTitle);
   title.tabIndex = -1;
-  head.append(title);
-  if (!view.paneIsStatus) {
+  titleRow.append(title);
+  if (!view.paneIsStatus && view.width !== "phone") {
     const close = el("button", "desk-close", "×");
     close.type = "button";
     close.setAttribute("aria-label", "status");
     close.onclick = () => actions.onClosePane();
-    head.append(close);
+    titleRow.append(close);
   }
+  head.append(titleRow);
   pane.append(head);
+
+  if (view.pageVerdict) {
+    const verdict = el("div", "desk-verdict");
+    const word = el("span", "desk-tile-word", view.pageVerdict.word);
+    word.dataset.word = view.pageVerdict.word;
+    verdict.append(word);
+    if (view.pageVerdict.switchOn !== null) {
+      verdict.append(
+        switchControl(
+          view.pageVerdict.id,
+          view.pageVerdict.switchOn,
+          view.pageVerdict.switchId,
+          view.pageVerdict.switchLabel,
+          "desk-switch",
+          actions,
+        ),
+      );
+    }
+    pane.append(verdict);
+  }
 
   if (view.paneIsStatus) {
     if (view.leadHeadline || view.leadLines.length > 0) {
@@ -243,29 +311,44 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
       pane.append(connect);
     }
     const labels = el("div", "desk-status-labels");
-    labels.append(el("span", "", "sources"), el("span", "", "so far"), el("span", "", "last taken in"));
+    labels.append(
+      el("span", "desk-status-glyph"),
+      el("span", "", "sources"),
+      el("span", "", "so far"),
+      el("span", "", "last taken in"),
+    );
     pane.append(labels);
     for (const row of view.rows) {
       pane.append(renderStatusRow(row, actions));
     }
-    if (view.facts.length > 0) {
-      const facts = el("div", "desk-facts");
-      for (const fact of view.facts) {
-        const row = el("div", "desk-fact");
-        row.append(el("span", "desk-fact-label", fact.label), el("span", "desk-fact-value", fact.value));
-        facts.append(row);
-      }
-      pane.append(facts);
+    const journal = el("div", "desk-journal-facts");
+    journal.append(el("h3", "desk-section", "your journal"));
+    if (view.kept) journal.append(factRow(view.kept.label, view.kept.value));
+    for (const fact of view.facts) journal.append(factRow(fact.label, fact.value));
+    pane.append(journal);
+    if (view.showTechnical) {
+      const technical = el("button", "desk-technical");
+      technical.type = "button";
+      technical.append(el("span", "", "technical details"), el("span", "desk-chevron", "\u203A"));
+      technical.onclick = () => actions.onTechnical();
+      pane.append(technical);
     }
   }
   if (parts.paneExtra) pane.append(parts.paneExtra);
   return pane;
 }
 
+function factRow(label: string, value: string): HTMLElement {
+  const row = el("div", "desk-fact");
+  row.append(el("span", "desk-fact-label", label), el("span", "desk-fact-value", value));
+  return row;
+}
+
 function renderStatusRow(row: DeskStatusRow, actions: DeskActions): HTMLElement {
   const button = el("button", "desk-status-row");
   button.type = "button";
   if (!row.hasFacts || row.nothingYet) button.classList.add("is-empty");
+  button.append(glyph(glyphForTile(row.id)));
   button.append(el("span", "desk-status-name", row.name));
   if (!row.hasFacts) {
     // A missing read is not a fact. The row still opens the page.

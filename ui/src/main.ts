@@ -17,8 +17,11 @@ import { displayableMark, MARK_CSS, renderMarkCard, type MarkRenderSpec } from "
 import setupFrameCss from "./setup-frame.css?inline";
 import shellCss from "./shell/shell.css?inline";
 import { publishCaptionColor, resetCaptionReport } from "./shell/caption";
+import { glyphForTile, type GlyphName } from "./shell/glyphs";
 import {
+  aboutJournalValue,
   addMoreSources,
+  audioSubline,
   audioTile,
   browsersTile,
   countTotal,
@@ -507,7 +510,7 @@ let migrationOfferBinding: string | null = null;
 let selectedMigrationDevice: MigrationDevice | null = null;
 let activeRoute: Route = "home";
 let deskRow: ShelfRow = "home";
-let deskPane: Pane | "addMore" = "status";
+let deskPane: Pane | "addMore" | "technical" = "status";
 let deskShelfOpen = false;
 let deskPhonePane = false;
 let latestCounters: CounterDocument | null | undefined;
@@ -5706,7 +5709,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
         id,
         name: "add more",
         word: "",
-        sub: "",
+        sub: "sources",
         switchOn: null,
         switchId: null,
         switchLabel: "",
@@ -5716,9 +5719,11 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     const view = id === "audio" ? audio : id === "screen" ? screenView : id === "browsers" ? browsers : obsidian;
     const sub =
       id === "audio"
-        ? audio.namesMicrophone
-          ? mic?.device || "microphone"
-          : ""
+        ? audioSubline({
+            systemAudioOn: setup?.system_audio === true,
+            word: audio.word,
+            microphone: audio.namesMicrophone ? mic?.device || "microphone" : null,
+          })
         : id === "screen"
           ? screenView.activityKept
             ? "activity is still on."
@@ -5759,22 +5764,66 @@ function deskStatusRows(): DeskStatusRow[] {
   });
 }
 
-function deskSoFar(source: SourceId): HTMLElement | null {
+function deskSection(title: string): HTMLElement {
+  const node = text("h3", title);
+  node.className = "desk-section";
+  return node;
+}
+
+function deskFactBlock(source: SourceId): HTMLElement | null {
   const fact = factFor(source);
   if (!fact) return null;
-  const line = fact.nothingYet
-    ? "nothing yet"
-    : `${totalWords(source, fact.total)}, since ${startedLabel(fact.started ?? "", new Date().getFullYear())}`;
-  const node = text("p", line);
-  node.classList.add("desk-breath");
-  if (fact.last !== null) {
-    const taken = text("p", relativeTaken(fact.last, nowSecs()));
-    taken.classList.add("desk-breath");
-    const wrap = document.createElement("div");
-    wrap.append(node, taken);
-    return wrap;
+  const block = document.createElement("div");
+  block.className = "desk-facts";
+  const soFar = document.createElement("div");
+  soFar.className = "desk-fact";
+  const soFarLabel = text("span", "so far");
+  soFarLabel.className = "desk-fact-label";
+  const soFarValue = text(
+    "span",
+    fact.nothingYet
+      ? "nothing yet"
+      : `${totalWords(source, fact.total)}, since ${startedLabel(fact.started ?? "", new Date().getFullYear())}`,
+  );
+  soFarValue.className = "desk-fact-value";
+  soFar.append(soFarLabel, soFarValue);
+  const last = document.createElement("div");
+  last.className = "desk-fact";
+  const lastLabel = text("span", "last taken in");
+  lastLabel.className = "desk-fact-label";
+  const lastValue = text("span", fact.last === null ? "" : relativeTaken(fact.last, nowSecs()));
+  lastValue.className = "desk-fact-value";
+  last.append(lastLabel, lastValue);
+  block.append(soFar, last);
+  return block;
+}
+
+function deskJournalName(dump: HealthDump): string {
+  const phase = dump.sync.pairing.phase;
+  if (phase === "paired" || phase === "awaiting_confirmation") return markTextForm(dump.sync.pairing.mark);
+  return "your \u00B7 journal";
+}
+
+function deskKept(dump: HealthDump): { label: string; value: string } | null {
+  const phase = dump.sync.pairing.phase;
+  if (phase === "paired" || phase === "awaiting_confirmation") return null;
+  const bytes = latestStorage?.bytes;
+  if (typeof bytes !== "number") return null;
+  return { label: "kept on this PC", value: formatStorageBytes(bytes) };
+}
+
+function deskTitleGlyph(): GlyphName | null {
+  if (deskRow !== "home") return null;
+  if (
+    deskPane === "audio" ||
+    deskPane === "screen" ||
+    deskPane === "browsers" ||
+    deskPane === "obsidian" ||
+    deskPane === "addMore"
+  ) {
+    return glyphForTile(deskPane);
   }
-  return node;
+  return null;
 }
 
 function restartControl(): HTMLButtonElement {
@@ -5804,16 +5853,19 @@ function breath(sentence: string): HTMLElement {
 function deskPaneExtra(dump: HealthDump): HTMLElement | null {
   if (deskRow !== "home") return null;
   if (homeShowsPairing(dump) && deskPane === "status") return renderRouteContent("journal", dump);
+  if (deskPane === "status") return null;
   const body = document.createElement("div");
-  if (deskPane === "status") {
-    const heading = text("h3", "technical details");
-    body.append(heading, renderStatusStrip(dump));
+  if (deskPane === "technical") {
+    body.append(renderStatusStrip(dump));
     const restart = deskRestart(dump, "technicalDetails");
     if (restart) body.append(restart);
     return body;
   }
   if (deskPane === "audio") {
     body.append(breath(DESK_BREATH.audio));
+    const facts = deskFactBlock("audio");
+    if (facts) body.append(facts);
+    body.append(deskSection("goes along with it"));
     const wanted = derivedComputerSoundWanted(
       dump.setup?.mic === true,
       dump.setup?.system_audio === true,
@@ -5829,8 +5881,6 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     };
     label.append(input, document.createTextNode(" computer sound"));
     body.append(label);
-    const soFar = deskSoFar("audio");
-    if (soFar) body.append(soFar);
     if (latestMic) body.append(renderMicSection(latestMic));
     const restart = deskRestart(dump, "audio");
     if (restart) body.append(restart);
@@ -5838,11 +5888,14 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
   }
   if (deskPane === "screen") {
     body.append(breath(DESK_BREATH.screen));
-    const soFar = deskSoFar("screen");
-    if (soFar) body.append(soFar);
-    body.append(text("h3", "goes along with it"));
+    const facts = deskFactBlock("screen");
+    if (facts) body.append(facts);
+    body.append(deskSection("goes along with it"));
     body.append(renderDesktopActivityControl(sourceByKind(dump, "desktop_activity"), dump));
-    body.append(text("p", "this list applies to activity too"));
+    body.append(deskSection("left out"));
+    const shared = text("p", "this list applies to activity too");
+    shared.classList.add("desk-breath");
+    body.append(shared);
     if (latestExclusions) body.append(renderExclusionsSection(latestExclusions, dump));
     const restart = deskRestart(dump, "screen");
     if (restart) body.append(restart);
@@ -5850,15 +5903,15 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
   }
   if (deskPane === "browsers") {
     body.append(breath(DESK_BREATH.browsers));
-    const soFar = deskSoFar("browsers");
-    if (soFar) body.append(soFar);
+    const facts = deskFactBlock("browsers");
+    if (facts) body.append(facts);
     if (latestBrowser) body.append(...renderBrowserRows(latestBrowser));
     return body;
   }
   if (deskPane === "obsidian") {
     body.append(breath(OBSIDIAN_COPY.explain));
-    const soFar = deskSoFar("obsidian");
-    if (soFar) body.append(soFar);
+    const facts = deskFactBlock("obsidian");
+    if (facts) body.append(facts);
     if (latestObsidian) body.append(...renderObsidianRows(latestObsidian));
     return body;
   }
@@ -5902,6 +5955,7 @@ function deskPaneTitle(): string {
   if (deskRow === "updates") return "updates";
   if (deskRow === "help") return "help";
   if (deskPane === "status") return "status";
+  if (deskPane === "technical") return "technical details";
   if (deskPane === "addMore") return "add more";
   if (deskPane === "screenLeftOut") return "left out";
   return deskSourceName(deskPane);
@@ -5933,6 +5987,13 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
   const journal = deskJournalInput(dump);
   const lead = statusLead(journal);
   const pill = journalPill(journal);
+  const tiles = deskTilesFor(dump);
+  const pageTile =
+    deskRow === "home" &&
+    (deskPane === "audio" || deskPane === "screen" || deskPane === "browsers" || deskPane === "obsidian")
+      ? tiles.find((tile) => tile.id === deskPane) ?? null
+      : null;
+  const statusOpen = deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump);
   const view = {
     width,
     row: deskRow,
@@ -5940,6 +6001,7 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
     phoneShowsPane: width === "phone" && deskRow === "home" && deskPhonePane,
     greeting: greeting(new Date().getHours()),
     pill,
+    journalName: deskJournalName(dump),
     pausedLine: deskPausedLine(dump),
     badges: shelfBadges({
       unknownJournal: (dump.sync.unknown_journals?.length ?? 0) > 0,
@@ -5950,20 +6012,29 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
         updateDisplay === "staged" ||
         updateDisplay === "failed_with_available",
     }),
-    tiles: deskTilesFor(dump),
+    tiles,
     rows: deskStatusRows(),
     paneTitle: deskPaneTitle(),
-    paneIsStatus: deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump),
+    titleGlyph: deskTitleGlyph(),
+    paneIsStatus: statusOpen,
     connected: pill === "connected",
-    leadHeadline: lead.headline,
+    leadHeadline: lead.headline || pill,
     leadLines: lead.lines,
+    kept: statusOpen ? deskKept(dump) : null,
     facts: deskFacts(dump),
     showConnect:
-      deskRow === "home" &&
-      deskPane === "status" &&
-      !homeShowsPairing(dump) &&
-      (dump.sync.pairing.phase === "not_paired" || dump.sync.pairing.phase === "failed"),
+      statusOpen && (dump.sync.pairing.phase === "not_paired" || dump.sync.pairing.phase === "failed"),
+    showTechnical: statusOpen,
     shelfPage: deskRow !== "home",
+    pageVerdict: pageTile
+      ? {
+          id: pageTile.id,
+          word: pageTile.word,
+          switchOn: pageTile.switchOn,
+          switchId: pageTile.switchId,
+          switchLabel: pageTile.switchLabel,
+        }
+      : null,
   };
   return renderDesk(
     view,
@@ -6004,6 +6075,13 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
       onClosePane: () => {
         deskPane = "status";
         deskPhonePane = false;
+        rerender();
+      },
+      onTechnical: () => {
+        deskRow = "home";
+        deskPane = "technical";
+        deskPhonePane = true;
+        deskShelfOpen = false;
         rerender();
       },
       onTile: (id) => openDeskSource(id),
@@ -6166,11 +6244,16 @@ function renderAbout(dump: HealthDump): void {
 
   const jvEl = selectable(
     automation(
-      text("div", dump.sync.journal_display_line ?? "journal unknown"),
+      text("div", aboutJournalValue(dump.sync.journal_display_line ?? "journal unknown")),
       ids["about.journalVersion"],
     ),
   );
-  root.append(valueRow("journal version", jvEl));
+  const journalRow = document.createElement("div");
+  journalRow.className = "desk-about-row";
+  const journalLabel = text("div", "journal version");
+  journalLabel.className = "desk-about-label";
+  journalRow.append(journalLabel, jvEl);
+  root.append(journalRow);
 
   const copy = document.createElement("button");
   copy.type = "button";

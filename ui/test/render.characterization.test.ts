@@ -381,7 +381,7 @@ describe("settings renderer characterization", () => {
     expect(present(ids["about.version"]).textContent).toBe(
       "windows app test-version · windows 11 26100 · x86_64",
     );
-    expect(present(ids["about.journalVersion"]).textContent).toBe("journal unknown");
+    expect(present(ids["about.journalVersion"]).textContent).toBe("unknown");
     expect(present(ids["about.version"]).classList.contains("selectable")).toBe(true);
     expect(present(ids["about.journalVersion"]).classList.contains("selectable")).toBe(true);
   });
@@ -427,6 +427,6 @@ describe("settings renderer characterization", () => {
 
     app.__test__.renderAbout(dump);
 
-    expect(present(ids["about.journalVersion"]).textContent).toBe("journal unknown");
+    expect(present(ids["about.journalVersion"]).textContent).toBe("unknown");
   });
 });
