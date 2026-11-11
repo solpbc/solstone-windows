@@ -2,8 +2,9 @@
 // Copyright (c) 2026 sol pbc
 
 use crate::{
-    AppPhase, ErrorReason, JournalLink, PairingPhase, PauseSnapshot, SourceKind, SourceReport,
-    SourceState, StorageHealth, SyncSnapshot,
+    AppPhase, ErrorReason, HealthDump, JournalLink, MarkColor, MarkIconSpec, MarkRenderSpec,
+    PairingPhase, PauseSnapshot, SourceKind, SourceReport, SourceState, StorageHealth,
+    SyncSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +134,82 @@ pub fn menu_status_line(dump: &crate::HealthDump) -> String {
             Some(crate::JournalLink::Connected) => "connected".to_string(),
             Some(crate::JournalLink::Connecting) | None => "connecting…".to_string(),
         },
+    }
+}
+
+const FRAME_REACHED_AGO_MS: u64 = 40 * 60 * 1000;
+
+/// A shot can show a paired journal this PC has not reached.
+/// Both gates have to be set. A normal launch leaves the live reading alone.
+/// The rendered dump changes. Nothing here dials a journal or writes a pair.
+pub fn apply_frame_journal(
+    dump: &mut HealthDump,
+    frame_png: Option<&str>,
+    journal: Option<&str>,
+    now_ms: u64,
+) {
+    let Some(frame) = frame_png else {
+        return;
+    };
+    if frame.is_empty() {
+        return;
+    }
+    let Some(raw) = journal else {
+        return;
+    };
+    match raw {
+        "connected" => paint_frame(dump, JournalLink::Connected, 0, now_ms),
+        "offline" => paint_frame(
+            dump,
+            JournalLink::Offline,
+            0,
+            now_ms.saturating_sub(FRAME_REACHED_AGO_MS),
+        ),
+        other => {
+            let Some(count) = other.strip_prefix("offline:") else {
+                return;
+            };
+            let Ok(count) = count.parse::<u64>() else {
+                return;
+            };
+            if count == 0 {
+                return;
+            }
+            paint_frame(
+                dump,
+                JournalLink::Offline,
+                count,
+                now_ms.saturating_sub(FRAME_REACHED_AGO_MS),
+            );
+        }
+    }
+}
+
+fn paint_frame(dump: &mut HealthDump, link: JournalLink, waiting: u64, reached_ms: u64) {
+    dump.sync.pairing.phase = PairingPhase::Paired;
+    dump.sync.pairing.mark = Some(frame_mark());
+    dump.sync.journal_link = Some(link);
+    dump.sync.upload.pending_segments = waiting;
+    dump.sync.upload.last_successful_sync = Some(reached_ms);
+}
+
+fn frame_mark() -> MarkRenderSpec {
+    MarkRenderSpec {
+        icon1: frame_chip("amber", "#E07A3D"),
+        icon2: frame_chip("clay", "#C4554A"),
+        words: ["bright".into(), "harbor".into()],
+    }
+}
+
+fn frame_chip(name: &str, hex: &str) -> MarkIconSpec {
+    MarkIconSpec {
+        name: name.into(),
+        svg: r#"<circle cx="12" cy="12" r="4"/>"#.into(),
+        color: MarkColor {
+            name: name.into(),
+            hex: hex.into(),
+        },
+        rot: 0,
     }
 }
 
@@ -927,6 +1004,60 @@ mod tests {
         assert!(counted.contains('4'));
         assert!(!quiet.chars().any(|ch| ch.is_ascii_digit()));
         assert!(quiet.contains("offline"));
+    }
+
+    #[test]
+    fn frame_journal_stays_off_without_both_gates() {
+        let mut dump = dump_with(PairingPhase::NotPaired, None, 0);
+        let before = dump.clone();
+        apply_frame_journal(&mut dump, None, Some("connected"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some(""), Some("connected"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), None, 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), Some("nope"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), Some("offline:0"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), Some("offline:no"), 1_000);
+        assert_eq!(dump, before);
+    }
+
+    #[test]
+    fn frame_journal_connected_and_offline_are_a_paired_reading() {
+        let now = 1_700_000_000_000_u64;
+        let mut connected = dump_with(PairingPhase::NotPaired, None, 4);
+        apply_frame_journal(&mut connected, Some("frame"), Some("connected"), now);
+        assert_eq!(connected.sync.pairing.phase, PairingPhase::Paired);
+        assert_eq!(connected.sync.journal_link, Some(JournalLink::Connected));
+        assert_eq!(connected.sync.upload.pending_segments, 0);
+        assert_eq!(connected.sync.upload.last_successful_sync, Some(now));
+        assert_eq!(
+            connected
+                .sync
+                .pairing
+                .mark
+                .as_ref()
+                .map(|mark| mark.words.clone()),
+            Some(["bright".into(), "harbor".into()])
+        );
+        assert_eq!(menu_status_line(&connected), "connected");
+
+        let mut offline = dump_with(PairingPhase::NotPaired, None, 0);
+        apply_frame_journal(&mut offline, Some("frame"), Some("offline:12"), now);
+        assert_eq!(offline.sync.journal_link, Some(JournalLink::Offline));
+        assert_eq!(offline.sync.upload.pending_segments, 12);
+        assert_eq!(
+            offline.sync.upload.last_successful_sync,
+            Some(now - 40 * 60 * 1000)
+        );
+        assert_eq!(menu_status_line(&offline), "offline · 12 waiting");
+
+        let mut quiet = dump_with(PairingPhase::NotPaired, None, 9);
+        apply_frame_journal(&mut quiet, Some("frame"), Some("offline"), now);
+        assert_eq!(quiet.sync.upload.pending_segments, 0);
+        assert_eq!(menu_status_line(&quiet), "offline");
     }
 
     #[test]

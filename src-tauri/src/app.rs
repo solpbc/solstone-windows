@@ -1091,6 +1091,17 @@ pub fn run(
                         if let Ok(mut sync) = shared_sync.lock() {
                             sync.journal_link = link;
                         }
+                        // After the transport copy, so a frame never becomes a real pair.
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_millis() as u64)
+                            .unwrap_or(0);
+                        observer_model::apply_frame_journal(
+                            &mut dump,
+                            std::env::var("SOLSTONE_FRAME_PNG").ok().as_deref(),
+                            std::env::var("SOLSTONE_JOURNAL").ok().as_deref(),
+                            now_ms,
+                        );
                         log_health_transitions(previous.as_ref(), &dump);
                         let changed = previous
                             .as_ref()

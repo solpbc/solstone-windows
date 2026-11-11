@@ -204,11 +204,15 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
 function journalFoot(view: DeskView, actions: DeskActions): HTMLButtonElement {
   const foot = el("button", "desk-journal");
   foot.type = "button";
-  const first = el("span", "desk-mark-slot");
-  const second = el("span", "desk-mark-slot");
-  first.setAttribute("aria-hidden", "true");
-  second.setAttribute("aria-hidden", "true");
-  foot.append(first, second, el("span", "desk-journal-name", view.journalName));
+  // Placeholders are the unpaired pill. A pair already has its name.
+  if (view.journalName === "your \u00B7 journal") {
+    const first = el("span", "desk-mark-slot");
+    const second = el("span", "desk-mark-slot");
+    first.setAttribute("aria-hidden", "true");
+    second.setAttribute("aria-hidden", "true");
+    foot.append(first, second);
+  }
+  foot.append(el("span", "desk-journal-name", view.journalName));
   foot.onclick = () => actions.onShelf("journal");
   return foot;
 }
