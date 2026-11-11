@@ -270,6 +270,7 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         |kind| dump.setup.is_enabled(kind),
         browsers,
         crate::obsidian::needs_attention(),
+        dump.app_state == AppPhase::Paused,
     );
     if let Some(name) = source {
         let _ = menu.attention.set_text(format!("{name} needs attention"));

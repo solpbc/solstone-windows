@@ -80,20 +80,55 @@ pub fn get_health(state: tauri::State<'_, crate::app::AppState>) -> Result<Healt
 }
 
 /// Where the owner's gathered media lives on this PC, for the Status surface.
-/// `bytes` is best-effort and currently always `None` — segments_dir holds
-/// per-segment SUBDIRECTORIES, so a shallow read_dir sum is meaningless and a
-/// deep walk is refused; the UI renders a size only when it is `Some`.
+/// `bytes` is a capped walk of the segments directory. Zero is an empty or
+/// missing directory, which the pane reads as nothing yet.
+const KEPT_WALK_CAP: u32 = 10_000;
+
 #[derive(serde::Serialize)]
 pub struct StorageInfo {
     root: String,
     bytes: Option<u64>,
 }
 
+fn kept_bytes(root: &std::path::Path) -> u64 {
+    let mut bytes = 0u64;
+    let mut seen = 0u32;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            seen = seen.saturating_add(1);
+            if seen > KEPT_WALK_CAP {
+                return bytes;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            if kind.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    bytes = bytes.saturating_add(meta.len());
+                }
+            }
+        }
+    }
+    bytes
+}
+
 #[tauri::command]
 pub fn storage_info() -> StorageInfo {
+    let root = platform_win::segments_dir();
     StorageInfo {
-        root: platform_win::segments_dir().to_string_lossy().into_owned(),
-        bytes: None,
+        bytes: Some(kept_bytes(&root)),
+        root: root.to_string_lossy().into_owned(),
     }
 }
 

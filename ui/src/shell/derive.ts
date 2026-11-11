@@ -89,6 +89,8 @@ export function audioTile(input: AudioTileInput): TileView {
   else if (!eitherOn) word = "off";
   else if (input.appPaused) word = "paused";
   else if (input.micTakingIn || input.systemAudioTakingIn) word = "on";
+  // A missing microphone with nothing else taking in is steady, not startup.
+  else if (!input.micDevicePresent) word = "needs attention";
   else word = "setting up";
   const namesMicrophone =
     word === "on" && input.micEnabled && input.micDevicePresent && input.micTakingIn;
@@ -165,6 +167,8 @@ export function obsidianTile(input: {
   state: ObsidianStateName;
   vault: string | null;
   foundCount: number;
+  /** The switch was turned on and the folder is still needed. */
+  armed?: boolean;
 }): TileView {
   let word: StateWord;
   if (input.state === "needs_attention") word = "needs attention";
@@ -172,9 +176,10 @@ export function obsidianTile(input: {
   else if (input.state === "on") word = "on";
   else if (input.state === "waiting_for_journal_update" || input.state === "confirm") word = "setting up";
   else if (input.state === "checking") word = "checking…";
-  else if (input.vault === null && input.foundCount === 0) word = "ready to set up";
+  else if (input.armed && input.vault === null) word = "ready to set up";
   else word = "off";
-  const switchOn = word === "off" || word === "ready to set up" ? false : word === "on" || word === "paused" ? true : null;
+  const switchOn =
+    word === "off" ? false : word === "on" || word === "paused" || word === "ready to set up" ? true : null;
   return {
     word,
     switchOn,
@@ -231,7 +236,7 @@ export type JournalPillInput = {
   sourceNeedsAttention: boolean;
 };
 
-/** Audio's companion line. Computer sound wins over a microphone name. */
+/** Audio's companion line. Computer sound wins over a microphone name, on or paused. */
 export function audioSubline(input: {
   systemAudioOn: boolean;
   word: StateWord;
@@ -242,6 +247,25 @@ export function audioSubline(input: {
   }
   if (input.word === "on" && input.microphone) return input.microphone;
   return "";
+}
+
+/** The tile line under the state word. A fault is never a generic companion. */
+export function sourceSubline(input: {
+  word: StateWord;
+  paired: boolean;
+  companion: string;
+  setup: string;
+  attention: string;
+}): string {
+  if (input.word === "needs attention") return input.attention;
+  if (input.word === "off") {
+    return input.paired ? "intake is off. turn it on any time." : "turn it on any time.";
+  }
+  if (input.word === "setting up") {
+    return input.paired ? "getting ready. connecting to your journal." : "getting ready…";
+  }
+  if (input.word === "ready to set up") return input.setup;
+  return input.companion;
 }
 
 /** The about row's value. The unknown line does not repeat the word journal. */

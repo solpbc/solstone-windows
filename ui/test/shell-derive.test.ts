@@ -6,6 +6,7 @@ import {
   counterFacts,
   aboutJournalValue,
   audioSubline,
+  sourceSubline,
   deckColumns,
   deckTiles,
   derivedComputerSoundWanted,
@@ -91,6 +92,20 @@ describe("audio", () => {
       }).word,
     ).toBe("on");
     expect(audioTile({ ...quietAudio, micDevicePresent: false }).word).toBe("off");
+  });
+
+  it("treats a missing microphone with nothing taking in as needs attention, and a present one as startup", () => {
+    expect(
+      audioTile({
+        ...quietAudio,
+        micDevicePresent: false,
+        systemAudioEnabled: true,
+        systemAudioTakingIn: false,
+      }).word,
+    ).toBe("needs attention");
+    expect(audioTile({ ...quietAudio, micEnabled: true, micDevicePresent: true }).word).toBe(
+      "setting up",
+    );
   });
 
   it("derives a missing computer-sound bit from the live keys and does not treat both-off as false", () => {
@@ -213,8 +228,14 @@ describe("obsidian", () => {
     );
     expect(obsidianTile({ state: "confirm", vault: null, foundCount: 1 }).word).toBe("setting up");
     expect(obsidianTile({ state: "checking", vault: null, foundCount: 0 }).word).toBe("checking…");
-    expect(obsidianTile({ state: "off", vault: null, foundCount: 0 }).word).toBe("ready to set up");
+    expect(obsidianTile({ state: "off", vault: null, foundCount: 0 }).word).toBe("off");
     expect(obsidianTile({ state: "off", vault: "v", foundCount: 1 }).word).toBe("off");
+    expect(obsidianTile({ state: "off", vault: null, foundCount: 0, armed: true }).word).toBe(
+      "ready to set up",
+    );
+    expect(obsidianTile({ state: "off", vault: null, foundCount: 0, armed: true }).switchOn).toBe(
+      true,
+    );
   });
 });
 
@@ -416,6 +437,31 @@ describe("routes and widths", () => {
     expect(audioSubline({ systemAudioOn: true, word: "paused", microphone: null })).toBe("with computer sound");
     expect(audioSubline({ systemAudioOn: false, word: "on", microphone: "mic" })).toBe("mic");
     expect(audioSubline({ systemAudioOn: false, word: "off", microphone: "mic" })).toBe("");
+    expect(audioSubline({ systemAudioOn: true, word: "needs attention", microphone: null })).toBe("");
+  });
+
+  it("gives every state its line, and a fault its own diagnosis", () => {
+    expect(sourceSubline({ word: "off", paired: false, companion: "x", setup: "s", attention: "a" })).toBe(
+      "turn it on any time.",
+    );
+    expect(sourceSubline({ word: "setting up", paired: false, companion: "x", setup: "s", attention: "a" })).toBe(
+      "getting ready…",
+    );
+    expect(sourceSubline({ word: "ready to set up", paired: false, companion: "x", setup: "s", attention: "a" })).toBe(
+      "s",
+    );
+    expect(
+      sourceSubline({
+        word: "needs attention",
+        paired: false,
+        companion: "with computer sound",
+        setup: "s",
+        attention: "no microphone is available.",
+      }),
+    ).toBe("no microphone is available.");
+    expect(sourceSubline({ word: "on", paired: false, companion: "with computer sound", setup: "", attention: "" })).toBe(
+      "with computer sound",
+    );
   });
 
   it("does not repeat journal on the unknown about value", () => {

@@ -169,9 +169,11 @@ html:has(.desk-shell) #app {
   min-width: 0;
 }
 
-.desk-pill,
-.desk-resume {
+.desk-pill {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   border: 1px solid var(--desk-hairline);
   background: var(--desk-card);
   color: inherit;
@@ -181,19 +183,34 @@ html:has(.desk-shell) #app {
   cursor: pointer;
 }
 
-.desk-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.desk-pill[data-connected="true"]::before {
+.desk-pill::before {
   content: "";
   width: 8px;
   height: 8px;
+  box-sizing: border-box;
   border-radius: 50%;
-  background: var(--desk-connected);
+  border: 1.5px solid currentColor;
+  background: transparent;
   flex: none;
+}
+
+.desk-pill[data-connected="true"]::before {
+  border: 0;
+  background: var(--desk-connected);
+}
+
+.desk-resume {
+  appearance: none;
+  align-self: flex-start;
+  width: fit-content;
+  border: 1.5px solid var(--desk-accent);
+  background: transparent;
+  color: var(--desk-ink);
+  font: inherit;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
 }
 
 .desk-shelf-button,
@@ -469,10 +486,12 @@ html:has(.desk-shell) #app {
 }
 
 .desk-fact {
-  display: grid;
-  grid-template-columns: 7.5rem minmax(0, 1fr);
-  gap: 8px;
-  padding: 4px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--desk-hairline);
 }
 
 .desk-fact-label {
@@ -480,7 +499,8 @@ html:has(.desk-shell) #app {
 }
 
 .desk-fact-value {
-  min-width: 0;
+  margin-left: auto;
+  text-align: right;
 }
 
 .desk-shell[data-width="phone"][data-page="deck"] .desk-pane,
@@ -590,9 +610,49 @@ html:has(.desk-shell) #app {
   grid-template-columns: 22px minmax(0, 1fr) auto;
 }
 
-.desk-breath {
+.desk-breath,
+.desk-reason {
   line-height: 1.45;
   margin: 0 0 12px;
+}
+
+.desk-switch-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--desk-hairline);
+}
+
+.desk-switch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.desk-switch-head > span {
+  min-width: 0;
+}
+
+.desk-switch-note {
+  margin: 4px 0 0;
+  color: var(--desk-subtle);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.desk-gain {
+  display: flex;
+  gap: 6px;
+}
+
+.desk-gain-level {
+  appearance: none;
+  border: 1px solid var(--desk-hairline);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
 }
 
 .desk-shell :focus {
@@ -611,17 +671,26 @@ html:has(.desk-shell) #app {
   color: #1a1a1a;
 }
 
+.desk-about-version,
 .desk-about-row {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 12px;
-  align-items: baseline;
   font-size: 13px;
-  padding: 7px 0;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--fg-subtle);
+  margin: 0;
 }
 
-.desk-about-label {
+.desk-about-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.desk-about-label,
+.desk-about-row .selectable {
   color: var(--fg-subtle);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -630,4 +699,22 @@ html:has(.desk-shell) #app {
     accent-color: #e8913a;
     color: #fcf3e4;
   }
+}
+
+html:has(.desk-shell[data-width="full"]) #setup-sun .sunarc-sun,
+html:has(.desk-shell[data-width="full"]) #setup-sun .sunarc-glow,
+html:has(.desk-shell[data-width="full"]) #setup-sun .sunarc-twilight {
+  transform: translate(20vw, 16vh);
+}
+
+html:has(.desk-shell[data-width="narrower"]) #setup-sun .sunarc-sun,
+html:has(.desk-shell[data-width="narrower"]) #setup-sun .sunarc-glow,
+html:has(.desk-shell[data-width="narrower"]) #setup-sun .sunarc-twilight {
+  transform: translate(15vw, 16vh);
+}
+
+html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-sun,
+html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-glow,
+html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-twilight {
+  transform: translate(12vw, 18vh);
 }

@@ -40,6 +40,7 @@ pub fn attention_source(
     is_enabled: impl Fn(SourceKind) -> bool,
     browsers_need_attention: bool,
     obsidian_needs_attention: bool,
+    paused: bool,
 ) -> Option<&'static str> {
     let faulted = |kind: SourceKind| {
         is_enabled(kind)
@@ -48,6 +49,25 @@ pub fn attention_source(
             })
     };
     if faulted(SourceKind::Mic) || faulted(SourceKind::SystemAudio) {
+        return Some("audio");
+    }
+    // No microphone, computer sound wanted, and nothing taking in. That is steady,
+    // so the menu names it. A pause still reads as paused. NoInputDevice stays
+    // its own state: this is not a capture fault.
+    let state_of = |kind: SourceKind| {
+        sources
+            .iter()
+            .find(|source| source.kind == kind)
+            .map(|source| &source.state)
+    };
+    let active = |kind: SourceKind| matches!(state_of(kind), Some(SourceState::Active));
+    let mic_missing = matches!(state_of(SourceKind::Mic), Some(SourceState::NoInputDevice));
+    if !paused
+        && is_enabled(SourceKind::SystemAudio)
+        && mic_missing
+        && !active(SourceKind::Mic)
+        && !active(SourceKind::SystemAudio)
+    {
         return Some("audio");
     }
     if faulted(SourceKind::Screen) || faulted(SourceKind::DesktopActivity) {
@@ -749,23 +769,55 @@ mod tests {
             denied(SourceKind::Mic),
             faulted_source(SourceKind::Screen, "x"),
         ];
-        assert_eq!(attention_source(&mic, |_| true, true, true), Some("audio"));
+        assert_eq!(
+            attention_source(&mic, |_| true, true, true, false),
+            Some("audio")
+        );
         let screen = [faulted_source(SourceKind::DesktopActivity, "x")];
         assert_eq!(
-            attention_source(&screen, |_| true, false, false),
+            attention_source(&screen, |_| true, false, false, false),
             Some("screen")
         );
         assert_eq!(
-            attention_source(&[], |_| true, true, true),
+            attention_source(&[], |_| true, true, true, false),
             Some("browsers")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, true),
+            attention_source(&[], |_| true, false, true, false),
             Some("Obsidian")
         );
-        assert_eq!(attention_source(&[], |_| true, false, false), None);
+        assert_eq!(attention_source(&[], |_| true, false, false, false), None);
         let off = [denied(SourceKind::Mic)];
-        assert_eq!(attention_source(&off, |_| false, false, false), None);
+        assert_eq!(attention_source(&off, |_| false, false, false, false), None);
+    }
+
+    #[test]
+    fn a_missing_microphone_with_computer_sound_wanted_and_nothing_taking_in_is_audio() {
+        let sources = [
+            SourceReport {
+                kind: SourceKind::Mic,
+                state: SourceState::NoInputDevice,
+                device: None,
+            },
+            SourceReport {
+                kind: SourceKind::SystemAudio,
+                state: SourceState::Inactive,
+                device: None,
+            },
+        ];
+        let enabled = |kind: SourceKind| kind == SourceKind::SystemAudio;
+        assert_eq!(
+            attention_source(&sources, enabled, false, false, false),
+            Some("audio")
+        );
+        assert_eq!(
+            attention_source(&sources, enabled, false, false, true),
+            None
+        );
+        assert_eq!(
+            attention_source(&sources, |_| false, false, false, false),
+            None
+        );
     }
 
     fn dump_with(
