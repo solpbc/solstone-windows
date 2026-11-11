@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.46
+PackageVersion: 2.0.47
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,10 +22,11 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Added
-  - Obsidian is now a source. in the solstone app's settings, pick a vault or choose its folder, and every note in that vault goes into your journal, then each one as it changes. your vault stays as it is.
   Changed
-  - settings no longer asks you to choose sites after you add the solstone extension. you choose them in your browser.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.46
+  - the solstone app now checks for updates daily and downloads them in the background when your network is unmetered. a downloaded update installs the next time the solstone app starts, including when you sign in to windows. this update resets your automatic update settings once, even if you'd changed them. you can change them in settings, where you can also check now or download on demand.
+  Fixed
+  - when there's no room for more browser pages, the tray and sources page say so, and the solstone extension stops asking you to turn browser pages back on.
+  - on a PC where only Obsidian notes go into your journal, "journal last reached" on the home pane now shows when this PC last reached your journal, instead of "not yet".
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.47
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
