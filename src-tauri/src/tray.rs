@@ -112,7 +112,7 @@ pub fn init(
         .item(&quit)
         .build()?;
 
-    let (visual, tooltip) = classify_tray(
+    let (visual, _starting) = classify_tray(
         AppPhase::Starting,
         &SyncSnapshot::default(),
         None,
@@ -126,7 +126,9 @@ pub fn init(
     let tray = TrayIconBuilder::with_id(observer_contract::tray::ROOT)
         .menu(&menu)
         .icon(icon_for(visual))
-        .tooltip(tooltip)
+        // Windows keeps the first tooltip as the icon's name in the taskbar and
+        // its settings, ahead of every later one, so it is the app's name.
+        .tooltip("solstone")
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             observer_contract::tray::MENU_ATTENTION => {
